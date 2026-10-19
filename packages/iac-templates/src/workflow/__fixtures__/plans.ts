@@ -64,6 +64,26 @@ export function withPlan(
   });
 }
 
+/** `plan` with the given workers (from the user, defaults for the rest) and cron jobs. */
+export function withProcesses(
+  plan: DeployPlan,
+  o: {
+    workers?: readonly { name: string; command: string; enabled?: boolean; count?: number }[];
+    cron?: readonly { name: string; schedule: string; command: string; enabled?: boolean }[];
+  },
+): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...plan,
+    processes: {
+      workers: (o.workers ?? []).map((worker) => ({ source: "user", ...worker })),
+      cron: o.cron ?? [],
+    },
+  });
+}
+
+/** One nightly cron job, enabled. */
+export const NIGHTLY = { name: "cleanup", schedule: "0 3 * * *", command: "node cleanup.js" };
+
 /** The YAML text of job `id` in a rendered workflow, as committed (for snapshots). */
 export function jobYaml(content: string, id: string): string {
   const lines = content.split("\n");

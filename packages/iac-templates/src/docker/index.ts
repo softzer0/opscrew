@@ -1,5 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
+import type { PinArch } from "../pins";
 import type { RenderedFile } from "../types";
 import { nodeImage, nodeMajor, pythonImage, pythonMinor, type ResolveImageDigest } from "./images";
 import {
@@ -47,6 +48,11 @@ export interface DockerAssetOptions {
    * Dockerfile): only `.dockerignore` and `.env.example` are rendered, for any stack. Default true.
    */
   dockerfile?: boolean;
+  /**
+   * The image's architecture when the plan has an enabled cron job (`supercronicArch(plan)`): the
+   * runtime stage then gets the pinned supercronic for it, which the `cron` service runs.
+   */
+  supercronic?: PinArch;
 }
 
 /** Port the container listens on for a stack. */
@@ -65,19 +71,20 @@ function dockerfile(
   const node = () => nodeImage(nodeMajor(facts, build), resolve);
   const python = () => pythonImage(pythonMinor(facts, build), resolve);
   const release = options.app ? options.app.releaseCommand : facts.build.releaseCommand;
+  const cron = options.supercronic;
   switch (stack) {
     case "next-standalone":
-      return nextStandaloneDockerfile(facts, port, node(), release);
+      return nextStandaloneDockerfile(facts, port, node(), release, cron);
     case "node-server":
-      return nodeServerDockerfile(facts, port, node(), release);
+      return nodeServerDockerfile(facts, port, node(), release, cron);
     case "static-spa":
-      return staticSpaDockerfile(facts, node());
+      return staticSpaDockerfile(facts, node(), cron);
     case "python-fastapi":
-      return fastapiDockerfile(facts, port, python());
+      return fastapiDockerfile(facts, port, python(), cron);
     case "python-django":
-      return djangoDockerfile(facts, port, python());
+      return djangoDockerfile(facts, port, python(), cron);
     case "python-generic":
-      return pythonGenericDockerfile(facts, port, python());
+      return pythonGenericDockerfile(facts, port, python(), cron);
   }
 }
 

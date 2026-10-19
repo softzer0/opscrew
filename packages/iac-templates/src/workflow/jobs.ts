@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
+import { sealsImage } from "./build";
 import { RETENTION_SCRIPT } from "./retention";
 import { block, DIGEST_REF_PATTERN, GHCR_LOGIN, job, run } from "./shared";
 
@@ -74,7 +75,7 @@ function deployTagsJob(plan: DeployPlan): string[] {
 
 /**
  * Image retention (FR-1229), after a healthy deploy, holding only `packages: write`: deletes the
- * Buildpacks and Railpack intermediate `build-<commit>` versions and, with
+ * intermediate `build-<commit>` versions a seal build leaves ({@link sealsImage}) and, with
  * `cicd.imageRetention.enabled`, every `<commit>` version but the newest `keep`, never the running or
  * the previous image (see {@link RETENTION_SCRIPT}).
  */
@@ -102,14 +103,12 @@ function retentionJob(plan: DeployPlan): string[] {
 /**
  * The jobs after `build` and `deploy`, each with only the permission it needs: signing
  * (`supplyChain.sign`), the deploy tag (`cicd.deployTags.enabled`) and image retention (for
- * `cicd.imageRetention.enabled`, or to delete the intermediate images of Buildpacks and Railpack).
+ * `cicd.imageRetention.enabled`, or to delete the intermediate images of a seal build).
  */
 export function afterDeployJobs(plan: DeployPlan): string[] {
-  const builder = plan.app.build?.builder;
-  const intermediate = builder === "buildpacks" || builder === "railpack";
   return [
     ...(plan.supplyChain.sign ? ["", ...signJob()] : []),
     ...(plan.cicd.deployTags.enabled ? ["", ...deployTagsJob(plan)] : []),
-    ...(plan.cicd.imageRetention.enabled || intermediate ? ["", ...retentionJob(plan)] : []),
+    ...(plan.cicd.imageRetention.enabled || sealsImage(plan) ? ["", ...retentionJob(plan)] : []),
   ];
 }

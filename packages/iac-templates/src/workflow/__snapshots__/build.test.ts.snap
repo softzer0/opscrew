@@ -1,5 +1,95 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`an own Dockerfile with cron jobs > matches the snapshot 1`] = `
+"  build:
+    name: Build the image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: \${{ steps.final.outputs.ref }}
+      tag: \${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: image
+        name: Choose the image name
+        run: |
+          set -euo pipefail
+          repo="\${GITHUB_REPOSITORY,,}"
+          echo "name=ghcr.io/\${repo}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      # Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the
+      # workflow run, and the repository and commit of the checkout.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: provenance-add-gha=false
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+      - id: own
+        name: Build the image from your Dockerfile
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "."
+          file: "Dockerfile"
+          build-args: \${{ secrets.OPSCREW_BUILD_ENV }}
+          secrets: \${{ secrets.OPSCREW_BUILD_SECRETS }}
+          push: true
+          tags: \${{ steps.image.outputs.name }}:build-\${{ github.sha }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Write the seal Dockerfile
+        env:
+          BASE: \${{ steps.image.outputs.name }}:build-\${{ github.sha }}@\${{ steps.own.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seal"
+          printf '%s\\n' "FROM $BASE" 'ADD --checksum=sha256:d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0 --chmod=755 https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-amd64 /usr/local/bin/supercronic' > "$RUNNER_TEMP/seal/Dockerfile"
+      - id: push
+        name: Seal and push the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          # The checkout is the context, so the provenance names its repository and commit; the
+          # seal copies nothing from it.
+          context: "."
+          file: \${{ runner.temp }}/seal/Dockerfile
+          push: true
+          tags: \${{ steps.image.outputs.image }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=seal
+          cache-to: type=gha,mode=min,scope=seal
+      - id: final
+        name: Record the image digest
+        env:
+          NAME: \${{ steps.image.outputs.name }}
+          DIGEST: \${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          ref="$NAME@$DIGEST"
+          if [[ ! "$ref" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not read the digest of the pushed image; re-run the workflow."
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Pushed \\\`$NAME:$GITHUB_SHA\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+      # The scan runs after the registry logout, so it never holds the job's packages: write token.
+      - name: Scan the image (report only)
+        env:
+          IMAGE: \${{ steps.final.outputs.ref }}
+        run: |
+          set -euo pipefail
+          docker pull --quiet "$IMAGE"
+          docker logout ghcr.io
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE""
+`;
+
 exports[`the build job > matches the snapshot for buildpacks 1`] = `
 "  build:
     name: Build the image
@@ -397,4 +487,24 @@ exports[`the build job > matches the snapshot for railpack 1`] = `
           docker pull --quiet "$IMAGE"
           docker logout ghcr.io
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE""
+`;
+
+exports[`the build scripts in bash > buildpacks: the seal adds supercronic when the plan has cron jobs 1`] = `
+"FROM ghcr.io/acme/shop:build-ffffffffffffffffffffffffffffffffffffffff@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ADD --checksum=sha256:d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0 --chmod=755 https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-amd64 /usr/local/bin/supercronic
+"
+`;
+
+exports[`the build scripts in bash > own-dockerfile: the seal adds supercronic when the plan has cron jobs 1`] = `
+"FROM ghcr.io/acme/shop:build-ffffffffffffffffffffffffffffffffffffffff@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ADD --checksum=sha256:d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0 --chmod=755 https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-amd64 /usr/local/bin/supercronic
+"
+`;
+
+exports[`the build scripts in bash > railpack: the seal adds supercronic when the plan has cron jobs 1`] = `
+"FROM ghcr.io/acme/shop:build-ffffffffffffffffffffffffffffffffffffffff@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+RUN mkdir -p /app/tmp /app/log /app/storage /app/db && chown -R 10001:10001 /app/tmp /app/log /app/storage /app/db
+ADD --checksum=sha256:d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0 --chmod=755 https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-amd64 /usr/local/bin/supercronic
+USER 10001:10001
+"
 `;

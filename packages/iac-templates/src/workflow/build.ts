@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan, RuntimeLanguage } from "@opscrew/plan-schema";
 import { SECRET_FILE_PATTERNS } from "../docker";
+import { supercronicAdd } from "../docker/stacks";
 import { ACTIONS, IMAGES, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import {
   buildArch,
@@ -8,9 +9,11 @@ import {
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
   GHCR_LOGIN,
+  hasCronJobs,
   job,
   run,
   secret,
+  supercronicArch,
 } from "./shared";
 
 /**
@@ -129,19 +132,56 @@ function finalBuild(name: string, inputs: readonly string[], cache: string): str
   ];
 }
 
-/** `generated-dockerfile` and `own-dockerfile` (and a plan without a builder yet). */
-function dockerfileSteps(plan: DeployPlan): string[] {
-  return finalBuild(
-    "Build and push the image",
-    [
-      `context: ${JSON.stringify(plan.app.buildContext || ".")}`,
-      `file: ${JSON.stringify(plan.app.dockerfile || "Dockerfile")}`,
-      "# The provenance records build arguments: only non-secret values go there.",
-      `build-args: ${secret(DEPLOY_SECRETS.buildEnv)}`,
-      `secrets: ${secret(DEPLOY_SECRETS.buildSecrets)}`,
-    ],
-    "",
+/** The seal's supercronic line when the plan has cron jobs (see {@link supercronicArch}). */
+function supercronicSeal(plan: DeployPlan): string[] {
+  const arch = supercronicArch(plan);
+  return arch === undefined ? [] : [supercronicAdd(arch)];
+}
+
+/**
+ * True when the build pushes a `build-<commit>` intermediate that a seal build turns into the
+ * final image: Buildpacks, Railpack, and the user's own Dockerfile when the plan has cron jobs.
+ */
+export function sealsImage(plan: DeployPlan): boolean {
+  const builder = plan.app.build?.builder;
+  return (
+    builder === "buildpacks" ||
+    builder === "railpack" ||
+    (builder === "own-dockerfile" && hasCronJobs(plan))
   );
+}
+
+/**
+ * `generated-dockerfile` and `own-dockerfile` (and a plan without a builder yet). OpsCrew's own
+ * Dockerfile already holds supercronic when the plan has cron jobs; the user's own one builds
+ * `build-<commit>` instead, and the seal adds it.
+ */
+function dockerfileSteps(plan: DeployPlan): string[] {
+  const source = [
+    `context: ${JSON.stringify(plan.app.buildContext || ".")}`,
+    `file: ${JSON.stringify(plan.app.dockerfile || "Dockerfile")}`,
+  ];
+  const values = [
+    `build-args: ${secret(DEPLOY_SECRETS.buildEnv)}`,
+    `secrets: ${secret(DEPLOY_SECRETS.buildSecrets)}`,
+  ];
+  if (!sealsImage(plan)) {
+    const note = "# The provenance records build arguments: only non-secret values go there.";
+    return finalBuild("Build and push the image", [...source, note, ...values], "");
+  }
+  return [
+    "- id: own",
+    "  name: Build the image from your Dockerfile",
+    uses("buildPush"),
+    "  with:",
+    ...[...source, ...values].map((line) => `    ${line}`),
+    "    push: true",
+    "    tags: ${{ steps.image.outputs.name }}:build-${{ github.sha }}",
+    "    provenance: false",
+    "    cache-from: type=gha",
+    "    cache-to: type=gha,mode=max",
+    ...sealSteps("own", supercronicSeal(plan)),
+  ];
 }
 
 /**
@@ -272,7 +312,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       "fi",
       'echo "digest=$digest" >> "$GITHUB_OUTPUT"',
     ]),
-    ...sealSteps("pack", []),
+    ...sealSteps("pack", supercronicSeal(plan)),
   ];
 }
 
@@ -341,6 +381,7 @@ function railpackSteps(plan: DeployPlan): string[] {
             `RUN mkdir -p ${writable.join(" ")} && chown -R ${RAILPACK_USER} ${writable.join(" ")}`,
           ]),
       ...(RAILPACK_SEAL[language] ?? []),
+      ...supercronicSeal(plan),
       `USER ${RAILPACK_USER}`,
     ]),
   ];
@@ -380,8 +421,9 @@ const SCAN = [
 
 /**
  * The `build` job: builds the image with the plan's builder on a runner of the server's
- * architecture and pushes it to GHCR (`app.build` absent: the Dockerfile, as before). Buildpacks
- * and Railpack push `<name>:build-<commit>` first, then a seal build. Every builder ends in one
+ * architecture and pushes it to GHCR (`app.build` absent: the Dockerfile, as before). Buildpacks,
+ * Railpack and, with cron jobs, the user's own Dockerfile push `<name>:build-<commit>` first, then
+ * a seal build, which adds supercronic when the plan has cron jobs. Every builder ends in one
  * `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
  * index digest reference, and `tag`, `<name>:<commit>`. Then the optional report-only scan.
  */

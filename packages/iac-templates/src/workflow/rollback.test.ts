@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testServices } from "../__fixtures__/plans";
 import type { RenderContext } from "../types";
-import { jobYaml, withBuild, withPlan } from "./__fixtures__/plans";
+import { jobYaml, NIGHTLY, withBuild, withPlan, withProcesses } from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
+import { type ServiceInitStep, switchCommands } from "./switch";
 
 /*
  * Runs the generated "Start the new version" and "Roll back" scripts in bash against a fake server:
@@ -60,6 +61,27 @@ function scripts(p: DeployPlan) {
     rollback: steps.find((s) => s.name?.startsWith("Roll back"))?.run ?? "",
   };
 }
+/**
+ * An app with Postgres, a Valkey cache, two workers (and a third turned off), cron jobs and a
+ * release command.
+ */
+const components = withProcesses(
+  withPlan(
+    DeployPlanSchema.parse({ ...plan, services: testServices({ postgres: true, redis: true }) }),
+    {
+      releaseCommand: "npm run migrate",
+    },
+  ),
+  {
+    workers: [
+      { name: "worker", command: "node worker.js", count: 2 },
+      { name: "beat", command: "node beat.js" },
+      { name: "mailer", command: "node mailer.js", enabled: false },
+    ],
+    cron: [NIGHTLY],
+  },
+);
+const withWorkers = scripts(components);
 const rolling = scripts(withBuild(plan, "buildpacks", { language: "go" }));
 const recreate = scripts(
   withPlan(withBuild(plan, "railpack", { language: "rust" }), { deploy: { strategy: "recreate" } }),
@@ -90,23 +112,42 @@ const PRELUDE = [
   "}",
 ].join("\n");
 
-/** The fake `docker`: logs every call; `compose` and kamal-proxy act on $WORK/containers. */
+/**
+ * The fake `docker`: logs every call; `compose` and kamal-proxy act on $WORK/containers. The
+ * workers and cron named in PROCESSES live in $WORK/processes, one container each
+ * (`p<n> <service> <image> <status> <restarts>`), recreated only when their image changed, as
+ * Compose does. Any other `compose exec` is a setup step: it fails when its words are a line of
+ * $WORK/failing.
+ */
 const FAKE_DOCKER = [
   "#!/usr/bin/env bash",
   'echo "docker $*" >> "$WORK/docker.log"',
   'state="$WORK/containers"',
-  'touch "$state"',
+  'processes="$WORK/processes"',
+  'touch "$state" "$processes" "$WORK/failing"',
+  'image_now() { echo "${APP_IMAGE:-$(sed -n "s/^APP_IMAGE=//p" .env)}"; }',
+  'next_id() { local n; n="$(cat "$WORK/next" 2>/dev/null || echo 1)"; echo $(( n + 1 )) > "$WORK/next"; echo "$n"; }',
   "start_one() {",
-  '  local n; n="$(cat "$WORK/next" 2>/dev/null || echo 1)"; echo $(( n + 1 )) > "$WORK/next"',
-  '  local image="${APP_IMAGE:-$(sed -n "s/^APP_IMAGE=//p" .env)}"',
+  '  local n; n="$(next_id)"',
+  '  local image; image="$(image_now)"',
   '  local status=running; [[ " ${EXITED:-} " == *" $image "* ]] && status=exited',
   '  echo "c$n shop-app-$n $image $status" >> "$state"',
+  "}",
+  "up_process() {",
+  '  local image; image="$(image_now)"',
+  '  awk -v s="$1" -v i="$image" \'$2 == s && $3 == i { found = 1 } END { exit !found }\' "$processes" && return 0',
+  '  local n; n="$(next_id)"',
+  '  { grep -v "^p[0-9]* $1 " "$processes" || true; echo "p$n $1 $image running 0"; } > "$processes.tmp"',
+  '  mv "$processes.tmp" "$processes"',
   "}",
   'case "$1 $2" in',
   '  "login ghcr.io") cat > /dev/null; [[ -z "${DOCKER_LOGIN_FAIL:-}" ]] ;;',
   '  "compose up")',
   '    [[ -z "${COMPOSE_UP_FAIL:-}" ]] || exit 1',
-  '    [[ "${@: -1}" == app ]] || exit 0',
+  '    if [[ "${@: -1}" != app ]]; then',
+  '      for arg in "${@:3}"; do [[ " ${PROCESSES:-} " != *" $arg "* ]] || up_process "$arg"; done',
+  "      exit 0",
+  "    fi",
   '    if [[ " $* " == *" --scale "* ]]; then',
   '      want="$(echo " $* " | sed -n "s/.* --scale app=\\([0-9]*\\) .*/\\1/p")"',
   '      while (( $(wc -l < "$state") < want )); do start_one; done',
@@ -114,12 +155,17 @@ const FAKE_DOCKER = [
   '      : > "$state"; start_one',
   "    fi ;;",
   '  "compose ps")',
-  '    if [[ " $* " == *" -aq "* ]]; then cut -d " " -f 1 "$state"',
+  '    if [[ " ${PROCESSES:-} " == *" ${@: -1} "* ]]; then awk -v s="${@: -1}" \'$2 == s { print $1 }\' "$processes"',
+  '    elif [[ " $* " == *" -aq "* ]]; then cut -d " " -f 1 "$state"',
   '    else awk \'$4 == "running" { print $1 }\' "$state"; fi ;;',
   '  "compose run") cat > /dev/null; echo "run image=${APP_IMAGE:-}" >> "$WORK/docker.log"',
   '    if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; exit 3; fi ;;',
   '  "compose exec")',
   "    cat > /dev/null",
+  '    if [[ "$4" != proxy ]]; then',
+  '      if grep -qxF "${*:5}" "$WORK/failing"; then echo "setup output for ${*:5}"; exit 1; fi',
+  "      exit 0",
+  "    fi",
   '    target=""; prev=""; for arg in "$@"; do [[ "$prev" == --target ]] && target="$arg"; prev="$arg"; done',
   '    image="$(awk -v n="${target%:*}" \'$2 == n { print $3 }\' "$state")"',
   '    status="$(awk -v n="${target%:*}" \'$2 == n { print $4 }\' "$state")"',
@@ -127,10 +173,25 @@ const FAKE_DOCKER = [
   '      echo "Error: target failed to become healthy within configured timeout (60s)" >&2; exit 1',
   "    fi",
   '    echo "$target" > "$WORK/routed" ;;',
-  '  "inspect --format") awk -v id="${@: -1}" \'$1 == id { print "/" $2 }\' "$state" | grep . ;;',
+  '  "inspect --format")',
+  '    if [[ "${@: -1}" == p* ]]; then',
+  '      awk -v id="${@: -1}" -v f="$3" \'$1 == id { print (f == "{{.RestartCount}}" ? $5 : $4 ":" $5) }\' "$processes"',
+  '    else awk -v id="${@: -1}" \'$1 == id { print "/" $2 }\' "$state" | grep .; fi ;;',
   "  *)",
   '    if [[ "$1" == rm ]]; then grep -v "^${@: -1} " "$state" > "$state.tmp" || true; mv "$state.tmp" "$state"; fi ;;',
   "esac",
+].join("\n");
+
+/** The fake `sleep`: returns at once; the services in CRASH restart meanwhile, those in STOP exit. */
+const FAKE_SLEEP = [
+  "#!/usr/bin/env bash",
+  'echo "sleep $*" >> "$WORK/docker.log"',
+  'touch "$WORK/processes"',
+  'awk -v crash=" ${CRASH:-} " -v stop=" ${STOP:-} " \'{',
+  '  if (index(crash, " " $2 " ")) $5 = $5 + 1',
+  '  if (index(stop, " " $2 " ")) $4 = "exited"',
+  "  print",
+  '}\' "$WORK/processes" > "$WORK/processes.tmp" && mv "$WORK/processes.tmp" "$WORK/processes"',
 ].join("\n");
 
 let work = "";
@@ -164,6 +225,7 @@ function run(script: string, env: Record<string, string> = {}) {
       GITHUB_OUTPUT: `${work}/output`,
       RUNNER_TEMP: `${work}/tmp`,
       REGISTRY_TOKEN: "registry-token-placeholder",
+      PROCESSES: "worker beat cron",
       ...env,
     },
     encoding: "utf8",
@@ -205,6 +267,20 @@ const resetCalls = () => {
   rmSync(join(work, "docker.log"), { force: true });
 };
 const dockerCalls = () => file("docker.log");
+/** The image each worker and cron container runs, by service. */
+const processImages = () =>
+  Object.fromEntries(
+    file("processes")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split(" ").slice(1, 3)),
+  );
+/** The workers and cron of an earlier deploy, all running `image`. */
+const runningProcesses = (image: string) =>
+  writeFileSync(
+    join(work, "processes"),
+    ["worker", "beat", "cron"].map((s, i) => `p${80 + i} ${s} ${image} running 0\n`).join(""),
+  );
 
 // Each test runs bash several times; on Windows (Git Bash) under a parallel `pnpm check` that
 // can take longer than the default 5 seconds.
@@ -215,6 +291,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
     mkdirSync(join(work, "tmp"));
     mkdirSync(join(work, "bin"));
     writeFileSync(join(work, "bin", "docker"), `${FAKE_DOCKER}\n`, { mode: 0o755 });
+    writeFileSync(join(work, "bin", "sleep"), `${FAKE_SLEEP}\n`, { mode: 0o755 });
   });
   afterEach(() => rmSync(work, { recursive: true, force: true }));
 
@@ -465,6 +542,189 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
     expect(dockerCalls()).toBe("");
   });
 
+  describe("workers and cron", () => {
+    it("deploys in order: services, release, web switch, workers and cron, then the worker check", () => {
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD);
+      const start = run(withWorkers.start);
+      expect(start.status, start.output).toBe(0);
+      const calls = dockerCalls().split("\n");
+      const at = (prefix: string) => {
+        const i = calls.findIndex((line) => line.startsWith(prefix));
+        expect(i, prefix).toBeGreaterThan(-1);
+        return i;
+      };
+      const order = [
+        at("docker compose pull"),
+        at("docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy"),
+        at("docker compose run --rm --no-deps -T release"),
+        at("docker compose up -d --no-deps --no-recreate --scale app=2 app"),
+        at("docker compose exec -T proxy kamal-proxy deploy app"),
+        at("docker stop c90"),
+        at("docker compose up -d --no-deps worker beat cron"),
+        at("docker inspect --format {{.RestartCount}}"),
+        at("sleep 30"),
+        at("docker inspect --format {{.State.Status}}:{{.RestartCount}}"),
+      ];
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      // The worker that is turned off is never started.
+      expect(dockerCalls()).not.toContain("mailer");
+      expect(processImages()).toEqual({ worker: NEW, beat: NEW, cron: NEW });
+      expect(routed()).toBe(NEW);
+    });
+
+    it("puts the web and the workers back on the previous image when a worker keeps restarting", () => {
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD);
+      const start = run(withWorkers.start, { CRASH: "worker" });
+      expect(start.status).toBe(1);
+      // The fake ssh maps /srv/app to the test's folder.
+      expect(start.output).toContain(
+        "::error::The worker container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version. Read its log on the server with `docker compose logs worker` in ",
+      );
+      expect(start.output).toContain(
+        "(opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\n",
+      );
+      expect(start.output).not.toContain("203.0.113.10");
+      expect(processImages()).toEqual({ worker: NEW, beat: NEW, cron: NEW });
+
+      resetCalls();
+      const rollback = run(withWorkers.rollback);
+      expect(rollback.status).toBe(1);
+      expect(rollback.output).toContain("restored the previous version");
+      expect(routed()).toBe(OLD);
+      expect(containers()).toEqual([OLD]);
+      expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+      expect(processImages()).toEqual({ worker: OLD, beat: OLD, cron: OLD });
+      expect(dockerCalls()).toContain("docker compose up -d --no-deps worker beat cron");
+    });
+
+    it("names a worker that exits", () => {
+      server({ ".env": OLD }, [OLD]);
+      const start = run(withWorkers.start, { STOP: "beat" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("::error::The beat container did not keep running");
+      expect(start.output).toContain("`docker compose logs beat`");
+    });
+
+    it("never restarts the steady services, and never forces Compose to recreate anything", () => {
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD);
+      expect(run(withWorkers.start).status).toBe(0);
+      const ups = dockerCalls()
+        .split("\n")
+        .filter((call) => call.startsWith("docker compose up"));
+      expect(ups).toEqual([
+        "docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy",
+        "docker compose up -d --no-deps --no-recreate --scale app=2 app",
+        "docker compose up -d --no-deps worker beat cron",
+      ]);
+      const job = renderWorkflow(components, ctx).content;
+      for (const forced of ["--force-recreate", "--always-recreate-deps", "docker restart"]) {
+        expect(job).not.toContain(forced);
+      }
+      expect(dockerCalls()).not.toMatch(/docker (stop|rm) p/);
+    });
+
+    it("keeps the workers that already run the image, as Compose does", () => {
+      server({ ".env": NEW }, [NEW]);
+      runningProcesses(NEW);
+      expect(run(withWorkers.start).status).toBe(0);
+      expect(
+        file("processes")
+          .split("\n")
+          .map((line) => line.split(" ")[0]),
+      ).toEqual(["p80", "p81", "p82"]);
+    });
+
+    it("starts no worker check without workers or cron", () => {
+      expect(rolling.start).not.toContain("sleep 30");
+      expect(rolling.rollback).not.toContain("--no-deps worker");
+    });
+
+    it("replaces a SQLite app's web container instead of running two", () => {
+      const sqlite = scripts(
+        DeployPlanSchema.parse({
+          ...plan,
+          deploy: { strategy: "recreate" },
+          storage: { sqlite: { dir: "storage" } },
+        }),
+      );
+      expect(sqlite.start).toContain("docker compose up -d --no-deps app\n");
+      expect(sqlite.start).not.toContain("--scale");
+    });
+  });
+
+  describe("the services' one-time setup", () => {
+    const STEPS: ServiceInitStep[] = [
+      {
+        service: "garage",
+        check: ["/garage", "layout", "show"],
+        run: ["/garage", "layout", "apply", "--version", "1"],
+      },
+      {
+        service: "garage",
+        check: ["/garage", "bucket", "info", "uploads"],
+        run: ["/garage", "bucket", "create", "uploads"],
+      },
+    ];
+    const LAYOUT = "/garage layout apply --version 1";
+    const BUCKET = "/garage bucket create uploads";
+    const start = [
+      'ssh "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
+      ...switchCommands(withPlan(plan, { releaseCommand: "npm run migrate" }), STEPS),
+      "REMOTE",
+    ].join("\n");
+    const failing = (...commands: string[]) =>
+      writeFileSync(join(work, "failing"), commands.map((c) => `${c}\n`).join(""));
+
+    it("runs each step after the services start and before the release command, when its check fails", () => {
+      server({ ".env": OLD }, [OLD]);
+      failing("/garage layout show", "/garage bucket info uploads");
+      const result = run(start);
+      expect(result.status, result.output).toBe(0);
+      const calls = dockerCalls().split("\n");
+      const at = (text: string) => calls.findIndex((line) => line.endsWith(text));
+      expect(at("--remove-orphans db proxy caddy")).toBeLessThan(at("/garage layout show"));
+      expect(at("/garage layout show")).toBeLessThan(at(LAYOUT));
+      expect(at(LAYOUT)).toBeLessThan(at("/garage bucket info uploads"));
+      expect(at("/garage bucket info uploads")).toBeLessThan(at(BUCKET));
+      expect(at(BUCKET)).toBeLessThan(at("compose run --rm --no-deps -T release"));
+      expect(calls).toContain(`docker compose exec -T garage ${LAYOUT}`);
+    });
+
+    it("skips the steps whose checks pass", () => {
+      server({ ".env": OLD }, [OLD]);
+      failing();
+      const result = run(start);
+      expect(result.status, result.output).toBe(0);
+      expect(dockerCalls()).toContain("docker compose exec -T garage /garage layout show");
+      expect(dockerCalls()).toContain("docker compose exec -T garage /garage bucket info uploads");
+      expect(dockerCalls()).not.toContain(LAYOUT);
+      expect(dockerCalls()).not.toContain(BUCKET);
+    });
+
+    it("stops before the release command when a step fails, keeping its output on the server", () => {
+      server({ ".env": OLD }, [OLD]);
+      failing("/garage layout show", LAYOUT);
+      const result = run(start);
+      expect(result.status).toBe(1);
+      // The fake ssh maps /srv/app to the test's folder.
+      expect(result.output).toContain(
+        "::error::The one-time setup of the garage service failed, so the new version was not started and the previous version keeps serving. The step's output stays on the server in ",
+      );
+      expect(result.output).toContain(
+        "/init.log (it can quote a key, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the cause and push again. The steps already done are skipped.",
+      );
+      // A step can print a key, so its output stays on the server.
+      expect(result.output).not.toContain("setup output");
+      expect(read("init.log")).toBe(`setup output for ${LAYOUT}`);
+      expect(dockerCalls()).not.toContain("bucket");
+      expect(dockerCalls()).not.toContain("compose run");
+      expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+    });
+  });
+
   it("refuses an image that is not pinned by digest before touching the server", () => {
     server({ ".env": OLD }, [OLD]);
     const start = run(rolling.start, { IMAGE: "ghcr.io/acme/shop:latest" });
@@ -488,6 +748,10 @@ describe("the deploy job per strategy", () => {
   it("matches the snapshot for recreate", () => {
     const p = withPlan(withBuild(plan, "buildpacks"), { deploy: { strategy: "recreate" } });
     expect(deploy(p)).toMatchSnapshot();
+  });
+
+  it("matches the snapshot with services, workers and cron", () => {
+    expect(deploy(components)).toMatchSnapshot();
   });
 
   it("drains the old copy for drainSeconds", () => {

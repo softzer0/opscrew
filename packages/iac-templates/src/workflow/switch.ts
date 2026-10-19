@@ -1,5 +1,5 @@
-import { type DeployPlan, type ImageBuilder, serviceOf } from "@opscrew/plan-schema";
-import { healthPath } from "./shared";
+import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
+import { hasCronJobs, healthPath } from "./shared";
 
 /**
  * Where the release command's output stays: on the server, readable only by the deploy user. It is
@@ -58,13 +58,98 @@ function builderHint(plan: DeployPlan): string {
   return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} and app.build.chosen: user in opscrew/plan.yaml, then ${RERUN}.`;
 }
 
-/** The services a deploy starts when they are not running, and never restarts otherwise. */
+/**
+ * The services a deploy starts when they are not running, and never restarts unless their own
+ * configuration changed: the plan's enabled services by name, kamal-proxy and Caddy.
+ */
 function steadyServices(plan: DeployPlan): string[] {
   return [
-    ...(serviceOf(plan, "postgres") ? ["db"] : []),
-    ...(serviceOf(plan, "valkey") ? ["cache"] : []),
+    ...plan.services.filter((service) => service.enabled).map((service) => service.name),
     "proxy",
     "caddy",
+  ];
+}
+
+/** Where the output of a failed one-time setup step stays on the server, as {@link RELEASE_LOG}. */
+const INIT_LOG = "/srv/app/init.log";
+
+/**
+ * A step of a service's one-time setup, from the catalog (for example Garage's layout, key and
+ * bucket): `run` executes in the running `service` only when `check` fails there, so a deploy
+ * skips the steps an earlier one did. Both are argument lists for `docker compose exec`, which
+ * needs no shell in the image.
+ */
+export interface ServiceInitStep {
+  /** The Compose service, started by the deploy just before. */
+  service: string;
+  /** Exits 0 when the step is already done. */
+  check: readonly string[];
+  run: readonly string[];
+}
+
+/** `words` in the running `service`, without a TTY and with no stdin (the script arrives on it). */
+function exec(service: string, words: readonly string[]): string {
+  return `docker compose exec -T ${service} ${words.map(shellQuote).join(" ")} < /dev/null`;
+}
+
+/** Shown when a setup step fails; names the service only. */
+function initFailed(service: string): string {
+  return `::error::The one-time setup of the ${service} service failed, so the new version was not started and the previous version keeps serving. The step's output stays on the server in ${INIT_LOG} (it can quote a key, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the cause and push again. The steps already done are skipped.`;
+}
+
+/** The one-time setup steps in order, each run only when its check fails; a failure stops here. */
+function serviceInit(steps: readonly ServiceInitStep[]): string[] {
+  return steps.flatMap(({ service, check, run }) => [
+    `if ! ${exec(service, check)} > /dev/null 2>&1; then`,
+    `  if ! (umask 077; ${exec(service, run)} > ${INIT_LOG} 2>&1); then`,
+    `    echo ${shellQuote(initFailed(service))}`,
+    "    exit 1",
+    "  fi",
+    "fi",
+  ]);
+}
+
+/** The Compose services of the enabled workers, and `cron` when a cron job is enabled. */
+function processServices(plan: DeployPlan): string[] {
+  return [
+    ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
+    ...(hasCronJobs(plan) ? ["cron"] : []),
+  ];
+}
+
+/** How long every worker and cron container must keep running after the deploy starts it. */
+const PROCESS_CHECK_SECONDS = 30;
+
+/** printf's format for a worker that stopped: `%s` is its Compose service, twice. */
+const PROCESS_FAILED = `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version. Read its log on the server with \`docker compose logs %s\` in /srv/app (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n`;
+
+/**
+ * Starts `services` (the workers and cron) on `$APP_IMAGE`; Compose recreates only those whose
+ * image or settings changed. Then each container must stay running, with the restart count it
+ * started with, for {@link PROCESS_CHECK_SECONDS}; otherwise the script names the first that did
+ * not and exits 1.
+ */
+function startProcesses(services: readonly string[]): string[] {
+  if (services.length === 0) return [];
+  const each = [
+    `for service in ${services.join(" ")}; do`,
+    '  for id in $(docker compose ps -aq "$service"); do',
+  ];
+  return [
+    `docker compose up -d --no-deps ${services.join(" ")}`,
+    'started=""',
+    ...each,
+    `    started="$started $id=running:$(docker inspect --format '{{.RestartCount}}' "$id")"`,
+    "  done",
+    "done",
+    `sleep ${PROCESS_CHECK_SECONDS}`,
+    ...each,
+    `    now="$id=$(docker inspect --format '{{.State.Status}}:{{.RestartCount}}' "$id")"`,
+    '    case " $started " in *" $now "*) continue ;; esac',
+    `    printf ${shellQuote(PROCESS_FAILED)} "$service" "$service"`,
+    "    exit 1",
+    "  done",
+    "done",
   ];
 }
 
@@ -123,14 +208,21 @@ function healthFailed(plan: DeployPlan): string {
 
 /**
  * The server script of the start step (POSIX sh; the image is `$1`, already checked to be a GHCR
- * digest reference): pull, start the database, cache and proxy when they are not running, run the
- * release command in a one-off container of the new image, then switch to the new image by
- * `deploy.strategy`. A failure before the switch leaves the running version untouched; the
- * database, cache and proxy are never named after the release command. The script reaches `sh` on
- * its stdin, so the commands that read stdin (`docker compose exec` and `run`) get `/dev/null`;
- * otherwise they would swallow the rest of the script.
+ * digest reference), in this order:
+ * 1. pull, and start the plan's services, kamal-proxy and Caddy when they are not running
+ *    (Compose recreates one only when its own configuration changed; nothing forces it);
+ * 2. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep});
+ * 3. the release command in a one-off container of the new image;
+ * 4. the switch to the new image by `deploy.strategy` (`recreate` for SQLite apps);
+ * 5. the workers and cron on the new image;
+ * 6. a check that every worker and cron container keeps running for 30 seconds.
+ * A failure before the switch leaves the running version untouched; after it, the workflow's
+ * rollback ({@link rollbackCommands}) puts the web and the workers back. The services are never
+ * named after the setup. The script reaches `sh` on its stdin, so the commands that read stdin
+ * (`docker compose exec` and `run`) get `/dev/null`; otherwise they would swallow the rest of the
+ * script.
  */
-export function switchCommands(plan: DeployPlan): string[] {
+export function switchCommands(plan: DeployPlan, init: readonly ServiceInitStep[]): string[] {
   const release =
     plan.app.releaseCommand === undefined
       ? []
@@ -148,18 +240,22 @@ export function switchCommands(plan: DeployPlan): string[] {
     'export APP_IMAGE="$1"',
     "docker compose pull",
     `docker compose up -d --no-deps --wait --remove-orphans ${steadyServices(plan).join(" ")}`,
+    ...serviceInit(init),
     ...release,
     ...switchApp(plan, healthFailed(plan)),
+    ...startProcesses(processServices(plan)),
   ];
 }
 
 /**
  * The server script of the rollback (POSIX sh; the failed image is `$1`): when `.env` names it and
- * `.env.previous` holds another image, switches back to that one the same way as the deploy and
- * prints `restored`; prints `unchanged` when this run never switched, `no-previous` when there is
- * nothing to go back to, and nothing when the switch back failed.
+ * `.env.previous` holds another image, switches the web back to that one the same way as the
+ * deploy, starts the workers and cron on it too, and prints `restored`; prints `unchanged` when
+ * this run never switched, `no-previous` when there is nothing to go back to, and nothing when the
+ * switch back failed.
  */
 export function rollbackCommands(plan: DeployPlan): string[] {
+  const processes = processServices(plan);
   return [
     "set -eu",
     "cd /srv/app",
@@ -168,9 +264,10 @@ export function rollbackCommands(plan: DeployPlan): string[] {
     "APP_IMAGE=\"$(sed -n 's/^APP_IMAGE=//p' .env.previous)\"",
     "export APP_IMAGE",
     "{",
-    ...switchApp(plan, "::error::The previous version did not pass its health check either.").map(
-      (line) => `  ${line}`,
-    ),
+    ...[
+      ...switchApp(plan, "::error::The previous version did not pass its health check either."),
+      ...(processes.length === 0 ? [] : [`docker compose up -d --no-deps ${processes.join(" ")}`]),
+    ].map((line) => `  ${line}`),
     "} >&2",
     "rm -f .env.previous",
     "echo restored",

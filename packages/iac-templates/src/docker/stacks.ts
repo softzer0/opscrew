@@ -1,5 +1,12 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
-import { IMAGES, PACKAGE_MANAGERS, PYPI_PACKAGES } from "../pins";
+import {
+  IMAGES,
+  PACKAGE_MANAGERS,
+  type PinArch,
+  PYPI_PACKAGES,
+  TOOLS,
+  toolDownloadUrl,
+} from "../pins";
 import { type BaseImage, tagOnlyNote } from "./images";
 import {
   NODE_TOOL_BINS,
@@ -55,6 +62,24 @@ export function detectStack(facts: ProjectFacts): DockerStack | undefined {
   if (usesPython) return "python-generic";
   if (usesJs) return "node-server";
   return undefined;
+}
+
+/**
+ * The Dockerfile line that adds the pinned supercronic, which runs the plan's cron jobs, for `arch`
+ * (the image's): BuildKit checks the download against OpsCrew's SHA-256 and fails the build on a
+ * mismatch.
+ */
+export function supercronicAdd(arch: PinArch): string {
+  return `ADD --checksum=sha256:${TOOLS.supercronic.sha256[arch]} --chmod=755 ${toolDownloadUrl("supercronic", arch)} /usr/local/bin/supercronic`;
+}
+
+/** The runtime stage's supercronic lines for `arch`, with a note for the file's owner; or none. */
+function supercronic(arch: PinArch | undefined): string[] {
+  if (arch === undefined) return [];
+  return [
+    "# supercronic runs the cron jobs in opscrew/plan.yaml (the cron service).",
+    supercronicAdd(arch),
+  ];
 }
 
 /** The first lines of every Dockerfile, with the note when its base is pinned by tag only. */
@@ -496,6 +521,7 @@ export function nextStandaloneDockerfile(
   port: number,
   base: BaseImage,
   releaseCommand?: string,
+  cron?: PinArch,
 ): string {
   const dir = appDirectory(facts);
   const atRoot = dir === ".";
@@ -558,6 +584,7 @@ export function nextStandaloneDockerfile(
     "WORKDIR /app",
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
     copyFromBuild("/out", "./"),
+    ...supercronic(cron),
     "USER node",
     `EXPOSE ${port}`,
     `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
@@ -576,6 +603,7 @@ export function nodeServerDockerfile(
   port: number,
   base: BaseImage,
   releaseCommand?: string,
+  cron?: PinArch,
 ): string {
   const dir = appDirectory(facts);
   const runtime = runtimePackageManager(
@@ -602,6 +630,7 @@ export function nodeServerDockerfile(
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
     "COPY --from=build --chown=node:node /app ./",
     ...runtime.lines,
+    ...supercronic(cron),
     "USER node",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
@@ -614,7 +643,7 @@ export function nodeServerDockerfile(
  * Static site image. For an app in a subfolder, the default output folder is `<dir>/dist`
  * (a detected `outputDir` is already relative to the repository root).
  */
-export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage): string {
+export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage, cron?: PinArch): string {
   const dir = appDirectory(facts);
   const build = facts.build.buildCommand ?? jsScript(facts, dir, "build");
   const outputDir = facts.build.outputDir ?? (dir === "." ? "dist" : `${dir}/dist`);
@@ -649,6 +678,7 @@ export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage): strin
     // kernel refuses to exec under `cap_drop: ALL` + `no-new-privileges`. A plain copy drops it;
     // port 8080 needs no capability.
     "  && cp /usr/bin/caddy /usr/local/bin/caddy",
+    ...supercronic(cron),
     "USER 65534",
     "EXPOSE 8080",
     'CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]',
@@ -899,11 +929,17 @@ function uvicornTarget(facts: ProjectFacts): string {
   return match?.[1] ?? "main:app";
 }
 
-export function fastapiDockerfile(facts: ProjectFacts, port: number, base: BaseImage): string {
+export function fastapiDockerfile(
+  facts: ProjectFacts,
+  port: number,
+  base: BaseImage,
+  cron?: PinArch,
+): string {
   return [
     ...pythonBase("python-fastapi", port, facts, base),
     "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("uvicorn"),
+    ...supercronic(cron),
     "USER app",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
@@ -924,7 +960,12 @@ const DJANGO_COLLECTSTATIC =
   'if [ -n "$static_root" ]; then python manage.py collectstatic --noinput; ' +
   'else echo "collectstatic skipped: STATIC_ROOT is not set"; fi';
 
-export function djangoDockerfile(facts: ProjectFacts, port: number, base: BaseImage): string {
+export function djangoDockerfile(
+  facts: ProjectFacts,
+  port: number,
+  base: BaseImage,
+  cron?: PinArch,
+): string {
   const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
     ...pythonBase("python-django", port, facts, base),
@@ -935,6 +976,7 @@ export function djangoDockerfile(facts: ProjectFacts, port: number, base: BaseIm
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
     "# container runs.",
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
+    ...supercronic(cron),
     "USER app",
     `EXPOSE ${port}`,
     facts.build.releaseCommand === undefined
@@ -950,10 +992,12 @@ export function pythonGenericDockerfile(
   facts: ProjectFacts,
   port: number,
   base: BaseImage,
+  cron?: PinArch,
 ): string {
   const start = pythonStart(facts) ?? "python main.py";
   return [
     ...pythonBase("python-generic", port, facts, base),
+    ...supercronic(cron),
     "USER app",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(start)}]`,

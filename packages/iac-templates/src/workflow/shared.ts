@@ -26,6 +26,19 @@ export function buildArch(plan: DeployPlan): PinArch {
     : "amd64";
 }
 
+/** True when the plan has an enabled cron job, which the `cron` service runs with supercronic. */
+export function hasCronJobs(plan: DeployPlan): boolean {
+  return plan.processes.cron.some((job) => job.enabled);
+}
+
+/**
+ * The architecture the image gets supercronic for: the image's, when the plan has an enabled cron
+ * job; otherwise undefined. The seal and the generated Dockerfile's runtime stage add it.
+ */
+export function supercronicArch(plan: DeployPlan): PinArch | undefined {
+  return hasCronJobs(plan) ? buildArch(plan) : undefined;
+}
+
 /**
  * GitHub-hosted runner that builds the image: arm64 servers (and arm64 Portainer environments) get
  * an arm64 runner (no emulation).

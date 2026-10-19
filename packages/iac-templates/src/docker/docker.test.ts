@@ -5,7 +5,14 @@ import { join } from "node:path";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { designProbe } from "../__fixtures__/plans";
-import { IMAGES, PACKAGE_MANAGERS, PYPI_PACKAGES } from "../pins";
+import {
+  IMAGES,
+  PACKAGE_MANAGERS,
+  type PinArch,
+  PYPI_PACKAGES,
+  TOOLS,
+  toolDownloadUrl,
+} from "../pins";
 import {
   containerPort,
   detectStack,
@@ -572,6 +579,47 @@ describe("renderDockerAssets", () => {
     expect(isClientExposedEnvName("VITE_X")).toBe(true);
     expect(isClientExposedEnvName("NEXT_PUBLIC_X")).toBe(true);
     expect(isClientExposedEnvName("DATABASE_URL")).toBe(false);
+  });
+});
+
+describe("supercronic in the image of an app with cron jobs", () => {
+  const add = (arch: PinArch) =>
+    `ADD --checksum=sha256:${TOOLS.supercronic.sha256[arch]} --chmod=755 ${toolDownloadUrl("supercronic", arch)} /usr/local/bin/supercronic`;
+  const withCron = (sample: ProjectFacts, arch: PinArch | undefined) =>
+    renderDockerAssets(sample, {
+      appPort: sample.port ?? 3000,
+      healthPath: "/health",
+      supercronic: arch,
+    })[0]?.content ?? "";
+
+  it("matches the snapshot of a Node.js server image with and without cron jobs", () => {
+    expect(withCron(expressApp, "amd64")).toMatchSnapshot();
+    expect(withCron(expressApp, undefined)).toMatchSnapshot();
+  });
+
+  it.each(Object.entries(ALL))(
+    "adds the pinned binary to the runtime stage of %s, before its user",
+    (_name, sample) => {
+      const lines = withCron(sample, "amd64").split("\n");
+      const at = lines.indexOf(add("amd64"));
+      expect(at).toBeGreaterThan(lines.findLastIndex((line) => line.startsWith("FROM ")));
+      expect(at).toBeLessThan(lines.findLastIndex((line) => line.startsWith("USER ")));
+      expect(lines.filter((line) => line.startsWith("ADD "))).toEqual([add("amd64")]);
+    },
+  );
+
+  it("downloads the binary for the image's architecture", () => {
+    const arm = withCron(expressApp, "arm64");
+    expect(arm).toContain(add("arm64"));
+    expect(arm).toContain("/supercronic-linux-arm64 ");
+    expect(arm).not.toContain(TOOLS.supercronic.sha256.amd64);
+  });
+
+  it("leaves the image as it was without cron jobs", () => {
+    for (const sample of Object.values(ALL)) {
+      expect(withCron(sample, undefined)).toBe(dockerfileOf(sample));
+      expect(dockerfileOf(sample)).not.toContain("supercronic");
+    }
   });
 });
 

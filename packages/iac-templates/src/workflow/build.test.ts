@@ -8,8 +8,15 @@ import type { DeployPlan, ImageBuilder, RuntimeLanguage } from "@opscrew/plan-sc
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { ACTIONS, IMAGES, TOOLS, toolDownloadUrl } from "../pins";
-import { jobYaml, serverPlan, withBuild } from "./__fixtures__/plans";
+import { ACTIONS, IMAGES, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import {
+  jobYaml,
+  NIGHTLY,
+  serverPlan,
+  withBuild,
+  withPlan,
+  withProcesses,
+} from "./__fixtures__/plans";
 import { DEPLOY_SECRETS, renderWorkflow } from "./index";
 
 type Step = {
@@ -161,6 +168,55 @@ describe("the build job", () => {
       "cache-from": "type=gha",
       "cache-to": "type=gha,mode=max",
     });
+  });
+});
+
+describe("an own Dockerfile with cron jobs", () => {
+  const cron = withProcesses(planFor("own-dockerfile"), { cron: [NIGHTLY] });
+
+  it("matches the snapshot", () => {
+    expect(jobYaml(rendered(cron), "build")).toMatchSnapshot();
+  });
+
+  it("builds build-<sha> from the Dockerfile with its build values, then seals it", () => {
+    const job = buildJob(cron);
+    const names = job.steps.map((s) => s.id ?? s.name);
+    expect(names.indexOf("own")).toBeLessThan(names.indexOf("Write the seal Dockerfile"));
+    expect(names.indexOf("Write the seal Dockerfile")).toBeLessThan(names.indexOf("push"));
+    const own = step(job, "own");
+    expect(own?.uses).toBe(action("buildPush"));
+    expect(own?.with).toEqual({
+      context: ".",
+      file: "Dockerfile",
+      "build-args": `\${{ secrets.${DEPLOY_SECRETS.buildEnv} }}`,
+      secrets: `\${{ secrets.${DEPLOY_SECRETS.buildSecrets} }}`,
+      push: true,
+      tags: "${{ steps.image.outputs.name }}:build-${{ github.sha }}",
+      provenance: false,
+      "cache-from": "type=gha",
+      "cache-to": "type=gha,mode=max",
+    });
+    expect(step(job, "push")?.name).toBe("Seal and push the image");
+    expect(step(job, "Write the seal Dockerfile")?.env?.BASE).toContain(
+      "${{ steps.own.outputs.digest }}",
+    );
+  });
+
+  it("deletes the intermediate image after the deploy, as for Buildpacks and Railpack", () => {
+    const keepAll = (p: DeployPlan) => withPlan(p, { imageRetention: { enabled: false } });
+    const prune = (p: DeployPlan) => parse(rendered(keepAll(p))).jobs.prune;
+    expect(prune(cron)?.steps[0]?.name).toBe("Delete the intermediate build images");
+    expect(prune(planFor("own-dockerfile"))).toBeUndefined();
+  });
+
+  it("builds as before when no cron job is enabled", () => {
+    const off = withProcesses(planFor("own-dockerfile"), {
+      cron: [{ ...NIGHTLY, enabled: false }],
+    });
+    expect(buildJob(off)).toEqual(buildJob(planFor("own-dockerfile")));
+    // OpsCrew's own Dockerfile gets supercronic in its runtime stage instead of a seal.
+    const generated = withProcesses(planFor("generated-dockerfile"), { cron: [NIGHTLY] });
+    expect(buildJob(generated)).toEqual(buildJob(planFor("generated-dockerfile")));
   });
 });
 
@@ -603,6 +659,34 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
     expect(sealOf(planFor("railpack", "rust"))).toBe(
       `FROM ghcr.io/acme/shop:build-${"f".repeat(40)}@${DIGEST}\nUSER 10001:10001\n`,
     );
+  });
+
+  const supercronic = (arch: PinArch) =>
+    `ADD --checksum=sha256:${TOOLS.supercronic.sha256[arch]} --chmod=755 ${toolDownloadUrl("supercronic", arch)} /usr/local/bin/supercronic`;
+
+  it.each(["own-dockerfile", "buildpacks", "railpack"] as const)(
+    "%s: the seal adds supercronic when the plan has cron jobs",
+    (builder) => {
+      const seal = sealOf(withProcesses(planFor(builder, "ruby"), { cron: [NIGHTLY] }));
+      expect(seal).toMatchSnapshot();
+      const lines = seal.split("\n");
+      expect(lines.filter((line) => line.startsWith("ADD "))).toEqual([supercronic("amd64")]);
+      // The image keeps its user: Railpack's seal sets it last, the others never change it.
+      expect(lines.filter((line) => line.startsWith("USER "))).toEqual(
+        builder === "railpack" ? ["USER 10001:10001"] : [],
+      );
+      if (builder === "railpack") {
+        expect(lines.indexOf(supercronic("amd64"))).toBeLessThan(lines.indexOf("USER 10001:10001"));
+      }
+    },
+  );
+
+  it("seals with the arm64 supercronic on an arm64 server", () => {
+    const arm = withProcesses(
+      withBuild(testPlan({ provider: "own", arch: "arm64" }), "buildpacks"),
+      { cron: [NIGHTLY] },
+    );
+    expect(sealOf(arm)).toContain(supercronic("arm64"));
   });
 
   it("retries railpack prepare only on its temporary-failure exit code and hashes the non-secret values", () => {

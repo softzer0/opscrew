@@ -18,7 +18,7 @@ import {
 import { rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
-export { buildRunner, DEPLOY_SECRETS } from "./shared";
+export { buildRunner, DEPLOY_SECRETS, supercronicArch } from "./shared";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
@@ -245,7 +245,8 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
     '    ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
-    ...remote(switchCommands(plan)),
+    // The services' one-time setup steps come from the catalog; no entry has any yet.
+    ...remote(switchCommands(plan, [])),
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",
