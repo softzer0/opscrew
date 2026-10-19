@@ -153,8 +153,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       "OPSCREW_APP_ENV",
       "OPSCREW_BUILD_ENV",
       "OPSCREW_BUILD_SECRETS",
-      "OPSCREW_DB_ENV",
       "OPSCREW_HOST",
+      "OPSCREW_SERVICE_DB_ENV",
       "OPSCREW_SSH_KNOWN_HOSTS",
       "OPSCREW_SSH_PRIVATE_KEY",
     ]);
@@ -181,7 +181,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     const printed = everythingPrinted(deps);
     const secretValue = (secret: string, name: string) =>
       new RegExp(`${name}=(\\S+)`).exec(github.secrets.get(secret) ?? "")?.[1] as string;
-    const dbPassword = secretValue("OPSCREW_DB_ENV", "POSTGRES_PASSWORD");
+    const dbPassword = secretValue("OPSCREW_SERVICE_DB_ENV", "POSTGRES_PASSWORD");
     const sessionSecret = secretValue("OPSCREW_APP_ENV", "SESSION_SECRET");
     expect(dbPassword).toHaveLength(32);
     expect(sessionSecret).toHaveLength(32);
@@ -366,7 +366,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
   it("keeps the database password and reuses key and host pin when run again", async () => {
     const { deps, github, services, handler } = await setup();
     await runProvision(deps, { services });
-    const firstDb = github.secrets.get("OPSCREW_DB_ENV");
+    const firstDb = github.secrets.get("OPSCREW_SERVICE_DB_ENV");
     const firstKey = github.secrets.get("OPSCREW_SSH_PRIVATE_KEY");
     handler.requests.length = 0;
 
@@ -376,7 +376,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       url: "https://github.com/acme/shop/pull/7",
     });
     const second = await runProvision(deps, { services });
-    expect(github.secrets.get("OPSCREW_DB_ENV")).toBe(firstDb);
+    expect(github.secrets.get("OPSCREW_SERVICE_DB_ENV")).toBe(firstDb);
     expect(github.secrets.get("OPSCREW_SSH_PRIVATE_KEY")).toBe(firstKey);
     // files are unchanged, so no repo-write; the fake engine plans the same changes again
     expect(handler.requests.map((r) => r.kind)).not.toContain("repo-write");

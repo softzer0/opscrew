@@ -56,7 +56,7 @@ const GHCR_DIGEST_REF = new RegExp(DIGEST_REF_PATTERN);
  * A stack has one environment for all its services, so OpsCrew's values carry the `OPSCREW_`
  * prefix, which the app's variables may not use: the Postgres user, database name and password
  * (`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD` in the `db` service, the values of
- * `OPSCREW_DB_ENV` on other targets) and the app tunnel's token (`tunnel_token` of the root
+ * `OPSCREW_SERVICE_DB_ENV` on other targets) and the app tunnel's token (`tunnel_token` of the root
  * module, `TUNNEL_TOKEN` in the `cloudflared` service).
  */
 export const PORTAINER_STACK_VARIABLES = {

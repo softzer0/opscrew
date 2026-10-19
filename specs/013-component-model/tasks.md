@@ -160,7 +160,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1305b [US1] Fixes from T1305's review, and the runtime files' wiring, in `packages/iac-templates/src/{workflow,docker}/**`, `packages/iac-templates/src/render.ts` (after T1304 merges)
+- [X] T1305b [US1] Fixes from T1305's review, and the runtime files' wiring, in `packages/iac-templates/src/{workflow,docker}/**`, `packages/iac-templates/src/render.ts` (after T1304 merges)
   - Depends: T1304
   - Accept:
     - **Before the workers and cron are replaced,** the start script records which worker and cron services already have containers (`.processes.previous`). The rollback runs `up -d --no-deps` only for those, and `docker compose stop`s the rest. So a deploy that adds the first cron job or a new worker and then fails still ends `restored`, and leaves no container crash-looping on the old image.
@@ -303,6 +303,7 @@ Effort`.
       - for MongoDB on x86, stops before any change when the CPU lacks AVX, saying why and what to do (the own-server flags from T1308c; on cloud targets, a check only when the server type's CPU is known);
       - stores the components' generated secrets, and writes each service's `<name>.env` from the catalog's `environment(ctx)` with the real values into the deploy secrets, as `db.env` is today;
       - removes named volumes (Kafka, Redpanda) and data folders alike on `--delete-data`;
+      - fills one GitHub secret per service with secrets, `serviceEnvSecret(name)` (`OPSCREW_SERVICE_<NAME>_ENV`, T1305b), and destroy deletes those too (`Object.values(DEPLOY_SECRETS)` does not list them);
       - rerun with nothing changed, changes no file (SC-1307).
     - **destroy:** removes every component, and keeps data folders and the `storage` root unless `--delete-data` is given with the typed confirmation, saying where they are. With `--delete-data`, the storage root is rendered without `prevent_destroy` (with `force_destroy` on the aws provider's bucket) and destroyed through its own approved plan. Cloudflare deletes an R2 bucket only when it is empty: OpsCrew then says how to empty it in the dashboard, and never deletes files itself.
     - **drift:** reports a component that differs from the plan.

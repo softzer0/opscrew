@@ -226,7 +226,7 @@ export interface GeneratedValues {
 export interface AppEnvironment {
   /** Contents of the `OPSCREW_APP_ENV` secret (Compose env_file for the app). */
   appEnv: string;
-  /** Contents of `OPSCREW_DB_ENV` when Postgres is self-hosted. */
+  /** Contents of `OPSCREW_SERVICE_DB_ENV` when Postgres is self-hosted. */
   dbEnv?: string;
   /**
    * Contents of `OPSCREW_BUILD_ENV`: the client-exposed values the plan does not mark secret,

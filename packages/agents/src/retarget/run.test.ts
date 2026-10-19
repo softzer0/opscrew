@@ -696,7 +696,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const stopAt = lines.indexOf(`${OLD_IPV4} stop app`);
     expect(stopAt).toBeGreaterThan(switchAt);
     expect((await move(h))?.oldAppStoppedAt).toBeDefined();
-    expect(h.github.secrets.has("OPSCREW_DB_ENV")).toBe(false);
+    expect(h.github.secrets.has("OPSCREW_SERVICE_DB_ENV")).toBe(false);
   });
 
   it("DNS at another provider: shows the records and continues once the user confirms", async () => {
