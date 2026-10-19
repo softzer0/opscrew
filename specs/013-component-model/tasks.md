@@ -75,7 +75,7 @@ Effort`.
 
 ## Phase 3: Packages (parallel)
 
-- [ ] T1303 [P] [US1] [US2] [US3] [US4] [US7] Detection of the new components in `packages/detect/**`
+- [X] T1303 [P] [US1] [US2] [US3] [US4] [US7] Detection of the new components in `packages/detect/**`
   - Owns: `packages/detect/src/**`, `packages/detect/test/**` (+ fixtures)
   - Reads: research.md R1–R5 detection lists; data-model.md "ProjectFacts"; spec FR-1302, FR-1305, FR-1308, FR-1315
   - Depends: T1301a
