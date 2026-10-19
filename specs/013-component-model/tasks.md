@@ -194,7 +194,7 @@ Effort`.
 
 ## Phase 4: Design
 
-- [ ] T1307 [US1] [US2] [US3] [US4] [US6] Components in design and the interview, in `packages/agents/src/{design,interview,shared}/**`
+- [X] T1307 [US1] [US2] [US3] [US4] [US6] Components in design and the interview, in `packages/agents/src/{design,interview,shared}/**`
   - Owns: those folders (+ tests), except the Portainer files (`design/portainer*.ts`)
   - Reads: spec FR-1301–FR-1304, FR-1315–FR-1316, FR-1325, FR-1327; plan.md "7."; research.md R7, R8; data-model.md (expected use, sizing figures)
   - Depends: T1303, T1304, T1306
