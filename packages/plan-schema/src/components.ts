@@ -54,17 +54,11 @@ const WorkerSchema = z
     }
   });
 
-/** True when `zone` is a time zone name the runtime knows, such as `UTC` or `Europe/Berlin`. */
-function isTimeZone(zone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: zone });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** A scheduled job: a command in the app's image, or a GET on one of the app's routes. */
+/**
+ * A scheduled job: a command in the app's image, or a GET on one of the app's routes. Schedules are
+ * in UTC, as Vercel's are: supercronic's `CRON_TZ` covers the whole crontab, and Alpine images have
+ * no tzdata (research.md "Spike results").
+ */
 const CronJobSchema = z
   .strictObject({
     name: z.string().regex(NAME, { message: NAME_MESSAGE }),
@@ -75,11 +69,6 @@ const CronJobSchema = z
     command: CommandLineSchema.optional(),
     /** Called with `Authorization: Bearer $CRON_SECRET` (`vercel.json` crons). */
     route: UrlPathSchema.optional(),
-    /** IANA name, written before the job as `CRON_TZ`. */
-    timeZone: z
-      .string()
-      .refine(isTimeZone, { message: "must be a time zone name such as `UTC` or `Europe/Berlin`" })
-      .default("UTC"),
     enabled: z.boolean().default(true),
   })
   .superRefine((job, ctx) => {

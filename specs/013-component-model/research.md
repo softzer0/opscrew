@@ -647,3 +647,59 @@ Which images ship signatures worth verifying.
 14. Vercel crons: HTTP method and `CRON_SECRET` handling through the probe tool (no curl in the
     image).
 15. Rails 8 SQLite paths in the Rails docs; Neo4j's current Docker Hub tags.
+
+## Spike results (T1302, 2026-10-19, local Docker)
+
+Raw record with commands and output: `.tools/scratch/013-spike-results.md` (gitignored). Engine:
+Docker Desktop, cgroup v1; arm64 binaries were only hashed, not run; the AVX refusal could not be
+tried (this CPU has AVX).
+
+1. **Railpack.** Entrypoint `["/bin/bash","-c"]`, Cmd one string. `command: ["<one string>"]` runs;
+   a list of words silently runs the wrong thing. `bash -c "a && b"` keeps bash as PID 1, which
+   ignores SIGTERM (exit 137 after the grace period), so worker commands start with `exec`. Railpack's
+   own `npm run start` drops SIGTERM before node too (012's Railpack Node web containers stop
+   without the app's shutdown handler; a follow-up, outside 013's table).
+2. **Buildpacks.** `entrypoint: ["/cnb/process/<type>"]` works for a Procfile type, with SIGTERM
+   reaching it. A raw command: `entrypoint: ["/cnb/lifecycle/launcher"]` with `command: ["<one
+   string>"]` (not `launcher --` with one string: exit 82; `launcher --` with `sh -c` also works).
+   The seal with `ADD --checksum --chmod=755` supercronic keeps the launcher and user 1002.
+3. **kamal-proxy v0.10.2.** Routing by host works; a host held by another service is refused.
+   Several hosts per service work (`--host a,b` or repeated), and `--canonical-host` redirects.
+   Routes survive a recreate only with a volume on `/home/kamal-proxy/.config/kamal-proxy`.
+4. **Compose without Swarm.** `mem_limit` and `deploy.resources.limits.memory` both set
+   `HostConfig.Memory`; Compose refuses differing values; the limit is enforced (OOM kill).
+   `deploy.replicas: 2` gives two containers. Docker's default `MemorySwap` is twice the limit, so
+   OpsCrew also sets `memswap_limit` to the same value.
+5. **Portainer CE 2.45.2.** A standalone stack gives the same limits and replicas as Compose.
+6. **supercronic v0.2.50.** SHA-1s match the release notes; SHA-256 amd64 `d2d7c97f…cdd0`, arm64
+   `a1c0af98…99e2` (also in GitHub's release API). A wrong checksum fails the build. Overlapping
+   runs are skipped. node `fetch`, python `urllib` and bash `/dev/tcp` all send the Bearer header
+   with the query string intact. **`CRON_TZ` covers the whole crontab** (the last line wins), and on
+   Alpine any zone but UTC makes supercronic exit: cron runs in UTC (as Vercel's does).
+7. **Garage v2.4.1.** Single-node init: layout assign and apply, `key import --yes` (keys `GK` + 24
+   hex, a 64-hex secret), `key allow --create-bucket`, bucket create and allow. The image has **no
+   shell**, and each init step refuses a rerun, so the deploy script runs the steps through
+   `docker compose exec` from the server's shell, checking each first. OpenTofu 1.13.1 with
+   `hashicorp/aws` 6.69.1 (custom endpoint, `s3_use_path_style`, the skip flags) created a bucket
+   and its CORS, a second plan showed no changes, destroy worked; the key was in no log or state.
+   Idle 6–7 MiB.
+8. **MongoDB 8.0.34.** `--replSet rs0 --wiredTigerCacheSizeGB 0.25` under 512m works; a separate
+   init container waits, then `rs.initiate` with the service name as the member host (a rerun is
+   harmless). With a root password and `--replSet`, mongod needs a **keyFile**: written into the
+   configdb volume at start. Prisma 6 and driver transactions work only with the replica set. Idle
+   148–157 MiB.
+9. **Images** (amd64; user / process user; shell; wget; curl; healthcheck; idle memory):
+   - MySQL 8.4.11: root / 999; bash; no; yes; `mysqladmin ping -h 127.0.0.1` (exits 0 even when the
+     login is refused: liveness only); 435 MiB;
+   - MariaDB 12.3.3: root / 999; bash; no; no; `healthcheck.sh --connect --innodb_initialized`;
+     125 MiB;
+   - MongoDB 8.0.34: root / 999; bash; no; no; `mongosh --quiet --eval "db.adminCommand('ping').ok"`;
+     121 MiB with a 0.25 GB cache;
+   - RabbitMQ 4.3.6: root / 999; bash; no; no; `rabbitmq-diagnostics -q ping`; 130 MiB;
+   - NATS 2.15.1 alpine: runs as root; busybox sh; wget; no; `wget -q -O- http://localhost:8222/healthz`;
+     7 MiB. Its default config carries a hard-coded cluster password: OpsCrew always mounts its own;
+   - apache/kafka 4.3.1: 1000; bash; wget; no; `kafka-broker-api-versions.sh --bootstrap-server
+     localhost:9092` (about 2 s, a JVM); 381 MiB with the default heap;
+   - Redpanda v26.2.5: 101; bash; no; curl; `curl -fsS http://localhost:9644/v1/status/ready`;
+     278 MiB (`--smp 1 --memory 1G --mode dev-container`);
+   - Garage v2.4.1: root; no shell; `/garage status`; 6–7 MiB.

@@ -167,12 +167,10 @@ describe("DeployPlan components", () => {
     const parse = (job: object) =>
       DeployPlanSchema.safeParse({ ...plan, processes: { cron: [job] } });
     const command = { name: "cleanup", schedule: "*/15 * * * *", command: "python manage.py x" };
-    expect(parse(command).data?.processes.cron).toEqual([
-      { ...command, timeZone: "UTC", enabled: true },
-    ]);
+    expect(parse(command).data?.processes.cron).toEqual([{ ...command, enabled: true }]);
     const route = { name: "digest", schedule: "0 7 * * *", route: "/api/cron/digest" };
-    const zoned = { ...route, timeZone: "Europe/Belgrade", enabled: false };
-    expect(parse(zoned).data?.processes.cron).toEqual([zoned]);
+    const off = { ...route, enabled: false };
+    expect(parse(off).data?.processes.cron).toEqual([off]);
     expect(pathsOf(parse({ ...command, route: "/api/cron/x" }))).toEqual(["processes.cron.0"]);
     expect(pathsOf(parse({ name: "x", schedule: "@daily" }))).toEqual(["processes.cron.0"]);
     expect(parse({ ...command, schedule: "*/10 * * * * * *" }).success).toBe(true);
@@ -181,8 +179,10 @@ describe("DeployPlan components", () => {
         "processes.cron.0.schedule",
       ]);
     }
-    expect(pathsOf(parse({ ...command, timeZone: "Mars/Olympus" }))).toEqual([
-      "processes.cron.0.timeZone",
+    // Cron runs in UTC: supercronic's CRON_TZ covers the whole crontab, and Alpine images lack
+    // tzdata (research "Spike results"). A time zone field is refused, not ignored.
+    expect(pathsOf(parse({ ...command, timeZone: "Europe/Belgrade" }))).toEqual([
+      "processes.cron.0",
     ]);
     expect(pathsOf(parse({ ...route, route: "api/x" }))).toEqual(["processes.cron.0.route"]);
   });

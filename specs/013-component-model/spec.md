@@ -274,7 +274,7 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   not bring it back.
 - **The same job library in the web process and a worker:** each runs as planned. OpsCrew does not
   start the library's embedded mode a second time.
-- **Cron in a time zone:** jobs run in UTC unless the plan names a time zone, and the guide says so.
+- **Cron in a time zone:** schedules are in UTC, as Vercel's are, and the guide says so.
 - **A cron job that fails:** its output is in the cron container's log. Alerts come with 015.
 - **A Rails app on SQLite with several database files** (primary, cache, queue, cable): all stay
   on the persistent volume.
@@ -337,7 +337,7 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   - each job runs on its schedule inside the app's image, through a pinned scheduler verified by
     checksum;
   - an overlapping run is skipped;
-  - jobs run in UTC unless a time zone is set.
+  - schedules are in UTC.
 - **FR-1309**: A `vercel.json` cron job MUST call the app's own route over the internal network, with
   a generated secret sent the way the original host sends it (`Authorization: Bearer`). OpsCrew MUST
   give the app that secret under the name it reads.
@@ -453,7 +453,7 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   limit, settings, where it was found, and whether the user changed it.
 - **Process**: the web process or a worker. It has a command, a count, a stop grace period, and the
   same image as the web process.
-- **Cron job**: a schedule, a command or route, and a time zone.
+- **Cron job**: a schedule in UTC, and a command or a route.
 - **Service**: a backing service OpsCrew runs. It has a kind, version, memory limit, a data volume,
   generated credentials, and its licence.
 - **Object storage choice**: a provider (R2, Hetzner, DigitalOcean, a storage container), a bucket, a

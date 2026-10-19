@@ -23,7 +23,6 @@ processes:
       schedule: "*/15 * * * *"     # supercronic syntax (an optional seconds field)
       command: "python manage.py clearsessions"   # or `route`, not both
       route: "/api/cron/cleanup"   # vercel.json jobs: called with Authorization: Bearer $CRON_SECRET
-      timeZone: UTC                # IANA name; rendered per job as CRON_TZ in the crontab
       enabled: true
 services:
   - name: mysql                    # the Compose service and data folder name; default: db (postgres),
@@ -56,7 +55,8 @@ storage:
 - Worker and service names are unique within the app and never `app`, `release`, `cron`, `proxy`
   or `caddy`.
 - `single: true` forces `count: 1`.
-- A cron entry has exactly one of `command` and `route`.
+- A cron entry has exactly one of `command` and `route`. Schedules are in UTC; there is no time zone
+  field (research "Spike results" 6).
 - A service's `memoryMb` is at least its catalog minimum.
 - The sum of all limits, plus the edge and the system reserve, fits the server. Design checks this
   and the schema does not.

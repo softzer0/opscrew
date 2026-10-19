@@ -63,7 +63,7 @@ Effort`.
 
 ## Phase 2: Spike (lead, in parallel with T1303, T1306 and T1308a)
 
-- [ ] T1302 Local spike on Docker (lead). It settles research.md's open items 1–4, 8, 10, 13 and 14. The results go into research.md as "Spike results", with one line per item: what was run, and what was seen.
+- [X] T1302 Local spike on Docker (lead). It settles research.md's open items 1–4, 8, 10, 13 and 14. The results go into research.md as "Spike results", with one line per item: what was run, and what was seen.
   - Railpack: `docker inspect` of a real image; a worker started with `command: ["<cmd>"]`; SIGTERM reaching the process through `bash -c`.
   - Buildpacks: `entrypoint: ["/cnb/process/worker"]` from a Procfile; the launcher form for a raw command; the seal with supercronic keeping the launcher.
   - kamal-proxy v0.10.2: two services on two hosts behind one proxy; one service with two hosts.
@@ -120,9 +120,9 @@ Effort`.
       - each service has `mem_limit`, `restart: unless-stopped`, the app's internal network and no `ports`;
       - volumes go under `/srv/data/<app>/<name>` on servers, and are named volumes in Portainer;
       - config files go to `opscrew/runtime/services/<name>/`.
-    - **Workers:** one service each, with the start form per builder (as the spike settled), `stop_grace_period`, `mem_limit` and no ports. `count` above 1 is rendered the way the spike showed works without Swarm.
+    - **Workers:** one service each, with the start form per builder from the contract (each command starts with `exec`), `stop_grace_period`, `mem_limit` and `memswap_limit`, no ports, and `deploy.replicas` for the count.
+    - **From the spike** (research "Spike results"): MongoDB writes its keyFile into the configdb volume at start and initiates the replica set with the service name as host; NATS always gets OpsCrew's own config; Garage's init steps run from the deploy script (T1305) through `docker compose exec`, each checked first, since its image has no shell; healthchecks as in the image table.
     - **Cron:** one `cron` service and the generated `opscrew/runtime/crontab`:
-      - each job is preceded by its `CRON_TZ`;
       - route jobs send a GET with `Authorization: Bearer ${CRON_SECRET}` through the probe tool;
       - with probe `none` or `wget`, the renderer refuses route jobs with a plain message.
     - **The web service** gets `mem_limit` from `app.memoryMb`.

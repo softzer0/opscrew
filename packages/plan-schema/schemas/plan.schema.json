@@ -349,10 +349,6 @@
                 "type": "string",
                 "pattern": "^\\/\\S*$"
               },
-              "timeZone": {
-                "default": "UTC",
-                "type": "string"
-              },
               "enabled": {
                 "default": true,
                 "type": "boolean"

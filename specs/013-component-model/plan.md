@@ -196,7 +196,7 @@ Results go in research.md.
   - a `cron` service from the app's image runs `supercronic /etc/opscrew/crontab`;
   - the crontab is a generated file in the repository;
   - `vercel.json` routes are called through the probe tool with `Authorization: Bearer $CRON_SECRET`;
-  - the time zone comes from `TZ`.
+  - schedules are in UTC (research "Spike results" 6).
 - **supercronic in the image:** `ADD --checksum=sha256:<pin> <url> /usr/local/bin/supercronic` in the
   generated Dockerfile's runtime stage and in the seal step for Buildpacks and Railpack. An own
   Dockerfile gets the seal step only when the plan has cron jobs.

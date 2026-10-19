@@ -30,7 +30,7 @@ export interface ServiceSpec {
 
 **Guarantees:**
 - The table is data. One renderer writes every service for Compose, and one for Portainer stacks.
-- Every rendered service has `mem_limit` (the plan's `memoryMb`), `restart: unless-stopped`, the
+- Every rendered service has `mem_limit` and `memswap_limit` (the plan's `memoryMb`), `restart: unless-stopped`, the
   app's internal network, its volume, no `ports`, and its healthcheck.
 - Secrets are referenced by name in an env file the app's Compose project reads. A value never
   appears in a rendered repository file.
@@ -39,16 +39,18 @@ export interface ServiceSpec {
 
 | Builder | Worker | Cron (`cron` service) |
 |---|---|---|
-| generated Dockerfile | `command: ["sh", "-c", "<command>"]` | `command: ["supercronic", "/etc/opscrew/crontab"]` |
-| own Dockerfile | `command: ["sh", "-c", "<command>"]` | the same (supercronic added by a seal step) |
-| Buildpacks | Procfile type: `entrypoint: ["/cnb/process/<type>"]`; other: `entrypoint: ["/cnb/lifecycle/launcher", "--"]`, `command: ["<command>"]` | `entrypoint: ["/cnb/lifecycle/launcher", "--"]`, `command: ["supercronic", "/etc/opscrew/crontab"]` |
-| Railpack | `command: ["<command>"]` (the image runs `bash -c`) | `command: ["supercronic /etc/opscrew/crontab"]` |
+| generated Dockerfile | `command: ["sh", "-c", "exec <command>"]` | `command: ["supercronic", "/etc/opscrew/crontab"]` |
+| own Dockerfile | `command: ["sh", "-c", "exec <command>"]` | the same (supercronic added by a seal step) |
+| Buildpacks | Procfile type: `entrypoint: ["/cnb/process/<type>"]`; other: `entrypoint: ["/cnb/lifecycle/launcher"]`, `command: ["exec <command>"]` (one string) | `entrypoint: ["/cnb/lifecycle/launcher", "--"]`, `command: ["supercronic", "/etc/opscrew/crontab"]` |
+| Railpack | `command: ["exec <command>"]` (one string; the image runs `bash -c`) | `command: ["exec supercronic /etc/opscrew/crontab"]` |
 
-The spike (T1302) confirms each row; it changes this table if needed.
+The spike (T1302) confirmed each row. `exec` makes the command PID 1, so SIGTERM reaches it: a
+shell left as PID 1 ignores it and the container is killed after the grace period.
 
-**Workers:** no `ports`, no healthcheck, `stop_grace_period: <stopGraceSeconds>s`, `mem_limit`,
-`restart: unless-stopped`, and `deploy.replicas` as the count (or one service per copy, whichever
-the spike shows Compose honours without Swarm).
+**Workers:** no `ports`, no healthcheck, `stop_grace_period: <stopGraceSeconds>s`, `mem_limit` and
+`memswap_limit` (the same value; Docker's default swap is twice the limit), `restart:
+unless-stopped`, and `deploy.replicas` as the count (honoured by Compose and Portainer without
+Swarm).
 
 **Cron:**
 - The crontab is generated in `opscrew/runtime/crontab` and mounted read-only.
@@ -56,7 +58,8 @@ the spike shows Compose honours without Swarm).
   ${CRON_SECRET}`, through the probe tool (`app.build.probe`): node, python, ruby, php or bash
   (`/dev/tcp`) can all send the header. With probe `none` or `wget`, design refuses route jobs and
   asks for a command job instead.
-- Each job's time zone is a `CRON_TZ=<zone>` line before it in the crontab.
+- Schedules are in UTC: supercronic's `CRON_TZ` covers the whole crontab, and Alpine images have no
+  tzdata.
 - Overlapping runs are skipped (supercronic's default).
 
 ## The deploy (workflow switch, T1305)
@@ -81,9 +84,10 @@ the spike shows Compose honours without Swarm).
 - **Each app:** `/srv/apps/<app>/compose.yaml` (project `<app>`). Its web service joins
   `opscrew-edge`.
 - **Caddy:** imports `/srv/edge/sites/*.caddy`. `<app>.caddy` routes the app's hostnames to
-  kamal-proxy, and a `www` name redirects to the main one.
+  kamal-proxy, which redirects `www` with `--canonical-host`.
 - **kamal-proxy:** one service per app, `kamal-proxy deploy <app> --target <container>:<port>
-  --host <domain> …`. The target is the new web container's Compose name
+  --host <domain>,www.<domain> --canonical-host <domain> …`, with its config on a volume so routes
+  survive a recreate. The target is the new web container's Compose name
   (`<app>-web-<n>`), unique across apps because each app is its own project.
 - **cloudflared:** each app keeps its own tunnel, owned by its own Cloudflare root as today. Its
   cloudflared runs in the app's project, joins `opscrew-edge`, and sends the app's hostnames to
