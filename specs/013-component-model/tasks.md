@@ -366,6 +366,7 @@ Effort`.
       - cloud servers: a one-shot privileged init container in the app's Compose file, which the engine depends on;
       - an own server: a host-plan item in `/etc/sysctl.d`.
     - **Design** warns below each engine's smallest server, and keeps Cassandra external with a hosted option named.
+    - **From T1304b:** design refuses a SQLite plan whose app folder is unknown (the user's own Dockerfile has no literal `WORKDIR`), with the same hint as the move case in `design/plan.ts`, instead of provision stopping later.
     - **Snapshots and tests.**
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
@@ -406,7 +407,7 @@ Effort`.
     - **Guide pages**, written for users:
       - `components.md`;
       - `workers-and-cron.md`;
-      - `databases.md`;
+      - `databases.md` (with SQLite: the volume, where the database lives in the image, and that a folder an own Dockerfile copies as root stays root-owned);
       - `object-storage.md` (options, the price formulas, each provider's key steps);
       - `brokers.md`;
       - `search-and-analytics.md`;
