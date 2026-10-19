@@ -160,6 +160,19 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
+- [ ] T1305b [US1] Fixes from T1305's review, in `packages/iac-templates/src/{workflow,docker}/**` (after T1304 merges)
+  - Depends: T1304
+  - Accept:
+    - **Before the workers and cron are replaced,** the start script records which worker and cron services already have containers (`.processes.previous`). The rollback runs `up -d --no-deps` only for those, and `docker compose stop`s the rest. So a deploy that adds the first cron job or a new worker and then fails still ends `restored`, and leaves no container crash-looping on the old image.
+    - **First-deploy wording:** the worker-failure message says "…back on the previous version, if there is one".
+    - **Tests:**
+      - a deploy that adds cron to an app without it, then fails after the switch, and the outcome is `restored`;
+      - a worker with two containers (replicas);
+      - a worker failure on a first deploy.
+    - **Caching:** supercronic's `ADD` moves right after the runtime stage's `FROM`/`WORKDIR` (still before `USER`), so its layer stays cached across code changes.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: high
+
 - [X] T1306 [P] [US3] The `storage` root, in `packages/iac-templates/src/infra/**`, `packages/iac-templates/modules/**`, `packages/iac-templates/src/generated/**`
   - Owns: those paths (+ tests and snapshots); `packages/iac-templates/src/index.ts` for new exports
   - Reads: plan.md "6."; research.md R3; spec FR-1316–FR-1319; constitution III and IV
