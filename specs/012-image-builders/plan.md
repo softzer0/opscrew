@@ -121,7 +121,7 @@ Gradle release level, `TargetFramework`, `composer.json` `require.php`, and `rus
 - tools as version and SHA-256 (pack, railpack, cosign installer);
 - GitHub actions by commit SHA;
 - runtime defaults per language: Node 24 (LTS); Python, Ruby, Go, Java, .NET, PHP and Rust at the
-  newest version OpsCrew tested;
+  second-newest minor version (FR-1228 rule 4);
 - the Buildpacks offer, meaning which major/minor versions the pinned builder provides per
   language.
 
@@ -207,9 +207,13 @@ The contract is in [contracts/builders.md](contracts/builders.md), section "Buil
   3. `build-push-action` with the plan as the file and `BUILDKIT_SYNTAX=<frontend pin>`, pushed to
      `build-<sha>`;
   4. the seal `FROM …` with `chown` of the framework's writable folders (Rails `tmp log storage db`,
-     Laravel `storage bootstrap/cache database`) and `USER 10001:10001`.
+     Laravel `storage bootstrap/cache database`) and `USER 10001:10001`. For PHP the seal also
+     copies FrankenPHP's binary over itself (dropping its `cap_net_bind_service` file capability,
+     which `cap_drop: ALL` cannot grant) and makes Laravel's `public/storage` link, so the web root
+     stays root's (T1213).
 - **Signing** (`supplyChain.sign`): `sigstore/cosign-installer`, then `cosign sign --yes <digest>`.
-  `id-token: write` is held only by that job.
+  That job holds `id-token: write` and `packages: write` (to push the signature), and no other job
+  holds `id-token: write`.
 - **Deploy tags** (`cicd.deployTags.enabled`): a final job after a healthy deploy, holding only
   `contents: write`, creates the tag `deploy-<UTC yyyymmdd-hhmmss>` on the commit through the API.
   With `release`, it also creates a GitHub Release naming the digest.

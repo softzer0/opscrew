@@ -11,9 +11,11 @@ app:
     builder: generated-dockerfile   # generated-dockerfile | own-dockerfile | buildpacks | railpack
     chosen: auto                    # auto (from chooseBuilder) | user (the user set builder)
     reason: "Next.js with pnpm: OpsCrew's Dockerfile builds it; Buildpacks has no pnpm."
+    automatic: generated-dockerfile # the builder OpsCrew would choose itself (without an own Dockerfile); the failure hint names it
+    probe: node                     # the Compose health check's tool: node | python | ruby | php | wget | bash | none (required)
     runtime:                        # what the builder is given
       language: node                # node | python | ruby | go | java | dotnet | php | rust | other
-      version: "24"                 # declared by the app, else pins.ts's default for the language
+      version: "24"                 # declared by the app, else its CI or other evidence, else pins.ts's default; kept on later runs
 deploy:
   strategy: rolling                 # rolling | recreate
   drainSeconds: 30                  # 5–300; the old copy's grace for open requests
@@ -30,14 +32,19 @@ cicd:
     keep: 10                        # 2–100; never the running or the previous image
 ```
 
+`opscrew/requirements.yaml` gains `signImages` (boolean, the interview's signing answer) and
+`deployTags` (`off`, `tag` or `tag-and-release`). Design copies them into `supplyChain.sign` and
+`cicd.deployTags`; a value set in `plan.yaml` is the interview's default on a rerun (T1215).
+
 **Validation:**
 - `own-dockerfile` needs `app.dockerfile` to exist in the repository. adapt checks this and names
   the file.
 - `generated-dockerfile` needs a stack `detectStack` supports. Otherwise design says which builder
   applies.
-- `chosen: user` keeps the user's builder through every later design, unless the baseline or the
-  architecture rules it out (FR-1202). OpsCrew then says why and changes nothing until the user
-  edits the field.
+- `chosen: user` keeps the user's builder (and, for `own-dockerfile`, `app.dockerfile`) through
+  every later design, unless the baseline rules it out or the builder cannot build the project
+  (FR-1202). OpsCrew then says why and changes nothing until the user edits the field. The
+  architecture never rules a builder out: every builder builds amd64 and arm64.
 - For the Portainer target, design always records `deploy.strategy: recreate`, since Portainer
   recreates the stack (FR-1217). The schema itself does not refuse `rolling`.
 - `runtime.version` is a major, major.minor or major.minor.patch string, kept as precise as the app
@@ -65,7 +72,9 @@ yet normalised:
 
 ```ts
 export const IMAGES: Record<ImageKey, { ref: string /* repo:tag@sha256:… */ }>;
-export const TOOLS: Record<ToolKey, { version: string; sha256: Record<"amd64" | "arm64", string> }>;
+export const TOOLS: Record<ToolKey, { version: string; sha256?: Record<PinArch, string> }>;  // cosign has none (its installer action checks it)
+export const TOOL_RELEASES: Record<ToolKey, { repo: string; tag(v): string; asset: Record<PinArch, (v) => string> }>;
+export function toolDownloadUrl(tool: ToolKey, arch: PinArch): string;
 export const ACTIONS: Record<ActionKey, string /* owner/name@<40-hex sha> # vX */>;
 export const RUNTIME_DEFAULTS: Record<RuntimeLanguage, string>;   // node: "24", python: "…", …
 export const BUILDPACKS_OFFERS: Record<"go" | "java" | "dotnet" | "ruby", string[]>;  // versions the pinned builder provides
@@ -77,7 +86,9 @@ export const BUILDPACKS_OFFERS: Record<"go" | "java" | "dotnet" | "ruby", string
 
 | File | Written by | Rewritten by OpsCrew? |
 |---|---|---|
-| `Dockerfile`, `.dockerignore` | adapt, for `generated-dockerfile` | yes, with newer pins kept |
+| `Dockerfile` | adapt, for `generated-dockerfile`, when missing | no; Dependabot keeps its pins current |
+| `.dockerignore`, `.env.example` | adapt, when missing (every builder) | no |
+| the runtime version file (`.nvmrc`, `.python-version`, `.ruby-version`, …) | adapt, when the repository has none (FR-1228 rule 5) | no |
 | `.github/dependabot.yml` | provision (deploy-setup pull request), when absent | never once present |
 | `.github/workflows/opscrew-deploy.yml` | provision | yes, with newer pins kept |
 | runtime `compose.yaml`, `Caddyfile` | provision | yes, with newer pins kept |

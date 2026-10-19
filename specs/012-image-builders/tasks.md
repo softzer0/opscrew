@@ -170,7 +170,7 @@ Effort`.
       - writes the Dockerfile only for `generated-dockerfile`;
       - resolves the digest of a declared non-default runtime image through the registry (an injected fetch, faked in tests) before rendering; offline, it warns that the image is pinned by tag only;
       - passes the committed files through `keepNewerPins`;
-      - adds `dependabot.yml` when absent, or lists the entries it would add;
+      - adds `dependabot.yml` when absent, or lists the entries it would add (moved to provision's deploy-setup pull request by T1214);
       - adds the runtime version file (`.nvmrc`, `.python-version`, …) with the recorded version when the repository has none;
       - checks an own Dockerfile against the baseline, listing each finding with its fix. The new secops rule is a base image not pinned by digest.
     - **provision:**
@@ -248,7 +248,7 @@ Effort`.
   - Depends: T1208
   - Accept:
     - **Laravel on Railpack:**
-      - the PHP seal also makes `public` writable for uid 10001;
+      - the PHP seal also makes `public` writable for uid 10001 (changed in review: `public` stays root's and the seal makes the `public/storage` link that `storage:link` needs);
       - it drops the file capabilities of FrankenPHP's binary (copy it over itself), since the app listens on its port (8080 by default), not on a low one;
       - the app then starts under `cap_drop: ALL` and no-new-privileges.
     - **Production defaults for Rails and Laravel**, through OpsCrew's existing derived and generated values:

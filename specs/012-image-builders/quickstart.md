@@ -38,7 +38,7 @@ The pass then checks:
 Run the Hetzner pass with `OPSCREW_E2E_APP=nextjs-postgres`, then `go-api`, then `rust-api`.
 For each:
 1. The deploy builds with the expected builder. `docker buildx imagetools inspect <image>
-   --format '{{json .Provenance}}'` shows the repository, commit and workflow, and `.SBOM` lists
+   --format '{{json .Provenance}}'` shows the repository and commit (and the build's run, no GitHub event data), and `.SBOM` lists
    packages.
 2. Under a steady load (20 requests per second through the domain), a merged change deploys with
    zero failed requests.

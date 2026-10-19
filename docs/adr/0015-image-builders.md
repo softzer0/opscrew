@@ -20,16 +20,18 @@ Two local spikes measured the options (`specs/012-image-builders/research.md`, R
 - **Builder order** (founder, 2026-10-18, from the measured comparison):
   1. OpsCrew's generated Dockerfile for its Node and Python stacks: the smallest images, and the only
      builder that built Next.js 16 and pnpm workspaces;
-  2. Paketo Buildpacks for Go, Java, .NET and Ruby whose runtime version the pinned builder offers:
-     non-root by default, and 1.4–2.8× smaller than Railpack for Java, .NET and Rails;
-  3. Railpack for everything else.
+  2. Paketo Buildpacks for Go, Java, .NET and Ruby whose runtime version the pinned builder offers
+     and that have no secret build value: non-root by default, and 1.4–2.8× smaller than Railpack
+     for Java, .NET and Rails;
+  3. Railpack for everything else, Bun projects included.
 
   The choice is deterministic, recorded with its reason in `plan.yaml`, and overridable there. A
   repository's own Dockerfile is used as it is.
 - **One seal step.**
   - Buildpacks and Railpack images are pushed to an intermediate tag.
   - A thin `FROM <intermediate>@digest` build follows. For Railpack it also does a `chown` of the
-    framework's writable folders and sets `USER 10001`.
+    framework's writable folders and sets `USER 10001`; for PHP it also drops FrankenPHP's file
+    capability and makes Laravel's storage link, so the web root stays root's.
   - The seal runs through `docker/build-push-action` with `provenance: mode=max` and `sbom: true`.
   - Dockerfile builds use the same action directly.
   - Every image therefore carries buildx SBOM and provenance attestations in GHCR, and runs as
@@ -37,7 +39,7 @@ Two local spikes measured the options (`specs/012-image-builders/research.md`, R
   - Secret build values are passed only as BuildKit secret mounts, because mode=max records build
     args.
 - **Runtime versions.** Each builder gets the version the app declares, else one default per
-  language: Node's current LTS, otherwise the newest version OpsCrew tested.
+  language: Node's current LTS, otherwise the second-newest minor version.
 - **One pin table** (`packages/iac-templates/src/pins.ts`) holds every image by tag and digest,
   every downloaded tool by version and checksum, and every action by SHA.
   - A script refreshes it at release time.
@@ -54,7 +56,9 @@ Two local spikes measured the options (`specs/012-image-builders/research.md`, R
   - Servers below 1 GiB of memory use recreate. The Portainer target recreates, and says so.
 - **Supply chain.**
   - A generated `dependabot.yml` covers the detected ecosystems, the actions, Dockerfiles and
-    Compose.
+    Compose. It comes with provision's deploy-setup pull request, together with the files it
+    watches (T1214). The workflow's own pins (builder images, the Railpack frontend, tools) move
+    only with OpsCrew's releases.
   - Signing with cosign keyless is opt-in, with a warning that a private repository's name and
     workflow become public in Sigstore's log.
   - Deploy tags and releases are off by default, created by a job holding only `contents: write`.

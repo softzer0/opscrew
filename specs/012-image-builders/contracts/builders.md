@@ -8,29 +8,44 @@ export interface BuilderChoice {
   chosen: "auto" | "user";
   reason: string;                       // one plain sentence naming the deciding fact
   runtime: { language: RuntimeLanguage; version: string };
-  /** What an automatic choice would be; printed by a failed deploy when the user's choice is in use. */
+  /** The Compose health check's tool for this image (FR-1214). */
+  probe: "node" | "python" | "ruby" | "php" | "wget" | "bash" | "none";
+  /**
+   * What OpsCrew would choose itself, leaving an own Dockerfile aside; a failed deploy names it
+   * (FR-1206).
+   */
   automatic: BuilderChoice["builder"];
+  /** Plain warnings for design to print (an end-of-life version, a user's risky choice). */
+  warnings: string[];
 }
 export function chooseBuilder(
   facts: ProjectFacts,
   plan: Pick<DeployPlan, "app"> | undefined,   // the current plan, for a user's choice
   arch: "amd64" | "arm64",
-): BuilderChoice | { refused: string };       // refused: no builder can meet the baseline
+): BuilderChoice | { refused: string };       // refused: only a user's choice that cannot build the app
 ```
 
 **Rules,** checked in this order:
 1. **The user's choice.** With `plan.app.build.chosen === "user"`, the user's builder is kept if it
-   supports the language and `arch`. Otherwise the result is `{ refused }`, naming what it lacks.
-2. **An own Dockerfile.** A Dockerfile present in the repository (`facts.docker.dockerfile`) gives
-   `own-dockerfile`.
-3. **The generated Dockerfile.** If `detectStack(facts)` supports the stack, the result is
-   `generated-dockerfile`.
-4. **Buildpacks.** For Go, Java, .NET or Ruby, where `BUILDPACKS_OFFERS[lang]` includes the
-   declared version (or the default) and the Noble builder has `arch`, the result is `buildpacks`.
-5. **Railpack** for everything else.
+   can build the language (Buildpacks has no PHP in the pinned Noble builder). Otherwise the result
+   is `{ refused }`, naming what it lacks.
+2. **An own Dockerfile.** A production Dockerfile in the app's folder or the root
+   (`facts.docker.dockerfile`; never `.devcontainer/**` or `Dockerfile.dev`) gives
+   `own-dockerfile`. OpsCrew's own generated Dockerfile does not count.
+3. **Bun** gives `railpack`.
+4. **The generated Dockerfile.** If `detectStack(facts)` supports the Node or Python stack, the
+   result is `generated-dockerfile`.
+5. **Buildpacks.** For Go, Java, .NET or Ruby, where `BUILDPACKS_OFFERS[lang]` includes the
+   version and the project has no secret build value (Buildpacks has no secret mounts), the result
+   is `buildpacks`.
+6. **Railpack** for everything else.
 
-**Versions.** The declared version is normalised to major (Node) or major.minor (others). If no
-version is declared, `RUNTIME_DEFAULTS[lang]` applies.
+`arch` decides nothing: every builder builds amd64 and arm64 (research R7, R8); the build job runs
+on a runner of the server's architecture.
+
+**Versions.** The declared version is kept as declared (FR-1228 rule 1; a range resolves to the
+newest supported version inside it). Without one, the evidence of FR-1228 rule 3 applies, then
+`RUNTIME_DEFAULTS[lang]`; a version recorded in `plan.yaml` is kept on later runs.
 
 **The result:**
 - is deterministic: the same inputs give the same result and the same reason text;
@@ -60,14 +75,14 @@ version is declared, `RUNTIME_DEFAULTS[lang]` applies.
 - Trivy scans the final digest; it only reports, as today.
 - Buildpacks and Railpack builds push an intermediate `ghcr.io/<repo>:build-<sha>`. Only the sealed
   final tag is deployed.
-- Signing and deploy tags each run in their own job, holding only `id-token: write` or
-  `contents: write`.
+- Signing and deploy tags each run in their own job: signing holds `id-token: write` and
+  `packages: write` (to push the signature), deploy tags only `contents: write`.
 
 ## Switch (packages/iac-templates, runtime and workflow; T1206)
 
 **Compose (server targets):**
-- `app`: no `container_name`, no host `ports`. It has `healthcheck`, `stop_grace_period` and
-  `restart: unless-stopped`. Its image comes from `${APP_IMAGE}`.
+- `app`: no `container_name`, no host `ports`. It has `healthcheck` (none for an own Dockerfile,
+  FR-1214), `stop_grace_period` and `restart: unless-stopped`. Its image comes from `${APP_IMAGE}`.
 - `proxy`: kamal-proxy, pinned. It sits on the internal network, holds the volume
   `kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy`, and has no host ports.
 - `caddy`: `reverse_proxy proxy:80`; everything else stays as today.
@@ -77,7 +92,7 @@ version is declared, `RUNTIME_DEFAULTS[lang]` applies.
 2. Then, depending on `deploy.strategy`:
    - **`rolling`:**
      1. start a second `app` container without recreating the first;
-     2. `kamal-proxy deploy app --target <new>:<port> --health-check-path <healthPath> --deploy-timeout 60s --drain-timeout <drainSeconds>s`;
+     2. `kamal-proxy deploy app --target <new>:<port> --health-check-path <healthPath> --deploy-timeout 60s --drain-timeout <drainSeconds>s --target-timeout 300s`, with stdin from `/dev/null`;
      3. remove the old container on success;
      4. on failure, remove the new container and exit non-zero with the builder hint.
    - **`recreate`:** `docker compose up -d app`, then the same `kamal-proxy deploy`.

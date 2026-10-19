@@ -187,14 +187,8 @@ fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, i
    variable the test logs
    "not checked: image signing".
 
-The test also logs what it does not check, on every run:
-
-- image retention on a package owned by an organization (the `/orgs` endpoints): the throwaway
-  repository is owned by a user;
-- kamal-proxy's `--target-timeout 300s` letting a 60-second request through: no example has a
-  slow route;
-- Railpack with a secret build value that is empty at `prepare`: no example has a secret build
-  value.
+The test also logs what it does not check, on every run; the list, with everything else no live
+test covers, is on the [coverage page](e2e-coverage.md#image-builders-feature-012).
 
 Run the three apps one after another (each pass creates and destroys its own server):
 

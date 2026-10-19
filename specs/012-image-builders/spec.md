@@ -62,8 +62,9 @@ shows a non-root user and no secret values.
 4. **Given** a user who sets the builder in `plan.yaml` to Buildpacks or Railpack, **When** they
    run `opscrew adapt` and deploy, **Then** the deploy uses that builder, or OpsCrew says why it
    cannot meet the baseline.
-5. **Given** a server whose architecture a builder cannot target, **When** OpsCrew designs or
-   retargets, **Then** it picks a builder that can, and says why.
+5. **Given** an arm64 or an x86 server, **When** OpsCrew designs or retargets, **Then** the same
+   builder is chosen for both: every builder builds both architectures (research R7, R8), so the
+   architecture never rules a builder out.
 6. **Given** nothing changed, **When** the user runs design, adapt or provision again, **Then** the
    builder choice and the generated files stay the same.
 
@@ -129,12 +130,13 @@ the old version still answers.
 ### User Story 4 - I know what is in my image, and it stays current (Priority: P3)
 
 Every image OpsCrew builds comes with a bill of materials (SBOM) and a provenance record. The
-provenance says which repository, commit and workflow built it. Both are stored with the image in
+provenance says which repository and commit built it. Both are stored with the image in
 the registry, and the guide shows the command that reads them. Signing the image is available as
 an opt-in, and OpsCrew warns that for a private repository the public signature log shows the
 repository's name.
 
-OpsCrew also adds a Dependabot configuration to the repository. It covers the app's package
+OpsCrew also adds a Dependabot configuration to the repository, in provision's deploy-setup pull
+request, together with the workflow and runtime files it watches. It covers the app's package
 ecosystems, the GitHub Actions in the workflow, and the base and service images, which are now
 pinned by digest. Update proposals come grouped, so the user gets few pull requests.
 
@@ -149,11 +151,11 @@ digest.
 **Acceptance Scenarios**:
 
 1. **Given** a deployed app, **When** the user runs the guide's command on the image digest,
-   **Then** they see its SBOM and its provenance (repository, commit, workflow run).
-2. **Given** a repository without a Dependabot configuration, **When** OpsCrew opens its adapt pull
-   request, **Then** it includes one covering the detected ecosystems, the Actions and the images,
-   with grouped updates.
-3. **Given** a repository that already has a Dependabot configuration, **When** OpsCrew adapts,
+   **Then** they see its SBOM and its provenance (repository, commit, the build's run).
+2. **Given** a repository without a Dependabot configuration, **When** OpsCrew opens its
+   deploy-setup pull request, **Then** it includes one covering the detected ecosystems, the
+   Actions and the images, with grouped updates.
+3. **Given** a repository that already has a Dependabot configuration, **When** OpsCrew provisions,
    **Then** it leaves the file as it is and lists the entries it would add.
 4. **Given** Dependabot updates a pinned image or action, **When** the user provisions again,
    **Then** OpsCrew keeps the updated pin and does not revert it.
@@ -187,7 +189,8 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 - **Monorepo:** an app in a subfolder of a workspace (pnpm, npm, Yarn or Bun workspaces) builds from
   the workspace root, so its workspace dependencies are included. A builder that cannot do that is
   not chosen.
-- **Build-time values the app needs** (a private registry token, a public API base URL): secret
+- **Build-time values the app needs** (the client-exposed variables the build bakes in, such as a
+  public API base URL or a public key; other values reach the app only at run time): secret
   ones reach the build only as secret mounts, never as build arguments. They are never in a layer,
   the image config or the provenance record. Non-secret ones may be baked in, and OpsCrew says so.
 - **The app does not listen on the port OpsCrew sets:** the health check fails, and the message
@@ -205,9 +208,8 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   copy get a drain period before it stops. The guide names the limit.
 - **A health check needs a tool the image lacks** (curl or wget in a slim image): the check works
   without tools the image may not have.
-- **`retarget` to a provider with another architecture:** the builder is checked for the new
-  architecture first. If it cannot build for it, OpsCrew changes the builder and says so before
-  anything is created.
+- **`retarget` to a provider with another architecture:** the build job moves to a runner of the
+  new architecture; the builder stays, because every builder builds both (research R7, R8).
 - **GitHub's own artifact attestations need a plan the user does not have:** the SBOM and provenance
   attached to the image still work. OpsCrew uses GitHub's attestations only where they are
   available.
@@ -222,21 +224,24 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 - **FR-1201**: OpsCrew MUST choose the builder per project, deterministically, in this order
   (founder decision, 2026-10-18, from the measured comparison):
   1. OpsCrew's generated Dockerfile, for the Node and Python stacks it has a template for;
-  2. Cloud Native Buildpacks, for Go, Java, .NET and Ruby projects whose runtime version and server
-     architecture its builder supports;
-  3. Railpack for everything else, run as a non-root user (FR-1203), including Go, Java, .NET and
-     Ruby projects whose runtime version Buildpacks lacks.
-  When no builder can meet the baseline, OpsCrew MUST say so and leave the Dockerfile to the
-  Code-change agent, as today. The choice and a one-sentence reason MUST be recorded in
-  `plan.yaml` and shown at design.
+  2. Cloud Native Buildpacks, for Go, Java, .NET and Ruby projects whose runtime version its
+     builder offers and that have no secret build value (Buildpacks has no secret mounts);
+  3. Railpack for everything else, run as a non-root user (FR-1203), including Bun projects and
+     Go, Java, .NET and Ruby projects whose runtime version Buildpacks lacks or that have a secret
+     build value.
+  The repository's own production Dockerfile, when it has one, comes before all three. Railpack
+  takes every project, so the automatic choice always has a builder; only a user's choice can be
+  refused (FR-1202). The choice and a one-sentence reason MUST be recorded in `plan.yaml` and
+  shown at design.
 - **FR-1202**: The user MUST be able to set the builder in `plan.yaml` to:
   - automatic;
   - Buildpacks;
   - Railpack;
   - the generated Dockerfile;
   - their own Dockerfile, with its path.
-  OpsCrew MUST respect the setting and refuse only a choice that cannot meet the baseline or the
-  server's architecture, saying why.
+  OpsCrew MUST respect the setting and refuse only a choice that cannot meet the baseline or cannot
+  build the project (Buildpacks for a language its builder lacks, such as PHP), saying why. A
+  later `opscrew design` MUST keep the user's choice and the Dockerfile's path.
 - **FR-1203**: Every image OpsCrew builds MUST meet the security baseline:
   - the app runs as a non-root user;
   - every base image, builder image and build tool is pinned to an exact version or digest, and
@@ -283,7 +288,9 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   7. **Unavailable.** A version that a builder cannot provide leads to another builder or a plain
      message, never a silent older version.
 
-  Today the Node templates are fixed at Node 22 and the Python default is 3.13.
+  A `go` line in `go.mod` is a minimum within its release line (`go 1.21` allows 1.21.x, not
+  1.26). The defaults today are in `packages/iac-templates/src/pins.ts` (`RUNTIME_DEFAULTS`: Node
+  24, Python 3.14, …).
 - **FR-1205**: A project's own Dockerfile MUST be used as it is, unless the user chooses another
   builder. OpsCrew MUST check it against the baseline and list each finding with its fix.
 - **FR-1206**: When a deploy's new version fails to start or fails its health check, the message
@@ -292,7 +299,9 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   DigitalOcean, the user's own server, Portainer). They MUST produce the image for the server's
   architecture and push it to GHCR by digest, as today.
 - **FR-1208**: Secret build-time values MUST reach the build only as secret mounts. Non-secret
-  build-time values MUST be listed as baked into the image.
+  build-time values MUST be listed as baked into the image. Build-time values are the app's
+  client-exposed variables, which the build bakes into the frontend; every other value reaches
+  the app only at run time.
 - **FR-1209**: The acceptance matrix MUST add Go, Rails, Laravel, Spring Boot, .NET and Rust example
   apps. Every example MUST build, start and answer its health route with the automatically chosen
   builder, without a model.
@@ -319,7 +328,9 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 - **FR-1213**: The release command MUST run before the new version starts, as today. The guide MUST
   say that migrations must stay compatible with the version still running.
 - **FR-1214**: The app service MUST have a health check on its health route that works for every
-  builder's image, without relying on tools the image may lack.
+  builder's image, without relying on tools the image may lack. For the user's own Dockerfile,
+  OpsCrew adds none (it cannot know the image's tools); its `HEALTHCHECK` applies, and kamal-proxy's
+  own check on the health route still decides when the new copy gets traffic.
 - **FR-1215**: The deploy strategy MUST be recorded in `plan.yaml`. Rolling is the default where the
   server has room for two copies; otherwise it is stop-and-start, and OpsCrew says why. The user
   can change it.
@@ -399,7 +410,8 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 
 - **SC-1201**: Every app in the acceptance matrix (the 19 of today plus Go, Rails, Laravel, Spring
   Boot, .NET and Rust, 25 in all) is packaged, starts and answers its health route without a model.
-- **SC-1202**: All images OpsCrew builds run as a non-root user, and a search of their layers,
+- **SC-1202**: All images OpsCrew builds with its own builders (not the user's own Dockerfile, which
+  is checked and reported, FR-1205) run as a non-root user, and a search of their layers,
   configuration and attestations finds no secret value.
 - **SC-1203**: During a deploy under steady load (at least 20 requests per second), no request
   fails. A request that is in flight when the switch starts completes.
@@ -408,8 +420,8 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 - **SC-1205**: The SBOM and provenance of a deployed image can be read with one documented command.
 - **SC-1206**: After the first Dependabot run, the user gets at most one grouped pull request per
   ecosystem for minor and patch updates.
-- **SC-1207**: The comparison table covers every example and every builder that applies to it, and
-  is published in the guide.
+- **SC-1207**: The comparison table covers one example of each kind (each language and stack) and
+  every builder that applies to it, and is published in the guide.
 - **SC-1208**: Running design, adapt or provision again with nothing changed changes no file and
   asks for no approval.
 
