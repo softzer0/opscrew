@@ -321,7 +321,7 @@ Effort`.
 
 ## Phase 6: Day 2, part 2 and Portainer
 
-- [ ] T1309 [US2] [US3] [US6] Components on day 2 in `packages/agents/src/{provision,destroy,drift,secure,retarget}/**`, `packages/secops/src/**`
+- [X] T1309 [US2] [US3] [US6] Components on day 2 in `packages/agents/src/{provision,destroy,drift,secure,retarget}/**`, `packages/secops/src/**`
   - Owns: those paths (+ tests), except the own-server files (T1308c) and the Portainer files (T1310's list)
   - Reads: spec FR-1312, FR-1318–FR-1319, FR-1328, FR-1331–FR-1332; plan.md "6." and "9."
   - Depends: T1308c
@@ -403,6 +403,7 @@ Effort`.
   - Depends: T1310
   - Accept:
     - **`status`** lists each component and whether it runs, over SSH on servers and through Portainer's API.
+    - **Drift on Hetzner and DigitalOcean** (deferred from T1309, which had no SSH read on cloud servers) reuses status's SSH read to report a component that differs from the plan, as drift already does on an own server (`drift/host.ts`). Owns `packages/agents/src/drift/**` for this.
     - **Design's output and the MCP tools** show components, licences, and each component's memory and price share.
     - **The plugin's deploy and adapt skills** cover workers, cron and the storage key.
     - **The runbook** describes the components, the edge and the storage key, with the per-app data paths (`/srv/data/<app>/<name>`). `runbook/shared.ts` still names `/srv/app` and the Caddyfile: it becomes `/srv/apps/<app>`, the edge at `/srv/edge`, and the app's site file.
