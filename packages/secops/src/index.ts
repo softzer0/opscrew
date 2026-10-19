@@ -1,10 +1,14 @@
 export {
   defaultTcpConnect,
+  HOST_CHECKS,
+  type HostCheck,
   type OwnServerHardening,
   ownServerHostChecks,
   probePorts,
   probeSshPasswordAuth,
   runHostChecks,
+  type ServiceCheckInput,
+  serviceHostChecks,
   type TcpConnect,
 } from "./hardening";
 export { blockingPolicyFailures, evaluatePlanPolicies } from "./policies";

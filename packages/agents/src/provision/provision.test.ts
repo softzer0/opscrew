@@ -6,9 +6,9 @@ import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderDependabot, renderRunbook } from "@opscrew/iac-templates";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { readServerAddresses } from "../shared";
+import { parseDotenv, readServerAddresses } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -195,6 +195,90 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(
       deps.audit.entries.filter((e) => e.kind === "secret-set").map((e) => e.action),
     ).toContain("set secret OPSCREW_APP_ENV");
+  });
+
+  it("stores each service's settings with its generated secrets as a GitHub secret of its own, and keeps them", async () => {
+    const base = testPlan();
+    const service = (kind: string, memoryMb: number, name?: string) => ({
+      kind,
+      ...(name !== undefined ? { name } : {}),
+      version: { mysql: "8.4", rabbitmq: "4.3", kafka: "4.3" }[kind],
+      memoryMb,
+      reason: `The app uses ${kind}.`,
+      licence: "test",
+    });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: [
+        ...base.services,
+        service("mysql", 512, "orders-db"),
+        service("rabbitmq", 384),
+        service("kafka", 1024),
+      ],
+    });
+    const { deps, github, services, handler } = await setup({ plan });
+    await runProvision(deps, { services });
+
+    const names = [...github.secrets.keys()].filter((name) => name.startsWith("OPSCREW_SERVICE_"));
+    // Kafka runs without a login, so it has no env file.
+    expect(names.sort()).toEqual([
+      "OPSCREW_SERVICE_DB_ENV",
+      "OPSCREW_SERVICE_ORDERS_DB_ENV",
+      "OPSCREW_SERVICE_RABBITMQ_ENV",
+    ]);
+    const mysql = parseDotenv(github.secrets.get("OPSCREW_SERVICE_ORDERS_DB_ENV") ?? "");
+    expect([...mysql.keys()]).toEqual([
+      "MYSQL_DATABASE",
+      "MYSQL_USER",
+      "MYSQL_PASSWORD",
+      "MYSQL_ROOT_PASSWORD",
+    ]);
+    const generated = JSON.parse(
+      await readFile(join(deps.paths.projectHomeDir, "generated_values.json"), "utf8"),
+    ) as { services: Record<string, Record<string, string>> };
+    expect(mysql.get("MYSQL_PASSWORD")).toBe(generated.services["orders-db"]?.password);
+    expect(mysql.get("MYSQL_ROOT_PASSWORD")).toBe(
+      generated.services["orders-db"]?.["root-password"],
+    );
+    const rabbit = parseDotenv(github.secrets.get("OPSCREW_SERVICE_RABBITMQ_ENV") ?? "");
+    expect(rabbit.get("RABBITMQ_DEFAULT_PASS")).toBe(generated.services.rabbitmq?.password);
+    expect(handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
+      "OPSCREW_SERVICE_ORDERS_DB_ENV",
+    );
+
+    // Never printed, and every value is masked wherever OpsCrew's text goes.
+    const printed = everythingPrinted(deps);
+    for (const value of Object.values(generated.services).flatMap(Object.values)) {
+      expect(printed).not.toContain(value);
+      expect(deps.redactor.redact(`x ${value} y`)).not.toContain(value);
+    }
+
+    // Run again: the same passwords (the databases were created with them).
+    const first = github.secrets.get("OPSCREW_SERVICE_ORDERS_DB_ENV");
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+    await runProvision(deps, { services });
+    expect(github.secrets.get("OPSCREW_SERVICE_ORDERS_DB_ENV")).toBe(first);
+
+    // RabbitMQ turned off: its secret goes, named in the approval; no other secret is touched.
+    github.secrets.set("OPSCREW_SERVICE_NOTES", "the user's own");
+    const turnedOff = await readArtifact("plan", deps.paths.files.plan);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...turnedOff,
+      services: turnedOff.services.map((s) =>
+        s.kind === "rabbitmq" ? { ...s, enabled: false } : s,
+      ),
+    });
+    handler.requests.length = 0;
+    await runProvision(deps, { services });
+    expect(github.secrets.has("OPSCREW_SERVICE_RABBITMQ_ENV")).toBe(false);
+    expect(github.secrets.get("OPSCREW_SERVICE_NOTES")).toBe("the user's own");
+    expect(github.secrets.has("OPSCREW_SERVICE_ORDERS_DB_ENV")).toBe(true);
+    expect(handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
+      "Deleted, since their services no longer run (names only):\n  OPSCREW_SERVICE_RABBITMQ_ENV",
+    );
+    expect(deps.audit.entries.map((e) => e.action)).toContain(
+      "delete secret OPSCREW_SERVICE_RABBITMQ_ENV",
+    );
   });
 
   it("a new deployment after opscrew destroy no longer records the teardown", async () => {
@@ -1736,7 +1820,7 @@ describe.skipIf(!findExecutable("git"))("runProvision and Dependabot's configura
     expect(await committedIn(run)).not.toContain(DEPENDABOT);
     expect(writesOf(run)).not.toContain(DEPENDABOT);
     const missing =
-      "docker in /, docker-compose in /opscrew/runtime and /opscrew/runtime/cloudflared and /opscrew/runtime/portainer, github-actions in /";
+      "docker in /, docker-compose in /opscrew/runtime, /opscrew/runtime/cloudflared and /opscrew/runtime/portainer, github-actions in /";
     expect(run.deps.reporter.text()).toContain(
       `.github/dependabot.yml is yours, so OpsCrew left it as it is. OpsCrew's would also update: ${missing}.`,
     );

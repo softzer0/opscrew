@@ -144,7 +144,8 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     expect((await deps.state.read()).phases.dns?.status).toBe("ok");
 
     // the running server is told about before anything is approved
-    const warning = "until the pull request with the new Caddyfile is merged and deployed";
+    const warning =
+      "until the pull request with the app's new Caddy site file (opscrew/runtime/edge/sites/shop.caddy) is merged and deployed";
     expect(deps.reporter.text()).toContain(warning);
     expect(deps.reporter.text()).toContain("ports 80 and 443 accept only Cloudflare");
     const apply = handler.requests.find((r) => r.kind === "iac-apply");
@@ -204,7 +205,9 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     await runDns(deps, { domain: "shop.example.com", services });
     expect(handler.requests.map((r) => r.kind)).not.toContain("github-secrets");
     expect(github.pulls[1]?.body).toContain("the deploy secrets are stored in GitHub Actions");
-    expect(deps.reporter.text()).toContain("until the pull request with the new Caddyfile");
+    expect(deps.reporter.text()).toContain(
+      "until the pull request with the app's new Caddy site file",
+    );
   });
 
   it("does not warn when the domain and proxying stay the same", async () => {
@@ -223,7 +226,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     });
     const before = deps.reporter.text().length;
     await runDns(deps, { services });
-    expect(deps.reporter.text().slice(before)).not.toContain("new Caddyfile");
+    expect(deps.reporter.text().slice(before)).not.toContain("new Caddy site file");
   });
 
   it("keeps a bought domain's registration only while the new name is inside it", async () => {

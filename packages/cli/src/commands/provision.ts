@@ -31,6 +31,7 @@ import {
 } from "../ui/deploy";
 import { createEnvPrompt } from "../ui/env-prompt";
 import { printNextSteps } from "../ui/output";
+import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
 
 /** Flags shared by `provision` and `dns`. */
 export interface InfraFlags {
@@ -249,7 +250,12 @@ export async function runInfraCommand(
         ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
         ...portainerImageOptions(publicImage, flags.replaceToken),
         services: {
-          ...(ctx.isInteractive ? { askEnv: createEnvPrompt(promptsOf(ctx)) } : {}),
+          ...(ctx.isInteractive
+            ? {
+                askEnv: createEnvPrompt(promptsOf(ctx)),
+                askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout),
+              }
+            : {}),
           ...servicesOf(ctx).provision,
         },
       });
@@ -265,6 +271,10 @@ export async function runInfraCommand(
           planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
           // Deleting OpsCrew's rule needs the app's name, like an infrastructure plan that deletes.
           removes = result.cloudflarePlanDeletes === true;
+        }
+        // The app's bucket at a provider has a plan of its own.
+        if (result.storagePlanHash !== undefined) {
+          planned.push({ label: "bucket (object storage)", hash: result.storagePlanHash });
         }
         const saved =
           result.planHash === undefined

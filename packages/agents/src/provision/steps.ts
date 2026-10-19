@@ -27,6 +27,8 @@ export interface SavedInfrastructureHashes {
   apply?: string;
   /** The saved removal plan of an earlier setup (an own server's switch, Portainer's Cloudflare). */
   removal?: string;
+  /** The saved plan of the `storage` root (the app's bucket). */
+  storage?: string;
 }
 
 /**

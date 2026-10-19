@@ -105,7 +105,7 @@ export class PortainerLifecycleGitHub extends FakeGitHub {
     this.branches.push({ branch: input.branch, path: input.path, content: input.content });
     return { commit: await writeBranch(this.bare, input.branch, input.content) };
   }
-  async deleteActionsSecret(_owner: string, _repo: string, name: string): Promise<void> {
+  override async deleteActionsSecret(_owner: string, _repo: string, name: string): Promise<void> {
     this.deleted.push(name);
     this.secrets.delete(name);
   }

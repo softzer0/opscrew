@@ -186,6 +186,7 @@ describe("own-server texts", () => {
     } as unknown as Parameters<typeof deploySecrets>[0]["environment"];
     const secret = fakeSecret("generic-password", "svc");
     const secrets = deploySecrets({
+      plan: ownPlan({ postgres: false }),
       host: "ssh-shop.example.com",
       privateKey: "k",
       knownHosts: "kh",

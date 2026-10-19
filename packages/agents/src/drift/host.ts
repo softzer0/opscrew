@@ -16,13 +16,14 @@ import {
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "@opscrew/connector-ssh-host";
-import { listText, lowerFirst, sha256Hex } from "@opscrew/core";
+import { listText, lowerFirst, sha256Hex, upperFirst } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   keepNewerPins,
   type RenderContext,
   renderCaddyfile,
   renderCompose,
+  serviceSpec,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -586,6 +587,73 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
   }
 }
 
+const STARTS_COMPONENTS =
+  "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it starts every component.";
+
+/** A component of the plan that runs as a container: its Compose service and what it is. */
+export interface PlannedComponent {
+  /** The Compose service: `app`, a worker's name, `cron`, a service's name. */
+  service: string;
+  /** In words: `the web process`, `the worker`, `the cron jobs`, `MySQL`. */
+  what: string;
+}
+
+/**
+ * The plan's components that run as containers of the app's Compose project (FR-1331): the web
+ * process, every enabled worker, the cron jobs when one is enabled, and every enabled service.
+ */
+export function plannedComponents(plan: DeployPlan): PlannedComponent[] {
+  return [
+    { service: "app", what: "the web process" },
+    ...plan.processes.workers
+      .filter((worker) => worker.enabled)
+      .map((worker) => ({ service: worker.name, what: "the worker" })),
+    ...(plan.processes.cron.some((job) => job.enabled)
+      ? [{ service: "cron", what: "the cron jobs" }]
+      : []),
+    ...plan.services
+      .filter((service) => service.enabled)
+      .map((service) => ({ service: service.name, what: serviceSpec(service.kind).title })),
+  ];
+}
+
+/**
+ * How the app's containers differ from its planned components: a component with no container
+ * (once the app was deployed), and a container of a component the plan no longer runs. A
+ * container's Compose service is its name without the project (`<app>-`) and the copy number;
+ * one-off containers (`docker compose run`, the release command) are left out.
+ */
+function componentDetails(
+  app: string,
+  containers: readonly HostFacts["containers"][number][],
+  components: readonly PlannedComponent[],
+  deployed: boolean,
+): string[] {
+  const running = new Set(
+    containers.flatMap((container) => {
+      const service = new RegExp(`^${app}-(.+)-\\d+$`).exec(container.name)?.[1];
+      return service === undefined || service.includes("-run-") ? [] : [service];
+    }),
+  );
+  const planned = new Set(components.map((component) => component.service));
+  const out: string[] = [];
+  if (deployed) {
+    for (const { service, what } of components) {
+      if (running.has(service)) continue;
+      out.push(
+        `${upperFirst(what)} (${service}) is in opscrew/plan.yaml but has no container on the server. ${STARTS_COMPONENTS}`,
+      );
+    }
+  }
+  for (const service of [...running].sort()) {
+    if (planned.has(service) || service === "release") continue;
+    out.push(
+      `${service} runs on the server but is not a component in opscrew/plan.yaml any more (turned off or removed there): the next deploy removes it.`,
+    );
+  }
+  return out;
+}
+
 /**
  * Every difference between the inspected server and what OpsCrew set up: OpsCrew's host record,
  * each step of the setup plan `setup` (planned from the same facts and the desired state) that is
@@ -604,6 +672,8 @@ export function hostDifferences(
     deployed: boolean;
     /** What OpsCrew renders now for the app folder ({@link expectedRuntimeFiles}); unset skips. */
     runtimeFiles?: ExpectedRuntimeFiles;
+    /** The plan's components that run as containers ({@link plannedComponents}); unset skips. */
+    components?: readonly PlannedComponent[];
   },
   applied?: HostPlan,
 ): HostDifference[] {
@@ -658,6 +728,11 @@ export function hostDifferences(
     });
   }
   const containers = facts.containers.filter((container) => container.project === app.name);
+  if (containers.length > 0 && app.components !== undefined) {
+    for (const detail of componentDetails(app.name, containers, app.components, app.deployed)) {
+      out.push({ area: "app", title: "The app's components", detail, restoredByProvision: false });
+    }
+  }
   const stopped = containers.filter((container) => !container.running).map((c) => c.name);
   if (stopped.length > 0) {
     out.push({
@@ -739,6 +814,7 @@ export async function ownHostDrift(
         name: plan.app.name,
         deployed: plan.deployment.lastDeployAt !== undefined,
         runtimeFiles,
+        components: plannedComponents(plan),
       },
       setup,
     ),

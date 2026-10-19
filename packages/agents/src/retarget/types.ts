@@ -41,7 +41,10 @@ export interface RetargetGitHubApi extends GitHubApi {
  * from `PhaseDeps`; tests replace them with fakes.
  */
 export interface RetargetServices
-  extends Pick<ProvisionServices, "engine" | "cloudflare" | "tcpConnect" | "remote" | "askEnv"> {
+  extends Pick<
+    ProvisionServices,
+    "engine" | "cloudflare" | "tcpConnect" | "remote" | "askEnv" | "askStorageKey"
+  > {
   /** Credential checks per provider (default: `vpsConnector(id).verifyCredentials`). */
   providers?: Partial<
     Record<VpsProviderId, { configured: boolean; verify(): Promise<CredentialCheck> }>

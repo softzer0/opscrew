@@ -20,6 +20,7 @@ import type {
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
+import type { StorageKey, StorageKeyQuestion } from "./storage";
 
 /**
  * The Cloudflare calls provisioning needs (a `CloudflareClient` or a test fake). `listAccounts`
@@ -43,6 +44,7 @@ export type GitHubApi = Pick<
   GitHubClient,
   | "getRepo"
   | "getActionsPublicKey"
+  | "deleteActionsSecret"
   | "setActionsSecret"
   | "findOpenPullRequest"
   | "createPullRequest"
@@ -78,6 +80,11 @@ export interface ProvisionServices {
   now?: () => number;
   /** Interactive question for each production environment value (CLI prompt). */
   askEnv?: (question: EnvQuestion) => Promise<EnvAnswer>;
+  /**
+   * Interactive question for the key of the app's bucket at a provider, asked once with the
+   * console steps (CLI prompt, hidden input). Never logged.
+   */
+  askStorageKey?: (question: StorageKeyQuestion) => Promise<StorageKey>;
   /** A server the user owns: its shell and the host adapter (fakes in tests). */
   own?: OwnServerServices;
   /**
@@ -186,6 +193,11 @@ export interface ProvisionResult {
    * so approving it needs the app's name typed (`--confirm <app>` in scripts).
    */
   cloudflarePlanDeletes?: true;
+  /**
+   * The `storage` root's plan hash (the app's bucket), when it has changes: applied by this run
+   * or, with `--plan-only`, the hash to approve.
+   */
+  storagePlanHash?: string;
   /** True when this run applied an infrastructure plan. */
   applied: boolean;
   /**
@@ -225,4 +237,6 @@ export interface SavedPlan {
   policy: PolicyResult[];
   /** The engine's `show -json` output, so later phases (secure) can re-check policies. */
   planJson?: unknown;
+  /** When this plan was applied; absent while it waits for its approval. */
+  appliedAt?: string;
 }

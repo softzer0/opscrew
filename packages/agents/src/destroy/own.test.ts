@@ -9,7 +9,7 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   everythingPrinted,
@@ -21,7 +21,7 @@ import {
   provisionOwn,
 } from "../drift/__fixtures__/own-project";
 import { hostPlanFile, readOwnServer, readServerAddresses } from "../shared";
-import { ED25519, OTHER_DEPLOY_KEY, withOtherApp } from "../testing";
+import { ED25519, OTHER_DEPLOY_KEY, ownPlan, withOtherApp } from "../testing";
 import { applyHostPlanApproved, savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
@@ -214,6 +214,52 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(s.host.facts.volumeProjects).toEqual(["nextcloud"]);
     // The data really went, so "What remains" no longer lists it.
     expect(result.remaining.join("\n")).not.toContain("The app's data stays on your server");
+  });
+
+  it("with deleteData removes every component's data, the named volumes as the data folders, and their secrets", async () => {
+    const base = ownPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: {
+        ...base.app,
+        // SQLite's volume is mounted in the app's folder in the image: its own Dockerfile's.
+        build: {
+          builder: "own-dockerfile",
+          chosen: "user",
+          reason: "The repository has its own Dockerfile.",
+          runtime: { language: "node", version: "24" },
+          probe: "node",
+          workdir: "/app",
+        },
+      },
+      services: [
+        ...base.services,
+        { kind: "kafka", version: "4.3", memoryMb: 1024, reason: "kafkajs", licence: "Apache-2.0" },
+        { kind: "mysql", version: "8.4", memoryMb: 512, reason: "mysql2", licence: "GPL-2.0" },
+      ],
+      storage: { sqlite: { dir: "storage" } },
+      deploy: { ...base.deploy, strategy: "recreate" },
+    });
+    const s = await deployed({ plan });
+    s.github.secrets.set("OPSCREW_SERVICE_MYSQL_ENV", "stored");
+    const previews: DestroyPreview[] = [];
+    const result = await runDestroy(s.deps, {
+      services: services(s),
+      deleteData: true,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    // Named from the plan and the catalog, never a hand list.
+    expect(previews[0]?.dataWarning).toContain(
+      "the PostgreSQL database, the Apache Kafka data, the MySQL database, the SQLite database and everything the app stored in /srv/data/shop and in its Docker volumes",
+    );
+    // The teardown removes the whole Compose project with its volumes (Kafka's and SQLite's).
+    expect(s.host.applies.at(-1)?.plan.deleteData).toBe(true);
+    expect(s.host.facts.volumeProjects).toEqual(["nextcloud"]);
+    expect(result.secretsRemoved).toContain("OPSCREW_SERVICE_MYSQL_ENV");
+    expect(s.github.secrets.has("OPSCREW_SERVICE_MYSQL_ENV")).toBe(false);
   });
 
   it("--undo-host --delete-data after an earlier destroy refuses before any change and names the data", async () => {

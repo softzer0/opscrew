@@ -9,7 +9,7 @@ import type {
   ScanReport,
 } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { createSecretsScanner, type TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
 import { recordServerAddress } from "../shared";
@@ -46,6 +46,10 @@ const SS_OUTPUT = [
 interface ServerOptions {
   /** Password login left on (sshd drop-in and the outside probe). */
   passwordAuth?: boolean;
+  /** `docker ps`'s ports of the app's Postgres (default: none published). */
+  dbPorts?: string;
+  /** The login variables set in its container (default: its password). */
+  dbLogin?: string;
 }
 
 /** A fake Ubuntu 24.04 server answering over `ssh` (as the deploy user) and the password probe. */
@@ -90,6 +94,9 @@ function serverScript(o: ServerOptions = {}) {
       case "apt list --upgradable 2>/dev/null | grep -ci security || true":
         return ok("0");
       default:
+        // The app's Postgres (`db`): its ports and the login variables that are set.
+        if (remote?.includes("{{.Ports}}")) return ok(o.dbPorts ?? "5432/tcp");
+        if (remote?.includes("docker inspect")) return ok(o.dbLogin ?? "POSTGRES_PASSWORD");
         return { exitCode: 127, stdout: "", stderr: `unexpected command: ${remote}` };
     }
   };
@@ -152,6 +159,52 @@ describe("runSecure", () => {
     expect(ssh?.args).toContain(deps.paths.files.deployKey);
     expect(ssh?.args).toContain(`UserKnownHostsFile=${deps.paths.files.knownHosts}`);
     expect(ssh?.args).toContain(`deploy@${SERVER_IPV4}`);
+  });
+
+  it("checks that no service port is public and that each service's login is set (FR-1328)", async () => {
+    const clean = await runSecure(await setup(), { scanners: noScanners, tcpConnect: ports() });
+    expect(find(clean.hostChecks, "service-db-port")).toMatchObject({ status: "pass" });
+    expect(find(clean.hostChecks, "service-db-login")).toMatchObject({
+      status: "pass",
+      message: "PostgreSQL (db) requires its login: POSTGRES_PASSWORD is set.",
+    });
+
+    const deps = await setup({}, { dbPorts: "0.0.0.0:5432->5432/tcp", dbLogin: "" });
+    const result = await runSecure(deps, { scanners: noScanners, tcpConnect: ports([5432]) });
+    expect(find(result.hostChecks, "service-db-port")).toMatchObject({
+      status: "fail",
+      severity: "critical",
+    });
+    expect(find(result.hostChecks, "service-db-login")).toMatchObject({
+      status: "fail",
+      message: "PostgreSQL (db) runs without POSTGRES_PASSWORD, so its login is not set.",
+    });
+    expect(find(result.probes, "port-5432-closed")).toMatchObject({ status: "fail" });
+    expect(result.passed).toBe(false);
+    // Only the names of the login variables are ever asked for, never their values.
+    const login = deps.runner.calls.find((c) => (c.args.at(-1) ?? "").includes("docker inspect"));
+    expect(login?.args.at(-1)).toContain("sed -n -E 's/^(POSTGRES_PASSWORD)=.+$/\\1/p'");
+  });
+
+  it("probes the ports of the plan's services from outside", async () => {
+    const base = testPlan();
+    const deps = await setup();
+    await writeArtifact(
+      "plan",
+      deps.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...base,
+        services: [
+          ...base.services,
+          { kind: "nats", version: "2.15", memoryMb: 64, reason: "nats", licence: "Apache-2.0" },
+        ],
+      }),
+    );
+    const result = await runSecure(deps, { scanners: noScanners, tcpConnect: ports([4222]) });
+    expect(find(result.probes, "port-4222-closed")).toMatchObject({
+      status: "fail",
+      message: "Port 4222 (NATS) is reachable from the internet.",
+    });
   });
 
   it("reports enabled SSH password login as a high failure with the fix (US4 scenario 1)", async () => {

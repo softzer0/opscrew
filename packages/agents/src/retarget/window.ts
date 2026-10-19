@@ -185,18 +185,20 @@ function windowCommands(
   path: string,
   release: boolean,
   folder: string,
+  processes: readonly string[],
 ): string[] {
   const dump = dumpPath(folder);
+  const app = ["app", ...processes].join(" ");
   return [
     `On the old server (${oldHost}), in ${folder}:`,
-    "  docker compose stop app",
+    `  docker compose stop ${app}`,
     `  docker compose exec -T db pg_dump -U app -Fc app > ${dump}`,
     "Between the servers, through this computer (OpenSSH):",
     `  scp -3 deploy@${oldHost}:${dump} deploy@${newHost}:${dump}`,
     `On both servers, before anything is dropped: docker compose exec -T db pg_restore --list < ${dump} > /dev/null && sha256sum ${dump}`,
     "  (the copy must be readable and match the dump on the old server)",
     `On the new server (${newHost}), in ${folder}:`,
-    "  docker compose stop app",
+    `  docker compose stop ${app}`,
     "  docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'",
     "    (recreates the new server's database empty, so afterwards it holds exactly the copy)",
     `  docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
@@ -207,7 +209,7 @@ function windowCommands(
         ]
       : []),
     `  rm -f ${dump} (on both servers)`,
-    `  docker compose up -d app, then a health check of http://app:${port}${path}`,
+    `  docker compose up -d ${app}, then a health check of http://app:${port}${path}`,
     "If any of these fails, OpsCrew deletes the dump files and starts the app on the old server again.",
   ];
 }
@@ -284,6 +286,7 @@ export async function maintenanceWindow(
         plan.app.healthPath,
         release,
         ops.folder,
+        ops.processes ?? [],
       ),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),

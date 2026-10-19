@@ -147,7 +147,12 @@ export function fakeServer(options: { passwordAuth?: boolean } = {}): RemoteExec
   return {
     host: SERVER_IPV4,
     run: async (command) => {
-      const answer = answers[command];
+      // The app's Postgres (`db`): no published port, and its password set.
+      const answer = command.includes("{{.Ports}}")
+        ? "5432/tcp"
+        : command.includes("docker inspect")
+          ? "POSTGRES_PASSWORD"
+          : answers[command];
       return answer === undefined
         ? { exitCode: 127, stdout: "", stderr: `unexpected command: ${command}` }
         : { exitCode: 0, stdout: `${answer}\n`, stderr: "" };

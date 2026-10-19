@@ -301,9 +301,9 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
 /**
  * The object storage variables of the app (plan.md "6."): the keys, `AWS_REGION`,
  * `AWS_ENDPOINT_URL_S3` and the bucket and endpoint names the app reads, plus Laravel's region
- * and path-style switch when it reads them. They are derived from the bucket, except a provider's
- * keys, which are the user's, and R2's endpoint, which needs the user's Cloudflare account.
- * Garage's keys and endpoint come from its catalog entry.
+ * and path-style switch when it reads them. All are derived: from the bucket, from the key
+ * provision asks the user for once (and R2's endpoint from the Cloudflare account), or for Garage
+ * from its catalog entry.
  */
 function storageEnv(facts: ProjectFacts, plan: DeployPlan): DeployPlan["app"]["env"] {
   const storage = plan.storage?.objectStorage;
@@ -318,10 +318,7 @@ function storageEnv(facts: ProjectFacts, plan: DeployPlan): DeployPlan["app"]["e
   return [...names].flatMap((name) => {
     const kind = storageVariableKind(name);
     if (kind === undefined) return [];
-    const theUsers =
-      (kind === "key" && storage.provider !== "garage") ||
-      (kind === "endpoint" && storage.provider === "r2");
-    return [{ name, secret: kind === "key", source: theUsers ? "user" : "derived" } as const];
+    return [derived(name, kind === "key")];
   });
 }
 

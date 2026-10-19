@@ -42,7 +42,18 @@ const NEVER_DESTROYED = [
   "# Never destroyed by a plan: OpsCrew deletes the bucket and its files only when you ask it to",
   "# delete data.",
 ];
-const PREVENT_DESTROY = ["  lifecycle {", "    prevent_destroy = true", "  }"];
+const DELETED = [
+  "# You asked OpsCrew to delete the app's data: this copy of the root lets its destroy plan",
+  "# delete the bucket and its files.",
+];
+const PREVENT_DESTROY = ["", "  lifecycle {", "    prevent_destroy = true", "  }"];
+
+/** The bucket's guard: `prevent_destroy`, except in the root that deletes the data. */
+function guard(deleteData: boolean) {
+  return deleteData
+    ? { comment: DELETED, lifecycle: [] }
+    : { comment: NEVER_DESTROYED, lifecycle: PREVENT_DESTROY };
+}
 const CORS_COMMENT = "# Browser uploads with presigned links, from the app's own origins only.";
 const CORS_METHODS = '["GET", "PUT", "POST"]';
 
@@ -61,17 +72,17 @@ function corsOrigins(plan: DeployPlan): string[] {
   return www ? [`https://${domain}`, `https://www.${domain}`] : [`https://${domain}`];
 }
 
-function r2Main(cors: boolean): string[] {
+function r2Main(cors: boolean, deleteData: boolean): string[] {
+  const { comment, lifecycle } = guard(deleteData);
   return [
     ...CLOUDFLARE_PROVIDER_BLOCK,
     "# The app's bucket on Cloudflare R2. OpsCrew never creates storage keys: you create an R2",
     "# token limited to this bucket after it exists.",
-    ...NEVER_DESTROYED,
+    ...comment,
     'resource "cloudflare_r2_bucket" "this" {',
     "  account_id = var.cloudflare_account_id",
     "  name       = var.bucket",
-    "",
-    ...PREVENT_DESTROY,
+    ...lifecycle,
     "}",
     ...(cors
       ? [
@@ -95,7 +106,12 @@ function r2Main(cors: boolean): string[] {
   ];
 }
 
-function s3Main(service: (typeof S3_SERVICES)[keyof typeof S3_SERVICES], cors: boolean): string[] {
+function s3Main(
+  service: (typeof S3_SERVICES)[keyof typeof S3_SERVICES],
+  cors: boolean,
+  deleteData: boolean,
+): string[] {
+  const { comment, lifecycle } = guard(deleteData);
   return [
     "# OpsCrew never creates storage keys: the provider reads yours from the AWS_ACCESS_KEY_ID and",
     "# AWS_SECRET_ACCESS_KEY environment variables, so it is never stored in files, plans or state.",
@@ -114,11 +130,14 @@ function s3Main(service: (typeof S3_SERVICES)[keyof typeof S3_SERVICES], cors: b
     "  skip_requesting_account_id  = true",
     "}",
     "",
-    ...NEVER_DESTROYED,
+    ...comment,
     'resource "aws_s3_bucket" "this" {',
     "  bucket = var.bucket",
     "",
-    ...PREVENT_DESTROY,
+    "  # Deletes the files with the bucket. The provider reads it from the state when the bucket is",
+    "  # destroyed, so it is set from the start; only a destroy you allowed ever uses it.",
+    "  force_destroy = true",
+    ...lifecycle,
     "}",
     ...(cors
       ? [
@@ -139,6 +158,12 @@ function s3Main(service: (typeof S3_SERVICES)[keyof typeof S3_SERVICES], cors: b
   ];
 }
 
+/** The `storage` root's folder, beside `plan.infra.dir`: `opscrew/infra/storage`. */
+export function storageRootDir(plan: Pick<DeployPlan, "infra">): string {
+  const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}storage`;
+}
+
 /**
  * The `storage` root (`opscrew/infra/storage`, beside `plan.infra.dir`) when
  * `storage.objectStorage` is a provider bucket; none for Garage, which runs on the server. It
@@ -151,10 +176,18 @@ function s3Main(service: (typeof S3_SERVICES)[keyof typeof S3_SERVICES], cors: b
  *   only as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in the engine's environment, so no key
  *   is in a rendered file, a saved plan or the state.
  *
- * The bucket has `prevent_destroy`: no plan, a destroy included, deletes it or its files.
+ * The bucket has `prevent_destroy`: no plan, a destroy included, deletes it or its files. With
+ * `deleteData` (`opscrew destroy --delete-data`) it is rendered without it, for the destroy plan
+ * the user approves. The aws provider's bucket always has `force_destroy`, which the provider reads
+ * from the state when the bucket is destroyed; R2 deletes only an empty bucket.
  * Deterministic; contains no secrets.
  */
-export function renderStorage(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
+export function renderStorage(
+  plan: DeployPlan,
+  ctx: RenderContext,
+  options: { deleteData?: boolean } = {},
+): RenderedFile[] {
+  const deleteData = options.deleteData === true;
   const storage = plan.storage?.objectStorage;
   if (storage === undefined || storage.provider === "garage") return [];
   const variables: VariableSpec[] = [
@@ -170,13 +203,13 @@ export function renderStorage(plan: DeployPlan, ctx: RenderContext): RenderedFil
       description: "Cloudflare account id (R2 buckets belong to the account).",
     });
     values.cloudflare_account_id = accountId(ctx);
-    main = r2Main(storage.cors);
+    main = r2Main(storage.cors, deleteData);
     provider = CLOUDFLARE_PROVIDER;
   } else {
     const service = S3_SERVICES[storage.provider];
     variables.push({ name: "region", type: "string", description: service.regionDescription });
     values.region = storage.region;
-    main = s3Main(service, storage.cors);
+    main = s3Main(service, storage.cors, deleteData);
     provider = AWS_PROVIDER;
   }
   if (storage.cors) {
@@ -187,8 +220,7 @@ export function renderStorage(plan: DeployPlan, ctx: RenderContext): RenderedFil
     });
     values.cors_origins = corsOrigins(plan);
   }
-  const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const dir = `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}storage`;
+  const dir = storageRootDir(plan);
   return [
     { path: `${dir}/versions.tf`, content: versionsTf([provider]), kind: "infra" },
     { path: `${dir}/main.tf`, content: [ROOT_HEADER, "", ...main, ""].join("\n"), kind: "infra" },

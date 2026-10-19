@@ -1,8 +1,8 @@
 import type { PlanSummary, ResourceChange } from "@opscrew/contracts";
 import { isRecord, listText } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import { cloudTarget, type ServerModule } from "@opscrew/iac-templates";
-import { type CloudDeployTarget, type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import { cloudTarget, type ServerModule, serviceSpec } from "@opscrew/iac-templates";
+import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { providerProfile } from "../providers";
 import { destroyTexts } from "./texts";
@@ -302,6 +302,26 @@ export function removeHostKeys(
   return { text: kept.length > 0 ? `${kept.join("\n")}\n` : "", removed };
 }
 
+/** Service kinds whose data is a database, said as `the MySQL database`. */
+const DATABASE_KINDS: ReadonlySet<string> = new Set(["postgres", "mysql", "mariadb", "mongodb"]);
+
+/**
+ * The data the plan's components keep on the server, in words, from the catalog: each running
+ * service's (`the MySQL database`, `the RabbitMQ data`; a Valkey cache keeps nothing on disk) and
+ * the SQLite database. Empty when none keeps any.
+ */
+export function serverData(plan: Pick<DeployPlan, "services" | "storage">): string[] {
+  const items = plan.services
+    .filter((service) => service.enabled)
+    .filter((service) => !(service.kind === "valkey" && service.options.mode === "cache"))
+    .map((service) => {
+      const title = serviceSpec(service.kind).title;
+      return DATABASE_KINDS.has(service.kind) ? `the ${title} database` : `the ${title} data`;
+    });
+  if (plan.storage?.sqlite !== undefined) items.push("the SQLite database");
+  return [...new Set(items)];
+}
+
 /**
  * Plain-English warning about data that exists only on the server, or `undefined` when the plan
  * does not delete the server. Automatic backups are lost with a Hetzner server but kept for a
@@ -309,15 +329,13 @@ export function removeHostKeys(
  * (default `plan.target`; during a move the old server's is `plan.retarget.from.target`).
  */
 export function dataWarning(
-  plan: Pick<DeployPlan, "services" | "target">,
+  plan: Pick<DeployPlan, "services" | "storage" | "target">,
   serverDeleted: boolean,
   target: Pick<CloudDeployTarget, "provider" | "backups"> = cloudTarget(plan.target),
 ): string | undefined {
   if (!serverDeleted) return undefined;
   const texts = destroyTexts(target.provider);
-  const lost: string[] = [];
-  if (serviceOf(plan, "postgres")) lost.push("the PostgreSQL database");
-  if (serviceOf(plan, "valkey")) lost.push("the Redis data");
+  const lost = serverData(plan);
   lost.push(`any files the app stored on the ${texts.noun}`);
   if (target.backups && texts.deletedBackups) lost.push(texts.deletedBackups);
   const deleted = `Deleting the ${texts.noun} also deletes ${listText(lost)}.`;

@@ -4,9 +4,11 @@ import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ROLLING_NOTE } from "../design/strategy";
+import { withBucket } from "../provision/__fixtures__/storage";
+import { STORAGE_KEY_VARS } from "../provision/storage";
 import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
   DOMAIN,
@@ -1079,6 +1081,96 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.message).toContain("already runs on Hetzner Cloud");
     expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
+  });
+
+  it("refuses before any change when the app keeps data a move cannot copy yet (FR-1332)", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact(
+      "plan",
+      h.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        services: [
+          ...plan.services,
+          { kind: "mysql", version: "8.4", memoryMb: 512, reason: "mysql2", licence: "GPL-2.0" },
+          {
+            kind: "rabbitmq",
+            version: "4.3",
+            memoryMb: 384,
+            reason: "amqplib",
+            licence: "MPL-2.0",
+          },
+        ],
+        storage: { sqlite: { dir: "storage" } },
+        deploy: { ...plan.deploy, strategy: "recreate" },
+      }),
+    );
+    const before = h.events.length;
+    const error = await caught(run(h));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "A move copies the PostgreSQL database to the new server, but not yet the data of mysql (MySQL), rabbitmq (RabbitMQ) and the SQLite database, so OpsCrew did not start it. Nothing was changed.",
+    );
+    expect(error.hint).toContain("comes in a later version of OpsCrew");
+    expect(h.events.slice(before)).toEqual([]);
+    expect(await move(h)).toBeUndefined();
+  });
+
+  it("says in its summary that jobs waiting in a Valkey queue are not moved", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact(
+      "plan",
+      h.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        services: [
+          ...plan.services,
+          {
+            kind: "valkey",
+            version: "8",
+            memoryMb: 128,
+            options: { mode: "queue" },
+            reason: "BullMQ",
+            licence: "BSD-3-Clause",
+          },
+        ],
+      }),
+    );
+    await caught(run(h, { confirmStart: async () => false }));
+    expect(h.reporter.text()).toContain(
+      "Jobs waiting in the Valkey queue (queue) are not moved: let the queue drain before the move, or those jobs are lost.",
+    );
+  });
+
+  it("stops before any change when the key of the app's bucket is not known here", async () => {
+    const h = await moveHarness();
+    const plan = withBucket(await readArtifact("plan", h.paths.files.plan), "r2");
+    await writeArtifact("plan", h.paths.files.plan, plan);
+    delete h.deps.env[STORAGE_KEY_VARS.accessKeyId];
+    delete h.deps.env[STORAGE_KEY_VARS.secretAccessKey];
+    const before = h.events.length;
+    const error = await caught(run(h));
+    expect(error.code).toBe("CREDENTIALS_MISSING");
+    expect(error.message).toContain("Nothing was changed.");
+    expect(h.events.slice(before)).toEqual([]);
+    expect(await move(h)).toBeUndefined();
+  });
+
+  it("moves an app whose files are in a bucket at a provider, which stays where it is", async () => {
+    const h = await moveHarness();
+    const plan = withBucket(await readArtifact("plan", h.paths.files.plan), "r2");
+    await writeArtifact("plan", h.paths.files.plan, plan);
+    const key = fakeSecret("aws-secret-access-key", "move");
+    h.deps.env[STORAGE_KEY_VARS.accessKeyId] = fakeSecret("aws-access-key-id", "move");
+    h.deps.env[STORAGE_KEY_VARS.secretAccessKey] = key;
+    const result = await run(h);
+    expect(result.step).toBe("switched");
+    // The bucket and its root stay; the app on the new server keeps its key.
+    expect((await readArtifact("plan", h.paths.files.plan)).storage).toEqual(plan.storage);
+    expect(h.github.secrets.get("OPSCREW_APP_ENV")).toContain(`AWS_SECRET_ACCESS_KEY=${key}`);
+    expect(existsSync(join(h.paths.files.tfstateDir, "storage.tfstate"))).toBe(false);
   });
 
   it("refuses a deployment that is not live", async () => {

@@ -34,15 +34,26 @@ export const SENSITIVE_PORTS: Readonly<Record<number, string>> = {
 
 export interface ProbeOptions {
   ports?: number[];
+  /**
+   * The ports of the app's own services with their names (`{ 4222: "NATS" }`), probed besides
+   * `ports` (FR-1328).
+   */
+  services?: Readonly<Record<number, string>>;
   timeoutMs?: number;
   connect?: TcpConnect;
   /** Cloud provider shown in remediation texts, for example `Hetzner Cloud` or `DigitalOcean`. */
   providerName?: string;
 }
 
-/** Checks from the outside that sensitive ports on `host` are closed. */
+/** Checks from the outside that sensitive ports on `host`, and the app's services' ports, are closed. */
 export async function probePorts(host: string, options: ProbeOptions = {}): Promise<CheckResult[]> {
-  const ports = options.ports ?? Object.keys(SENSITIVE_PORTS).map(Number);
+  const services = options.services ?? {};
+  const ports = [
+    ...new Set([
+      ...(options.ports ?? Object.keys(SENSITIVE_PORTS).map(Number)),
+      ...Object.keys(services).map(Number),
+    ]),
+  ];
   const connect = options.connect ?? defaultTcpConnect;
   const timeoutMs = options.timeoutMs ?? 3000;
   const firewall = options.providerName
@@ -50,7 +61,7 @@ export async function probePorts(host: string, options: ProbeOptions = {}): Prom
     : "your cloud provider's firewall";
   const open = await Promise.all(ports.map((port) => connect(host, port, timeoutMs)));
   return ports.map((port, i) => {
-    const service = SENSITIVE_PORTS[port] ?? "service";
+    const service = services[port] ?? SENSITIVE_PORTS[port] ?? "service";
     const base = {
       id: `port-${port}-closed`,
       title: `Port ${port} (${service}) is closed to the internet`,

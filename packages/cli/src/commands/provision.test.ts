@@ -13,7 +13,7 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import {
@@ -84,6 +84,37 @@ function printedHash(output: string): string {
 }
 
 describe.skipIf(GIT === undefined)("opscrew provision", () => {
+  it("--plan-only lists the bucket's plan with its own hash, in the --approve command", async () => {
+    const base = testPlan({ userSecret: false });
+    project = await deployProject(
+      DeployPlanSchema.parse({
+        ...base,
+        storage: {
+          objectStorage: {
+            provider: "hetzner",
+            bucket: "shop-uploads",
+            region: "fsn1",
+            expected: { storageGb: 10, egressGbPerMonth: 50 },
+            price: { monthly: 6.49, currency: "EUR", source: "test", checkedOn: "2026-10-19" },
+          },
+        },
+      }),
+    );
+    // A non-interactive run reads the bucket's key from the environment.
+    project.env.OPSCREW_STORAGE_ACCESS_KEY_ID = fakeSecret("aws-access-key-id", "cli");
+    project.env.OPSCREW_STORAGE_SECRET_ACCESS_KEY = fakeSecret("aws-secret-access-key", "cli");
+    const { ctx } = context(project);
+    expect(await run(ctx, "provision", "--plan-only", "--yes"), ctx.errors).toBe(0);
+    const bucket = /bucket \(object storage\):\s+([0-9a-f]{64})/.exec(ctx.output)?.[1];
+    const infrastructure = /infrastructure:\s+([0-9a-f]{64})/.exec(ctx.output)?.[1];
+    expect(bucket).toBeDefined();
+    expect(infrastructure).toBeDefined();
+    expect(ctx.output).toContain(
+      `    opscrew provision --approve ${bucket} --approve ${infrastructure} --yes\n`,
+    );
+    expect(ctx.output).not.toContain(project.env.OPSCREW_STORAGE_SECRET_ACCESS_KEY);
+  });
+
   it("--plan-only --yes prints the hash; --approve <hash> --yes applies exactly that plan", async () => {
     project = await deployProject();
     const first = context(project);

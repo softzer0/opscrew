@@ -1,7 +1,7 @@
 import { isUserFacingError, lowerFirst, OpsCrewError } from "@opscrew/core";
-import { readArtifact, serviceOf } from "@opscrew/plan-schema";
+import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { dataWarning } from "../destroy/checks";
+import { dataWarning, serverData } from "../destroy/checks";
 import {
   confirmDeletion,
   forgetHostKeys,
@@ -84,7 +84,7 @@ async function finish(
   }
   const warning = dataWarning(session.plan, serverInState, old);
   const data = {
-    postgres: serviceOf(session.plan, "postgres") !== undefined,
+    serverData: serverData(session.plan).length > 0,
     backups: old.backups,
   };
   const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { exists, readTextIfExists } from "@opscrew/core";
+import { exists, listText, readTextIfExists } from "@opscrew/core";
 import { type JavaBuild, type RenderedFile, renderDependabot } from "@opscrew/iac-templates";
 import { type DeployPlan, type ProjectFacts, readOptionalArtifact } from "@opscrew/plan-schema";
 import { parse } from "yaml";
@@ -78,7 +78,7 @@ export async function dependabotStep(
         config.updates.filter((e) => e["package-ecosystem"] === ecosystem).flatMap(folders),
       );
       const lacking = folders(entry).filter((dir) => !have.has(dir));
-      return lacking.length === 0 ? [] : [`${ecosystem} in ${lacking.join(" and ")}`];
+      return lacking.length === 0 ? [] : [`${ecosystem} in ${listText(lacking)}`];
     });
     return { action: "keep", path, missing };
   }

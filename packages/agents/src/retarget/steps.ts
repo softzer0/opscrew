@@ -5,8 +5,11 @@ import {
   buildAppEnvironment,
   deploySecrets,
   deploySecretsStoredFor,
+  providerBucket,
+  requireStorageKey,
   type SavedPlan,
   setDeploySecrets,
+  storageLogin,
 } from "../provision";
 import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
 import { moveProvider } from "../shared/vps-target";
@@ -204,10 +207,27 @@ export async function storeDeploySecrets(
   const move = moveOf(session);
   const provider = which === "new" ? moveProvider(plan.target) : move.from.target.provider;
   const pinned = await pinHost(session, host, provider);
+  // The bucket stays where it is (FR-1332): the app keeps its key (`startMove` checked it is known).
+  const key =
+    providerBucket(plan) === undefined
+      ? undefined
+      : await requireStorageKey(deps, plan, session.services, {
+          command: session.command,
+          already:
+            which === "new"
+              ? "The new server exists; set the key and run the command again to continue the move."
+              : "The old server runs again; set the key and run the command again to finish going back.",
+        });
   let environment: Awaited<ReturnType<typeof buildAppEnvironment>>;
   try {
     // Without a domain, host lists (`ALLOWED_HOSTS`) name the server these secrets point to.
-    environment = await buildAppEnvironment(deps, plan, session.services, host);
+    environment = await buildAppEnvironment(
+      deps,
+      plan,
+      session.services,
+      host,
+      key === undefined ? {} : { storage: storageLogin(plan, key, session.cloudflare) },
+    );
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "INVALID_INPUT") {
       throw new OpsCrewError(error.code, error.message, {
@@ -222,6 +242,7 @@ export async function storeDeploySecrets(
       deps,
       session.github,
       deploySecrets({
+        plan,
         host,
         privateKey: session.deployKey.privateKeyOpenSsh,
         knownHosts: pinned.knownHostsLines,

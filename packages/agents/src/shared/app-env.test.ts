@@ -541,20 +541,21 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
     });
   });
 
-  it("gives a provider's bucket its endpoint, region and name, and takes the user's key", async () => {
+  it("gives a provider's bucket its endpoint, region and name, and the user's stored key", async () => {
     const key = fakeSecret("aws-access-key-id");
     const secret = fakeSecret("aws-secret-access-key");
     const env: Env = [
-      { name: "AWS_ACCESS_KEY_ID", secret: true, source: "user" },
+      derived("AWS_ACCESS_KEY_ID", true),
       derived("AWS_BUCKET"),
       derived("AWS_DEFAULT_REGION"),
       derived("AWS_ENDPOINT_URL_S3"),
-      { name: "AWS_SECRET_ACCESS_KEY", secret: true, source: "user" },
+      derived("AWS_SECRET_ACCESS_KEY", true),
       derived("AWS_USE_PATH_STYLE_ENDPOINT"),
     ];
     const result = await assembleAppEnv({
       plan: withComponents(env, { storage: { objectStorage: storage("hetzner", "fsn1") } }),
-      dotenvText: `AWS_ACCESS_KEY_ID=${key}\nAWS_SECRET_ACCESS_KEY=${secret}\n`,
+      dotenvText: "",
+      storage: { accessKeyId: key, secretAccessKey: secret },
     });
     expect(result.values.app).toMatchObject({
       AWS_ACCESS_KEY_ID: key,
@@ -564,5 +565,29 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
       AWS_SECRET_ACCESS_KEY: secret,
       AWS_USE_PATH_STYLE_ENDPOINT: "true",
     });
+  });
+
+  it("gives R2's endpoint from the stored login, and asks for nothing without it", async () => {
+    const env: Env = [
+      derived("AWS_ACCESS_KEY_ID", true),
+      derived("AWS_ENDPOINT_URL_S3"),
+      derived("AWS_SECRET_ACCESS_KEY", true),
+    ];
+    const plan = withComponents(env, { storage: { objectStorage: storage("r2", "auto") } });
+    const login = {
+      accessKeyId: fakeSecret("aws-access-key-id"),
+      secretAccessKey: fakeSecret("aws-secret-access-key"),
+      endpoint: "https://0123abcd.r2.cloudflarestorage.com",
+    };
+    const result = await assembleAppEnv({ plan, dotenvText: "", storage: login });
+    expect(result.values.app).toMatchObject({
+      AWS_ACCESS_KEY_ID: login.accessKeyId,
+      AWS_ENDPOINT_URL_S3: login.endpoint,
+      AWS_SECRET_ACCESS_KEY: login.secretAccessKey,
+    });
+    // Without the login, the values are missing like any other.
+    await expect(assembleAppEnv({ plan, dotenvText: "" })).rejects.toThrow(
+      "Production values are missing for: AWS_ACCESS_KEY_ID, AWS_ENDPOINT_URL_S3, AWS_SECRET_ACCESS_KEY.",
+    );
   });
 });

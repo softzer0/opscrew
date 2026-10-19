@@ -175,6 +175,26 @@ describe("probePorts", () => {
     expect(results[1]?.status).toBe("pass");
   });
 
+  it("probes the app's own service ports too, by their names (FR-1328)", async () => {
+    const probed: number[] = [];
+    const results = await probePorts("203.0.113.10", {
+      ports: [5432],
+      services: { 4222: "NATS", 5432: "PostgreSQL" },
+      connect: async (_h, port) => {
+        probed.push(port);
+        return port === 4222;
+      },
+    });
+    expect(probed.sort()).toEqual([4222, 5432]);
+    expect(results.find((r) => r.id === "port-4222-closed")).toMatchObject({
+      status: "fail",
+      message: "Port 4222 (NATS) is reachable from the internet.",
+    });
+    expect(results.find((r) => r.id === "port-5432-closed")?.title).toBe(
+      "Port 5432 (PostgreSQL) is closed to the internet",
+    );
+  });
+
   it("names the provider's firewall only when told which provider it is", async () => {
     const connect = async () => true;
     const [neutral] = await probePorts("h", { ports: [6379], connect });

@@ -17,7 +17,7 @@ export type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["obje
 type StorageProvider = ObjectStorage["provider"];
 
 /** What each provider is called in a sentence. */
-const STORAGE_NAMES: Readonly<Record<StorageProvider, string>> = {
+export const STORAGE_NAMES: Readonly<Record<StorageProvider, string>> = {
   r2: "Cloudflare R2",
   digitalocean: "DigitalOcean Spaces",
   hetzner: "Hetzner Object Storage",

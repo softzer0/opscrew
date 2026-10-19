@@ -132,12 +132,14 @@ export async function compareInfrastructure(
     statePath: string;
     mirrored: AttributesByType;
     changedFiles: readonly string[];
+    /** The root module (default: `plan.infra.dir`; the bucket's is `opscrew/infra/storage`). */
+    dir?: string;
     prepare?: (outputs: () => Promise<Record<string, unknown> | undefined>) => Promise<void>;
   },
 ): Promise<InfrastructureComparison> {
   const { plan, engine, engineEnv, statePath } = input;
   const notes: string[] = [];
-  const dir = join(deps.paths.root, plan.infra.dir);
+  const dir = input.dir ?? join(deps.paths.root, plan.infra.dir);
   const stamp = deps.clock.now().toISOString().replace(/[:.]/g, "-");
   const refreshFile = join(deps.paths.files.plansDir, `drift-${stamp}-refresh.tfplan`);
   const pendingFile = join(deps.paths.files.plansDir, `drift-${stamp}-pending.tfplan`);
@@ -152,7 +154,9 @@ export async function compareInfrastructure(
   };
   try {
     await mkdir(deps.paths.files.plansDir, { recursive: true });
-    deps.reporter.step(`Initialising ${engineLabel(engine.info.name)} in ${plan.infra.dir}`);
+    deps.reporter.step(
+      `Initialising ${engineLabel(engine.info.name)} in ${toPosixRelative(deps.paths.root, dir)}`,
+    );
     await engine.init(dir, { env: engineEnv, backendConfig: { path: statePath } });
     await input.prepare?.(readOutputs);
     deps.reporter.step("Reading the live infrastructure (nothing is changed)");

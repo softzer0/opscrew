@@ -10,11 +10,13 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
   defaultTcpConnect,
   evaluatePlanPolicies,
+  HOST_CHECKS,
   ownServerHostChecks,
   probePorts,
   probeSshPasswordAuth,
   runHostChecks,
   runScan,
+  serviceHostChecks,
   type TcpConnect,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -38,6 +40,7 @@ import {
   securityProblems,
   UNKNOWN_SERVER_ADDRESS,
 } from "./report";
+import { serviceCheckInputs, servicePorts } from "./services";
 
 /** Options for {@link runSecure}; every side effect has a default built from `deps`. */
 export interface RunSecureOptions {
@@ -123,14 +126,16 @@ async function checkServer(
       : undefined);
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;
+  // The app's services: no published port, and their login set (FR-1328).
+  const services = serviceHostChecks(plan.app.name, serviceCheckInputs(plan));
   if (remote === undefined) {
     skipped = `the deploy key is not on this machine (it is created by \`opscrew provision\`). Run the checks from the machine that ${own !== undefined ? "prepared your server" : "provisioned the server"}.`;
   } else if (own !== undefined) {
     reporter.step("Checking your server's hardening over SSH");
-    hostChecks = await runHostChecks(remote, ownServerHostChecks(own.hardening));
+    hostChecks = await runHostChecks(remote, [...ownServerHostChecks(own.hardening), ...services]);
   } else {
     reporter.step(`Checking the server's hardening over SSH (${host})`);
-    hostChecks = await runHostChecks(remote);
+    hostChecks = await runHostChecks(remote, [...HOST_CHECKS, ...services]);
   }
   reporter.step(
     own === undefined
@@ -153,6 +158,7 @@ async function checkServer(
           ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
         })),
     ...(await probePorts(probeHost, {
+      services: servicePorts(plan),
       connect,
       timeoutMs,
       providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,

@@ -277,10 +277,27 @@ const STORAGE_ENDPOINTS: Readonly<Record<string, (region: string) => string>> = 
 };
 
 /**
- * The value of a derived object storage variable from the plan's bucket, or undefined: the keys
- * (Garage's come from its catalog entry; a provider's are the user's) and R2's endpoint.
+ * The user's key for a provider's bucket (Spaces, Hetzner, or an R2 token's S3 keys) and, for R2,
+ * the endpoint, which names the user's Cloudflare account. Provision keeps it like a provider
+ * token; it is never logged.
  */
-function storageValue(name: string, plan: DeployPlan): string | undefined {
+export interface StorageLogin {
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** R2's `https://<account>.r2.cloudflarestorage.com`; the other providers' come from the plan. */
+  endpoint?: string;
+}
+
+/**
+ * The value of a derived object storage variable from the plan's bucket and the user's `login`,
+ * or undefined: Garage's keys come from its catalog entry, and without `login` a provider's keys
+ * and R2's endpoint are not known.
+ */
+function storageValue(
+  name: string,
+  plan: DeployPlan,
+  login: StorageLogin | undefined,
+): string | undefined {
   const storage = plan.storage?.objectStorage;
   if (storage === undefined) return undefined;
   switch (storageVariableKind(name)) {
@@ -291,7 +308,9 @@ function storageValue(name: string, plan: DeployPlan): string | undefined {
     case "path-style":
       return "true";
     case "endpoint":
-      return STORAGE_ENDPOINTS[storage.provider]?.(storage.region);
+      return STORAGE_ENDPOINTS[storage.provider]?.(storage.region) ?? login?.endpoint;
+    case "key":
+      return name === "AWS_ACCESS_KEY_ID" ? login?.accessKeyId : login?.secretAccessKey;
     default:
       return undefined;
   }
@@ -385,6 +404,8 @@ export interface AssembleAppEnvOptions {
    * keeps the database password Postgres was initialised with and keeps app secrets stable.
    */
   previous?: GeneratedValues;
+  /** The user's key for the plan's provider bucket, and R2's endpoint (see {@link StorageLogin}). */
+  storage?: StorageLogin;
 }
 
 /** Generated values to keep between runs (stored privately, never committed or logged). */
@@ -513,7 +534,8 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     const serviceUrl =
       aliased === undefined
         ? derived
-          ? (storageValue(variable.name, plan) ?? sqliteVariableValue(variable.name, plan))
+          ? (storageValue(variable.name, plan, options.storage) ??
+            sqliteVariableValue(variable.name, plan))
           : undefined
         : serviceAddress(plan, aliased, secret);
     const fixed = derived ? FIXED_VALUES.get(variable.name) : undefined;

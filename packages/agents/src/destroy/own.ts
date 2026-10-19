@@ -15,15 +15,17 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural, replaceNames } from "@opscrew/core";
-import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, serviceOf, writeArtifact } from "@opscrew/plan-schema";
+import { TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
+import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   checkProvider,
+  deploySecretNames,
   type OwnServerSession,
   ownEngineEnv,
   ownServerLoginCheck,
   ownTarget,
+  providerBucket,
 } from "../provision";
 import {
   adapterBlocked,
@@ -34,9 +36,11 @@ import {
   hasDeployment,
   hasState,
   hostPlanFile,
+  type ProjectEngine,
   readValidJson,
 } from "../shared";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
+import { serverData } from "./checks";
 import {
   applyCloudflareRemoval,
   approveCloudflareRemoval,
@@ -67,6 +71,15 @@ import {
   removalDetails,
   zeroTrustLeft,
 } from "./shared-rules";
+import {
+  type BucketDeletion,
+  bucketDeletionWarning,
+  bucketKept,
+  bucketStays,
+  deleteBucket,
+  discardBucketDeletion,
+  planBucketDeletion,
+} from "./storage";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -232,9 +245,9 @@ function hasAppData(facts: HostFacts, app: string): boolean {
 
 /** What is deleted with `deleteData`, for the warning shown before the typed confirmation. */
 function dataLoss(plan: DeployPlan, facts: HostFacts): string {
-  const lost: string[] = [];
-  if (serviceOf(plan, "postgres")) lost.push("the PostgreSQL database");
-  if (serviceOf(plan, "valkey")) lost.push("the Redis data");
+  // Every component's data: the named volumes (Kafka's, Redpanda's, SQLite's) and the data folders
+  // alike, since the teardown removes the app's whole Compose project and folder.
+  const lost = serverData(plan);
   lost.push(
     `everything the app stored in ${appDirs(plan.app.name).data} and in its Docker volumes`,
   );
@@ -307,6 +320,8 @@ function remainingOnOwnServer(input: {
   secretNames: readonly string[];
   /** What data stays on the server and how to remove it (see {@link keptData}). */
   keptData: string | undefined;
+  /** The app's bucket at a provider when it stays (see `bucketKept`). */
+  keptBucket: string | undefined;
   undone: boolean;
   removedApp: boolean;
   /** The other OpsCrew apps on the server, which stay with what they share. */
@@ -329,6 +344,7 @@ function remainingOnOwnServer(input: {
       : "OpsCrew's host setup on your server (Docker, the deploy user, SSH hardening, the firewall rules, fail2ban and automatic updates). `opscrew destroy --undo-host` reverses OpsCrew's changes and leaves Docker installed.",
   );
   if (input.keptData !== undefined) items.push(input.keptData);
+  if (input.keptBucket !== undefined) items.push(input.keptBucket);
   if (!input.removedApp) return items;
   items.push(
     ...deploySecretsLeft(github, { names: input.secretNames, removed: input.secretsRemoved }),
@@ -428,6 +444,7 @@ export async function destroyOwnServer(
   let iac: DeletionSession | undefined;
   let resources: ResourceChange[] = [];
   let confirmed: ReadonlySet<string> = new Set();
+  let engineSetup: ProjectEngine | undefined;
   if (removeApp && stateHere) {
     const setup = await setupEngine(deps, plan, options);
     const dir = join(deps.paths.root, plan.infra.dir);
@@ -437,6 +454,7 @@ export async function destroyOwnServer(
     );
     iac = deletionSession(scope, { ...setup, dir });
     ({ resources, confirmed } = await previewCloudflareRemoval(iac, words));
+    engineSetup = setup;
   }
   // Without its record (deleted on the server) the plan names the app (T931).
   const teardown = removeApp
@@ -465,6 +483,7 @@ export async function destroyOwnServer(
   // This app's hostnames in OpsCrew's shared Cloudflare rules: removed after the rest.
   const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
   const cloudflarePlan = removalDetails(shared);
+  let bucket: BucketDeletion | undefined;
   if (removeApp) {
     const removed = hostSteps.map((step) => step.title);
     deps.reporter.info(teardownSummary({ resources, removed, words }));
@@ -483,6 +502,14 @@ export async function destroyOwnServer(
           : kept,
       );
     }
+    // With --delete-data, the app's bucket too (its own root and plan), planned last before the
+    // confirmation, so nothing else can stop the run with it left behind.
+    if (deleteData && engineSetup !== undefined) {
+      bucket = await planBucketDeletion(scope, plan, engineSetup);
+    }
+    const keptBucket = deleteData ? undefined : providerBucket(plan);
+    if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
+    else if (keptBucket !== undefined) deps.reporter.info(bucketStays(keptBucket));
     await confirmDeletion(
       scope,
       {
@@ -490,15 +517,23 @@ export async function destroyOwnServer(
         confirmPrompt: destroyConfirmPrompt(name, "own"),
         provider: "own",
         deleteProtection: false,
-        resources,
+        resources: [...resources, ...(bucket?.summary.changes ?? [])],
         snapshot: false,
         ...(dataWarning !== undefined ? { dataWarning } : {}),
         hostSteps: removed,
         ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
       },
       options.confirm,
-    );
+    ).catch(async (error: unknown) => {
+      if (bucket !== undefined) await discardBucketDeletion(bucket);
+      throw error;
+    });
   }
+
+  // 4b. The app's bucket: R2's first, since Cloudflare refuses a bucket that holds files and then
+  // nothing else is deleted yet; any other after the app (at the end of the block below).
+  let bucketApproval: ApprovalRecord | undefined;
+  if (bucket?.bucket.provider === "r2") bucketApproval = await deleteBucket(bucket);
 
   // 5–6. The Cloudflare resources (DNS records, tunnel, Access) and the app on the server (teardown
   // host plan). Both are approved before anything changes. Cloudflare first, unless its plan
@@ -560,16 +595,20 @@ export async function destroyOwnServer(
     if (iac !== undefined && removal?.tunnel === true) {
       destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
     }
+    if (bucket !== undefined && bucket.bucket.provider !== "r2") {
+      bucketApproval = await deleteBucket(bucket);
+    }
   } finally {
     // Never left behind for a later apply (applyCloudflareRemoval deletes it, too).
     if (removal !== undefined) await discardPlan(removal.summary);
+    if (bucket !== undefined) await discardBucketDeletion(bucket);
   }
 
   // 6b. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
 
   // 7. Deploy secrets (tunnel ones included) and OpsCrew's record of the deployment
-  const secretNames = [...Object.values(DEPLOY_SECRETS), ...Object.values(TUNNEL_DEPLOY_SECRETS)];
+  const secretNames = [...deploySecretNames(plan), ...Object.values(TUNNEL_DEPLOY_SECRETS)];
   let secretsRemoved: string[] = [];
   let current = plan;
   if (removeApp) {
@@ -579,7 +618,8 @@ export async function destroyOwnServer(
       reach: "your server",
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
-    current = await recordTeardown(deps, plan, [iacApproval, teardownApproval, sharedApproval], {
+    const approvals = [bucketApproval, iacApproval, teardownApproval, sharedApproval];
+    current = await recordTeardown(deps, plan, approvals, {
       summary: "app removed from your server",
       forgetAddress: true,
     });
@@ -666,6 +706,7 @@ export async function destroyOwnServer(
     secretNames,
     // Read before the teardown, which deletes it only with `deleteData` and only when it ran.
     keptData: deletesData && hostPlans.teardown !== undefined ? undefined : kept,
+    keptBucket: removeApp && !deleteData ? bucketKept(plan) : undefined,
     undone,
     removedApp: removeApp,
     others,

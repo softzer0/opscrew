@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import type { IacEngine } from "@opscrew/contracts";
 import { exists, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { usesTunnel } from "@opscrew/iac-templates";
+import { renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudConnectorRemoval } from "../portainer/run";
@@ -70,7 +70,15 @@ import {
   type SavedInfrastructureHashes,
   withLearnedZone,
 } from "./steps";
-import type { ProvisionOptions, ProvisionResult } from "./types";
+import {
+  applyStorage,
+  providerBucket,
+  requireR2Cloudflare,
+  requireStorageKey,
+  STORAGE_PLAN_SUFFIX,
+  storageLogin,
+} from "./storage";
+import type { ProvisionOptions, ProvisionResult, SavedPlan } from "./types";
 
 /**
  * After a failed apply: the apply may have replaced the server before it stopped, so the address
@@ -156,7 +164,8 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
  * goes, its removal): the main plan is the hash whose saved plan exists, is not a removal and was
  * not applied yet (a script that names both hashes again after the infrastructure was applied
  * plans afresh, which finds nothing to change); a saved removal plan is kept apart and only ever
- * applied as the removal; the host or stack plan's hash is granted by the approval handler.
+ * applied as the removal; the host or stack plan's hash is granted by the approval handler. On
+ * every target, the saved plan of the `storage` root (the app's bucket) is kept apart as `storage`.
  */
 async function savedInfrastructureHashes(
   deps: PhaseDeps,
@@ -164,25 +173,30 @@ async function savedInfrastructureHashes(
   plan: DeployPlan,
   cloudflare: readonly string[] = [],
 ): Promise<SavedInfrastructureHashes> {
-  const hashes = (options.approveHashes ?? []).filter(
+  const found: SavedInfrastructureHashes = {};
+  const others: string[] = [];
+  const saved = new Map<string, SavedPlan>();
+  for (const hash of (options.approveHashes ?? []).filter(
     (hash) => !cloudflare.includes(hash.toLowerCase()),
-  );
+  )) {
+    const savedPlan = await findSavedPlan(deps.paths.files.plansDir, hash);
+    if (savedPlan !== undefined) saved.set(hash, savedPlan);
+    // The `storage` root's saved plan (the app's bucket) is only ever applied as that root's, and
+    // once it was applied a run that names it again plans the bucket afresh.
+    if (savedPlan?.planFile.endsWith(STORAGE_PLAN_SUFFIX)) {
+      if (savedPlan.appliedAt === undefined) found.storage ??= hash;
+    } else others.push(hash);
+  }
   if (plan.target.provider !== "own" && plan.target.provider !== "portainer") {
     // A Cloudflare plan an earlier run applied may be named too: the saved plan's hash wins.
-    for (const hash of hashes) {
-      if ((await findSavedPlan(deps.paths.files.plansDir, hash)) !== undefined) {
-        return { apply: hash };
-      }
-    }
-    return hashes[0] === undefined ? {} : { apply: hashes[0] };
+    const apply = others.find((hash) => saved.has(hash)) ?? others[0];
+    return apply === undefined ? found : { ...found, apply };
   }
   const applied = plan.deployment.lastPlanHash?.toLowerCase();
-  const found: SavedInfrastructureHashes = {};
-  for (const hash of hashes) {
-    if (hash.toLowerCase() === applied) continue;
-    const saved = await findSavedPlan(deps.paths.files.plansDir, hash);
-    if (saved === undefined) continue;
-    if (saved.planFile.endsWith(REMOVAL_PLAN_SUFFIX)) found.removal ??= hash;
+  for (const hash of others) {
+    const savedPlan = saved.get(hash);
+    if (hash.toLowerCase() === applied || savedPlan === undefined) continue;
+    if (savedPlan.planFile.endsWith(REMOVAL_PLAN_SUFFIX)) found.removal ??= hash;
     else found.apply ??= hash;
   }
   return found;
@@ -237,6 +251,14 @@ async function provisionFlow(
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
+  // The app's bucket at a provider: R2 needs the plan's Cloudflare account, and a Hetzner or
+  // Spaces bucket is created with the user's key, so it is needed now (R2's comes after its bucket).
+  requireR2Cloudflare(plan, cloudflare);
+  const bucket = providerBucket(plan);
+  const storageKey =
+    bucket !== undefined && bucket.provider !== "r2"
+      ? await requireStorageKey(deps, plan, services, { command })
+      : undefined;
   // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
   // no longer uses), planned read-only now (it stops on its findings) and applied before the
   // infrastructure plan.
@@ -385,6 +407,27 @@ async function provisionFlow(
   ];
   if (approveHash === undefined) await approveAndWriteRenderedFiles(deps, root, files);
 
+  // 4b. The app's bucket (the `storage` root): its own plan, approved by its hash, before the
+  // infrastructure plan.
+  const storage =
+    bucket === undefined
+      ? undefined
+      : await applyStorage(deps, {
+          engine,
+          env: engineEnv,
+          plan,
+          files: renderStorage(plan, ctx),
+          key: storageKey,
+          ...(saved.storage !== undefined ? { approvePlanHash: saved.storage } : {}),
+          ...(options.planOnly ? { planOnly: true } : {}),
+          command,
+          phase,
+        });
+  if (storage?.approval) approvals.push(approvalEntry(storage.approval));
+  const storagePlanHash =
+    storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined;
+  const storageHash = storagePlanHash !== undefined ? { storagePlanHash } : {};
+
   // 5. Plan → policies → approval → apply. A plan that deletes the tunnel (for example when
   // plan.yaml no longer has a Portainer subdomain) is applied only after the connector on the
   // server is removed (its own host-apply approval) and Cloudflare reports no active connections.
@@ -485,6 +528,7 @@ async function provisionFlow(
     if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
+      ...storageHash,
       ...cloudflareHash,
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
       applied: false,
@@ -576,12 +620,28 @@ async function provisionFlow(
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
     save: async () => {
+      // R2's key is a token the user limits to the bucket, so it comes now that the bucket exists.
+      const key =
+        bucket === undefined
+          ? undefined
+          : (storageKey ??
+            (await requireStorageKey(deps, plan, services, {
+              command,
+              already: `The bucket ${bucket.bucket} exists; the deploy secrets are not stored yet.`,
+            })));
       // Without a domain, host lists (`ALLOWED_HOSTS`) hold the address recorded in local state.
-      const environment = await buildAppEnvironment(deps, plan, services, address?.ipv4);
+      const environment = await buildAppEnvironment(
+        deps,
+        plan,
+        services,
+        address?.ipv4,
+        key === undefined ? {} : { storage: storageLogin(plan, key, cloudflare) },
+      );
       await setDeploySecrets(
         deps,
         github,
         deploySecrets({
+          plan,
           host: secretsTarget.host,
           privateKey: deployKey.privateKeyOpenSsh,
           knownHosts: secretsTarget.knownHosts,
@@ -612,6 +672,7 @@ async function provisionFlow(
   if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
+    ...storageHash,
     ...cloudflareHash,
     applied: applied.applied,
     ...(host !== undefined ? { hostPlanHash: host.hash, hostApplied: host.applied } : {}),

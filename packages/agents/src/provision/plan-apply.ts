@@ -17,6 +17,7 @@ import {
   plural,
   type Redactor,
   taxLabel,
+  toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
@@ -62,8 +63,17 @@ export interface PlanAndApplyOptions {
    * the apply (for example: the host change that removes a tunnel's connector goes first).
    */
   beforeApply?: (plan: SavedPlan) => Promise<void>;
-  /** Hears of a failed apply, with the redacted engine log, before the error is thrown. */
+  /**
+   * Hears of a failed apply, with the redacted engine log, before the error is thrown; it may throw
+   * a plainer error of its own instead (the `storage` root's bucket name taken).
+   */
   applyFailed?: (log: string, plan: SavedPlan) => void;
+  /** The state file (default: the deployment's, `stateFile`); the `storage` root has its own. */
+  statePath?: string;
+  /** The saved plan file's name ending (default `.tfplan`; `-removal.tfplan` with `destroy`). */
+  planSuffix?: string;
+  /** What a refusal calls the plan (default `infrastructure plan`). */
+  planNoun?: string;
   /**
    * Monthly cost change shown with the approval. Default: the plan's monthly cost (the plan
    * creates the deployment's servers); `null` for a server the user owns. `null`: the plan changes
@@ -350,6 +360,7 @@ const SavedPlanSchema = z.object({
   planJson: z
     .unknown()
     .refine((value) => value !== undefined && value !== null, "the plan JSON is missing"),
+  appliedAt: z.string().optional(),
 });
 
 /** The first problem zod found, as `changes.0.address: …`. */
@@ -438,12 +449,12 @@ function lastLines(text: string, count = 8): string {
 
 async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise<SavedPlan> {
   const { engine, dir, env } = options;
-  const statePath = stateFile(deps.paths);
+  const statePath = options.statePath ?? stateFile(deps.paths);
   await mkdir(deps.paths.files.tfstateDir, { recursive: true });
   await mkdir(deps.paths.files.plansDir, { recursive: true });
 
   deps.reporter.step(
-    `Initialising ${engineLabel(engine.info.name)} in ${options.deployPlan.infra.dir}`,
+    `Initialising ${engineLabel(engine.info.name)} in ${toPosixRelative(deps.paths.root, dir)}`,
   );
   await engine.init(dir, { env, backendConfig: { path: statePath } });
 
@@ -474,10 +485,8 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
   }
 
   const stamp = deps.clock.now().toISOString().replace(/[:.]/g, "-");
-  const planFile = join(
-    deps.paths.files.plansDir,
-    options.destroy === true ? `${stamp}${REMOVAL_PLAN_SUFFIX}` : `${stamp}.tfplan`,
-  );
+  const suffix = options.planSuffix ?? (options.destroy === true ? REMOVAL_PLAN_SUFFIX : ".tfplan");
+  const planFile = join(deps.paths.files.plansDir, `${stamp}${suffix}`);
   deps.reporter.step(
     options.destroy === true
       ? "Planning the removal of the current infrastructure"
@@ -646,7 +655,7 @@ export async function planAndApply(
   });
   if (!approval.approved) {
     throw new PlanRefusedError({
-      plan: "infrastructure plan",
+      plan: options.planNoun ?? "infrastructure plan",
       ...(approval.reason ? { reason: approval.reason } : {}),
       unchanged: "Nothing was changed.",
       hint: approveLaterHint(
@@ -688,6 +697,8 @@ export async function planAndApply(
       hint: applyFailureHint(deps, fullLog, options, command),
     });
   }
+  // Its sidecar records the apply, so a script that names the hash again plans afresh.
+  await writePlanSidecar(deps.redactor, { ...saved, appliedAt: deps.clock.now().toISOString() });
   deps.reporter.success(
     movesOnly
       ? "Renamed the resources in the infrastructure state; nothing changed in the cloud."

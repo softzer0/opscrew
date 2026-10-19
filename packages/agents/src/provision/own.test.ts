@@ -14,7 +14,7 @@ import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES, renderTunnelConnectorCompose } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import type { PortainerServices } from "../portainer";
@@ -521,6 +521,63 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     });
     expect(run.facts.avx).toBe(false);
     expect(s.host.applies).toHaveLength(0);
+  });
+
+  describe("MongoDB on a CPU without AVX (FR-1312)", () => {
+    const mongoPlan = (arch: "amd64" | "arm64" = "amd64") => {
+      const plan = ownPlan({ arch });
+      return DeployPlanSchema.parse({
+        ...plan,
+        services: [
+          ...plan.services,
+          {
+            kind: "mongodb",
+            version: "8.0",
+            memoryMb: 512,
+            reason: "The app uses mongoose.",
+            licence: "SSPL-1.0",
+          },
+        ],
+      });
+    };
+
+    it("stops before any change on x86, saying why and what to do", async () => {
+      const s = await setup({
+        plan: mongoPlan(),
+        facts: HostFactsSchema.parse({ ...freshFacts(), avx: false }),
+      });
+      const error = await runProvision(s.deps, {
+        services: s.services,
+        hostKey: ED25519_FINGERPRINT,
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect((error as OpsCrewError).code).toBe("PHASE_PRECONDITION");
+      expect((error as OpsCrewError).message).toBe(
+        "Your server's CPU lacks AVX, which MongoDB needs on x86 since version 5, so the service mongodb could not start there. Nothing was changed.",
+      );
+      expect((error as OpsCrewError).hint).toContain("a server with a newer CPU");
+      expect((error as OpsCrewError).hint).toContain("hosted MongoDB such as MongoDB Atlas");
+      expect(s.handler.requests).toEqual([]);
+      expect(s.host.applies).toHaveLength(0);
+      expect(s.engine.calls).toEqual([]);
+    });
+
+    it("lets MongoDB run where the CPU has AVX, and on arm64 without the x86 check", async () => {
+      for (const arch of ["amd64", "arm64"] as const) {
+        const facts = HostFactsSchema.parse({ ...freshFacts({ arch }), avx: arch === "amd64" });
+        const s = await setup({ plan: mongoPlan(arch), facts });
+        const run = await prepareOwnServer(s.deps, {
+          plan: mongoPlan(arch),
+          options: { hostKey: ED25519_FINGERPRINT },
+          services: s.services,
+          deployPublicKey: OTHER_DEPLOY_KEY,
+          deployKeyFile: s.deps.paths.files.deployKey,
+          phase: "provision",
+          command: "opscrew provision",
+        });
+        expect(run.facts.arch).toBe(arch);
+      }
+    });
   });
 
   describe("next to another project's app on the server", () => {

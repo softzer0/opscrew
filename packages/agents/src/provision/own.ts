@@ -19,7 +19,7 @@ import {
   usesTunnel,
   wrongTarget,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   addressFromOutputs,
@@ -271,6 +271,22 @@ export async function desiredHost(
   };
 }
 
+/**
+ * Stops before any change when the plan runs MongoDB on an x86 server whose CPU lacks AVX, which
+ * MongoDB 5 and later need (FR-1312): the inspected CPU flags say so.
+ */
+function requireMongoAvx(plan: DeployPlan, facts: Pick<HostFacts, "arch" | "avx">): void {
+  const mongo = serviceOf(plan, "mongodb");
+  if (mongo === undefined || facts.arch !== "amd64" || facts.avx) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `Your server's CPU lacks AVX, which MongoDB needs on x86 since version 5, so the service ${mongo.name} could not start there. Nothing was changed.`,
+    {
+      hint: "Run the app on a server with a newer CPU (most x86 CPUs since 2011 have AVX), or use a hosted MongoDB such as MongoDB Atlas: put its mongodb+srv:// address in the app's settings, then run `opscrew analyze`, `opscrew design` and `opscrew provision` again (OpsCrew keeps a hosted MongoDB as it is).",
+    },
+  );
+}
+
 /** The phases that change a server the user owns through its host plan. */
 type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer">;
 
@@ -324,6 +340,7 @@ export async function prepareOwnServer(
       },
     );
   }
+  requireMongoAvx(plan, facts);
   const run: OwnServerRun = {
     session,
     facts,

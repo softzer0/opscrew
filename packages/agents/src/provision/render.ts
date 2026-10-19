@@ -4,6 +4,7 @@ import {
   type RenderedFile,
   type RenderedFileKind,
   renderDeployment,
+  renderStorage,
   renderTunnelConnectorCompose,
   tunnelMode,
   usesTunnel,
@@ -99,12 +100,16 @@ export function deploymentRenderContext(
 }
 
 /**
- * Every file provision writes for the plan: the deployment (`renderDeployment`) and, whenever the
- * plan has a Cloudflare Tunnel (an own server in tunnel mode, or a Portainer subdomain), the tunnel
+ * Every file provision writes for the plan: the deployment (`renderDeployment`), on a server the
+ * `storage` root of the app's bucket at a provider (`renderStorage`) and, whenever the plan has a
+ * Cloudflare Tunnel (an own server in tunnel mode, or a Portainer subdomain), the tunnel
  * connector's Compose file (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server).
  */
 export function deploymentFiles(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
-  const files = renderDeployment(plan, ctx);
+  const files = [
+    ...renderDeployment(plan, ctx),
+    ...(plan.target.provider === "portainer" ? [] : renderStorage(plan, ctx)),
+  ];
   return usesTunnel(plan) ? [...files, renderTunnelConnectorCompose(plan)] : files;
 }
 

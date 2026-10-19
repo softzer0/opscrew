@@ -352,10 +352,10 @@ function readSnapshotRecord(
 /** Whether a snapshot is taken first (`auto`: when data lives only on the server). */
 export function snapshotWanted(
   choice: "auto" | boolean | undefined,
-  data: { postgres: boolean; backups: boolean },
+  data: { serverData: boolean; backups: boolean },
 ): boolean {
   const resolved = choice ?? "auto";
-  return resolved === "auto" ? data.postgres || data.backups : resolved;
+  return resolved === "auto" ? data.serverData || data.backups : resolved;
 }
 
 /** `20261011T120000Z`: a Hetzner label value (no colons), also used in the snapshot name. */
@@ -384,8 +384,11 @@ export interface SnapshotBeforeDeleteInput {
   server: { inState: boolean; ids: readonly string[] };
   /** `--snapshot` (true), `--no-snapshot` (false) or `auto` (default). */
   choice?: "auto" | boolean;
-  /** What lives only on the server; with `auto` a snapshot is taken when either is true. */
-  data: { postgres: boolean; backups: boolean };
+  /**
+   * What lives only on the server: a component's data (`serverData`) and the provider's
+   * backups; with `auto` a snapshot is taken when either is true.
+   */
+  data: { serverData: boolean; backups: boolean };
   /** Which record to reuse and write. */
   purpose: SnapshotPurpose;
   /** Server lookup and snapshots (default: the provider connector's `servers`). */
@@ -520,7 +523,7 @@ export async function takeSnapshotBeforeDelete(
     deps.reporter.info(
       input.choice === false
         ? "Skipping the snapshot, as requested."
-        : `No snapshot: the database does not run on the ${noun} and ${texts.company} backups are off.`,
+        : `No snapshot: no service keeps data on the ${noun} and ${texts.company} backups are off.`,
     );
     return undefined;
   }

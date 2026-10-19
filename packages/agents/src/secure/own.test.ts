@@ -82,6 +82,9 @@ function serverScript(o: ServerOptions = {}) {
       case "apt list --upgradable 2>/dev/null | grep -ci security || true":
         return ok("0");
       default:
+        // The app's Postgres (`db`): no published port, its password set.
+        if (args.at(-1)?.includes("{{.Ports}}")) return ok("5432/tcp");
+        if (args.at(-1)?.includes("docker inspect")) return ok("POSTGRES_PASSWORD");
         return { exitCode: 127, stdout: "", stderr: "unexpected command" };
     }
   };

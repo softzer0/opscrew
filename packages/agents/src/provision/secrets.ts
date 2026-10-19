@@ -4,16 +4,22 @@ import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   PORTAINER_DEPLOY_SECRETS,
+  serviceEnvSecret,
+  serviceSpec,
   TUNNEL_DEPLOY_SECRETS,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
   type AppEnvironment,
   assembleAppEnv,
+  dotenvLine,
   fixedProductionValue,
   type GeneratedValues,
   hostListKind,
+  readValidJson,
+  type StorageLogin,
 } from "../shared";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
@@ -41,14 +47,16 @@ async function readGenerated(deps: PhaseDeps): Promise<GeneratedValues | undefin
  * `serverHost` (the address the deploy secrets point to) fills host lists such as
  * `ALLOWED_HOSTS` when the plan has no domain; it is never printed. For the user's Portainer
  * (`options.portainer`) the notes about unset variables say what a stack does with them: they are
- * sent empty, because a stack's variable cannot be left unset.
+ * sent empty, because a stack's variable cannot be left unset. `options.storage` is the key of the
+ * plan's provider bucket (`requireStorageKey`, `storageLogin`), which the app receives. Every
+ * generated and stored secret is registered with the redactor.
  */
 export async function buildAppEnvironment(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: ProvisionServices,
   serverHost?: string,
-  options: { portainer?: boolean } = {},
+  options: { portainer?: boolean; storage?: StorageLogin } = {},
 ): Promise<AppEnvironment> {
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;
@@ -73,9 +81,10 @@ export async function buildAppEnvironment(
     ...(ask ? { ask } : {}),
     ...(serverHost !== undefined ? { serverHost } : {}),
     ...(await readGenerated(deps).then((previous) => (previous ? { previous } : {}))),
+    ...(options.storage !== undefined ? { storage: options.storage } : {}),
   });
   await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(environment.generated)}\n`);
-  const { app, build, db } = environment.values;
+  const { app, build, services: secrets } = environment.values;
   for (const [name, value] of Object.entries({ ...app, ...build })) {
     // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual, and
     // a fixed production setting is a plain word (`production`), masked nowhere.
@@ -83,7 +92,10 @@ export async function buildAppEnvironment(
       deps.redactor.addLiteral(value, "app-env");
     }
   }
-  if (db !== undefined) deps.redactor.addLiteral(db.password, "app-env");
+  // Each service's generated secrets (Postgres's password among them).
+  for (const value of Object.values(secrets).flatMap(Object.values)) {
+    deps.redactor.addLiteral(value, "app-env");
+  }
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);
   else reportUnsetVariables(deps, environment);
   return environment;
@@ -126,13 +138,60 @@ function reportUnsetVariables(deps: PhaseDeps, environment: AppEnvironment): voi
   }
 }
 
+/** The plan's services with secrets: each reads `<name>.env` on a server. */
+function servicesWithSecrets(plan: DeployPlan): DeployPlan["services"] {
+  return plan.services.filter((service) => serviceSpec(service.kind).secrets.length > 0);
+}
+
 /**
- * The GitHub Actions secrets the deploy workflow reads. In tunnel mode (a server the user owns
- * without a public address) `tunnel` adds the Cloudflare Access service token the workflow reaches
- * SSH through; `host` is then the tunnel's SSH hostname and `knownHosts` holds the server's host
- * key under that name.
+ * `<name>.env` of every running service with secrets, by its GitHub secret
+ * (`serviceEnvSecret(name)`): the catalog's `environment(ctx)` with the real values, as the
+ * deploy writes it next to compose.yaml (`db.env` for Postgres).
+ */
+export function serviceEnvSecrets(
+  plan: DeployPlan,
+  environment: Pick<AppEnvironment, "values">,
+): Record<string, string> {
+  const secrets: Record<string, string> = {};
+  for (const service of servicesWithSecrets(plan).filter((s) => s.enabled)) {
+    const values = environment.values.services[service.name] ?? {};
+    const env = serviceSpec(service.kind).environment({
+      plan,
+      service,
+      secretRef: (name) => {
+        const value = values[name];
+        if (value === undefined) throw new Error(`${service.name} has no secret ${name}.`);
+        return value;
+      },
+    });
+    const lines = Object.entries(env).map(([name, value]) => dotenvLine(name, value));
+    secrets[serviceEnvSecret(service.name)] = `${lines.join("\n")}\n`;
+  }
+  return secrets;
+}
+
+/**
+ * Every GitHub Actions secret provision may have set for the plan on a server: the deploy
+ * secrets, and one per service with secrets (enabled or not, an earlier run may have set it).
+ * Destroy deletes them all.
+ */
+export function deploySecretNames(plan: DeployPlan): string[] {
+  return [
+    ...new Set([
+      ...Object.values(DEPLOY_SECRETS),
+      ...servicesWithSecrets(plan).map((service) => serviceEnvSecret(service.name)),
+    ]),
+  ];
+}
+
+/**
+ * The GitHub Actions secrets the deploy workflow reads, with one per service with secrets
+ * ({@link serviceEnvSecrets}). In tunnel mode (a server the user owns without a public address)
+ * `tunnel` adds the Cloudflare Access service token the workflow reaches SSH through; `host` is
+ * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.
  */
 export function deploySecrets(input: {
+  plan: DeployPlan;
   host: string;
   privateKey: string;
   knownHosts: string;
@@ -144,9 +203,7 @@ export function deploySecrets(input: {
     [DEPLOY_SECRETS.sshKey]: input.privateKey,
     [DEPLOY_SECRETS.knownHosts]: input.knownHosts,
     [DEPLOY_SECRETS.appEnv]: input.environment.appEnv,
-    ...(input.environment.dbEnv !== undefined
-      ? { [DEPLOY_SECRETS.dbEnv]: input.environment.dbEnv }
-      : {}),
+    ...serviceEnvSecrets(input.plan, input.environment),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
     [DEPLOY_SECRETS.buildSecrets]: input.environment.buildSecrets,
     ...(input.tunnel !== undefined
@@ -206,9 +263,32 @@ export async function deploySecretsStoredFor(
   }
 }
 
+/** A service's env file secret: `OPSCREW_SERVICE_<NAME>_ENV` (`serviceEnvSecret`). */
+const SERVICE_SECRET = /^OPSCREW_SERVICE_[A-Z0-9_]+_ENV$/;
+
+/**
+ * The service env file secrets OpsCrew stored last time for `repo` (its record of the deploy
+ * secrets) that `names` no longer holds: their services are turned off or removed. Only names of
+ * that form, never another secret.
+ */
+async function staleServiceSecrets(
+  deps: PhaseDeps,
+  repo: string,
+  names: readonly string[],
+): Promise<string[]> {
+  const record = await readValidJson(
+    deps.paths.files.deploySecrets,
+    z.looseObject({ repo: z.string(), names: z.array(z.string()) }),
+  );
+  if (record === undefined || record.repo !== repo) return [];
+  return record.names.filter((name) => SERVICE_SECRET.test(name) && !names.includes(name)).sort();
+}
+
 /**
  * Stores the deploy secrets in the repository's GitHub Actions after a `github-secrets` approval
- * that lists their names. Values are sealed locally; only names reach the reporter and audit log.
+ * that lists their names, and deletes the env file secrets of services that no longer run
+ * ({@link staleServiceSecrets}, named in the same approval). Values are sealed locally; only
+ * names reach the reporter and audit log.
  */
 export async function setDeploySecrets(
   deps: PhaseDeps,
@@ -228,6 +308,7 @@ export async function setDeploySecrets(
 ): Promise<void> {
   const names = Object.keys(secrets).sort();
   const repo = `${github.owner}/${github.repo}`;
+  const stale = await staleServiceSecrets(deps, repo, names);
   const approval = await deps.approvals.request({
     kind: "github-secrets",
     title: `Store ${names.length} deploy secrets in GitHub Actions for ${repo}`,
@@ -235,6 +316,12 @@ export async function setDeploySecrets(
       "Secrets (names only; values are encrypted on this computer before upload and never shown):",
       ...names.map((name) => `  ${name}`),
       `The app environment contains: ${variableNames.length > 0 ? variableNames.join(", ") : "no variables"}.`,
+      ...(stale.length > 0
+        ? [
+            "Deleted, since their services no longer run (names only):",
+            ...stale.map((name) => `  ${name}`),
+          ]
+        : []),
     ].join("\n"),
   });
   if (!approval.approved) {
@@ -257,6 +344,17 @@ export async function setDeploySecrets(
       kind: "secret-set",
       actor: "opscrew",
       action: `set secret ${name}`,
+      phase,
+      target: repo,
+      decision: "approved",
+    });
+  }
+  for (const name of stale) {
+    await github.api.deleteActionsSecret(github.owner, github.repo, name);
+    await deps.audit.append({
+      kind: "secret-set",
+      actor: "opscrew",
+      action: `delete secret ${name}`,
       phase,
       target: repo,
       decision: "approved",

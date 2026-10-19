@@ -27,6 +27,10 @@ provider "aws" {
 resource "aws_s3_bucket" "this" {
   bucket = var.bucket
 
+  # Deletes the files with the bucket. The provider reads it from the state when the bucket is
+  # destroyed, so it is set from the start; only a destroy you allowed ever uses it.
+  force_destroy = true
+
   lifecycle {
     prevent_destroy = true
   }
@@ -126,6 +130,10 @@ provider "aws" {
 resource "aws_s3_bucket" "this" {
   bucket = var.bucket
 
+  # Deletes the files with the bucket. The provider reads it from the state when the bucket is
+  # destroyed, so it is set from the start; only a destroy you allowed ever uses it.
+  force_destroy = true
+
   lifecycle {
     prevent_destroy = true
   }
@@ -202,6 +210,10 @@ provider "aws" {
 # delete data.
 resource "aws_s3_bucket" "this" {
   bucket = var.bucket
+
+  # Deletes the files with the bucket. The provider reads it from the state when the bucket is
+  # destroyed, so it is set from the start; only a destroy you allowed ever uses it.
+  force_destroy = true
 
   lifecycle {
     prevent_destroy = true
@@ -300,6 +312,10 @@ provider "aws" {
 # delete data.
 resource "aws_s3_bucket" "this" {
   bucket = var.bucket
+
+  # Deletes the files with the bucket. The provider reads it from the state when the bucket is
+  # destroyed, so it is set from the start; only a destroy you allowed ever uses it.
+  force_destroy = true
 
   lifecycle {
     prevent_destroy = true

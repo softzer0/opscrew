@@ -325,7 +325,7 @@ export class FakeDestroyGitHub extends FakeGitHub implements DestroyGitHubApi {
     super();
   }
 
-  async deleteActionsSecret(_owner: string, _repo: string, name: string): Promise<void> {
+  override async deleteActionsSecret(_owner: string, _repo: string, name: string): Promise<void> {
     await this.onDelete?.(name);
     if (this.deleteError) throw this.deleteError;
     this.deleted.push(name);

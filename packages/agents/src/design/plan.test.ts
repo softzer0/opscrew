@@ -597,11 +597,11 @@ describe("connection settings under the app's own names (FR-814)", () => {
     expect(plan.storage?.objectStorage).toMatchObject({ provider: "r2", bucket: "shop-uploads" });
     expect(plan.externalServices).toEqual([]);
     expect(plan.app.env).toEqual([
-      // R2's key is the user's, and its endpoint names their Cloudflare account.
-      { name: "AWS_ACCESS_KEY_ID", secret: true, source: "user" },
-      { name: "AWS_ENDPOINT_URL_S3", secret: false, source: "user" },
+      // Provision fills in the key the user creates, and R2's endpoint from the Cloudflare account.
+      { name: "AWS_ACCESS_KEY_ID", secret: true, source: "derived" },
+      { name: "AWS_ENDPOINT_URL_S3", secret: false, source: "derived" },
       { name: "AWS_REGION", secret: false, source: "derived" },
-      { name: "AWS_SECRET_ACCESS_KEY", secret: true, source: "user" },
+      { name: "AWS_SECRET_ACCESS_KEY", secret: true, source: "derived" },
       { name: "AWS_STORAGE_BUCKET_NAME", secret: false, source: "derived" },
       { name: "CELERY_BROKER_URL", secret: false, source: "derived" },
       { name: "DATABASE_URL", secret: true, source: "derived" },
@@ -611,12 +611,16 @@ describe("connection settings under the app's own names (FR-814)", () => {
     expect(plan.app.env.map((v) => v.name)).not.toContain("CRON_SECRET");
 
     const key = fakeSecret("aws-access-key-id");
+    const endpoint = "https://0123abcd.r2.cloudflarestorage.com";
     const env = await assembleAppEnv({
       plan,
-      dotenvText: `AWS_ACCESS_KEY_ID=${key}\nAWS_SECRET_ACCESS_KEY=${fakeSecret("aws-secret-access-key")}\nAWS_ENDPOINT_URL_S3=https://example.r2.cloudflarestorage.com\n`,
+      dotenvText: "",
+      storage: { accessKeyId: key, secretAccessKey: fakeSecret("aws-secret-access-key"), endpoint },
     });
     const password = env.generated.services?.mysql?.password;
     expect(env.values.app).toMatchObject({
+      AWS_ACCESS_KEY_ID: key,
+      AWS_ENDPOINT_URL_S3: endpoint,
       AWS_REGION: "auto",
       AWS_STORAGE_BUCKET_NAME: "shop-uploads",
       CELERY_BROKER_URL: "redis://queue:6379",

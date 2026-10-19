@@ -151,6 +151,33 @@ describe("renderStorage", () => {
     }
   });
 
+  it("lets the aws provider delete the files only when a destroy is allowed (force_destroy is read from the state)", () => {
+    for (const provider of ["digitalocean", "hetzner"] as const) {
+      const main = content(renderStorage(storagePlan(provider), ctx()), "main.tf");
+      expect(main).toContain("  force_destroy = true\n");
+      expect(main).toContain("prevent_destroy = true");
+    }
+    // Cloudflare deletes an R2 bucket only when it is empty: no such setting.
+    expect(content(renderStorage(storagePlan("r2"), ctx()), "main.tf")).not.toContain(
+      "force_destroy",
+    );
+  });
+
+  it("renders the root for deleting the data without prevent_destroy, and otherwise the same", () => {
+    for (const provider of PROVIDERS) {
+      const kept = renderStorage(storagePlan(provider), ctx());
+      const deleted = renderStorage(storagePlan(provider), ctx(), { deleteData: true });
+      expect(deleted.map((f) => f.path)).toEqual(kept.map((f) => f.path));
+      const main = content(deleted, "main.tf");
+      expect(main).not.toContain("prevent_destroy = true");
+      expect(main).toContain("You asked OpsCrew to delete the app's data");
+      expect(main.includes("force_destroy = true")).toBe(provider !== "r2");
+      for (const name of ["versions.tf", "variables.tf", "terraform.tfvars.json"]) {
+        expect(content(deleted, name)).toBe(content(kept, name));
+      }
+    }
+  });
+
   it("allows GET, PUT and POST from the app's own origins only, and only with cors", () => {
     for (const provider of PROVIDERS) {
       const withCors = renderStorage(storagePlan(provider, { www: false }), ctx());

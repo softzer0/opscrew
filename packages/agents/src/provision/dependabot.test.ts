@@ -82,6 +82,18 @@ describe("dependabotStep", () => {
     });
   });
 
+  it("lists three or more missing folders as plain English", async () => {
+    const yaml = ["version: 2", "updates:", "  - package-ecosystem: npm", "    directory: /", ""];
+    const root = await temp({ ".github/dependabot.yml": yaml.join("\n") });
+    const step = await dependabotStep(root, facts, plan);
+    const compose = (step.action === "keep" ? (step.missing ?? []) : []).find((entry) =>
+      entry.startsWith("docker-compose in "),
+    );
+    expect(compose).toBe(
+      "docker-compose in /opscrew/runtime, /opscrew/runtime/cloudflared and /opscrew/runtime/portainer",
+    );
+  });
+
   it("takes OpsCrew's own unchanged file as OpsCrew's (a --plan-only run wrote it, or it is committed)", async () => {
     const file = renderDependabot(facts, plan);
     // Git may check it out with CRLF line endings.

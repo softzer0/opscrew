@@ -527,6 +527,9 @@ export class FakeGitHub implements GitHubApi {
   async setActionsSecret(_owner: string, _repo: string, name: string, value: string) {
     this.secrets.set(name, value);
   }
+  async deleteActionsSecret(_owner: string, _repo: string, name: string) {
+    this.secrets.delete(name);
+  }
   async findOpenPullRequest(_owner: string, _repo: string, head: string) {
     this.lookups.push(head);
     return this.openPulls.get(head) ?? this.openPull;

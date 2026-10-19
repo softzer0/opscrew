@@ -63,7 +63,9 @@ export interface DestroyOptions {
    * data is kept unless asked for; deleting it needs the teardown approval with `allowDestroy` and
    * the typed app name. The user's Portainer: also delete the app stack's recorded volumes (the
    * stack teardown plan's approval with `allowDestroy` and the typed app name); a later run with
-   * it deletes the volumes an earlier teardown kept.
+   * it deletes the volumes an earlier teardown kept. On a server, also delete the app's bucket at
+   * a provider (the `storage` root) with its files, through its own destroy plan with the same
+   * typed name (R2 deletes an empty bucket only).
    */
   deleteData?: boolean;
   /**

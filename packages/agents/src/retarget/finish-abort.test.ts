@@ -727,6 +727,46 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(h.events.filter((e) => e.type === "remote" && e.op === "dump")).toHaveLength(2);
   });
 
+  it("stops the workers and cron with the app for the copy, and an abort starts them again with it", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact("plan", h.paths.files.plan, {
+      ...plan,
+      processes: {
+        workers: [
+          {
+            name: "worker",
+            command: "node worker.js",
+            source: "procfile",
+            count: 1,
+            single: false,
+            stopGraceSeconds: 30,
+            memoryMb: 256,
+            enabled: true,
+          },
+        ],
+        cron: [
+          { name: "cleanup", schedule: "*/15 * * * *", command: "node cleanup.js", enabled: true },
+        ],
+      },
+    });
+    crashAfter(h, "migrated");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    const processes = "cd /srv/apps/shop && docker compose";
+    const window = trail(h.events);
+    // Nothing of the app writes to the old database while it is copied.
+    const stopAt = window.indexOf(`${OLD_IPV4} stop app`);
+    expect(window[stopAt + 1]).toBe(`${OLD_IPV4} ${processes} stop worker cron`);
+    expect(window.indexOf(`${OLD_IPV4} dump`)).toBeGreaterThan(stopAt + 1);
+    expect(window).toContain(`${h.newServer.ipv4} ${processes} up -d worker cron`);
+
+    const mark = h.events.length;
+    await abort(h);
+    const back = trail(since(h, mark));
+    const startAt = back.indexOf(`${OLD_IPV4} start app`);
+    expect(back[startAt + 1]).toBe(`${OLD_IPV4} ${processes} up -d worker cron`);
+  });
+
   it("with the local record gone too, starts the app on the old server (from the state)", async () => {
     const h = await moveHarness();
     crashAfter(h, "migrated");

@@ -69,10 +69,12 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
       );
       if (requirements) await recordRequirements(deps, requirements, domain);
     }
-    if (switching) deps.reporter.warn(runningServerNote(domain));
+    if (switching) deps.reporter.warn(runningServerNote(domain, updated.app.name));
   };
 
-  const approvalNotes = switching ? [`Warning: ${runningServerNote(domain)}`] : [];
+  const approvalNotes = switching
+    ? [`Warning: ${runningServerNote(domain, updated.app.name)}`]
+    : [];
   return runPhaseFlow(
     deps,
     "dns",
@@ -81,9 +83,9 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
   );
 }
 
-/** The warning when the running server goes behind Cloudflare before its new Caddyfile deploys. */
-function runningServerNote(domain: string): string {
-  return `The server is already running. Once this plan is applied, ports 80 and 443 accept only Cloudflare's addresses and ${domain} points at the server through Cloudflare, but the server keeps its current web configuration: the app is unreachable (by its domain and by the server's IP address) until the pull request with the new Caddyfile is merged and deployed.`;
+/** The warning when the running server goes behind Cloudflare before the app's new site deploys. */
+function runningServerNote(domain: string, app: string): string {
+  return `The server is already running. Once this plan is applied, ports 80 and 443 accept only Cloudflare's addresses and ${domain} points at the server through Cloudflare, but the server keeps its current web configuration: the app is unreachable (by its domain and by the server's IP address) until the pull request with the app's new Caddy site file (opscrew/runtime/edge/sites/${app}.caddy) is merged and deployed.`;
 }
 
 /**

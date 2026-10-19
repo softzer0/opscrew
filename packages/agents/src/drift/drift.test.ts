@@ -17,7 +17,9 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { renderDeployment } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { RootEngine, withBucket } from "../provision/__fixtures__/storage";
 import { deploymentRenderContext } from "../provision/render";
+import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
 import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../shared";
 import {
@@ -305,6 +307,36 @@ async function expectError(promise: Promise<unknown>, code: string): Promise<Ops
 }
 
 describe.skipIf(!findExecutable("git"))("runDrift", () => {
+  it("checks the app's bucket in its own root and state: a bucket deleted in the console is drift", async () => {
+    const key = {
+      [STORAGE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "drift"),
+      [STORAGE_KEY_VARS.secretAccessKey]: fakeSecret("aws-secret-access-key", "drift"),
+    };
+    const bucketEngine = new DriftEngine({
+      drift: [drifted("aws_s3_bucket.this", "delete")],
+      pending: [change("aws_s3_bucket.this", "create")],
+    });
+    const main = new DriftEngine();
+    const engine = new RootEngine(main, bucketEngine);
+    const { deps, services } = await setup({
+      plan: withBucket(testPlan({ deployed: true }), "hetzner"),
+      services: { engine: async () => engine },
+      env: key,
+    });
+    await writeFile(storageStateFile(deps.paths), stateContent("plain") ?? "");
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([
+      expect.objectContaining({ address: "aws_s3_bucket.this", action: "delete" }),
+    ]);
+    expect(report.pending.map((p) => p.address)).toEqual(["aws_s3_bucket.this"]);
+    expect(bucketEngine.initOptions?.backendConfig?.path).toBe(storageStateFile(deps.paths));
+    for (const call of bucketEngine.plans) {
+      expect(call.env?.AWS_SECRET_ACCESS_KEY).toBe(key[STORAGE_KEY_VARS.secretAccessKey]);
+    }
+    expect(report.clean).toBe(false);
+    expect(await driftPlanFiles(deps.paths.files.plansDir)).toEqual([]);
+  });
+
   it("reports a clean deployment without applying or leaving plan files behind", async () => {
     const { deps, engine, handler, services, statePath } = await setup();
     const report = await runDrift(deps, { services });

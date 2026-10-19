@@ -3,6 +3,7 @@ import {
   finishRetarget,
   isMaintenanceWindowRequest,
   type RetargetResult,
+  type RetargetServices,
   runRetarget,
 } from "@opscrew/agents";
 import type {
@@ -29,6 +30,7 @@ import { runPhaseCommand } from "../ui/deploy";
 import { chooseOption } from "../ui/options";
 import { printNextSteps } from "../ui/output";
 import { startQuestion } from "../ui/retarget";
+import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
 import { engineOption, YES_DESCRIPTION } from "./provision";
 
 /** Flags of `opscrew retarget` (FR-501). */
@@ -183,11 +185,17 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   const approve = flags.approve?.trim() || undefined;
   const mode = flags.finish ? "finish" : flags.abort ? "abort" : "run";
   const deps0 = createPhaseDeps(ctx, { ai: false });
-  const services = servicesOf(ctx).retarget;
+  // The key of the app's bucket, which stays where it is, when this computer has none yet.
+  const services: RetargetServices = {
+    ...(ctx.isInteractive
+      ? { askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout) }
+      : {}),
+    ...servicesOf(ctx).retarget,
+  };
   const common = {
     ...(approve !== undefined ? { approvePlanHash: approve } : {}),
     ...(flags.engine !== undefined ? { engine: flags.engine } : {}),
-    ...(services !== undefined ? { services } : {}),
+    services,
   };
   const prompts = promptsOf(ctx);
 

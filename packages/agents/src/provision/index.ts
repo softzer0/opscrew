@@ -73,12 +73,29 @@ export {
 export { type PhaseFlowExtras, runPhaseFlow, runProvision } from "./run";
 export {
   buildAppEnvironment,
+  deploySecretNames,
   deploySecrets,
   deploySecretsStoredFor,
   generatedValuesFile,
+  serviceEnvSecrets,
   setDeploySecrets,
 } from "./secrets";
 export { describeStackPlan, ROUTE_CHANGE_NOTE } from "./stack-plan";
+export {
+  applyStorage,
+  type BucketProvider,
+  type ProviderBucket,
+  providerBucket,
+  requireStorageKey,
+  STORAGE_KEY_VARS,
+  STORAGE_PLAN_SUFFIX,
+  type StorageKey,
+  type StorageKeyQuestion,
+  storageEngineEnv,
+  storageKeyFile,
+  storageLogin,
+  storageStateFile,
+} from "./storage";
 export type {
   CloudflareApi,
   GitHubApi,

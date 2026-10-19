@@ -4,6 +4,7 @@ import {
   type DestroyResult,
   destroyConfirmPrompt,
   type PhaseDeps,
+  providerBucket,
   runDestroy,
   savedHostPlanPurpose,
 } from "@opscrew/agents";
@@ -158,7 +159,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--delete-data",
-      "Your own server or your Portainer: also delete the app's data (its Docker volumes, and /srv/data on your own server); asks for the app's name",
+      "Also delete the app's data: its Docker volumes and /srv/data on your own server or in your Portainer, and its bucket at a provider with its files; asks for the name",
     )
     .option(
       "--approve <hash>",
@@ -215,10 +216,14 @@ export async function runDestroyCommand(
         { hint: "Run `opscrew destroy` without it (add --delete-data to delete the app's data)." },
       );
     }
-    if (!own && !portainer && (flags.undoHost === true || flags.deleteData === true)) {
+    // On a server OpsCrew created, --delete-data deletes only the app's bucket at a provider.
+    const bucket = providerBucket(plan) !== undefined;
+    if (!own && !portainer && (flags.undoHost === true || (flags.deleteData === true && !bucket))) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        "--undo-host and --delete-data apply only to a server you already own or your Portainer; this deployment's server was created by OpsCrew and is deleted with its data.",
+        bucket
+          ? "--undo-host applies only to a server you already own; this deployment's server was created by OpsCrew and is deleted with its data."
+          : "--undo-host and --delete-data apply only to a server you already own, your Portainer or an app with a bucket at a provider; this deployment's server was created by OpsCrew and is deleted with its data.",
         { hint: "Run `opscrew destroy` without them." },
       );
     }

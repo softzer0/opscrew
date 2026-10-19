@@ -3,7 +3,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
-import { readArtifact, serviceOf, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, serviceOf, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
 import { lastHostSetup, passwordLoginChoice, recordOwnServer } from "../shared";
@@ -448,6 +448,14 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
             : { app: "shop", name: "db.env", kind: "absent", sha256: null },
         ];
         f.containers.push({ name: "shop-app-1", project: plan.app.name, ports: "", running: true });
+        if (serviceOf(plan, "postgres")) {
+          f.containers.push({
+            name: "shop-db-1",
+            project: plan.app.name,
+            ports: "",
+            running: true,
+          });
+        }
       });
     }
 
@@ -468,6 +476,48 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       await deployed(s);
       const report = await runDrift(s.deps, { services: s.services });
       expect(report.host).toEqual({ differences: [] });
+    });
+
+    it("reports a component that differs from the plan: one without its container, and one the plan no longer runs (FR-1331)", async () => {
+      const base = ownPlan();
+      const plan = DeployPlanSchema.parse({
+        ...base,
+        processes: {
+          workers: [{ name: "worker", command: "node worker.js", source: "procfile", count: 2 }],
+        },
+        services: [
+          ...base.services,
+          { kind: "mysql", version: "8.4", memoryMb: 512, reason: "mysql2", licence: "GPL-2.0" },
+          {
+            kind: "valkey",
+            version: "8",
+            memoryMb: 128,
+            enabled: false,
+            options: { mode: "cache" },
+            reason: "redis",
+            licence: "BSD-3-Clause",
+          },
+        ],
+      });
+      const s = await ownProject({ plan });
+      await provisionOwn(s);
+      await deployed(s);
+      edit(s, (f) => {
+        for (const name of [
+          "shop-worker-1",
+          "shop-worker-2",
+          "shop-cache-1",
+          "shop-release-run-1a2b3c",
+        ]) {
+          f.containers.push({ name, project: "shop", ports: "", running: true });
+        }
+      });
+      const report = await runDrift(s.deps, { services: s.services });
+      expect(details(report).filter((line) => !line.includes("OpsCrew's runtime files"))).toEqual([
+        "app: MySQL (mysql) is in opscrew/plan.yaml but has no container on the server. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it starts every component.",
+        "app: cache runs on the server but is not a component in opscrew/plan.yaml any more (turned off or removed there): the next deploy removes it.",
+      ]);
+      expect(report.clean).toBe(false);
     });
 
     it("a pin Dependabot updated in the committed Compose file is no drift on the server", async () => {

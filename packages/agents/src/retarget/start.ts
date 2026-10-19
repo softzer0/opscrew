@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { exists, formatMoney, OpsCrewError } from "@opscrew/core";
-import { cloudTarget } from "@opscrew/iac-templates";
+import { exists, formatMoney, listText, OpsCrewError } from "@opscrew/core";
+import { cloudTarget, serviceSpec } from "@opscrew/iac-templates";
 import {
   type AppBuild,
   type CloudDeployTarget,
@@ -16,7 +16,7 @@ import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
 import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
-import { readRequirements } from "../provision";
+import { providerBucket, readRequirements, requireStorageKey } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
 import { ownServerNoMove, portainerTargetNoMove } from "../shared/vps-target";
 import { databaseSize, serverOps } from "./server-ops";
@@ -46,6 +46,30 @@ function nothingLive(plan: DeployPlan): OpsCrewError {
     },
   );
 }
+
+/**
+ * Stops before any change when the app keeps data a move cannot copy yet (FR-1332): a running
+ * service other than PostgreSQL and Valkey (MySQL, MongoDB, a broker, Garage, an engine), or a
+ * SQLite database. Workers and cron move with the app, and a bucket at a provider stays where it
+ * is, so neither stops a move.
+ */
+function requireMovableData(plan: DeployPlan): void {
+  const stuck = plan.services
+    .filter((service) => service.enabled && !MOVABLE_KINDS.has(service.kind))
+    .map((service) => `${service.name} (${serviceSpec(service.kind).title})`);
+  if (plan.storage?.sqlite !== undefined) stuck.push("the SQLite database");
+  if (stuck.length === 0) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `A move copies the PostgreSQL database to the new server, but not yet the data of ${listText(stuck)}, so OpsCrew did not start it. Nothing was changed.`,
+    {
+      hint: "Copying the data of these services to a new server comes in a later version of OpsCrew. Until then, the app stays on its server.",
+    },
+  );
+}
+
+/** The services a move handles (feature 005): PostgreSQL is copied, Valkey starts afresh. */
+const MOVABLE_KINDS: ReadonlySet<string> = new Set(["postgres", "valkey"]);
 
 /** The option the user chose: `--option`, the picker, else the recommended one. */
 async function pickOption(
@@ -200,6 +224,10 @@ export function moveSummary(
 function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
   const old = providerWords(summary.from.provider);
   const fresh = providerWords(summary.to.provider);
+  // Valkey starts afresh on the new server.
+  const queue = plan.services.find(
+    (service) => service.enabled && service.kind === "valkey" && service.options.mode === "queue",
+  );
   return [
     `Moving ${plan.app.name} from ${old.name} (${summary.from.serverType} in ${summary.from.location}) to ${fresh.name} (${summary.to.serverType} in ${summary.to.location}):`,
     ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
@@ -214,6 +242,11 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
         : [
             `Database: ${sizeText(summary.databaseBytes)}; expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`,
           ]),
+    ...(queue === undefined
+      ? []
+      : [
+          `Jobs waiting in the Valkey queue (${queue.name}) are not moved: let the queue drain before the move, or those jobs are lost.`,
+        ]),
     ...(summary.changes.length === 0
       ? []
       : [
@@ -257,6 +290,11 @@ export async function startMove(
   }
   // A server the user owns never moves (spec 009): said before the cloud-only steps.
   if (plan.target.provider === "own") throw ownServerNoMove();
+  requireMovableData(plan);
+  // The bucket stays where it is: the app on the new server needs its key, known before any change.
+  if (providerBucket(plan) !== undefined) {
+    await requireStorageKey(deps, plan, options.services ?? {}, { command: RUN_COMMAND });
+  }
   const from = cloudTarget(plan.target);
   if (options.to === undefined && requirements.provider === "portainer") {
     throw portainerTargetNoMove();

@@ -650,7 +650,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(result.snapshotId).toBeUndefined();
     expect(s.servers.lookups).toEqual([]);
     expect(s.deps.reporter.text()).toContain(
-      "No snapshot: the database does not run on the server and Hetzner backups are off.",
+      "No snapshot: no service keeps data on the server and Hetzner backups are off.",
     );
   });
 

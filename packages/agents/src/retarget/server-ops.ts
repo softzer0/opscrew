@@ -27,11 +27,20 @@ export interface ServerOpOptions {
   redact: RedactText;
   /** The app's folder on both servers (`appDir(plan)`, `/srv/apps/<app>`). */
   folder: string;
+  /**
+   * The app's processes besides the web one, which use its database too: the enabled workers and,
+   * with cron jobs, `cron`. They stop and start with `app`.
+   */
+  processes?: readonly string[];
 }
 
 /** {@link ServerOpOptions} for `plan`'s app, its text redacted by `redactor`. */
 export function serverOps(plan: DeployPlan, redactor: Pick<Redactor, "redact">): ServerOpOptions {
-  return { redact: redactor.redact, folder: appDir(plan) };
+  const processes = [
+    ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
+    ...(plan.processes.cron.some((job) => job.enabled) ? ["cron"] : []),
+  ];
+  return { redact: redactor.redact, folder: appDir(plan), processes };
 }
 
 /** Where a service's Compose project is: the app's folder, or the edge's for Caddy. */
@@ -134,18 +143,36 @@ async function runStep(
 const composePsHint = (host: string, folder: string) =>
   `Connect to the server (\`ssh deploy@${host}\`), run \`docker compose ps\` in ${folder} to see what is running, then run \`opscrew retarget\` again.`;
 
-/** Stops a Compose service: `app` in the app's folder, or the edge's `caddy` in `/srv/edge`. */
+/** The workers and cron that stop and start with `app` ({@link ServerOpOptions.processes}). */
+function processesOf(service: MoveService, options: ServerOpOptions): readonly string[] {
+  return service === "app" ? (options.processes ?? []) : [];
+}
+
+/**
+ * Stops a Compose service: `app` in the app's folder, then its workers and cron (so nothing of
+ * the app writes to its database any more), or the edge's `caddy` in `/srv/edge`.
+ */
 export async function stopService(
   remote: RemoteExec,
   service: MoveService,
   options: ServerOpOptions,
 ): Promise<void> {
   const folder = projectFolder(service, options);
+  const hint = composePsHint(remote.host, folder);
   await runStep(
     remote,
     `cd ${folder} && docker compose stop ${service}`,
     2 * MINUTE,
-    { what: `stop ${SERVICE_LABEL[service]}`, hint: composePsHint(remote.host, folder) },
+    { what: `stop ${SERVICE_LABEL[service]}`, hint },
+    options.redact,
+  );
+  const processes = processesOf(service, options);
+  if (processes.length === 0) return;
+  await runStep(
+    remote,
+    `cd ${folder} && docker compose stop ${processes.join(" ")}`,
+    2 * MINUTE,
+    { what: "stop the app's workers and cron", hint },
     options.redact,
   );
 }
@@ -157,11 +184,21 @@ export async function startService(
   options: ServerOpOptions,
 ): Promise<void> {
   const folder = projectFolder(service, options);
+  const hint = composePsHint(remote.host, folder);
   await runStep(
     remote,
     `cd ${folder} && docker compose up -d ${service}`,
     5 * MINUTE,
-    { what: `start ${SERVICE_LABEL[service]}`, hint: composePsHint(remote.host, folder) },
+    { what: `start ${SERVICE_LABEL[service]}`, hint },
+    options.redact,
+  );
+  const processes = processesOf(service, options);
+  if (processes.length === 0) return;
+  await runStep(
+    remote,
+    `cd ${folder} && docker compose up -d ${processes.join(" ")}`,
+    5 * MINUTE,
+    { what: "start the app's workers and cron", hint },
     options.redact,
   );
 }

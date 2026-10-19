@@ -406,7 +406,7 @@ describe("confirmDeletion", () => {
 describe("takeSnapshotBeforeDelete", () => {
   const input = (servers: FakeServers, overrides = {}) => ({
     server: { inState: true, ids: ["4711"] },
-    data: { postgres: true, backups: false },
+    data: { serverData: true, backups: false },
     purpose: "retarget" as const,
     servers,
     ...overrides,
@@ -474,12 +474,12 @@ describe("takeSnapshotBeforeDelete", () => {
     expect(
       await takeSnapshotBeforeDelete(
         session,
-        input(servers, { data: { postgres: false, backups: false } }),
+        input(servers, { data: { serverData: false, backups: false } }),
       ),
     ).toBe(undefined);
     expect(deps.reporter.text()).toContain("Skipping the snapshot, as requested.");
     expect(deps.reporter.text()).toContain(
-      "No snapshot: the database does not run on the server and Hetzner backups are off.",
+      "No snapshot: no service keeps data on the server and Hetzner backups are off.",
     );
     servers.lookupError = new OpsCrewError("PROVIDER_ERROR", "Hetzner is down.");
     const error = await takeSnapshotBeforeDelete(session, input(servers)).catch((e: unknown) => e);
@@ -492,10 +492,10 @@ describe("takeSnapshotBeforeDelete", () => {
   });
 
   it("resolves auto from the deleted server's data", () => {
-    expect(snapshotWanted(undefined, { postgres: false, backups: true })).toBe(true);
-    expect(snapshotWanted("auto", { postgres: false, backups: false })).toBe(false);
-    expect(snapshotWanted(true, { postgres: false, backups: false })).toBe(true);
-    expect(snapshotWanted(false, { postgres: true, backups: true })).toBe(false);
+    expect(snapshotWanted(undefined, { serverData: false, backups: true })).toBe(true);
+    expect(snapshotWanted("auto", { serverData: false, backups: false })).toBe(false);
+    expect(snapshotWanted(true, { serverData: false, backups: false })).toBe(true);
+    expect(snapshotWanted(false, { serverData: true, backups: true })).toBe(false);
   });
 });
 

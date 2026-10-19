@@ -1,6 +1,7 @@
+import { join } from "node:path";
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
-import { usesTunnel } from "@opscrew/iac-templates";
+import { exists, OpsCrewError } from "@opscrew/core";
+import { storageRootDir, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
@@ -8,6 +9,12 @@ import { checkProvider } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
+import {
+  providerBucket,
+  requireStorageKey,
+  storageEngineEnv,
+  storageStateFile,
+} from "../provision/storage";
 import { hasDeployment, stateFile, stringOutput } from "../shared";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { type HostDrift, ownHostDrift } from "./host";
@@ -38,7 +45,8 @@ const NO_CLOUD_RESOURCES_NOTE =
 /**
  * `opscrew drift`: compares the live infrastructure with the state (refresh-only plan, changes made
  * outside OpsCrew), the state with the infrastructure code (normal plan, changes not applied yet)
- * and the repository's generated files with what OpsCrew renders from `opscrew/plan.yaml`.
+ * and the repository's generated files with what OpsCrew renders from `opscrew/plan.yaml`; the
+ * app's bucket at a provider, once created, the same way in its own root and state.
  * Read-only: never applies, writes its plan files under `.opscrew/plans/drift-*.tfplan` without a
  * sidecar (so they can never be approved) and deletes them afterwards, even on errors. Stops with
  * `PHASE_PRECONDITION` while `opscrew retarget` is moving the deployment.
@@ -122,6 +130,28 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     if (ownServer && usesTunnel(plan)) {
       tunnelId = stringOutput((await compared.outputs()) ?? {}, "tunnel_id");
     }
+  }
+
+  // 4b. The app's bucket at a provider, once created: its own root and state, so a bucket deleted
+  // or a CORS rule changed in the provider's console shows as drift (FR-1331).
+  const bucket = providerBucket(plan);
+  if (bucket !== undefined && (await exists(storageStateFile(deps.paths)))) {
+    const key =
+      bucket.provider === "r2"
+        ? undefined
+        : await requireStorageKey(deps, plan, services, { command: "opscrew drift", asks: false });
+    const storage = await compareInfrastructure(deps, {
+      plan,
+      engine,
+      engineEnv: storageEngineEnv(env, plan, key),
+      statePath: storageStateFile(deps.paths),
+      dir: join(deps.paths.root, storageRootDir(plan)),
+      mirrored: {},
+      changedFiles: preview.changed,
+    });
+    drift = [...drift, ...storage.drift];
+    pending = [...pending, ...storage.pending];
+    notes.push(...storage.notes);
   }
 
   // 5. A server the user owns: compare the server with OpsCrew's record and setup (read-only)
