@@ -4,15 +4,16 @@ import type { Retarget } from "@opscrew/plan-schema";
 import { failureReason } from "../destroy/deletion";
 import {
   copyDump,
-  DUMP_PATH,
   databaseSize,
   dumpDatabase,
+  dumpPath,
   hasReleaseService,
   recreateDatabase,
   removeDump,
   removeDumpByHand,
   restoreDatabase,
   runRelease,
+  serverOps,
   startService,
   stopService,
   verifyDump,
@@ -85,11 +86,12 @@ export function newRemote(session: MoveBase): RemoteExec {
 
 /** Removes the dump file from a server; a failure is only a warning (best effort on rollback). */
 async function removeDumpQuietly(session: MoveBase, remote: RemoteExec): Promise<void> {
+  const ops = serverOps(session.plan, session.deps.redactor);
   try {
-    await removeDump(remote, session.deps.redactor);
+    await removeDump(remote, ops);
   } catch {
     session.deps.reporter.warn(
-      `OpsCrew could not delete the database dump on ${remote.host}. Delete it yourself: ${removeDumpByHand(remote.host)}.`,
+      `OpsCrew could not delete the database dump on ${remote.host}. Delete it yourself: ${removeDumpByHand(remote.host, ops.folder)}.`,
     );
   }
 }
@@ -121,8 +123,9 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
     move = moveOf(session);
   }
   deps.reporter.step(`Starting the app on the old server (${host}) again`);
+  const ops = serverOps(session.plan, deps.redactor);
   try {
-    await startService(oldRemote(session), "app", deps.redactor);
+    await startService(oldRemote(session), "app", ops);
   } catch (error) {
     await auditMove(session, {
       kind: "remote-exec",
@@ -135,7 +138,7 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
       "COMMAND_FAILED",
       `${before}OpsCrew could not start the app on the old server (${host}) again: ${failureReason(error)}. Your app is offline until it runs again.`,
       {
-        hint: `Start it yourself with \`ssh deploy@${host} 'cd /srv/app && docker compose up -d app'\`, then run \`${RUN_COMMAND}\` (or \`${ABORT_COMMAND}\`); OpsCrew checks it again first.`,
+        hint: `Start it yourself with \`ssh deploy@${host} 'cd ${ops.folder} && docker compose up -d app'\`, then run \`${RUN_COMMAND}\` (or \`${ABORT_COMMAND}\`); OpsCrew checks it again first.`,
       },
     );
   }
@@ -174,34 +177,36 @@ export async function recoverInterruptedWindow(session: MoveBase): Promise<void>
   if (session.servers.next !== undefined) await removeDumpQuietly(session, newRemote(session));
 }
 
-/** The commands of the window, listed in its approval. */
+/** The commands of the window, listed in its approval (`folder`: the app's on both servers). */
 function windowCommands(
   oldHost: string,
   newHost: string,
   port: number,
   path: string,
   release: boolean,
+  folder: string,
 ): string[] {
+  const dump = dumpPath(folder);
   return [
-    `On the old server (${oldHost}), in /srv/app:`,
+    `On the old server (${oldHost}), in ${folder}:`,
     "  docker compose stop app",
-    `  docker compose exec -T db pg_dump -U app -Fc app > ${DUMP_PATH}`,
+    `  docker compose exec -T db pg_dump -U app -Fc app > ${dump}`,
     "Between the servers, through this computer (OpenSSH):",
-    `  scp -3 deploy@${oldHost}:${DUMP_PATH} deploy@${newHost}:${DUMP_PATH}`,
-    `On both servers, before anything is dropped: docker compose exec -T db pg_restore --list < ${DUMP_PATH} > /dev/null && sha256sum ${DUMP_PATH}`,
+    `  scp -3 deploy@${oldHost}:${dump} deploy@${newHost}:${dump}`,
+    `On both servers, before anything is dropped: docker compose exec -T db pg_restore --list < ${dump} > /dev/null && sha256sum ${dump}`,
     "  (the copy must be readable and match the dump on the old server)",
-    `On the new server (${newHost}), in /srv/app:`,
+    `On the new server (${newHost}), in ${folder}:`,
     "  docker compose stop app",
     "  docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'",
     "    (recreates the new server's database empty, so afterwards it holds exactly the copy)",
-    `  docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${DUMP_PATH}`,
+    `  docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
     ...(release
       ? [
           "  docker compose run --rm --no-deps -T release",
           "    (app.releaseCommand migrates the copied data to the version deployed on the new server; the app stays offline while it runs)",
         ]
       : []),
-    `  rm -f ${DUMP_PATH} (on both servers)`,
+    `  rm -f ${dump} (on both servers)`,
     `  docker compose up -d app, then a health check of http://app:${port}${path}`,
     "If any of these fails, OpsCrew deletes the dump files and starts the app on the old server again.",
   ];
@@ -235,7 +240,7 @@ export async function maintenanceWindow(
   if (next === undefined) return stopped(session, [`Run \`${RUN_COMMAND}\` again.`]);
   const old = oldRemote(session);
   const fresh = newRemote(session);
-  const ops = deps.redactor;
+  const ops = serverOps(plan, deps.redactor);
 
   deps.reporter.step("Measuring the database on the old server");
   const size = await databaseSize(old, ops);
@@ -278,6 +283,7 @@ export async function maintenanceWindow(
         plan.app.port,
         plan.app.healthPath,
         release,
+        ops.folder,
       ),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),
@@ -314,7 +320,7 @@ export async function maintenanceWindow(
     const dumped = await verifyDump(old, size, ops);
     await audited("copy database dump", `${old.host} -> ${fresh.host}`, () =>
       copyDump(session.services.runner ?? deps.runner, {
-        redact: ops.redact,
+        ...ops,
         from: old.host,
         to: fresh.host,
         keyFile: session.deployKey.privateKeyFile,
@@ -330,7 +336,7 @@ export async function maintenanceWindow(
         "COMMAND_FAILED",
         `The database dump copied to the new server (${fresh.host}) differs from the dump on the old server (${old.host}).`,
         {
-          hint: `Check the free disk space on both servers (\`df -h /srv/app\`); \`${RUN_COMMAND}\` makes and copies a new dump.`,
+          hint: `Check the free disk space on both servers (\`df -h ${ops.folder}\`); \`${RUN_COMMAND}\` makes and copies a new dump.`,
         },
       );
     }
@@ -353,7 +359,7 @@ export async function maintenanceWindow(
       deps.reporter.step(
         "Running the release command (app.releaseCommand) on the copied database, migrating it to the version on the new server",
       );
-      await audited("run release command", fresh.host, () => runRelease(fresh, size));
+      await audited("run release command", fresh.host, () => runRelease(fresh, size, ops));
     }
     await audited("remove database dump", old.host, () => removeDump(old, ops));
     await audited("remove database dump", fresh.host, () => removeDump(fresh, ops));
@@ -361,7 +367,7 @@ export async function maintenanceWindow(
     await audited("start app", fresh.host, () => startService(fresh, "app", ops));
     newAppStopped = false;
     await waitAppHealthy(fresh, plan.app.port, plan.app.healthPath, {
-      redact: ops.redact,
+      ...ops,
       ...waitsOf(session.services),
     });
   } catch (error) {
@@ -395,7 +401,9 @@ async function rollBackWindow(
   await removeDumpQuietly(session, ctx.old);
   await removeDumpQuietly(session, ctx.fresh);
   if (ctx.newAppStopped) {
-    await startService(ctx.fresh, "app", deps.redactor).catch(() => undefined);
+    await startService(ctx.fresh, "app", serverOps(session.plan, deps.redactor)).catch(
+      () => undefined,
+    );
   }
   try {
     await restartOldApp(session, `The maintenance window failed (${failureReason(cause)}), and `);

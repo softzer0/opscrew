@@ -83,6 +83,7 @@ import {
   portainerDesignChoice,
 } from "./portainer";
 import { releaseCommandNote } from "./release";
+import { ownServerMemory, type ServerApp } from "./sizing";
 import { checkSqliteFolder } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
@@ -118,6 +119,14 @@ export interface OwnServerDesignInput {
   access?: OwnServerAccess;
   /** How the site is served; default: the interview's answers (see `ownServerServing`). */
   serving?: OwnServerServing;
+  /**
+   * The OpsCrew apps set up on the server with the sum of their memory limits (their records): the
+   * server's memory must hold this app next to the others. This app's own record, on a later
+   * design, is left out by its name.
+   */
+  apps?: readonly ServerApp[];
+  /** The server's x86 CPU has AVX (inspection's CPU flags; MongoDB 5 and later need it). */
+  avx?: boolean;
 }
 
 export interface DesignResult {
@@ -558,6 +567,20 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const plan =
     previous !== undefined && !answeredLater && samePlan(kept, previous) ? previous : kept;
+  // On the user's own server, its memory must hold this app next to the other OpsCrew apps there.
+  if (chosen.target.provider === "own") {
+    const memory = ownServerMemory(
+      chosen.target.memoryGb * 1024,
+      appMemoryMb(plan),
+      (ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
+    );
+    if (memory?.refused !== undefined) {
+      throw new OpsCrewError("PHASE_PRECONDITION", memory.refused.message, {
+        hint: memory.refused.hint,
+      });
+    }
+    if (memory?.warning !== undefined) warn(memory.warning);
+  }
   if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
   if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
 

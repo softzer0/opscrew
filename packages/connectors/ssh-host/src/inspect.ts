@@ -7,6 +7,7 @@ import {
   DATA_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
+  EDGE_DIR,
   FAIL2BAN_JAIL_PATH,
   HASHED_RUNTIME_FILES,
   PORTAINER_DIR,
@@ -16,8 +17,8 @@ import {
   RUNTIME_FILE_NAMES,
   SHARED_DIRS,
   SSHD_DROP_IN,
-  TUNNEL_DIR,
-  TUNNEL_PROJECT,
+  TUNNELS_DIR,
+  tunnelProject,
 } from "./constants";
 import { type HostFacts, HostFactsSchema, HostRecordSchema, type WebFilterFacts } from "./facts";
 import { foreignFirewalls } from "./firewall";
@@ -52,6 +53,7 @@ import {
   splitSections,
 } from "./parse";
 import { asLogin, asRoot, buildScript } from "./shell";
+import { AppNameSchema } from "./types";
 import {
   WEB_FILTER_DROP_IN,
   WEB_FILTER_SCRIPT,
@@ -134,10 +136,11 @@ for parent in ${APPS_DIR} ${DATA_DIR}; do
 done`;
 
 /**
- * OpsCrew's runtime files in each app's folder (`/srv/apps/<app>`): kind, owner, group and mode
- * of each, and the SHA-256 of the rendered ones only. Never prints a file's content, never hashes
- * a file that holds secrets, and never follows a symbolic link (an app folder that is a link, or
- * /srv/apps itself, is skipped).
+ * OpsCrew's runtime files of each app with a folder (`/srv/apps/<app>`), the app's site on the
+ * shared edge (`/srv/edge/sites/<app>.caddy`) included: kind, owner, group and mode of each, and
+ * the SHA-256 of the rendered ones only. Never prints a file's content, never hashes a file that
+ * holds secrets, and never follows a symbolic link (an app folder that is a link, or /srv/apps
+ * itself, is skipped; a site under a linked edge folder is reported as a link).
  */
 export const RUNTIME_FILES_SNIPPET = `${APP_NAME_FN}
 if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
@@ -147,6 +150,10 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
     if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi
     for f in ${RUNTIME_FILE_NAMES.join(" ")}; do
       p="$d/$f"
+      if [ "$f" = site ]; then
+        p="${EDGE_DIR}/sites/$app.caddy"
+        if [ -L "${EDGE_DIR}" ] || [ -L "${EDGE_DIR}/sites" ]; then echo "$app $f link"; continue; fi
+      fi
       if [ -L "$p" ]; then echo "$app $f link"
       elif [ -f "$p" ]; then
         sum=-
@@ -170,7 +177,9 @@ for f in "${APP_RECORDS_DIR}"/*.json; do
   echo
 done`;
 
-const ADDONS_SNIPPET = `addon() {
+/** Portainer, and each app's tunnel connector (`tunnel:<app>`) in its folder of /srv/opscrew/cloudflared. */
+const ADDONS_SNIPPET = `${APP_NAME_FN}
+addon() {
   if [ -f "$2/compose.yaml" ]; then
     sum=$(sha256sum "$2/compose.yaml" | cut -d ' ' -f 1)
     secret=no
@@ -181,7 +190,13 @@ const ADDONS_SNIPPET = `addon() {
     echo "$1 absent"
   fi
 }
-addon tunnel ${TUNNEL_DIR} tunnel.env
+if [ -d "${TUNNELS_DIR}" ] && [ ! -L "${TUNNELS_DIR}" ]; then
+  for d in "${TUNNELS_DIR}"/*; do
+    app_name "\${d##*/}" || continue
+    if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi
+    addon "tunnel:\${d##*/}" "$d" tunnel.env
+  done
+fi
 addon portainer ${PORTAINER_DIR} admin_password`;
 
 /** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
@@ -562,7 +577,12 @@ export function factsFromOutput(
       sshd: pending.get("sshd") === "active",
       ufw: pending.get("ufw") === "active",
     },
-    tunnel: addon("tunnel", TUNNEL_PROJECT),
+    tunnels: [...addons.keys()]
+      .filter((name) => name.startsWith("tunnel:"))
+      .map((name) => name.slice("tunnel:".length))
+      .filter((app) => AppNameSchema.safeParse(app).success)
+      .sort()
+      .map((app) => ({ app, ...addon(`tunnel:${app}`, tunnelProject(app)) })),
     portainer: addon("portainer", PORTAINER_PROJECT),
     webFilter: {
       ...dockerFirewall({

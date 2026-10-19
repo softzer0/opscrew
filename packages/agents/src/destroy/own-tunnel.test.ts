@@ -1,4 +1,5 @@
 import { readdir } from "node:fs/promises";
+import { tunnelOf } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -51,7 +52,7 @@ async function deployed(o: { access: "public" | "tunnel"; closeAfter?: number; n
   };
   const api = fakeTunnelApi({
     events,
-    connectorRunning: () => s.host.facts.tunnel.running,
+    connectorRunning: () => tunnelOf(s.host.facts, "shop").running,
     ...(o.closeAfter !== undefined ? { closeAfter: o.closeAfter } : {}),
     ...(o.never !== undefined ? { never: o.never } : {}),
   });
@@ -105,7 +106,7 @@ describe.skipIf(!findExecutable("git"))(
   () => {
     it("approves both plans first, removes the connector, waits for the connections, then deletes the tunnel", async () => {
       const s = await deployed({ access: "tunnel", closeAfter: 5 });
-      expect(s.host.facts.tunnel.running).toBe(true);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(true);
       const result = await runDestroy(s.deps, { services: services(s) });
 
       // Both approvals before any change; the server first; Cloudflare once the connections closed.
@@ -235,7 +236,7 @@ describe.skipIf(!findExecutable("git"))(
         "The removal of shop from your server was not approved, so nothing on your server was changed and nothing in Cloudflare was deleted.",
       );
       expect(s.events).toEqual(["approve:iac-apply", "approve:host-apply"]);
-      expect(s.host.facts.tunnel.running).toBe(true);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(true);
       expect(await leftPlans(s)).toEqual([]);
     });
 

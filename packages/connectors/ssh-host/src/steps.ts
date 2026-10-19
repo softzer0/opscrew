@@ -29,13 +29,15 @@ import {
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
+  runtimeFilePath,
   SHARED_DIRS,
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
   sshdDropIn,
-  TUNNEL_DIR,
-  TUNNEL_PROJECT,
+  TUNNELS_DIR,
+  tunnelDir,
+  tunnelProject,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
   WEB_RULES,
@@ -1114,6 +1116,9 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
       APP_DIR: dirs.app,
       APP_COMPOSE: `${dirs.app}/compose.yaml`,
       DATA_DIR: dirs.data,
+      SITE: runtimeFilePath(p.app, "site"),
+      EDGE_COMPOSE: `${EDGE_DIR}/compose.yaml`,
+      EDGE_PROJECT,
     },
     helpers: `${PROJECT_HELPERS}
 remove_dir() {
@@ -1121,9 +1126,11 @@ remove_dir() {
     find "$1" -xdev -mindepth 1 -delete
     rmdir "$1" || fail "OpsCrew could not remove $1 completely."
   fi
-}`,
+}
+edge() { docker compose -p "$EDGE_PROJECT" -f "$EDGE_COMPOSE" "$@"; }`,
     verify: `  project_gone "$APP" "$DELETE_DATA" || return 1
   [ ! -e "$APP_DIR" ] || return 1
+  [ ! -e "$SITE" ] && [ ! -L "$SITE" ] || return 1
   if [ "$DELETE_DATA" = true ] && [ -e "$DATA_DIR" ]; then return 1; fi
   return 0`,
     snapshot: `echo "prev.appFiles=$(ls -A "$APP_DIR" 2>/dev/null | wc -l)"
@@ -1132,6 +1139,24 @@ echo "prev.dataFiles=$(ls -A "$DATA_DIR" 2>/dev/null | wc -l)"`,
   if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
 done
 remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
+# The app's site and its kamal-proxy service leave the shared edge, which stays for other apps
+# (remove_project started Docker when it was stopped).
+reload=''
+if [ -e "$SITE" ] || [ -L "$SITE" ]; then rm -f "$SITE"; reload=true; fi
+if [ -f "$EDGE_COMPOSE" ] && command -v docker >/dev/null 2>&1; then
+  # A stopped kamal-proxy keeps the app's route on its volume: it runs while the route goes.
+  edge up -d kamal-proxy >/dev/null 2>&1 || fail "The shared edge's kamal-proxy did not start, so OpsCrew could not remove the app's route from it."
+  # An app that was never deployed has no route there.
+  if ! out=$(edge exec -T kamal-proxy kamal-proxy remove "$APP" </dev/null 2>&1); then
+    case "$out" in
+      *"service not found"*) ;;
+      *) fail "kamal-proxy did not remove the app's route." ;;
+    esac
+  fi
+  if [ -n "$reload" ]; then
+    edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null >/dev/null 2>&1 || true
+  fi
+fi
 remove_dir "$APP_DIR"
 if [ "$DELETE_DATA" = true ]; then remove_dir "$DATA_DIR"; fi
 if [ "$DELETE_DATA" = true ] && ! project_gone "$APP" true; then
@@ -1148,8 +1173,7 @@ function runtimeScripts(plan: HostPlan, step: HostStep): StepScripts {
     const p = params(
       step,
       z.object({
-        // T1308b: `app` (/srv/app) goes with LEGACY_APP_DIR.
-        dirs: z.string().regex(/^\/srv\/(edge|apps|data|app)( \/srv\/(edge|apps|data|app)){0,3}$/),
+        dirs: z.string().regex(/^\/srv\/(edge|apps|data)( \/srv\/(edge|apps|data)){0,2}$/),
       }),
     );
     const verify = `  for d in $DIRS; do
@@ -1427,6 +1451,7 @@ function removeAddonScripts(
     name: `${addon.name}.remove`,
     params: {
       DIR: dir,
+      PARENT: dir.slice(0, dir.lastIndexOf("/")),
       PROJECT: addon.project,
       DELETE_DATA: deleteData,
       ADDONS_ROOT,
@@ -1438,20 +1463,30 @@ function removeAddonScripts(
   return 0`,
     apply: `remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
 rm -rf "$DIR"
-# OpsCrew's shared parent goes too once it is empty.
-if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then rmdir "$ADDONS_ROOT"; fi`,
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi`,
     failed: `OpsCrew's ${addon.name} is still on the server.`,
     doing: addon.doing,
     timeoutMs: 5 * MINUTE,
   });
 }
 
+/**
+ * The app's own tunnel connector (`params.app`): a setup or teardown plan changes only its own
+ * app's connector; an undo removes any app's that was left behind.
+ */
 function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const { app } = params(step, z.object({ app: AppNameSchema }));
+  if (plan.purpose !== "undo" && app !== plan.app) throw invalid(step, "app");
   if (plan.purpose !== "setup" || step.params.remove === true) {
     return removeAddonScripts(plan, step, {
       name: "tunnel-connector",
-      dir: TUNNEL_DIR,
-      project: TUNNEL_PROJECT,
+      dir: tunnelDir(app),
+      project: tunnelProject(app),
       doing: "removing the tunnel connector",
     });
   }
@@ -1465,15 +1500,16 @@ function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
       runAs: RunAsSchema.optional(),
     }),
   );
-  const dir = p.dir ?? TUNNEL_DIR;
+  const dir = p.dir ?? tunnelDir(app);
   const runAs = p.runAs ?? "root";
-  checkLocation(step, dir, runAs, TUNNEL_DIR);
+  checkLocation(step, dir, runAs, tunnelDir(app));
   return scripts({
     name: "tunnel-connector",
     params: {
       DIR: dir,
-      PROJECT: TUNNEL_PROJECT,
+      PROJECT: tunnelProject(app),
       ADDONS_ROOT,
+      TUNNELS_DIR,
       RUN_AS: runAs,
       COMPOSE_B64: base64(p.compose),
       COMPOSE_SHA256: sha256Hex(p.compose),
@@ -1487,7 +1523,7 @@ function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
   running || return 1`,
     snapshot: `if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
     apply: `umask 077
-if [ "$RUN_AS" = root ]; then install -d -m 0700 "$ADDONS_ROOT"; fi
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$ADDONS_ROOT" "$TUNNELS_DIR"; fi
 install -d -m 0700 "$DIR"
 token=''
 IFS= read -r token || true

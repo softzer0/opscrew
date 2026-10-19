@@ -7,7 +7,7 @@ import { readArtifact, serviceOf, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
 import { lastHostSetup, passwordLoginChoice, recordOwnServer } from "../shared";
-import { CF_V4, CF_V6, ownCloudflare, ownPlan } from "../testing";
+import { CF_V4, CF_V6, ownCloudflare, ownPlan, withOtherApp } from "../testing";
 import {
   ED25519_FINGERPRINT,
   everythingPrinted,
@@ -215,7 +215,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     expect(s.engine.plans.every((p) => p.env.TF_VAR_server_ipv4 === undefined)).toBe(true);
 
     edit(s, (f) => {
-      f.tunnel.running = false;
+      for (const tunnel of f.tunnels) tunnel.running = false;
       f.firewall.ufwRules.push({ rule: "allow 80/tcp", comment: "opscrew-web" });
     });
     const report = await runDrift(s.deps, { services: s.services });
@@ -352,8 +352,8 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     };
     const runtime: HostDifference = {
       area: "app",
-      title: "OpsCrew's runtime files in the app's folder",
-      detail: "/srv/apps/shop/Caddyfile differs. Re-run the deploy workflow.",
+      title: "OpsCrew's runtime files of the app",
+      detail: "/srv/edge/sites/shop.caddy differs. Re-run the deploy workflow.",
       restoredByProvision: false,
     };
     const blocker: HostDifference = {
@@ -379,7 +379,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       expect(text).not.toContain("Put back by");
       expect(text).not.toContain("shows a host plan");
       expect(text).toContain(
-        "Left alone by `opscrew provision` (1):\n  ~ OpsCrew's runtime files in the app's folder: /srv/apps/shop/Caddyfile differs. Re-run the deploy workflow.\n`opscrew provision` does not change these; where something needs doing, it is said with each.",
+        "Left alone by `opscrew provision` (1):\n  ~ OpsCrew's runtime files of the app: /srv/edge/sites/shop.caddy differs. Re-run the deploy workflow.\n`opscrew provision` does not change these; where something needs doing, it is said with each.",
       );
     });
 
@@ -412,12 +412,15 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     ).toBe("keep");
   });
 
-  describe("OpsCrew's runtime files in the app's folder", () => {
+  describe("OpsCrew's runtime files of the app (its folder and its site on the edge)", () => {
     const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
     /** The files the deploy workflow copies, as OpsCrew rendered them into the repository. */
     async function repoSums(s: OwnProject) {
       const read = (name: string) => readFile(join(s.root, "opscrew", "runtime", name), "utf8");
-      return { compose: sum(await read("compose.yaml")), caddy: sum(await read("Caddyfile")) };
+      return {
+        compose: sum(await read("compose.yaml")),
+        site: sum(await read("edge/sites/shop.caddy")),
+      };
     }
     /** The server after a deploy: OpsCrew's files as the workflow wrote them. */
     async function deployed(s: OwnProject) {
@@ -437,7 +440,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       edit(s, (f) => {
         f.runtimeFiles = [
           { app: "shop", name: "compose.yaml", ...file("644", sums.compose) },
-          { app: "shop", name: "Caddyfile", ...file("644", sums.caddy) },
+          { app: "shop", name: "site", ...file("644", sums.site) },
           { app: "shop", name: ".env", ...file("644") },
           { app: "shop", name: "app.env", ...file("600") },
           serviceOf(plan, "postgres")
@@ -461,7 +464,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         opscrewVersion: s.deps.version,
         ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
       });
-      expect(expected.rendered).toEqual({ "compose.yaml": sums.compose, Caddyfile: sums.caddy });
+      expect(expected.rendered).toEqual({ "compose.yaml": sums.compose, site: sums.site });
       await deployed(s);
       const report = await runDrift(s.deps, { services: s.services });
       expect(report.host).toEqual({ differences: [] });
@@ -483,15 +486,49 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       expect(report.host).toEqual({ differences: [] });
     });
 
-    // T1308b: drift checks the runtime files again once the deploy works in /srv/apps/<app>.
-    it.skip("reports each edited, replaced or missing file and unsafe secret files, never contents", async () => {
+    it("with another app on the server, reads every app and reports only this app's parts", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      await deployed(s);
+      s.host.facts = withOtherApp({ facts: s.host.facts });
+      // What differs for the other app is for its own project's drift to report.
+      edit(s, (f) => {
+        f.containers = f.containers.map((c) =>
+          c.project === "blog" ? { ...c, running: false } : c,
+        );
+        f.runtimeFiles.push({
+          app: "blog",
+          name: "site",
+          kind: "file",
+          owner: "deploy",
+          group: "deploy",
+          mode: "644",
+          sha256: "0".repeat(64),
+        });
+        f.dirs = f.dirs.map((dir) =>
+          dir.path === "/srv/apps/blog" ? { ...dir, mode: "777" } : dir,
+        );
+      });
+      expect(s.host.facts.apps.map((app) => app.name)).toEqual(["blog", "shop"]);
+      expect((await runDrift(s.deps, { services: s.services })).host).toEqual({ differences: [] });
+      // This app's own site, edited on the server, is reported.
+      edit(s, (f) => {
+        const site = f.runtimeFiles.find((file) => file.app === "shop" && file.name === "site");
+        Object.assign(site ?? {}, { sha256: "0".repeat(64) });
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "app: /srv/edge/sites/shop.caddy differs from what OpsCrew renders from opscrew/plan.yaml now: it was edited on the server, or the deploy workflow has not copied the current version yet. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.",
+      ]);
+    });
+
+    it("reports each edited, replaced or missing file and unsafe secret files, never contents", async () => {
       const s = await ownProject();
       await provisionOwn(s);
       await deployed(s);
       edit(s, (f) => {
         const files = f.runtimeFiles;
         const named = (name: string) => files.find((file) => file.name === name);
-        Object.assign(named("Caddyfile") ?? {}, { sha256: "0".repeat(64) });
+        Object.assign(named("site") ?? {}, { sha256: "0".repeat(64) });
         Object.assign(named("compose.yaml") ?? {}, { kind: "link", sha256: null });
         Object.assign(named(".env") ?? {}, { kind: "absent" });
         Object.assign(named("app.env") ?? {}, { owner: "root", group: "root", mode: "644" });
@@ -501,23 +538,22 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.";
       expect(details(report)).toEqual([
         "app: /srv/apps/shop/compose.yaml is no longer a regular file (it is a symbolic link or something else), so OpsCrew does not look into it. Remove it on the server, then re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.",
-        `app: /srv/apps/shop/Caddyfile differs from what OpsCrew renders from opscrew/plan.yaml now: it was edited on the server, or the deploy workflow has not copied the current version yet. ${redeploy}`,
+        `app: /srv/edge/sites/shop.caddy differs from what OpsCrew renders from opscrew/plan.yaml now: it was edited on the server, or the deploy workflow has not copied the current version yet. ${redeploy}`,
         `app: /srv/apps/shop/.env (which names the image the app runs) is missing. ${redeploy}`,
         "app: /srv/apps/shop/app.env is owned by root:root, so the deploy workflow (which logs in as deploy) may not be able to replace it. Run `chown deploy:deploy /srv/apps/shop/app.env` as root on the server.",
         "app: /srv/apps/shop/app.env holds secrets but other users on the server can read it (mode 644). Run `chmod 600 /srv/apps/shop/app.env` on the server.",
       ]);
       expect(renderDriftReport(report)).toContain(
-        "~ OpsCrew's runtime files in the app's folder: /srv/apps/shop/Caddyfile differs",
+        "~ OpsCrew's runtime files of the app: /srv/edge/sites/shop.caddy differs",
       );
       expect(s.host.applies).toHaveLength(1);
     });
 
-    // T1308b: as above.
-    it.skip("a missing file counts only after the first deploy; db.env only with PostgreSQL", async () => {
+    it("a missing file counts only after the first deploy; db.env only with PostgreSQL", async () => {
       const s = await ownProject();
       await provisionOwn(s);
       edit(s, (f) => {
-        f.runtimeFiles = ["compose.yaml", "Caddyfile", ".env", "app.env", "db.env"].map((name) => ({
+        f.runtimeFiles = ["compose.yaml", "site", ".env", "app.env", "db.env"].map((name) => ({
           app: "shop",
           name: name as "app.env",
           kind: "absent" as const,

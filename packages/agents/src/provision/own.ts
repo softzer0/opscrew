@@ -6,7 +6,6 @@ import {
   type HostFacts,
   type HostPlan,
   inspectHost,
-  otherActiveApps,
   planHost,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
@@ -278,9 +277,12 @@ type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer">;
 /**
  * Connects to the user's own server (host key confirmed or `--host-key`, pinned), inspects it
  * read-only (audited as `phase`), and stops before any change when the host plan would be blocked:
- * an unsupported system, another firewall or web server, a different OpsCrew app, a password
- * choice to make, and so on (the stop says to run `command` again). Also checks that the plan's
- * architecture is the server's, and in public mode finds the public address DNS points to.
+ * an unsupported system, another firewall or web server, another OpsCrew app on the server that
+ * holds one of the app's hostnames, its name or another access mode, an app without a domain next
+ * to another, a password choice to make, and so on (the stop says to run `command` again). Other
+ * OpsCrew apps on the server are welcome otherwise: the host plan sets up only what this app needs
+ * that is not there yet. Also checks that the plan's architecture is the server's, and in public
+ * mode finds the public address DNS points to.
  */
 export async function prepareOwnServer(
   deps: PhaseDeps,
@@ -319,18 +321,6 @@ export async function prepareOwnServer(
       `opscrew/plan.yaml builds the app for ${target.arch}, but your server is ${facts.arch}. Nothing was changed.`,
       {
         hint: `Run \`opscrew design\` again so OpsCrew builds the image for ${facts.arch}, then run \`opscrew provision\` again.`,
-      },
-    );
-  }
-  // T1308c: one OpsCrew app per server until the flows run several (the shared edge); the host
-  // adapter itself already takes several.
-  const [other] = otherActiveApps(facts.apps, plan.app.name);
-  if (other !== undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `This server already runs the OpsCrew app "${other.app}". One server runs one OpsCrew app for now; sharing a server between apps comes with a later version. Nothing was changed.`,
-      {
-        hint: `Use another server, or remove "${other.app}" first with opscrew destroy in its project.`,
       },
     );
   }

@@ -22,7 +22,8 @@ import {
   SUPPORTED_OS,
   sshdDropIn,
   TUNNEL_APP_PORT,
-  TUNNEL_PROJECT,
+  tunnelDir,
+  tunnelProject,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
   WEB_RULES,
@@ -35,6 +36,7 @@ import {
   type HostRecordEntry,
   otherActiveApps,
   readableRecords,
+  tunnelOf,
   type WebFilterRules,
 } from "./facts";
 import {
@@ -89,7 +91,12 @@ function setupEntry(facts: HostFacts, step: HostStepId): HostRecordEntry | undef
 }
 
 /** Steps that are the plan's app's own; every other step is shared by the apps on the server. */
-const APP_STEPS: ReadonlySet<HostStepId> = new Set(["deploy-key", "app-dirs", "app-record"]);
+const APP_STEPS: ReadonlySet<HostStepId> = new Set([
+  "deploy-key",
+  "app-dirs",
+  "app-record",
+  "tunnel-connector",
+]);
 
 function step(
   id: HostStepId,
@@ -104,12 +111,19 @@ function step(
     : { id, title, state, scope, reason, params };
 }
 
-/** Compose projects OpsCrew runs: every recorded app's, the edge's, and the add-ons'. */
+/**
+ * Compose projects OpsCrew runs: every recorded app's and its tunnel connector's, the edge's, and
+ * Portainer's.
+ */
 function opscrewProjects(facts: HostFacts): Set<string> {
+  const apps = [
+    ...readableRecords(facts.apps).map((record) => record.app),
+    ...facts.tunnels.map((tunnel) => tunnel.app),
+  ];
   return new Set([
     ...readableRecords(facts.apps).map((record) => record.composeProject),
+    ...apps.map(tunnelProject),
     EDGE_PROJECT,
-    TUNNEL_PROJECT,
     PORTAINER_PROJECT,
   ]);
 }
@@ -961,29 +975,30 @@ function imageIn(compose: string): string {
 }
 
 /**
- * The Cloudflare Tunnel connector runs whenever the caller passes one: tunnel mode, or a Portainer
- * subdomain in either mode (the tunnel then serves only Portainer's hostname). Without one, a
- * connector OpsCrew left behind is removed.
+ * The app's own Cloudflare Tunnel connector (`/srv/opscrew/cloudflared/<app>`, Compose project
+ * `<app>-tunnel`, with the token of the app's own tunnel) runs whenever the caller passes one:
+ * tunnel mode, or a Portainer subdomain in either mode (the tunnel then serves only Portainer's
+ * hostname). Without one, the app's connector OpsCrew left behind is removed. Other apps'
+ * connectors are never touched.
  */
 function tunnelStep({
   facts,
   desired,
   found,
   findings,
-  others,
   projects,
 }: SetupContext): HostStep | undefined {
-  const tunnel = facts.tunnel;
+  const app = desired.app;
+  const tunnel = tunnelOf(facts, app);
   const tunnelMode = desired.access === "tunnel";
   if (desired.tunnel === undefined) {
-    // Another app on the server may use it.
-    if ((!tunnel.installed && !tunnel.running) || others.length > 0) return undefined;
+    if (!tunnel.installed) return undefined;
     return step(
       "tunnel-connector",
       TITLES.removeTunnel,
       "change",
-      { remove: true },
-      "No Cloudflare Tunnel is planned any more (the app is served directly and Portainer has no subdomain), so the connector is no longer needed.",
+      { remove: true, app },
+      "No Cloudflare Tunnel is planned any more (the app is served directly and Portainer has no subdomain), so the app's connector is no longer needed.",
     );
   }
   if (tunnelMode) {
@@ -1007,8 +1022,8 @@ function tunnelStep({
   const { compose, tunnelId } = desired.tunnel;
   // A different tunnel id means a new tunnel: its token must be written and the connector restarted.
   const sameTunnel = tunnel.tunnelId === tunnelId;
-  const params = { compose, tunnelId, needsToken: !tunnel.secretFile || !sameTunnel };
-  const title = `${TITLES.tunnel}${imageIn(compose)}`;
+  const params = { app, compose, tunnelId, needsToken: !tunnel.secretFile || !sameTunnel };
+  const title = `${TITLES.tunnel} of "${app}"${imageIn(compose)}`;
   if (
     tunnel.installed &&
     tunnel.composeSha256 === sha256Hex(compose) &&
@@ -1019,10 +1034,6 @@ function tunnelStep({
     return step("tunnel-connector", title, "in-place", params, "Already running.");
   }
   if (tunnel.installed && tunnel.tunnelId !== null && !sameTunnel) {
-    if (others.length > 0) {
-      found.push(findings.tunnelConnectorInUse());
-      return step("tunnel-connector", title, "blocked", params, "It runs another app's tunnel.");
-    }
     return step(
       "tunnel-connector",
       title,
@@ -1032,14 +1043,14 @@ function tunnelStep({
     );
   }
   const serves = tunnelMode
-    ? `the app answers it on 127.0.0.1:${TUNNEL_APP_PORT}`
+    ? `the shared edge answers it on 127.0.0.1:${TUNNEL_APP_PORT}`
     : "it serves only Portainer's subdomain (the app stays served directly)";
   return step(
     "tunnel-connector",
     title,
     "change",
     params,
-    `cloudflared runs as its own Compose project in /srv/opscrew/cloudflared and connects out to Cloudflare; no inbound port is opened, and ${serves}. Its token is written to a root-only file at apply time and is never part of this plan.`,
+    `cloudflared runs as the app's own Compose project ${tunnelProject(app)} in ${tunnelDir(app)} and connects out to Cloudflare; no inbound port is opened, and ${serves}. Its token is written to a root-only file at apply time and is never part of this plan.`,
   );
 }
 
@@ -1155,6 +1166,11 @@ function conflicts(
 ): string | undefined {
   const before = found.length;
   if (desired.app === EDGE_PROJECT) found.push(findings.reservedAppName(desired.app));
+  // The app's tunnel connector would run as another app's Compose project and take it over.
+  const project = tunnelProject(desired.app);
+  if (desired.tunnel !== undefined && readableRecords(facts.apps).some((r) => r.app === project)) {
+    found.push(findings.tunnelProjectTaken(project));
+  }
   const claim = { ...desired, access: accessMode(desired) };
   found.push(...claimFindings(facts.apps, facts.record?.apps ?? [], claim, findings));
   return found.length > before ? "See the findings." : undefined;
@@ -1163,11 +1179,12 @@ function conflicts(
 /**
  * The host plan that prepares the server for `desired`. Each step is shared by the apps on the
  * server (Docker, the deploy user, SSH hardening, ufw, the web filter, fail2ban, automatic
- * updates, the shared folders and, when asked for, the tunnel connector and Portainer) or the
- * app's own (its deploy key, its folders and its record). While other apps are on the server,
- * a shared part that is there stays as it is: it is planned only when missing. Each step is in
- * place, a change or blocked; every blocked step comes with a finding that says what was found
- * and what to do, and to run `command` (for example `opscrew provision`) again once it is fixed.
+ * updates, the shared folders and, when asked for, Portainer) or the app's own (its deploy key,
+ * its folders, its record and, when asked for, its tunnel connector). While other apps are on
+ * the server, a shared part that is there stays as it is: it is planned only when missing. Each
+ * step is in place, a change or blocked; every blocked step comes with a finding that says what
+ * was found and what to do, and to run `command` (for example `opscrew provision`) again once it
+ * is fixed.
  */
 export function planHost(facts: HostFacts, desired: DesiredHost, command: string): HostPlan {
   const f = parseFacts(facts);
@@ -1252,12 +1269,13 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
 /**
  * The host plan that removes the app `opts.app` from the server, and only its own parts: its
  * containers (by their Compose project label, so they go without a record too), its folder
- * `/srv/apps/<app>`, its deploy key while other apps stay, and its record. Its data
- * (`/srv/data/<app>`, its Compose volumes) is deleted only with `deleteData`; otherwise its record
- * stays as `data-kept`, so only its project can take the data again. With the last app the shared
- * edge goes too (the `opscrew-edge` project's containers, network and volumes, and `/srv/edge`
- * when OpsCrew created it), and the tunnel connector and Portainer (its data only with
- * `deleteData`). The server itself and OpsCrew's host settings stay (`planUndo` reverses those).
+ * `/srv/apps/<app>`, its site and kamal-proxy service on the shared edge, its tunnel connector, its
+ * deploy key while other apps stay, and its record. Its data (`/srv/data/<app>`, its Compose
+ * volumes) is deleted only with `deleteData`; otherwise its record stays as `data-kept`, so only
+ * its project can take the data again. With the last app the shared edge goes too (the
+ * `opscrew-edge` project's containers, network and volumes, and `/srv/edge` when OpsCrew created
+ * it), and Portainer (its data only with `deleteData`). The server itself and OpsCrew's host
+ * settings stay (`planUndo` reverses those).
  * Nothing is removed when the app's record names another project (`opts.projectId` is this
  * one's). Findings say to run `command` (for example `opscrew destroy`) again once fixed.
  */
@@ -1317,8 +1335,8 @@ export function planTeardown(
     step(
       "app-dirs",
       deleteData
-        ? `Remove the app "${app}": its containers, ${dirs.app}, and its data in ${dirs.data} and Compose volumes`
-        : `Remove the app "${app}": its containers and ${dirs.app} (its data in ${dirs.data} and Compose volumes stay)`,
+        ? `Remove the app "${app}": its containers, ${dirs.app}, its site on the shared edge, and its data in ${dirs.data} and Compose volumes`
+        : `Remove the app "${app}": its containers, ${dirs.app} and its site on the shared edge (its data in ${dirs.data} and Compose volumes stay)`,
       busy ? "change" : "in-place",
       { app, deleteData },
       busy
@@ -1335,6 +1353,17 @@ export function planTeardown(
         "change",
         { user: "deploy", keys: keys.join("\n") },
         `The deploy keys of ${quoted(others)} stay.`,
+      ),
+    );
+  }
+  if (tunnelOf(f, app).installed) {
+    steps.push(
+      step(
+        "tunnel-connector",
+        `${TITLES.removeTunnel} of "${app}" and its token file`,
+        "change",
+        { remove: true, app },
+        `Its Compose project ${tunnelProject(app)} and ${tunnelDir(app)}; other apps' connectors stay.`,
       ),
     );
   }
@@ -1359,13 +1388,6 @@ export function planTeardown(
             ? "No other OpsCrew app is left on this server."
             : `No other OpsCrew app is left on this server. ${EDGE_DIR} stays: it was there before OpsCrew.`,
         ),
-      );
-    }
-    if (f.tunnel.installed) {
-      steps.push(
-        step("tunnel-connector", `${TITLES.removeTunnel} and its token file`, "change", {
-          remove: true,
-        }),
       );
     }
     if (f.portainer.installed || (deleteData && f.portainer.dataVolume)) {
@@ -1470,12 +1492,20 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
       ),
     );
   }
-  if (entry("tunnel-connector") && (f.tunnel.installed || f.tunnel.running)) {
-    steps.push(
-      step("tunnel-connector", TITLES.removeTunnel, "change", {
-        remove: true,
-      }),
-    );
+  // Each app's teardown removes its connector; one left behind goes here.
+  if (entry("tunnel-connector")) {
+    for (const tunnel of f.tunnels) {
+      steps.push(
+        step(
+          "tunnel-connector",
+          `${TITLES.removeTunnel} of "${tunnel.app}"`,
+          "change",
+          { remove: true, app: tunnel.app },
+          undefined,
+          "shared",
+        ),
+      );
+    }
   }
   const runtime = entry("runtime-dirs");
   if (runtime) {
@@ -1697,17 +1727,17 @@ export function planPortainer(options: {
             id: "tunnel-connector",
             title: `${TITLES.removeTunnel} that served Portainer's subdomain`,
             state: "change",
-            scope: "shared",
-            params: { remove: true, dir: connector.dir, runAs },
+            scope: "app",
+            params: { remove: true, app, dir: connector.dir, runAs },
           }
         : {
             id: "tunnel-connector",
             title: `Run the Cloudflare Tunnel connector for Portainer's subdomain${imageIn(connector.compose)}`,
             state: "change",
-            scope: "shared",
-            reason:
-              "cloudflared runs as its own Compose project and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.",
+            scope: "app",
+            reason: `cloudflared runs as its own Compose project ${tunnelProject(app)} and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.`,
             params: {
+              app,
               compose: connector.compose,
               tunnelId: connector.tunnelId,
               needsToken: connector.needsToken,

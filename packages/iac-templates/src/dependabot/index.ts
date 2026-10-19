@@ -50,9 +50,15 @@ export const NO_MAJOR_UPDATES: readonly string[] = [
 /**
  * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper). A
  * Portainer target's stack template is committed here on the default branch too, the only branch
- * Dependabot reads; the orphan `opscrew-deploy` branch Portainer deploys holds only its copy.
+ * Dependabot reads; the orphan `opscrew-deploy` branch Portainer deploys holds only its copy. The
+ * shared edge (`opscrew/runtime/edge`) is left out: its pins move only with OpsCrew's releases
+ * and its version stamp, which decides which app's copy a server keeps.
  */
-const RUNTIME_FOLDERS = ["/opscrew/runtime", "/opscrew/runtime/*"];
+const RUNTIME_FOLDERS = [
+  "/opscrew/runtime",
+  "/opscrew/runtime/cloudflared",
+  "/opscrew/runtime/portainer",
+];
 
 function update(
   ecosystem: string,

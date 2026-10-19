@@ -198,6 +198,18 @@ describe("renderWorkflow", () => {
     expect(serverScript(plan())).toContain("docker compose pull");
   });
 
+  it("logs in to the registry in the app's own Docker settings, so another app's logout never stops its pull", () => {
+    const start = steps("deploy").find((s) => s.id === "start")?.run ?? "";
+    const login = start.split("\n").find((line) => line.includes("docker login ghcr.io")) ?? "";
+    expect(login).toContain('"DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u');
+    const script = serverScript(plan()).split("\n");
+    const exported = script.indexOf("export DOCKER_CONFIG=/srv/apps/shop/.docker");
+    expect(exported).toBeGreaterThan(-1);
+    // Set before the logout on exit and the pull, which both use it.
+    expect(exported).toBeLessThan(script.findIndex((line) => line.includes("docker logout")));
+    expect(exported).toBeLessThan(script.indexOf("docker compose pull"));
+  });
+
   it("deploys the exact pushed image by digest and keeps the SHA tag for humans", () => {
     expect(doc.jobs.build.outputs).toEqual({
       image: "${{ steps.final.outputs.ref }}",

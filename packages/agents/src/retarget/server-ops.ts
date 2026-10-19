@@ -1,18 +1,23 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
-import { durationText, errorMessage, OpsCrewError } from "@opscrew/core";
+import { durationText, errorMessage, OpsCrewError, type Redactor } from "@opscrew/core";
+import { appDir, EDGE_DIR } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
 
 /**
  * Typed server operations for moving a deployment between servers (feature 005). Every command is
  * fixed here; callers choose an operation and pass validated values, never shell text. Commands
- * run as the `deploy` user in `/srv/app`, where the deploy workflow keeps `compose.yaml` and the
- * `.env` file that names `APP_IMAGE`.
+ * run as the `deploy` user in the app's folder (`/srv/apps/<app>`), where the deploy workflow keeps
+ * `compose.yaml` and the `.env` file that names `APP_IMAGE`; Caddy is the shared edge's, in
+ * `/srv/edge`. A server OpsCrew creates runs one app.
  */
 
 /** Where the database dump lives on both servers while it is moved (mode 0600, owned by deploy). */
-export const DUMP_PATH = "/srv/app/opscrew-move.dump";
+export function dumpPath(folder: string): string {
+  return `${folder}/opscrew-move.dump`;
+}
 
-/** Compose services OpsCrew stops and starts during a move. */
+/** Compose services OpsCrew stops and starts during a move: the app's, and the edge's Caddy. */
 export type MoveService = "app" | "caddy";
 
 /** Passes user-visible text through the redactor (`deps.redactor.redact`). */
@@ -20,6 +25,18 @@ export type RedactText = (text: string) => string;
 
 export interface ServerOpOptions {
   redact: RedactText;
+  /** The app's folder on both servers (`appDir(plan)`, `/srv/apps/<app>`). */
+  folder: string;
+}
+
+/** {@link ServerOpOptions} for `plan`'s app, its text redacted by `redactor`. */
+export function serverOps(plan: DeployPlan, redactor: Pick<Redactor, "redact">): ServerOpOptions {
+  return { redact: redactor.redact, folder: appDir(plan) };
+}
+
+/** Where a service's Compose project is: the app's folder, or the edge's for Caddy. */
+function projectFolder(service: MoveService, options: Pick<ServerOpOptions, "folder">): string {
+  return service === "caddy" ? EDGE_DIR : options.folder;
 }
 
 const MINUTE = 60_000;
@@ -114,35 +131,37 @@ async function runStep(
   return check(result, full, timeoutMs, redact);
 }
 
-const composePsHint = (host: string) =>
-  `Connect to the server (\`ssh deploy@${host}\`), run \`docker compose ps\` in /srv/app to see what is running, then run \`opscrew retarget\` again.`;
+const composePsHint = (host: string, folder: string) =>
+  `Connect to the server (\`ssh deploy@${host}\`), run \`docker compose ps\` in ${folder} to see what is running, then run \`opscrew retarget\` again.`;
 
-/** Stops a Compose service (`app` or `caddy`) in `/srv/app`. */
+/** Stops a Compose service: `app` in the app's folder, or the edge's `caddy` in `/srv/edge`. */
 export async function stopService(
   remote: RemoteExec,
   service: MoveService,
   options: ServerOpOptions,
 ): Promise<void> {
+  const folder = projectFolder(service, options);
   await runStep(
     remote,
-    `cd /srv/app && docker compose stop ${service}`,
+    `cd ${folder} && docker compose stop ${service}`,
     2 * MINUTE,
-    { what: `stop ${SERVICE_LABEL[service]}`, hint: composePsHint(remote.host) },
+    { what: `stop ${SERVICE_LABEL[service]}`, hint: composePsHint(remote.host, folder) },
     options.redact,
   );
 }
 
-/** Starts a Compose service (`app` or `caddy`) in `/srv/app` with `docker compose up -d`. */
+/** Starts a Compose service (as {@link stopService} finds it) with `docker compose up -d`. */
 export async function startService(
   remote: RemoteExec,
   service: MoveService,
   options: ServerOpOptions,
 ): Promise<void> {
+  const folder = projectFolder(service, options);
   await runStep(
     remote,
-    `cd /srv/app && docker compose up -d ${service}`,
+    `cd ${folder} && docker compose up -d ${service}`,
     5 * MINUTE,
-    { what: `start ${SERVICE_LABEL[service]}`, hint: composePsHint(remote.host) },
+    { what: `start ${SERVICE_LABEL[service]}`, hint: composePsHint(remote.host, folder) },
     options.redact,
   );
 }
@@ -159,9 +178,10 @@ function healthCommand(port: number, healthPath: string): string {
       },
     );
   }
-  // A one-off Caddy container (busybox wget) on the Compose network: works whether or not the
+  // A one-off container of the edge's Caddy (busybox wget) on the edge's network, which the app's
+  // web service joins as `app` (a server OpsCrew creates runs one app): works whether or not the
   // `caddy` service is running (it is stopped on the new server until DNS points at it).
-  return `cd /srv/app && docker compose run --rm --no-deps -T --entrypoint wget caddy -q -O /dev/null -T 5 'http://app:${port}${healthPath}'`;
+  return `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget caddy -q -O /dev/null -T 5 'http://app:${port}${healthPath}'`;
 }
 
 async function probe(
@@ -228,20 +248,20 @@ export async function waitAppHealthy(
     "COMMAND_FAILED",
     `The app on ${remote.host} did not answer on http://app:${port}${healthPath} within ${durationText(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
     {
-      hint: `See why on the server: \`ssh deploy@${remote.host}\`, then \`cd /srv/app && docker compose logs --tail 200 app\`.`,
+      hint: `See why on the server: \`ssh deploy@${remote.host}\`, then \`cd ${options.folder} && docker compose logs --tail 200 app\`.`,
     },
   );
 }
 
-const dbHint = (host: string) =>
-  `Connect to the server (\`ssh deploy@${host}\`) and check the database with \`cd /srv/app && docker compose ps db\` and \`docker compose logs --tail 100 db\`.`;
+const dbHint = (host: string, folder: string) =>
+  `Connect to the server (\`ssh deploy@${host}\`) and check the database with \`cd ${folder} && docker compose ps db\` and \`docker compose logs --tail 100 db\`.`;
 
 /** Size of the `app` Postgres database in bytes. */
 export async function databaseSize(remote: RemoteExec, options: ServerOpOptions): Promise<number> {
-  const step = { what: "read the database size", hint: dbHint(remote.host) };
+  const step = { what: "read the database size", hint: dbHint(remote.host, options.folder) };
   const result = await runStep(
     remote,
-    `cd /srv/app && docker compose exec -T db psql -U app -d app -tAc "select pg_database_size('app')"`,
+    `cd ${options.folder} && docker compose exec -T db psql -U app -d app -tAc "select pg_database_size('app')"`,
     MINUTE,
     step,
     options.redact,
@@ -258,7 +278,7 @@ export async function databaseSize(remote: RemoteExec, options: ServerOpOptions)
 }
 
 /**
- * Writes a custom-format `pg_dump` of the `app` database to {@link DUMP_PATH} (created with
+ * Writes a custom-format `pg_dump` of the `app` database to {@link dumpPath} (created with
  * `umask 077`). Timeout scaled by {@link moveTimeoutMs}.
  */
 export async function dumpDatabase(
@@ -266,11 +286,13 @@ export async function dumpDatabase(
   sizeBytes: number,
   options: ServerOpOptions,
 ): Promise<void> {
+  const { folder } = options;
+  const dump = dumpPath(folder);
   await runStep(
     remote,
-    `cd /srv/app && umask 077 && rm -f ${DUMP_PATH} && docker compose exec -T db pg_dump -U app -Fc app > ${DUMP_PATH}`,
+    `cd ${folder} && umask 077 && rm -f ${dump} && docker compose exec -T db pg_dump -U app -Fc app > ${dump}`,
     moveTimeoutMs(sizeBytes),
-    { what: "dump the database", hint: dbHint(remote.host), filter: withoutData },
+    { what: "dump the database", hint: dbHint(remote.host, folder), filter: withoutData },
     options.redact,
   );
 }
@@ -287,15 +309,15 @@ export async function recreateDatabase(
 ): Promise<void> {
   await runStep(
     remote,
-    `cd /srv/app && docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
+    `cd ${options.folder} && docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
     2 * MINUTE,
-    { what: "empty the database", hint: dbHint(remote.host), filter: withoutData },
+    { what: "empty the database", hint: dbHint(remote.host, options.folder), filter: withoutData },
     options.redact,
   );
 }
 
 /**
- * Restores {@link DUMP_PATH} into the `app` database in one transaction. The database must be
+ * Restores {@link dumpPath} into the `app` database in one transaction. The database must be
  * empty ({@link recreateDatabase}); nothing is dropped first. Timeout scaled by
  * {@link moveTimeoutMs}.
  */
@@ -304,11 +326,13 @@ export async function restoreDatabase(
   sizeBytes: number,
   options: ServerOpOptions,
 ): Promise<void> {
+  const { folder } = options;
+  const dump = dumpPath(folder);
   await runStep(
     remote,
-    `cd /srv/app && chmod 600 ${DUMP_PATH} && docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${DUMP_PATH}`,
+    `cd ${folder} && chmod 600 ${dump} && docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
     moveTimeoutMs(sizeBytes),
-    { what: "restore the database", hint: dbHint(remote.host), filter: withoutData },
+    { what: "restore the database", hint: dbHint(remote.host, folder), filter: withoutData },
     options.redact,
   );
 }
@@ -318,7 +342,7 @@ const RELEASE_SERVICE = "release";
 const RELEASE_COMMAND = `docker compose run --rm --no-deps -T ${RELEASE_SERVICE}`;
 
 /**
- * True when `/srv/app/compose.yaml` on the server defines the `release` service: the deployed
+ * True when the app's `compose.yaml` on the server defines the `release` service: the deployed
  * version has a release command, and its deploy workflow runs it before each new version starts.
  */
 export async function hasReleaseService(
@@ -327,9 +351,9 @@ export async function hasReleaseService(
 ): Promise<boolean> {
   const result = await runStep(
     remote,
-    `cd /srv/app && docker compose --profile ${RELEASE_SERVICE} config --services`,
+    `cd ${options.folder} && docker compose --profile ${RELEASE_SERVICE} config --services`,
     MINUTE,
-    { what: "read the Compose services", hint: composePsHint(remote.host) },
+    { what: "read the Compose services", hint: composePsHint(remote.host, options.folder) },
     options.redact,
   );
   return result.stdout.split(/\r?\n/).some((line) => line.trim() === RELEASE_SERVICE);
@@ -344,19 +368,23 @@ export async function hasReleaseService(
  * `DbError { detail: … }`, SQLAlchemy `[parameters: …]`), so none of it reaches errors, logs or
  * the audit log. The hint says how to see it on the server.
  */
-export async function runRelease(remote: RemoteExec, sizeBytes: number): Promise<void> {
+export async function runRelease(
+  remote: RemoteExec,
+  sizeBytes: number,
+  options: Pick<ServerOpOptions, "folder">,
+): Promise<void> {
   const timeoutMs = moveTimeoutMs(sizeBytes);
   const failed = (why: string) =>
     new OpsCrewError(
       "COMMAND_FAILED",
       `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${remote.host}: ${why} (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).`,
       {
-        hint: `The old server keeps serving your users. See the release command's full output on the new server: \`ssh deploy@${remote.host}\`, then \`cd /srv/app && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
+        hint: `The old server keeps serving your users. See the release command's full output on the new server: \`ssh deploy@${remote.host}\`, then \`cd ${options.folder} && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
       },
     );
   let result: CommandResult;
   try {
-    result = await remote.run(`cd /srv/app && ${RELEASE_COMMAND}`, { timeoutMs });
+    result = await remote.run(`cd ${options.folder} && ${RELEASE_COMMAND}`, { timeoutMs });
   } catch {
     throw failed("the SSH connection failed");
   }
@@ -365,7 +393,7 @@ export async function runRelease(remote: RemoteExec, sizeBytes: number): Promise
 }
 
 /**
- * Checks the dump at {@link DUMP_PATH}: Postgres can read its table of contents
+ * Checks the dump at {@link dumpPath}: Postgres can read its table of contents
  * (`pg_restore --list`), and returns its SHA-256, so the copy on the new server can be compared
  * with the dump on the old one before anything is dropped. Timeout scaled by {@link moveTimeoutMs}.
  */
@@ -374,14 +402,16 @@ export async function verifyDump(
   sizeBytes: number,
   options: ServerOpOptions,
 ): Promise<string> {
+  const { folder } = options;
+  const dump = dumpPath(folder);
   const step = {
     what: "read the database dump",
-    hint: `The dump is incomplete or damaged; OpsCrew makes a new one when you run \`opscrew retarget\` again. If it fails again, check the free disk space on both servers (\`ssh deploy@${remote.host} df -h /srv/app\`).`,
+    hint: `The dump is incomplete or damaged; OpsCrew makes a new one when you run \`opscrew retarget\` again. If it fails again, check the free disk space on both servers (\`ssh deploy@${remote.host} df -h ${folder}\`).`,
     filter: withoutData,
   };
   const result = await runStep(
     remote,
-    `cd /srv/app && docker compose exec -T db pg_restore --list < ${DUMP_PATH} > /dev/null && sha256sum ${DUMP_PATH}`,
+    `cd ${folder} && docker compose exec -T db pg_restore --list < ${dump} > /dev/null && sha256sum ${dump}`,
     moveTimeoutMs(sizeBytes),
     step,
     options.redact,
@@ -397,20 +427,20 @@ export async function verifyDump(
   return hash;
 }
 
-/** The command, in backticks, that deletes {@link DUMP_PATH} on `host` by hand. */
-export function removeDumpByHand(host: string): string {
-  return `\`ssh deploy@${host} rm -f ${DUMP_PATH}\``;
+/** The command, in backticks, that deletes {@link dumpPath} on `host` by hand. */
+export function removeDumpByHand(host: string, folder: string): string {
+  return `\`ssh deploy@${host} rm -f ${dumpPath(folder)}\``;
 }
 
-/** Deletes {@link DUMP_PATH}; a missing file is not an error. */
+/** Deletes {@link dumpPath}; a missing file is not an error. */
 export async function removeDump(remote: RemoteExec, options: ServerOpOptions): Promise<void> {
   await runStep(
     remote,
-    `rm -f ${DUMP_PATH}`,
+    `rm -f ${dumpPath(options.folder)}`,
     MINUTE,
     {
       what: "remove the database dump",
-      hint: `Delete it by hand: ${removeDumpByHand(remote.host)}.`,
+      hint: `Delete it by hand: ${removeDumpByHand(remote.host, options.folder)}.`,
     },
     options.redact,
   );
@@ -428,20 +458,20 @@ export interface CopyDumpOptions extends ServerOpOptions {
   sizeBytes: number;
 }
 
-function scpTarget(host: string): string {
+function scpTarget(host: string, folder: string): string {
   if (!/^[A-Za-z0-9:][A-Za-z0-9.:-]*$/.test(host)) {
     throw new OpsCrewError("INVALID_INPUT", `${JSON.stringify(host)} is not a server address.`);
   }
-  return `deploy@${host.includes(":") ? `[${host}]` : host}:${DUMP_PATH}`;
+  return `deploy@${host.includes(":") ? `[${host}]` : host}:${dumpPath(folder)}`;
 }
 
 /**
- * Copies {@link DUMP_PATH} from the old to the new server through this computer (`scp -3`), with
+ * Copies {@link dumpPath} from the old to the new server through this computer (`scp -3`), with
  * the same key, pinned host keys and options as every other OpsCrew SSH connection.
  */
 export async function copyDump(runner: CommandRunner, options: CopyDumpOptions): Promise<void> {
-  const source = scpTarget(options.from);
-  const destination = scpTarget(options.to);
+  const source = scpTarget(options.from, options.folder);
+  const destination = scpTarget(options.to, options.folder);
   const ssh = sshArgs({
     host: options.from,
     keyFile: options.keyFile,

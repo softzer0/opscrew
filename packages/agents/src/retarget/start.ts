@@ -19,7 +19,7 @@ import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
 import { ownServerNoMove, portainerTargetNoMove } from "../shared/vps-target";
-import { databaseSize } from "./server-ops";
+import { databaseSize, serverOps } from "./server-ops";
 import { recordMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, pinHost, remoteFor, saveMove } from "./session";
 import {
@@ -308,7 +308,7 @@ export async function startMove(
     await pinHost(session, oldHost, from.provider);
     deps.reporter.step("Measuring the database on the old server");
     const old = remoteFor(deps, services, session.deployKey.privateKeyFile, oldHost);
-    databaseBytes = await databaseSize(old, deps.redactor);
+    databaseBytes = await databaseSize(old, serverOps(plan, deps.redactor));
   }
   const summary = moveSummary(plan, target, chosen, databaseBytes, buildChanges(plan, next));
   deps.reporter.info(summaryText(summary, plan));

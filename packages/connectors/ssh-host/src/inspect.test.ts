@@ -6,7 +6,7 @@ import { deployApp, FakeHost, type OsPreset } from "./__fixtures__/fake-host";
 import { desiredFor, planFor, provision } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
 import { dockerFirewall, inspectHost, inspectScript, RUNTIME_FILES_SNIPPET } from "./inspect";
-import { parseAppRecords, parseDirs, parseRuntimeFiles, splitSections } from "./parse";
+import { parseAddons, parseAppRecords, parseDirs, parseRuntimeFiles, splitSections } from "./parse";
 import { planHost } from "./plan";
 import { appRecord } from "./steps";
 
@@ -172,7 +172,16 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
         mode: "644",
         sha256: sum(fake.appFiles.get("shop")?.get("compose.yaml")?.content ?? ""),
       },
-      { app: "shop", name: "Caddyfile", kind: "absent", sha256: null },
+      // The app's site on the shared edge.
+      {
+        app: "shop",
+        name: "site",
+        kind: "file",
+        owner: "deploy",
+        group: "deploy",
+        mode: "644",
+        sha256: sum(fake.files.get("/srv/edge/sites/shop.caddy") ?? ""),
+      },
       {
         app: "shop",
         name: ".env",
@@ -207,7 +216,7 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
       try {
         const secret = fakeSecret("generic-password", "app-env");
         sh.write("/srv/apps/shop/compose.yaml", "services: {}\n");
-        sh.write("/srv/apps/shop/Caddyfile", ":80 {\n}\n");
+        sh.write("/srv/edge/sites/shop.caddy", ":80 {\n}\n");
         sh.write("/srv/apps/shop/app.env", `SECRET_KEY=${secret}\n`);
         sh.write("/srv/apps/shop/db.env", `POSTGRES_PASSWORD=${secret}\n`);
         sh.write("/srv/apps/blog/compose.yaml", "services: {}\n");
@@ -224,7 +233,11 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
           kind: "file",
           sha256: sum("services: {}\n"),
         });
-        expect(byName.get("Caddyfile")?.sha256).toBe(sum(":80 {\n}\n"));
+        // The app's site is read on the shared edge; blog has none there.
+        expect(byName.get("site")?.sha256).toBe(sum(":80 {\n}\n"));
+        expect(files.find((file) => file.app === "blog" && file.name === "site")?.kind).toBe(
+          "absent",
+        );
         expect(byName.get("app.env")).toMatchObject({ kind: "file", sha256: null });
         expect(byName.get("db.env")).toMatchObject({ kind: "file", sha256: null });
         expect(byName.get(".env")).toEqual({
@@ -278,7 +291,7 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
         [
           `shop app.env file deploy deploy 600 ${hash}`,
           "shop compose.yaml link",
-          `shop Caddyfile file root root 644 ${hash}`,
+          `shop site file root root 644 ${hash}`,
           "shop unknown.txt file root root 644 -",
           "Bad compose.yaml link",
         ].join("\n"),
@@ -287,7 +300,7 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
       { app: "shop", name: "compose.yaml", kind: "link", sha256: null },
       {
         app: "shop",
-        name: "Caddyfile",
+        name: "site",
         kind: "file",
         owner: "root",
         group: "root",
@@ -323,8 +336,16 @@ describe("inspectHost: the apps' records and folders (real shell)", () => {
         sh.write("/srv/apps/shop/compose.yaml", "services: {}\n");
         sh.write("/srv/data/shop/PG_VERSION", "17\n");
         sh.write("/srv/data/Bad Name/x", "\n");
+        // Each app's tunnel connector in its own folder.
+        const tunnelId = "6f1d0c2e-1111-4a5b-9c3d-0123456789ab";
+        sh.write("/srv/opscrew/cloudflared/shop/compose.yaml", "services: {}\n");
+        sh.write("/srv/opscrew/cloudflared/shop/tunnel.id", `${tunnelId}\n`);
+        sh.write("/srv/opscrew/cloudflared/Bad Name/compose.yaml", "services: {}\n");
         // The harness moves the paths under its root; the server prints them as they are.
         const sections = splitSections(sh.run(inspectScript()).stdout.replaceAll(sh.root, ""));
+        const addons = parseAddons(sections.get("addons")?.text ?? "");
+        expect([...addons.keys()]).toEqual(["tunnel:shop"]);
+        expect(addons.get("tunnel:shop")).toMatchObject({ secretFile: false, tunnelId });
         expect(parseAppRecords(sections.get("apps")?.text ?? "")).toEqual([
           { name: "blog", record: null },
           { name: "shop", record },
@@ -335,7 +356,6 @@ describe("inspectHost: the apps' records and folders (real shell)", () => {
           ["/srv/edge", "absent"],
           ["/srv/apps", "dir"],
           ["/srv/data", "dir"],
-          ["/srv/app", "absent"],
           ["/srv/apps/shop", "dir"],
           ["/srv/data/shop", "dir"],
         ]);

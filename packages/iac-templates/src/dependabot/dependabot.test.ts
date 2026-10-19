@@ -145,7 +145,7 @@ describe("renderDependabot", () => {
     expect(entries(updates(sample, deployPlan))).toEqual([
       "npm /",
       "docker /apps/web",
-      "docker-compose /opscrew/runtime,/opscrew/runtime/*",
+      "docker-compose /opscrew/runtime,/opscrew/runtime/cloudflared,/opscrew/runtime/portainer",
       "github-actions /",
     ]);
     // An app in a folder that is not a workspace has its manifest there.
@@ -158,8 +158,22 @@ describe("renderDependabot", () => {
     // template there; the `opscrew-deploy` branch only gets the copy with each new image.
     expect(PORTAINER_STACK_TEMPLATE_PATH).toBe("opscrew/runtime/compose.yaml");
     expect(entries(updates(facts({}), portainerTestPlan()))).toContain(
-      "docker-compose /opscrew/runtime,/opscrew/runtime/*",
+      "docker-compose /opscrew/runtime,/opscrew/runtime/cloudflared,/opscrew/runtime/portainer",
     );
+  });
+
+  it("leaves the shared edge out: its pins move only with OpsCrew's version stamp", () => {
+    const [sample, deployPlan] = EXAMPLES["monorepo-two-apps (pnpm workspace member)"] as [
+      ProjectFacts,
+      DeployPlan,
+    ];
+    const compose = updates(sample, deployPlan).find(
+      (u) => u["package-ecosystem"] === "docker-compose",
+    );
+    for (const dir of compose?.directories ?? []) {
+      expect(dir).not.toContain("*");
+      expect(dir.startsWith("/opscrew/runtime/edge")).toBe(false);
+    }
   });
 
   it("covers each language the builders take", () => {

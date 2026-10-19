@@ -21,12 +21,12 @@ import {
   READY_FLAG,
   RECORD_PATH,
   RUNTIME_FILE_NAMES,
+  runtimeFilePath,
   SHARED_DIRS,
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
-  TUNNEL_DIR,
-  TUNNEL_PROJECT,
+  TUNNELS_DIR,
 } from "../constants";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { WEB_FILTER_DROP_IN, WEB_FILTER_SCRIPT, WEB_FILTER_UNIT } from "../web-filter";
@@ -258,6 +258,10 @@ export class FakeHost implements RemoteExec {
   appFiles = new Map<string, Map<string, FakeFile>>();
   /** Docker networks by name (the edge's network). */
   networks = new Set<string>();
+  /** The edge's kamal-proxy services, by app (a deploy registers its app). */
+  proxyServices = new Set<string>();
+  /** `docker compose … up -d kamal-proxy` of the shared edge fails. */
+  edgeUpFails = false;
   /** The `flags` of /proc/cpuinfo (x86 only; AVX by default). */
   cpuFlags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov sse sse2 ssse3 sse4_1 sse4_2 avx avx2";
   portainerAdmin = false;
@@ -651,7 +655,14 @@ export class FakeHost implements RemoteExec {
       apps
         .flatMap((app) =>
           RUNTIME_FILE_NAMES.map((name) => {
-            const file = this.appFiles.get(app)?.get(name);
+            // The app's site on the edge is a file of the edge's folder (deploy:deploy, 644).
+            const site = this.files.get(runtimeFilePath(app, "site"));
+            const file =
+              name === "site"
+                ? site === undefined
+                  ? undefined
+                  : { content: site, owner: "deploy", group: "deploy", mode: "644" }
+                : this.appFiles.get(app)?.get(name);
             if (file === undefined) return `${app} ${name} absent`;
             if (file.kind !== undefined) return `${app} ${name} ${file.kind}`;
             const hashed = (HASHED_RUNTIME_FILES as readonly string[]).includes(name);
@@ -678,9 +689,20 @@ export class FakeHost implements RemoteExec {
       const id = this.files.get(`${dir}/tunnel.id`)?.trim() || "-";
       return `${name} installed ${sha256(compose)} ${this.files.get(`${dir}/${secret}`) ? "yes" : "no"} ${id}`;
     };
+    // Each app's tunnel connector in its folder of /srv/opscrew/cloudflared.
+    const tunnelApps = [
+      ...new Set(
+        [...this.files.keys()]
+          .map((path) => new RegExp(`^${TUNNELS_DIR}/([a-z0-9-]+)/`).exec(path)?.[1])
+          .filter((app): app is string => app !== undefined),
+      ),
+    ].sort();
     add(
       "addons",
-      [addon("tunnel", TUNNEL_DIR, "tunnel.env"), addon("portainer", PORTAINER_DIR, "admin_password")].join("\n"),
+      [
+        ...tunnelApps.map((app) => addon(`tunnel:${app}`, `${TUNNELS_DIR}/${app}`, "tunnel.env")),
+        addon("portainer", PORTAINER_DIR, "admin_password"),
+      ].join("\n"),
     );
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
@@ -1206,11 +1228,23 @@ export class FakeHost implements RemoteExec {
         const ok =
           !this.running(p.APP ?? "") &&
           !this.dirs.has(p.APP_DIR ?? "") &&
+          !this.files.has(p.SITE ?? "") &&
           !(wipe && (this.dirs.has(p.DATA_DIR ?? "") || this.volumes.has(p.APP ?? "")));
         return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
       }
       case "app-dirs.teardown.apply": {
         this.removeProject(p.APP ?? "", p.DELETE_DATA === "true");
+        this.files.delete(p.SITE ?? "");
+        if (this.files.has(p.EDGE_COMPOSE ?? "")) {
+          // kamal-proxy is started (when stopped) before the app's route goes.
+          if (this.edgeUpFails) {
+            return fail("The shared edge's kamal-proxy did not start, so OpsCrew could not remove the app's route from it.");
+          }
+          for (const container of this.containers) {
+            if (container.project === EDGE_PROJECT && container.name.includes("kamal-proxy")) container.stopped = false;
+          }
+          this.proxyServices.delete(p.APP ?? "");
+        }
         this.removeDir(p.APP_DIR ?? "");
         this.appFiles.delete(p.APP ?? "");
         if (p.DELETE_DATA === "true") this.removeDir(p.DATA_DIR ?? "");
@@ -1410,13 +1444,13 @@ export class FakeHost implements RemoteExec {
 }
 
 /**
- * Puts the app's runtime on the fake (as a deploy would): its web container (and its own
- * cloudflared in tunnel mode), its files and data, and the shared edge when it is not there yet
- * (Caddy publishing the web ports in public mode, kamal-proxy, their network and volume).
+ * Puts the app's runtime on the fake (as a deploy would): its web container and kamal-proxy
+ * service, its files, its site and data, and the shared edge when it is not there yet (Caddy
+ * publishing the web ports in public mode, kamal-proxy, their network and volume).
  */
 export function deployApp(fake: FakeHost, app: string, access: "public" | "tunnel" = "public"): void {
   fake.containers.push({ name: `${app}-web-1`, project: app, ports: "" });
-  if (access === "tunnel") fake.containers.push({ name: `${app}-cloudflared-1`, project: app, ports: "" });
+  fake.proxyServices.add(app);
   if (!fake.containers.some((container) => container.project === EDGE_PROJECT)) {
     fake.containers.push(
       {

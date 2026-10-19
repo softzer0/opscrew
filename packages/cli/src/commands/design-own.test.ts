@@ -86,7 +86,8 @@ describe("opscrew design on a server the user owns", () => {
 
   it("shows the option table without a price or a budget column value in a terminal", async () => {
     const prompts = new ScriptedPrompts(["own-server"]);
-    const s = await setup({ interactive: true, prompts, memoryGb: 1 });
+    // Big enough for the containers' memory limits (design refuses below that), small for the users.
+    const s = await setup({ interactive: true, prompts, memoryGb: 1.6 });
     const ctx = s.context();
     expect(await run(ctx, "design", "--host-key", ED25519_FINGERPRINT), ctx.errors).toBe(0);
     const choice = prompts.calls.find((call) => call.kind === "select");

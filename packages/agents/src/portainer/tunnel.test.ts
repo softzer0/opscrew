@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApplyOptions, HostPlan } from "@opscrew/connector-ssh-host";
-import { hostPlanHash } from "@opscrew/connector-ssh-host";
+import { hostPlanHash, tunnelOf } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -427,12 +427,12 @@ async function ownOnSubdomain(o: { never?: boolean } = {}) {
     tunnel_token: `eyJ${fakeSecret("cloudflare-token", "own-portainer-tunnel")}`,
   };
   await portainerEnable(deps, { ...SUBDOMAIN, services });
-  expect(host.facts.tunnel.running).toBe(true);
+  expect(tunnelOf(host.facts, "shop").running).toBe(true);
   deleting = true;
   events.length = 0;
   deps.fetch = fakeTunnelApi({
     events,
-    connectorRunning: () => host.facts.tunnel.running,
+    connectorRunning: () => tunnelOf(host.facts, "shop").running,
     ...(o.never !== undefined ? { never: o.never } : {}),
   }).fetch;
   handler.requests.length = 0;
@@ -463,7 +463,7 @@ describe.skipIf(!hasGit)(
         "poll",
         "iac-apply",
       ]);
-      expect(s.host.facts.tunnel.running).toBe(false);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(false);
       expect(result).toMatchObject({ applied: true, hostApplied: true });
       expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
       expect(s.deps.reporter.text()).not.toContain(ORIGIN_IP);
@@ -514,7 +514,7 @@ describe.skipIf(!hasGit)(
         "poll",
         "iac-apply",
       ]);
-      expect(s.host.facts.tunnel.running).toBe(false);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(false);
       expect(s.deps.reporter.text()).toContain(SERVER_GOES_FIRST);
     });
 
@@ -538,7 +538,7 @@ describe.skipIf(!hasGit)(
       expect(error.hint).toBe(
         `Run \`opscrew provision --approve ${iac?.planHash} --approve ${host?.planHash}\` when you are ready, typing shop to confirm: the change on your server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
       );
-      expect(s.host.facts.tunnel.running).toBe(true);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(true);
     });
   },
 );

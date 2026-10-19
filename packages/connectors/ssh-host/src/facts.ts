@@ -75,7 +75,7 @@ const DirSchema = z.object({
 export type DirFact = z.infer<typeof DirSchema>;
 
 const RuntimeFileSchema = z.object({
-  /** The app whose folder (`/srv/apps/<app>`) holds the file. */
+  /** The app the file belongs to (where it is: `runtimeFilePath`). */
   app: z.string(),
   name: z.enum(RUNTIME_FILE_NAMES),
   /** `link` is a symbolic link (never followed), `other` neither a regular file nor a link. */
@@ -107,6 +107,9 @@ const AddonSchema = z.object({
   tunnelId: z.string().nullable(),
 });
 export type AddonFact = z.infer<typeof AddonSchema>;
+
+/** An app's Cloudflare Tunnel connector (`/srv/opscrew/cloudflared/<app>`, project `<app>-tunnel`). */
+const TunnelSchema = AddonSchema.extend({ app: z.string() });
 
 const WebFilterRulesSchema = z.object({
   /** OpsCrew's chain `OPSCREW-WEB`, null when it does not exist. */
@@ -278,8 +281,8 @@ export const HostFactsSchema = z.object({
    */
   dirs: z.array(DirSchema),
   /**
-   * OpsCrew's runtime files in each app's folder (see {@link RUNTIME_FILE_NAMES}): checksums of
-   * the rendered ones, only presence, owner and mode of the ones that hold secrets.
+   * OpsCrew's runtime files of each app with a folder (see {@link RUNTIME_FILE_NAMES}): checksums
+   * of the rendered ones, only presence, owner and mode of the ones that hold secrets.
    */
   runtimeFiles: z.array(RuntimeFileSchema),
   /** Every OpsCrew app on the server, by name; `record` is null when its file is damaged. */
@@ -288,13 +291,31 @@ export const HostFactsSchema = z.object({
   recordDamaged: z.boolean(),
   /** Dead-man switches still waiting on the server (from an interrupted apply). */
   pendingUndo: z.object({ sshd: z.boolean(), ufw: z.boolean() }),
-  tunnel: AddonSchema,
+  /** Each app's tunnel connector whose folder exists, by app (see {@link tunnelOf}). */
+  tunnels: z.array(TunnelSchema),
   portainer: AddonSchema,
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;
+
+/**
+ * `app`'s tunnel connector as inspection found it in its folder; none without the folder (a
+ * container of a project named `<app>-tunnel` alone may be another app's, so it never counts).
+ */
+export function tunnelOf(facts: Pick<HostFacts, "tunnels">, app: string): AddonFact {
+  return (
+    facts.tunnels.find((tunnel) => tunnel.app === app) ?? {
+      installed: false,
+      composeSha256: null,
+      running: false,
+      secretFile: false,
+      dataVolume: false,
+      tunnelId: null,
+    }
+  );
+}
 
 /** The records of the apps on the server that could be read (`HostFacts["apps"]`). */
 export function readableRecords(apps: HostFacts["apps"]): AppRecord[] {

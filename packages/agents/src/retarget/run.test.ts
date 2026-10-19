@@ -412,7 +412,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       what: "different from the old server's dump",
       result: {
         exitCode: 0,
-        stdout: `${"0".repeat(64)}  /srv/app/opscrew-move.dump\n`,
+        stdout: `${"0".repeat(64)}  /srv/apps/shop/opscrew-move.dump\n`,
         stderr: "",
       },
     },

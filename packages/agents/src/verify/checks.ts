@@ -1,4 +1,5 @@
 import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
+import { tunnelProject } from "@opscrew/connector-ssh-host";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { normalizeHostName, upperFirst } from "@opscrew/core";
 import { tunnelMode } from "@opscrew/iac-templates";
@@ -128,7 +129,7 @@ function serverRunningHint(plan: DeployPlan): string {
     return `that the ${profile.serverNoun} is running (${providerConsole(profile)})`;
   }
   return tunnelMode(plan)
-    ? "that your server is running and its Cloudflare Tunnel connector is up (`docker compose -p opscrew-tunnel ps` on the server)"
+    ? `that your server is running and the app's Cloudflare Tunnel connector is up (\`docker compose -p ${tunnelProject(plan.app.name)} ps\` on the server)`
     : "that your server is running";
 }
 

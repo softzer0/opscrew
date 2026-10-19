@@ -36,16 +36,17 @@ function withDocker(): FakeHost {
 
 describe("ufw that is on but lets everything in (T927)", () => {
   it("keeps plans where the default incoming policy already denies exactly as before", async () => {
-    // The hashes these fake servers give without a default to change (pinned since 013's layout).
+    // The hashes these fake servers give without a default to change (pinned since 013's layout
+    // without /srv/app).
     expect(hostPlanHash(await planFor(activeUfw("deny")))).toBe(
-      "1cfb8e601e9ebb9ade0fdf31295b6736499cc37122c66848a38af319d7485a93",
+      "e838c958bd6032772cf0220d7b99d6133a8d7ecdbc0ba7de7fde36a96f4c11e7",
     );
     const covered = activeUfw("deny");
     covered.ufwRules = WEB;
     const plan = await planFor(covered);
     expect(stepOf(plan, "ufw")).toMatchObject({ state: "in-place", reason: "Already set." });
     expect(hostPlanHash(plan)).toBe(
-      "57970c4c3d14a1bead040bf1b7c87ec3f174de2870b5deeefd6edd6f5e65d8ac",
+      "dc5ded9f98241b628309e8da255afe8e796cf68b8f72687c14b7128cae342db5",
     );
     const reject = activeUfw("reject");
     reject.ufwRules = WEB;
@@ -162,7 +163,7 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
   it("keeps today's step on servers with only OpsCrew's containers or none", async () => {
     const idle = withDocker();
     expect(hostPlanHash(await planFor(idle))).toBe(
-      "22c3e33e51bb735ff784e15fbe632aa04e9d6d76a4fb6e852883b791f6e30008",
+      "c3d6c13dba552022cbe09e29ee462d20300d757ddce5e86eb5b716d839ecfe1b",
     );
     // A server OpsCrew prepared whose daemon.json is gone again, running only the app.
     const own = withDocker();
@@ -175,11 +176,11 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
     const plan = await planFor(own);
     expect(stepOf(plan, "docker-daemon")?.state).toBe("change");
     expect(hostPlanHash(plan)).toBe(
-      "5f8859eb3ef52a901911f3a4fed5bd677d77db3d445d32f8e73e3c4d59dd61c8",
+      "d15b12eee239bc78b864142edce40e8ed25281bca6a9ba443ee4ab04a5203936",
     );
-    // OpsCrew's add-ons are its own too.
+    // OpsCrew's add-ons are its own too: the app's tunnel connector and Portainer.
     own.containers.push(
-      { name: "opscrew-tunnel-cloudflared-1", project: "opscrew-tunnel", ports: "" },
+      { name: "shop-tunnel-cloudflared-1", project: "shop-tunnel", ports: "" },
       { name: "opscrew-portainer-portainer-1", project: "opscrew-portainer", ports: "" },
     );
     expect(stepOf(await planFor(own), "docker-daemon")?.state).toBe("change");

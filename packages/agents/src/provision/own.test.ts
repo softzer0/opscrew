@@ -6,6 +6,7 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   HostApplyError,
   type HostFacts,
+  HostFactsSchema,
   HostPlanSchema,
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
@@ -36,6 +37,7 @@ import {
   fakeSharedCloudflare,
   freshFacts,
   LAN_IPV4,
+  OTHER_DEPLOY_KEY,
   OWN_IPV4,
   OwnEngine,
   ownCloudflare,
@@ -48,8 +50,10 @@ import {
   TUNNEL_CHANGES,
   TUNNEL_ID,
   tunnelOutputs,
+  withOtherApp,
   writeArchitecture,
 } from "../testing";
+import { prepareOwnServer } from "./own";
 import { runProvision } from "./run";
 import { zeroTrustAuthDomain } from "./shared-cloudflare";
 import type { ProvisionOptions } from "./types";
@@ -504,36 +508,82 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect((await s.deps.state.read()).phases.provision?.status).toBe("failed");
   });
 
-  // T1308c: until the flows run several apps on one server.
-  it("stops before any change when another OpsCrew app is on the server", async () => {
-    const facts = freshFacts();
-    const blog = {
-      schemaVersion: 1 as const,
-      app: "blog",
-      projectId: "blog-1",
-      state: "active" as const,
-      access: "public" as const,
-      hostnames: ["blog.example.com"],
-      folders: { app: "/srv/apps/blog", data: "/srv/data/blog" },
-      composeProject: "blog",
-      services: [],
-      memoryMb: 512,
-      deployKey: "",
-    };
-    const s = await setup({ facts: { ...facts, apps: [{ name: "blog", record: blog }] } });
-    const error = (await runProvision(s.deps, {
+  it("keeps the inspected CPU flags in the run for the components' checks (AVX for MongoDB)", async () => {
+    const s = await setup({ facts: HostFactsSchema.parse({ ...freshFacts(), avx: false }) });
+    const run = await prepareOwnServer(s.deps, {
+      plan: ownPlan(),
+      options: { hostKey: ED25519_FINGERPRINT },
       services: s.services,
-      hostKey: ED25519_FINGERPRINT,
-    }).catch((e: unknown) => e)) as OpsCrewError;
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toBe(
-      'This server already runs the OpsCrew app "blog". One server runs one OpsCrew app for now; sharing a server between apps comes with a later version. Nothing was changed.',
-    );
-    expect(error.hint).toBe(
-      'Use another server, or remove "blog" first with opscrew destroy in its project.',
-    );
-    expect(s.engine.plans).toHaveLength(0);
+      deployPublicKey: OTHER_DEPLOY_KEY,
+      deployKeyFile: s.deps.paths.files.deployKey,
+      phase: "provision",
+      command: "opscrew provision",
+    });
+    expect(run.facts.avx).toBe(false);
     expect(s.host.applies).toHaveLength(0);
+  });
+
+  describe("next to another project's app on the server", () => {
+    // Both apps served directly with DNS only: the apps on a server share its firewall.
+    const direct = () => ownPlan({ proxied: false });
+
+    it("sets up only this app's own items; the shared parts and the other app stay as they are", async () => {
+      const s = await setup({ plan: direct(), facts: withOtherApp() });
+      const result = await runProvision(s.deps, {
+        services: s.services,
+        hostKey: ED25519_FINGERPRINT,
+      });
+      expect(result).toMatchObject({ applied: true, hostApplied: true });
+      const plan = s.host.applies[0]?.plan;
+      expect(plan?.otherApps).toEqual([{ app: "blog", deployKey: OTHER_DEPLOY_KEY }]);
+      const changed = plan?.steps.filter((step) => step.state === "change") ?? [];
+      expect(changed.map((step) => [step.id, step.scope])).toEqual([
+        ["deploy-key", "app"],
+        ["app-dirs", "app"],
+        ["app-record", "app"],
+      ]);
+      // The other app's deploy key stays authorized next to this app's.
+      expect(String(changed[0]?.params.keys).split("\n")).toContain(OTHER_DEPLOY_KEY);
+      expect(s.host.facts.apps.map((app) => app.name)).toEqual(["blog", "shop"]);
+      expect(s.host.facts.containers.map((c) => c.name)).toEqual(["blog-app-1"]);
+      // The deploy works in this app's folder only, and brings its own site to the shared edge.
+      const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
+      expect(workflow).toContain("cd /srv/apps/shop");
+      expect(workflow).not.toContain("/srv/apps/blog");
+      expect(workflow).toContain("cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy");
+    });
+
+    it("stops before any change at a hostname the other app serves, naming it", async () => {
+      const s = await setup({
+        plan: direct(),
+        facts: withOtherApp({ hostnames: ["shop.example.com"] }),
+      });
+      const error = (await runProvision(s.deps, {
+        services: s.services,
+        hostKey: ED25519_FINGERPRINT,
+      }).catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(
+        'The OpsCrew app "blog" on this server already serves shop.example.com, and a hostname belongs to one app.',
+      );
+      expect(error.hint).toContain("then run opscrew provision again");
+      expect(s.engine.plans).toHaveLength(0);
+      expect(s.host.applies).toHaveLength(0);
+    });
+
+    it("stops before any change for an app without a domain: only one app can take port 80", async () => {
+      const s = await setup({ plan: ownPlan({ domain: null }), facts: withOtherApp() });
+      const error = (await runProvision(s.deps, {
+        services: s.services,
+        hostKey: ED25519_FINGERPRINT,
+      }).catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(
+        'This app has no domain, so it would answer every request on port 80 of this server, and the OpsCrew app "blog" is already served here.',
+      );
+      expect(s.engine.plans).toHaveLength(0);
+      expect(s.host.applies).toHaveLength(0);
+    });
   });
 
   it("opscrew dns audits the server's inspection as dns and names itself to approve the host plan", async () => {

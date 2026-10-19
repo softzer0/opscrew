@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { CommandResult } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -10,6 +11,7 @@ import {
   createTestPhaseDeps,
   ED25519,
   ED25519_FINGERPRINT,
+  FakeHostServer,
   freshFacts,
   hostKeyBlob,
   LAN_IPV4,
@@ -19,6 +21,7 @@ import {
   RSA,
   ScriptedApprovalHandler,
   ScriptedRunner,
+  withOtherApp,
 } from "../testing";
 import {
   connectOwnServer,
@@ -28,6 +31,7 @@ import {
   ownServerLoginCheck,
   ownServerPublicAddress,
 } from "./own-server";
+import { inspectOwnServerForDesign } from "./own-server-design";
 import { sshArgs } from "./remote";
 import {
   type OwnServerConnectionInput,
@@ -509,6 +513,35 @@ describe("inspection facts for design", () => {
       diskFreeGb: 40,
       os: "Ubuntu 24.04.3 LTS",
     });
+  });
+
+  it("gives design the OpsCrew apps set up on the server with their memory limits, and AVX", async () => {
+    const { deps } = await connectSetup();
+    // An x86 CPU whose flags lack AVX (MongoDB 5 and later need it).
+    const facts = HostFactsSchema.parse({ ...withOtherApp({ memoryMb: 768 }), avx: false });
+    const input = await inspectOwnServerForDesign(deps, {
+      hostKey: ED25519_FINGERPRINT,
+      services: { host: new FakeHostServer(facts) },
+    });
+    expect(input.apps).toEqual([{ name: "blog", memoryMb: 768, tunnel: false }]);
+    expect(input.facts?.memoryGb).toBe(4);
+    expect(input.avx).toBe(false);
+    // An x86 CPU with AVX, where the other app runs its own tunnel connector.
+    const connector = {
+      app: "blog",
+      installed: true,
+      composeSha256: null,
+      running: true,
+      secretFile: true,
+      dataVolume: false,
+      tunnelId: null,
+    };
+    const tunnelled = HostFactsSchema.parse({ ...withOtherApp(), tunnels: [connector] });
+    const withAvx = await inspectOwnServerForDesign(deps, {
+      services: { host: new FakeHostServer(tunnelled) },
+    });
+    expect(withAvx.avx).toBe(true);
+    expect(withAvx.apps).toEqual([{ name: "blog", memoryMb: 512, tunnel: true }]);
   });
 
   it("refuses an architecture OpsCrew cannot build for", () => {

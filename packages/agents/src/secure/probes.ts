@@ -128,7 +128,7 @@ export async function probeOwnServerPorts(
             status: "fail",
             message: `Port ${web} does not answer, so visitors cannot reach the app.`,
             remediation:
-              "Check that Caddy is running (`docker compose ps` in /srv/app) and that the firewall (ufw, and any firewall of your hosting provider) allows ports 80 and 443.",
+              "Check that Caddy is running (`docker compose ps` in /srv/edge, OpsCrew's shared edge) and that the firewall (ufw, and any firewall of your hosting provider) allows ports 80 and 443.",
           },
     );
   }

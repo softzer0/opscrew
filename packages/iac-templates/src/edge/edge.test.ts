@@ -67,6 +67,11 @@ describe("the edge's Compose project", () => {
     expect(doc.networks).toEqual({ "opscrew-edge": { external: true } });
   });
 
+  it("limits the memory of Caddy (64 MB) and kamal-proxy (32 MB), without swap", () => {
+    expect(doc.services.caddy).toMatchObject({ mem_limit: "64m", memswap_limit: "64m" });
+    expect(doc.services["kamal-proxy"]).toMatchObject({ mem_limit: "32m", memswap_limit: "32m" });
+  });
+
   it("keeps kamal-proxy's routes on a named volume, so they survive a recreate", () => {
     const proxy = doc.services["kamal-proxy"] as Service;
     expect(proxy.volumes).toEqual(["kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy"]);
@@ -130,8 +135,8 @@ describe("the edge's Compose project", () => {
       renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
     );
     expect({ version: EDGE_VERSION, sha256: sha256Hex(files.join("\n")) }).toEqual({
-      version: 2026101901,
-      sha256: "e03c08e5d61dd1850e227429717db3f10c928f9d87aeacf90a28e1afdba38412",
+      version: 2026101902,
+      sha256: "d9243d7c30199687693384e10ae5623770dedd8c93c50b5dfe5e0e64524d3077",
     });
   });
 });

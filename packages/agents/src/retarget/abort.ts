@@ -1,5 +1,6 @@
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { appDir } from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
   type CostEstimate,
@@ -310,7 +311,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     deps.reporter.success(`The move is aborted; ${app} runs on the old ${old.noun} (${oldHost}).`);
   } else {
     deps.reporter.warn(
-      `The move is aborted, but the app on the old ${old.noun} (${oldHost}) does not answer its health check. Check it with \`ssh deploy@${oldHost}\` and \`cd /srv/app && docker compose ps\`.`,
+      `The move is aborted, but the app on the old ${old.noun} (${oldHost}) does not answer its health check. Check it with \`ssh deploy@${oldHost}\` and \`cd ${appDir(restored)} && docker compose ps\`.`,
     );
   }
   return {

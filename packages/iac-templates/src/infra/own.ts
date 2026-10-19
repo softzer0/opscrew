@@ -1,8 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
-import { webFilterMode } from "../runtime";
-import { tunnelMode } from "../tunnel";
+import { tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderContext } from "../types";
 import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {

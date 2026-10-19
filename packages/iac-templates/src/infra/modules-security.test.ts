@@ -116,7 +116,7 @@ describe("cloudflare-access module security", () => {
 });
 
 describe("tunnel connector security", () => {
-  it("serves cloudflared's metrics on loopback only", () => {
+  it("serves cloudflared's metrics on loopback only, on a free port of its own", () => {
     const compose = parse(
       renderTunnelConnectorCompose(
         testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
@@ -125,7 +125,7 @@ describe("tunnel connector security", () => {
     const command: string[] = compose.services.cloudflared.command;
     expect(command.slice(command.indexOf("--metrics"), command.indexOf("--metrics") + 2)).toEqual([
       "--metrics",
-      "127.0.0.1:20241",
+      "127.0.0.1:0",
     ]);
   });
 });

@@ -122,7 +122,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       "opscrew/infra/prod/main.tf",
       "opscrew/infra/modules/hetzner-vps/main.tf",
       "opscrew/runtime/compose.yaml",
-      "opscrew/runtime/Caddyfile",
+      "opscrew/runtime/edge/compose.yaml",
+      "opscrew/runtime/edge/sites/shop.caddy",
       ".github/workflows/opscrew-deploy.yml",
     ]) {
       await expect(readFile(join(root, file), "utf8")).resolves.toContain("OpsCrew");
@@ -1094,7 +1095,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     await runProvision(deps, { services });
     const after = await previewDeploymentFiles(deps, { services });
     expect(after.created).toEqual([]);
-    expect(after.unchanged).toContain("opscrew/runtime/Caddyfile");
+    expect(after.unchanged).toContain("opscrew/runtime/edge/sites/shop.caddy");
   });
 
   it("reports a failed apply with the engine's message", async () => {
@@ -1735,7 +1736,7 @@ describe.skipIf(!findExecutable("git"))("runProvision and Dependabot's configura
     expect(await committedIn(run)).not.toContain(DEPENDABOT);
     expect(writesOf(run)).not.toContain(DEPENDABOT);
     const missing =
-      "docker in /, docker-compose in /opscrew/runtime and /opscrew/runtime/*, github-actions in /";
+      "docker in /, docker-compose in /opscrew/runtime and /opscrew/runtime/cloudflared and /opscrew/runtime/portainer, github-actions in /";
     expect(run.deps.reporter.text()).toContain(
       `.github/dependabot.yml is yours, so OpsCrew left it as it is. OpsCrew's would also update: ${missing}.`,
     );

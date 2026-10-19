@@ -21,7 +21,7 @@ import {
   provisionOwn,
 } from "../drift/__fixtures__/own-project";
 import { hostPlanFile, readOwnServer, readServerAddresses } from "../shared";
-import { ED25519 } from "../testing";
+import { ED25519, OTHER_DEPLOY_KEY, withOtherApp } from "../testing";
 import { applyHostPlanApproved, savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
@@ -533,20 +533,52 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(`${later}\n${undo.remaining.join("\n")}`).not.toContain("--delete-data");
   });
 
-  it("never removes anything from a server that runs another OpsCrew app", async () => {
+  it("with a second app on the server, removes only this app's parts: the other app and the edge stay", async () => {
+    const s = await deployed();
+    s.host.facts = withOtherApp({ facts: s.host.facts });
+    const result = await runDestroy(s.deps, { services: services(s) });
+
+    const teardown = s.host.applies.at(-1)?.plan;
+    expect(teardown?.purpose).toBe("teardown");
+    expect(teardown?.otherApps).toEqual([{ app: "blog", deployKey: OTHER_DEPLOY_KEY }]);
+    // No edge (it goes with the last app); the deploy user keeps only the other app's key.
+    expect(teardown?.steps.map((step) => [step.id, step.scope])).toEqual([
+      ["app-dirs", "app"],
+      ["deploy-key", "app"],
+      ["app-record", "app"],
+    ]);
+    expect(teardown?.steps.find((step) => step.id === "deploy-key")?.params.keys).toBe(
+      OTHER_DEPLOY_KEY,
+    );
+    expect(s.host.facts.apps.map((app) => [app.name, app.record?.state])).toEqual([
+      ["blog", "active"],
+      // Its data stays (the default), so its record says so.
+      ["shop", "data-kept"],
+    ]);
+    expect(s.host.facts.containers.map((c) => c.project)).toEqual(["nextcloud", "blog"]);
+    expect(s.host.facts.dirs.find((dir) => dir.path === "/srv/edge")?.kind).toBe("dir");
+    expect(s.host.facts.dirs.find((dir) => dir.path === "/srv/apps/blog")?.kind).toBe("dir");
+    expect(result.remaining.join("\n")).toContain(
+      'The other OpsCrew app on your server ("blog") and what the apps share: the edge (Caddy and kamal-proxy), which goes with the last app.',
+    );
+  });
+
+  it("never removes an app of the same name that belongs to another project", async () => {
     const s = await deployed();
     const facts = structuredClone(s.host.facts);
-    facts.apps = facts.apps.map(({ record }) => {
-      const blog = { ...record, app: "blog", projectId: "other-project", composeProject: "blog" };
-      return { name: "blog", record: blog as typeof record };
-    });
+    facts.apps = facts.apps.map(({ name, record }) => ({
+      name,
+      record: record === null ? null : { ...record, projectId: "other-project" },
+    }));
     s.host.facts = HostFactsSchema.parse(facts);
     const before = { host: s.host.applies.length, engine: s.engine.applies.length };
     const error = await expectError(
       runDestroy(s.deps, { services: services(s) }),
       "PHASE_PRECONDITION",
     );
-    expect(error.message).toContain('runs the OpsCrew app "blog"');
+    expect(error.message).toBe(
+      'Your server runs an OpsCrew app named "shop" from another project, so OpsCrew removes nothing from it. Nothing was changed.',
+    );
     expect(s.handler.requests).toEqual([]);
     expect(s.host.applies).toHaveLength(before.host);
     expect(s.engine.applies).toHaveLength(before.engine);

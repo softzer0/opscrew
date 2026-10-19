@@ -2,7 +2,7 @@
  * Several OpsCrew apps on one server (feature 013, US5): one record per app, the host record that
  * lists them, the shared parts set up once, and conflicts refused before any change.
  */
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost } from "./__fixtures__/fake-host";
 import {
@@ -124,8 +124,7 @@ describe("a fresh server and the first app", () => {
     for (const dir of ["/srv/edge", "/srv/apps", "/srv/data", "/srv/apps/shop", "/srv/data/shop"]) {
       expect(fake.dirs.get(dir), dir).toMatchObject({ owner: "deploy", mode: "750" });
     }
-    // T1308b: /srv/app stays until the deploy works in /srv/apps/<app>.
-    expect(fake.dirs.get("/srv/app")).toMatchObject({ owner: "deploy", mode: "750" });
+    expect(fake.dirs.has("/srv/app")).toBe(false);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
 
     const again = await planFor(fake);
@@ -194,8 +193,8 @@ describe("a second app", () => {
     expect(plan.steps.every((step) => step.state === "in-place")).toBe(true);
   });
 
-  it("keeps the tunnel connector and Portainer another app runs, and never replaces its tunnel", async () => {
-    // "shop" is served directly, with Portainer on a subdomain through the tunnel connector.
+  it("keeps the tunnel connector and Portainer of another app, and runs its own connector beside them", async () => {
+    // "shop" is served directly, with Portainer on a subdomain through its tunnel connector.
     const fake = new FakeHost();
     const subdomain = { compose: TUNNEL_COMPOSE, tunnelId: TUNNEL_ID };
     await provision(fake, desiredFor(fake, { tunnel: subdomain, portainer: portainerDesired() }), {
@@ -208,11 +207,65 @@ describe("a second app", () => {
     expect(plain.steps.some((step) => ["tunnel-connector", "portainer"].includes(step.id))).toBe(
       false,
     );
-    // A tunnel of its own would replace the one that serves the subdomain of "shop".
+    // A tunnel of its own: its own connector, with its own token, next to the one of "shop".
     const other = { compose: TUNNEL_COMPOSE, tunnelId: "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef" };
     const tunnelled = await planFor(fake, blog(fake, { tunnel: other }));
-    expect(codes(tunnelled)).toEqual(["tunnel-connector-in-use"]);
-    expect(tunnelled.steps.find((step) => step.id === "tunnel-connector")?.state).toBe("blocked");
+    expect(codes(tunnelled)).toEqual([]);
+    const connector = tunnelled.steps.find((step) => step.id === "tunnel-connector");
+    expect(connector).toMatchObject({ state: "change", scope: "app" });
+    expect(connector?.params).toMatchObject({ app: "blog", tunnelId: other.tunnelId });
+    const shopToken = fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.env");
+    const blogToken = tunnelToken().replace("eyJ", "eyJblog");
+    await applyApproved(fake, tunnelled, { secrets: { tunnelToken: blogToken } });
+    expect(fake.files.get("/srv/opscrew/cloudflared/blog/tunnel.env")).toBe(
+      `TUNNEL_TOKEN=${blogToken}\n`,
+    );
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(shopToken);
+    expect(fake.files.get("/srv/opscrew/cloudflared/blog/tunnel.id")).toBe(`${other.tunnelId}\n`);
+    expect(fake.containers.map((container) => container.project)).toEqual(
+      expect.arrayContaining(["shop-tunnel", "blog-tunnel"]),
+    );
+    const facts = await inspectHost(fake);
+    expect(facts.tunnels.map((item) => [item.app, item.tunnelId, item.running])).toEqual([
+      ["blog", other.tunnelId, true],
+      ["shop", TUNNEL_ID, true],
+    ]);
+  });
+
+  it("refuses a tunnel connector whose Compose project is another app's name", async () => {
+    const fake = new FakeHost();
+    const other = { app: "shop-tunnel", projectId: "st-1", hostnames: ["st.example.com"] };
+    await provision(fake, tunnelDesired(fake, other), { secrets: { tunnelToken: tunnelToken() } });
+    deployApp(fake, "shop-tunnel", "tunnel");
+    const plan = await planFor(fake, tunnelDesired(fake));
+    expect(codes(plan)).toEqual(["tunnel-project-taken"]);
+    expect(plan.findings[0]?.message).toContain('the OpsCrew app "shop-tunnel" on this server');
+  });
+});
+
+describe("an app without a domain answers every name on port 80", () => {
+  it("is refused next to another app, naming it", async () => {
+    const fake = await withShop();
+    const plan = await planFor(fake, blog(fake, { hostnames: [] }));
+    expect(codes(plan)).toEqual(["no-domain-shared"]);
+    expect(plan.findings[0]?.message).toBe(
+      'This app has no domain, so it would answer every request on port 80 of this server, and the OpsCrew app "shop" is already served here. Only an app with its own domain can share a server.',
+    );
+    await expect(applyApproved(fake, plan)).rejects.toThrow(/cannot change this server yet/);
+    expect(fake.files.has("/etc/opscrew/apps/blog.json")).toBe(false);
+  });
+
+  it("keeps a second app off a server whose app has no domain", async () => {
+    const fake = new FakeHost();
+    await provision(fake, desiredFor(fake, { hostnames: [] }));
+    deployApp(fake, "shop");
+    const plan = await planFor(fake, blog(fake));
+    expect(codes(plan)).toEqual(["no-domain-shared"]);
+    expect(plan.findings[0]?.message).toContain(
+      'The OpsCrew app "shop" on this server has no domain',
+    );
+    // Alone on its server, an app without a domain is fine, and so is its own re-run.
+    expect(codes(await planFor(fake, desiredFor(fake, { hostnames: [] })))).toEqual([]);
   });
 });
 
@@ -261,15 +314,17 @@ describe("access modes: the apps on a server share its firewall", () => {
     expect(codes(plan)).toEqual([]);
     expect(changes(plan)).toEqual(["deploy-key", "app-dirs", "app-record"]);
 
-    // Two tunnelled apps: only their one shared connector is in the way (until each app runs its
-    // own), never their modes.
+    // Two tunnelled apps, each with its own connector.
     const tunnelled = new FakeHost();
     await provision(tunnelled, tunnelDesired(tunnelled), {
       secrets: { tunnelToken: tunnelToken() },
     });
-    const other = { compose: TUNNEL_COMPOSE, tunnelId: "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef" };
-    const second = await planFor(tunnelled, blogTunnel(tunnelled, other.tunnelId));
-    expect(codes(second)).toEqual(["tunnel-connector-in-use"]);
+    const second = await planFor(
+      tunnelled,
+      blogTunnel(tunnelled, "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef"),
+    );
+    expect(codes(second)).toEqual([]);
+    expect(changes(second)).toEqual(["deploy-key", "app-dirs", "app-record", "tunnel-connector"]);
   });
 
   it("ignores the mode of an app removed with its data kept", async () => {
@@ -286,7 +341,12 @@ describe("access modes: the apps on a server share its firewall", () => {
     const news = { ...appRecord(fake, "shop"), app: "news", projectId: "news-1" };
     fake.files.set(
       "/etc/opscrew/apps/news.json",
-      JSON.stringify({ ...news, access: "tunnel", hostnames: [], composeProject: "news" }),
+      JSON.stringify({
+        ...news,
+        access: "tunnel",
+        hostnames: ["news.example.com"],
+        composeProject: "news",
+      }),
     );
     fake.calls.length = 0;
     const error = await rejection(applyApproved(fake, plan));
@@ -378,11 +438,62 @@ describe("removing an app", () => {
     expect(fake.dirs.has("/srv/apps/shop")).toBe(false);
     expect(fake.dirs.has("/srv/data/shop")).toBe(false);
     expect(fake.dirs.has("/srv/edge")).toBe(true);
+    // Its site and kamal-proxy service leave the edge; the second app's stay.
+    expect(fake.files.has("/srv/edge/sites/shop.caddy")).toBe(false);
+    expect(fake.files.has("/srv/edge/sites/blog.caddy")).toBe(true);
+    expect([...fake.proxyServices]).toEqual(["blog"]);
     expect(fake.files.has("/etc/opscrew/apps/shop.json")).toBe(false);
     expect(hostRecord(fake).apps).toEqual(["blog"]);
     expect(fake.users.get("deploy")?.keys).toEqual([BLOG_KEY]);
     // The second app's plan is still entirely in place.
     expect((await planFor(fake, blog(fake))).steps.every((s) => s.state === "in-place")).toBe(true);
+  });
+
+  it("starts a stopped kamal-proxy to remove the app's route; one that cannot start stops the teardown", async () => {
+    const fake = await withTwo();
+    const proxy = fake.containers.find((container) => container.name.includes("kamal-proxy"));
+    if (proxy === undefined) throw new Error("no kamal-proxy");
+    proxy.stopped = true;
+    fake.edgeUpFails = true;
+    const error = await rejection(removeApp(fake, "shop"));
+    expect(error.message).toContain("kamal-proxy did not start");
+    expect(fake.proxyServices.has("shop")).toBe(true);
+    // Run again once the edge can start: the route goes, and kamal-proxy runs for the other app.
+    fake.edgeUpFails = false;
+    await removeApp(fake, "shop");
+    expect([...fake.proxyServices]).toEqual(["blog"]);
+    expect(proxy.stopped).toBe(false);
+  });
+
+  it("removes a tunnelled app's own connector; the other app's connector keeps running", async () => {
+    const fake = new FakeHost();
+    await provision(fake, tunnelDesired(fake), { secrets: { tunnelToken: tunnelToken() } });
+    deployApp(fake, "shop", "tunnel");
+    const blogId = "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef";
+    await provision(fake, blogTunnel(fake, blogId), { secrets: { tunnelToken: tunnelToken() } });
+    deployApp(fake, "blog", "tunnel");
+    const plan = planTeardown(
+      await inspectHost(fake),
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
+    expect(plan.steps.map((step) => [step.id, step.scope])).toEqual([
+      ["app-dirs", "app"],
+      ["deploy-key", "app"],
+      ["tunnel-connector", "app"],
+      ["app-record", "app"],
+    ]);
+    expect(plan.steps.find((step) => step.id === "tunnel-connector")?.params).toEqual({
+      remove: true,
+      app: "shop",
+    });
+    await applyApproved(fake, plan, { command: "opscrew destroy" });
+    expect(fake.files.has("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(false);
+    expect(fake.files.has("/srv/opscrew/cloudflared/blog/tunnel.env")).toBe(true);
+    expect(fake.containers.some((container) => container.project === "shop-tunnel")).toBe(false);
+    expect(fake.containers.some((container) => container.project === "blog-tunnel")).toBe(true);
+    const blogPlan = await planFor(fake, blogTunnel(fake, blogId));
+    expect(blogPlan.steps.every((step) => step.state === "in-place")).toBe(true);
   });
 
   it("removes the edge with the last app: its containers, network, volumes and /srv/edge", async () => {
@@ -461,11 +572,17 @@ describe("inspection", () => {
     expect(
       facts.runtimeFiles.find((file) => file.app === "blog" && file.name === "compose.yaml"),
     ).toMatchObject({ kind: "file" });
+    // Each app's site on the edge, by its checksum.
+    expect(
+      facts.runtimeFiles.find((file) => file.app === "blog" && file.name === "site"),
+    ).toMatchObject({
+      kind: "file",
+      sha256: sha256Hex(fake.files.get("/srv/edge/sites/blog.caddy") ?? ""),
+    });
     expect(facts.dirs.map((dir) => dir.path)).toEqual([
       "/srv/edge",
       "/srv/apps",
       "/srv/data",
-      "/srv/app",
       "/srv/apps/blog",
       "/srv/apps/shop",
       "/srv/data/blog",

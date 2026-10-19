@@ -69,7 +69,11 @@ describe("dependabotStep", () => {
     expect(await dependabotStep(root, facts, plan)).toEqual({
       action: "keep",
       path: ".github/dependabot.yaml",
-      missing: ["npm in /", "docker in /", "docker-compose in /opscrew/runtime/*"],
+      missing: [
+        "npm in /",
+        "docker in /",
+        "docker-compose in /opscrew/runtime/cloudflared and /opscrew/runtime/portainer",
+      ],
     });
     const broken = await temp({ ".github/dependabot.yml": "updates: [\n" });
     expect(await dependabotStep(broken, facts, plan)).toEqual({

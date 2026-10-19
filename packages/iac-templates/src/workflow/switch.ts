@@ -13,6 +13,15 @@ function releaseLog(plan: DeployPlan): string {
   return `${appDir(plan)}/release.log`;
 }
 
+/**
+ * The app's own Docker client settings on the server (`DOCKER_CONFIG`), where its deploy logs in
+ * to the registry and out again: one app's logout never ends the login another app's deploy pulls
+ * with at the same time.
+ */
+export function dockerConfig(plan: DeployPlan): string {
+  return `${appDir(plan)}/.docker`;
+}
+
 /** Shown when the release command fails; names neither the server nor any secret. */
 function releaseFailed(plan: DeployPlan): string {
   return `::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${releaseLog(plan)} (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.`;
@@ -310,7 +319,9 @@ function edgeFailed(plan: DeployPlan): string {
  * The shared edge, under a lock other apps' deploys wait for: creates the network `opscrew-edge`
  * when missing; puts the uploaded edge Compose file (`edge/compose.yaml` in the app's folder) in
  * `/srv/edge` only when its {@link EDGE_VERSION_KEY} is larger than the server's, so an app with an
- * older OpsCrew never downgrades the edge; puts the app's site in `/srv/edge/sites`; then starts
+ * older OpsCrew never downgrades the edge, or when it is the same version with other content (the
+ * ports of another access mode, which all the server's apps share); puts the app's site in
+ * `/srv/edge/sites`; then starts
  * the edge (Compose recreates only what changed) and reloads Caddy. When either fails, the app's
  * previous site goes back, so Caddy never keeps a site it refused.
  */
@@ -327,6 +338,11 @@ function edgeCommands(plan: DeployPlan): string[] {
     '  if [ "$uploaded" -gt "${current:-0}" ]; then',
     `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
     `    echo "OpsCrew's shared edge on this server is now version $uploaded."`,
+    // The same version with other ports: how the server's apps are served changed (they all are
+    // served the same way, the host plan refuses anything else), so this app's copy is the one.
+    `  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml ${EDGE_DIR}/compose.yaml; then`,
+    `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
+    `    echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."`,
     '  elif [ "$uploaded" -lt "${current:-0}" ]; then',
     `    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."`,
     "  fi",
@@ -375,6 +391,7 @@ export function switchCommands(plan: DeployPlan, init: readonly ServiceInitStep[
         ];
   return [
     "set -eu",
+    `export DOCKER_CONFIG=${dockerConfig(plan)}`,
     "trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT",
     `cd ${appDir(plan)}`,
     'export APP_IMAGE="$1"',

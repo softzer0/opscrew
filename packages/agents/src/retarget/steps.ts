@@ -11,7 +11,7 @@ import {
 import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
 import { moveProvider } from "../shared/vps-target";
 import { planThenApply } from "./plans";
-import { stopService, waitAppHealthy } from "./server-ops";
+import { serverOps, stopService, waitAppHealthy } from "./server-ops";
 import {
   auditMove,
   auditStep,
@@ -328,12 +328,13 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
   await runDeployWorkflow(session);
   const remote = newRemote(session);
   deps.reporter.step(`Checking the app on the new ${fresh.noun} over SSH`);
+  const ops = serverOps(plan, deps.redactor);
   await waitAppHealthy(remote, plan.app.port, plan.app.healthPath, {
-    redact: deps.redactor.redact,
+    ...ops,
     ...waitsOf(session.services),
   });
   deps.reporter.step(`Stopping Caddy on the new ${fresh.noun} until traffic is switched to it`);
-  await stopService(remote, "caddy", deps.redactor);
+  await stopService(remote, "caddy", ops);
   await auditMove(session, {
     kind: "remote-exec",
     action: "stop caddy",

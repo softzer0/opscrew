@@ -346,8 +346,7 @@ describe("parsers", () => {
       { path: "/srv/edge", kind: "absent" },
       { path: "/srv/apps", kind: "dir", owner: "deploy", group: "deploy", mode: "750", entries: 1 },
       { path: "/srv/data", kind: "absent" },
-      // T1308b: /srv/app is read with the shared folders while the deploy still uses it.
-      { path: "/srv/app", kind: "dir", owner: "root", group: "root", mode: "755", entries: 1 },
+      // /srv/app is not OpsCrew's (each app has its folder in /srv/apps).
       { path: "/srv/apps/shop", kind: "link" },
       {
         path: "/srv/data/shop",

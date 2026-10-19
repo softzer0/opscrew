@@ -1,7 +1,54 @@
 import { serviceOf } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, nextPostgresFacts, staticSpaFacts } from "../testing";
-import { regionLocations, sizeFor } from "./sizing";
+import { ownServerMemory, regionLocations, sizeFor } from "./sizing";
+
+describe("ownServerMemory", () => {
+  const blog = { name: "blog", memoryMb: 1024, tunnel: false };
+
+  it("fits this app next to the other apps' recorded limits, the edge and the system", () => {
+    // 4096 MB - 384 (system) - 128 (edge) - 1024 (blog) leaves 2560 MB, 1536 of them still free.
+    expect(ownServerMemory(4096, 1024, [blog])).toBeUndefined();
+    expect(ownServerMemory(4096, 2560, [])).toBeUndefined();
+  });
+
+  it("refuses limits that do not fit, saying how much the other apps take", () => {
+    const result = ownServerMemory(2048, 1024, [
+      blog,
+      { name: "news", memoryMb: 256, tunnel: false },
+    ]);
+    expect(result?.refused?.message).toBe(
+      'Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew\'s edge, the other OpsCrew apps on it take 1280 MB of memory limits ("blog" 1024 MB and "news" 256 MB), which leaves 256 MB, and this app\'s containers have 1024 MB of memory limits. Nothing was written.',
+    );
+    expect(result?.refused?.hint).toBe(
+      "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again.",
+    );
+    // Alone on a server too small for its limits.
+    expect(ownServerMemory(1024, 640, [])?.refused?.message).toBe(
+      "Your server has 1024 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, 512 MB are left, and this app's containers have 640 MB of memory limits. Nothing was written.",
+    );
+  });
+
+  it("warns below 15% free, with how much the other apps take", () => {
+    // 4096 - 384 = 3712 MB usable; 1024 + 2048 + 128 leaves 512 MB, 13.8% of it.
+    expect(ownServerMemory(4096, 2048, [blog])?.warning).toBe(
+      'Your server keeps only 14% of its memory free after the memory limits of this app (2048 MB) and of the other OpsCrew app on it (1024 MB: "blog" 1024 MB), OpsCrew\'s edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.',
+    );
+  });
+
+  it("counts the tunnel connector of each other tunnelled app (the edge's figure holds one)", () => {
+    // 2048 - 384 - 128 leaves 1536 MB; blog's 1024 MB and its connector's 32 leave 480 MB.
+    const tunnelled = { name: "blog", memoryMb: 1024, tunnel: true };
+    expect(ownServerMemory(2048, 480, [tunnelled])?.refused).toBeUndefined();
+    expect(ownServerMemory(2048, 512, [tunnelled])?.refused?.message).toBe(
+      "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1056 MB of memory limits (\"blog\" 1024 MB and 32 MB for its tunnel connector), which leaves 480 MB, and this app's containers have 512 MB of memory limits. Nothing was written.",
+    );
+  });
+
+  it("checks nothing when inspection could not read the server's memory", () => {
+    expect(ownServerMemory(0, 1024, [blog])).toBeUndefined();
+  });
+});
 
 describe("regionLocations", () => {
   it("maps regions to Hetzner locations in preference order", () => {

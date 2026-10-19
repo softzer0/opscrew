@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, scriptParams } from "./__fixtures__/fake-host";
@@ -382,6 +383,66 @@ ufw() {
       "ufw default allow outgoing",
       "ufw --force enable",
     ]);
+  });
+
+  it("app teardown: starts kamal-proxy before removing the app's route, and only an absent route is fine", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    const plan = planTeardown(
+      await inspectHost(fake),
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
+    const step = plan.steps.find((item) => item.id === "app-dirs");
+    if (step === undefined) throw new Error("no app-dirs step");
+    const { apply } = stepScripts(plan, step);
+    // `docker`: kamal-proxy's `up` fails with $S/up-fails; `remove` answers as $S/remove says.
+    const docker = `case "$*" in
+  *"up -d kamal-proxy"*) [ ! -f "$S/up-fails" ] ;;
+  *"kamal-proxy remove"*)
+    case "$(cat "$S/remove" 2>/dev/null)" in
+      missing) echo 'Error: service not found' >&2; exit 1 ;;
+      broken) echo 'Error: connection refused' >&2; exit 1 ;;
+    esac ;;
+esac`;
+    const h = new ShellHarness();
+    try {
+      h.stub("docker", docker);
+      h.stub("systemctl", "exit 0");
+      const run = (state: { upFails?: boolean; remove?: "missing" | "broken" } = {}) => {
+        h.write("/srv/edge/compose.yaml", "name: opscrew-edge\n");
+        h.write("/srv/edge/sites/shop.caddy", "shop.example.com {\n}\n");
+        h.write("/srv/apps/shop/compose.yaml", "name: shop\n");
+        h.write("/state/remove", state.remove ?? "");
+        if (state.upFails) h.write("/state/up-fails", "");
+        else rmSync(h.native("/state/up-fails"), { force: true });
+        h.clearCalls();
+        return h.run(apply);
+      };
+      const edge = `docker compose -p opscrew-edge -f ${h.posix("/srv/edge/compose.yaml")}`;
+      const done = run();
+      expect(done.status, done.stderr).toBe(0);
+      const calls = h.calls();
+      const up = calls.indexOf(`${edge} up -d kamal-proxy`);
+      expect(up).toBeGreaterThan(-1);
+      expect(calls.indexOf(`${edge} exec -T kamal-proxy kamal-proxy remove shop`)).toBe(up + 1);
+      expect(calls).toContain(
+        `${edge} exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`,
+      );
+      expect(h.exists("/srv/edge/sites/shop.caddy")).toBe(false);
+      // An app that was never deployed has no route: that is fine.
+      expect(run({ remove: "missing" }).status).toBe(0);
+      // A proxy that cannot start, or a route that cannot go, stops the teardown.
+      const stopped = run({ upFails: true });
+      expect(stopped.status).not.toBe(0);
+      expect(stopped.stderr).toContain("kamal-proxy did not start");
+      const broken = run({ remove: "broken" });
+      expect(broken.status).not.toBe(0);
+      expect(broken.stderr).toContain("kamal-proxy did not remove the app's route.");
+    } finally {
+      h.dispose();
+    }
   });
 
   it("sshd: the check accepts without-password for prohibit-password and needs OpsCrew's drop-in", async () => {

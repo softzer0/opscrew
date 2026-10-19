@@ -139,12 +139,16 @@ describe("planHost: steps", () => {
     const fake = new FakeHost();
     const plan = await planFor(fake, tunnelDesired(fake));
     expect(paramsOf(plan, "tunnel-connector")).toEqual({
+      app: "shop",
       compose: TUNNEL_COMPOSE,
       tunnelId: TUNNEL_ID,
       needsToken: true,
     });
-    expect(plan.steps.find((step) => step.id === "tunnel-connector")?.title).toContain(
-      "cloudflare/cloudflared:2026.5.1",
+    const step = plan.steps.find((item) => item.id === "tunnel-connector");
+    expect(step?.title).toContain("cloudflare/cloudflared:2026.5.1");
+    expect(step?.scope).toBe("app");
+    expect(step?.reason).toContain(
+      "the app's own Compose project shop-tunnel in /srv/opscrew/cloudflared/shop",
     );
   });
 
@@ -159,8 +163,10 @@ describe("planHost: steps", () => {
     busy.packages.set("docker-compose-plugin", "2.39.4");
     busy.packages.set("docker-buildx-plugin", "0.29.1");
     busy.dockerRunning = true;
-    // Only OpsCrew's own containers run (see setup-steps.test.ts for the user's own).
-    busy.containers.push({ name: "cloudflared", project: "opscrew-tunnel", ports: "" });
+    // Only OpsCrew's own containers run (see setup-steps.test.ts for the user's own): here the
+    // tunnel connector of an app, in its folder.
+    busy.files.set("/srv/opscrew/cloudflared/shop/compose.yaml", TUNNEL_COMPOSE);
+    busy.containers.push({ name: "cloudflared", project: "shop-tunnel", ports: "" });
     expect((await planFor(busy)).steps.find((step) => step.id === "docker-daemon")?.reason).toMatch(
       /without restarting your running containers/,
     );
@@ -672,6 +678,7 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     expect(codes(plan)).toEqual([]);
     expect(stateOf(plan, "tunnel-connector")).toBe("change");
     expect(paramsOf(plan, "tunnel-connector")).toEqual({
+      app: "shop",
       compose: TUNNEL_COMPOSE,
       tunnelId: TUNNEL_ID,
       needsToken: true,
@@ -695,7 +702,10 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     expect(stateOf(await planFor(fake, desired), "tunnel-connector")).toBe("in-place");
     const without = await planFor(fake, desiredFor(fake, { portainer: portainerDesired() }));
     expect(stateOf(without, "tunnel-connector")).toBe("change");
-    expect(paramsOf(without, "tunnel-connector")).toEqual({ remove: true });
+    expect(paramsOf(without, "tunnel-connector")).toEqual({ remove: true, app: "shop" });
+    await applyApproved(fake, without, { secrets: { portainerPassword: portainerPassword() } });
+    expect(fake.files.has("/srv/opscrew/cloudflared/shop/compose.yaml")).toBe(false);
+    expect(fake.containers.some((container) => container.project === "shop-tunnel")).toBe(false);
   });
 
   it("needs SSH local forwarding for the Portainer tunnel command", async () => {
@@ -900,7 +910,7 @@ describe("planTeardown and planUndo", () => {
     expect(plan.steps.every((step) => step.scope === "shared")).toBe(true);
     // The edge folder went with the last app.
     expect(paramsOf(plan, "runtime-dirs")).toEqual({
-      dirs: "/srv/edge /srv/apps /srv/data /srv/app",
+      dirs: "/srv/edge /srv/apps /srv/data",
     });
     expect(fake.dirs.has("/srv/edge")).toBe(false);
     expect(paramsOf(plan, "ufw")).toEqual({
@@ -933,21 +943,22 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
   it("keeps every plan without the filter exactly as before (same steps, same hash)", async () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
-    // The hashes these fake servers give without the filter (pinned since 013's host layout).
+    // The hashes these fake servers give without the filter (pinned since 013's per-app tunnel
+    // connector and the end of /srv/app).
     expect(hostPlanHash(planHost(facts, desiredFor(fake), "opscrew provision"))).toBe(
-      "4db85a86433672d9f98d42f68bf2ee9d104fa2fa62af0669a48a2328e2cb3818",
+      "5d1032fb9cd5acedf0ca57dbbcf7ffe6b40ebf1cba1bd4ee7e40f3682e87a13c",
     );
     expect(hostPlanHash(planHost(facts, tunnelDesired(fake), "opscrew provision"))).toBe(
-      "4f7a6e6fb593f30ba8110b7f7d1540b50e8065f172456f93fb6cb0a86637932d",
+      "d5fddcbae7961a292992e7af8f5b6c1f7ff73da96ae1b62fe5df08ec25afdd34",
     );
     const used = new FakeHost();
     await provision(used);
     expect(hostPlanHash(await planFor(used))).toBe(
-      "5986f209c6f6610f75db80d374997a585cfe2ad0131b7d4b305cc959156521d1",
+      "9dc23f150dce99dac92ea7050b6ed1b891cfa2b40fbe036362d26345b6baafa4",
     );
     await removeApp(used);
     expect(hostPlanHash(planUndo(await inspectHost(used), "opscrew destroy --undo-host"))).toBe(
-      "60d4db46202cb95df763e3e0de475ae208950326565f1a64ae35b6a4e8f7d94b",
+      "6eb09594464e710b56f90f87db90c2022423a6c29289a97b56a403dc6633f651",
     );
   });
 
@@ -968,7 +979,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(codes(plan)).toEqual([]);
     // The filter plan of this fake server, pinned.
     expect(hostPlanHash(plan)).toBe(
-      "98b2c80f1e5e3fe2a703896bb5e334a1c5b94126e2a203f7d91eca73ab7fe69a",
+      "76261e8588d055247369c766bcc12bc1f0c77581016f455f039847b52974a076",
     );
   });
 

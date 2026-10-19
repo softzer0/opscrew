@@ -7,13 +7,16 @@ import {
   type ApplyResult,
   type AppRecord,
   appDirs,
+  type DesiredHost,
   EDGE_DIR,
   EDGE_PROJECT,
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
+  planHost,
   SHARED_DIRS,
+  tunnelProject,
   webFilterFileHashes,
 } from "@opscrew/connector-ssh-host";
 import type {
@@ -249,7 +252,7 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
     record: null,
     recordDamaged: false,
     pendingUndo: { sshd: false, ufw: false },
-    tunnel: ADDON,
+    tunnels: [],
     portainer: ADDON,
     webFilter: NO_WEB_FILTER,
   });
@@ -285,17 +288,27 @@ export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
   };
 }
 
-/** The shared folders and the folders of `app`, as the host plan creates them (all empty). */
-function preparedDirs(app: string): HostFacts["dirs"] {
+/**
+ * The shared folders and the folders of `app` as the host plan creates them (empty when new), and
+ * the folders of the other apps already on the server (`before`).
+ */
+function preparedDirs(app: string, before: HostFacts["dirs"] = []): HostFacts["dirs"] {
   const own = appDirs(app);
-  return [...SHARED_DIRS, own.app, own.data].map((path) => ({
-    path,
-    kind: "dir" as const,
-    owner: "deploy",
-    group: "deploy",
-    mode: "750",
-    entries: 0,
-  }));
+  const made = [...SHARED_DIRS, own.app, own.data].map(
+    (path) =>
+      before.find((dir) => dir.path === path && dir.kind === "dir") ?? {
+        path,
+        kind: "dir" as const,
+        owner: "deploy",
+        group: "deploy",
+        mode: "750",
+        entries: 0,
+      },
+  );
+  const others = before.filter(
+    (dir) => dir.kind !== "absent" && !made.some((item) => item.path === dir.path),
+  );
+  return [...made, ...others];
 }
 
 /**
@@ -397,27 +410,90 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
     dockerDaemonJson: "opscrew",
     fail2ban: { active: true, jail, sshdJail: true },
     ready: true,
-    dirs: preparedDirs(app),
-    apps: [{ name: app, record: appRecord }],
-    record: {
-      schemaVersion: 1,
-      apps: [app],
-      opscrewVersion: "0.0.0-test",
-      changes: [
-        entry("deploy-user", { existed: false }),
-        entry("runtime-dirs", { edge: "absent", apps: "absent", data: "absent" }),
-      ],
-    },
-    tunnel: tunnelOn
-      ? {
-          installed: true,
-          composeSha256: sha256(String(tunnel.compose)),
-          running: true,
-          secretFile: true,
-          dataVolume: false,
-          tunnelId: String(tunnel.tunnelId),
-        }
-      : ADDON,
+    // The other apps on the server keep their folders, records and tunnel connectors.
+    dirs: preparedDirs(app, before.dirs),
+    apps: [
+      ...before.apps.filter((item) => item.name !== app),
+      { name: app, record: appRecord },
+    ].sort((a, b) => a.name.localeCompare(b.name)),
+    record:
+      before.record === null
+        ? {
+            schemaVersion: 1,
+            apps: [app],
+            opscrewVersion: "0.0.0-test",
+            changes: [
+              entry("deploy-user", { existed: false }),
+              entry("runtime-dirs", { edge: "absent", apps: "absent", data: "absent" }),
+            ],
+          }
+        : { ...before.record, apps: [...new Set([...before.record.apps, app])].sort() },
+    tunnels: [
+      ...before.tunnels.filter((item) => item.app !== app),
+      ...(tunnelOn
+        ? [
+            {
+              app,
+              installed: true,
+              composeSha256: sha256(String(tunnel.compose)),
+              running: true,
+              secretFile: true,
+              dataVolume: false,
+              tunnelId: String(tunnel.tunnelId),
+            },
+          ]
+        : []),
+    ].sort((a, b) => a.app.localeCompare(b.app)),
+  });
+}
+
+/** The deploy key of another project's app on the server (a public key; not a secret). */
+export const OTHER_DEPLOY_KEY =
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOTHEROTHEROTHEROTHEROTHEROTHEROTHEROTHER opscrew-deploy";
+
+export interface OtherAppOptions {
+  /** Default `blog`. */
+  app?: string;
+  /** Default `<app>.example.com`; empty for an app without a domain. */
+  hostnames?: string[];
+  /** The sum of its memory limits in MB (default 512). */
+  memoryMb?: number;
+  /** The server before the app came (default: a fresh one). */
+  facts?: HostFacts;
+}
+
+/**
+ * `o.facts` after another project's app (`blog`) was set up and deployed there, served directly
+ * (behind OpsCrew's web filter when the server has one, as the apps on a server share it): what
+ * its host plan left ({@link preparedFacts}: its record, folders and deploy key, the shared parts
+ * when missing) and its web container.
+ */
+export function withOtherApp(o: OtherAppOptions = {}): HostFacts {
+  const before = o.facts ?? freshFacts();
+  const app = o.app ?? "blog";
+  const filter = before.webFilter.rules4.chain?.sources;
+  const desired: DesiredHost = {
+    app,
+    projectId: `${app}-project`,
+    hostnames: o.hostnames ?? [`${app}.example.com`],
+    services: [],
+    memoryMb: o.memoryMb ?? 512,
+    admin: { user: before.user, isRoot: before.privilege === "root" },
+    deploy: { user: "deploy", publicKey: OTHER_DEPLOY_KEY },
+    sshPort: before.sshd?.ports[0] ?? 22,
+    access: "public",
+    ...(filter !== undefined ? { webFilter: { ipv4: filter } } : {}),
+    disablePasswords: true,
+  };
+  const plan = planHost(before, desired, "opscrew provision");
+  if (plan.findings.length > 0) throw new Error(plan.findings[0]?.message);
+  const after = preparedFacts(before, plan);
+  return HostFactsSchema.parse({
+    ...after,
+    containers: [
+      ...after.containers,
+      { name: `${app}-app-1`, project: app, ports: "", running: true },
+    ],
   });
 }
 
@@ -475,14 +551,18 @@ export function preparedServerFacts(projectId: string): HostFacts {
 
 /**
  * The facts after the teardown `plan`: only what OpsCrew set up for the app goes (its Compose
- * project, its folder, the add-ons and the edge with the last app, its record; its data only with
- * `deleteData`, else its record stays as data-kept), as the real adapter does. Containers,
- * volumes and users OpsCrew did not create stay.
+ * project, its folder, its tunnel connector and deploy key, Portainer and the edge with the last
+ * app, its record; its data only with `deleteData`, else its record stays as data-kept), as the
+ * real adapter does. Other apps, and containers, volumes and users OpsCrew did not create, stay.
  */
 function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const f = structuredClone(before);
   const deleteData = plan.deleteData === true;
-  const gone = new Set([plan.app, ...(paramsOf(plan, "edge") ? [EDGE_PROJECT] : [])]);
+  const gone = new Set([
+    plan.app,
+    tunnelProject(plan.app),
+    ...(paramsOf(plan, "edge") ? [EDGE_PROJECT] : []),
+  ]);
   const own = appDirs(plan.app);
   f.containers = f.containers.filter((container) => !gone.has(container.project));
   // The edge's volumes go with the edge, the app's only with its data.
@@ -495,8 +575,14 @@ function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
       gone.has(EDGE_PROJECT) && dir.path === EDGE_DIR ? { path: dir.path, kind: "absent" } : dir,
     );
   f.runtimeFiles = f.runtimeFiles.filter((file) => file.app !== plan.app);
-  f.tunnel = ADDON;
-  f.portainer = { ...ADDON, dataVolume: deleteData ? false : f.portainer.dataVolume };
+  f.tunnels = f.tunnels.filter((tunnel) => tunnel.app !== plan.app);
+  if (paramsOf(plan, "portainer") !== undefined) {
+    f.portainer = { ...ADDON, dataVolume: deleteData ? false : f.portainer.dataVolume };
+  }
+  const keys = paramsOf(plan, "deploy-key");
+  if (keys !== undefined && f.deployUser !== null) {
+    f.deployUser.keys = String(keys.keys).split("\n").filter(Boolean);
+  }
   const record = paramsOf(plan, "app-record");
   f.apps = f.apps.flatMap((app) => {
     if (app.name !== plan.app || record === undefined) return [app];

@@ -10,10 +10,23 @@ import { webOnlyFromCloudflare } from "../predicates";
 export const TUNNEL_ORIGIN_PORT = 18080;
 
 /**
- * Where the connector serves its metrics, diagnostics and pprof endpoints: loopback only. The
+ * Where cloudflared serves its metrics, diagnostics and pprof endpoints: loopback only. The
  * official image listens on 0.0.0.0:20241 by default, which on the host network is every interface.
  */
 export const CLOUDFLARED_METRICS = "127.0.0.1:20241";
+
+/**
+ * Where an app's tunnel connector on a server's host network serves its metrics: loopback only,
+ * on a free port of its own (port 0), so the connectors of several apps on one server never take
+ * the same port. The port is in the connector's log (`Starting metrics server on 127.0.0.1:…`).
+ */
+export const CONNECTOR_METRICS = "127.0.0.1:0";
+
+/**
+ * The memory limit of an app's tunnel connector on a server, in MB. The shared edge's 128 MB that
+ * design counts on every server includes one; each further tunnelled app adds its own.
+ */
+export const CONNECTOR_MEMORY_MB = 32;
 
 /** Port Portainer listens on, bound to the server's loopback interface only. */
 export const PORTAINER_PORT = 9443;

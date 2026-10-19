@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import type { ApprovalRecord, FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { EDGE_DIR } from "@opscrew/iac-templates";
 import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
@@ -14,7 +15,7 @@ import {
 } from "../shared";
 import { moveProvider } from "../shared/vps-target";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
-import { startService, stopService } from "./server-ops";
+import { serverOps, startService, stopService } from "./server-ops";
 import { oldServer } from "./servers";
 import {
   auditMove,
@@ -440,11 +441,11 @@ async function settleSwitch(
   const next = newServer(session);
   const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
-  const ops = deps.redactor;
+  const ops = serverOps(plan, deps.redactor);
   const remote = newRemote(session);
   const site = publicUrl(plan, next.ipv4);
   const check = `${site}${plan.app.healthPath}`;
-  const logs = `See what happens with \`ssh deploy@${next.ipv4}\` and \`cd /srv/app && docker compose logs --tail 100 caddy app\`, then run \`${RUN_COMMAND}\` to check again.`;
+  const logs = `See what happens with \`ssh deploy@${next.ipv4}\`, \`cd ${EDGE_DIR} && docker compose logs --tail 100 caddy\` and \`cd ${ops.folder} && docker compose logs --tail 100 app\`, then run \`${RUN_COMMAND}\` to check again.`;
   deps.reporter.step(`Starting Caddy on the new ${fresh.noun}`);
   try {
     await startService(remote, "caddy", ops);

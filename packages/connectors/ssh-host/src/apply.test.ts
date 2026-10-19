@@ -114,7 +114,6 @@ describe("applyHostPlan on a fresh server", () => {
       edge: "absent",
       apps: "absent",
       data: "absent",
-      app: "absent",
     });
     expect(new Set(host.changes.map((entry) => entry.at))).toEqual(
       new Set(["2026-10-14T12:00:00.000Z"]),
@@ -213,8 +212,10 @@ describe("applyHostPlan on a fresh server", () => {
     });
     expect(result.applied).toContain("tunnel-connector");
     expect(fake.ufwRules.map((rule) => rule.rule)).toEqual(["allow 22/tcp"]);
-    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.env")).toBe(`TUNNEL_TOKEN=${token}\n`);
-    expect(fake.files.get("/srv/opscrew/cloudflared/compose.yaml")).toContain(
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(
+      `TUNNEL_TOKEN=${token}\n`,
+    );
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/compose.yaml")).toContain(
       "env_file: [tunnel.env]",
     );
     const carriers = fake.calls.filter((call) => call.input?.includes(token));
@@ -253,7 +254,7 @@ describe("tunnel replaced", () => {
     const fake = new FakeHost();
     const first = tunnelToken();
     await provision(fake, tunnelDesired(fake), { secrets: { tunnelToken: first } });
-    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.id")).toBe(`${TUNNEL_ID}\n`);
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.id")).toBe(`${TUNNEL_ID}\n`);
 
     const replaced = tunnelDesired(fake, {
       tunnel: { compose: TUNNEL_COMPOSE, tunnelId: "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef" },
@@ -274,8 +275,10 @@ describe("tunnel replaced", () => {
     const second = `${tunnelToken()}SECOND`;
     const result = await applyApproved(fake, plan, { secrets: { tunnelToken: second } });
     expect(result.applied).toEqual(["tunnel-connector"]);
-    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.env")).toBe(`TUNNEL_TOKEN=${second}\n`);
-    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.id")).toBe(
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(
+      `TUNNEL_TOKEN=${second}\n`,
+    );
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.id")).toBe(
       "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef\n",
     );
     expect(fake.tunnelRecreates).toBe(1);
@@ -682,7 +685,7 @@ describe("secrets", () => {
       }),
     );
     expect(error.message).toMatch(/No tunnel token arrived on standard input/);
-    expect(fake.files.has("/srv/opscrew/cloudflared/tunnel.env")).toBe(false);
+    expect(fake.files.has("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(false);
   });
 
   it("are checked before anything changes", async () => {
@@ -919,7 +922,7 @@ describe("planPortainer (servers OpsCrew created)", () => {
     expect(fake.files.get("/home/deploy/opscrew/cloudflared/tunnel.env")).toBe(
       `TUNNEL_TOKEN=${token}\n`,
     );
-    expect(fake.files.has("/srv/opscrew/cloudflared/tunnel.env")).toBe(false);
+    expect(fake.files.has("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(false);
     expect(JSON.stringify(plan)).not.toContain(token);
 
     const off = planPortainer({

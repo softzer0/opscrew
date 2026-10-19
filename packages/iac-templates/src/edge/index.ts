@@ -8,6 +8,7 @@ import { sha256Hex } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
+import { memoryLimit } from "../runtime/components";
 import { composeLiteral, hardened } from "../runtime/services";
 import { TUNNEL_ORIGIN_PORT, tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderedFile } from "../types";
@@ -29,13 +30,21 @@ export function appDir(plan: DeployPlan): string {
  * A deploy replaces the server's edge only with a larger one. Change it with every change of the
  * edge's Compose file; a test fails until it is changed.
  */
-export const EDGE_VERSION = 2026101901;
+export const EDGE_VERSION = 2026101902;
 
 /** The key of {@link EDGE_VERSION} in the edge's Compose file (a Compose extension field). */
 export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
 
 /** Where Caddy sends every app's traffic: kamal-proxy, which routes by hostname to the app's copy. */
 export const EDGE_UPSTREAM = "kamal-proxy:80";
+
+/**
+ * The memory limits of the edge's containers, in MB: with 32 MB for each tunnelled app's
+ * connector, they make up the edge's 128 MB that design counts on every server (data-model.md
+ * "Sizing figures").
+ */
+const CADDY_MEMORY_MB = 64;
+const KAMAL_PROXY_MEMORY_MB = 32;
 
 /** The folder of the apps' site files in the Caddy container (the server's `/srv/edge/sites`). */
 const CADDY_SITES = "/etc/caddy/sites";
@@ -79,12 +88,14 @@ export function renderEdgeCompose(plan: DeployPlan): RenderedFile {
         image: IMAGES.kamalProxy.ref,
         restart: "unless-stopped",
         volumes: ["kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy"],
+        ...memoryLimit(KAMAL_PROXY_MEMORY_MB),
         ...hardened({ noCapabilities: true }),
         networks: [EDGE_PROJECT],
       },
       caddy: {
         image: IMAGES.caddy.ref,
         restart: "unless-stopped",
+        ...memoryLimit(CADDY_MEMORY_MB),
         ports: caddyPorts(plan),
         configs: [{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }],
         volumes: [`./sites:${CADDY_SITES}:ro`, "caddy_data:/data", "caddy_config:/config"],

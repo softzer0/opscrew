@@ -19,7 +19,7 @@ import {
   serviceEnvSecret,
   workflowStart,
 } from "./shared";
-import { rollbackCommands, switchCommands } from "./switch";
+import { dockerConfig, rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export { buildRunner, DEPLOY_SECRETS, serviceEnvSecret, supercronicArch } from "./shared";
@@ -272,7 +272,8 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     `    previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd ${dir} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"`,
     `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
     '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
-    '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
+    // In the app's own Docker settings: another app's deploy logs out of the same registry.
+    `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
     '    ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
     // The services' one-time setup steps come from the catalog; no entry has any yet.
     ...remote(switchCommands(plan, initStepsFor(plan))),

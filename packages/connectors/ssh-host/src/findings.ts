@@ -41,7 +41,8 @@ export function damagedRecords(
 /**
  * Why the app `claim` cannot be recorded among `apps` (the records on the server, `listed` in the
  * host record), each finding naming the other app: a record OpsCrew cannot rely on, the app's name
- * used by another project, a hostname an app set up there holds, or an access mode other than
+ * used by another project, a hostname an app set up there holds, an app without a domain next to
+ * another (it answers every name on port 80, so it must be alone), or an access mode other than
  * theirs (the apps share the firewall, and each mode needs its own stance: open, Cloudflare only,
  * or closed).
  */
@@ -61,6 +62,12 @@ export function claimFindings(
   for (const other of others) {
     const taken = other.hostnames.filter((hostname) => wanted.has(hostname));
     if (taken.length > 0) found.push(findings.hostnameTaken(other.app, taken));
+  }
+  const catchAll = others.find((record) => record.hostnames.length === 0);
+  if (claim.hostnames.length === 0 && others[0] !== undefined) {
+    found.push(findings.noDomainNextToApps(others.map((record) => record.app)));
+  } else if (catchAll !== undefined) {
+    found.push(findings.appWithoutDomain(catchAll.app));
   }
   const differs = others.find((record) => record.access !== null && record.access !== claim.access);
   if (differs?.access) {
@@ -240,11 +247,20 @@ export function hostFindings(command: string) {
       message: `The OpsCrew apps on this server changed since this host plan was made (now ${now.length === 0 ? "none besides this one" : listText(now.map((app) => `"${app}"`))}), and its shared parts were planned for the apps as they were, so OpsCrew changes nothing.`,
       hint: `Run ${command} again to make a fresh host plan for the server as it is now, and approve that one.`,
     }),
-    tunnelConnectorInUse: (): HostFinding => ({
-      code: "tunnel-connector-in-use",
-      message:
-        "The Cloudflare Tunnel connector on this server runs the tunnel of another OpsCrew app, and replacing it would take that app offline.",
-      hint: `Serve this app directly on ports 80 and 443 (opscrew interview), or use another server for it, ${rerun}.`,
+    noDomainNextToApps: (apps: readonly string[]): HostFinding => ({
+      code: "no-domain-shared",
+      message: `This app has no domain, so it would answer every request on port 80 of this server, and the OpsCrew ${apps.length === 1 ? "app" : "apps"} ${listText(apps.map((app) => `"${app}"`))} ${apps.length === 1 ? "is" : "are"} already served here. Only an app with its own domain can share a server.`,
+      hint: `Give this app a domain (opscrew interview), or use another server for it, ${rerun}.`,
+    }),
+    appWithoutDomain: (app: string): HostFinding => ({
+      code: "no-domain-shared",
+      message: `The OpsCrew app "${app}" on this server has no domain, so it answers every request on port 80, and another app cannot share the server with it.`,
+      hint: `Give "${app}" a domain (opscrew interview and opscrew provision in its project), or use another server for this app, ${rerun}.`,
+    }),
+    tunnelProjectTaken: (project: string): HostFinding => ({
+      code: "tunnel-project-taken",
+      message: `This app's Cloudflare Tunnel connector runs as the Compose project "${project}", and the OpsCrew app "${project}" on this server already has that name.`,
+      hint: `Give this app or "${project}" another name (opscrew interview), or use another server for this app, ${rerun}.`,
     }),
     recordDamaged: (): HostFinding => ({
       code: "host-record-damaged",

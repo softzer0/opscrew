@@ -15,7 +15,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testServices } from "../__fixtures__/plans";
+import { testPlan, testServices } from "../__fixtures__/plans";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { EDGE_VERSION, EDGE_VERSION_KEY, renderEdgeCompose } from "../edge";
 import { renderCaddyfile, renderCompose, renderRuntimeFiles } from "../runtime";
@@ -995,12 +995,36 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       ]);
     });
 
-    it("keeps the server's edge when the uploaded one has the same version", () => {
-      const theirs = otherEdge(EDGE_VERSION);
+    it("keeps the server's edge when the uploaded one is the same file", () => {
+      const same = renderEdgeCompose(plan).content;
+      writeFileSync(edgeFile("compose.yaml"), same);
       const start = run(rolling.start);
       expect(start.status, start.output).toBe(0);
-      expect(serverEdge()).toBe(theirs);
+      expect(serverEdge()).toBe(same);
       expect(start.output).not.toContain("shared edge");
+    });
+
+    it("replaces the server's edge of the same version when its content differs", () => {
+      otherEdge(EDGE_VERSION);
+      const start = run(rolling.start);
+      expect(start.status, start.output).toBe(0);
+      expect(serverEdge()).toBe(renderEdgeCompose(plan).content);
+      expect(start.output).toContain(
+        "OpsCrew's shared edge on this server now publishes the ports for how this app is served.",
+      );
+    });
+
+    it("an app moved from the tunnel to serving directly gets the public ports on its server", () => {
+      const tunnelled = testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" });
+      const direct = testPlan({ provider: "own" });
+      // The server's edge from the app's last deploy, in tunnel mode: loopback only.
+      writeFileSync(edgeFile("compose.yaml"), renderEdgeCompose(tunnelled).content);
+      expect(serverEdge()).toContain("127.0.0.1:18080:80");
+      uploaded(direct);
+      const start = run(scripts(direct).start);
+      expect(start.status, start.output).toBe(0);
+      expect(serverEdge()).toBe(renderEdgeCompose(direct).content);
+      expect(parse(serverEdge()).services.caddy.ports).toEqual(["80:80", "443:443", "443:443/udp"]);
     });
 
     it("replaces the server's edge with a newer upload", () => {

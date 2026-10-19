@@ -129,9 +129,9 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     ]);
     expect(github.secrets.size).toBe(0);
     expect(result.applied).toBe(true);
-    await expect(readFile(join(root, "opscrew/runtime/Caddyfile"), "utf8")).resolves.toContain(
-      "shop.example.com",
-    );
+    await expect(
+      readFile(join(root, "opscrew/runtime/edge/sites/shop.caddy"), "utf8"),
+    ).resolves.toContain("shop.example.com");
     // OpsCrew's shared rules in the zone now protect the domain (probe block, strict TLS).
     expect(zone.opscrewRule(WAF)?.expression).toContain('(http.host in {"shop.example.com"})');
     expect(zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"shop.example.com"})');

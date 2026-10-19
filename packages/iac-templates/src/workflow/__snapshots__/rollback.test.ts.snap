@@ -53,9 +53,10 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
-          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
+          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
           set -eu
+          export DOCKER_CONFIG=/srv/apps/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd /srv/apps/shop
           export APP_IMAGE="$1"
@@ -70,6 +71,9 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
             if [ "$uploaded" -gt "\${current:-0}" ]; then
               cp edge/compose.yaml /srv/edge/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
+            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+              cp edge/compose.yaml /srv/edge/compose.yaml
+              echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
@@ -208,9 +212,10 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
-          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
+          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
           set -eu
+          export DOCKER_CONFIG=/srv/apps/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd /srv/apps/shop
           export APP_IMAGE="$1"
@@ -225,6 +230,9 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
             if [ "$uploaded" -gt "\${current:-0}" ]; then
               cp edge/compose.yaml /srv/edge/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
+            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+              cp edge/compose.yaml /srv/edge/compose.yaml
+              echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
@@ -379,9 +387,10 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
-          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
+          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
           set -eu
+          export DOCKER_CONFIG=/srv/apps/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd /srv/apps/shop
           export APP_IMAGE="$1"
@@ -396,6 +405,9 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
             if [ "$uploaded" -gt "\${current:-0}" ]; then
               cp edge/compose.yaml /srv/edge/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
+            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+              cp edge/compose.yaml /srv/edge/compose.yaml
+              echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi

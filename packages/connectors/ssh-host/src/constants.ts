@@ -9,15 +9,9 @@ export const EDGE_DIR = "/srv/edge";
  * name.
  */
 export const EDGE_PROJECT = "opscrew-edge";
-/**
- * The folder today's deploy workflow copies an app's runtime files to.
- * T1308b: goes once the deploy works in `/srv/apps/<app>`.
- */
-export const LEGACY_APP_DIR = "/srv/app";
 
 /** The folders the apps share, which the `runtime-dirs` step creates for the deploy user. */
-// T1308b: drop LEGACY_APP_DIR once the deploy works in /srv/apps/<app>.
-export const SHARED_DIRS = [EDGE_DIR, APPS_DIR, DATA_DIR, LEGACY_APP_DIR] as const;
+export const SHARED_DIRS = [EDGE_DIR, APPS_DIR, DATA_DIR] as const;
 
 /** An app's own folders: `/srv/apps/<app>` (Compose project, env files) and `/srv/data/<app>`. */
 export function appDirs(app: string): { app: string; data: string } {
@@ -25,10 +19,11 @@ export function appDirs(app: string): { app: string; data: string } {
 }
 
 /**
- * Runtime files OpsCrew renders into the repository and the deploy workflow copies to the app's
- * folder unchanged: inspection reads their SHA-256 (never their content).
+ * Runtime files OpsCrew renders into the repository and the deploy workflow copies to the server
+ * unchanged: the app's Compose file in its folder, and its site on the shared edge (`site`, see
+ * {@link runtimeFilePath}). Inspection reads their SHA-256 (never their content).
  */
-export const HASHED_RUNTIME_FILES = ["compose.yaml", "Caddyfile"] as const;
+export const HASHED_RUNTIME_FILES = ["compose.yaml", "site"] as const;
 
 /**
  * Files the deploy workflow writes in the app's folder from secrets or from the deploy itself
@@ -38,9 +33,14 @@ export const HASHED_RUNTIME_FILES = ["compose.yaml", "Caddyfile"] as const;
  */
 export const SECRET_RUNTIME_FILES = [".env", "app.env", "db.env"] as const;
 
-/** Every runtime file inspection looks at in each app's folder. */
+/** Every runtime file inspection looks at for each app. */
 export const RUNTIME_FILE_NAMES = [...HASHED_RUNTIME_FILES, ...SECRET_RUNTIME_FILES] as const;
 export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number];
+
+/** Where an app's runtime file is: its site on the shared edge, the others in the app's folder. */
+export function runtimeFilePath(app: string, name: RuntimeFileName): string {
+  return name === "site" ? `${EDGE_DIR}/sites/${app}.caddy` : `${appDirs(app).app}/${name}`;
+}
 
 /** Where OpsCrew keeps its records and backups on the server (root only). */
 export const OPSCREW_DIR = "/etc/opscrew";
@@ -106,11 +106,23 @@ export const READY_FLAG = "/var/lib/opscrew-ready";
 /** Root-owned directory for OpsCrew's add-on Compose projects on servers the user owns. */
 export const ADDONS_ROOT = "/srv/opscrew";
 
-/** The Cloudflare Tunnel connector: its own Compose project, token in `tunnel.env` beside it. */
-export const TUNNEL_DIR = `${ADDONS_ROOT}/cloudflared`;
-export const TUNNEL_PROJECT = "opscrew-tunnel";
+/** The parent of each app's Cloudflare Tunnel connector on a server the user owns. */
+export const TUNNELS_DIR = `${ADDONS_ROOT}/cloudflared`;
 
-/** In tunnel mode the app's Caddy publishes only this port on 127.0.0.1. */
+/**
+ * The folder of an app's Cloudflare Tunnel connector on a server the user owns: its Compose file,
+ * its token in `tunnel.env` (root only) and its tunnel's id in `tunnel.id`.
+ */
+export function tunnelDir(app: string): string {
+  return `${TUNNELS_DIR}/${app}`;
+}
+
+/** The Compose project of an app's Cloudflare Tunnel connector, on every server. */
+export function tunnelProject(app: string): string {
+  return `${app}-tunnel`;
+}
+
+/** In tunnel mode the shared edge's Caddy publishes only this port on 127.0.0.1. */
 export const TUNNEL_APP_PORT = 18080;
 
 /** Portainer CE: its own Compose project; on servers the user owns it lives under /srv/opscrew. */

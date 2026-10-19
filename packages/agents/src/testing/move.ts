@@ -541,7 +541,7 @@ function opOf(command: string): string {
   if (command.includes("DROP DATABASE")) return "empty db";
   if (command.endsWith("config --services")) return "services?";
   if (command.endsWith("docker compose run --rm --no-deps -T release")) return "release";
-  if (command.startsWith("rm -f /srv/app/opscrew-move.dump")) return "rm dump";
+  if (command.startsWith(`rm -f /srv/apps/${APP}/opscrew-move.dump`)) return "rm dump";
   return command;
 }
 
@@ -627,7 +627,7 @@ export class FakeHosts {
       case "verify dump":
         if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
         return ok(
-          `${createHash("sha256").update(h.dump).digest("hex")}  /srv/app/opscrew-move.dump\n`,
+          `${createHash("sha256").update(h.dump).digest("hex")}  /srv/apps/${APP}/opscrew-move.dump\n`,
         );
       case "empty db":
         h.db = "empty";

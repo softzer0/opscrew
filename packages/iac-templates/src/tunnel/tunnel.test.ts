@@ -4,13 +4,14 @@ import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { renderEdgeCompose } from "../edge";
 import { IMAGES } from "../pins";
+import { renderCaddyfile, renderCompose, renderTunnelConnectorCompose } from "../runtime";
 import {
-  renderCaddyfile,
-  renderCompose,
-  renderTunnelConnectorCompose,
+  CONNECTOR_METRICS,
+  sshHostname,
+  TUNNEL_ORIGIN_PORT,
+  usesTunnel,
   webFilterMode,
-} from "../runtime";
-import { CLOUDFLARED_METRICS, sshHostname, TUNNEL_ORIGIN_PORT, usesTunnel } from "./index";
+} from "./index";
 
 const PORTAINER = {
   access: "subdomain",
@@ -111,9 +112,12 @@ describe("renderTunnelConnectorCompose", () => {
   const file = renderTunnelConnectorCompose(tunnelPlan());
   const compose = parse(file.content);
 
-  it("runs the pinned connector on the host network with the token from a file", () => {
+  it("runs the app's own pinned connector on the host network with the token from a file", () => {
     expect(file.path).toBe("opscrew/runtime/cloudflared/compose.yaml");
-    expect(compose.name).toBe("opscrew-tunnel");
+    // Each app's connector is a Compose project of its own, next to other apps' on the server.
+    expect(compose.name).toBe("shop-tunnel");
+    const blog = { ...tunnelPlan(), app: { ...tunnelPlan().app, name: "blog" } };
+    expect(parse(renderTunnelConnectorCompose(blog).content).name).toBe("blog-tunnel");
     const service = compose.services.cloudflared;
     expect(service.image).toBe(IMAGES.cloudflared.ref);
     expect(service.image).toMatch(/^cloudflare\/cloudflared:2026\.5\.1@sha256:[0-9a-f]{64}$/);
@@ -121,22 +125,25 @@ describe("renderTunnelConnectorCompose", () => {
       "tunnel",
       "--no-autoupdate",
       "--metrics",
-      "127.0.0.1:20241",
+      "127.0.0.1:0",
       "run",
     ]);
     expect(service.env_file).toEqual(["tunnel.env"]);
     expect(service.network_mode).toBe("host");
     expect(service.ports).toBeUndefined();
     expect(service.restart).toBe("unless-stopped");
+    // A memory limit like every container OpsCrew runs (FR-1325), without swap.
+    expect(service).toMatchObject({ mem_limit: "32m", memswap_limit: "32m" });
   });
 
-  it("serves metrics, diagnostics and pprof on loopback only (it shares the host's network)", () => {
+  it("serves metrics, diagnostics and pprof on loopback only, on a free port of its own", () => {
     const command: string[] = compose.services.cloudflared.command;
     const flag = command.indexOf("--metrics");
     expect(flag).toBeGreaterThan(-1);
     expect(flag).toBeLessThan(command.indexOf("run"));
-    expect(command[flag + 1]).toBe(CLOUDFLARED_METRICS);
-    expect(CLOUDFLARED_METRICS).toMatch(/^127\.0\.0\.1:\d+$/);
+    expect(command[flag + 1]).toBe(CONNECTOR_METRICS);
+    // Port 0: the system picks a free one, so two apps' connectors on one host never collide.
+    expect(CONNECTOR_METRICS).toBe("127.0.0.1:0");
     expect(file.content).not.toMatch(/0\.0\.0\.0|\[::\]/);
   });
 

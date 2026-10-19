@@ -554,17 +554,17 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     const { deps, services, root } = await setup();
     const mainTf = join(root, "opscrew", "infra", "prod", "main.tf");
     await writeFile(mainTf, `${await readFile(mainTf, "utf8")}\n# hand edit\n`);
-    await rm(join(root, "opscrew", "runtime", "Caddyfile"));
+    await rm(join(root, "opscrew", "runtime", "edge", "sites", "shop.caddy"));
 
     const report = await runDrift(deps, { services });
     expect(report.files).toEqual({
       changed: ["opscrew/infra/prod/main.tf"],
-      created: ["opscrew/runtime/Caddyfile"],
+      created: ["opscrew/runtime/edge/sites/shop.caddy"],
     });
     expect(report.clean).toBe(false);
     const text = renderDriftReport(report);
     expect(text).toMatch(/changed\s+opscrew\/infra\/prod\/main\.tf/);
-    expect(text).toMatch(/missing\s+opscrew\/runtime\/Caddyfile/);
+    expect(text).toMatch(/missing\s+opscrew\/runtime\/edge\/sites\/shop\.caddy/);
   });
 
   it("refuses without the state file and explains where it lives", async () => {

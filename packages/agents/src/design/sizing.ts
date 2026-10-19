@@ -1,6 +1,6 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { listText, plural } from "@opscrew/core";
-import { serviceSpec } from "@opscrew/iac-templates";
+import { CONNECTOR_MEMORY_MB, serviceSpec } from "@opscrew/iac-templates";
 import type {
   PlanService,
   ProjectFacts,
@@ -11,7 +11,7 @@ import type {
 } from "@opscrew/plan-schema";
 import { serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { appMemoryMb, EDGE_MEMORY_MB, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryMb, EDGE_MEMORY_MB, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, designComponents } from "./components";
 
 /**
@@ -137,6 +137,67 @@ const OWN_SERVER_POSTGRES_FREE_DISK_GB = 20;
  * share of the need.
  */
 export const OWN_SERVER_MEMORY_TOLERANCE = 0.9;
+
+/** Another OpsCrew app set up on a server the user owns, from its record and inspection. */
+export interface ServerApp {
+  name: string;
+  /** The sum of its containers' memory limits (its record). */
+  memoryMb: number;
+  /** It runs a Cloudflare Tunnel connector of its own. */
+  tunnel: boolean;
+}
+
+/** An app's memory on the server: its limits, and its tunnel connector's. */
+function serverAppMb(app: ServerApp): number {
+  return app.memoryMb + (app.tunnel ? CONNECTOR_MEMORY_MB : 0);
+}
+
+/**
+ * Whether a server the user owns, with `serverMb` of inspected memory, holds this app's containers
+ * (`appMb` of memory limits) next to the other OpsCrew apps' recorded limits (and their tunnel
+ * connectors: the edge's figure includes one), OpsCrew's edge and the system's reserve (FR-1325,
+ * the same figures as on cloud servers): `refused` when they do not fit, a `warning` when less
+ * than 15% stays free, each saying how much the other apps take; `undefined` when it fits, or
+ * when inspection could not read the memory (the own-server option then records a placeholder
+ * under 100 MB, and design warns about the server's size already).
+ */
+export function ownServerMemory(
+  serverMb: number,
+  appMb: number,
+  others: readonly ServerApp[],
+): { refused?: { message: string; hint: string }; warning?: string } | undefined {
+  if (serverMb < 100) return undefined;
+  const othersMb = others.reduce((sum, app) => sum + serverAppMb(app), 0);
+  const headroom = memoryHeadroom(serverMb, appMb + othersMb);
+  if (!headroom.low) return undefined;
+  const each = listText(
+    others.map(
+      (app) =>
+        `"${app.name}" ${app.memoryMb} MB${app.tunnel ? ` and ${CONNECTOR_MEMORY_MB} MB for its tunnel connector` : ""}`,
+    ),
+  );
+  const server = Math.round(serverMb);
+  if (!headroom.fits) {
+    const left = server - SYSTEM_RESERVE_MB - EDGE_MEMORY_MB;
+    const taken =
+      others.length === 0
+        ? `${Math.max(0, left)} MB are left`
+        : `the other OpsCrew ${others.length === 1 ? "app on it takes" : "apps on it take"} ${othersMb} MB of memory limits (${each}), which leaves ${Math.max(0, left - othersMb)} MB`;
+    return {
+      refused: {
+        message: `Your server has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${EDGE_MEMORY_MB} MB for OpsCrew's edge, ${taken}, and this app's containers have ${appMb} MB of memory limits. Nothing was written.`,
+        hint: "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again.",
+      },
+    };
+  }
+  const theirs =
+    others.length === 0
+      ? ""
+      : ` and of the other OpsCrew ${others.length === 1 ? "app" : "apps"} on it (${othersMb} MB: ${each})`;
+  return {
+    warning: `Your server keeps only ${Math.max(0, Math.round(headroom.free * 100))}% of its memory free after the memory limits of this app (${appMb} MB)${theirs}, OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
+  };
+}
 
 /** Free disk (GB) the app needs on a server the user already owns. */
 export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {

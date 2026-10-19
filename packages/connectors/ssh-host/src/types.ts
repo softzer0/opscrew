@@ -6,8 +6,9 @@ import { canonicalIpv4Cidr } from "./parse";
 export const HOST_PLAN_SCHEMA_VERSION = 1;
 
 /**
- * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs` and `app-record` are
- * the app's own; `edge` only appears in a teardown (the edge goes with the last app).
+ * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record` and
+ * `tunnel-connector` are the app's own; `edge` only appears in a teardown (the edge goes with the
+ * last app).
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -151,8 +152,9 @@ export const DesiredHostSchema = z
     sshPort: z.number().int().min(1).max(65535),
     access: z.enum(["public", "tunnel"]),
     /**
-     * Tunnel mode: the connector's Compose file as rendered by `@opscrew/iac-templates`
-     * (`renderTunnelConnectorCompose`). It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which
+     * Tunnel mode: the app's own connector's Compose file as rendered by `@opscrew/iac-templates`
+     * (`renderTunnelConnectorCompose`), run as the project `<app>-tunnel` in
+     * `/srv/opscrew/cloudflared/<app>`. It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which
      * the adapter writes from the token supplied at apply. `tunnelId` (not secret) is recorded next
      * to the connector: a different id means a new tunnel, so its token is written again and the
      * connector restarted. Required when `access` is `tunnel`.

@@ -82,26 +82,25 @@ export interface OwnHost {
 }
 
 /**
- * Stops before anything changes when the server runs another OpsCrew app and not this one, or
- * this app's name belongs to another project there (the apps' records say so): OpsCrew removes
- * only what it set up for this app.
+ * Stops before anything changes when this app's name belongs to another project on the server (its
+ * record says so): OpsCrew removes only what it set up for this app. Other OpsCrew apps on the
+ * server stay as they are.
  */
 function requireOwnApp(plan: DeployPlan, projectId: string, facts: HostFacts): void {
-  const owner =
-    readableRecords(facts.apps).find((record) => record.app === plan.app.name) ??
-    otherActiveApps(facts.apps, plan.app.name)[0];
-  if (owner === undefined) return;
-  const same = owner.app === plan.app.name && owner.projectId === projectId;
-  if (same) return;
+  const owner = readableRecords(facts.apps).find((record) => record.app === plan.app.name);
+  if (owner === undefined || owner.projectId === projectId) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    owner.app === plan.app.name
-      ? `Your server runs an OpsCrew app named "${owner.app}" from another project, so OpsCrew removes nothing from it. Nothing was changed.`
-      : `Your server runs the OpsCrew app "${owner.app}", not "${plan.app.name}", so OpsCrew removes nothing from it. Nothing was changed.`,
+    `Your server runs an OpsCrew app named "${owner.app}" from another project, so OpsCrew removes nothing from it. Nothing was changed.`,
     {
       hint: "Run `opscrew destroy` in the project of that app, or check with `opscrew interview` that this project points at the right server.",
     },
   );
+}
+
+/** The other OpsCrew apps set up on the server, which the teardown leaves as they are. */
+function otherApps(plan: DeployPlan, facts: HostFacts): string[] {
+  return otherActiveApps(facts.apps, plan.app.name).map((record) => record.app);
 }
 
 /**
@@ -239,7 +238,10 @@ function dataLoss(plan: DeployPlan, facts: HostFacts): string {
   lost.push(
     `everything the app stored in ${appDirs(plan.app.name).data} and in its Docker volumes`,
   );
-  if (facts.portainer.dataVolume) lost.push("Portainer's data");
+  // Portainer is shared: it goes only with the last app.
+  if (facts.portainer.dataVolume && otherApps(plan, facts).length === 0) {
+    lost.push("Portainer's data");
+  }
   return `Removing the app also deletes its data on your server: ${listText(lost)}. OpsCrew takes no snapshot of your own server, so this cannot be undone unless you have your own backup.`;
 }
 
@@ -250,10 +252,10 @@ function volumeRm(project: string): string {
 
 /**
  * Exactly which data stays on the server after a teardown without `deleteData` (the data
- * directory, the app's Compose volumes, Portainer's volumes) and the commands that remove it, or
- * `undefined` when there is none.
+ * directory, the app's Compose volumes, and with the last app Portainer's volumes) and the
+ * commands that remove it, or `undefined` when there is none.
  */
-function keptData(facts: HostFacts, app: string): string | undefined {
+function keptData(facts: HostFacts, app: string, last: boolean): string | undefined {
   const parts: string[] = [];
   const commands: string[] = [];
   const data = appDirs(app).data;
@@ -265,7 +267,7 @@ function keptData(facts: HostFacts, app: string): string | undefined {
     parts.push(`the Docker volumes of the Compose project "${app}"`);
     commands.push(volumeRm(app));
   }
-  if (facts.portainer.dataVolume || facts.volumeProjects.includes(PORTAINER_PROJECT)) {
+  if (last && (facts.portainer.dataVolume || facts.volumeProjects.includes(PORTAINER_PROJECT))) {
     parts.push(
       `Portainer's data (the Docker volumes of the Compose project "${PORTAINER_PROJECT}")`,
     );
@@ -307,11 +309,20 @@ function remainingOnOwnServer(input: {
   keptData: string | undefined;
   undone: boolean;
   removedApp: boolean;
+  /** The other OpsCrew apps on the server, which stay with what they share. */
+  others: readonly string[];
+  /** Portainer runs on the server (shared by the apps). */
+  portainer: boolean;
 }): string[] {
-  const { plan, github } = input;
+  const { plan, github, others } = input;
   const items = [
     "Your server itself: OpsCrew never deletes, rebuilds or reinstalls it, and took no snapshot. Backups of anything on it are your responsibility.",
   ];
+  if (others.length > 0) {
+    items.push(
+      `The other OpsCrew ${others.length === 1 ? "app" : "apps"} on your server (${listText(others.map((app) => `"${app}"`))}) and what the apps share: the edge (Caddy and kamal-proxy)${input.portainer ? " and Portainer, which go" : ", which goes"} with the last app.`,
+    );
+  }
   items.push(
     input.undone
       ? "Docker stays installed on your server, because other software may use it; remove it yourself with apt if you no longer need it."
@@ -439,7 +450,8 @@ export async function destroyOwnServer(
   const deletesData =
     deleteData &&
     (teardown?.steps ?? []).some((step) => step.id === "app-dirs" && step.state === "change");
-  const kept = keptData(facts, name);
+  const others = otherApps(plan, facts);
+  const kept = keptData(facts, name, others.length === 0);
   if (deleteData && kept !== undefined) {
     // Never a `--delete-data` that silently keeps the data (Constitution IX).
     if (!removeApp) throw dataNotDeletable(name, kept, true);
@@ -656,6 +668,8 @@ export async function destroyOwnServer(
     keptData: deletesData && hostPlans.teardown !== undefined ? undefined : kept,
     undone,
     removedApp: removeApp,
+    others,
+    portainer: facts.portainer.installed,
   });
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   return {

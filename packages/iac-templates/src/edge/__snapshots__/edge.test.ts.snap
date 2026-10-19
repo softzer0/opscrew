@@ -65,13 +65,15 @@ networks:
 # kamal-proxy in front of every OpsCrew app there. Each app's deploy brings this file and puts it
 # in /srv/edge only when its x-opscrew-edge-version is larger than the server's.
 name: opscrew-edge
-x-opscrew-edge-version: 2026101901
+x-opscrew-edge-version: 2026101902
 services:
   kamal-proxy:
     image: basecamp/kamal-proxy:v0.10.2@sha256:a686220c2aa42c4f9bbcfe851b1d21b2cedee0b5c389890c29d205282379da7c
     restart: unless-stopped
     volumes:
       - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
     security_opt: &a1
       - no-new-privileges:true
     logging:
@@ -86,6 +88,8 @@ services:
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
     ports:
       - 127.0.0.1:18080:80
     configs:
@@ -205,13 +209,15 @@ networks:
 # kamal-proxy in front of every OpsCrew app there. Each app's deploy brings this file and puts it
 # in /srv/edge only when its x-opscrew-edge-version is larger than the server's.
 name: opscrew-edge
-x-opscrew-edge-version: 2026101901
+x-opscrew-edge-version: 2026101902
 services:
   kamal-proxy:
     image: basecamp/kamal-proxy:v0.10.2@sha256:a686220c2aa42c4f9bbcfe851b1d21b2cedee0b5c389890c29d205282379da7c
     restart: unless-stopped
     volumes:
       - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
     security_opt: &a1
       - no-new-privileges:true
     logging:
@@ -226,6 +232,8 @@ services:
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
     ports:
       - 80:80
       - 443:443
@@ -287,13 +295,15 @@ exports[`snapshots > two apps: two site files, one edge 1`] = `
 # kamal-proxy in front of every OpsCrew app there. Each app's deploy brings this file and puts it
 # in /srv/edge only when its x-opscrew-edge-version is larger than the server's.
 name: opscrew-edge
-x-opscrew-edge-version: 2026101901
+x-opscrew-edge-version: 2026101902
 services:
   kamal-proxy:
     image: basecamp/kamal-proxy:v0.10.2@sha256:a686220c2aa42c4f9bbcfe851b1d21b2cedee0b5c389890c29d205282379da7c
     restart: unless-stopped
     volumes:
       - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
     security_opt: &a1
       - no-new-privileges:true
     logging:
@@ -308,6 +318,8 @@ services:
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
     ports:
       - 80:80
       - 443:443

@@ -21,7 +21,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -103,7 +104,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -233,7 +235,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -363,7 +366,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -445,7 +449,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -538,7 +543,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -668,7 +674,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -798,7 +805,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -891,7 +899,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -1021,7 +1030,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -1092,7 +1102,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:
@@ -1222,7 +1233,8 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - /opscrew/runtime
-      - /opscrew/runtime/*
+      - /opscrew/runtime/cloudflared
+      - /opscrew/runtime/portainer
     schedule:
       interval: weekly
     groups:

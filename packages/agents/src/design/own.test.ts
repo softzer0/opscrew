@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { OpsCrewError } from "@opscrew/core";
 import {
   type Architecture,
   type DeployPlan,
@@ -450,19 +451,56 @@ describe("runDesign for a server the user owns", () => {
     expect(preview.warnings.join(" ")).toMatch(/needs a domain on your Cloudflare account/);
   });
 
-  it("warns when the server is too small, and takes the access mode from the caller", async () => {
-    const deps = await setup(ownRequirements());
+  it("warns when the server is smaller than planned for the users, and takes the access mode from the caller", async () => {
+    // The containers' limits fit 1.5 GB, but OpsCrew plans 2 GB for 1k-10k users.
+    const deps = await setup(ownRequirements({ expectedMonthlyUsers: "1k-10k" }));
     const result = await runDesign(deps, {
-      ownServer: { facts: { ...BIG, memoryGb: 0.5, diskFreeGb: 5 }, access: "public" },
+      ownServer: { facts: { ...BIG, memoryGb: 1.5, diskFreeGb: 5 }, access: "public" },
     });
     expect(result.plan.target).toMatchObject({ provider: "own", access: "public" });
-    expect(result.warnings.join("\n")).toMatch(/0\.5 GB of memory/);
+    expect(result.warnings.join("\n")).toMatch(/1\.5 GB of memory/);
     expect(result.warnings.join("\n")).toMatch(/has 5 GB of free disk/);
+  });
+
+  describe("the server's memory holds this app next to the other OpsCrew apps there", () => {
+    it("refuses before writing anything when the limits do not fit, saying how much the others take", async () => {
+      const deps = await setup(ownRequirements());
+      const blog = { name: "blog", memoryMb: 1280, tunnel: false };
+      const error = await runDesign(deps, {
+        ownServer: { facts: { ...BIG, memoryGb: 2 }, access: "public", apps: [blog] },
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect((error as OpsCrewError).code).toBe("PHASE_PRECONDITION");
+      expect((error as OpsCrewError).message).toBe(
+        "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1280 MB of memory limits (\"blog\" 1280 MB), which leaves 256 MB, and this app's containers have 512 MB of memory limits. Nothing was written.",
+      );
+      await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toThrow();
+    });
+
+    it("warns when little stays free, and leaves out the app's own record on a redesign", async () => {
+      const deps = await setup(ownRequirements());
+      const blog = { name: "blog", memoryMb: 1024, tunnel: false };
+      const own = { name: "landing", memoryMb: 9999, tunnel: false };
+      const result = await runDesign(deps, {
+        ownServer: { facts: { ...BIG, memoryGb: 2.2 }, access: "public", apps: [blog, own] },
+      });
+      expect(result.plan.app.name).toBe("landing");
+      expect(result.warnings.join("\n")).toContain(
+        'Your server keeps only 11% of its memory free after the memory limits of this app (512 MB) and of the other OpsCrew app on it (1024 MB: "blog" 1024 MB)',
+      );
+    });
   });
 
   it("keeps the rolling deploys the user set in plan.yaml for a small server (FR-1215)", async () => {
     const deps = await setup(ownRequirements());
-    const ownServer = { facts: { ...BIG, memoryGb: 0.5 }, access: "public" } as const;
+    // A server under 1 GB holds the app once its memory limit is lowered to 256 MB.
+    const big = await runDesign(deps, { ownServer: { facts: BIG, access: "public" } });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...big.plan,
+      app: { ...big.plan.app, memoryMb: 256 },
+      deploy: { strategy: "recreate", reason: "A small server.", drainSeconds: 30 },
+    });
+    const ownServer = { facts: { ...BIG, memoryGb: 0.9 }, access: "public" } as const;
     const first = await runDesign(deps, { ownServer });
     expect(first.plan.deploy.strategy).toBe("recreate");
     const rolling = { strategy: "rolling", drainSeconds: 30 } as const;

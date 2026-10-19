@@ -2,8 +2,8 @@
  * @opscrew/connector-ssh-host: the typed host adapter for servers the user already owns
  * (feature 009). Read-only inspection, host plans of fixed steps, and an apply bound to the
  * plan's SHA-256 hash, with SSH and firewall changes under a dead-man switch on the server.
- * Several OpsCrew apps share a server (feature 013): each has its own record, folders and deploy
- * key, and the shared edge goes with the last one.
+ * Several OpsCrew apps share a server (feature 013): each has its own record, folders, deploy key
+ * and Cloudflare Tunnel connector, and the shared edge goes with the last one.
  * See `specs/009-own-server/contracts/host-adapter.md` and
  * `specs/013-component-model/contracts/components.md`.
  */
@@ -18,8 +18,11 @@ export {
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   type RuntimeFileName,
+  runtimeFilePath,
   SECRET_RUNTIME_FILES,
   SHARED_DIRS,
+  tunnelDir,
+  tunnelProject,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "./constants";
@@ -29,6 +32,7 @@ export {
   HostFactsSchema,
   otherActiveApps,
   readableRecords,
+  tunnelOf,
 } from "./facts";
 export { hostPlanHash } from "./hash";
 export { inspectHost } from "./inspect";

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApplyOptions, HostPlan } from "@opscrew/connector-ssh-host";
-import { HostFactsSchema } from "@opscrew/connector-ssh-host";
+import { HostFactsSchema, tunnelOf } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -52,14 +52,17 @@ async function switchToPublic(o: { closeAfter?: number; never?: boolean } = {}) 
     (options, summary) => options?.destroy === true && summary.changes.length > 0,
   );
   const facts = structuredClone(freshFacts());
-  facts.tunnel = {
-    installed: true,
-    composeSha256: "0".repeat(64),
-    running: true,
-    secretFile: true,
-    dataVolume: false,
-    tunnelId: TUNNEL_ID,
-  };
+  facts.tunnels = [
+    {
+      app: "shop",
+      installed: true,
+      composeSha256: "0".repeat(64),
+      running: true,
+      secretFile: true,
+      dataVolume: false,
+      tunnelId: TUNNEL_ID,
+    },
+  ];
   const host = new FakeHostServer(HostFactsSchema.parse(facts));
   let answer = (_request: ApprovalRequest): boolean => true;
   const handler = new ScriptedApprovalHandler((request) => {
@@ -77,7 +80,7 @@ async function switchToPublic(o: { closeAfter?: number; never?: boolean } = {}) 
   delete env.TF_VAR_server_ipv6;
   const api = fakeTunnelApi({
     events,
-    connectorRunning: () => host.facts.tunnel.running,
+    connectorRunning: () => tunnelOf(host.facts, "shop").running,
     ...(o.closeAfter !== undefined ? { closeAfter: o.closeAfter } : {}),
     ...(o.never !== undefined ? { never: o.never } : {}),
   });
@@ -162,7 +165,7 @@ describe.skipIf(!findExecutable("git"))(
       // Then the new setup's plan; its host plan finds the server prepared already.
       expect(s.events.slice(8, 10)).toEqual(["approve:iac-apply", "iac-apply"]);
       expect(s.events.filter((e) => e === "host")).toHaveLength(1);
-      expect(s.host.facts.tunnel.running).toBe(false);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(false);
       const connector = s.host.applies[0]?.plan.steps.find(
         (step) => step.id === "tunnel-connector",
       );
@@ -237,7 +240,7 @@ describe.skipIf(!findExecutable("git"))(
         "The host plan was not approved. Nothing on your server was changed and nothing in Cloudflare was deleted.",
       );
       expect(s.events).toEqual(["approve:iac-apply", "approve:host-apply"]);
-      expect(s.host.facts.tunnel.running).toBe(true);
+      expect(tunnelOf(s.host.facts, "shop").running).toBe(true);
       const [removal, host] = s.handler.requests;
       expect(error.hint).toBe(
         `Run \`opscrew provision --approve ${removal?.planHash} --approve ${host?.planHash}\` when you are ready, typing shop to confirm: the change on your server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,

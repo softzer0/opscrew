@@ -8,8 +8,11 @@ import {
   MIN_DOCKER_MAJOR,
   planHost,
   type RuntimeFileName,
+  runtimeFilePath,
   SECRET_RUNTIME_FILES,
   SHARED_DIRS,
+  tunnelDir,
+  tunnelOf,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "@opscrew/connector-ssh-host";
@@ -25,8 +28,9 @@ import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
+import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
+import { committedText, lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
@@ -71,7 +75,7 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   portainer: "Portainer",
 };
 
-const RUNTIME_FILES_TITLE = "OpsCrew's runtime files in the app's folder";
+const RUNTIME_FILES_TITLE = "OpsCrew's runtime files of the app";
 
 function portList(value: string | number | boolean | undefined): string[] {
   return String(value ?? "")
@@ -360,26 +364,27 @@ function ufwSinceSetup(facts: HostFacts, step: HostStep): UfwChange[] {
   return out;
 }
 
-/** What OpsCrew renders now for the runtime files the deploy workflow copies to the app folder. */
+/** What OpsCrew renders now for the runtime files the deploy workflow copies to the server. */
 export interface ExpectedRuntimeFiles {
-  /** SHA-256 of each rendered file (`compose.yaml`, `Caddyfile`) as OpsCrew renders it now. */
+  /** SHA-256 of each rendered file (`compose.yaml`, the `site`) as OpsCrew renders it now. */
   rendered: Readonly<Partial<Record<(typeof HASHED_RUNTIME_FILES)[number], string>>>;
   /** The deploy workflow writes `db.env` (the plan has PostgreSQL). */
   dbEnv: boolean;
 }
 
 /**
- * The SHA-256 of `opscrew/runtime/compose.yaml` and `opscrew/runtime/Caddyfile` as OpsCrew renders
- * them from `plan` now (the deploy workflow copies exactly these to the app's folder). Both read
- * only the plan and the contact email for certificates, so no secret and no connection is needed.
- * The Compose file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
+ * The SHA-256 of `opscrew/runtime/compose.yaml` and the app's site file
+ * (`opscrew/runtime/edge/sites/<app>.caddy`) as OpsCrew renders them from `plan` now (the deploy
+ * workflow copies exactly these to the app's folder and the shared edge). Both read only the plan
+ * and the contact email for certificates, so no secret and no connection is needed. The Compose
+ * file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
  */
 export function expectedRuntimeFiles(
   plan: DeployPlan,
   ctx: Pick<RenderContext, "opscrewVersion" | "acmeEmail">,
   committedCompose = "",
 ): ExpectedRuntimeFiles {
-  // The Caddyfile does not depend on the repository or the deploy key (a test checks both files
+  // The site file does not depend on the repository or the deploy key (a test checks both files
   // match the full render), so these stay empty here.
   const full: RenderContext = {
     opscrewVersion: ctx.opscrewVersion,
@@ -390,7 +395,7 @@ export function expectedRuntimeFiles(
   return {
     rendered: {
       "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
-      Caddyfile: sha256Hex(renderCaddyfile(plan, full).content),
+      site: sha256Hex(renderCaddyfile(plan, full).content),
     },
     dbEnv: serviceOf(plan, "postgres") !== undefined,
   };
@@ -399,21 +404,22 @@ export function expectedRuntimeFiles(
 const REDEPLOY =
   "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.";
 
-/** Why each file in the app's folder matters, said when it is missing. */
+/** Why each of the app's runtime files matters, said when it is missing. */
 const RUNTIME_FILE_ROLE: Readonly<Record<RuntimeFileName, string>> = {
   "compose.yaml": "which defines the app's containers",
-  Caddyfile: "the web server's settings",
+  site: "the app's site on the shared web server",
   ".env": "which names the image the app runs",
   "app.env": `the app's settings from the GitHub secret ${DEPLOY_SECRETS.appEnv}`,
   "db.env": `the database's settings from the GitHub secret ${DEPLOY_SECRETS.dbEnv}`,
 };
 
 /**
- * How OpsCrew's runtime files in the app's folder differ from what OpsCrew renders now (FR-911,
- * US4/AC1): a rendered file edited, replaced or missing, and a file with secrets missing, owned
- * by someone else than deploy, or readable by other users. Files that hold secrets are compared
- * by presence, owner and mode only; no file content is ever read. Missing files count only once
- * the app was deployed (the deploy workflow writes them on its first run).
+ * How OpsCrew's runtime files of the app (in its folder, and its site on the shared edge) differ
+ * from what OpsCrew renders now (FR-911, US4/AC1): a rendered file edited, replaced or missing,
+ * and a file with secrets missing, owned by someone else than deploy, or readable by other users.
+ * Files that hold secrets are compared by presence, owner and mode only; no file content is ever
+ * read. Missing files count only once the app was deployed (the deploy workflow writes them on
+ * its first run). Other apps' files are never looked at.
  */
 function runtimeFileDetails(
   facts: HostFacts,
@@ -426,7 +432,7 @@ function runtimeFileDetails(
   if (facts.dirs.find((dir) => dir.path === folder)?.kind !== "dir") return [];
   const out: string[] = [];
   for (const file of facts.runtimeFiles.filter((item) => item.app === app)) {
-    const path = `${folder}/${file.name}`;
+    const path = runtimeFilePath(app, file.name);
     const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
     const secret = (SECRET_RUNTIME_FILES as readonly string[]).includes(file.name);
     if (file.name === "db.env" && !expected.dbEnv) continue;
@@ -497,15 +503,16 @@ function appRecordDetails(facts: HostFacts, app: string): string[] {
   return facts.ready ? [] : ["The setup-finished flag /var/lib/opscrew-ready is missing."];
 }
 
-function tunnelDetails(facts: HostFacts, step: HostStep): string[] {
-  const tunnel = facts.tunnel;
+/** The app's own tunnel connector; other apps' connectors are theirs to check. */
+function tunnelDetails(facts: HostFacts, step: HostStep, app: string): string[] {
+  const tunnel = tunnelOf(facts, app);
   if (step.params.remove === true) {
     return [
-      "The tunnel connector is still on the server, although the app is served directly now.",
+      "The app's tunnel connector is still on the server, although the app is served directly now.",
     ];
   }
   if (!tunnel.installed) {
-    return ["The tunnel connector's files in /srv/opscrew/cloudflared are missing."];
+    return [`The tunnel connector's files in ${tunnelDir(app)} are missing.`];
   }
   const out: string[] = [];
   if (tunnel.tunnelId !== null && tunnel.tunnelId !== step.params.tunnelId) {
@@ -573,7 +580,7 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     case "edge":
       return [];
     case "tunnel-connector":
-      return tunnelDetails(facts, step);
+      return tunnelDetails(facts, step, app);
     case "portainer":
       return portainerDetails(facts, step);
   }
@@ -583,8 +590,9 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
  * Every difference between the inspected server and what OpsCrew set up: OpsCrew's host record,
  * each step of the setup plan `setup` (planned from the same facts and the desired state) that is
  * not in place, ufw rules and default policies changed since OpsCrew's setup (from its record),
- * OpsCrew's runtime files in the app's folder (with `app.runtimeFiles`), the plan's findings (a
- * blocked step always has one), and the app's containers.
+ * OpsCrew's runtime files of the app (with `app.runtimeFiles`), the plan's findings (a blocked
+ * step always has one), and the app's containers. Only `app`'s own parts and the shared ones are
+ * compared; other OpsCrew apps on the server are theirs to check.
  * `applied` (the last setup plan the user approved) tells a change of Cloudflare's IP ranges from
  * a filter someone changed on the server. Pure; holds no secret and no address.
  */
@@ -699,7 +707,7 @@ export async function ownHostDrift(
   });
   const setup = await lastHostSetup(deps, plan);
   const passwordLogins = passwordLoginChoice(setup, facts);
-  const tunnelId = options.tunnelId ?? facts.tunnel.tunnelId ?? undefined;
+  const tunnelId = options.tunnelId ?? tunnelOf(facts, plan.app.name).tunnelId ?? undefined;
   const webSources = await driftWebSources(deps, plan, options.cloudflare, setup, facts);
   const desired = await desiredHost(
     deps,
@@ -716,15 +724,22 @@ export async function ownHostDrift(
       ...(passwordLogins !== undefined ? { passwordLogins } : {}),
     },
   );
+  const contactEmail = (await readRequirements(deps))?.contactEmail;
+  const runtimeFiles = expectedRuntimeFiles(
+    plan,
+    { opscrewVersion: deps.version, ...(contactEmail ? { acmeEmail: contactEmail } : {}) },
+    await committedText(deps.paths.root, [renderCompose(plan).path]),
+  );
   return {
     differences: hostDifferences(
       facts,
       // Its findings say what stops `opscrew provision`, which puts the setup back.
       planHost(facts, desired, "opscrew provision"),
-      // T1308b: the deploy still copies the runtime files to /srv/app, while inspection reads
-      // them in /srv/apps/<app>: their check (`runtimeFiles: expectedRuntimeFiles(...)`) comes
-      // back once the deploy works there.
-      { name: plan.app.name, deployed: plan.deployment.lastDeployAt !== undefined },
+      {
+        name: plan.app.name,
+        deployed: plan.deployment.lastDeployAt !== undefined,
+        runtimeFiles,
+      },
       setup,
     ),
   };
