@@ -68,7 +68,10 @@ describe("move layouts", () => {
   });
 
   it("fills the old server's image when the plan omits it", () => {
-    const { image: _image, ...target } = cloudTarget(testPlan({ provider: "digitalocean" }).target);
-    expect(previousTarget({ from: { target } }).image).toBe("ubuntu-24-04-x64");
+    const plan = testPlan({ provider: "digitalocean" });
+    const { image: _image, ...target } = cloudTarget(plan.target);
+    expect(previousTarget({ from: { target, deploy: plan.deploy } }).image).toBe(
+      "ubuntu-24-04-x64",
+    );
   });
 });

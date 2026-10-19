@@ -1,6 +1,7 @@
 import { DesignOptionListSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
+  autoBuild,
   digitaloceanCatalog,
   doEuCatalog,
   doOffer,
@@ -188,6 +189,7 @@ describe("optionToPlan on DigitalOcean", () => {
       requirements: doRequirements(),
       now: new Date("2026-10-12T10:00:00.000Z"),
       codeChanges: [],
+      build: autoBuild(staticSpaFacts()),
     });
     expect(plan.target).toEqual({
       provider: "digitalocean",

@@ -25,6 +25,7 @@ function build(builder: AppBuild["builder"], runtime: AppBuild["runtime"]): AppB
     chosen: builder === "generated-dockerfile" ? "auto" : "user",
     reason: "The reason.",
     runtime,
+    probe: "bash",
   };
 }
 

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { exists, stripBom, zodIssues } from "@opscrew/core";
+import { exists, listText, stripBom, zodIssues } from "@opscrew/core";
 import {
   type AppKind,
   type EnvUrlScheme,
@@ -117,6 +117,9 @@ interface UnitInfo {
 
 const NEXT_CONFIG = /^next\.config\.[cm]?[jt]s$/;
 const ASTRO_CONFIG = /^astro\.config\.[cm]?[jt]s$/;
+/** Dockerfiles for development, tests or local runs: `Dockerfile.dev`, `test.Dockerfile`. */
+const DEV_DOCKERFILE =
+  /^(?:dockerfile\.(?:dev|development|test|local)|(?:dev|development|test|local)\.dockerfile)$/i;
 
 type JsPackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type PyPackageManager = "pip" | "poetry" | "uv" | "pipenv";
@@ -438,19 +441,25 @@ export async function detectProjectDetails(
   });
 
   // Docker files.
-  const pickFile = (exact: string[], loose?: (name: string) => boolean): string | undefined => {
+  const pickFile = (exact: string[], loose?: (path: string) => boolean): string | undefined => {
     for (const dir of searchDirs) {
       for (const name of exact) if (fileSet.has(joinRel(dir, name))) return joinRel(dir, name);
     }
     if (!loose) return undefined;
-    return scopedFiles.filter((f) => loose(basenameRel(f))).sort(byDepth)[0];
+    return scopedFiles.filter(loose).sort(byDepth)[0];
   };
-  const dockerfile = pickFile(
-    ["Dockerfile"],
-    (n) => /^dockerfile(?:\.[\w-]+)?$/i.test(n) || /\.dockerfile$/i.test(n),
-  );
+  // Only a production Dockerfile is the app's own: never a dev container's, or one for
+  // development, tests or local runs.
+  const dockerfile = pickFile(["Dockerfile"], (path) => {
+    const name = basenameRel(path);
+    return (
+      (/^dockerfile(?:\.[\w-]+)?$/i.test(name) || /\.dockerfile$/i.test(name)) &&
+      !DEV_DOCKERFILE.test(name) &&
+      !path.split("/").includes(".devcontainer")
+    );
+  });
   const composeNames = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
-  const compose = pickFile(composeNames, (n) => composeNames.includes(n));
+  const compose = pickFile(composeNames, (path) => composeNames.includes(basenameRel(path)));
   const dockerignore = pickFile([".dockerignore"]);
 
   // Package manager and install command.
@@ -552,6 +561,17 @@ export async function detectProjectDetails(
     : undefined;
 
   const notes: string[] = [];
+  // OpsCrew runs the web process; the Procfile's other process types (workers, clocks) do not run.
+  const otherProcesses = [...(procfile ?? "").matchAll(/^([\w-]+):/gm)]
+    .map((match) => match[1] as string)
+    .filter((type) => type !== "web" && type !== "release")
+    .sort();
+  if (otherProcesses.length > 0) {
+    const one = otherProcesses.length === 1;
+    notes.push(
+      `The Procfile also declares the ${listText(otherProcesses)} process${one ? "" : "es"}. OpsCrew deploys only the web process for now, so ${one ? "it" : "they"} will not run until support for apps made of several parts arrives. Meanwhile, run ${one ? "it" : "them"} yourself, for example on the same server next to the app.`,
+    );
+  }
   if (appKind !== "static-spa") {
     let start: string | undefined;
     const hasNpmDependency = (name: string) =>

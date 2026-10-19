@@ -5,6 +5,7 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import { type ProjectFacts, type Requirements, writeArtifact } from "@opscrew/plan-schema";
+import { type BuilderChoice, chooseBuilder } from "../design/builder";
 
 export const AS_OF = "2026-09-01T00:00:00.000Z";
 
@@ -160,6 +161,13 @@ export function nextPostgresFacts(overrides: Partial<ProjectFacts> = {}): Projec
     git: { defaultBranch: "trunk" },
     ...overrides,
   });
+}
+
+/** The builder design chooses for `facts` on an amd64 server (for `optionToPlan` in tests). */
+export function autoBuild(facts: ProjectFacts): BuilderChoice {
+  const choice = chooseBuilder(facts, undefined, "amd64");
+  if ("refused" in choice) throw new Error(choice.refused);
+  return choice;
 }
 
 export function makeRequirements(overrides: Partial<Requirements> = {}): Requirements {

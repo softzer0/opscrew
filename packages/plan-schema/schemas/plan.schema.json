@@ -112,7 +112,7 @@
               "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
             }
           },
-          "required": ["builder", "chosen", "reason", "runtime"],
+          "required": ["builder", "chosen", "reason", "runtime", "probe"],
           "additionalProperties": false
         }
       },
@@ -730,6 +730,7 @@
               "additionalProperties": false
             },
             "deploy": {
+              "default": {},
               "type": "object",
               "properties": {
                 "strategy": {
@@ -799,7 +800,7 @@
                   "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
                 }
               },
-              "required": ["builder", "chosen", "reason", "runtime"],
+              "required": ["builder", "chosen", "reason", "runtime", "probe"],
               "additionalProperties": false
             }
           },

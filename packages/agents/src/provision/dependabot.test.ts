@@ -29,6 +29,7 @@ function java(): DeployPlan {
         chosen: "user",
         reason: "The reason.",
         runtime: { language: "java", version: "25" },
+        probe: "bash",
       },
     },
   };

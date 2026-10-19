@@ -614,3 +614,61 @@ describe("health endpoints the plan can check", () => {
     expect((await detectProject(root)).healthEndpoint).toBe("/docs/api/health");
   });
 });
+
+describe("the app's own Dockerfile", () => {
+  const express = (files: Record<string, string>) =>
+    tree({
+      "package.json": JSON.stringify({ name: "api", dependencies: { express: "^5" } }),
+      "server.js": "app.listen(process.env.PORT);\n",
+      ...files,
+    });
+
+  it("is never a dev container's or a development, test or local Dockerfile", async () => {
+    const root = await express({
+      ".devcontainer/Dockerfile": "FROM mcr.microsoft.com/devcontainers/javascript-node:22\n",
+      ".devcontainer/devcontainer.json": "{}\n",
+      "Dockerfile.dev": "FROM node:22\n",
+      "docker/Dockerfile.development": "FROM node:22\n",
+      "Dockerfile.test": "FROM node:22\n",
+      "Dockerfile.local": "FROM node:22\n",
+      "dev.Dockerfile": "FROM node:22\n",
+    });
+    const facts = await detectProject(root);
+    expect(facts.docker.dockerfile).toBeUndefined();
+    // Their base images are no evidence of the app's runtime version either.
+    expect(facts.runtimeEvidence).toBeUndefined();
+  });
+
+  it("is a production Dockerfile anywhere in the app, the shallowest first", async () => {
+    const root = await express({
+      ".devcontainer/Dockerfile": "FROM node:22\n",
+      "Dockerfile.dev": "FROM node:22\n",
+      "docker/Dockerfile.prod": "FROM node:24\n",
+    });
+    expect((await detectProject(root)).docker.dockerfile).toBe("docker/Dockerfile.prod");
+  });
+});
+
+describe("Procfile process types", () => {
+  it("notes the process types besides web and release, which OpsCrew does not run", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({ name: "api", dependencies: { express: "^5" } }),
+      "server.js": "app.listen(process.env.PORT);\n",
+      Procfile:
+        "web: node server.js\nrelease: npm run migrate\nworker: node worker.js\nclock: node clock.js\n",
+    });
+    const facts = await detectProject(root);
+    expect(facts.build.startCommand).toBe("node server.js");
+    expect(facts.notes).toEqual([
+      "The Procfile also declares the clock and worker processes. OpsCrew deploys only the web process for now, so they will not run until support for apps made of several parts arrives. Meanwhile, run them yourself, for example on the same server next to the app.",
+    ]);
+  });
+
+  it("notes nothing for a Procfile with only web and release", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({ name: "api", dependencies: { express: "^5" } }),
+      Procfile: "web: node server.js\nrelease: npm run migrate\n",
+    });
+    expect((await detectProject(root)).notes).toBeUndefined();
+  });
+});

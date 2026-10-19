@@ -487,6 +487,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
           chosen: "user",
           reason: "You chose Railpack.",
           runtime: { language: "node", version: "24" },
+          probe: "bash",
         },
       },
     };

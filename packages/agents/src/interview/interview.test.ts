@@ -9,10 +9,12 @@ import {
   QuestionSchema,
   type Requirements,
   readArtifact,
+  writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runAnalyze } from "../analyze";
-import { createTestPhaseDeps } from "../testing";
+import { runDesign } from "../design";
+import { createTestPhaseDeps, euCatalog, testPlan } from "../testing";
 import { answersToRequirements, normaliseDomain, parseMoney } from "./answers";
 import { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
 import { IMAGE_RETENTION_NOTE, runInterview } from "./run";
@@ -570,6 +572,67 @@ describe("runInterview", () => {
       signImages: false,
       deployTags: "off",
     });
+  });
+
+  it("keeps the signing and deploy tags set in plan.yaml when run again", async () => {
+    const deps = await createTestPhaseDeps({ root: await project("static-vite") });
+    await runInterview(deps, { answers: { ...BASE_ANSWERS, signImages: false } });
+    // Design wrote the plan after the interview; the user then turned both on in plan.yaml.
+    const plan = { ...testPlan(), updatedAt: "2026-10-11T13:00:00.000Z" };
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      supplyChain: { sign: true },
+      cicd: { ...plan.cicd, deployTags: { enabled: true, release: true } },
+    });
+
+    let asked: Question[] = [];
+    const interactive = await runInterview(deps, {
+      ask: async (questions) => {
+        asked = questions;
+        return Object.fromEntries(questions.map((q) => [q.id, q.default]));
+      },
+    });
+    const defaults = Object.fromEntries(asked.map((q) => [q.id, q.default]));
+    expect(defaults).toMatchObject({ signImages: true, deployTags: "tag-and-release" });
+    expect(interactive.requirements).toMatchObject({
+      signImages: true,
+      deployTags: "tag-and-release",
+    });
+
+    // From an answers file without them, too.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      cicd: { ...plan.cicd, deployTags: { enabled: true, release: false } },
+    });
+    const answered = await runInterview(deps, { answers: BASE_ANSWERS });
+    expect(answered.requirements).toMatchObject({ signImages: false, deployTags: "tag" });
+  });
+
+  it("keeps answers newer than the plan: plan.yaml wins only once design wrote it later", async () => {
+    let now = new Date("2026-10-11T12:00:00.000Z");
+    const tick = () => {
+      now = new Date(now.getTime() + 60_000);
+    };
+    const deps = await createTestPhaseDeps({
+      root: await project("static-vite"),
+      clock: { now: () => now },
+    });
+    await runAnalyze(deps, { ai: false });
+    await runInterview(deps, { answers: BASE_ANSWERS });
+    tick();
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.supplyChain.sign).toBe(false);
+    tick();
+    // Signing turned on in the interview, after the design.
+    await runInterview(deps, { answers: { ...BASE_ANSWERS, signImages: true } });
+    tick();
+    const enter = await runInterview(deps, {
+      ask: async (questions) => Object.fromEntries(questions.map((q) => [q.id, q.default])),
+    });
+    expect(enter.requirements.signImages).toBe(true);
+    tick();
+    const file = await runInterview(deps, { answers: BASE_ANSWERS });
+    expect(file.requirements.signImages).toBe(true);
   });
 
   it("fails with INVALID_INPUT listing missing answers and records the failure", async () => {

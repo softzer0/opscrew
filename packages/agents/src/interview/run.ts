@@ -1,4 +1,4 @@
-import { ensureStateDir, toPosixRelative } from "@opscrew/core";
+import { ensureStateDir, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type ProjectFacts,
@@ -146,10 +146,36 @@ async function appCandidatesFor(deps: PhaseDeps, facts: ProjectFacts): Promise<s
   }
 }
 
-/** Previous answers from `opscrew/requirements.yaml`, if the file exists and is valid. */
+/**
+ * The previous answers with signing and deploy tags as `opscrew/plan.yaml` sets them, when there is
+ * a readable plan written after those answers (the user may have changed them there since). The
+ * same order rule as design's: answers newer than the plan replace its settings at the next
+ * design, so they win here too. The interview's defaults and unanswered values start from this.
+ */
+export async function withPlanSettings(
+  paths: ProjectPaths,
+  previous: Requirements,
+): Promise<Requirements> {
+  const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);
+  if (plan === undefined || Date.parse(previous.answeredAt) > Date.parse(plan.updatedAt)) {
+    return previous;
+  }
+  const { enabled, release } = plan.cicd.deployTags;
+  return {
+    ...previous,
+    signImages: plan.supplyChain.sign,
+    deployTags: !enabled ? "off" : release ? "tag-and-release" : "tag",
+  };
+}
+
+/**
+ * Previous answers from `opscrew/requirements.yaml`, if the file exists and is valid, with the
+ * plan's signing and deploy tags ({@link withPlanSettings}).
+ */
 async function loadPrevious(deps: PhaseDeps): Promise<Requirements | undefined> {
   try {
-    return await readArtifact("requirements", deps.paths.files.requirements);
+    const previous = await readArtifact("requirements", deps.paths.files.requirements);
+    return await withPlanSettings(deps.paths, previous);
   } catch (error) {
     if (errorCode(error) === "ARTIFACT_MISSING") return undefined;
     if (errorCode(error) === "ARTIFACT_INVALID") {

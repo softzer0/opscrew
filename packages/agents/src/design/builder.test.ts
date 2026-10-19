@@ -8,8 +8,8 @@ import { type BuilderChoice, chooseBuilder, runtimeLanguageOf } from "./builder"
 const EXAMPLES = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 
 /** A plan holding only `app.build`, as `chooseBuilder` reads it. */
-function planWith(build: AppBuild): Pick<DeployPlan, "app"> {
-  return { app: { build } as DeployPlan["app"] };
+function planWith(build: Omit<AppBuild, "probe">): Pick<DeployPlan, "app"> {
+  return { app: { build: { ...build, probe: "none" } } as DeployPlan["app"] };
 }
 
 function choice(result: BuilderChoice | { refused: string }): BuilderChoice {
@@ -181,7 +181,12 @@ describe("chooseBuilder rules", () => {
   it("uses the repository's own Dockerfile before any other builder", () => {
     const facts = nextPostgresFacts({ docker: { dockerfile: "Dockerfile" } });
     const result = choice(chooseBuilder(facts, undefined, "amd64"));
-    expect(result).toMatchObject({ builder: "own-dockerfile", probe: "none" });
+    // A failed deploy names the builder OpsCrew would choose without the Dockerfile.
+    expect(result).toMatchObject({
+      builder: "own-dockerfile",
+      probe: "none",
+      automatic: "generated-dockerfile",
+    });
     expect(result.reason).toBe(
       "The repository has its own Dockerfile (Dockerfile), so OpsCrew builds the image with it.",
     );
@@ -263,14 +268,12 @@ describe("chooseBuilder rules", () => {
       expect(result.warnings).toEqual([unchecked("Python 3.14")]);
     });
 
-    it("allows PHP, warning that Laravel needs its own NGINX configuration", () => {
+    it("refuses PHP: the pinned Noble builder has none", () => {
       const laravel = NEW_LANGUAGES["laravel-app"] as ProjectFacts;
-      const result = choice(chooseBuilder(laravel, buildpacks("php", "8.4"), "amd64"));
-      expect(result).toMatchObject({ builder: "buildpacks", automatic: "railpack" });
-      expect(result.warnings).toEqual([
-        unchecked("PHP 8.4"),
-        "Buildpacks' default NGINX configuration does not route Laravel's front controller, so the app answers 404 until you add your own NGINX configuration for it.",
-      ]);
+      expect(chooseBuilder(laravel, buildpacks("php", "8.4"), "amd64")).toEqual({
+        refused:
+          "opscrew/plan.yaml sets app.build.builder to buildpacks, but the pinned Buildpacks builder has no PHP support. Set it to railpack, or set app.build.chosen to auto to let OpsCrew choose; plan.yaml was not changed.",
+      });
     });
 
     it("refuses pnpm, Bun and Rust, which the builder does not support", () => {
@@ -323,7 +326,10 @@ describe("chooseBuilder rules", () => {
         packageManager: "bun",
         docker: { dockerfile: "Dockerfile" },
       });
-      expect(choice(chooseBuilder(facts, undefined, "amd64")).builder).toBe("own-dockerfile");
+      expect(choice(chooseBuilder(facts, undefined, "amd64"))).toMatchObject({
+        builder: "own-dockerfile",
+        automatic: "railpack",
+      });
     });
   });
 

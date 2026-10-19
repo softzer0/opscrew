@@ -19,6 +19,7 @@ import {
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
+  withPlanSettings,
 } from "@opscrew/agents";
 import { isUserFacingError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
@@ -48,10 +49,16 @@ async function loadFacts(
   }
 }
 
-/** Previous requirements when `opscrew/requirements.yaml` exists and is valid. */
+/**
+ * Previous requirements when `opscrew/requirements.yaml` exists and is valid, with signing and
+ * deploy tags as `opscrew/plan.yaml` sets them (as `opscrew interview` reads them).
+ */
 async function loadPrevious(paths: ProjectPaths): Promise<Requirements | undefined> {
   try {
-    return await readArtifact("requirements", paths.files.requirements);
+    return await withPlanSettings(
+      paths,
+      await readArtifact("requirements", paths.files.requirements),
+    );
   } catch {
     return undefined;
   }

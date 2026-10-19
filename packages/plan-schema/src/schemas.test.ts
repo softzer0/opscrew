@@ -1146,6 +1146,8 @@ describe("DeployPlan retarget", () => {
     });
     expect(cloud(moving.target).image).toBe("ubuntu-24-04-x64");
     expect(moving.retarget?.from.target.image).toBe("ubuntu-24.04");
+    // The deploy settings an abort restores: the defaults when the move did not record them.
+    expect(moving.retarget?.from.deploy).toEqual({ strategy: "rolling", drainSeconds: 30 });
     expect(moving.retarget?.step).toBe("renamed");
     const bad = { ...moving, retarget: { ...moving.retarget, step: "halfway" } };
     expect(pathsOf(DeployPlanSchema.safeParse(bad))).toEqual(["retarget.step"]);
@@ -1200,6 +1202,7 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
     chosen: "auto",
     reason: "Next.js with pnpm: OpsCrew's Dockerfile builds it; Buildpacks has no pnpm.",
     runtime: { language: "node", version: "24" },
+    probe: "node",
   } as const;
   const withBuild = (plan: DeployPlan, value: object) => ({
     ...plan,
@@ -1226,7 +1229,7 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
         language: "node" | "python" | "ruby" | "go" | "java" | "dotnet" | "php" | "rust" | "other";
         version?: string;
       };
-      probe?: "node" | "python" | "ruby" | "php" | "wget" | "bash" | "none";
+      probe: "node" | "python" | "ruby" | "php" | "wget" | "bash" | "none";
       automatic?: "generated-dockerfile" | "own-dockerfile" | "buildpacks" | "railpack";
     }>();
     for (const probe of ["node", "python", "ruby", "php", "wget", "bash", "none"]) {
@@ -1237,6 +1240,11 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
     expect(DeployPlanSchema.safeParse(withBuild(plan, { ...build, probe: "curl" })).success).toBe(
       false,
     );
+    // Design always records the probe with the builder.
+    const { probe: _probe, ...noProbe } = build;
+    expect(pathsOf(DeployPlanSchema.safeParse(withBuild(plan, noProbe)))).toEqual([
+      "app.build.probe",
+    ]);
   });
 
   it("keeps the version as the app declares it: major, major.minor or major.minor.patch", async () => {

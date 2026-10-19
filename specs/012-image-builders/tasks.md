@@ -282,7 +282,7 @@ Effort`.
 
 Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MCP, plugin, secops and docs; spec coverage) reviewed `e459f77..main` on 2026-10-19. The lead fixed the artefact drift in the spec, plan, data model, contract, quickstart and ADR. T1215–T1217 have disjoint Owns and run in parallel; T1218 follows.
 
-- [ ] T1215 [US1] Design keeps what the user chose, and the builder choice's gaps, in `packages/agents/src/**`, `packages/detect/src/**`, `packages/plan-schema/src/**`
+- [X] T1215 [US1] Design keeps what the user chose, and the builder choice's gaps, in `packages/agents/src/**`, `packages/detect/src/**`, `packages/plan-schema/src/**`
   - Reads: spec FR-1201, FR-1202, FR-1206, FR-1215, FR-1219, FR-1228; `design/{builder,plan,run,strategy}.ts`, `interview/questions.ts`, `shared/phase-status.ts`
   - Depends: T1214
   - Accept:
@@ -307,7 +307,7 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/detect --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew`
   - Effort: xhigh
 
-- [ ] T1216 [US1] Pinned build tools and the workflow's last gaps, in `packages/iac-templates/**`
+- [X] T1216 [US1] Pinned build tools and the workflow's last gaps, in `packages/iac-templates/**`
   - Reads: spec FR-1203, FR-1206, FR-1220, FR-1222, FR-1228; `src/docker/stacks.ts`, `src/pins.ts`, `src/pins-carry.ts`, `src/workflow/{build,switch}.ts`, `src/runtime/healthcheck.ts`
   - Depends: T1214
   - Accept:

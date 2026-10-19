@@ -4,9 +4,11 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
+import { forbiddenFetch, ScriptedRunner, testPlan } from "@opscrew/agents/testing";
 import type { CommandRunner, FetchLike } from "@opscrew/contracts";
+import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
 
@@ -41,12 +43,13 @@ async function connect(
     await client.close();
     await server.close();
   });
-  return async (name: string, args: Record<string, unknown> = {}) =>
+  const call = async (name: string, args: Record<string, unknown> = {}) =>
     (await client.callTool({ name, arguments: args })) as CallToolResult;
+  return { call, root };
 }
 
 async function questions(env: Record<string, string>) {
-  const call = await connect(env);
+  const { call } = await connect(env);
   const result = await call("opscrew_interview_questions");
   const data = result.structuredContent as {
     questions: { id: string; default?: unknown }[];
@@ -83,10 +86,44 @@ function textOf(result: CallToolResult): string {
   return result.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
 }
 
+describe("opscrew_interview_questions signing and deploy-tags defaults", () => {
+  it("come from plan.yaml when it exists, so a rerun keeps the user's settings there", async () => {
+    const { call, root } = await connect({});
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, provider: "hetzner" },
+    });
+    expect(saved.isError).toBeFalsy();
+    const defaults = async () => {
+      const result = await call("opscrew_interview_questions");
+      const data = result.structuredContent as { questions: { id: string; default?: unknown }[] };
+      return Object.fromEntries(data.questions.map((q) => [q.id, q.default]));
+    };
+    expect(await defaults()).toMatchObject({ signImages: false, deployTags: "off" });
+
+    // Design wrote the plan after the answers; the user then turned both on in plan.yaml.
+    const { files } = resolveProjectPaths(root, { env: {} });
+    const { answeredAt } = await readArtifact("requirements", files.requirements);
+    const minutesAfter = (minutes: number) =>
+      new Date(Date.parse(answeredAt) + minutes * 60_000).toISOString();
+    const plan = testPlan();
+    const edited = {
+      ...plan,
+      updatedAt: minutesAfter(1),
+      supplyChain: { sign: true },
+      cicd: { ...plan.cicd, deployTags: { enabled: true, release: true } },
+    };
+    await writeArtifact("plan", files.plan, edited);
+    expect(await defaults()).toMatchObject({ signImages: true, deployTags: "tag-and-release" });
+    // Answers newer than the plan win, as at the next design.
+    await writeArtifact("plan", files.plan, { ...edited, updatedAt: minutesAfter(-1) });
+    expect(await defaults()).toMatchObject({ signImages: false, deployTags: "off" });
+  });
+});
+
 describe("opscrew_save_requirements provider summary", () => {
   it("reports DigitalOcean when no provider is given and only DIGITALOCEAN_TOKEN is set", async () => {
     const token = fakeSecret("digitalocean-token");
-    const call = await connect({ DIGITALOCEAN_TOKEN: token });
+    const { call } = await connect({ DIGITALOCEAN_TOKEN: token });
     const saved = await call("opscrew_save_requirements", { answers: ANSWERS });
     expect(saved.isError).toBeFalsy();
     expect(textOf(saved)).toContain("- Cloud provider: DigitalOcean");
@@ -94,7 +131,7 @@ describe("opscrew_save_requirements provider summary", () => {
   });
 
   it("reports Hetzner Cloud when the provider answer is hetzner", async () => {
-    const call = await connect({ DIGITALOCEAN_TOKEN: fakeSecret("digitalocean-token") });
+    const { call } = await connect({ DIGITALOCEAN_TOKEN: fakeSecret("digitalocean-token") });
     const saved = await call("opscrew_save_requirements", {
       answers: { ...ANSWERS, provider: "hetzner" },
     });
@@ -123,7 +160,7 @@ describe("the signing question and the repository's visibility", () => {
 
   async function signingHelp(answer: { private: boolean } | "unavailable") {
     const setup = onGitHub(answer);
-    const call = await connect({ GITHUB_TOKEN: setup.token }, setup.io);
+    const { call } = await connect({ GITHUB_TOKEN: setup.token }, setup.io);
     const result = await call("opscrew_interview_questions");
     const data = result.structuredContent as { questions: { id: string; help?: string }[] };
     expect(JSON.stringify(result)).not.toContain(setup.token);

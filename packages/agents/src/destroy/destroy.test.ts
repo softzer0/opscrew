@@ -1029,7 +1029,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const plan: DeployPlan = {
       ...digitalOceanPlan(),
       retarget: {
-        from: { target: cloudTarget(from.target) },
+        from: { target: cloudTarget(from.target), deploy: from.deploy },
         step: "deployed",
         startedAt: NOW,
       },

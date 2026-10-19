@@ -604,6 +604,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       chosen: "auto" as const,
       reason: "Before the move.",
       runtime: { language: "node" as const, version: "24" },
+      probe: "bash" as const,
     };
     await writeArtifact("plan", h.paths.files.plan, {
       ...before,
@@ -656,6 +657,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       chosen: "user" as const,
       reason: "You chose it.",
       runtime: { language: "node" as const, version: "24" },
+      probe: "bash" as const,
     };
     await writeArtifact("plan", h.paths.files.plan, { ...before, app: { ...before.app, build } });
     // Buildpacks has no pnpm support.

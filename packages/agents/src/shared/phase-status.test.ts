@@ -15,6 +15,7 @@ describe("buildStatusLines", () => {
       chosen: "auto" as const,
       reason: "Go 1.26: Buildpacks builds it.",
       runtime: { language: "go" as const, version: "1.26" },
+      probe: "bash" as const,
     };
     expect(buildStatusLines({ ...plan, app: { ...plan.app, build } })).toEqual([
       "Image builder: buildpacks. Go 1.26: Buildpacks builds it.",
@@ -36,7 +37,8 @@ describe("buildStatusLines", () => {
 describe("supplyChainLines", () => {
   it("shows the defaults with the setting that changes each", () => {
     expect(supplyChainLines(testPlan())).toEqual([
-      "Image signing: off (the default). Set supplyChain.sign: true in opscrew/plan.yaml to sign each image with cosign.",
+      // FR-1219: what signing would make public, before the user turns it on in plan.yaml.
+      "Image signing: off (the default). Set supplyChain.sign: true in opscrew/plan.yaml to sign each image with cosign. If your repository is private, its name and the deploy workflow's path appear in Sigstore's public log once images are signed.",
       "Deploy tags: off (the default). Set cicd.deployTags.enabled: true in opscrew/plan.yaml to tag each healthy deploy.",
       "Image retention: keeps the newest 10 deployed images in GitHub's container registry, never the running or the previous one (cicd.imageRetention in opscrew/plan.yaml).",
     ]);

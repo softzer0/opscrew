@@ -43,14 +43,16 @@ export function buildStatusLines(
 
 /**
  * The supply-chain lines of design and status (CLI and MCP): image signing, deploy tags and image
- * retention, each with what it does and the `opscrew/plan.yaml` setting that changes it.
+ * retention, each with what it does and the `opscrew/plan.yaml` setting that changes it. Signing,
+ * on or off, says what it makes public for a private repository (FR-1219).
  */
 export function supplyChainLines(plan: Pick<DeployPlan, "supplyChain" | "cicd">): string[] {
   const { deployTags, imageRetention } = plan.cicd;
+  const publicLog = signingPublicLog(undefined);
   return [
     plan.supplyChain.sign
-      ? `Image signing: on. Each image gets a keyless cosign signature. ${signingPublicLog(undefined)}`
-      : "Image signing: off (the default). Set supplyChain.sign: true in opscrew/plan.yaml to sign each image with cosign.",
+      ? `Image signing: on. Each image gets a keyless cosign signature. ${publicLog}`
+      : `Image signing: off (the default). Set supplyChain.sign: true in opscrew/plan.yaml to sign each image with cosign. ${publicLog}`,
     deployTags.enabled
       ? `Deploy tags: on. Each healthy deploy tags its commit deploy-<UTC time>${deployTags.release ? " and gets a GitHub Release naming the image digest" : ""}.`
       : "Deploy tags: off (the default). Set cicd.deployTags.enabled: true in opscrew/plan.yaml to tag each healthy deploy.",

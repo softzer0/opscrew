@@ -25,7 +25,10 @@ export interface BuilderChoice {
   reason: string;
   /** What the builder is given; `other` has no version (Railpack picks it). */
   runtime: AppBuild["runtime"];
-  /** What an automatic choice would be; printed by a failed deploy when the user's choice is in use. */
+  /**
+   * The builder OpsCrew would choose for the app's code, leaving the repository's own Dockerfile
+   * aside: a failed deploy names it as the one to switch to.
+   */
   automatic: ImageBuilder;
   /** How the Compose health check probes the app, for a tool the image has. */
   probe: NonNullable<AppBuild["probe"]>;
@@ -142,21 +145,13 @@ function secretBuildValue(facts: ProjectFacts): string | undefined {
   )?.name;
 }
 
-/** Rules 2–5 of the contract: the builder OpsCrew picks itself. */
+/** Rules 3–5 of the contract: the builder OpsCrew picks itself for the app's code. */
 function automaticChoice(
   facts: ProjectFacts,
   language: RuntimeLanguage,
   version: string | undefined,
   stack: DockerStack | undefined,
-  ownsGeneratedDockerfile: boolean,
 ): Decision {
-  const dockerfile = facts.docker.dockerfile;
-  if (dockerfile !== undefined && !ownsGeneratedDockerfile) {
-    return {
-      builder: "own-dockerfile",
-      reason: `The repository has its own Dockerfile (${dockerfile}), so OpsCrew builds the image with it.`,
-    };
-  }
   if (isBun(facts, language)) {
     return { builder: "railpack", reason: `A${BUN_REASON.slice(1)}.` };
   }
@@ -202,8 +197,8 @@ type UserCheck = { problem: string } | { warnings: string[] };
 /**
  * The user's Buildpacks for this app (FR-1202): refused without a secret mount for a secret build
  * value, for a version the pinned builder does not offer, and where the builder has no support
- * (pnpm, Bun, Rust, other languages); allowed with a warning for Node with npm or Yarn, Python and
- * PHP, whose offered versions OpsCrew cannot check.
+ * (pnpm, Bun, PHP, Rust, other languages); allowed with a warning for Node with npm or Yarn and
+ * Python, whose offered versions OpsCrew cannot check.
  */
 function buildpacksCheck(
   facts: ProjectFacts,
@@ -225,18 +220,15 @@ function buildpacksCheck(
   if (language === "node" && (facts.packageManager === "pnpm" || facts.packageManager === "bun")) {
     return { problem: `the pinned Buildpacks builder has no ${facts.packageManager} support` };
   }
-  if (language !== "node" && language !== "python" && language !== "php") {
+  // The pinned Noble builder has no PHP buildpack.
+  if (language !== "node" && language !== "python") {
     return { problem: `the pinned Buildpacks builder has no ${RUNTIME_NAMES[language]} support` };
   }
-  const warnings = [
-    `OpsCrew could not check that the pinned Buildpacks builder offers ${runtime}; the build fails if it does not.`,
-  ];
-  if (hasFramework(facts, "laravel")) {
-    warnings.push(
-      "Buildpacks' default NGINX configuration does not route Laravel's front controller, so the app answers 404 until you add your own NGINX configuration for it.",
-    );
-  }
-  return { warnings };
+  return {
+    warnings: [
+      `OpsCrew could not check that the pinned Buildpacks builder offers ${runtime}; the build fails if it does not.`,
+    ],
+  };
 }
 
 /** Whether the user's builder can build this app, and what to warn about when it can. */
@@ -269,8 +261,10 @@ function userChoiceCheck(
  * (for Buildpacks see {@link buildpacksCheck}); the repository's own Dockerfile (unless it is the
  * one OpsCrew generated, recorded as `generated-dockerfile`); Railpack for a Bun project; OpsCrew's
  * Dockerfile for the Node and Python stacks it has one for; Buildpacks for Go, Java, .NET and Ruby
- * versions its pinned builder offers, unless the build needs a secret value (Buildpacks has no secret mounts); Railpack for
- * everything else. The runtime version follows FR-1228 ({@link resolveRuntime}). Every builder
+ * versions its pinned builder offers, unless the build needs a secret value (Buildpacks has no
+ * secret mounts); Railpack for everything else. `automatic` is that order without the
+ * repository's own Dockerfile, so a failed deploy can name a builder to switch to. The runtime
+ * version follows FR-1228 ({@link resolveRuntime}). Every builder
  * builds for amd64 and arm64 (research R7, R8), so the architecture, part of the contract for
  * `retarget`, decides nothing today. Pure and deterministic: the same inputs give the same result
  * and the same reason.
@@ -285,19 +279,21 @@ export function chooseBuilder(
   const offers = isBuildpacksLanguage(language) ? BUILDPACKS_OFFERS[language] : [];
   const { runtime, warnings } = resolveRuntime(language, facts, recorded?.runtime, offers);
   const stack = language === "node" || language === "python" ? detectStack(facts) : undefined;
-  const auto = automaticChoice(
-    facts,
-    language,
-    runtime.version,
-    stack,
-    recorded?.builder === "generated-dockerfile",
-  );
+  const auto = automaticChoice(facts, language, runtime.version, stack);
+  const dockerfile = facts.docker.dockerfile;
+  const decision: Decision =
+    dockerfile !== undefined && recorded?.builder !== "generated-dockerfile"
+      ? {
+          builder: "own-dockerfile",
+          reason: `The repository has its own Dockerfile (${dockerfile}), so OpsCrew builds the image with it.`,
+        }
+      : auto;
   const common = { runtime, automatic: auto.builder, warnings };
   if (recorded?.chosen === "user") {
     const check = userChoiceCheck(facts, recorded.builder, language, runtime.version, stack);
     if ("problem" in check) {
       return {
-        refused: `opscrew/plan.yaml sets app.build.builder to ${recorded.builder}, but ${check.problem}. Set it to ${auto.builder}, or set app.build.chosen to auto to let OpsCrew choose; plan.yaml was not changed.`,
+        refused: `opscrew/plan.yaml sets app.build.builder to ${recorded.builder}, but ${check.problem}. Set it to ${decision.builder}, or set app.build.chosen to auto to let OpsCrew choose; plan.yaml was not changed.`,
       };
     }
     return {
@@ -311,9 +307,9 @@ export function chooseBuilder(
   }
   return {
     ...common,
-    builder: auto.builder,
+    builder: decision.builder,
     chosen: "auto",
-    reason: auto.reason,
-    probe: probeFor(auto.builder, language, stack),
+    reason: decision.reason,
+    probe: probeFor(decision.builder, language, stack),
   };
 }

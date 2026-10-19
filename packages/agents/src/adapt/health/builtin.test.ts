@@ -26,7 +26,9 @@ async function planned(files: Record<string, string>) {
   const facts = await detectProject(await project(files));
   return {
     path: healthRouteFor(facts).path,
-    change: deriveCodeChanges(facts).some((change) => change.kind === "health-endpoint"),
+    change: deriveCodeChanges(facts, "generated-dockerfile").some(
+      (change) => change.kind === "health-endpoint",
+    ),
   };
 }
 

@@ -12,6 +12,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { readValidJson } from "../shared/files";
+import { runtimeLanguageOf } from "./builder";
 
 /** One entry of `plan.codeChanges`. */
 export type CodeChange = DeployPlan["codeChanges"][number];
@@ -115,10 +116,22 @@ function isInDir(dir: string, file: string): boolean {
 }
 
 /**
+ * The folder the image is built from (`app.buildContext`). Buildpacks and Railpack build the app's
+ * folder, unless the app is a JavaScript workspace member, whose dependencies the workspace root
+ * installs. A Dockerfile is built from the repository root, so it can copy the app's folder and the
+ * code it shares.
+ */
+export function buildContextFor(facts: ProjectFacts, builder: ImageBuilder): string {
+  const fromCode = builder === "buildpacks" || builder === "railpack";
+  const workspaceMember = facts.monorepo && runtimeLanguageOf(facts) === "node";
+  return fromCode && !workspaceMember ? appDirOf(facts) : ".";
+}
+
+/**
  * The Dockerfile the deployment builds and whether it exists. At the repository root that is
  * `Dockerfile` (present when detection found any Dockerfile). For an app in a subfolder it is a
  * Dockerfile detected inside that folder, otherwise `<appDir>/Dockerfile`, which adapt creates;
- * the build context is the repository root either way.
+ * either is built from the repository root ({@link buildContextFor}).
  */
 export function appDockerfile(facts: ProjectFacts): { path: string; exists: boolean } {
   const dir = appDirOf(facts);
@@ -248,14 +261,14 @@ function hasEnvExample(facts: ProjectFacts, signals: CodeChangeSignals): boolean
  * `supabase/service-role-*`; `.env` files are excluded). Ids are stable: the kind, plus a number
  * for kinds that can repeat (`port-config-1`, `secret-removal-2`). All start `pending`. The
  * Dockerfile change is derived only when OpsCrew's Dockerfile builds the image (`builder`
- * `generated-dockerfile`, or none chosen): Buildpacks, Railpack and the user's own Dockerfile
- * need none.
+ * `generated-dockerfile`): Buildpacks, Railpack and the user's own Dockerfile need none. The
+ * `.dockerignore` goes to the root of the build context ({@link buildContextFor}).
  */
 export function deriveCodeChanges(
   facts: ProjectFacts,
+  builder: ImageBuilder,
   scan?: ScanFindings,
   signals: CodeChangeSignals = {},
-  builder?: ImageBuilder,
 ): CodeChange[] {
   const changes: CodeChange[] = [];
   const add = (id: string, kind: CodeChangeKind, path: string, reason: string) => {
@@ -263,8 +276,7 @@ export function deriveCodeChanges(
   };
 
   const dockerfile = appDockerfile(facts);
-  const generated = builder === undefined || builder === "generated-dockerfile";
-  if (generated && !dockerfile.exists) {
+  if (builder === "generated-dockerfile" && !dockerfile.exists) {
     add(
       "dockerfile",
       "dockerfile",
@@ -272,16 +284,13 @@ export function deriveCodeChanges(
       "The app has no Dockerfile; OpsCrew adds a production Dockerfile for the detected stack that runs as a non-root user.",
     );
   }
-  // The build context is the repository root, so that is where `.dockerignore` must be.
-  const rootIgnore =
-    appDirOf(facts) === "."
-      ? facts.docker.dockerignore !== undefined
-      : facts.docker.dockerignore === ".dockerignore";
-  if (!rootIgnore) {
+  // Only the `.dockerignore` at the root of the build context applies to the build.
+  const dockerignore = under(buildContextFor(facts, builder), ".dockerignore");
+  if (facts.docker.dockerignore !== dockerignore) {
     add(
       "dockerignore",
       "dockerignore",
-      ".dockerignore",
+      dockerignore,
       "Keeps .env files, git data and local build output out of the container image.",
     );
   }

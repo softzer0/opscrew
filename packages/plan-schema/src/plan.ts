@@ -424,7 +424,7 @@ export const AppBuildSchema = z.strictObject({
    * Caddy), bash's `/dev/tcp` (images with bash but no interpreter, such as Go, Java, .NET and
    * Rust), or `none` (the user's own Dockerfile keeps its own `HEALTHCHECK`). Set by design.
    */
-  probe: z.enum(["node", "python", "ruby", "php", "wget", "bash", "none"]).optional(),
+  probe: z.enum(["node", "python", "ruby", "php", "wget", "bash", "none"]),
   /**
    * The builder an automatic choice would pick, recorded by design so a failed deploy can name it
    * when the user chose another one.
@@ -456,7 +456,7 @@ export const RetargetSchema = z.strictObject({
    */
   from: z.strictObject({
     target: CloudTargetSchema,
-    deploy: DeploySettingsSchema.optional(),
+    deploy: DeploySettingsSchema.prefault({}),
     build: AppBuildSchema.optional(),
   }),
   /** Last completed step. */

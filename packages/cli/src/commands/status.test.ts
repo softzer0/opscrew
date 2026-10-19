@@ -46,6 +46,7 @@ describe("opscrew status and the server's address", () => {
       chosen: "auto" as const,
       reason: "Rust: Railpack builds it.",
       runtime: { language: "rust" as const, version: "1.98" },
+      probe: "bash" as const,
     };
     await writeArtifact("plan", paths.files.plan, { ...plan, app: { ...plan.app, build } });
     await new ProjectStateStore(paths.files.state).markPhase("design", "ok");

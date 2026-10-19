@@ -525,6 +525,7 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       chosen: "auto" as const,
       reason: "Before the move.",
       runtime: { language: "node" as const, version: "24" },
+      probe: "bash" as const,
     };
     await writeArtifact("plan", h.paths.files.plan, {
       ...before,

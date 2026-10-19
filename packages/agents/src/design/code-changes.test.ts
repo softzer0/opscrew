@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { RepoPathSchema } from "@opscrew/plan-schema";
+import { type ProjectFacts, RepoPathSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, nextPostgresFacts, staticSpaFacts } from "../testing";
 import { collectCodeChangeSignals, deriveCodeChanges, healthRouteFor } from "./code-changes";
@@ -36,7 +36,7 @@ describe("deriveCodeChanges", () => {
         finding("secrets/generic", "/etc/passwd"),
       ],
     };
-    const changes = deriveCodeChanges(facts, scan, {
+    const changes = deriveCodeChanges(facts, "generated-dockerfile", scan, {
       files: ["src/app/page.tsx", "src/db.ts"],
       hardcodedPortFiles: ["server.ts"],
     });
@@ -56,8 +56,10 @@ describe("deriveCodeChanges", () => {
       "GitHub token; Stripe secret key",
     );
     expect(changes.find((c) => c.kind === "health-endpoint")?.reason).toContain("/api/health");
-    expect(deriveCodeChanges(facts, scan, { files: ["src/app/page.tsx"] })).toEqual(
-      deriveCodeChanges(facts, scan, { files: ["src/app/page.tsx"] }),
+    expect(
+      deriveCodeChanges(facts, "generated-dockerfile", scan, { files: ["src/app/page.tsx"] }),
+    ).toEqual(
+      deriveCodeChanges(facts, "generated-dockerfile", scan, { files: ["src/app/page.tsx"] }),
     );
   });
 
@@ -70,7 +72,7 @@ describe("deriveCodeChanges", () => {
         finding("secrets/github-token", "src/config.ts", "GitHub token"),
       ],
     };
-    const changes = deriveCodeChanges(staticSpaFacts(), scan).filter(
+    const changes = deriveCodeChanges(staticSpaFacts(), "generated-dockerfile", scan).filter(
       (c) => c.kind === "secret-removal",
     );
     expect(changes.map((c) => [c.id, c.path])).toEqual([
@@ -85,7 +87,9 @@ describe("deriveCodeChanges", () => {
       frameworks: [{ name: "next", path: "apps/web" }],
       monorepo: true,
     });
-    const missing = deriveCodeChanges(facts, undefined, { files: ["apps/web/app/page.tsx"] });
+    const missing = deriveCodeChanges(facts, "generated-dockerfile", undefined, {
+      files: ["apps/web/app/page.tsx"],
+    });
     const change = missing.find((c) => c.kind === "build-config");
     expect(change?.path).toBe("apps/web/next.config.mjs");
     expect(change?.reason).toContain('output: "standalone"');
@@ -93,18 +97,18 @@ describe("deriveCodeChanges", () => {
     expect(change?.reason).toContain('"../../"');
 
     // Standalone is set but the tracing root is not: still a build-config change.
-    const partly = deriveCodeChanges(facts, undefined, {
+    const partly = deriveCodeChanges(facts, "generated-dockerfile", undefined, {
       nextConfig: { path: "apps/web/next.config.ts", standalone: true, tracingRoot: false },
     });
     expect(partly.find((c) => c.kind === "build-config")?.path).toBe("apps/web/next.config.ts");
 
-    const done = deriveCodeChanges(facts, undefined, {
+    const done = deriveCodeChanges(facts, "generated-dockerfile", undefined, {
       nextConfig: { path: "apps/web/next.config.ts", standalone: true, tracingRoot: true },
     });
     expect(done.map((c) => c.kind)).not.toContain("build-config");
 
     // A root app does not need the tracing root.
-    const root = deriveCodeChanges(nextPostgresFacts(), undefined, {
+    const root = deriveCodeChanges(nextPostgresFacts(), "generated-dockerfile", undefined, {
       nextConfig: { path: "next.config.ts", standalone: false },
     });
     expect(root.find((c) => c.kind === "build-config")?.reason).not.toContain(
@@ -119,6 +123,7 @@ describe("deriveCodeChanges", () => {
     });
     const changes = deriveCodeChanges(
       facts,
+      "own-dockerfile",
       { findings: [] },
       {
         files: [".env.example", "next.config.ts"],
@@ -159,10 +164,14 @@ describe("deriveCodeChanges", () => {
 
   it("static sites need no health endpoint, port change or Next.js build config", () => {
     const facts = staticSpaFacts();
-    const changes = deriveCodeChanges(facts, undefined, { hardcodedPortFiles: ["vite.ts"] });
+    const changes = deriveCodeChanges(facts, "generated-dockerfile", undefined, {
+      hardcodedPortFiles: ["vite.ts"],
+    });
     expect(changes.map((c) => c.kind)).toEqual(["dockerfile", "dockerignore"]);
     const exported = nextPostgresFacts({ appKind: "static-spa" });
-    expect(deriveCodeChanges(exported).map((c) => c.kind)).not.toContain("build-config");
+    expect(deriveCodeChanges(exported, "generated-dockerfile").map((c) => c.kind)).not.toContain(
+      "build-config",
+    );
   });
 
   it("falls back to facts to find an existing .env.example", () => {
@@ -176,13 +185,17 @@ describe("deriveCodeChanges", () => {
         },
       ],
     });
-    expect(deriveCodeChanges(facts).map((c) => c.kind)).not.toContain("env-example");
+    expect(deriveCodeChanges(facts, "generated-dockerfile").map((c) => c.kind)).not.toContain(
+      "env-example",
+    );
     const without = makeFacts({
       envVars: [
         { name: "API_URL", files: ["src/x.ts"], clientExposed: false, secretLikely: false },
       ],
     });
-    expect(deriveCodeChanges(without).map((c) => c.kind)).toContain("env-example");
+    expect(deriveCodeChanges(without, "generated-dockerfile").map((c) => c.kind)).toContain(
+      "env-example",
+    );
   });
 });
 
@@ -204,7 +217,7 @@ describe("collectCodeChangeSignals", () => {
     expect(signals.serverEntry).toBe("server.js");
     expect(signals.files).toContain("src/app/page.tsx");
 
-    const changes = deriveCodeChanges(facts, undefined, signals);
+    const changes = deriveCodeChanges(facts, "generated-dockerfile", undefined, signals);
     expect(changes.map((c) => c.kind)).not.toContain("build-config");
     expect(changes.find((c) => c.kind === "health-endpoint")?.path).toBe(
       "src/app/api/health/route.ts",
@@ -227,7 +240,7 @@ describe("collectCodeChangeSignals", () => {
     expect(signals.hardcodedPortFiles).toEqual(["apps/api/src/server.js"]);
     expect(signals.serverEntry).toBe("apps/api/src/server.js");
 
-    const changes = deriveCodeChanges(facts, undefined, signals);
+    const changes = deriveCodeChanges(facts, "generated-dockerfile", undefined, signals);
     const paths = Object.fromEntries(changes.map((c) => [c.id, c.path]));
     expect(paths).toMatchObject({
       dockerfile: "apps/api/Dockerfile",
@@ -242,30 +255,42 @@ describe("collectCodeChangeSignals", () => {
       appDir: "apps/api",
       docker: { dockerfile: "apps/api/Dockerfile", dockerignore: "apps/api/.dockerignore" },
     });
-    const kinds = deriveCodeChanges(facts).map((c) => [c.kind, c.path]);
+    const kinds = deriveCodeChanges(facts, "generated-dockerfile").map((c) => [c.kind, c.path]);
     expect(kinds).not.toContainEqual(["dockerfile", expect.any(String)]);
     expect(kinds).toContainEqual(["dockerignore", ".dockerignore"]);
 
     // A Dockerfile elsewhere (for example the root) does not build this app.
     const elsewhere = makeFacts({ appDir: "apps/api", docker: { dockerfile: "Dockerfile" } });
-    expect(deriveCodeChanges(elsewhere).find((c) => c.kind === "dockerfile")?.path).toBe(
-      "apps/api/Dockerfile",
-    );
+    expect(
+      deriveCodeChanges(elsewhere, "generated-dockerfile").find((c) => c.kind === "dockerfile")
+        ?.path,
+    ).toBe("apps/api/Dockerfile");
   });
 
   it("derives the Dockerfile change only when OpsCrew's Dockerfile builds the image", () => {
     const facts = makeFacts({ languages: ["go"], packageManager: "none" });
-    const has = (builder?: Parameters<typeof deriveCodeChanges>[3]) =>
-      deriveCodeChanges(facts, undefined, {}, builder).some((c) => c.kind === "dockerfile");
-    expect(has()).toBe(true);
+    const has = (builder: Parameters<typeof deriveCodeChanges>[1]) =>
+      deriveCodeChanges(facts, builder).some((c) => c.kind === "dockerfile");
     expect(has("generated-dockerfile")).toBe(true);
     for (const builder of ["buildpacks", "railpack", "own-dockerfile"] as const) {
       expect(has(builder), builder).toBe(false);
     }
     // The .dockerignore keeps secrets out of Railpack's build context too.
-    expect(deriveCodeChanges(facts, undefined, {}, "railpack").map((c) => c.kind)).toContain(
-      "dockerignore",
-    );
+    expect(deriveCodeChanges(facts, "railpack").map((c) => c.kind)).toContain("dockerignore");
+  });
+
+  it("puts the .dockerignore where the build context is", () => {
+    const ignoreOf = (facts: ProjectFacts, builder: Parameters<typeof deriveCodeChanges>[1]) =>
+      deriveCodeChanges(facts, builder).find((c) => c.kind === "dockerignore")?.path;
+    // Railpack builds an app in a subfolder from that folder.
+    const go = makeFacts({ languages: ["go"], packageManager: "none", appDir: "services/api" });
+    expect(ignoreOf(go, "railpack")).toBe("services/api/.dockerignore");
+    const ignored = { ...go, docker: { dockerignore: "services/api/.dockerignore" } };
+    expect(ignoreOf(ignored, "railpack")).toBeUndefined();
+    // A Dockerfile, and a JavaScript workspace member, build from the repository root.
+    expect(ignoreOf(go, "own-dockerfile")).toBe(".dockerignore");
+    const member = makeFacts({ packageManager: "bun", monorepo: true, appDir: "apps/api" });
+    expect(ignoreOf(member, "railpack")).toBe(".dockerignore");
   });
 
   it("asks a Django app without STATIC_ROOT to set it, so collectstatic works in the image", async () => {
@@ -280,7 +305,7 @@ describe("collectCodeChangeSignals", () => {
     });
     const missing = await collectCodeChangeSignals(without, facts);
     expect(missing.djangoSettings).toEqual({ path: "proj/settings.py", staticRoot: false });
-    const change = deriveCodeChanges(facts, undefined, missing).find(
+    const change = deriveCodeChanges(facts, "generated-dockerfile", undefined, missing).find(
       (c) => c.kind === "build-config",
     );
     expect(change).toMatchObject({ path: "proj/settings.py" });
@@ -293,9 +318,9 @@ describe("collectCodeChangeSignals", () => {
     });
     const ok = await collectCodeChangeSignals(withRoot, facts);
     expect(ok.djangoSettings?.staticRoot).toBe(true);
-    expect(deriveCodeChanges(facts, undefined, ok).map((c) => c.kind)).not.toContain(
-      "build-config",
-    );
+    expect(
+      deriveCodeChanges(facts, "generated-dockerfile", undefined, ok).map((c) => c.kind),
+    ).not.toContain("build-config");
   });
 
   it("checks outputFileTracingRoot for a Next.js app in a monorepo folder", async () => {
@@ -324,7 +349,7 @@ describe("collectCodeChangeSignals", () => {
     const signals = await collectCodeChangeSignals(root, nextPostgresFacts());
     expect(signals.nextConfig).toEqual({ path: "next.config.ts", standalone: false });
     expect(
-      deriveCodeChanges(nextPostgresFacts(), undefined, signals).find(
+      deriveCodeChanges(nextPostgresFacts(), "generated-dockerfile", undefined, signals).find(
         (c) => c.kind === "build-config",
       )?.path,
     ).toBe("next.config.ts");

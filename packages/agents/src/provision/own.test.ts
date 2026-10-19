@@ -248,6 +248,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
           chosen: "user",
           reason: "You chose Buildpacks.",
           runtime: { language: "node", version: "24" },
+          probe: "bash",
         },
       },
       deploy: { strategy: "recreate", drainSeconds: 20 },

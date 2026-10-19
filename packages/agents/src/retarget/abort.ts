@@ -285,7 +285,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     ...rest,
     app: move.from.build === undefined ? unbuilt : { ...unbuilt, build: move.from.build },
     target: from,
-    deploy: move.from.deploy ?? rest.deploy,
+    deploy: move.from.deploy,
     ...(cost !== undefined ? { cost } : {}),
   };
   await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");

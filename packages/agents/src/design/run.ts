@@ -36,6 +36,7 @@ import {
   readOwnServer,
   readPortainerConnection,
   serverAddress,
+  serviceUrlKind,
 } from "../shared";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { backgroundJobsWarning } from "./background-jobs";
@@ -464,7 +465,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
     readScanReport(paths.files.scanReportJson),
   ]);
-  const codeChanges = deriveCodeChanges(facts, scan, signals, build.builder);
+  const codeChanges = deriveCodeChanges(facts, build.builder, scan, signals);
   const fresh = optionToPlan(chosen, {
     facts,
     requirements,
@@ -701,7 +702,10 @@ async function requireChosenApp(
  * while the app's domain is still on Cloudflare inside that zone. A Portainer subdomain the new
  * DNS settings no longer allow stops design before plan.yaml changes. Image retention is kept, and
  * signing and deploy tags too unless the interview was answered after the previous plan was
- * written. The deploy settings come from {@link keptDeploy}.
+ * written. The deploy settings come from {@link keptDeploy}. Of the app, each variable that is
+ * still there keeps its `secret` (secret if either plan says so), `source` and `optional`, except
+ * the variables a service fills (`serviceUrlKind`) when that service was turned on or off; and the
+ * user's own Dockerfile they chose (`app.build.chosen: user`) keeps its path.
  */
 function keepPlanSettings(
   fresh: DeployPlan,
@@ -711,6 +715,9 @@ function keepPlanSettings(
   const key = (change: DeployPlan["codeChanges"][number]) =>
     `${change.id}\u0000${change.kind}\u0000${change.path}`;
   const statuses = new Map(previous.codeChanges.map((change) => [key(change), change.status]));
+  const variables = new Map(previous.app.env.map((variable) => [variable.name, variable]));
+  const userDockerfile =
+    fresh.app.build?.chosen === "user" && fresh.app.build.builder === "own-dockerfile";
   const { httpAllowedFrom, ...security } = previous.security;
   const zone = previous.dns.zone;
   const sameZone =
@@ -722,6 +729,21 @@ function keepPlanSettings(
   const answeredLater = Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
+    app: {
+      ...fresh.app,
+      ...(userDockerfile ? { dockerfile: previous.app.dockerfile } : {}),
+      env: fresh.app.env.map((variable) => {
+        const before = variables.get(variable.name);
+        if (before === undefined) return variable;
+        // A service turned on or off decides the variables OpsCrew fills from it.
+        const service = serviceUrlKind(variable.name);
+        if (service !== undefined && previous.services[service] !== fresh.services[service]) {
+          return variable;
+        }
+        // Fail closed: a name now detected as secret stays secret, never a build argument.
+        return { ...before, secret: before.secret || variable.secret };
+      }),
+    },
     ...(sameZone ? { dns: { ...fresh.dns, zone } } : {}),
     codeChanges: fresh.codeChanges.map((change) => ({
       ...change,

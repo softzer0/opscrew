@@ -11,8 +11,9 @@ import {
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { buildDesignOptions, chooseBuilder } from "../design";
-import { deploySentence, deployStrategyFor } from "../design/strategy";
+import { buildDesignOptions } from "../design";
+import { chooseBuilder } from "../design/builder";
+import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
@@ -152,7 +153,8 @@ function buildChanges(plan: DeployPlan, next: NewServerBuild): string[] {
   }
   const { deploy } = next;
   if (plan.deploy.strategy !== deploy.strategy) {
-    const why = deploySentence(deploy, deploy);
+    // Design gives every recreate its reason.
+    const why = deploy.strategy === "rolling" ? ROLLING_NOTE : (deploy.reason ?? "");
     changes.push(`Deploys: ${deploy.strategy} (was ${plan.deploy.strategy}). ${why}`.trimEnd());
   }
   return changes;

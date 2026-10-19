@@ -13,6 +13,7 @@ import type { BuilderChoice } from "./builder";
 import {
   appDirOf,
   appDockerfile,
+  buildContextFor,
   type CodeChange,
   type CodeChangeSignals,
   healthRouteFor,
@@ -46,8 +47,8 @@ export interface OptionToPlanInput {
    * redeploy and web modes from the interview's answers.
    */
   portainer?: PortainerDesignChoice;
-  /** Who builds the image (`chooseBuilder`); without it the plan has no `app.build`. */
-  build?: BuilderChoice;
+  /** Who builds the image (`chooseBuilder`). */
+  build: BuilderChoice;
 }
 
 /**
@@ -128,8 +129,9 @@ export function appPortFor(facts: ProjectFacts): number {
  * environment variable names), target (the option's provider and its default image; for the user's
  * own server its architecture and `input.access`), services, cost, code changes, DNS from the requirements and
  * GitHub Actions + GHCR for CI/CD, with deploy tags and signing as the interview answered. The
- * image's builder comes from `input.build`, and the deploy strategy from the option's server
- * (`deployStrategyFor`). Every documented default is filled by `DeployPlanSchema`.
+ * image's builder comes from `input.build` (Buildpacks and Railpack build an app in a subfolder
+ * from that folder), and the deploy strategy from the option's server (`deployStrategyFor`).
+ * Every documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
  */
 export function optionToPlan(option: DesignOption, input: OptionToPlanInput): DeployPlan {
@@ -200,16 +202,17 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         };
 
   const releaseCommand = releaseCommandInImage(facts);
-  const build = input.build;
+  const { build } = input;
   const tags = requirements.deployTags;
   // The user's own Dockerfile is built where detection found it; OpsCrew's goes into the app's
-  // folder. Both are built from the repository root (`buildContext` stays `.`).
+  // folder.
   const dockerfile =
-    build?.builder === "own-dockerfile" && facts.docker.dockerfile !== undefined
+    build.builder === "own-dockerfile" && facts.docker.dockerfile !== undefined
       ? facts.docker.dockerfile
       : appDirOf(facts) !== "."
         ? appDockerfile(facts).path
         : undefined;
+  const buildContext = buildContextFor(facts, build.builder);
 
   return DeployPlanSchema.parse({
     schemaVersion: 1,
@@ -219,22 +222,19 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       name: appNameFor(facts),
       port: appPortFor(facts),
       healthPath: healthRouteFor(facts, input.signals).path,
+      buildContext,
       ...(dockerfile !== undefined ? { dockerfile } : {}),
       // Database migrations, run before each new version takes traffic (FR-813).
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
-      ...(build !== undefined
-        ? {
-            build: {
-              builder: build.builder,
-              chosen: build.chosen,
-              reason: build.reason,
-              runtime: build.runtime,
-              probe: build.probe,
-              automatic: build.automatic,
-            },
-          }
-        : {}),
+      build: {
+        builder: build.builder,
+        chosen: build.chosen,
+        reason: build.reason,
+        runtime: build.runtime,
+        probe: build.probe,
+        automatic: build.automatic,
+      },
     },
     target: targetFor(option, input.access, input.portainer),
     deploy: deployStrategyFor(option),

@@ -13,10 +13,10 @@ export {
   type PortainerInterviewOptions,
 } from "./portainer";
 export { createPortainerAccess } from "./portainer-access";
+export { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
 export {
-  buildQuestions,
-  type InterviewAnswers,
-  inferredAnswers,
-  signingPublicLog,
-} from "./questions";
-export { type InterviewOptions, type InterviewResult, runInterview } from "./run";
+  type InterviewOptions,
+  type InterviewResult,
+  runInterview,
+  withPlanSettings,
+} from "./run";

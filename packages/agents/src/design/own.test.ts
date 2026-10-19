@@ -11,6 +11,7 @@ import { recordOwnServerAnswers } from "../interview";
 import { type OwnServerFacts, ownServerConnector } from "../providers";
 import { recordOwnServer } from "../shared";
 import {
+  autoBuild,
   createTestPhaseDeps,
   euCatalog,
   makeRequirements,
@@ -248,6 +249,7 @@ describe("buildOwnServerOption", () => {
       requirements,
       now: NOW,
       codeChanges: [],
+      build: autoBuild(facts),
       access: "tunnel",
     });
     expect(plan.target).toEqual({
@@ -256,9 +258,15 @@ describe("buildOwnServerOption", () => {
       arch: "arm64",
       access: "tunnel",
     });
-    expect(() => optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] })).toThrow(
-      /access mode/,
-    );
+    expect(() =>
+      optionToPlan(option, {
+        facts,
+        requirements,
+        now: NOW,
+        codeChanges: [],
+        build: autoBuild(facts),
+      }),
+    ).toThrow(/access mode/);
   });
 
   it("refuses a domain Cloudflare serves two levels below its zone, unless DNS only", async () => {
@@ -269,7 +277,7 @@ describe("buildOwnServerOption", () => {
     });
     const [option] = await ownOptions({ facts, requirements, catalog: catalogOf(BIG) });
     if (option === undefined) throw new Error("no option");
-    const input = { facts, requirements, now: NOW, codeChanges: [] };
+    const input = { facts, requirements, now: NOW, codeChanges: [], build: autoBuild(facts) };
     const reason =
       "Cloudflare's free certificate covers only example.com and *.example.com, so api.shop.example.com would fail HTTPS at Cloudflare's edge. plan.yaml was not changed.";
     expect(() => optionToPlan(option, { ...input, access: "tunnel" })).toThrow(
@@ -450,6 +458,20 @@ describe("runDesign for a server the user owns", () => {
     expect(result.plan.target).toMatchObject({ provider: "own", access: "public" });
     expect(result.warnings.join("\n")).toMatch(/0\.5 GB of memory/);
     expect(result.warnings.join("\n")).toMatch(/has 5 GB of free disk/);
+  });
+
+  it("keeps the rolling deploys the user set in plan.yaml for a small server (FR-1215)", async () => {
+    const deps = await setup(ownRequirements());
+    const ownServer = { facts: { ...BIG, memoryGb: 0.5 }, access: "public" } as const;
+    const first = await runDesign(deps, { ownServer });
+    expect(first.plan.deploy.strategy).toBe("recreate");
+    const rolling = { strategy: "rolling", drainSeconds: 30 } as const;
+    await writeArtifact("plan", deps.paths.files.plan, { ...first.plan, deploy: rolling });
+    const again = await runDesign(deps, { ownServer });
+    expect(again.plan.deploy).toEqual(rolling);
+    expect(again.lines).toContain(
+      "Deploys: rolling. You chose rolling in opscrew/plan.yaml (deploy.strategy).",
+    );
   });
 
   it("stops plainly without the interview's answers or the inspected server", async () => {

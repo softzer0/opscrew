@@ -55,10 +55,10 @@ export interface PullRequestBodyInput {
   build?: PullRequestBuild;
 }
 
-/** The image build in the pull request (absent: OpsCrew's Dockerfile at the root, as before). */
+/** The image build in the pull request (absent: `docker build` at the root in the checklist). */
 export interface PullRequestBuild {
-  /** `app.build.builder`; absent for a plan from before the builder choice (OpsCrew's Dockerfile). */
-  builder?: ImageBuilder;
+  /** `app.build.builder`. */
+  builder: ImageBuilder;
   /** `app.dockerfile` and `app.buildContext`, for the `docker build` line. */
   dockerfile: string;
   context: string;
@@ -82,7 +82,7 @@ function buildSection(build: PullRequestBuild): string[] {
     "",
     named !== undefined
       ? `${named} ${NO_DOCKERFILE_NEEDED}.`
-      : `The deploy workflow builds the image with ${BUILDER_NAMES[build.builder ?? "generated-dockerfile"]}, \`${build.dockerfile}\`.`,
+      : `The deploy workflow builds the image with ${BUILDER_NAMES[build.builder]}, \`${build.dockerfile}\`.`,
   ];
   if (build.versionFile !== undefined) {
     lines.push(

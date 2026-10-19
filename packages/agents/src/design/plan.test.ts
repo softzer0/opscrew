@@ -12,13 +12,13 @@ import {
 import { describe, expect, it } from "vitest";
 import { assembleAppEnv, parseDotenv } from "../shared";
 import {
+  autoBuild,
   euCatalog,
   makeFacts,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
 } from "../testing";
-import { chooseBuilder } from "./builder";
 import { deriveCodeChanges } from "./code-changes";
 import { buildDesignOptions } from "./options";
 import { appNameFor, appPortFor, optionToPlan } from "./plan";
@@ -32,7 +32,13 @@ describe("optionToPlan names behind Cloudflare's proxy", () => {
     const [option] = await buildDesignOptions({ facts, requirements: deep, catalog: euCatalog() });
     if (!option) throw new Error("no option");
     expect(() =>
-      optionToPlan(option, { facts, requirements: deep, now: NOW, codeChanges: [] }),
+      optionToPlan(option, {
+        facts,
+        requirements: deep,
+        now: NOW,
+        codeChanges: [],
+        build: autoBuild(facts),
+      }),
     ).toThrow(
       expect.objectContaining({
         code: "INVALID_INPUT",
@@ -42,7 +48,13 @@ describe("optionToPlan names behind Cloudflare's proxy", () => {
       }),
     );
     const other = { ...deep, dnsProvider: "other" as const };
-    const plan = optionToPlan(option, { facts, requirements: other, now: NOW, codeChanges: [] });
+    const plan = optionToPlan(option, {
+      facts,
+      requirements: other,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
     expect(plan.dns).toMatchObject({ provider: "none", domain: "api.shop.example.com" });
   });
 });
@@ -59,8 +71,14 @@ describe("optionToPlan", () => {
     });
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    const codeChanges = deriveCodeChanges(facts);
-    const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges });
+    const codeChanges = deriveCodeChanges(facts, "generated-dockerfile");
+    const plan = optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges,
+      build: autoBuild(facts),
+    });
 
     expect(DeployPlanSchema.safeParse(plan).success).toBe(true);
     // Round-trips through the YAML artefact unchanged.
@@ -110,11 +128,52 @@ describe("optionToPlan", () => {
     const requirements = makeRequirements();
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    const build = chooseBuilder(facts, undefined, "amd64");
-    if ("refused" in build) throw new Error(build.refused);
+    const build = autoBuild(facts);
     expect(build.builder).toBe("own-dockerfile");
     const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [], build });
     expect(plan.app).toMatchObject({ dockerfile: "docker/Dockerfile.prod", buildContext: "." });
+  });
+
+  describe("an app in a subfolder", () => {
+    const planOf = async (facts: ProjectFacts) => {
+      const requirements = makeRequirements();
+      const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+      if (!option) throw new Error("no option");
+      const build = autoBuild(facts);
+      return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [], build });
+    };
+
+    it("is built from its folder with Buildpacks or Railpack", async () => {
+      const go = makeFacts({
+        languages: ["go"],
+        runtimeVersions: { go: "1.26" },
+        appDir: "services/api",
+      });
+      expect((await planOf(go)).app).toMatchObject({
+        build: { builder: "buildpacks" },
+        buildContext: "services/api",
+      });
+      const rust = makeFacts({ languages: ["rust"], appDir: "services/api" });
+      expect((await planOf(rust)).app).toMatchObject({
+        build: { builder: "railpack" },
+        buildContext: "services/api",
+      });
+    });
+
+    it("is built from the repository root as a JavaScript workspace member or with a Dockerfile", async () => {
+      const member = makeFacts({ packageManager: "bun", monorepo: true, appDir: "apps/api" });
+      expect((await planOf(member)).app).toMatchObject({
+        build: { builder: "railpack" },
+        buildContext: ".",
+      });
+      // OpsCrew's Dockerfile copies the app's folder from the repository root.
+      const node = await planOf(nextPostgresFacts({ monorepo: true, appDir: "apps/web" }));
+      expect(node.app).toMatchObject({
+        build: { builder: "generated-dockerfile" },
+        buildContext: ".",
+        dockerfile: "apps/web/Dockerfile",
+      });
+    });
   });
 
   it("serves a static site on 8080 with / as the health path and no DNS", async () => {
@@ -127,6 +186,7 @@ describe("optionToPlan", () => {
       requirements,
       now: NOW,
       codeChanges: [],
+      build: autoBuild(facts),
       createdAt: "2026-10-01T00:00:00.000Z",
     });
     expect(plan.app).toMatchObject({ name: "landing", port: 8080, healthPath: "/", env: [] });
@@ -151,7 +211,13 @@ describe("optionToPlan", () => {
     });
     const options = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     for (const option of options) {
-      const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+      const plan = optionToPlan(option, {
+        facts,
+        requirements,
+        now: NOW,
+        codeChanges: [],
+        build: autoBuild(facts),
+      });
       expect(plan.services.postgres).toBe(false);
       expect(plan.externalServices).toEqual(["postgres", "supabase"]);
       expect(plan.app.env.find((v) => v.name === "DATABASE_URL")?.source).toBe("user");
@@ -186,7 +252,13 @@ describe("optionToPlan", () => {
     const requirements = makeRequirements({ domain: "shop.example.com", dnsProvider: "other" });
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+    const plan = optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
     expect(plan.app.env).toEqual([
       { name: "API_TOKEN", secret: true, source: "user" },
       { name: "CSRF_TRUSTED_ORIGINS", secret: false, source: "derived" },
@@ -210,7 +282,13 @@ describe("optionToPlan", () => {
     const requirements = makeRequirements();
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+    const plan = optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
     expect(plan.services.redis).toBe(true);
     expect(plan.app.env).toEqual([{ name: "REDIS_URL", secret: false, source: "derived" }]);
     expect(plan.app.port).toBe(8000);
@@ -259,7 +337,13 @@ describe("connection settings under the app's own names (FR-814)", () => {
     const requirements = makeRequirements();
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+    return optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
   }
 
   it("derives aliases of the planned Postgres and Redis, and generates Flask secret keys", async () => {
@@ -385,7 +469,13 @@ describe("connection settings under the app's own names (FR-814)", () => {
       const requirements = makeRequirements();
       const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
       if (!option) throw new Error("no option");
-      const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+      const plan = optionToPlan(option, {
+        facts,
+        requirements,
+        now: NOW,
+        codeChanges: [],
+        build: autoBuild(facts),
+      });
       expect(plan.services).toMatchObject({ postgres: true, redis: true });
       expect(plan.app.env).toEqual([
         { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
@@ -396,6 +486,37 @@ describe("connection settings under the app's own names (FR-814)", () => {
         { name: "FLASK_SECRET_KEY", secret: true, source: "generated" },
         { name: "REDIS_URL", secret: false, source: "derived" },
       ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never builds a dev container's Dockerfile as the app's own", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-plan-devcontainer-"));
+    try {
+      const files: Record<string, string> = {
+        "package.json": JSON.stringify({
+          name: "api",
+          scripts: { start: "node server.js" },
+          dependencies: { express: "^5" },
+        }),
+        "server.js": "app.listen(process.env.PORT);\n",
+        ".devcontainer/Dockerfile": "FROM mcr.microsoft.com/devcontainers/javascript-node:22\n",
+      };
+      for (const [path, text] of Object.entries(files)) {
+        await mkdir(dirname(join(root, path)), { recursive: true });
+        await writeFile(join(root, path), text);
+      }
+      const facts = await detectProject(root);
+      const requirements = makeRequirements();
+      const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+      if (!option) throw new Error("no option");
+      const build = autoBuild(facts);
+      expect(build.builder).toBe("generated-dockerfile");
+      const codeChanges = deriveCodeChanges(facts, build.builder);
+      const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges, build });
+      expect(plan.app.dockerfile).toBe("Dockerfile");
+      expect(plan.codeChanges.find((c) => c.kind === "dockerfile")?.path).toBe("Dockerfile");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -431,7 +552,13 @@ describe("examples/django-postgres: facts → plan → production environment", 
     );
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+    return optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
   }
 
   it("plans the debug flag as optional, the host list as derived and the secret key as generated", async () => {
@@ -477,7 +604,13 @@ describe("examples/rails-api and examples/laravel-app: production defaults", () 
     const requirements = makeRequirements();
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
-    return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+    return optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
   }
   const byName = (plan: Awaited<ReturnType<typeof examplePlan>>) =>
     Object.fromEntries(plan.app.env.map((v) => [v.name, v]));

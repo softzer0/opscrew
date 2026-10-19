@@ -1014,7 +1014,7 @@ describe("runDesign", () => {
           },
           deployment: { lastApplyAt: "2026-10-11T12:30:00.000Z" },
           retarget: {
-            from: { target: cloudTarget(plan.target) },
+            from: { target: cloudTarget(plan.target), deploy: plan.deploy },
             step: "renamed",
             startedAt: "2026-10-12T09:00:00.000Z",
           },
@@ -1143,6 +1143,151 @@ describe("runDesign: the image builder and the deploy strategy", () => {
     expect(plan.supplyChain).toEqual({ sign: true });
     expect(plan.cicd.deployTags).toEqual({ enabled: true, release: false });
     expect(plan.cicd.imageRetention).toEqual({ enabled: false, keep: 10 });
+  });
+
+  it("keeps the path of the user's own Dockerfile they chose in plan.yaml", async () => {
+    const deps = await setup(nextPostgresFacts({ docker: { dockerfile: "Dockerfile" } }));
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    const build = first.plan.app.build as NonNullable<DeployPlan["app"]["build"]>;
+    expect(build.builder).toBe("own-dockerfile");
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: {
+        ...first.plan.app,
+        dockerfile: "docker/production.Dockerfile",
+        build: { ...build, chosen: "user" },
+      },
+    });
+    const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(plan.app.dockerfile).toBe("docker/production.Dockerfile");
+    expect(plan.app.build).toMatchObject({ builder: "own-dockerfile", chosen: "user" });
+  });
+
+  it("keeps the secret, source and optional the user set on each variable still there", async () => {
+    const deps = await setup(nextPostgresFacts());
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.plan.app.env).toEqual([
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      { name: "NEXTAUTH_SECRET", secret: true, source: "generated" },
+      { name: "NEXT_PUBLIC_SITE_URL", secret: false, source: "user" },
+    ]);
+    const edited = [
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      // The user brings their own value instead of OpsCrew's generated one.
+      { name: "NEXTAUTH_SECRET", secret: true, source: "user" },
+      // A build value that must reach the build as a secret mount, never as a build argument.
+      { name: "NEXT_PUBLIC_SITE_URL", secret: true, source: "user", optional: true },
+      { name: "REMOVED_FROM_THE_CODE", secret: false, source: "user" },
+    ] as const;
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: { ...first.plan.app, env: [...edited] },
+    });
+    const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(plan.app.env).toEqual(edited.slice(0, 3));
+  });
+
+  describe("when the facts change between designs", () => {
+    const reanalysed = async (deps: TestPhaseDeps, facts: Architecture["facts"]) => {
+      const architecture = await readArtifact("architecture", deps.paths.files.architecture);
+      await writeArtifact("architecture", deps.paths.files.architecture, {
+        ...architecture,
+        facts,
+      });
+    };
+    const variable = (plan: DeployPlan, name: string) => plan.app.env.find((v) => v.name === name);
+
+    it("fills a service's variables from the service turned on or off, keeping the user's others", async () => {
+      const deps = await setup(nextPostgresFacts());
+      const first = await runDesign(deps, { catalog: euCatalog() });
+      expect(variable(first.plan, "DATABASE_URL")).toMatchObject({ source: "derived" });
+      // The user brings their own NEXTAUTH_SECRET.
+      const own = (plan: DeployPlan) => ({
+        ...plan,
+        app: {
+          ...plan.app,
+          env: plan.app.env.map((v) =>
+            v.name === "NEXTAUTH_SECRET" ? { ...v, source: "user" as const } : v,
+          ),
+        },
+      });
+      await writeArtifact("plan", deps.paths.files.plan, own(first.plan));
+
+      // Postgres off: DATABASE_URL is the user's.
+      await reanalysed(deps, nextPostgresFacts({ services: [] }));
+      const off = await runDesign(await later(deps), { catalog: euCatalog() });
+      expect(off.plan.services.postgres).toBe(false);
+      expect(variable(off.plan, "DATABASE_URL")).toEqual({
+        name: "DATABASE_URL",
+        secret: true,
+        source: "user",
+      });
+      expect(variable(off.plan, "NEXTAUTH_SECRET")).toMatchObject({ source: "user" });
+
+      // Postgres on again: OpsCrew fills DATABASE_URL from it.
+      await reanalysed(deps, nextPostgresFacts());
+      const on = await runDesign(await later(deps), { catalog: euCatalog() });
+      expect(variable(on.plan, "DATABASE_URL")).toEqual({
+        name: "DATABASE_URL",
+        secret: true,
+        source: "derived",
+      });
+      expect(variable(on.plan, "NEXTAUTH_SECRET")).toMatchObject({ source: "user" });
+    });
+
+    it("keeps a name newly detected as secret secret, with the user's other settings", async () => {
+      const deps = await setup(nextPostgresFacts());
+      const first = await runDesign(deps, { catalog: euCatalog() });
+      await writeArtifact("plan", deps.paths.files.plan, {
+        ...first.plan,
+        app: {
+          ...first.plan.app,
+          env: first.plan.app.env.map((v) =>
+            v.name === "NEXT_PUBLIC_SITE_URL" ? { ...v, optional: true } : v,
+          ),
+        },
+      });
+      const facts = nextPostgresFacts();
+      await reanalysed(deps, {
+        ...facts,
+        envVars: facts.envVars.map((v) =>
+          v.name === "NEXT_PUBLIC_SITE_URL" ? { ...v, secretLikely: true } : v,
+        ),
+      });
+      const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
+      // Never kept as a build argument: secret values reach the build only as secret mounts.
+      expect(variable(plan, "NEXT_PUBLIC_SITE_URL")).toEqual({
+        name: "NEXT_PUBLIC_SITE_URL",
+        secret: true,
+        source: "user",
+        optional: true,
+      });
+    });
+  });
+
+  it("keeps source: user on a Rails production setting", async () => {
+    const rails = makeFacts({
+      name: "shop",
+      languages: ["ruby"],
+      frameworks: [{ name: "rails", path: "." }],
+      appKind: "fullstack",
+      runtimeVersions: { ruby: "3.4" },
+    });
+    const deps = await setup(rails);
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    const env = first.plan.app.env.map((v) =>
+      v.name === "RAILS_ENV" ? { ...v, source: "user" as const } : v,
+    );
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: { ...first.plan.app, env },
+    });
+    const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(plan.app.env.find((v) => v.name === "RAILS_ENV")).toEqual({
+      name: "RAILS_ENV",
+      secret: false,
+      source: "user",
+    });
   });
 
   it("takes signing and deploy tags from an interview answered after the plan", async () => {

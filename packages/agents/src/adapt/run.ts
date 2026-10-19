@@ -133,7 +133,7 @@ export interface AdaptResult {
 /**
  * Code-change kinds OpsCrew writes from templates, and the rendered file each one uses: the
  * Dockerfile is rendered in the app's folder (`<appDir>/Dockerfile`), the others at the repository
- * root (the build context).
+ * root. Each is written at its change's path (the `.dockerignore` at the build context's root).
  */
 const DETERMINISTIC: Partial<Record<CodeChangeKind, (path: string) => boolean>> = {
   dockerfile: (path) => path === "Dockerfile" || path.endsWith("/Dockerfile"),
@@ -370,9 +370,10 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   }
   const toWrite: RenderedFile[] = [];
   for (const change of templated) {
-    // Written at the change's path, which design sets to where the plan's build expects it.
+    // Written at the change's path, which design sets to where the plan's build expects it. Only
+    // the Dockerfile is rendered for the analysed app's folder.
     const template = templateFor(change, rendered);
-    if (template !== undefined && template.path !== change.path) {
+    if (change.kind === "dockerfile" && template !== undefined && template.path !== change.path) {
       warn(
         `The plan puts the ${change.kind} at ${change.path}, but OpsCrew would render it at ${template.path} for the analysed app. If you changed which app to deploy, run \`opscrew design\` again.`,
       );
@@ -411,16 +412,19 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     }
   }
   const version = plan.app.build?.runtime.version;
-  /** The build's part of the pull request. */
-  const build: PullRequestBuild = {
-    ...(builder !== undefined ? { builder } : {}),
-    dockerfile: plan.app.dockerfile,
-    context: plan.app.buildContext,
-    ...(versionFile !== undefined && version !== undefined
-      ? { versionFile: { path: versionFile.path, version } }
-      : {}),
-    ...(baseline !== undefined ? { baseline } : {}),
-  };
+  /** The build's part of the pull request, once design chose the builder. */
+  const build: PullRequestBuild | undefined =
+    builder === undefined
+      ? undefined
+      : {
+          builder,
+          dockerfile: plan.app.dockerfile,
+          context: plan.app.buildContext,
+          ...(versionFile !== undefined && version !== undefined
+            ? { versionFile: { path: versionFile.path, version } }
+            : {}),
+          ...(baseline !== undefined ? { baseline } : {}),
+        };
 
   // 3b. The health route, added by OpsCrew for the frameworks it knows when it can tell where
   // it goes (`./health`), and the Next.js standalone output, edited when the config is a plain

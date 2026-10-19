@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { euCatalog, makeFacts, makeRequirements, nextPostgresFacts } from "../testing";
+import { autoBuild, euCatalog, makeFacts, makeRequirements, nextPostgresFacts } from "../testing";
 import { buildDesignOptions } from "./options";
 import { optionToPlan } from "./plan";
 import { releaseCommandNote } from "./release";
@@ -23,7 +23,13 @@ async function planFor(facts: ReturnType<typeof makeFacts>) {
   const requirements = makeRequirements();
   const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
   if (!option) throw new Error("no option");
-  return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+  return optionToPlan(option, {
+    facts,
+    requirements,
+    now: NOW,
+    codeChanges: [],
+    build: autoBuild(facts),
+  });
 }
 
 describe("release command in the plan", () => {

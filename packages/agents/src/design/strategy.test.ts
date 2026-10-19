@@ -91,9 +91,9 @@ describe("keptDeploy", () => {
     });
   });
 
-  it("recreates once the own server has less memory, never keeping a rolling there", () => {
-    const fresh = planOn(OWN, 0.5);
-    expect(keptDeploy(fresh, planOn(OWN, 2))).toEqual(fresh.deploy);
+  it("keeps a rolling the user set on their own server, however little memory it has", () => {
+    const user: PlanDeploy = { target: OWN, deploy: { strategy: "rolling", drainSeconds: 45 } };
+    expect(keptDeploy(planOn(OWN, 0.5), user)).toEqual({ strategy: "rolling", drainSeconds: 45 });
   });
 
   it("always recreates in Portainer", () => {

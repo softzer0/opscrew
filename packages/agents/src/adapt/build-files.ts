@@ -36,7 +36,7 @@ export const NO_DOCKERFILE_NEEDED =
 
 /** After the path of the user's own Dockerfile when it has no baseline finding. */
 export const BASELINE_MET =
-  "meets OpsCrew's image baseline: a non-root user, base images pinned by digest and no secret in ENV or ARG";
+  "meets OpsCrew's image baseline: a non-root user, base images pinned by digest, and no secret in ENV or ARG, not even a secret-named ARG without a value (secrets go in as BuildKit secret mounts)";
 
 /**
  * `Dockerfile` (with `options.dockerfile`), `.dockerignore` and `.env.example` for the plan's app

@@ -1410,6 +1410,7 @@ describe.skipIf(!findExecutable("git"))("runProvision hands the plan's build to 
           chosen: "user" as const,
           reason: "You chose Railpack.",
           runtime: { language: "node" as const, version: "24" },
+          probe: "bash" as const,
         },
       },
       deploy: { strategy: "recreate" as const, drainSeconds: 20 },

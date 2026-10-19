@@ -182,7 +182,9 @@ describe("renderPullRequestBody", () => {
       const clean = render({
         build: { builder: "own-dockerfile", dockerfile: "Dockerfile", context: ".", baseline: [] },
       });
-      expect(clean).toContain("- `Dockerfile` meets OpsCrew's image baseline");
+      expect(clean).toContain(
+        "- `Dockerfile` meets OpsCrew's image baseline: a non-root user, base images pinned by digest, and no secret in ENV or ARG, not even a secret-named ARG without a value (secrets go in as BuildKit secret mounts).",
+      );
       expect(clean).toContain("`docker build -t shop .`");
     });
   });

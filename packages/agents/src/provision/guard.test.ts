@@ -11,7 +11,7 @@ function moving(abort?: NonNullable<Retarget["abort"]>["step"]): DeployPlan {
   return {
     ...testPlan({ provider: "digitalocean", deployed: true }),
     retarget: {
-      from: { target: cloudTarget(from.target) },
+      from: { target: cloudTarget(from.target), deploy: from.deploy },
       step: "deployed",
       startedAt: "2026-10-12T09:00:00.000Z",
       ...(abort !== undefined ? { abort: { step: abort } } : {}),

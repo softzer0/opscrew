@@ -48,19 +48,16 @@ function serverOf({ target }: PlanDeploy): string {
 
 /**
  * The new plan's deploy settings on a later design: the previous drain time, and the previous
- * strategy when the user changed it, that is when it differs from the fresh one on the same server.
- * Design's own strategy is never kept: a recreate with the reason design wrote, and on the user's
- * own server (whose memory can change) a previous rolling, give way to the fresh one. A Portainer
- * always recreates.
+ * strategy when the user changed it, that is when it differs from the fresh one on the same server
+ * (the user's own server counts as the same one whatever its memory). A recreate with the reason
+ * design wrote is design's own and gives way to the fresh strategy. A Portainer always recreates.
  */
 export function keptDeploy(fresh: PlanDeploy, previous: PlanDeploy): DeployPlan["deploy"] {
   const before = previous.deploy;
   const designWrote = before.strategy === "recreate" && before.reason !== undefined;
-  const ownRolling = fresh.target.provider === "own" && before.strategy === "rolling";
   const userStrategy =
     fresh.target.provider !== "portainer" &&
     !designWrote &&
-    !ownRolling &&
     serverOf(fresh) === serverOf(previous) &&
     before.strategy !== fresh.deploy.strategy;
   return userStrategy

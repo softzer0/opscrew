@@ -156,7 +156,9 @@ function envExample(facts: ProjectFacts): string {
  * when the files are missing (the user owns them afterwards). For an app in a subfolder
  * (`facts.appDir`) the Dockerfile is `<appDir>/Dockerfile`. A `.dockerignore` applies only at the
  * root of the build context; this returns it at the repository root, the build context of
- * OpsCrew's Dockerfile, which builds an app in a subfolder from there. With `options.dockerfile`
+ * OpsCrew's Dockerfile, which builds an app in a subfolder from there. For Buildpacks and Railpack
+ * an app in a subfolder builds from its own folder, and adapt writes the file at the path design
+ * gives the change (the build context's root). With `options.dockerfile`
  * false, only `.dockerignore` and `.env.example`, which need no stack.
  * Throws `INVALID_INPUT` when the Dockerfile is wanted and OpsCrew has no template for the stack.
  */
