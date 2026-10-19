@@ -368,10 +368,21 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew`, plus that Docker pass
   - Effort: high
 
+- [ ] T1220 [US2] The hint switches the builder, and no `.git` in a Buildpacks image, in `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/portainer-target/stack.ts`
+  - Reads: the review of T1216's merged commit (the lead's brief); spec FR-1203, FR-1206; `src/workflow/{switch,build}.ts`; `packages/agents/src/design/builder.ts` (`chosen: user`)
+  - Depends: T1216
+  - Accept:
+    - the failed-deploy hint says to set `app.build.builder: <automatic>` **with `app.build.chosen: user`** in `opscrew/plan.yaml`, then run design, adapt and provision. Design keeps a user's builder only with `chosen: user`. The test that asserts the hint has no "chosen" is changed;
+    - **no `.git` in a Buildpacks image.** pack uploads the whole `--path`, and a committed secret file stays in `.git/objects` after the working copy is removed. While pack runs, `.git` is moved out of the build context when it is inside it, and moved back before the seal, whose provenance needs it. Restore it with a trap, so it is back even when pack fails;
+    - a local pack build confirms it: a git checkout of a copy of `go-api` with a committed planted file, then `docker run --rm --entrypoint ls <image> -a /workspace` shows no `.git` and no planted file. Same Docker hygiene as before;
+    - `CURL_IMAGE` (`src/portainer-target/stack.ts`) becomes `IMAGES.curl.ref`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew`, plus that pack build
+  - Effort: high
+
 - [ ] T1218 Live check after the fixes (lead): one Hetzner builder pass (`go-api` or `nextjs-postgres`) with the new restart check, and the Docker pass for a handful of examples; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
 
 {T1201, T1202} → {T1212 → T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211.
 T1201 and T1202 run in parallel. T1205 needs T1202's R8; T1203 needs T1212; T1204 and T1206 need
-only T1201. Then T1213 → T1214 → {T1215, T1216, T1217} → T1219 (after T1216) → T1218.
+only T1201. Then T1213 → T1214 → {T1215, T1216, T1217} → {T1219, T1220} (after T1216) → T1218.
