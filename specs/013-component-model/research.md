@@ -292,7 +292,11 @@ RustFS (young). Ceph RGW (needs a cluster). A Hetzner project per app for least-
   (stale; verify live). The secret lands in Terraform state: treat state as secret. The bucket
   resource itself needs a Spaces key (chicken and egg) [K].
 - Cloudflare R2 [F] https://developers.cloudflare.com/r2/pricing/ : Standard USD 0.015/GB-month,
-  free tier 10 GB, 1M Class A, 10M Class B; egress free. `cloudflare_r2_bucket` and friends
+  free tier 10 GB, 1M Class A, 10M Class B; egress free. Beyond the free tier, Class A operations
+  are USD 4.50 and Class B USD 0.36 per million, each billed per started unit (checked by T1301b on
+  2026-10-19). DigitalOcean Spaces' USD 5 subscription is per account: "Each subscription allows you
+  to create multiple Spaces buckets", with its storage and transfer shared across them [F]
+  https://docs.digitalocean.com/products/spaces/details/pricing/ . `cloudflare_r2_bucket` and friends
   (provider v5.28.0) [F]
   https://raw.githubusercontent.com/cloudflare/terraform-provider-cloudflare/main/docs/resources/r2_bucket.md .
   S3 credentials: Access Key ID = token `id`, Secret = SHA-256 hex of the token `value` [F]

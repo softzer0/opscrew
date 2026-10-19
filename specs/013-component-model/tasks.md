@@ -44,7 +44,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test`
   - Effort: xhigh
 
-- [ ] T1301b [P] Pins and storage prices in `packages/iac-templates/src/{pins.ts,prices.ts}`, `packages/iac-templates/scripts/**`
+- [X] T1301b [P] Pins and storage prices in `packages/iac-templates/src/{pins.ts,prices.ts}`, `packages/iac-templates/scripts/**`
   - Owns: those paths (+ tests); `packages/iac-templates/src/index.ts` for the `prices` export only
   - Reads: research.md R1–R4, R8; plan.md "6."
   - Depends: —
