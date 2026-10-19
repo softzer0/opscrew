@@ -5,10 +5,12 @@
  * `adapt --no-ai --no-push`, like `examples.test.ts`). Then the image is built with the plan's
  * builder the way the deploy workflow builds it (`workflowBuild`):
  * - a Dockerfile (generated or the app's own) through buildx;
- * - Buildpacks through pack, with the workflow's builder, run image and version setting, then the
- *   seal;
- * - Railpack: the build plan from the Railpack CLI, buildx with the pinned frontend, then the seal
- *   (`USER` and the `chown` of the folders the framework writes to).
+ * - Buildpacks through pack, after removing the secret files from the build context
+ *   (`removeSecretFiles`, as the workflow does), with the workflow's builder, run image and version
+ *   setting, then the seal;
+ * - Railpack: the build plan from the Railpack CLI with the workflow's runtime version setting,
+ *   buildx with the pinned frontend and that setting as a secret, then the seal (`USER` and the
+ *   `chown` of the folders the framework writes to).
  *
  * pack and Railpack are the release archives pinned in `pins.ts` (checksums checked), run in a
  * pinned glibc image with CA certificates. The container is started the way the production Compose
@@ -19,6 +21,14 @@
  * command (`app.releaseCommand`, database migrations) is started like the deploy workflow starts it
  * instead: OpsCrew's Compose file, the backing services, the `release` service run once, then the
  * app, which must also answer 200 on a route that writes to the database (`DATABASE_ROUTES`).
+ * Before the build the pass writes a local `.env` with a fake secret into the build context, and
+ * checks that it stays out: the `.dockerignore` OpsCrew wrote lists `.env` (Dockerfile and Railpack
+ * builds), or the removal before pack took it away (Buildpacks). The image's files (`docker
+ * export` of a container never started), history (`docker history --no-trunc`) and configuration
+ * (`docker image inspect`), and those of the image Buildpacks or Railpack built before the seal,
+ * must hold none of the secret values the pass knows: the ones the example plants (`{{FAKE:…}}`),
+ * the one in that `.env`, and the ones it generated for the app; a failure names their labels
+ * only.
  * Then, inside the running container:
  * - the app does not run as root;
  * - the Compose health check OpsCrew renders for the image passes (`docker exec`), so every probe
@@ -35,16 +45,16 @@
  * examples. Containers, images and pack's cache volumes are always removed; every container this
  * file starts carries the label `opscrew.test=docker-pass`.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembleAppEnv, fixedProductionValue } from "@opscrew/agents";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
-import { FakeAgentRuntime, materializeFixture } from "@opscrew/core/testing";
+import { FakeAgentRuntime, fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { IMAGES, type PinArch, renderCompose } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -58,8 +68,15 @@ import {
   type TempProject,
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
-import { toolArchive, workflowBuild } from "./builders";
-import { BASE_ANSWERS, exampleNames, readExpected, readPlan, ScriptedApprovals } from "./support";
+import { removeSecretFiles, toolArchive, type WorkflowBuild, workflowBuild } from "./builders";
+import {
+  BASE_ANSWERS,
+  exampleNames,
+  plantedSecrets,
+  readExpected,
+  readPlan,
+  ScriptedApprovals,
+} from "./support";
 
 const DOCKER = findExecutable("docker");
 const TWENTY_MINUTES = 1_200_000;
@@ -465,6 +482,8 @@ describe.skipIf(SKIP !== undefined)(
       let prepared: Prepared | undefined;
       let built = false;
       let running: Running | undefined;
+      /** The secret values the pass knows for the app, with the labels a failure shows. */
+      const known: { label: string; value: string }[] = [];
 
       /**
        * Runs `opscrew <args>` in the project and returns what it printed; fails with that output
@@ -515,10 +534,15 @@ describe.skipIf(SKIP !== undefined)(
       }
 
       /**
-       * Railpack: the CLI writes the build plan (with the build values), and buildx builds
-       * `buildTag` from it with the pinned frontend, reading the values as BuildKit secrets.
+       * Railpack: the CLI writes the build plan (with the runtime version and the build values),
+       * and buildx builds `buildTag` from it with the pinned frontend, reading the values and the
+       * version as BuildKit secrets, as the workflow does.
        */
-      async function railpackBuild(project: TempProject, frontend: string, buildEnv: string[]) {
+      async function railpackBuild(
+        project: TempProject,
+        steps: Extract<WorkflowBuild, { builder: "railpack" }>,
+        buildEnv: string[],
+      ) {
         const context = prepared?.plan.app.buildContext || ".";
         const out = path.join(project.dir, "railpack");
         await mkdir(out, { recursive: true });
@@ -534,6 +558,7 @@ describe.skipIf(SKIP !== undefined)(
           [
             path.posix.join("/workspace", context),
             ...["--plan-out", "/out/railpack-plan.json", "--info-out", "/out/railpack-info.json"],
+            ...steps.prepareEnv.flatMap((setting) => ["--env", setting]),
             ...buildEnv.flatMap((name) => ["--env", `${name}=${placeholder(name)}`]),
           ],
         );
@@ -545,14 +570,24 @@ describe.skipIf(SKIP !== undefined)(
         );
         console.info(`${example}: Railpack resolved ${versions.join(", ") || "nothing"}`);
         const secrets: string[] = [];
-        for (const name of buildEnv) {
+        const values = [
+          ...steps.secrets.map(
+            (setting) =>
+              [
+                setting.slice(0, setting.indexOf("=")),
+                setting.slice(setting.indexOf("=") + 1),
+              ] as const,
+          ),
+          ...buildEnv.map((name) => [name, placeholder(name)] as const),
+        ];
+        for (const [name, value] of values) {
           const file = path.join(out, `secret-${name}`);
-          await writeFile(file, placeholder(name));
+          await writeFile(file, value);
           secrets.push("--secret", `id=${name},src=${file}`);
         }
         await buildx(`${example}: the Railpack build`, [
           ...["-f", path.join(out, "railpack-plan.json")],
-          ...["--build-arg", `BUILDKIT_SYNTAX=${frontend}`],
+          ...["--build-arg", `BUILDKIT_SYNTAX=${steps.frontend}`],
           ...secrets,
           ...["-t", buildTag, path.join(project.root, context)],
         ]);
@@ -576,6 +611,7 @@ describe.skipIf(SKIP !== undefined)(
         appEnv.delete("PORT");
         if (plan.services.postgres) {
           const password = randomBytes(16).toString("hex");
+          known.push({ label: "the database password", value: password });
           await writeFile(
             path.join(server, "db.env"),
             `POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=${password}\n`,
@@ -619,6 +655,10 @@ describe.skipIf(SKIP !== undefined)(
       }
 
       beforeAll(async () => {
+        const planted = await plantedSecrets(path.join(EXAMPLES_DIR, testCase.example));
+        for (const [i, value] of planted.entries()) {
+          known.push({ label: `planted secret #${i + 1}`, value });
+        }
         project = await tempProject(testCase.example);
         const { env, root, dir } = project;
         if (testCase.overlay !== undefined) {
@@ -708,6 +748,23 @@ describe.skipIf(SKIP !== undefined)(
           }
           const { plan, buildEnv } = prepared;
           const builder = plan.app.build?.builder;
+          // A developer's local `.env` next to the app, with a value the image must never hold:
+          // `.dockerignore` keeps it out of a Dockerfile or Railpack build, and the workflow
+          // removes it before a Buildpacks build, since pack does not read `.dockerignore`.
+          const context = path.join(project.root, plan.app.buildContext);
+          const local = fakeSecret("generic-password", `docker-pass-${example}`);
+          await appendFile(path.join(context, ".env"), `\nOPSCREW_TEST_LOCAL_SECRET=${local}\n`);
+          known.push({ label: "the value in the local .env", value: local });
+          if (builder === "buildpacks") {
+            const removed = await removeSecretFiles(context);
+            console.info(`${example}: removed before pack: ${removed.join(", ")}`);
+            expect(removed, `${example}: the files removed before pack`).toContain(".env");
+          } else {
+            const ignored = (await readFile(path.join(context, ".dockerignore"), "utf8"))
+              .split(/\r?\n/)
+              .map((line) => line.trim());
+            expect(ignored, `${example}: the .dockerignore in the build context`).toContain(".env");
+          }
           images.add(tag);
           if (builder === "buildpacks" || builder === "railpack") {
             const steps = workflowBuild(plan);
@@ -715,7 +772,8 @@ describe.skipIf(SKIP !== undefined)(
             if (steps.builder === "buildpacks") {
               await packBuild(project, steps.packOptions, buildEnv);
             } else {
-              await railpackBuild(project, steps.frontend, buildEnv);
+              console.info(`${example}: Railpack settings ${steps.prepareEnv.join(", ")}`);
+              await railpackBuild(project, steps, buildEnv);
             }
             // The seal, from the checkout like CI (it copies nothing from it).
             const seal = path.join(project.dir, "seal", "Dockerfile");
@@ -746,6 +804,9 @@ describe.skipIf(SKIP !== undefined)(
           // variables, all capabilities dropped and no privilege escalation. The generated keys
           // and fixed production settings (RAILS_ENV, APP_KEY) are the ones provision assembles.
           const assembled = await assembleAppEnv({ plan, ask: async () => ({ skip: true }) });
+          for (const [name, value] of Object.entries(assembled.generated.env ?? {})) {
+            known.push({ label: `the generated ${name}`, value });
+          }
           const env = new Map<string, string>([["PORT", String(port)]]);
           for (const variable of plan.app.env) {
             if (variable.name === "PORT" || prepared.buildEnv.includes(variable.name)) continue;
@@ -828,6 +889,46 @@ describe.skipIf(SKIP !== undefined)(
         console.info(`${example}: the app runs as uid ${uid}`);
         expect(uid, `${example} runs as root`).not.toBe("0");
       });
+
+      it(
+        "the image's files, history and configuration hold none of the known secret values",
+        async () => {
+          if (!built) {
+            throw new Error(`${example}: there is no image to search (see the tests above).`);
+          }
+          const builder = prepared?.plan.app.build?.builder;
+          const searched =
+            builder === "buildpacks" || builder === "railpack" ? [tag, buildTag] : [tag];
+          let text = "";
+          const inFiles = new Set<string>();
+          for (const image of searched) {
+            for (const args of [
+              ["history", "--no-trunc", image],
+              ["image", "inspect", image],
+            ]) {
+              const result = await docker(args);
+              if (result.exitCode !== 0) {
+                throw new Error(
+                  `${example}: docker ${args.join(" ")} failed:\n${tail(result.stderr)}`,
+                );
+              }
+              text += `${result.stdout}\n`;
+            }
+            for (const label of await imageFileLeaks(image, known)) inFiles.add(label);
+          }
+          const images = searched.join(" and ");
+          const inConfig = known.filter(({ value }) => text.includes(value)).map((k) => k.label);
+          expect(
+            inConfig,
+            `${example}: secret values in the history or configuration of ${images}`,
+          ).toEqual([]);
+          expect([...inFiles], `${example}: secret values in the files of ${images}`).toEqual([]);
+          console.info(
+            `${example}: none of the ${known.length} known secret values is in the files, history or configuration of ${images}`,
+          );
+        },
+        TEN_MINUTES,
+      );
 
       it(
         "the Compose health check OpsCrew renders passes inside the container",
@@ -934,6 +1035,53 @@ describe.skipIf(SKIP !== undefined)(
     });
   },
 );
+
+/**
+ * The labels of the `known` values found in the files of `image`: a container of the image, never
+ * started, is exported as a tar stream and searched as it arrives, keeping the end of each chunk
+ * so a value split between two chunks is still found. The container is removed afterwards.
+ */
+async function imageFileLeaks(
+  image: string,
+  known: readonly { label: string; value: string }[],
+): Promise<string[]> {
+  const created = await docker(["create", "--label", LABEL, image, "true"]);
+  if (created.exitCode !== 0) {
+    throw new Error(`docker create ${image} failed:\n${tail(created.stderr)}`);
+  }
+  const id = created.stdout.trim();
+  containers.add(id);
+  try {
+    const needles = known.map(({ label, value }) => ({ label, bytes: Buffer.from(value) }));
+    const overlap = Math.max(0, ...needles.map((needle) => needle.bytes.length - 1));
+    const found = new Set<string>();
+    const child = spawn(DOCKER ?? "docker", ["export", id], { stdio: ["ignore", "pipe", "pipe"] });
+    const closed = new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    let stderr = "";
+    child.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+    let carry = Buffer.alloc(0);
+    for await (const chunk of child.stdout as AsyncIterable<Buffer>) {
+      const window = Buffer.concat([carry, chunk]);
+      for (const needle of needles) {
+        if (window.indexOf(needle.bytes) !== -1) found.add(needle.label);
+      }
+      carry = window.subarray(Math.max(0, window.length - overlap));
+    }
+    const code = await closed;
+    if (code !== 0)
+      throw new Error(`docker export of ${image} failed (exit ${code}):\n${tail(stderr)}`);
+    return [...found];
+  } finally {
+    // With the anonymous volumes an image's VOLUME lines gave the container.
+    await docker(["rm", "-f", "-v", id]);
+    containers.delete(id);
+  }
+}
 
 /** What polling the container found. */
 interface HealthResult {

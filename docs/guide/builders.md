@@ -123,7 +123,10 @@ adapt` checks it against the baseline and lists each finding with its fix in its
 - the image runs as root (no `USER`, or `USER root`);
 - a base image uses `latest` or no tag;
 - a base image is pinned by tag only, not by digest;
-- a secret value is written into an `ENV` or `ARG` line.
+- a secret value is written into an `ENV` or `ARG` line;
+- a build argument's name says it holds a secret (`ARG NPM_TOKEN`), even without a value: a value
+  passed with `--build-arg` is recorded in the image history, so the fix is a BuildKit secret mount
+  (`RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci`).
 
 The app must listen on the port in its `PORT` variable and answer its health route. When the new
 version does not start or fails its health check, the deploy stops, the running version keeps
@@ -144,10 +147,13 @@ Every builder uses the runtime version your app declares:
 - Rust: `rust-toolchain.toml` or `rust-toolchain`.
 
 An exact version is used as declared and never raised. OpsCrew only warns when it no longer gets
-security fixes. For a range such as `>=3.11`, OpsCrew keeps the version recorded in
-`opscrew/plan.yaml` when it is inside the range. Otherwise it picks the newest version Buildpacks
-offers inside it (Go, Java, .NET, Ruby), or its default when the range allows it, else the newest
-version the range names (Node.js, Python). It never picks one outside the range.
+security fixes. Go is the exception: OpsCrew reads the `go` line of `go.mod` (or its `toolchain`
+line, which wins) as a minimum within its release line, so `go 1.25.3` is a range that allows
+1.25.3 and any later 1.25 release, never 1.26. For a range such as `>=3.11`, OpsCrew keeps the
+version recorded in `opscrew/plan.yaml` when it is inside the range. Otherwise it picks the newest
+version Buildpacks offers inside it (Go, Java, .NET, Ruby), or its default when the range allows
+it, else the newest version the range names (Node.js, Python). It never picks one outside the
+range.
 
 When a Node.js or Python app declares nothing, OpsCrew looks for other evidence first:
 
@@ -176,6 +182,38 @@ Dependabot proposes only minor and patch updates for the Node.js and Python imag
 [The image supply chain](supply-chain.md)). To move, change the version your app declares (for
 example `.nvmrc`), or `app.build.runtime.version` when it declares none, and run
 `npx opscrew design`. OpsCrew warns that libraries may break.
+
+## Production settings for Rails and Laravel
+
+Rails and Laravel start in development mode unless they are told otherwise. So
+`npx opscrew design` adds their production settings to `app.env` in `opscrew/plan.yaml`, and
+`npx opscrew provision` gives them to the app on the server:
+
+- Rails: `RAILS_ENV=production`, and a generated `SECRET_KEY_BASE`;
+- Laravel: `APP_ENV=production`, `APP_DEBUG=false`, `LOG_CHANNEL=stderr` (the logs go to the
+  container's output), and a generated `APP_KEY` in the format `php artisan key:generate` uses.
+
+OpsCrew generates each key once, keeps it on your computer (in `~/.opscrew/projects/<project>/`)
+and reuses it on later runs, so sessions and encrypted data stay valid. It never prints, logs or
+commits the key.
+
+To use your own value instead, do one of these:
+
+- **In scripts,** put the value in the file that `OPSCREW_APP_ENV_FILE` names. A value there wins
+  over OpsCrew's. In a terminal, OpsCrew does not take these settings from your project's `.env`,
+  because that file holds your development values (such as `APP_ENV=local`).
+- **Anywhere,** set the variable's `source` to `user` in `opscrew/plan.yaml`. Then
+  `npx opscrew provision` asks you for the value in a terminal, or reads it from the
+  `OPSCREW_APP_ENV_FILE` file in scripts. A later `npx opscrew design` keeps `source: user`, and
+  `secret: true` too.
+
+```yaml
+app:
+  env:
+    - name: APP_KEY
+      secret: true
+      source: user
+```
 
 ## Values the build needs
 

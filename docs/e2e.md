@@ -142,7 +142,7 @@ fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, i
 1. **The builder.** `app.build.builder` in `opscrew/plan.yaml` is the expected one,
    `deploy.strategy` is `rolling`, and `supplyChain.sign` matches `OPSCREW_E2E_SIGN`. The first
    deploy run's "Build the image" job has the builder's own steps, all succeeded: "Build and push
-   the image" for the generated Dockerfile; "Set up pack", "Build the image with Buildpacks" and
+   the image" for the generated Dockerfile; "Install pack <version>", "Build the image with Buildpacks" and
    "Seal and push the image" for Buildpacks; "Plan the Railpack build", "Build the image with
    Railpack" and "Seal and push the image" for Railpack. For Buildpacks the job's log must name
    the pinned builder and run images as `repo:tag@sha256:…`, exactly as in OpsCrew's pin table.
@@ -165,7 +165,8 @@ fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, i
    computer, without waiting for answers, each with a 10-second timeout. Meanwhile it merges a
    pull request adding `opscrew-e2e-change.txt` and waits for that deploy run. Every non-2xx answer
    and connection error is logged with the time its request was sent; there must be none, and the
-   server must run a new image afterwards.
+   server must run a new image afterwards. The deploy must not restart `db`, `cache`, `proxy` or
+   `caddy` (those the plan has): each container's `StartedAt` is the same before and after.
 6. **A broken release.** Under the same load, the test merges a commit that makes the health route
    answer 500 (none of the examples has a switch for that, so the copy in the throwaway repository
    is edited: Next.js's `app/api/health/route.ts` that `adapt` wrote, `main.go`, `src/main.rs`).

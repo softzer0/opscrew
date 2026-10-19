@@ -1,6 +1,6 @@
 FROM node:latest
 WORKDIR /app
-# Build-time secret passed the safe way: no default value.
+# A build argument with a secret name: a value passed with --build-arg lands in the image history.
 ARG NPM_TOKEN
 ENV NODE_ENV=production \
     API_SECRET="{{FAKE:generic-password:docker}}"

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Finding } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   contextFor,
@@ -58,6 +59,7 @@ describe("createConfigScanner", () => {
       [
         "config/dockerfile-latest-tag@Dockerfile:1",
         "config/dockerfile-root@Dockerfile:1",
+        "config/dockerfile-secret-arg@Dockerfile:4",
         "config/dockerfile-secret-env@Dockerfile:5",
         "config/dockerfile-secret-env@Dockerfile:7",
         "config/dockerfile-latest-tag@services/worker/Dockerfile:1",
@@ -87,6 +89,7 @@ describe("createConfigScanner", () => {
     expect(severity("config/dockerfile-root")).toBe("medium");
     expect(severity("config/dockerfile-latest-tag")).toBe("low");
     expect(severity("config/dockerfile-secret-env")).toBe("high");
+    expect(severity("config/dockerfile-secret-arg")).toBe("medium");
     expect(severity("config/django-debug")).toBe("high");
     expect(severity("config/flask-debug")).toBe("high");
     expect(severity("config/cors-wildcard-credentials")).toBe("medium");
@@ -223,6 +226,52 @@ describe("createConfigScanner", () => {
     expect(unpinned[0]?.remediation).toContain("docker buildx imagetools inspect node:24-alpine");
     // `latest` keeps its own finding instead.
     expect(findings.map((f) => f.ruleId)).toContain("config/dockerfile-latest-tag");
+  });
+
+  it("flags a build argument with a secret name, even without a value, with the mount fix", () => {
+    const findings = scanDockerfile(
+      "Dockerfile",
+      [
+        `FROM node:24-alpine@sha256:${"0".repeat(64)}`,
+        "ARG NPM_TOKEN",
+        "ARG API_SECRET DB_PASSWORD",
+        "ARG STRIPE_KEY=$STRIPE_KEY",
+        "ARG NODE_VERSION TOKEN_FILE NEXT_PUBLIC_SUPABASE_ANON_KEY",
+        "ENV SESSION_SECRET=$SESSION_SECRET",
+        "USER node",
+        "",
+      ].join("\n"),
+    );
+    const args = findings.filter((f) => f.ruleId === "config/dockerfile-secret-arg");
+    expect(args.map((f) => [f.line, f.evidence])).toEqual([
+      [2, "ARG NPM_TOKEN"],
+      [3, "ARG API_SECRET"],
+      [3, "ARG DB_PASSWORD"],
+      [4, "ARG STRIPE_KEY"],
+    ]);
+    expect(args[0]?.severity).toBe("medium");
+    expect(args[0]?.remediation).toContain("RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN");
+    expect(args[0]?.remediation).toContain("--secret id=NPM_TOKEN,env=NPM_TOKEN");
+    expect(findings.map((f) => f.ruleId)).toEqual(args.map((f) => f.ruleId));
+  });
+
+  it("reports an ARG with a literal secret once, as a baked-in secret", () => {
+    const value = fakeSecret("generic-password");
+    const findings = scanDockerfile(
+      "Dockerfile",
+      `FROM node:24-alpine@sha256:${"0".repeat(64)}\nARG DB_PASSWORD=${value}\nUSER node\n`,
+    );
+    expect(findings.map((f) => f.ruleId)).toEqual(["config/dockerfile-secret-env"]);
+  });
+
+  it("suggests the digest form for a latest or untagged base image", () => {
+    const findings = scanDockerfile("Dockerfile", "FROM node:latest\nFROM python\nUSER app\n");
+    const latest = findings.filter((f) => f.ruleId === "config/dockerfile-latest-tag");
+    expect(latest.map((f) => f.remediation)).toEqual([
+      expect.stringContaining('"FROM node:<version>@sha256:<digest>"'),
+      expect.stringContaining('"FROM python:<version>@sha256:<digest>"'),
+    ]);
+    expect(latest[0]?.remediation).not.toContain("node:22-alpine");
   });
 
   it("reports the .env rule without a file when the project has no .gitignore", async () => {

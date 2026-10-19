@@ -331,7 +331,7 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`, plus that Docker pass
   - Effort: xhigh
 
-- [ ] T1217 [US4] Guide, plugin, secops and the test harnesses, in `docs/guide/**`, `README.md`, `plugin/**`, `packages/secops/**`, `packages/cli/test/**`
+- [X] T1217 [US4] Guide, plugin, secops and the test harnesses, in `docs/guide/**`, `README.md`, `plugin/**`, `packages/secops/**`, `packages/cli/test/**`
   - Reads: the guide's `builders.md`, `zero-downtime.md`, `supply-chain.md`, `domains.md`; `plugin/skills/opscrew-adapt/SKILL.md`; `packages/secops/src/rules/config.ts`; `packages/cli/test/live/{support,builder-checks,harness,live.test}.ts`, `packages/cli/test/e2e/docker.test.ts`
   - Depends: T1214
   - Accept:

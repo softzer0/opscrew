@@ -43,19 +43,22 @@ To check a signature, with cosign installed:
 
 ```bash
 cosign verify ghcr.io/<owner>/<repo>@sha256:<digest> \
-  --certificate-identity "https://github.com/<owner>/<repo>/.github/workflows/opscrew-deploy.yml@refs/heads/main" \
+  --certificate-identity "https://github.com/<Owner>/<Repo>/.github/workflows/opscrew-deploy.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-The identity is the deploy workflow on your deploy branch: use your branch instead of `main` if it
-has another name, and the path in `cicd.workflowPath` (in `opscrew/plan.yaml`) if you changed it.
-To accept any workflow of your repository instead, replace `--certificate-identity "…"` with
-`--certificate-identity-regexp '^https://github.com/<owner>/<repo>/'`.
+The image name is in lower case, but the identity is not: write `<Owner>/<Repo>` exactly as GitHub
+spells your repository, as in its address on github.com (for example `Acme/Shop`). The signature
+records that spelling, and cosign compares it letter for letter. The identity is the deploy
+workflow on your deploy branch: use your branch instead of `main` if it has another name, and the
+path in `cicd.workflowPath` (in `opscrew/plan.yaml`) if you changed it. To accept any workflow of
+your repository instead, replace `--certificate-identity "…"` with
+`--certificate-identity-regexp '^https://github.com/<Owner>/<Repo>/'`.
 
 ## Updates with Dependabot
 
-OpsCrew pins every image and tool it uses to an exact version, and GitHub's Dependabot keeps those
-pins current. When your repository has no `.github/dependabot.yml`, the pull request that
+OpsCrew pins every image and tool it uses to an exact version, and GitHub's Dependabot keeps most
+of those pins current. When your repository has no `.github/dependabot.yml`, the pull request that
 `npx opscrew provision` opens with the deployment setup adds one, together with the deploy workflow
 and the Compose files it watches, so Dependabot's first check finds them. It covers:
 
@@ -77,6 +80,10 @@ the entries it would add, in the output of `npx opscrew provision` and in that p
 
 When Dependabot updates a pin in a file OpsCrew generated, OpsCrew keeps the newer pin on the next
 `npx opscrew provision` and does not put the old one back.
+
+Dependabot cannot update the pins in the deploy workflow's own build steps: the Buildpacks builder
+and run images, Railpack's frontend, the pack and Railpack versions, and Trivy. Those pins move with
+OpsCrew's releases: update OpsCrew and run `npx opscrew provision` to get the new ones.
 
 ## Deploy tags
 

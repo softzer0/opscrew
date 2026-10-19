@@ -1,16 +1,17 @@
 /**
  * What the local Docker pass (`docker.test.ts`) needs to build an image the way the deploy
  * workflow does: the Buildpacks and Railpack settings read from the workflow OpsCrew renders for
- * the plan, and the pinned pack and Railpack release archives (`toolDownloadUrl`), checked against
- * `pins.ts`.
+ * the plan, the removal of the secret files before a Buildpacks build, and the pinned pack and
+ * Railpack release archives (`toolDownloadUrl`), checked against `pins.ts`.
  */
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type PinArch,
   type RenderContext,
   renderWorkflow,
+  SECRET_FILE_PATTERNS,
   TOOLS,
   toolDownloadUrl,
 } from "@opscrew/iac-templates";
@@ -30,6 +31,10 @@ export type WorkflowBuild =
       builder: "railpack";
       /** The Railpack frontend the build names as `BUILDKIT_SYNTAX`. */
       frontend: string;
+      /** `NAME=value` settings `railpack prepare` gets as `--env` (the runtime version). */
+      prepareEnv: string[];
+      /** `NAME=value` secrets the build step passes besides the build values (the same version). */
+      secrets: string[];
       /** The seal Dockerfile's lines after its `FROM`: the `chown` and the `USER`. */
       sealLines: string[];
     };
@@ -89,12 +94,62 @@ export function workflowBuild(plan: DeployPlan): WorkflowBuild {
       sealLines,
     };
   }
-  const buildArgs = steps.find((step) => step.id === "railpack")?.with?.["build-args"];
+  const railpack = steps.find((step) => step.id === "railpack")?.with;
+  const values = read(
+    script((step) => step.id === "prepare"),
+    /^values=\((.*)\)$/m,
+    "the Railpack prepare settings",
+  );
   return {
     builder: "railpack",
-    frontend: read(String(buildArgs ?? ""), /BUILDKIT_SYNTAX=(\S+)/, "the Railpack frontend"),
+    frontend: read(
+      String(railpack?.["build-args"] ?? ""),
+      /BUILDKIT_SYNTAX=(\S+)/,
+      "the Railpack frontend",
+    ),
+    prepareEnv: values.split(/\s+/).filter((word) => word !== "" && word !== "--env"),
+    // The build values come from GitHub secrets (`${{ secrets.… }}`); the rest are literal.
+    secrets: String(railpack?.secrets ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("${{")),
     sealLines,
   };
+}
+
+/** A `.dockerignore` name pattern (`*` within a name) as a regular expression. */
+function namePattern(pattern: string): RegExp {
+  const name = pattern.replace(/^!/, "").replace(/^\*\*\//, "");
+  return new RegExp(`^${name.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*")}$`);
+}
+
+/**
+ * The workflow's "Keep secret files out of the Buildpacks build" step: removes the files that
+ * {@link SECRET_FILE_PATTERNS} names (except the `!` ones, `.env.example`) below `dir`, outside
+ * `node_modules` and `.git`, since pack does not read `.dockerignore`. Returns their paths
+ * relative to `dir`, sorted.
+ */
+export async function removeSecretFiles(dir: string): Promise<string[]> {
+  const secret = SECRET_FILE_PATTERNS.filter((p) => !p.startsWith("!")).map(namePattern);
+  const kept = SECRET_FILE_PATTERNS.filter((p) => p.startsWith("!")).map(namePattern);
+  const removed: string[] = [];
+  const visit = async (folder: string): Promise<void> => {
+    for (const entry of await readdir(folder, { withFileTypes: true })) {
+      const full = path.join(folder, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules" && entry.name !== ".git") await visit(full);
+      } else if (
+        entry.isFile() &&
+        secret.some((p) => p.test(entry.name)) &&
+        !kept.some((p) => p.test(entry.name))
+      ) {
+        await rm(full);
+        removed.push(path.relative(dir, full).split(path.sep).join("/"));
+      }
+    }
+  };
+  await visit(dir);
+  return removed.sort();
 }
 
 /**

@@ -167,7 +167,8 @@ const ROOT_USERS = new Set(["root", "0"]);
 /**
  * The Dockerfile findings of the `opscrew-config` scanner for `text` (the file at repo-relative
  * `file`): the image baseline (a non-root user, base images pinned by version and digest, no
- * literal secret in `ENV`/`ARG`), each finding with its fix in `remediation`.
+ * literal secret in `ENV`/`ARG`, no build argument with a secret name), each finding with its fix
+ * in `remediation`.
  */
 export function scanDockerfile(file: string, text: string): Finding[] {
   const findings: Finding[] = [];
@@ -186,7 +187,8 @@ export function scanDockerfile(file: string, text: string): Finding[] {
       stages.push(stage);
       if (!parent) {
         const problem = imageTagProblem(image);
-        if (problem) {
+        if (problem === "latest" || problem === "untagged") {
+          const repository = problem === "latest" ? image.slice(0, -":latest".length) : image;
           findings.push(
             configFinding({
               ruleId: "config/dockerfile-latest-tag",
@@ -199,12 +201,11 @@ export function scanDockerfile(file: string, text: string): Finding[] {
               line,
               evidence: `FROM ${image}`,
               description: `"${image}" ${problem === "latest" ? "uses the moving latest tag" : "has no tag, so Docker pulls latest"}. Builds can silently change or break when a new version is published.`,
-              remediation:
-                'Pin the base image to a specific version (for example "node:22-alpine" or "python:3.12-slim"), ideally with its @sha256 digest.',
+              remediation: `Pin the base image to a specific version and its digest: "FROM ${repository}:<version>@sha256:<digest>" (\`docker buildx imagetools inspect ${repository}:<version>\` shows the digest). Dependabot keeps digests current.`,
               rawMatch: `FROM ${image}`,
             }),
           );
-        } else if (isTagOnly(image)) {
+        } else if (problem === "tag-only") {
           findings.push(
             configFinding({
               ruleId: "config/dockerfile-unpinned-digest",
@@ -233,7 +234,11 @@ export function scanDockerfile(file: string, text: string): Finding[] {
     }
     if (keyword === "ENV" || keyword === "ARG") {
       for (const [name, value] of envPairs(keyword, args)) {
-        if (value === undefined || !isSecretName(name) || !isLiteralSecretValue(value)) continue;
+        if (!isSecretName(name)) continue;
+        if (value === undefined || !isLiteralSecretValue(value)) {
+          if (keyword === "ARG") findings.push(secretArgFinding(file, line, name));
+          continue;
+        }
         findings.push(
           configFinding({
             ruleId: "config/dockerfile-secret-env",
@@ -276,23 +281,36 @@ export function scanDockerfile(file: string, text: string): Finding[] {
   return findings;
 }
 
-/** `latest`, `untagged` or `undefined` when the image is pinned (or cannot be judged). */
-function imageTagProblem(image: string): "latest" | "untagged" | undefined {
+/**
+ * A build argument whose name says it holds a secret. Whatever value `--build-arg` gives it is
+ * recorded in the image history of every `RUN` that sees it, so it belongs in a secret mount.
+ */
+function secretArgFinding(file: string, line: number, name: string): Finding {
+  return configFinding({
+    ruleId: "config/dockerfile-secret-arg",
+    title: `Build argument ${name} looks like a secret`,
+    severity: "medium",
+    file,
+    line,
+    evidence: `ARG ${name}`,
+    description: `"${name}" is a build argument, and its name says it holds a secret. A value passed with --build-arg is recorded in the image history, so anyone who can pull the image can read it.`,
+    remediation: `Remove the ARG and give the value to the build as a BuildKit secret mount: "RUN --mount=type=secret,id=${name},env=${name} <command>" in the Dockerfile and "docker build --secret id=${name},env=${name}" for the build. The value then stays out of the image.`,
+    rawMatch: `ARG ${name}`,
+  });
+}
+
+/**
+ * What is wrong with a base image's pin: the `latest` tag, no tag at all, or a tag without a
+ * digest; `undefined` when it is pinned by digest, `scratch` or a variable.
+ */
+function imageTagProblem(image: string): "latest" | "untagged" | "tag-only" | undefined {
   if (image.includes("$") || image.toLowerCase() === "scratch" || image.includes("@")) {
     return undefined;
   }
   const lastSegment = image.slice(image.lastIndexOf("/") + 1);
   const colon = lastSegment.indexOf(":");
   if (colon === -1) return "untagged";
-  return lastSegment.slice(colon + 1).toLowerCase() === "latest" ? "latest" : undefined;
-}
-
-/**
- * Of the images {@link imageTagProblem} accepts, true for one pinned by its tag only: no digest,
- * and neither `scratch` nor a variable.
- */
-function isTagOnly(image: string): boolean {
-  return !image.includes("$") && !image.includes("@") && image.toLowerCase() !== "scratch";
+  return lastSegment.slice(colon + 1).toLowerCase() === "latest" ? "latest" : "tag-only";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -509,8 +527,8 @@ async function scanFile(context: ScanContext, file: string): Promise<Finding[]> 
 
 /**
  * Built-in configuration scanner (`opscrew-config`): Dockerfiles running as root (medium),
- * `latest` or untagged base images (low), base images without a digest (low) and literal secrets
- * in `ENV`/`ARG` (high); Django
+ * `latest` or untagged base images (low), base images without a digest (low), literal secrets
+ * in `ENV`/`ARG` (high) and build arguments with a secret name (medium); Django
  * `DEBUG = True` and Flask debug mode (high); CORS `*` combined with credentials (medium);
  * client-exposed env names containing `SECRET`, `SERVICE_ROLE`, `PRIVATE` or `PASSWORD`
  * (critical); and `.env` files that `.gitignore` does not exclude (medium).

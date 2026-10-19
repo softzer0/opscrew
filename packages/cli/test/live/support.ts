@@ -4,10 +4,12 @@
  * output, choosing the throwaway Hetzner server, reading `ufw status` and `ss` output, splitting
  * the printed SSH tunnel command, OpsCrew's shared Cloudflare rules in the zone (feature 011) and
  * the cleanup's leftover decision, masking the server's address and secrets in everything the
- * tests print, and the Hetzner pass's builder checks (the expected builder, the broken health
- * route, the attestations, the steady load). No network, no processes; the safety and leak helpers
+ * tests print, and the Hetzner pass's builder checks (the build steps, the broken health route,
+ * the attestations, the steady load, the services a deploy must not restart) and the run's id. No
+ * network, no processes; the safety and leak helpers
  * are unit-tested in `support.test.ts`.
  */
+import { randomBytes } from "node:crypto";
 import { parseKeyscan } from "@opscrew/agents";
 import {
   SHARED_RULES,
@@ -15,7 +17,8 @@ import {
   type SharedRuleRef,
 } from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
-import type { ImageBuilder } from "@opscrew/plan-schema";
+import { TOOLS } from "@opscrew/iac-templates";
+import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 
 /** The variables both server live tests need besides their gate. */
 export const SERVER_E2E_VARIABLES = [
@@ -36,6 +39,11 @@ export function missingVariables(
     ...(env[gate] === "1" ? [] : [`${gate}=1`]),
     ...names.filter((name) => (env[name] ?? "").trim() === ""),
   ];
+}
+
+/** A new id for one live run: the time and a random part, in lower-case letters and digits. */
+export function newRunId(): string {
+  return `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
 }
 
 /**
@@ -575,13 +583,6 @@ export function duration(ms: number): string {
 // The builder checks of the Hetzner pass (feature 012): the builder, the deploy under load, a
 // broken release and the image's attestations.
 
-/** The builder OpsCrew must choose for each example the Hetzner pass checks the builders with. */
-export const EXPECTED_BUILDERS: Readonly<Record<string, ImageBuilder>> = {
-  "nextjs-postgres": "generated-dockerfile",
-  "go-api": "buildpacks",
-  "rust-api": "railpack",
-};
-
 /** The name of the deploy workflow's build job. */
 export const BUILD_JOB = "Build the image";
 
@@ -589,7 +590,11 @@ export const BUILD_JOB = "Build the image";
 const BUILDER_STEPS: Record<ImageBuilder, readonly string[]> = {
   "generated-dockerfile": ["Build and push the image"],
   "own-dockerfile": ["Build and push the image"],
-  buildpacks: ["Set up pack", "Build the image with Buildpacks", "Seal and push the image"],
+  buildpacks: [
+    `Install pack ${TOOLS.pack.version}`,
+    "Build the image with Buildpacks",
+    "Seal and push the image",
+  ],
   railpack: ["Plan the Railpack build", "Build the image with Railpack", "Seal and push the image"],
 };
 
@@ -645,6 +650,55 @@ export function applyEdit(text: string, edit: SourceEdit): string {
     );
   }
   return text.replace(edit.from, () => edit.to);
+}
+
+/**
+ * The Compose services next to the app that deploying a new app version must not restart, as far
+ * as the plan has them: Postgres (`db`), the cache, kamal-proxy (`proxy`) and Caddy.
+ */
+export function steadyServices(plan: Pick<DeployPlan, "services">): string[] {
+  return [
+    ...(plan.services.postgres ? ["db"] : []),
+    ...(plan.services.redis ? ["cache"] : []),
+    "proxy",
+    "caddy",
+  ];
+}
+
+/**
+ * The command, run on the server, that prints `<service> <StartedAt>` for each container of
+ * `services` in the app's Compose project (`/srv/app`).
+ */
+export function startedAtCommand(services: readonly string[]): string {
+  return [
+    `cd /srv/app && for service in ${services.join(" ")}; do`,
+    'for id in $(docker compose ps -q "$service"); do',
+    `echo "$service $(docker inspect --format '{{.State.StartedAt}}' "$id")";`,
+    "done; done",
+  ].join(" ");
+}
+
+/**
+ * The services of `services` that a deploy restarted, from {@link startedAtCommand}'s output
+ * before and after it: one whose containers started anew, or one without a container in either.
+ */
+export function restartedServices(
+  services: readonly string[],
+  before: string,
+  after: string,
+): string[] {
+  const starts = (output: string, service: string) =>
+    output
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/))
+      .filter(([name, startedAt]) => name === service && startedAt !== undefined)
+      .map(([, startedAt]) => startedAt)
+      .sort()
+      .join(" ");
+  return services.filter((service) => {
+    const was = starts(before, service);
+    return was === "" || was !== starts(after, service);
+  });
 }
 
 /** Every key of a JSON value, at any depth. */

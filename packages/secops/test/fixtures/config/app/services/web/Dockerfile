@@ -11,5 +11,4 @@ COPY --from=build /app /app
 ENV NODE_ENV=production \
     SESSION_SECRET_FILE=/run/secrets/session \
     API_TOKEN=${API_TOKEN}
-ARG BUILD_TOKEN
 CMD ["node", "server.js"]

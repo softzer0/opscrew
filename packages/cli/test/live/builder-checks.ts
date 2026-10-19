@@ -1,37 +1,46 @@
 /**
  * The builder checks of the Hetzner pass (feature 012, docs/e2e.md "The builders"), for the three
  * builder examples: the builder the deploy used, a non-root container, the image's provenance and
- * SBOM (with the leak search), a merged change deployed under a steady load, a release whose health
- * route fails, GHCR keeping the layers after the image retention job, and optionally the cosign
- * signatures. Nothing here prints a secret or a log; messages name labels, images and statuses.
+ * SBOM (with the leak search), a merged change deployed under a steady load without restarting the
+ * services next to the app, a release whose health route fails, GHCR keeping the layers after the
+ * image retention job, and optionally the cosign signatures. Nothing here prints a secret or a
+ * log; messages name labels, images and statuses.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDotenv, readServerAddresses } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
-import { type ImageBuilder, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type ImageBuilder,
+  ImageBuilderSchema,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { expect } from "vitest";
 import { type GitHubRepo, ghcrMissingBlobs, minutes } from "./cloud";
+import { EXAMPLES } from "./harness";
 import { jobErrors, jobLog, runSteps } from "./portainer-cloud";
 import { deployedImage } from "./portainer-support";
 import {
   applyEdit,
   BUILD_JOB,
   deployJobFailed,
-  EXPECTED_BUILDERS,
   HEALTH_BREAKS,
   jsonStrings,
   type LoadFailure,
   leakedLabels,
   missingBuildSteps,
   provenanceProblems,
+  restartedServices,
   Scrubber,
   type SourceEdit,
   sbomPackages,
+  startedAtCommand,
   steadyLoad,
+  steadyServices,
 } from "./support";
 
 /** The deploy workflow's jobs the checks read (their names in the workflow). */
@@ -65,7 +74,8 @@ export interface BuilderSettings {
 
 /**
  * The settings for `app` (an example name, `undefined` for a GitHub repository) with
- * `OPSCREW_E2E_BUILDS=1`; otherwise the one line the pass logs to say why the checks do not run.
+ * `OPSCREW_E2E_BUILDS=1`, with the builder its `expected.json` names; otherwise the one line the
+ * pass logs to say why the checks do not run.
  */
 export function builderSettings(
   app: string | undefined,
@@ -74,13 +84,17 @@ export function builderSettings(
   if (env.OPSCREW_E2E_BUILDS !== "1") {
     return "not checked: the builder checks of feature 012 (set OPSCREW_E2E_BUILDS=1, see docs/e2e.md)";
   }
-  const builder = app === undefined ? undefined : EXPECTED_BUILDERS[app];
-  if (app === undefined || builder === undefined) {
-    return `not checked: OPSCREW_E2E_BUILDS=1 checks only ${Object.keys(EXPECTED_BUILDERS).join(", ")}`;
+  // The builder examples are the ones whose health route the checks can break.
+  const examples = Object.keys(HEALTH_BREAKS);
+  if (app === undefined || !examples.includes(app)) {
+    return `not checked: OPSCREW_E2E_BUILDS=1 checks only ${examples.join(", ")}`;
   }
+  const expected = JSON.parse(readFileSync(join(EXAMPLES, app, "expected.json"), "utf8")) as {
+    builder?: unknown;
+  };
   return {
     app,
-    builder,
+    builder: ImageBuilderSchema.parse(expected.builder),
     ghcrToken: env.OPSCREW_E2E_GHCR_READ_TOKEN?.trim() ?? "",
     sign: env.OPSCREW_E2E_SIGN === "1",
   };
@@ -189,10 +203,12 @@ async function registryLogin(user: string, token: string) {
 /**
  * Every secret value the attestations must not hold: `tokens`, the deploy key, the state
  * passphrase, the values OpsCrew generated for the app and the `OPSCREW_E2E_APP_ENV` values of 8
- * characters or more.
+ * characters or more. Throws when the plan has generated values and OpsCrew's record of them is
+ * missing, since the search would then miss them.
  */
 async function knownSecrets(
   run: BuilderRun,
+  plan: DeployPlan,
   tokens: readonly { label: string; value: string | undefined }[],
 ): Promise<{ label: string; value: string }[]> {
   const scrubber = new Scrubber();
@@ -209,6 +225,10 @@ async function knownSecrets(
     for (const value of jsonStrings(JSON.parse(await readFile(generated, "utf8")))) {
       scrubber.add(value, "generated-value");
     }
+  } else if (plan.services.postgres || plan.app.env.some((v) => v.source === "generated")) {
+    throw new Error(
+      `The plan has values OpsCrew generates, but ${generated}, where provision keeps them, is missing, so the leak search cannot look for them.`,
+    );
   }
   const appEnv = run.env.OPSCREW_APP_ENV_FILE;
   if (appEnv !== undefined && existsSync(appEnv)) {
@@ -266,8 +286,9 @@ async function underLoad<T>(
 
 /**
  * The checks after the first deploy (docs/e2e.md "The builders"), in order: the builder, a
- * non-root container, the attestations and the leak search, a change under load, a broken release
- * under load and its restore, the blobs after the image retention job, and the signatures.
+ * non-root container, the attestations and the leak search, a change under load that restarts
+ * none of the services next to the app, a broken release under load and its restore, the blobs
+ * after the image retention job, and the signatures.
  */
 export async function builderChecks(
   run: BuilderRun,
@@ -334,7 +355,7 @@ export async function builderChecks(
     log(
       `the provenance names the repository and the commit and holds no event data; the SBOM lists ${packages} packages`,
     );
-    const known = await knownSecrets(run, [
+    const known = await knownSecrets(run, plan, [
       ...tokens,
       { label: "OPSCREW_E2E_GHCR_READ_TOKEN", value: settings.ghcrToken },
     ]);
@@ -344,7 +365,11 @@ export async function builderChecks(
     ).toEqual([]);
     log(`none of the ${known.length} known secret values is in the provenance or the SBOM`);
 
-    // A merged change deploys under a steady load.
+    // A merged change deploys under a steady load, and restarts none of the services next to the
+    // app (docs/guide/zero-downtime.md).
+    const steady = steadyServices(plan);
+    const startedAt = () => run.ssh(ipv4, startedAtCommand(steady));
+    const startedBefore = await startedAt();
     const health = new URL(plan.app.healthPath, plan.deployment.url ?? `http://${ipv4}`).toString();
     await writeFile(
       join(run.repo, CHANGE_FILE),
@@ -360,6 +385,11 @@ export async function builderChecks(
     expect(changed.conclusion, "the deploy run of the change").toBe("success");
     const second = await runningImage();
     expect(second, "the change deployed a new image").not.toBe(first);
+    expect(
+      restartedServices(steady, startedBefore, await startedAt()),
+      `the services among ${steady.join(", ")} that the change's deploy restarted, or that have no container`,
+    ).toEqual([]);
+    log(`the change's deploy restarted none of ${steady.join(", ")}`);
 
     // A release whose health route fails: no request fails, the run fails with the builder hint,
     // and the previous version still answers. Then the route is restored.

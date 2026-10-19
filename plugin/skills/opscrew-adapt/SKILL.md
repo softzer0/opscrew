@@ -13,13 +13,16 @@ dependencies unless there is no other way (then tell the user which and why).
 
 - **dockerfile / dockerignore / env-example:** prefer OpsCrew's templates — they run as a non-root
   user and match the detected stack. If the files are missing, generate them with the same structure
-  as OpsCrew's templates: multi-stage build, pinned major base image (`node:22-alpine`,
-  `python:3.13-slim`), dependencies installed from the lockfile, `USER` set to a non-root user, the
-  app listening on `0.0.0.0:$PORT`. `.env.example` lists variable names only, never values.
+  as OpsCrew's templates: multi-stage build, base images pinned by tag and `@sha256` digest, at the
+  runtime version in `app.build.runtime.version` of `opscrew/plan.yaml` (the version the app
+  declares, else OpsCrew's default), dependencies installed from the lockfile, `USER` set to a
+  non-root user, the app listening on `0.0.0.0:$PORT`. Write no Dockerfile when `app.build.builder`
+  is `buildpacks`, `railpack` or `own-dockerfile`. `.env.example` lists variable names only, never
+  values.
 - **health-endpoint:** add a route that returns HTTP 200 with a tiny JSON body (`{"ok":true}`) and
   does no expensive work. Path: `/api/health` for Next.js (`app/api/health/route.ts` in the app
   router, `pages/api/health.ts` in the pages router); `/health` for Express, Fastify, NestJS, Hono,
-  FastAPI, Flask and Django.
+  FastAPI, Flask, Django, Go, Java, .NET and Rust.
 - **port-config:** read the port from `PORT` with the current value as the default.
 - **build-config (Next.js):** set `output: "standalone"` in `next.config.*`.
 - **secret-removal:** replace the hard-coded value with an environment variable read, add the name

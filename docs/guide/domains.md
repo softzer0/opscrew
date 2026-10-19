@@ -32,13 +32,8 @@ nameservers to Cloudflare.
   `npx opscrew domain auto-renew off`, or buy with `--no-auto-renew`.
 - **At other registrars:**
   - Porkbun: OpsCrew sets auto-renew through its API the same way.
-  - Namecheap and GoDaddy: your account's own auto-renew setting applies, and you change it in their
-    dashboard.
-
-## Settings only the registrar's dashboard can change
-
-At Namecheap and GoDaddy, change auto-renew and DNSSEC in the registrar's dashboard. OpsCrew tells you
-where.
+  - Namecheap and GoDaddy: your account's own auto-renew setting applies. You change it, and
+    DNSSEC, in the registrar's dashboard, and OpsCrew tells you where.
 
 ## Cloudflare token permissions for buying
 

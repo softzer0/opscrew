@@ -6,7 +6,6 @@
  * a Cloudflare domain it also checks the app's hostnames in OpsCrew's shared rules (feature 011).
  * On Hetzner the builder examples also get the builder checks of feature 012 (builder-checks.ts).
  */
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,6 +36,7 @@ import {
   type AppRules,
   appRules,
   approveHashes,
+  newRunId,
   runHostname,
   sharedRuleHosts,
   unprotectHetznerRoot,
@@ -455,12 +455,7 @@ async function deployAndTearDown(
   const app = APP;
   // Each run serves the app on its own hostname: every run's fresh server asks Let's Encrypt for a
   // certificate, and it issues only 5 per week for the same names.
-  const domain = withDns
-    ? runHostname(
-        E2E.domain as string,
-        `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`,
-      )
-    : undefined;
+  const domain = withDns ? runHostname(E2E.domain as string, newRunId()) : undefined;
   expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
   const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-"));
   const repo = join(work, "repo");

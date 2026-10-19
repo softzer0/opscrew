@@ -7,7 +7,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakeSecret } from "@opscrew/core/testing";
+import { TOOLS } from "@opscrew/iac-templates";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { builderSettings } from "./builder-checks";
 import { GitHubRepo, ghcrMissingBlobs } from "./cloud";
 import {
   CORE_STEPS,
@@ -39,8 +41,10 @@ import {
   jsonStrings,
   leakedLabels,
   missingBuildSteps,
+  newRunId,
   provenanceProblems,
   requestFailure,
+  restartedServices,
   rulesCleanup,
   runHostname,
   Scrubber,
@@ -48,7 +52,9 @@ import {
   sbomPackages,
   seededDescription,
   sharedRuleHosts,
+  startedAtCommand,
   steadyLoad,
+  steadyServices,
   ufwRulesBeyondSsh,
   unprotectHetznerRoot,
   userRules,
@@ -628,6 +634,14 @@ describe("deployJobFailed", () => {
   });
 });
 
+describe("newRunId", () => {
+  it("gives each live run its own id of lower-case letters and digits", () => {
+    const ids = new Set(Array.from({ length: 20 }, newRunId));
+    expect(ids.size).toBe(20);
+    for (const id of ids) expect(id).toMatch(/^[0-9a-z]+[0-9a-f]{4}$/);
+  });
+});
+
 describe("the builder checks of the Hetzner pass (feature 012)", () => {
   const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 
@@ -638,7 +652,7 @@ describe("the builder checks of the Hetzner pass (feature 012)", () => {
       conclusion,
     });
     const pack = [
-      build("Set up pack"),
+      build(`Install pack ${TOOLS.pack.version}`),
       build("Build the image with Buildpacks"),
       build("Seal and push the image"),
     ];
@@ -660,6 +674,55 @@ describe("the builder checks of the Hetzner pass (feature 012)", () => {
         "generated-dockerfile",
       ),
     ).toEqual(["Build and push the image"]);
+  });
+
+  it("expects the builder that each builder example's expected.json names", () => {
+    const env = { OPSCREW_E2E_BUILDS: "1" };
+    for (const [app, builder] of [
+      ["nextjs-postgres", "generated-dockerfile"],
+      ["go-api", "buildpacks"],
+      ["rust-api", "railpack"],
+    ] as const) {
+      expect(builderSettings(app, env)).toMatchObject({ app, builder });
+    }
+    expect(builderSettings("express-api", env)).toBe(
+      "not checked: OPSCREW_E2E_BUILDS=1 checks only nextjs-postgres, go-api, rust-api",
+    );
+    expect(builderSettings("go-api", {})).toMatch(/^not checked: the builder checks/);
+  });
+
+  it("names the services next to the app that the plan has", () => {
+    expect(steadyServices({ services: { postgres: true, redis: true } })).toEqual([
+      "db",
+      "cache",
+      "proxy",
+      "caddy",
+    ]);
+    expect(steadyServices({ services: { postgres: false, redis: false } })).toEqual([
+      "proxy",
+      "caddy",
+    ]);
+    const command = startedAtCommand(["db", "proxy"]);
+    expect(command).toMatch(/^cd \/srv\/app && for service in db proxy; do /);
+    expect(command).toContain(`docker inspect --format '{{.State.StartedAt}}' "$id"`);
+  });
+
+  it("finds the services a deploy restarted, and those without a container", () => {
+    const services = ["db", "proxy", "caddy"];
+    const before = [
+      "db 2026-10-19T10:00:00.1Z",
+      "proxy 2026-10-19T10:00:01.2Z",
+      "caddy 2026-10-19T10:00:02.3Z",
+      "",
+    ].join("\n");
+    expect(restartedServices(services, before, before.replaceAll("\n", "\r\n"))).toEqual([]);
+    const after = before.replace("caddy 2026-10-19T10:00:02.3Z", "caddy 2026-10-19T11:00:00.0Z");
+    expect(restartedServices(services, before, after)).toEqual(["caddy"]);
+    expect(restartedServices(services, before, "db 2026-10-19T10:00:00.1Z\n")).toEqual([
+      "proxy",
+      "caddy",
+    ]);
+    expect(restartedServices(["cache"], before, before)).toEqual(["cache"]);
   });
 
   it("breaks each example's health route with one exact edit, and refuses a missing or repeated one", () => {

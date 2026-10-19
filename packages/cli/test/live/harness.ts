@@ -1,5 +1,4 @@
 /** The shared harness of the live tests on a throwaway server (own server and Portainer). */
-import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,6 +38,7 @@ import {
   expectedSharedHosts,
   fingerprintFromKeygen,
   ipv6PrefixForms,
+  newRunId,
   removalApproval,
   runHostname,
   Scrubber,
@@ -259,7 +259,7 @@ export class LiveRun {
   ) {
     const { settings } = options;
     this.parent = parent;
-    this.runId = parent?.runId ?? `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+    this.runId = parent?.runId ?? newRunId();
     this.scrubber = parent?.scrubber ?? new Scrubber();
     this.scrub = this.scrubber.scrub;
     this.outputs = parent?.outputs ?? new Map();
