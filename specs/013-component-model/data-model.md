@@ -84,6 +84,12 @@ storage:
 `app.build`, `deploy` and the rest are unchanged. `deploy.strategy` is `recreate` when
 `storage.sqlite` is set.
 
+## `opscrew/requirements.yaml`
+
+`workerCommands` (optional): the commands the interview asked for detected workers with no
+conventional command (BullMQ, asynq, river), by worker name. Design uses one when `facts.workers`
+has no command; later designs keep the plan's command. Question ids `workerCommands.<name>`.
+
 ## `ProjectFacts` (opscrew/architecture.json)
 
 | Field | Meaning |
