@@ -4,11 +4,14 @@ import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, scriptParams } from "./__fixtures__/fake-host";
 import {
   applyApproved,
+  DEPLOY_KEY,
   desiredFor,
   portainerDesired,
   portainerPassword,
   provision,
+  removeApp,
   SH_AVAILABLE,
+  SHOP_PROJECT,
   shSyntax,
   tunnelDesired,
   tunnelToken,
@@ -79,13 +82,41 @@ async function everyPlan(): Promise<HostPlan[]> {
   // Switching to public mode removes the tunnel connector and Portainer.
   plans.push(planHost(await inspectHost(used), desiredFor(used), "opscrew provision"));
   plans.push(
-    planTeardown(await inspectHost(used), { deleteData: true, app: "shop" }, "opscrew destroy"),
+    planTeardown(
+      await inspectHost(used),
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    ),
   );
   await applyApproved(
     used,
-    planTeardown(await inspectHost(used), { deleteData: false, app: "shop" }, "opscrew destroy"),
+    planTeardown(
+      await inspectHost(used),
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    ),
   );
   plans.push(planUndo(await inspectHost(used), "opscrew destroy --undo-host"));
+
+  // Two apps on one server: removing one takes its deploy key too.
+  const shared = new FakeHost();
+  await provision(shared);
+  await provision(
+    shared,
+    desiredFor(shared, {
+      app: "blog",
+      projectId: "blog-1",
+      hostnames: ["blog.example.com"],
+      deploy: { user: "deploy", publicKey: DEPLOY_KEY.replace("opscrew-deploy", "blog-deploy") },
+    }),
+  );
+  plans.push(
+    planTeardown(
+      await inspectHost(shared),
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    ),
+  );
 
   // Behind Cloudflare's proxy: the web filter, its removal and its undo.
   const filtered = new FakeHost();
@@ -98,7 +129,7 @@ async function everyPlan(): Promise<HostPlan[]> {
   plans.push(withFilter);
   await applyApproved(filtered, withFilter);
   plans.push(planHost(await inspectHost(filtered), desiredFor(filtered), "opscrew provision"));
-  filtered.files.delete("/etc/opscrew/app.json");
+  await removeApp(filtered);
   plans.push(planUndo(await inspectHost(filtered), "opscrew destroy --undo-host"));
   plans.push(
     planPortainer({
@@ -126,19 +157,23 @@ describe("generated scripts", () => {
         "setup/docker",
         "setup/docker-daemon",
         "setup/deploy-user",
+        "setup/deploy-key",
         "setup/sshd",
         "setup/ufw",
         "setup/web-filter",
         "setup/fail2ban",
         "setup/unattended-upgrades",
         "setup/runtime-dirs",
-        "setup/app-marker",
+        "setup/app-dirs",
+        "setup/app-record",
         "setup/tunnel-connector",
         "setup/portainer",
-        "teardown/runtime-dirs",
+        "teardown/app-dirs",
+        "teardown/deploy-key",
+        "teardown/edge",
         "teardown/tunnel-connector",
         "teardown/portainer",
-        "teardown/app-marker",
+        "teardown/app-record",
         "undo/runtime-dirs",
         "undo/unattended-upgrades",
         "undo/fail2ban",
@@ -147,7 +182,7 @@ describe("generated scripts", () => {
         "undo/sshd",
         "undo/deploy-user",
         "undo/docker-daemon",
-        "undo/app-marker",
+        "undo/app-record",
       ].sort(),
     );
   });

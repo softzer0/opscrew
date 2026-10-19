@@ -3,7 +3,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { applyHostPlan } from "../apply";
 import { hostPlanHash } from "../hash";
 import { inspectHost } from "../inspect";
-import { planHost } from "../plan";
+import { planHost, planTeardown } from "../plan";
 import type { ApplyOptions, DesiredHost, HostPlan } from "../types";
 import type { FakeHost } from "./fake-host";
 
@@ -81,10 +81,16 @@ export function portainerPassword(): string {
   return fakeSecret("generic-password", "portainer");
 }
 
+/** The project id of the test app "shop". */
+export const SHOP_PROJECT = "shop-0123456789ab";
+
 export function desiredFor(fake: FakeHost, overrides: Partial<DesiredHost> = {}): DesiredHost {
   const base: DesiredHost = {
     app: "shop",
-    projectId: "shop-0123456789ab",
+    projectId: SHOP_PROJECT,
+    hostnames: ["shop.example.com", "www.shop.example.com"],
+    services: ["web"],
+    memoryMb: 512,
     admin: { user: fake.login, isRoot: fake.login === "root" },
     deploy: { user: "deploy", publicKey: DEPLOY_KEY },
     sshPort: 22,
@@ -134,6 +140,17 @@ export async function provision(
   const plan = await planFor(fake, desired);
   const result = await applyApproved(fake, plan, options);
   return { plan, result };
+}
+
+/**
+ * Removes the app from the server with an approved teardown (its data too, by default), from the
+ * project its record names.
+ */
+export async function removeApp(fake: FakeHost, app = "shop", deleteData = true) {
+  const facts = await inspectHost(fake);
+  const projectId = facts.apps.find((item) => item.name === app)?.record?.projectId ?? SHOP_PROJECT;
+  const plan = planTeardown(facts, { deleteData, app, projectId }, "opscrew destroy");
+  return applyApproved(fake, plan, { command: "opscrew destroy" });
 }
 
 /** `sh -n` on a script; `undefined` when no POSIX shell can be started here. */

@@ -21,7 +21,7 @@ function scriptsFor(
   params: HostStep["params"],
   extra: Partial<HostPlan> = {},
 ): StepScripts {
-  const step: HostStep = { id, title: id, state: "change", params };
+  const step: HostStep = { id, title: id, state: "change", scope: "shared", params };
   const plan: HostPlan = {
     schemaVersion: 1,
     purpose,
@@ -629,28 +629,31 @@ esac`;
 
   describe("teardown", () => {
     const teardown = (deleteData: boolean) =>
-      scriptsFor("teardown", "runtime-dirs", { app: "shop", deleteData }, { deleteData });
+      scriptsFor("teardown", "app-dirs", { app: "shop", deleteData }, { deleteData });
 
     it("removes the app through its own compose file, never one in the working directory", () => {
       const h = harness();
       h.stub("docker", DOCKER);
       h.write("/state/active.docker", "");
       h.write("/state/containers", "c1\nc2\n");
-      h.write("/state/volumes", "shop_caddy_data\n");
-      h.write("/srv/app/compose.yaml", "name: shop\n");
-      h.write("/srv/app/app.env", "SECRET=x\n");
-      h.write("/srv/data/postgres/PG_VERSION", "17\n");
+      h.write("/state/volumes", "shop_db\n");
+      h.write("/srv/apps/shop/compose.yaml", "name: shop\n");
+      h.write("/srv/apps/shop/app.env", "SECRET=x\n");
+      h.write("/srv/data/shop/postgres/PG_VERSION", "17\n");
+      h.write("/srv/data/blog/postgres/PG_VERSION", "17\n");
       h.write("/work/compose.yaml", "name: decoy\n");
       const { apply, verify } = teardown(true);
       const run = h.run(apply);
       expect(run.status, run.stderr).toBe(0);
       expect(h.calls()).toContain(
-        `docker compose -p shop --project-directory ${h.posix("/srv/app")} -f ${h.posix("/srv/app/compose.yaml")} down --remove-orphans --volumes`,
+        `docker compose -p shop --project-directory ${h.posix("/srv/apps/shop")} -f ${h.posix("/srv/apps/shop/compose.yaml")} down --remove-orphans --volumes`,
       );
       expect(h.calls().some((call) => call.includes("/work"))).toBe(false);
-      expect(h.exists("/srv/app/compose.yaml")).toBe(false);
-      expect(h.exists("/srv/data/postgres")).toBe(false);
-      expect(h.exists("/srv/app")).toBe(true);
+      expect(h.exists("/srv/apps/shop")).toBe(false);
+      expect(h.exists("/srv/data/shop")).toBe(false);
+      // Another app's data stays.
+      expect(h.read("/srv/data/blog/postgres/PG_VERSION")).toBe("17\n");
+      expect(h.exists("/srv/apps")).toBe(true);
       expect(h.run(verify).status).toBe(0);
     });
 
@@ -660,8 +663,8 @@ esac`;
       h.write("/state/active.docker", "");
       h.write("/state/containers", "c1\n");
       h.write("/state/networks", "n1\n");
-      h.write("/state/volumes", "shop_caddy_data\n");
-      h.write("/srv/data/postgres/PG_VERSION", "17\n");
+      h.write("/state/volumes", "shop_db\n");
+      h.write("/srv/data/shop/postgres/PG_VERSION", "17\n");
       h.write("/work/compose.yaml", "name: decoy\n");
       const run = h.run(teardown(false).apply);
       expect(run.status, run.stderr).toBe(0);
@@ -671,7 +674,26 @@ esac`;
       expect(calls).toContain("docker rm -f c1");
       expect(calls).toContain("docker network rm n1");
       expect(calls.some((call) => call.startsWith("docker volume rm"))).toBe(false);
-      expect(h.read("/srv/data/postgres/PG_VERSION")).toBe("17\n");
+      expect(h.read("/srv/data/shop/postgres/PG_VERSION")).toBe("17\n");
+    });
+
+    it("removes the shared edge with its containers, network, volumes and folder", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      h.write("/state/containers", "e1\ne2\n");
+      h.write("/state/volumes", "opscrew-edge_caddy_data\n");
+      h.write("/srv/edge/compose.yaml", "name: opscrew-edge\n");
+      h.write("/srv/edge/sites/shop.caddy", "shop.example.com {\n}\n");
+      const { apply } = scriptsFor("teardown", "edge", { removeDir: true }, { deleteData: false });
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.calls()).toContain(
+        `docker compose -p opscrew-edge --project-directory ${h.posix("/srv/edge")} -f ${h.posix("/srv/edge/compose.yaml")} down --remove-orphans --volumes`,
+      );
+      expect(h.calls()).toContain("docker network inspect opscrew-edge");
+      expect(h.calls()).toContain("docker network rm opscrew-edge");
+      expect(h.exists("/srv/edge")).toBe(false);
     });
 
     it("fails when a volume with the app's label is still there after deleting data", () => {
@@ -763,19 +785,30 @@ esac`;
     });
   });
 
-  describe("app marker", () => {
-    const marker = (ownProject: boolean) =>
-      scriptsFor("setup", "app-marker", { app: "shop", projectId: "shop-1", ownProject });
+  describe("app record", () => {
+    const params = (ownProject: boolean, projectId = "shop-1") => ({
+      app: "shop",
+      projectId,
+      access: "public",
+      hostnames: "shop.example.com www.shop.example.com",
+      services: "web",
+      memoryMb: 512,
+      deployKey: KEY,
+      ownProject,
+    });
+    const record = (ownProject: boolean, projectId?: string) =>
+      scriptsFor("setup", "app-record", params(ownProject, projectId));
+    const RECORD = "/etc/opscrew/apps/shop.json";
 
     it("is not written over a Compose project of that name that OpsCrew did not deploy", () => {
       const h = harness();
       h.stub("docker", DOCKER);
       h.write("/state/active.docker", "");
       h.write("/state/volumes", "shop_pgdata\n");
-      const run = h.run(marker(false).apply);
+      const run = h.run(record(false).apply);
       expect(run.status).toBe(3);
       expect(run.stderr).toContain("Compose project named shop that OpsCrew did not deploy");
-      expect(h.exists("/etc/opscrew/app.json")).toBe(false);
+      expect(h.exists(RECORD)).toBe(false);
       expect(h.calls()).toContain(
         "docker volume ls -q --filter label=com.docker.compose.project=shop",
       );
@@ -784,30 +817,90 @@ esac`;
     it("is not written while Docker is stopped (its containers cannot be seen)", () => {
       const h = harness();
       h.stub("docker", DOCKER);
-      const run = h.run(marker(false).apply);
+      const run = h.run(record(false).apply);
       expect(run.status).toBe(3);
       expect(run.stderr).toContain("Docker is installed but not running");
       expect(h.calls().some((call) => call.startsWith("docker "))).toBe(false);
-      expect(h.exists("/etc/opscrew/app.json")).toBe(false);
+      expect(h.exists(RECORD)).toBe(false);
     });
 
     it("is written when the project is OpsCrew's own (data kept by an earlier teardown)", () => {
       const h = harness();
       h.stub("docker", DOCKER);
       h.write("/state/active.docker", "");
-      h.write("/state/volumes", "shop_caddy_data\n");
-      const run = h.run(marker(true).apply);
+      h.write("/state/volumes", "shop_db\n");
+      const { apply, verify } = record(true);
+      const run = h.run(apply);
       expect(run.status, run.stderr).toBe(0);
-      expect(h.read("/etc/opscrew/app.json")).toBe('{"app":"shop","projectId":"shop-1"}\n');
+      // The harness moves every /srv path under its root, the record's folders too.
+      expect(JSON.parse(h.read(RECORD) ?? "null")).toMatchObject({
+        app: "shop",
+        projectId: "shop-1",
+        state: "active",
+        hostnames: ["shop.example.com", "www.shop.example.com"],
+        folders: { app: h.posix("/srv/apps/shop"), data: h.posix("/srv/data/shop") },
+      });
       expect(h.exists("/var/lib/opscrew-ready")).toBe(true);
+      expect(h.run(verify).status).toBe(0);
     });
 
     it("is written on a server without any project of that name", () => {
       const h = harness();
       h.stub("docker", DOCKER);
       h.write("/state/active.docker", "");
-      expect(h.run(marker(false).apply).status).toBe(0);
-      expect(h.exists("/etc/opscrew/app.json")).toBe(true);
+      expect(h.run(record(false).apply).status).toBe(0);
+      expect(h.exists(RECORD)).toBe(true);
+    });
+
+    it("is never written over another project's app of that name", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      expect(h.run(record(false, "shop-other").apply).status).toBe(0);
+      const run = h.run(record(true).apply);
+      expect(run.status).toBe(3);
+      expect(run.stderr).toContain("Another project's OpsCrew app named shop");
+      expect(h.read(RECORD)).toContain('"projectId":"shop-other"');
+    });
+
+    it("refuses the reserved name and bad hostnames before writing a script", () => {
+      expect(() =>
+        scriptsFor("setup", "app-record", { ...params(false), app: "opscrew-edge" }),
+      ).toThrow(/invalid parameters/);
+      expect(() =>
+        scriptsFor("setup", "app-record", { ...params(false), hostnames: "shop.example.com;x" }),
+      ).toThrow(/invalid parameters/);
+    });
+
+    it("a teardown never removes or rewrites another project's record of that name", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      expect(h.run(record(false, "shop-other").apply).status).toBe(0);
+      const before = h.read(RECORD);
+      for (const keepData of [false, true]) {
+        const teardown = scriptsFor(
+          "teardown",
+          "app-record",
+          { app: "shop", keepData, projectId: "shop-1" },
+          { deleteData: !keepData },
+        );
+        const run = h.run(teardown.apply);
+        expect(run.status).toBe(3);
+        expect(run.stderr).toContain("Another project's OpsCrew app named shop");
+        expect(h.read(RECORD)).toBe(before);
+      }
+    });
+
+    it("undo refuses while an app is still set up", () => {
+      const h = harness();
+      h.write(RECORD, '{"state":"active"}\n');
+      const run = h.run(scriptsFor("undo", "app-record", {}).apply);
+      expect(run.status).toBe(3);
+      expect(h.exists(RECORD)).toBe(true);
+      h.write(RECORD, '{"state":"data-kept"}\n');
+      expect(h.run(scriptsFor("undo", "app-record", {}).apply).status).toBe(0);
+      expect(h.exists("/etc/opscrew")).toBe(false);
     });
   });
 
@@ -834,8 +927,8 @@ esac`,
     });
   });
 
-  describe("deploy user", () => {
-    it("writes authorized_keys atomically with exactly the current key (old keys revoked)", () => {
+  describe("deploy user and the apps' deploy keys", () => {
+    const deployHarness = () => {
       const h = harness();
       // getent prints the home under the harness root.
       h.stub(
@@ -847,20 +940,41 @@ esac`,
 esac`,
       );
       h.stub("id", `echo "deploy docker"`);
+      return h;
+    };
+
+    it("gives an existing deploy user Docker access and leaves its keys to the deploy-key step", () => {
+      const h = deployHarness();
+      h.write("/home/deploy/.ssh/authorized_keys", `${KEY}\n`);
+      const { apply, verify } = scriptsFor("setup", "deploy-user", { user: "deploy" });
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.calls()).toContain("usermod -aG docker deploy");
+      expect(h.calls().some((call) => call.startsWith("useradd"))).toBe(false);
+      expect(h.read("/home/deploy/.ssh/authorized_keys")).toBe(`${KEY}\n`);
+      expect(h.run(verify).status).toBe(0);
+    });
+
+    it("writes authorized_keys atomically with exactly the apps' keys (old keys revoked)", () => {
+      const h = deployHarness();
       h.write(
         "/home/deploy/.ssh/authorized_keys",
         "ssh-ed25519 AAAAold old-deploy\nssh-rsa AAAAother someone\n",
       );
-      const { apply, verify } = scriptsFor("setup", "deploy-user", {
-        user: "deploy",
-        publicKey: KEY,
-      });
+      const blog = KEY.replace("opscrew-deploy", "blog-deploy");
+      const keys = [blog, KEY].sort().join("\n");
+      const { check, apply, verify } = scriptsFor("setup", "deploy-key", { user: "deploy", keys });
+      expect(h.run(check).stdout).toContain("state=change");
       const run = h.run(apply);
       expect(run.status, run.stderr).toBe(0);
-      expect(h.read("/home/deploy/.ssh/authorized_keys")).toBe(`${KEY}\n`);
-      expect(h.calls()).toContain("usermod -aG docker deploy");
-      expect(h.calls().some((call) => call.startsWith("useradd"))).toBe(false);
+      expect(h.read("/home/deploy/.ssh/authorized_keys")).toBe(`${keys}\n`);
+      expect(readdirSync(h.native("/home/deploy/.ssh"))).toEqual(["authorized_keys"]);
       expect(h.run(verify).status).toBe(0);
+      expect(h.run(check).stdout).toContain("state=in-place");
+      // A teardown keeps only the other apps' keys.
+      const removal = scriptsFor("teardown", "deploy-key", { user: "deploy", keys: blog });
+      expect(h.run(removal.apply).status).toBe(0);
+      expect(h.read("/home/deploy/.ssh/authorized_keys")).toBe(`${blog}\n`);
     });
   });
 

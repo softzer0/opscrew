@@ -5,10 +5,21 @@ import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, type OsPreset } from "./__fixtures__/fake-host";
 import { desiredFor, planFor, provision } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
-import { RUNTIME_FILE_NAMES } from "./constants";
 import { dockerFirewall, inspectHost, inspectScript, RUNTIME_FILES_SNIPPET } from "./inspect";
-import { parseRuntimeFiles } from "./parse";
+import { parseAppRecords, parseDirs, parseRuntimeFiles, splitSections } from "./parse";
 import { planHost } from "./plan";
+import { appRecord } from "./steps";
+
+const appRecordFor = (app: string) =>
+  appRecord({
+    app,
+    projectId: `${app}-1`,
+    access: "public",
+    hostnames: [],
+    services: ["web"],
+    memoryMb: 512,
+    deployKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKE opscrew-deploy",
+  });
 
 const SUPPORTED: OsPreset[] = [
   "ubuntu-22.04",
@@ -36,12 +47,14 @@ describe("inspectHost", () => {
           ["docker", "change"],
           ["docker-daemon", "change"],
           ["deploy-user", "change"],
+          ["deploy-key", "change"],
           ["sshd", "change"],
           ["ufw", "change"],
           ["fail2ban", "change"],
           ["unattended-upgrades", "change"],
           ["runtime-dirs", "change"],
-          ["app-marker", "change"],
+          ["app-dirs", "change"],
+          ["app-record", "change"],
         ]);
         expect(plan.steps[0]?.params).toEqual({ distro: os.split("-")[0], action: "install" });
       });
@@ -142,7 +155,7 @@ describe("inspectHost", () => {
   });
 });
 
-describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
+describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
   it("reads checksums of the rendered files and only presence and mode of the others", async () => {
     const fake = new FakeHost();
     await provision(fake);
@@ -151,23 +164,26 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
     const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
     expect(facts.runtimeFiles).toEqual([
       {
+        app: "shop",
         name: "compose.yaml",
         kind: "file",
         owner: "deploy",
         group: "deploy",
         mode: "644",
-        sha256: sum(fake.appFiles.get("compose.yaml")?.content ?? ""),
+        sha256: sum(fake.appFiles.get("shop")?.get("compose.yaml")?.content ?? ""),
       },
+      { app: "shop", name: "Caddyfile", kind: "absent", sha256: null },
       {
-        name: "Caddyfile",
+        app: "shop",
+        name: ".env",
         kind: "file",
         owner: "deploy",
         group: "deploy",
         mode: "644",
-        sha256: sum(fake.appFiles.get("Caddyfile")?.content ?? ""),
+        sha256: null,
       },
-      { name: ".env", kind: "file", owner: "deploy", group: "deploy", mode: "644", sha256: null },
       {
+        app: "shop",
         name: "app.env",
         kind: "file",
         owner: "deploy",
@@ -175,13 +191,13 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
         mode: "600",
         sha256: null,
       },
-      { name: "db.env", kind: "absent", sha256: null },
+      { app: "shop", name: "db.env", kind: "absent", sha256: null },
     ]);
   });
 
-  it("reports every file as absent on a fresh server", async () => {
+  it("reports no file on a fresh server", async () => {
     const facts = await inspectHost(new FakeHost());
-    expect(facts.runtimeFiles?.every((file) => file.kind === "absent")).toBe(true);
+    expect(facts.runtimeFiles).toEqual([]);
   });
 
   it.skipIf(!BASH_AVAILABLE)(
@@ -190,14 +206,19 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
       const sh = new ShellHarness();
       try {
         const secret = fakeSecret("generic-password", "app-env");
-        sh.write("/srv/app/compose.yaml", "services: {}\n");
-        sh.write("/srv/app/Caddyfile", ":80 {\n}\n");
-        sh.write("/srv/app/app.env", `SECRET_KEY=${secret}\n`);
-        sh.write("/srv/app/db.env", `POSTGRES_PASSWORD=${secret}\n`);
+        sh.write("/srv/apps/shop/compose.yaml", "services: {}\n");
+        sh.write("/srv/apps/shop/Caddyfile", ":80 {\n}\n");
+        sh.write("/srv/apps/shop/app.env", `SECRET_KEY=${secret}\n`);
+        sh.write("/srv/apps/shop/db.env", `POSTGRES_PASSWORD=${secret}\n`);
+        sh.write("/srv/apps/blog/compose.yaml", "services: {}\n");
+        sh.write("/srv/apps/Not An App/compose.yaml", "services: {}\n");
         const result = sh.run(RUNTIME_FILES_SNIPPET);
         expect(result.status).toBe(0);
         const files = parseRuntimeFiles(result.stdout);
-        const byName = new Map(files.map((file) => [file.name, file]));
+        expect(new Set(files.map((file) => file.app))).toEqual(new Set(["blog", "shop"]));
+        const byName = new Map(
+          files.filter((file) => file.app === "shop").map((file) => [file.name, file]),
+        );
         const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
         expect(byName.get("compose.yaml")).toMatchObject({
           kind: "file",
@@ -206,12 +227,17 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
         expect(byName.get("Caddyfile")?.sha256).toBe(sum(":80 {\n}\n"));
         expect(byName.get("app.env")).toMatchObject({ kind: "file", sha256: null });
         expect(byName.get("db.env")).toMatchObject({ kind: "file", sha256: null });
-        expect(byName.get(".env")).toEqual({ name: ".env", kind: "absent", sha256: null });
+        expect(byName.get(".env")).toEqual({
+          app: "shop",
+          name: ".env",
+          kind: "absent",
+          sha256: null,
+        });
         // Nothing about the secret files beyond their owner and mode reaches OpsCrew.
         expect(result.stdout).not.toContain(secret);
         expect(result.stdout).not.toContain(sum(`SECRET_KEY=${secret}\n`));
         expect(result.stdout).not.toContain(sum(`POSTGRES_PASSWORD=${secret}\n`));
-        expect(result.stdout.match(/\b[0-9a-f]{64}\b/g)).toHaveLength(2);
+        expect(result.stdout.match(/\b[0-9a-f]{64}\b/g)).toHaveLength(3);
       } finally {
         sh.dispose();
       }
@@ -219,27 +245,25 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
   );
 
   it.skipIf(!BASH_AVAILABLE)(
-    "reads nothing when /srv/app is a symbolic link or not a directory (real shell)",
+    "reads nothing through an app folder that is a symbolic link or not a directory (real shell)",
     () => {
-      const absent = RUNTIME_FILE_NAMES.map((name) => `${name} absent`);
       const sh = new ShellHarness();
       try {
-        sh.write("/srv/app", "not a directory\n");
+        sh.write("/srv/apps/shop", "not a directory\n");
         const result = sh.run(RUNTIME_FILES_SNIPPET);
         expect(result.status).toBe(0);
-        expect(result.stdout.trim().split("\n")).toEqual(absent);
+        expect(result.stdout.trim()).toBe("");
 
-        rmSync(sh.native("/srv/app"));
+        rmSync(sh.native("/srv/apps/shop"));
         sh.write("/srv/elsewhere/compose.yaml", "services: {}\n");
         let linked = true;
         try {
-          symlinkSync(sh.native("/srv/elsewhere"), sh.native("/srv/app"), "junction");
+          symlinkSync(sh.native("/srv/elsewhere"), sh.native("/srv/apps/shop"), "junction");
         } catch {
           linked = false; // this machine cannot create links
         }
-        if (linked && sh.run('[ -L "/srv/app" ]').status === 0) {
-          const viaLink = sh.run(RUNTIME_FILES_SNIPPET);
-          expect(viaLink.stdout.trim().split("\n")).toEqual(absent);
+        if (linked && sh.run('[ -L "/srv/apps/shop" ]').status === 0) {
+          expect(sh.run(RUNTIME_FILES_SNIPPET).stdout.trim()).toBe("");
         }
       } finally {
         sh.dispose();
@@ -252,17 +276,27 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
     expect(
       parseRuntimeFiles(
         [
-          `app.env file deploy deploy 600 ${hash}`,
-          "compose.yaml link",
-          `Caddyfile file root root 644 ${hash}`,
-          "unknown.txt file root root 644 -",
+          `shop app.env file deploy deploy 600 ${hash}`,
+          "shop compose.yaml link",
+          `shop Caddyfile file root root 644 ${hash}`,
+          "shop unknown.txt file root root 644 -",
+          "Bad compose.yaml link",
         ].join("\n"),
       ),
     ).toEqual([
-      { name: "compose.yaml", kind: "link", sha256: null },
-      { name: "Caddyfile", kind: "file", owner: "root", group: "root", mode: "644", sha256: hash },
-      { name: ".env", kind: "absent", sha256: null },
+      { app: "shop", name: "compose.yaml", kind: "link", sha256: null },
       {
+        app: "shop",
+        name: "Caddyfile",
+        kind: "file",
+        owner: "root",
+        group: "root",
+        mode: "644",
+        sha256: hash,
+      },
+      { app: "shop", name: ".env", kind: "absent", sha256: null },
+      {
+        app: "shop",
         name: "app.env",
         kind: "file",
         owner: "deploy",
@@ -270,10 +304,46 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
         mode: "600",
         sha256: null,
       },
-      { name: "db.env", kind: "absent", sha256: null },
+      { app: "shop", name: "db.env", kind: "absent", sha256: null },
     ]);
-    expect(RUNTIME_FILES_SNIPPET).toMatch(/if \[ -L "\$p" \]; then echo "\$f link"/);
+    expect(RUNTIME_FILES_SNIPPET).toMatch(/if \[ -L "\$p" \]; then echo "\$app \$f link"/);
   });
+});
+
+describe("inspectHost: the apps' records and folders (real shell)", () => {
+  it.skipIf(!BASH_AVAILABLE)(
+    "prints each app's record on one line, and only folders with app names",
+    () => {
+      const sh = new ShellHarness();
+      try {
+        const record = { ...appRecordFor("shop"), hostnames: ["shop.example.com"] };
+        sh.write("/etc/opscrew/apps/shop.json", `${JSON.stringify(record, null, 2)}\n`);
+        sh.write("/etc/opscrew/apps/blog.json", "{");
+        sh.write("/etc/opscrew/apps/notes.txt", "not a record\n");
+        sh.write("/srv/apps/shop/compose.yaml", "services: {}\n");
+        sh.write("/srv/data/shop/PG_VERSION", "17\n");
+        sh.write("/srv/data/Bad Name/x", "\n");
+        // The harness moves the paths under its root; the server prints them as they are.
+        const sections = splitSections(sh.run(inspectScript()).stdout.replaceAll(sh.root, ""));
+        expect(parseAppRecords(sections.get("apps")?.text ?? "")).toEqual([
+          { name: "blog", record: null },
+          { name: "shop", record },
+        ]);
+        expect(
+          parseDirs(sections.get("dirs")?.text ?? "").map((dir) => [dir.path, dir.kind]),
+        ).toEqual([
+          ["/srv/edge", "absent"],
+          ["/srv/apps", "dir"],
+          ["/srv/data", "dir"],
+          ["/srv/app", "absent"],
+          ["/srv/apps/shop", "dir"],
+          ["/srv/data/shop", "dir"],
+        ]);
+      } finally {
+        sh.dispose();
+      }
+    },
+  );
 });
 
 describe("dockerFirewall", () => {

@@ -122,7 +122,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(iac?.details).toContain("never deletes, rebuilds or reinstalls it");
     expect(host).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
     expect(host?.details).toContain("Backups are your responsibility");
-    expect(host?.details).toContain("its data in /srv/data and its Docker volumes stay");
+    expect(host?.details).toContain("its data in /srv/data/shop and its Docker volumes stay");
 
     // The engine destroyed only Cloudflare resources, with the address only in TF_VAR_*.
     const destroyPlans = s.engine.plans.filter((p) => p.destroy);
@@ -151,7 +151,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     // What OpsCrew did not create is untouched; the app is gone; the server's setup stays.
     expect(s.host.facts.containers.map((c) => c.project)).toEqual(["nextcloud"]);
     expect(s.host.facts.volumeProjects).toEqual(["shop", "nextcloud"]);
-    expect(s.host.facts.marker).toBeNull();
+    expect(s.host.facts.record?.apps).toEqual([]);
     expect(s.host.facts.deployUser).not.toBeNull();
 
     // Deploy secrets, tunnel ones included; the plan records the teardown.
@@ -230,7 +230,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
       "OpsCrew cannot delete the app's data: shop was removed from your server before (opscrew/plan.yaml records when), and OpsCrew deletes an app's data only in the teardown that removes the app, so a new `opscrew destroy` cannot delete it. Nothing was changed.",
     );
     expect(error.hint).toBe(
-      "The app's data stays on your server: the directory /srv/data, the Docker volumes of the Compose project \"shop\". OpsCrew took no snapshot. To remove it yourself when you no longer need it, run as root on the server: `rm -rf /srv/data` and `docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=shop)`. Then run `opscrew destroy --undo-host` without `--delete-data` to undo OpsCrew's host changes.",
+      "The app's data stays on your server: the directory /srv/data/shop, the Docker volumes of the Compose project \"shop\". OpsCrew took no snapshot. To remove it yourself when you no longer need it, run as root on the server: `rm -rf /srv/data/shop` and `docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=shop)`. Then run `opscrew destroy --undo-host` without `--delete-data` to undo OpsCrew's host changes.",
     );
     // Nothing was approved, applied or changed on the server.
     expect(s.handler.requests).toEqual([]);
@@ -250,10 +250,14 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
 
   it("--delete-data with nothing of the app left to remove refuses instead of keeping the data silently", async () => {
     const s = await deployed();
-    // Only the app's Compose volumes are left: no containers, no runtime files, no files in /srv/data.
+    // Only Compose volumes named like the app are left: no containers, no app folder, no data
+    // files and no record that makes them the app's.
     const facts = structuredClone(s.host.facts);
     facts.containers = facts.containers.filter((c) => c.project !== "shop");
-    facts.dirs = facts.dirs.map((dir) => ({ ...dir, entries: 0 }));
+    facts.dirs = facts.dirs
+      .filter((dir) => dir.path !== "/srv/apps/shop")
+      .map((dir) => ({ ...dir, entries: 0 }));
+    facts.apps = [];
     s.host.facts = HostFactsSchema.parse(facts);
     const before = s.host.applies.length;
     const error = await expectError(
@@ -354,21 +358,24 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(s.host.facts.deployUser).not.toBeNull();
   });
 
-  it("removes the app's containers and /srv/app when the marker was deleted on the server", async () => {
+  it("removes the app's containers and folder when its record was deleted on the server", async () => {
     const s = await deployed();
     const facts = structuredClone(s.host.facts);
-    facts.marker = null;
+    facts.apps = [];
     s.host.facts = HostFactsSchema.parse(facts);
     await runDestroy(s.deps, { services: services(s) });
     const teardown = s.host.applies.at(-1)?.plan;
     expect(teardown?.purpose).toBe("teardown");
     expect(teardown?.app).toBe("shop");
     expect(teardown?.steps.map((step) => [step.id, step.params])).toEqual([
-      ["runtime-dirs", { app: "shop", deleteData: false }],
+      ["app-dirs", { app: "shop", deleteData: false }],
+      ["edge", { removeDir: true }],
+      // The host record still lists it.
+      ["app-record", { app: "shop", keepData: false, projectId: s.deps.paths.projectId }],
     ]);
     // Only the app's Compose project went; the user's Nextcloud stays.
     expect(s.host.facts.containers.map((c) => c.project)).toEqual(["nextcloud"]);
-    expect(s.host.facts.dirs.find((dir) => dir.path === "/srv/app")?.entries).toBe(0);
+    expect(s.host.facts.dirs.some((dir) => dir.path === "/srv/apps/shop")).toBe(false);
   });
 
   it("--undo-host also works after an earlier destroy, and refusing it changes nothing", async () => {
@@ -403,9 +410,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
   it("--undo-host against a host record that names no app still asks for the app's name", async () => {
     const s = await deployed();
     await runDestroy(s.deps, { services: services(s) });
-    // An older host record without the app's name: the undo plan names no app either.
+    // A host record that lists no app: the undo plan names no app either.
     const record = s.host.facts.record;
-    s.host.facts = { ...s.host.facts, record: record === null ? null : { ...record, app: "" } };
+    s.host.facts = { ...s.host.facts, record: record === null ? null : { ...record, apps: [] } };
     s.handler.requests.length = 0;
     const result = await runDestroy(s.deps, { services: services(s), undoHost: true });
     expect(s.handler.requests.filter((r) => r.kind === "host-apply")).toEqual([
@@ -419,7 +426,11 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     const s = await deployed();
     const before = { applies: s.host.applies.length, requests: s.handler.requests.length };
     const plan = {
-      ...planTeardown(s.host.facts, { deleteData: false, app: "shop" }, "opscrew destroy"),
+      ...planTeardown(
+        s.host.facts,
+        { deleteData: false, app: "shop", projectId: s.deps.paths.projectId },
+        "opscrew destroy",
+      ),
       app: "blog",
     };
     const host = {
@@ -467,7 +478,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     s.host.fail = new HostApplyError(
       "COMMAND_FAILED",
       "Removing the app's containers failed.",
-      ["runtime-dirs"],
+      ["app-dirs"],
       { hint: "Check Docker on the server." },
     );
     const error = await expectError(
@@ -477,7 +488,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     // The audit still lists the steps the adapter applied before the failure.
     expect(
       s.deps.audit.entries.find((entry) => entry.action === "host teardown failed")?.detail,
-    ).toBe("steps applied before the failure: runtime-dirs");
+    ).toBe("steps applied before the failure: app-dirs");
     expect(error.message).toBe("Removing the app's containers failed.");
     expect(error.hint).toBe(
       "Check Docker on the server. The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish.",
@@ -491,7 +502,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     s.handler.requests.length = 0;
     await runDestroy(s.deps, { services: services(s) });
     expect(kinds(s)).toEqual(["host-apply", "cloudflare-apply", "github-secrets"]);
-    expect(s.host.facts.marker).toBeNull();
+    expect(s.host.facts.record?.apps).toEqual([]);
   });
 
   it("offers --delete-data only while the app can still be cancelled, and names the kept data", async () => {
@@ -525,7 +536,10 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
   it("never removes anything from a server that runs another OpsCrew app", async () => {
     const s = await deployed();
     const facts = structuredClone(s.host.facts);
-    facts.marker = { app: "blog", projectId: "other-project" };
+    facts.apps = facts.apps.map(({ record }) => {
+      const blog = { ...record, app: "blog", projectId: "other-project", composeProject: "blog" };
+      return { name: "blog", record: blog as typeof record };
+    });
     s.host.facts = HostFactsSchema.parse(facts);
     const before = { host: s.host.applies.length, engine: s.engine.applies.length };
     const error = await expectError(
@@ -584,7 +598,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(kinds(s)).toEqual(["iac-apply", "host-apply", "cloudflare-apply", "github-secrets"]);
     const teardown = s.host.applies.at(-1)?.plan;
     expect(teardown?.steps.map((step) => step.id)).toEqual(
-      expect.arrayContaining(["runtime-dirs", "tunnel-connector", "app-marker"]),
+      expect.arrayContaining(["app-dirs", "tunnel-connector", "app-record"]),
     );
     expect(s.handler.requests[0]?.title).toContain("Cloudflare Tunnel");
     expect(s.github.deleted).toEqual(

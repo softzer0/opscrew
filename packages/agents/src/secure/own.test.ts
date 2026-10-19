@@ -98,6 +98,7 @@ function setupPlan(o: { root: boolean; disablePasswords: boolean; sshPorts: stri
         id: "sshd",
         title: "SSH",
         state: "in-place",
+        scope: "shared",
         params: {
           permitRootLogin: o.root ? "prohibit-password" : "no",
           disablePasswords: o.disablePasswords,
@@ -108,6 +109,7 @@ function setupPlan(o: { root: boolean; disablePasswords: boolean; sshPorts: stri
         id: "ufw",
         title: "Firewall (ufw)",
         state: "in-place",
+        scope: "shared",
         params: { sshPorts: o.sshPorts, sshRulePorts: "", webRules: "", web: false },
       },
     ],

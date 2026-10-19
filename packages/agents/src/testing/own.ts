@@ -5,10 +5,15 @@ import { FAKE_ACCOUNT_ID } from "@opscrew/connector-cloudflare/testing";
 import {
   type ApplyOptions,
   type ApplyResult,
+  type AppRecord,
+  appDirs,
+  EDGE_DIR,
+  EDGE_PROJECT,
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
+  SHARED_DIRS,
   webFilterFileHashes,
 } from "@opscrew/connector-ssh-host";
 import type {
@@ -179,6 +184,7 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
     arch: o.arch ?? "amd64",
     machine: o.arch === "arm64" ? "aarch64" : "x86_64",
     cpus: 2,
+    avx: o.arch !== "arm64",
     memoryBytes: (o.memoryGb ?? 4) * 1024 ** 3,
     diskFreeBytes: 40 * 1024 ** 3,
     systemd: true,
@@ -236,14 +242,10 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
     dockerDaemonJson: "absent",
     fail2ban: { active: false, jail: null, sshdJail: false },
     ready: false,
-    dirs: [
-      { path: "/srv/app", kind: "absent" },
-      { path: "/srv/data", kind: "absent" },
-    ],
+    dirs: SHARED_DIRS.map((path) => ({ path, kind: "absent" })),
     // The fake server reports no runtime files, so drift compares none unless a test adds them.
     runtimeFiles: [],
-    marker: null,
-    markerDamaged: false,
+    apps: [],
     record: null,
     recordDamaged: false,
     pendingUndo: { sshd: false, ufw: false },
@@ -283,15 +285,42 @@ export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
   };
 }
 
+/** The shared folders and the folders of `app`, as the host plan creates them (all empty). */
+function preparedDirs(app: string): HostFacts["dirs"] {
+  const own = appDirs(app);
+  return [...SHARED_DIRS, own.app, own.data].map((path) => ({
+    path,
+    kind: "dir" as const,
+    owner: "deploy",
+    group: "deploy",
+    mode: "750",
+    entries: 0,
+  }));
+}
+
 /**
  * The facts of the server after the setup `plan` was applied to it, so the next inspection plans
  * no changes (what OpsCrew's host adapter leaves behind, as far as planning can tell).
  */
 export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
-  const marker = paramsOf(plan, "app-marker") as Params;
-  const app = String(marker.app);
-  const projectId = String(marker.projectId);
-  const deploy = paramsOf(plan, "deploy-user") as Params;
+  const claim = paramsOf(plan, "app-record") as Params;
+  const app = String(claim.app);
+  const words = (value: unknown) => String(value).split(" ").filter(Boolean);
+  // The record the app-record step writes (hostnames and services come sorted in its params).
+  const appRecord: AppRecord = {
+    schemaVersion: 1,
+    app,
+    projectId: String(claim.projectId),
+    state: "active",
+    access: claim.access as AppRecord["access"],
+    hostnames: words(claim.hostnames),
+    folders: appDirs(app),
+    composeProject: app,
+    services: words(claim.services),
+    memoryMb: Number(claim.memoryMb),
+    deployKey: String(claim.deployKey),
+  };
+  const keys = String((paramsOf(plan, "deploy-key") as Params).keys).split("\n");
   const sshd = paramsOf(plan, "sshd") as Params;
   const ufw = paramsOf(plan, "ufw") as Params;
   const tunnel = paramsOf(plan, "tunnel-connector");
@@ -361,30 +390,22 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
       composePlugin: true,
       buildxPlugin: true,
     },
-    deployUser: { groups: ["deploy", "docker"], keys: [String(deploy.publicKey)] },
+    deployUser: { groups: ["deploy", "docker"], keys },
     packages: { ...before.packages, fail2ban: true },
     autoUpgrades: true,
     autoUpgradesService: true,
     dockerDaemonJson: "opscrew",
     fail2ban: { active: true, jail, sshdJail: true },
     ready: true,
-    dirs: ["/srv/app", "/srv/data"].map((path) => ({
-      path,
-      kind: "dir",
-      owner: "deploy",
-      group: "deploy",
-      mode: "750",
-      entries: 0,
-    })),
-    marker: { app, projectId },
+    dirs: preparedDirs(app),
+    apps: [{ name: app, record: appRecord }],
     record: {
       schemaVersion: 1,
-      app,
-      projectId,
+      apps: [app],
       opscrewVersion: "0.0.0-test",
       changes: [
         entry("deploy-user", { existed: false }),
-        entry("runtime-dirs", { app: "absent", data: "absent" }),
+        entry("runtime-dirs", { edge: "absent", apps: "absent", data: "absent" }),
       ],
     },
     tunnel: tunnelOn
@@ -402,8 +423,8 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
 
 /**
  * A server OpsCrew prepared before for the app `shop` of the project `projectId`: Docker from
- * Docker's repository, the deploy user, the runtime directories, the app marker and OpsCrew's
- * record of its changes.
+ * Docker's repository, the deploy user, the shared folders and the app's, the app's record and
+ * OpsCrew's record of its changes.
  */
 export function preparedServerFacts(projectId: string): HostFacts {
   const fresh = freshFacts();
@@ -413,6 +434,19 @@ export function preparedServerFacts(projectId: string): HostFacts {
     at: "2026-10-14T12:00:00.000Z",
     previous,
   });
+  const record: AppRecord = {
+    schemaVersion: 1,
+    app: "shop",
+    projectId,
+    state: "active",
+    access: "public",
+    hostnames: [],
+    folders: appDirs("shop"),
+    composeProject: "shop",
+    services: [],
+    memoryMb: 512,
+    deployKey: "",
+  };
   return HostFactsSchema.parse({
     ...fresh,
     docker: {
@@ -425,23 +459,15 @@ export function preparedServerFacts(projectId: string): HostFacts {
     },
     deployUser: { groups: ["deploy", "docker"], keys: [] },
     ready: true,
-    dirs: ["/srv/app", "/srv/data"].map((path) => ({
-      path,
-      kind: "dir",
-      owner: "deploy",
-      group: "deploy",
-      mode: "750",
-      entries: 0,
-    })),
-    marker: { app: "shop", projectId },
+    dirs: preparedDirs("shop"),
+    apps: [{ name: "shop", record }],
     record: {
       schemaVersion: 1,
-      app: "shop",
-      projectId,
+      apps: ["shop"],
       opscrewVersion: "0.0.0-test",
       changes: [
         entry("deploy-user", { existed: false }),
-        entry("runtime-dirs", { app: "absent", data: "absent" }),
+        entry("runtime-dirs", { edge: "absent", apps: "absent", data: "absent" }),
       ],
     },
   });
@@ -449,22 +475,48 @@ export function preparedServerFacts(projectId: string): HostFacts {
 
 /**
  * The facts after the teardown `plan`: only what OpsCrew set up for the app goes (its Compose
- * project, the add-ons, the marker; its data only with `deleteData`), as the real adapter does.
- * Containers, volumes and users OpsCrew did not create stay.
+ * project, its folder, the add-ons and the edge with the last app, its record; its data only with
+ * `deleteData`, else its record stays as data-kept), as the real adapter does. Containers,
+ * volumes and users OpsCrew did not create stay.
  */
 function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const f = structuredClone(before);
   const deleteData = plan.deleteData === true;
-  f.containers = f.containers.filter((container) => container.project !== plan.app);
-  if (deleteData) f.volumeProjects = f.volumeProjects.filter((project) => project !== plan.app);
-  f.dirs = f.dirs.map((dir) =>
-    dir.path === "/srv/app" || (deleteData && dir.path === "/srv/data")
-      ? { ...dir, entries: 0 }
-      : dir,
+  const gone = new Set([plan.app, ...(paramsOf(plan, "edge") ? [EDGE_PROJECT] : [])]);
+  const own = appDirs(plan.app);
+  f.containers = f.containers.filter((container) => !gone.has(container.project));
+  // The edge's volumes go with the edge, the app's only with its data.
+  f.volumeProjects = f.volumeProjects.filter(
+    (project) => !(gone.has(project) && (project === EDGE_PROJECT || deleteData)),
   );
+  f.dirs = f.dirs
+    .filter((dir) => dir.path !== own.app && !(deleteData && dir.path === own.data))
+    .map((dir) =>
+      gone.has(EDGE_PROJECT) && dir.path === EDGE_DIR ? { path: dir.path, kind: "absent" } : dir,
+    );
+  f.runtimeFiles = f.runtimeFiles.filter((file) => file.app !== plan.app);
   f.tunnel = ADDON;
   f.portainer = { ...ADDON, dataVolume: deleteData ? false : f.portainer.dataVolume };
-  f.marker = null;
+  const record = paramsOf(plan, "app-record");
+  f.apps = f.apps.flatMap((app) => {
+    if (app.name !== plan.app || record === undefined) return [app];
+    if (record.keepData !== true) return [];
+    const kept: AppRecord = {
+      schemaVersion: 1,
+      app: plan.app,
+      projectId: String(record.projectId),
+      state: "data-kept",
+      access: null,
+      hostnames: [],
+      folders: own,
+      composeProject: plan.app,
+      services: [],
+      memoryMb: 0,
+      deployKey: "",
+    };
+    return [{ name: plan.app, record: kept }];
+  });
+  if (f.record !== null) f.record.apps = f.record.apps.filter((app) => app !== plan.app);
   return HostFactsSchema.parse(f);
 }
 
@@ -480,6 +532,8 @@ function undoneFacts(before: HostFacts): HostFacts {
   f.dirs = f.dirs.map((dir) =>
     (dir.entries ?? 0) === 0 ? { path: dir.path, kind: "absent" as const } : dir,
   );
+  // /etc/opscrew goes, the records of apps removed with their data kept too.
+  f.apps = [];
   f.record = null;
   f.ready = false;
   return HostFactsSchema.parse(f);
@@ -497,7 +551,7 @@ export interface FakeApply {
  * The host adapter over a fake server: `inspect` reports its facts; `apply` refuses a plan whose
  * hash is not the approved one (as the real adapter does), calls `verifyLogin` around the SSH and
  * firewall steps, and leaves the server as the plan would: prepared after a setup plan with the
- * app marker ({@link preparedFacts}), unchanged after a Portainer or connector add-on, without the
+ * app record ({@link preparedFacts}), unchanged after a Portainer or connector add-on, without the
  * app after a teardown and without OpsCrew's host settings after an undo.
  */
 export class FakeHostServer implements HostAdapterApi {
@@ -527,7 +581,7 @@ export class FakeHostServer implements HostAdapterApi {
     }
     if (plan.purpose === "teardown") this.facts = tornDownFacts(this.facts, plan);
     else if (plan.purpose === "undo") this.facts = undoneFacts(this.facts);
-    else if (paramsOf(plan, "app-marker") !== undefined) {
+    else if (paramsOf(plan, "app-record") !== undefined) {
       this.facts = preparedFacts(this.facts, plan);
     }
     return {

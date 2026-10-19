@@ -6,6 +6,7 @@ import {
   type HostFacts,
   type HostPlan,
   inspectHost,
+  otherActiveApps,
   planHost,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
@@ -14,6 +15,7 @@ import {
   keepNewerPins,
   renderPortainerCompose,
   renderTunnelConnectorCompose,
+  siteHosts,
   sshHostname,
   usesTunnel,
   wrongTarget,
@@ -197,6 +199,22 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
 }
 
 /**
+ * The sum of the memory limits of the app's containers in MB, recorded with the app on its server:
+ * the web process, each enabled worker times its copies, each enabled service, and the cron
+ * container when a cron job is enabled (it runs the app's image with the web process's limit).
+ */
+export function appMemoryMb(plan: DeployPlan): number {
+  const workers = plan.processes.workers
+    .filter((worker) => worker.enabled)
+    .reduce((sum, worker) => sum + worker.memoryMb * worker.count, 0);
+  const services = plan.services
+    .filter((service) => service.enabled)
+    .reduce((sum, service) => sum + service.memoryMb, 0);
+  const cron = plan.processes.cron.some((job) => job.enabled) ? plan.app.memoryMb : 0;
+  return plan.app.memoryMb + workers + services + cron;
+}
+
+/**
  * The desired state of the server for the plan: the app, the admin login, the deploy key, SSH and
  * firewall settings for the access mode, the tunnel connector (with the tunnel's id) whenever the
  * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode), Portainer
@@ -250,6 +268,9 @@ export async function desiredHost(
   return {
     app: plan.app.name,
     projectId: deps.paths.projectId,
+    hostnames: siteHosts(plan),
+    services: plan.services.filter((service) => service.enabled).map((service) => service.name),
+    memoryMb: appMemoryMb(plan),
     admin: {
       user: run.facts.user || connection.user,
       isRoot: run.facts.privilege === "root",
@@ -313,6 +334,18 @@ export async function prepareOwnServer(
       `opscrew/plan.yaml builds the app for ${target.arch}, but your server is ${facts.arch}. Nothing was changed.`,
       {
         hint: `Run \`opscrew design\` again so OpsCrew builds the image for ${facts.arch}, then run \`opscrew provision\` again.`,
+      },
+    );
+  }
+  // T1308c: one OpsCrew app per server until the flows run several (the shared edge); the host
+  // adapter itself already takes several.
+  const [other] = otherActiveApps(facts.apps, plan.app.name);
+  if (other !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `This server already runs the OpsCrew app "${other.app}". One server runs one OpsCrew app for now; sharing a server between apps comes with a later version. Nothing was changed.`,
+      {
+        hint: `Use another server, or remove "${other.app}" first with opscrew destroy in its project.`,
       },
     );
   }

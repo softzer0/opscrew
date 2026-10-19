@@ -10,6 +10,8 @@ import {
   portainerDesired,
   portainerPassword,
   provision,
+  removeApp,
+  SHOP_PROJECT,
   TUNNEL_COMPOSE,
   TUNNEL_ID,
   tunnelDesired,
@@ -52,12 +54,14 @@ describe("applyHostPlan on a fresh server", () => {
         "docker",
         "docker-daemon",
         "deploy-user",
+        "deploy-key",
         "sshd",
         "ufw",
         "fail2ban",
         "unattended-upgrades",
         "runtime-dirs",
-        "app-marker",
+        "app-dirs",
+        "app-record",
       ],
       skipped: [],
     });
@@ -92,23 +96,26 @@ describe("applyHostPlan on a fresh server", () => {
       "enable",
     ]);
     expect(fake.files.has("/etc/apt/apt.conf.d/21opscrew-auto-upgrades")).toBe(true);
-    expect(fake.dirs.get("/srv/app")).toMatchObject({
+    expect(fake.dirs.get("/srv/apps/shop")).toMatchObject({
       owner: "deploy",
       group: "deploy",
       mode: "750",
     });
-    expect(fake.files.get("/etc/opscrew/app.json")).toBe(
-      '{"app":"shop","projectId":"shop-0123456789ab"}',
-    );
+    expect(JSON.parse(fake.files.get("/etc/opscrew/apps/shop.json") ?? "{}")).toMatchObject({
+      app: "shop",
+      projectId: "shop-0123456789ab",
+    });
 
     // The record holds the previous value of each step, written before the step's change.
     const host = record(fake);
-    expect(host).toMatchObject({
-      app: "shop",
-      projectId: "shop-0123456789ab",
-      opscrewVersion: "1.4.0",
-    });
+    expect(host).toMatchObject({ apps: ["shop"], opscrewVersion: "1.4.0" });
     expect(host.changes.map((entry) => entry.step)).toEqual(plan.steps.map((step) => step.id));
+    expect(host.changes.find((entry) => entry.step === "runtime-dirs")?.previous).toEqual({
+      edge: "absent",
+      apps: "absent",
+      data: "absent",
+      app: "absent",
+    });
     expect(new Set(host.changes.map((entry) => entry.at))).toEqual(
       new Set(["2026-10-14T12:00:00.000Z"]),
     );
@@ -324,7 +331,7 @@ describe("docker daemon settings", () => {
   it("stay when the user changed OpsCrew's file before undo", async () => {
     const fake = new FakeHost();
     await provision(fake);
-    fake.files.delete("/etc/opscrew/app.json");
+    await removeApp(fake);
     fake.files.set("/etc/docker/daemon.json", '{ "log-driver": "journald" }\n');
     const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     expect(undo.steps.find((step) => step.id === "docker-daemon")).toMatchObject({
@@ -336,41 +343,30 @@ describe("docker daemon settings", () => {
 });
 
 describe("claims", () => {
-  it("refuses at apply time when another app claimed the server after the plan was made", async () => {
+  it("refuses at apply time when another project took the app's name after the plan was made", async () => {
     const fake = new FakeHost();
     const plan = await planFor(fake);
-    fake.files.set("/etc/opscrew/app.json", '{"app":"blog","projectId":"blog-1"}');
+    const other = await planFor(fake, desiredFor(fake, { projectId: "shop-other" }));
+    await applyApproved(fake, other);
     fake.calls.length = 0;
     const error = await rejection(applyApproved(fake, plan));
     expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toMatch(/already runs the OpsCrew app "blog"/);
-    expect(fake.names()).toEqual(["privilege", "marker.read"]);
-    expect(fake.files.get("/etc/opscrew/app.json")).toBe('{"app":"blog","projectId":"blog-1"}');
+    expect(error.message).toMatch(/already has the OpsCrew app "shop" from another project/);
+    expect(fake.names()).toEqual(["privilege", "record.read", "apps.read"]);
+    expect(fake.files.get("/etc/opscrew/apps/shop.json")).toContain('"projectId":"shop-other"');
   });
 
-  it("refuses to take over the host record of another app", async () => {
+  it("shares the host record with the other apps on the server", async () => {
     const fake = new FakeHost();
-    const plan = await planFor(fake);
-    fake.files.set(
-      "/etc/opscrew/host.json",
-      JSON.stringify({
-        schemaVersion: 1,
-        app: "blog",
-        projectId: "blog-1",
-        opscrewVersion: "0.1.0",
-        changes: [],
-      }),
-    );
-    fake.calls.length = 0;
-    const error = await rejection(applyApproved(fake, plan));
-    expect(error.message).toMatch(/still belongs to "blog"/);
-    expect(fake.names()).toEqual(["privilege", "marker.read", "record.read"]);
-    expect(JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "{}").app).toBe("blog");
+    await provision(fake, desiredFor(fake, { app: "blog", hostnames: ["blog.example.com"] }));
+    const before = record(fake).changes;
+    await provision(fake);
+    expect(record(fake)).toMatchObject({ apps: ["blog", "shop"], changes: before });
   });
 });
 
 describe("host record", () => {
-  it("keeps the project id when a plan without an app marker runs as root", async () => {
+  it("keeps the apps when a plan without an app record runs as root", async () => {
     const fake = new FakeHost();
     await provision(fake, desiredFor(fake, { portainer: portainerDesired() }), {
       secrets: { portainerPassword: portainerPassword() },
@@ -382,7 +378,7 @@ describe("host record", () => {
       disable: { deleteData: false },
     });
     await applyApproved(fake, off);
-    expect(record(fake)).toMatchObject({ app: "shop", projectId: "shop-0123456789ab" });
+    expect(record(fake).apps).toEqual(["shop"]);
   });
 });
 
@@ -397,7 +393,7 @@ describe("ufw default policies", () => {
       defaultOutgoing: "allow",
       defaultRouted: "reject",
     });
-    fake.files.delete("/etc/opscrew/app.json");
+    await removeApp(fake);
     await applyApproved(fake, planUndo(await inspectHost(fake), "opscrew destroy --undo-host"));
     expect(fake.ufwDefaults).toEqual({ incoming: "allow", outgoing: "allow", routed: "reject" });
     expect(fake.ufwActive).toBe(false);
@@ -615,15 +611,22 @@ describe("resuming after an interruption", () => {
       ["docker", "in-place"],
       ["docker-daemon", "in-place"],
       ["deploy-user", "in-place"],
+      ["deploy-key", "in-place"],
       ["sshd", "in-place"],
       ["ufw", "in-place"],
       ["fail2ban", "in-place"],
       ["unattended-upgrades", "change"],
       ["runtime-dirs", "change"],
-      ["app-marker", "change"],
+      ["app-dirs", "change"],
+      ["app-record", "change"],
     ]);
     const result = await applyApproved(fake, plan);
-    expect(result.applied).toEqual(["unattended-upgrades", "runtime-dirs", "app-marker"]);
+    expect(result.applied).toEqual([
+      "unattended-upgrades",
+      "runtime-dirs",
+      "app-dirs",
+      "app-record",
+    ]);
     const upgrades = record(fake).changes.filter((entry) => entry.step === "unattended-upgrades");
     expect(upgrades).toHaveLength(1);
   });
@@ -713,16 +716,19 @@ describe("teardown", () => {
     const fake = await deployed(true);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop" },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
       "opscrew destroy",
     );
     const result = await applyApproved(fake, plan);
-    expect(result.applied).toEqual(["runtime-dirs", "portainer", "app-marker"]);
+    expect(result.applied).toEqual(["app-dirs", "edge", "portainer", "app-record"]);
     expect(fake.containers.map((container) => container.name)).toEqual(["grafana"]);
-    expect(fake.dirs.get("/srv/app")?.entries).toBe(0);
-    expect(fake.dirs.get("/srv/data")?.entries).toBe(1);
+    expect(fake.dirs.has("/srv/apps/shop")).toBe(false);
+    expect(fake.dirs.get("/srv/data/shop")?.entries).toBe(1);
     expect(fake.volumes.get("opscrew-portainer")).toBe(1);
-    expect(fake.files.has("/etc/opscrew/app.json")).toBe(false);
+    expect(JSON.parse(fake.files.get("/etc/opscrew/apps/shop.json") ?? "{}").state).toBe(
+      "data-kept",
+    );
+    expect(record(fake).apps).toEqual([]);
     // Host settings stay: deploy user, SSH, firewall.
     expect(fake.users.has("deploy")).toBe(true);
     expect(fake.ufwActive).toBe(true);
@@ -730,19 +736,20 @@ describe("teardown", () => {
       record(fake)
         .changes.filter((entry) => entry.purpose === "teardown")
         .map((entry) => entry.step),
-    ).toEqual(["runtime-dirs", "portainer", "app-marker"]);
+    ).toEqual(["app-dirs", "edge", "portainer", "app-record"]);
   });
 
   it("deletes the data only with deleteData", async () => {
     const fake = await deployed(true);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop" },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
       "opscrew destroy",
     );
     await applyApproved(fake, plan);
-    expect(fake.dirs.get("/srv/data")?.entries).toBe(0);
+    expect(fake.dirs.has("/srv/data/shop")).toBe(false);
     expect(fake.volumes.has("opscrew-portainer")).toBe(false);
+    expect(fake.files.has("/etc/opscrew/apps/shop.json")).toBe(false);
   });
 });
 
@@ -760,7 +767,11 @@ describe("undo", () => {
     deployApp(fake, "shop");
     await applyApproved(
       fake,
-      planTeardown(await inspectHost(fake), { deleteData: true, app: "shop" }, "opscrew destroy"),
+      planTeardown(
+        await inspectHost(fake),
+        { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+        "opscrew destroy",
+      ),
     );
 
     const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
@@ -775,7 +786,7 @@ describe("undo", () => {
         "sshd",
         "deploy-user",
         "docker-daemon",
-        "app-marker",
+        "app-record",
       ],
       skipped: ["docker"],
     });
@@ -803,7 +814,7 @@ describe("undo", () => {
     fake.files.set("/etc/ssh/sshd_config.d/10-opscrew.conf", "X11Forwarding no\n");
     await provision(fake);
     expect(fake.files.get("/etc/opscrew/backup/10-opscrew.conf")).toBe("X11Forwarding no\n");
-    fake.files.delete("/etc/opscrew/app.json");
+    await removeApp(fake);
     await applyApproved(fake, planUndo(await inspectHost(fake), "opscrew destroy --undo-host"));
     expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe("X11Forwarding no\n");
   });

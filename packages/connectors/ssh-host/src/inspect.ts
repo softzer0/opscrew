@@ -2,29 +2,24 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isRecord, OpsCrewError } from "@opscrew/core";
 import {
-  APP_DIR,
+  APP_RECORDS_DIR,
+  APPS_DIR,
+  DATA_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   FAIL2BAN_JAIL_PATH,
   HASHED_RUNTIME_FILES,
-  MARKER_PATH,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
-  RUNTIME_DIRS,
   RUNTIME_FILE_NAMES,
+  SHARED_DIRS,
   SSHD_DROP_IN,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
 } from "./constants";
-import {
-  AppMarkerSchema,
-  type HostFacts,
-  HostFactsSchema,
-  HostRecordSchema,
-  type WebFilterFacts,
-} from "./facts";
+import { type HostFacts, HostFactsSchema, HostRecordSchema, type WebFilterFacts } from "./facts";
 import { foreignFirewalls } from "./firewall";
 import {
   dockerdFlags,
@@ -33,7 +28,9 @@ import {
   linesOf,
   parseAddons,
   parseAddresses,
+  parseAppRecords,
   parseAptPeriodic,
+  parseAvx,
   parseContainers,
   parseDf,
   parseDirs,
@@ -113,28 +110,64 @@ getent passwd | while IFS=: read -r name _x uid _g _c home shell; do
   printf '%s:%s:%s:%s\\n' "$name" "$uid" "$pw" "$keys"
 done`;
 
-const DIRS_SNIPPET = `for d in ${RUNTIME_DIRS.join(" ")}; do
-  if [ -L "$d" ]; then echo "$d link"
-  elif [ -d "$d" ]; then echo "$d dir $(stat -c '%U %G %a' "$d") $(ls -A "$d" | wc -l)"
-  elif [ -e "$d" ]; then echo "$d other"
-  else echo "$d absent"; fi
+/** `app_name <name>`: the name is an OpsCrew app name (anything else is never printed). */
+const APP_NAME_FN = `app_name() {
+  case "$1" in ''|-*|*[!a-z0-9-]*) return 1 ;; esac
+  [ "\${#1}" -le 41 ]
+}`;
+
+/** The shared folders, then each app's folder in /srv/apps and /srv/data (never through a link). */
+const DIRS_SNIPPET = `${APP_NAME_FN}
+dir_line() {
+  if [ -L "$1" ]; then echo "$1 link"
+  elif [ -d "$1" ]; then echo "$1 dir $(stat -c '%U %G %a' "$1") $(ls -A "$1" | wc -l)"
+  elif [ -e "$1" ]; then echo "$1 other"
+  else echo "$1 absent"; fi
+}
+for d in ${SHARED_DIRS.join(" ")}; do dir_line "$d"; done
+for parent in ${APPS_DIR} ${DATA_DIR}; do
+  if [ -L "$parent" ] || [ ! -d "$parent" ]; then continue; fi
+  for d in "$parent"/*; do
+    app_name "\${d##*/}" || continue
+    if [ -e "$d" ] || [ -L "$d" ]; then dir_line "$d"; fi
+  done
 done`;
 
 /**
- * OpsCrew's runtime files in /srv/app: kind, owner, group and mode of each, and the SHA-256 of the
- * rendered ones only. Never prints a file's content, never hashes a file that holds secrets, and
- * never follows a symbolic link (not even /srv/app itself: then every file reads as absent).
+ * OpsCrew's runtime files in each app's folder (`/srv/apps/<app>`): kind, owner, group and mode
+ * of each, and the SHA-256 of the rendered ones only. Never prints a file's content, never hashes
+ * a file that holds secrets, and never follows a symbolic link (an app folder that is a link, or
+ * /srv/apps itself, is skipped).
  */
-export const RUNTIME_FILES_SNIPPET = `for f in ${RUNTIME_FILE_NAMES.join(" ")}; do
-  if [ -L "${APP_DIR}" ] || [ ! -d "${APP_DIR}" ]; then echo "$f absent"; continue; fi
-  p="${APP_DIR}/$f"
-  if [ -L "$p" ]; then echo "$f link"
-  elif [ -f "$p" ]; then
-    sum=-
-    case "$f" in ${HASHED_RUNTIME_FILES.join("|")}) sum=$(sha256sum "$p" | cut -d ' ' -f 1) ;; esac
-    echo "$f file $(stat -c '%U %G %a' "$p") \${sum:--}"
-  elif [ -e "$p" ]; then echo "$f other"
-  else echo "$f absent"; fi
+export const RUNTIME_FILES_SNIPPET = `${APP_NAME_FN}
+if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
+  for d in "${APPS_DIR}"/*; do
+    app=\${d##*/}
+    app_name "$app" || continue
+    if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi
+    for f in ${RUNTIME_FILE_NAMES.join(" ")}; do
+      p="$d/$f"
+      if [ -L "$p" ]; then echo "$app $f link"
+      elif [ -f "$p" ]; then
+        sum=-
+        case "$f" in ${HASHED_RUNTIME_FILES.join("|")}) sum=$(sha256sum "$p" | cut -d ' ' -f 1) ;; esac
+        echo "$app $f file $(stat -c '%U %G %a' "$p") \${sum:--}"
+      elif [ -e "$p" ]; then echo "$app $f other"
+      else echo "$app $f absent"; fi
+    done
+  done
+fi`;
+
+/** Each app's record on one line, after its name (records hold no secrets). */
+const APPS_SNIPPET = `${APP_NAME_FN}
+for f in "${APP_RECORDS_DIR}"/*.json; do
+  if [ -L "$f" ] || [ ! -f "$f" ]; then continue; fi
+  name=\${f##*/}
+  name=\${name%.json}
+  app_name "$name" || continue
+  printf '%s ' "$name"
+  tr '\\r\\n' '  ' < "$f"
+  echo
 done`;
 
 const ADDONS_SNIPPET = `addon() {
@@ -176,6 +209,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["dpkg-arch", "dpkg --print-architecture"],
   ["uname", "uname -m"],
   ["nproc", "nproc"],
+  ["cpu-flags", "grep -m1 -E '^flags[[:space:]]*:' /proc/cpuinfo"],
   ["free", "free -b"],
   ["df", "df -P -B1 /"],
   ["systemd", "test -d /run/systemd/system"],
@@ -243,7 +277,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     "apt-periodic",
     "apt-config dump | grep -E '^APT::Periodic::(Update-Package-Lists|Unattended-Upgrade) '",
   ],
-  ["marker", `cat ${MARKER_PATH}`],
+  ["apps", APPS_SNIPPET],
   ["record", `cat ${RECORD_PATH}`],
   [
     "pending-undo",
@@ -262,6 +296,11 @@ export function inspectScript(): string {
   ).join("\n");
   const helpers = "docker_up() { systemctl is-active --quiet docker 2>/dev/null; }";
   return buildScript("inspect", {}, `${helpers}\n${body}`, { tolerant: true });
+}
+
+/** Read-only: the apps' records, as the inspection prints them (see {@link parseAppRecords}). */
+export function readAppsScript(): string {
+  return buildScript("apps.read", {}, APPS_SNIPPET, { tolerant: true });
 }
 
 /** Read-only probe: how the admin login becomes root. Prints root, sudo, sudo-password or none. */
@@ -438,11 +477,6 @@ export function factsFromOutput(
     kind === "docker-repo" ? (repoVersion ?? "") : ok(sections, "docker-server"),
   );
 
-  const marker = section(sections, "marker");
-  const markerValue =
-    marker.exit === 0
-      ? parseJson(marker.text, (value) => AppMarkerSchema.safeParse(value).data)
-      : undefined;
   const record = section(sections, "record");
   const recordValue =
     record.exit === 0
@@ -458,6 +492,7 @@ export function factsFromOutput(
     arch: ok(sections, "dpkg-arch").trim(),
     machine: ok(sections, "uname").trim(),
     cpus: Number.parseInt(ok(sections, "nproc").trim(), 10) || 0,
+    avx: parseAvx(ok(sections, "cpu-flags")),
     memoryBytes: parseFree(ok(sections, "free")),
     diskFreeBytes: parseDf(ok(sections, "df")),
     systemd: section(sections, "systemd").exit === 0,
@@ -518,10 +553,9 @@ export function factsFromOutput(
       sshdJail: section(sections, "fail2ban-sshd").exit === 0,
     },
     ready: section(sections, "ready").exit === 0,
-    dirs: parseDirs(text("dirs"), RUNTIME_DIRS),
+    dirs: parseDirs(text("dirs")),
     runtimeFiles: parseRuntimeFiles(text("runtime-files")),
-    marker: markerValue ?? null,
-    markerDamaged: marker.exit === 0 && markerValue === undefined,
+    apps: parseAppRecords(text("apps")),
     record: recordValue ?? null,
     recordDamaged: record.exit === 0 && recordValue === undefined,
     pendingUndo: {

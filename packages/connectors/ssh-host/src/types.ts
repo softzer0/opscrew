@@ -5,19 +5,25 @@ import { canonicalIpv4Cidr } from "./parse";
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
 export const HOST_PLAN_SCHEMA_VERSION = 1;
 
-/** Host steps in the order a setup plan runs them. */
+/**
+ * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs` and `app-record` are
+ * the app's own; `edge` only appears in a teardown (the edge goes with the last app).
+ */
 export const HOST_STEP_IDS = [
   "package-repair",
   "docker",
   "docker-daemon",
   "deploy-user",
+  "deploy-key",
   "sshd",
   "ufw",
   "web-filter",
   "fail2ban",
   "unattended-upgrades",
   "runtime-dirs",
-  "app-marker",
+  "app-dirs",
+  "app-record",
+  "edge",
   "tunnel-connector",
   "portainer",
 ] as const;
@@ -31,8 +37,29 @@ export const AppNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
   message: "must be lower-case letters, digits and dashes",
 });
 
-/** The id of the project folder a server is bound to (`/etc/opscrew/app.json`). */
+/** The id of the project folder an app on the server belongs to (its record names it). */
 export const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/);
+
+/** A lower-case domain name such as `shop.example.com`. */
+export const HostnameSchema = z
+  .string()
+  .regex(
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/,
+    { message: "must be a lower-case domain name such as shop.example.com" },
+  );
+
+/**
+ * How an app is served, which sets the server's firewall stance: `public` (DNS only: the web
+ * ports open to everyone), `web-filter` (behind Cloudflare's proxy: the web ports open to
+ * Cloudflare's addresses only) or `tunnel` (through a Cloudflare Tunnel: no web port open).
+ */
+export const AccessModeSchema = z.enum(["public", "web-filter", "tunnel"]);
+export type AccessMode = z.infer<typeof AccessModeSchema>;
+
+/** A Compose service name. */
+export const ServiceNameSchema = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,62}$/, {
+  message: "must be a Compose service name",
+});
 
 /** A pinned Portainer CE version. */
 export const PortainerVersionSchema = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, {
@@ -44,6 +71,8 @@ const HostStepSchema = z.strictObject({
   /** Plain English, e.g. "Install Docker Engine 28.x from Docker's repository". */
   title: z.string().min(1),
   state: z.enum(["in-place", "change", "blocked"]),
+  /** `shared` by every OpsCrew app on the server, or `app`: the plan's app's own. */
+  scope: z.enum(["shared", "app"]),
   /** Why it is blocked, or what is already there. */
   reason: z.string().optional(),
   /** Non-secret parameters the step's script uses (ports, user names, versions). */
@@ -66,6 +95,12 @@ export const HostPlanSchema = z.strictObject({
   steps: z.array(HostStepSchema),
   findings: z.array(HostFindingSchema),
   deleteData: z.boolean().optional(),
+  /**
+   * The other apps set up on the server when the plan was made (by name, with their deploy keys).
+   * The apply refuses the plan when they changed since: the shared parts, the deploy keys and the
+   * edge were planned for them.
+   */
+  otherApps: z.array(z.strictObject({ app: z.string(), deployKey: z.string() })).optional(),
 });
 export type HostPlan = z.infer<typeof HostPlanSchema>;
 
@@ -97,6 +132,12 @@ export const DesiredHostSchema = z
   .strictObject({
     app: AppNameSchema,
     projectId: ProjectIdSchema,
+    /** The app's hostnames; no other app on the server may hold one of them. */
+    hostnames: z.array(HostnameSchema).max(50),
+    /** The app's backing services (plan.yaml's `services` names: db, cache ...), kept in its record. */
+    services: z.array(ServiceNameSchema).max(50),
+    /** The sum of the memory limits of the app's containers, in MB, kept in its record. */
+    memoryMb: z.number().int().positive().max(1_048_576),
     admin: z.strictObject({
       user: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$/),
       isRoot: z.boolean(),

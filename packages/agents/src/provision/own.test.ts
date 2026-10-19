@@ -504,6 +504,38 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect((await s.deps.state.read()).phases.provision?.status).toBe("failed");
   });
 
+  // T1308c: until the flows run several apps on one server.
+  it("stops before any change when another OpsCrew app is on the server", async () => {
+    const facts = freshFacts();
+    const blog = {
+      schemaVersion: 1 as const,
+      app: "blog",
+      projectId: "blog-1",
+      state: "active" as const,
+      access: "public" as const,
+      hostnames: ["blog.example.com"],
+      folders: { app: "/srv/apps/blog", data: "/srv/data/blog" },
+      composeProject: "blog",
+      services: [],
+      memoryMb: 512,
+      deployKey: "",
+    };
+    const s = await setup({ facts: { ...facts, apps: [{ name: "blog", record: blog }] } });
+    const error = (await runProvision(s.deps, {
+      services: s.services,
+      hostKey: ED25519_FINGERPRINT,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      'This server already runs the OpsCrew app "blog". One server runs one OpsCrew app for now; sharing a server between apps comes with a later version. Nothing was changed.',
+    );
+    expect(error.hint).toBe(
+      'Use another server, or remove "blog" first with opscrew destroy in its project.',
+    );
+    expect(s.engine.plans).toHaveLength(0);
+    expect(s.host.applies).toHaveLength(0);
+  });
+
   it("opscrew dns audits the server's inspection as dns and names itself to approve the host plan", async () => {
     // A blocking problem: the run stops before any change, its inspection audited as dns.
     const blocked = await setup({

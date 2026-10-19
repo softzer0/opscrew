@@ -3,8 +3,23 @@
  * output: unknown lines are ignored and missing values fall back to "unknown" defaults, which
  * the planner treats conservatively.
  */
-import { HASHED_RUNTIME_FILES, RUNTIME_FILE_NAMES, type RuntimeFileName } from "./constants";
-import type { DirFact, HostFacts, Listener, RuntimeFileFact, WebFilterRules } from "./facts";
+import {
+  APPS_DIR,
+  DATA_DIR,
+  HASHED_RUNTIME_FILES,
+  RUNTIME_FILE_NAMES,
+  type RuntimeFileName,
+  SHARED_DIRS,
+} from "./constants";
+import {
+  type AppRecord,
+  AppRecordSchema,
+  type DirFact,
+  type HostFacts,
+  type Listener,
+  type RuntimeFileFact,
+  type WebFilterRules,
+} from "./facts";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -348,12 +363,25 @@ export function parseUsers(text: string): HostFacts["loginUsers"] {
   });
 }
 
-/** Lines `<path> absent|link|other` or `<path> dir <owner> <group> <mode> <entries>`. */
-export function parseDirs(text: string, paths: readonly string[]): DirFact[] {
+/** An app name as the inspection prints it (the app name pattern; anything else is skipped). */
+const APP_NAME_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+
+/**
+ * Lines `<path> absent|link|other` or `<path> dir <owner> <group> <mode> <entries>`: the shared
+ * folders, always listed (absent when not printed), then the apps' folders in `/srv/apps` and
+ * `/srv/data` that exist, sorted by path.
+ */
+export function parseDirs(text: string): DirFact[] {
+  const shared: readonly string[] = SHARED_DIRS;
   const found = new Map<string, DirFact>();
   for (const line of linesOf(text)) {
     const [path, kind, owner, group, mode, entries] = line.split(/\s+/);
-    if (!path || !paths.includes(path)) continue;
+    if (!path) continue;
+    const parent = path.slice(0, path.lastIndexOf("/"));
+    const child =
+      (parent === APPS_DIR || parent === DATA_DIR) &&
+      APP_NAME_RE.test(path.slice(parent.length + 1));
+    if (!shared.includes(path) && !child) continue;
     if (kind === "dir") {
       found.set(path, {
         path,
@@ -363,30 +391,38 @@ export function parseDirs(text: string, paths: readonly string[]): DirFact[] {
         mode: mode ?? "",
         entries: Number.parseInt(entries ?? "0", 10) || 0,
       });
-    } else if (kind === "link" || kind === "other" || kind === "absent") {
+    } else if (kind === "link" || kind === "other" || (kind === "absent" && !child)) {
       found.set(path, { path, kind });
     }
   }
-  return paths.map((path) => found.get(path) ?? { path, kind: "absent" });
+  const children = [...found.keys()].filter((path) => !shared.includes(path)).sort();
+  return [
+    ...SHARED_DIRS.map((path) => found.get(path) ?? { path, kind: "absent" as const }),
+    ...children.map((path) => found.get(path) as DirFact),
+  ];
 }
 
 /**
- * The runtime files section: `<name> file <owner> <group> <mode> <sha256|->`, `<name> link`,
- * `<name> other` or `<name> absent`, one line per file of {@link RUNTIME_FILE_NAMES}. A checksum
- * is kept only for the rendered files, never for a file that holds secrets.
+ * The runtime files section: `<app> <name> file <owner> <group> <mode> <sha256|->`,
+ * `<app> <name> link`, `<app> <name> other` or `<app> <name> absent`, for every file of
+ * {@link RUNTIME_FILE_NAMES} in each app's folder. A checksum is kept only for the rendered
+ * files, never for a file that holds secrets. Sorted by app, each app with every file.
  */
 export function parseRuntimeFiles(text: string): RuntimeFileFact[] {
-  const found = new Map<RuntimeFileName, RuntimeFileFact>();
+  const found = new Map<string, Map<RuntimeFileName, RuntimeFileFact>>();
   const names: readonly string[] = RUNTIME_FILE_NAMES;
   const hashed: readonly string[] = HASHED_RUNTIME_FILES;
   for (const line of linesOf(text)) {
-    const [name, kind, owner, group, mode, sum] = line.split(/\s+/);
-    if (!name || !names.includes(name)) continue;
+    const [app, name, kind, owner, group, mode, sum] = line.split(/\s+/);
+    if (!app || !APP_NAME_RE.test(app) || !name || !names.includes(name)) continue;
+    const files = found.get(app) ?? new Map<RuntimeFileName, RuntimeFileFact>();
+    found.set(app, files);
     const key = name as RuntimeFileName;
     if (kind === "file") {
       const sha256 =
         hashed.includes(name) && sum !== undefined && /^[0-9a-f]{64}$/.test(sum) ? sum : null;
-      found.set(key, {
+      files.set(key, {
+        app,
         name: key,
         kind: "file",
         owner: owner ?? "",
@@ -395,12 +431,44 @@ export function parseRuntimeFiles(text: string): RuntimeFileFact[] {
         sha256,
       });
     } else if (kind === "link" || kind === "other" || kind === "absent") {
-      found.set(key, { name: key, kind, sha256: null });
+      files.set(key, { app, name: key, kind, sha256: null });
     }
   }
-  return RUNTIME_FILE_NAMES.map(
-    (name) => found.get(name) ?? { name, kind: "absent" as const, sha256: null },
-  );
+  return [...found.keys()]
+    .sort()
+    .flatMap((app) =>
+      RUNTIME_FILE_NAMES.map(
+        (name) => found.get(app)?.get(name) ?? { app, name, kind: "absent" as const, sha256: null },
+      ),
+    );
+}
+
+/**
+ * The apps section: `<name> <the record's JSON on one line>` per file in /etc/opscrew/apps,
+ * sorted by name. A record that is not valid, or names another app, is null (damaged).
+ */
+export function parseAppRecords(text: string): HostFacts["apps"] {
+  const apps = new Map<string, AppRecord | null>();
+  for (const line of linesOf(text)) {
+    const space = line.indexOf(" ");
+    const name = space < 0 ? line : line.slice(0, space);
+    if (!APP_NAME_RE.test(name)) continue;
+    let record: AppRecord | null = null;
+    try {
+      const parsed = AppRecordSchema.safeParse(JSON.parse(line.slice(space + 1)));
+      if (parsed.success && parsed.data.app === name) record = parsed.data;
+    } catch {
+      record = null;
+    }
+    apps.set(name, record);
+  }
+  return [...apps.keys()].sort().map((name) => ({ name, record: apps.get(name) ?? null }));
+}
+
+/** The `flags` line of /proc/cpuinfo (x86) lists `avx`. */
+export function parseAvx(text: string): boolean {
+  const flags = /^flags\s*:(.*)$/m.exec(text)?.[1] ?? "";
+  return flags.trim().split(/\s+/).includes("avx");
 }
 
 /** `apt-config dump` lines: both periodic settings are "1". */

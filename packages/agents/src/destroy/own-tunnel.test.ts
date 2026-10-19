@@ -171,7 +171,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(s.events.filter((e) => e === "poll")).toHaveLength(37);
       expect(s.events).not.toContain("iac-apply");
       expect(s.engine.applies).toHaveLength(applies);
-      expect(s.host.facts.marker).toBeNull();
+      expect(s.host.facts.record?.apps).toEqual([]);
       expect(
         (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
       ).toBeUndefined();

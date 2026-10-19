@@ -22,6 +22,7 @@ import {
   tunnelOutputs,
 } from "../testing";
 import { checkProvider, OWN_SERVER_CONNECT_HINT, setupCloudflare } from "./credentials";
+import { appMemoryMb } from "./own";
 import { deploySetupPullRequestBody } from "./publish";
 import { previewDeploymentFiles } from "./render";
 import { runProvision } from "./run";
@@ -207,6 +208,7 @@ describe("own-server texts", () => {
           id: "docker" as const,
           title: "Install Docker",
           state: "change" as const,
+          scope: "shared" as const,
           reason: "Docker is not installed.",
           params: {},
         },
@@ -214,6 +216,7 @@ describe("own-server texts", () => {
           id: "unattended-upgrades" as const,
           title: "Automatic updates",
           state: "in-place" as const,
+          scope: "shared" as const,
           reason: "Already on.",
           params: {},
         },
@@ -239,6 +242,50 @@ describe("own-server texts", () => {
         where,
       ),
     ).toThrow(/cannot prepare your server/);
+  });
+});
+
+describe("appMemoryMb", () => {
+  it("adds the web process, enabled workers times their copies, enabled services and cron", () => {
+    const plan = { ...ownPlan(), services: [] };
+    const web = plan.app.memoryMb;
+    const worker = {
+      name: "worker",
+      command: "node worker.js",
+      source: "user" as const,
+      count: 2,
+      single: false,
+      stopGraceSeconds: 30,
+      memoryMb: 256,
+      enabled: true,
+    };
+    const job = {
+      name: "cleanup",
+      schedule: "*/15 * * * *",
+      command: "node cleanup.js",
+      timeZone: "UTC",
+      enabled: true,
+    };
+    const valkey = {
+      name: "cache",
+      kind: "valkey" as const,
+      version: "8",
+      memoryMb: 128,
+      enabled: true,
+      options: { mode: "cache" as const },
+      reason: "The app uses Redis.",
+      licence: "BSD-3-Clause",
+    };
+    expect(appMemoryMb(plan)).toBe(web);
+    const workers = [worker, { ...worker, name: "off", enabled: false }];
+    expect(appMemoryMb({ ...plan, processes: { workers, cron: [] } })).toBe(web + 2 * 256);
+    expect(appMemoryMb({ ...plan, services: [valkey, { ...valkey, enabled: false }] })).toBe(
+      web + 128,
+    );
+    // The cron container runs the app's image with the web process's limit.
+    expect(appMemoryMb({ ...plan, processes: { workers: [], cron: [job] } })).toBe(2 * web);
+    const off = { ...job, enabled: false };
+    expect(appMemoryMb({ ...plan, processes: { workers: [], cron: [off] } })).toBe(web);
   });
 });
 

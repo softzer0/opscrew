@@ -7,18 +7,21 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { sha256Hex as sha256 } from "@opscrew/core";
 import {
+  APP_RECORDS_DIR,
   AUTO_UPGRADES_FILE,
   BACKUP_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
+  EDGE_DIR,
+  EDGE_PROJECT,
   FAIL2BAN_JAIL_PATH,
   HASHED_RUNTIME_FILES,
-  MARKER_PATH,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
   RUNTIME_FILE_NAMES,
+  SHARED_DIRS,
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
@@ -115,6 +118,15 @@ export interface FakeContainer {
 interface UfwRule {
   rule: string;
   comment: string | null;
+}
+
+/** A runtime file in an app's folder, with its owner, group and mode. */
+export interface FakeFile {
+  content: string;
+  owner: string;
+  group: string;
+  mode: string;
+  kind?: "link" | "other";
 }
 
 export interface FakeCall {
@@ -242,11 +254,12 @@ export class FakeHost implements RemoteExec {
   ufwDefaults = { incoming: "deny", outgoing: "allow", routed: "deny" };
   users = new Map<string, { uid: number; password: boolean; keys: string[]; groups: string[] }>();
   dirs = new Map<string, { owner: string; group: string; mode: string; entries: number }>();
-  /** Files in /srv/app by name (the deploy workflow's copies), with owner, group and mode. */
-  appFiles = new Map<
-    string,
-    { content: string; owner: string; group: string; mode: string; kind?: "link" | "other" }
-  >();
+  /** Each app's files in /srv/apps/<app> by name (the deploy workflow's copies). */
+  appFiles = new Map<string, Map<string, FakeFile>>();
+  /** Docker networks by name (the edge's network). */
+  networks = new Set<string>();
+  /** The `flags` of /proc/cpuinfo (x86 only; AVX by default). */
+  cpuFlags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov sse sse2 ssse3 sse4_1 sse4_2 avx avx2";
   portainerAdmin = false;
   /** `systemctl is-enabled unattended-upgrades`. */
   upgradesServiceEnabled = true;
@@ -428,23 +441,42 @@ export class FakeHost implements RemoteExec {
     return this.containers.some((container) => container.project === project);
   }
 
-  private deployKeyOk(key: string): boolean {
-    const deploy = this.users.get("deploy");
-    return (
-      deploy !== undefined &&
-      deploy.keys.length === 1 &&
-      deploy.keys[0] === key &&
-      deploy.groups.includes("docker")
-    );
+  private deployUserOk(): boolean {
+    return this.users.get("deploy")?.groups.includes("docker") ?? false;
   }
 
-  private markerOk(marker: string): boolean {
-    return this.files.get(MARKER_PATH) === marker;
+  /** authorized_keys (its lines, each ending in a newline) has the given SHA-256. */
+  private deployKeysOk(sum: string): boolean {
+    const deploy = this.users.get("deploy");
+    return deploy !== undefined && sha256(deploy.keys.map((key) => `${key}\n`).join("")) === sum;
+  }
+
+  /** The record file `RECORD_FILE` exists and names another project than `PROJECT_ID`. */
+  private otherProject(p: Record<string, string>): boolean {
+    const current = this.files.get(p.RECORD_FILE ?? "");
+    return current !== undefined && !current.includes(`"projectId":"${p.PROJECT_ID}"`);
   }
 
   private dirOk(path: string): boolean {
     const dir = this.dirs.get(path);
     return dir !== undefined && dir.owner === "deploy" && dir.group === "deploy" && dir.mode === "750";
+  }
+
+  /** What `ls -A <path> | wc -l` prints: the files the fake keeps there and its folders. */
+  private entries(path: string): number {
+    const children = [...this.dirs.keys()].filter((dir) => dir.startsWith(`${path}/`)).length;
+    return (this.dirs.get(path)?.entries ?? 0) + children;
+  }
+
+  /** The words of a space-separated script parameter. */
+  private static words(value: string | undefined): string[] {
+    return (value ?? "").split(" ").filter(Boolean);
+  }
+
+  /** Removes a folder and everything in it (the files OpsCrew's fake keeps there too). */
+  private removeDir(path: string): void {
+    this.dirs.delete(path);
+    this.removeUnder(path);
   }
 
   private removeProject(project: string, volumes: boolean): void {
@@ -460,6 +492,15 @@ export class FakeHost implements RemoteExec {
 
   private removeUnder(dir: string): void {
     for (const path of [...this.files.keys()]) if (path.startsWith(`${dir}/`)) this.files.delete(path);
+  }
+
+  /** `<name> <record on one line>` for each file in /etc/opscrew/apps, as the snippet prints it. */
+  private appRecordLines(): string {
+    return [...this.files.entries()]
+      .filter(([path]) => path.startsWith(`${APP_RECORDS_DIR}/`) && path.endsWith(".json"))
+      .map(([path, text]) => `${path.slice(APP_RECORDS_DIR.length + 1, -".json".length)} ${text.replace(/\n/g, " ")}`)
+      .sort()
+      .join("\n");
   }
 
   // -------------------------------------------------------------------------------------------
@@ -485,6 +526,8 @@ export class FakeHost implements RemoteExec {
     add("dpkg-arch", this.arch);
     add("uname", MACHINE[this.arch as keyof typeof MACHINE] ?? this.arch);
     add("nproc", "2");
+    const x86 = this.arch === "amd64";
+    add("cpu-flags", x86 ? `flags\t\t: ${this.cpuFlags}` : "", x86 ? 0 : 1);
     add(
       "free",
       [
@@ -594,32 +637,35 @@ export class FakeHost implements RemoteExec {
     const deploy = this.users.get("deploy");
     add("deploy", deploy ? deploy.groups.join(" ") : "", deploy ? 0 : 2);
     add("deploy-keys", deploy ? deploy.keys.join("\n") : "", deploy && deploy.keys.length > 0 ? 0 : 1);
-    add(
-      "dirs",
-      ["/srv/app", "/srv/data"]
-        .map((path) => {
-          const dir = this.dirs.get(path);
-          return dir ? `${path} dir ${dir.owner} ${dir.group} ${dir.mode} ${dir.entries}` : `${path} absent`;
-        })
-        .join("\n"),
-    );
+    const dirLine = (path: string) => {
+      const dir = this.dirs.get(path);
+      return dir ? `${path} dir ${dir.owner} ${dir.group} ${dir.mode} ${this.entries(path)}` : `${path} absent`;
+    };
+    const children = [...this.dirs.keys()].filter((path) => /^\/srv\/(apps|data)\/[^/]+$/.test(path)).sort();
+    add("dirs", [...SHARED_DIRS, ...children].map(dirLine).join("\n"));
+    const apps = children
+      .filter((path) => path.startsWith("/srv/apps/"))
+      .map((path) => path.slice("/srv/apps/".length));
     add(
       "runtime-files",
-      RUNTIME_FILE_NAMES.map((name) => {
-        const file = this.appFiles.get(name);
-        if (file === undefined) return `${name} absent`;
-        if (file.kind !== undefined) return `${name} ${file.kind}`;
-        const hashed = (HASHED_RUNTIME_FILES as readonly string[]).includes(name);
-        return `${name} file ${file.owner} ${file.group} ${file.mode} ${hashed ? sha256(file.content) : "-"}`;
-      }).join("\n"),
+      apps
+        .flatMap((app) =>
+          RUNTIME_FILE_NAMES.map((name) => {
+            const file = this.appFiles.get(app)?.get(name);
+            if (file === undefined) return `${app} ${name} absent`;
+            if (file.kind !== undefined) return `${app} ${name} ${file.kind}`;
+            const hashed = (HASHED_RUNTIME_FILES as readonly string[]).includes(name);
+            return `${app} ${name} file ${file.owner} ${file.group} ${file.mode} ${hashed ? sha256(file.content) : "-"}`;
+          }),
+        )
+        .join("\n"),
     );
     const periodic = this.autoUpgradesOn() ? "1" : "0";
     add(
       "apt-periodic",
       `APT::Periodic::Update-Package-Lists "${periodic}";\nAPT::Periodic::Unattended-Upgrade "${periodic}";`,
     );
-    const marker = this.files.get(MARKER_PATH);
-    add("marker", marker ?? "", marker === undefined ? 1 : 0);
+    add("apps", this.appRecordLines());
     const record = this.files.get(RECORD_PATH);
     add("record", record ?? "", record === undefined ? 1 : 0);
     add(
@@ -796,8 +842,8 @@ export class FakeHost implements RemoteExec {
       case "record.write":
         this.files.set(RECORD_PATH, p.RECORD ?? "");
         return result();
-      case "marker.read":
-        return result(this.files.get(MARKER_PATH) ?? "");
+      case "apps.read":
+        return result(this.appRecordLines());
     }
     const loginAddon = name.startsWith("portainer") || name.startsWith("tunnel-connector");
     if (!root && !(loginAddon && p.RUN_AS === "login")) {
@@ -842,9 +888,9 @@ export class FakeHost implements RemoteExec {
           p,
         );
 
-      // deploy user
+      // deploy user and the apps' deploy keys
       case "deploy-user.check":
-        return this.check(this.deployKeyOk(p.PUBLIC_KEY ?? ""), {
+        return this.check(this.deployUserOk(), {
           existed: this.users.has("deploy"),
           dockerGroup: this.users.get("deploy")?.groups.includes("docker") ?? false,
         });
@@ -855,13 +901,22 @@ export class FakeHost implements RemoteExec {
           deploy = { uid: 1001, password: false, keys: [], groups: ["deploy"] };
           this.users.set("deploy", deploy);
         }
-        // Exactly the current key: older keys are revoked.
-        deploy.keys = [p.PUBLIC_KEY ?? ""];
         if (!deploy.groups.includes("docker")) deploy.groups.push("docker");
         return result();
       }
       case "deploy-user.verify":
-        return this.verify(this.deployKeyOk(p.PUBLIC_KEY ?? ""), p);
+        return this.verify(this.deployUserOk(), p);
+      case "deploy-key.check":
+        return this.check(this.deployKeysOk(p.KEYS_SHA256 ?? ""));
+      case "deploy-key.apply": {
+        const deploy = this.users.get("deploy");
+        if (deploy === undefined) return fail("The deploy user is missing; OpsCrew creates it first.");
+        // Exactly the planned keys: older keys and removed apps' keys are revoked.
+        deploy.keys = Buffer.from(p.KEYS_B64 ?? "", "base64").toString("utf8").trimEnd().split("\n");
+        return result();
+      }
+      case "deploy-key.verify":
+        return this.verify(this.deployKeysOk(p.KEYS_SHA256 ?? ""), p);
       case "deploy-user.undo.check":
         return this.check(!this.users.has("deploy"), { existed: this.users.has("deploy") });
       case "deploy-user.undo.apply":
@@ -1125,81 +1180,112 @@ export class FakeHost implements RemoteExec {
         }
         return result();
 
-      // runtime dirs
+      // the shared folders and the app's own
       case "runtime-dirs.check":
-        return this.check(this.dirOk("/srv/app") && this.dirOk("/srv/data"), {
-          app: this.dirs.has("/srv/app") ? "present" : "absent",
-          data: this.dirs.has("/srv/data") ? "present" : "absent",
-        });
+        return this.check(
+          FakeHost.words(p.DIRS).every((path) => this.dirOk(path)),
+          Object.fromEntries(
+            FakeHost.words(p.DIRS).map((path) => [path.slice("/srv/".length), this.dirs.has(path) ? "present" : "absent"]),
+          ),
+        );
+      case "app-dirs.check":
+        return this.check(FakeHost.words(p.DIRS).every((path) => this.dirOk(path)));
       case "runtime-dirs.apply":
-        for (const path of (p.DIRS ?? "").split(" ")) {
+      case "app-dirs.apply":
+        for (const path of FakeHost.words(p.DIRS)) {
           const existing = this.dirs.get(path);
           this.dirs.set(path, { owner: "deploy", group: "deploy", mode: "750", entries: existing?.entries ?? 0 });
         }
         return result();
       case "runtime-dirs.verify":
-        return this.verify(this.dirOk("/srv/app") && this.dirOk("/srv/data"), p);
-      case "runtime-dirs.teardown.check":
-      case "runtime-dirs.teardown.verify": {
+      case "app-dirs.verify":
+        return this.verify(FakeHost.words(p.DIRS).every((path) => this.dirOk(path)), p);
+      case "app-dirs.teardown.check":
+      case "app-dirs.teardown.verify": {
+        const wipe = p.DELETE_DATA === "true";
         const ok =
           !this.running(p.APP ?? "") &&
-          (this.dirs.get("/srv/app")?.entries ?? 0) === 0 &&
-          !(p.DELETE_DATA === "true" && (this.dirs.get("/srv/data")?.entries ?? 0) > 0);
-        return name.endsWith("check") ? this.check(ok, { appFiles: String(this.dirs.get("/srv/app")?.entries ?? 0) }) : this.verify(ok, p);
+          !this.dirs.has(p.APP_DIR ?? "") &&
+          !(wipe && (this.dirs.has(p.DATA_DIR ?? "") || this.volumes.has(p.APP ?? "")));
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
       }
-      case "runtime-dirs.teardown.apply": {
+      case "app-dirs.teardown.apply": {
         this.removeProject(p.APP ?? "", p.DELETE_DATA === "true");
-        const app = this.dirs.get("/srv/app");
-        if (app) app.entries = 0;
-        this.appFiles.clear();
-        const data = this.dirs.get("/srv/data");
-        if (data && p.DELETE_DATA === "true") data.entries = 0;
+        this.removeDir(p.APP_DIR ?? "");
+        this.appFiles.delete(p.APP ?? "");
+        if (p.DELETE_DATA === "true") this.removeDir(p.DATA_DIR ?? "");
         return result();
       }
       case "runtime-dirs.undo.check":
       case "runtime-dirs.undo.verify": {
-        const ok = !(p.DIRS ?? "").split(" ").some((path) => this.dirs.get(path)?.entries === 0);
+        const ok = !FakeHost.words(p.DIRS).some((path) => this.dirs.has(path) && this.entries(path) === 0);
         return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
       }
       case "runtime-dirs.undo.apply":
-        for (const path of (p.DIRS ?? "").split(" ")) if (this.dirs.get(path)?.entries === 0) this.dirs.delete(path);
+        for (const path of FakeHost.words(p.DIRS)) {
+          if (this.dirs.has(path) && this.entries(path) === 0) this.dirs.delete(path);
+        }
         return result();
 
-      // app marker
-      case "app-marker.check":
-        return this.check(this.markerOk(p.MARKER ?? "") && this.files.has(READY_FLAG), {
-          marker: this.files.has(MARKER_PATH) ? "present" : "absent",
+      // the app's record
+      case "app-record.check":
+        return this.check(this.files.get(p.RECORD_FILE ?? "") === p.RECORD && this.files.has(READY_FLAG), {
+          record: this.files.has(p.RECORD_FILE ?? "") ? "present" : "absent",
         });
-      case "app-marker.apply": {
-        const current = this.files.get(MARKER_PATH);
-        if (current !== undefined && current !== p.MARKER) return fail("Another OpsCrew app is already on this server.");
-        this.files.set(MARKER_PATH, p.MARKER ?? "");
+      case "app-record.apply": {
+        if (this.otherProject(p)) return fail(`Another project's OpsCrew app named ${p.APP} is already on this server.`);
+        this.files.set(p.RECORD_FILE ?? "", p.RECORD ?? "");
         this.files.set(READY_FLAG, "");
         return result();
       }
-      case "app-marker.verify":
-        return this.verify(this.markerOk(p.MARKER ?? "") && this.files.has(READY_FLAG), p);
-      case "app-marker.teardown.check":
-        return this.check(!this.files.has(MARKER_PATH));
-      case "app-marker.teardown.apply":
-        this.files.delete(MARKER_PATH);
+      case "app-record.verify":
+        return this.verify(this.files.get(p.RECORD_FILE ?? "") === p.RECORD && this.files.has(READY_FLAG), p);
+      case "app-record.keep.check":
+      case "app-record.keep.verify": {
+        const ok = this.files.get(p.RECORD_FILE ?? "") === p.RECORD;
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "app-record.keep.apply":
+        if (this.otherProject(p)) return fail(`Another project's OpsCrew app named ${p.APP} is already on this server.`);
+        this.files.set(p.RECORD_FILE ?? "", p.RECORD ?? "");
         return result();
-      case "app-marker.teardown.verify":
-        return this.verify(!this.files.has(MARKER_PATH), p);
-      case "app-marker.undo.check":
-        return this.check(
-          ![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")) && !this.files.has(READY_FLAG),
-        );
-      case "app-marker.undo.apply":
-        if (this.files.has(MARKER_PATH)) return fail("An OpsCrew app is still on this server; remove it first.");
+      case "app-record.teardown.check":
+      case "app-record.teardown.verify": {
+        const ok = !this.files.has(p.RECORD_FILE ?? "");
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "app-record.teardown.apply":
+        if (this.otherProject(p)) return fail(`Another project's OpsCrew app named ${p.APP} is already on this server.`);
+        this.files.delete(p.RECORD_FILE ?? "");
+        return result();
+      case "app-record.undo.check":
+      case "app-record.undo.verify": {
+        const ok = ![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")) && !this.files.has(READY_FLAG);
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "app-record.undo.apply":
+        if (this.appRecordLines().includes('"state":"active"')) {
+          return fail("An OpsCrew app is still on this server; remove it first.");
+        }
         this.files.delete(READY_FLAG);
         this.removeUnder("/etc/opscrew");
         return result();
-      case "app-marker.undo.verify":
-        return this.verify(
-          ![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")) && !this.files.has(READY_FLAG),
-          p,
-        );
+
+      // the shared edge, with the last app
+      case "edge.teardown.check":
+      case "edge.teardown.verify": {
+        const ok =
+          !(p.REMOVE_DIR === "true" && this.dirs.has(EDGE_DIR)) &&
+          !this.running(EDGE_PROJECT) &&
+          !this.volumes.has(EDGE_PROJECT) &&
+          !this.networks.has(EDGE_PROJECT);
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "edge.teardown.apply":
+        this.removeProject(EDGE_PROJECT, true);
+        this.networks.delete(EDGE_PROJECT);
+        if (p.REMOVE_DIR === "true") this.removeDir(EDGE_DIR);
+        return result();
 
       // tunnel connector
       case "tunnel-connector.check":
@@ -1323,34 +1409,50 @@ export class FakeHost implements RemoteExec {
   }
 }
 
-/** Puts the app's runtime on the fake (as a deploy would): containers and files. */
+/**
+ * Puts the app's runtime on the fake (as a deploy would): its web container (and its own
+ * cloudflared in tunnel mode), its files and data, and the shared edge when it is not there yet
+ * (Caddy publishing the web ports in public mode, kamal-proxy, their network and volume).
+ */
 export function deployApp(fake: FakeHost, app: string, access: "public" | "tunnel" = "public"): void {
-  fake.containers.push(
-    { name: `${app}-app-1`, project: app, ports: "" },
-    {
-      name: `${app}-caddy-1`,
-      project: app,
-      ports: access === "public" ? "0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp" : "127.0.0.1:18080->80/tcp",
-    },
-  );
-  if (access === "public") {
-    fake.listeners.push(
-      { proto: "tcp", address: "0.0.0.0", port: 80, process: "docker-proxy" },
-      { proto: "tcp", address: "0.0.0.0", port: 443, process: "docker-proxy" },
+  fake.containers.push({ name: `${app}-web-1`, project: app, ports: "" });
+  if (access === "tunnel") fake.containers.push({ name: `${app}-cloudflared-1`, project: app, ports: "" });
+  if (!fake.containers.some((container) => container.project === EDGE_PROJECT)) {
+    fake.containers.push(
+      {
+        name: `${EDGE_PROJECT}-caddy-1`,
+        project: EDGE_PROJECT,
+        ports: access === "public" ? "0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp" : "",
+      },
+      { name: `${EDGE_PROJECT}-kamal-proxy-1`, project: EDGE_PROJECT, ports: "" },
     );
-  } else {
-    fake.listeners.push({ proto: "tcp", address: "127.0.0.1", port: 18080, process: "docker-proxy" });
+    if (access === "public") {
+      fake.listeners.push(
+        { proto: "tcp", address: "0.0.0.0", port: 80, process: "docker-proxy" },
+        { proto: "tcp", address: "0.0.0.0", port: 443, process: "docker-proxy" },
+      );
+    }
+    fake.volumes.set(EDGE_PROJECT, 1);
+    fake.networks.add(EDGE_PROJECT);
+    fake.files.set(`${EDGE_DIR}/compose.yaml`, `name: ${EDGE_PROJECT}\nservices: {}\n`);
   }
-  const appDir = fake.dirs.get("/srv/app");
+  const edgeDir = fake.dirs.get(EDGE_DIR);
+  if (edgeDir) edgeDir.entries = 2;
+  fake.files.set(`${EDGE_DIR}/sites/${app}.caddy`, `${app}.example.com {\n}\n`);
+  const appDir = fake.dirs.get(`/srv/apps/${app}`);
   if (appDir) {
-    appDir.entries = 4;
+    appDir.entries = 3;
     const file = (content: string, mode: string) => ({ content, owner: "deploy", group: "deploy", mode });
-    fake.appFiles.set("compose.yaml", file(`name: ${app}\nservices: {}\n`, "644"));
-    fake.appFiles.set("Caddyfile", file(":80 {\n}\n", "644"));
-    fake.appFiles.set(".env", file("APP_IMAGE=ghcr.io/acme/shop@sha256:0\n", "644"));
-    fake.appFiles.set("app.env", file("NODE_ENV=production\n", "600"));
+    fake.appFiles.set(
+      app,
+      new Map([
+        ["compose.yaml", file(`name: ${app}\nservices: {}\n`, "644")],
+        [".env", file(`APP_IMAGE=ghcr.io/acme/${app}@sha256:0\n`, "644")],
+        ["app.env", file("NODE_ENV=production\n", "600")],
+      ]),
+    );
   }
-  const dataDir = fake.dirs.get("/srv/data");
+  const dataDir = fake.dirs.get(`/srv/data/${app}`);
   if (dataDir) dataDir.entries = 1;
 }
 

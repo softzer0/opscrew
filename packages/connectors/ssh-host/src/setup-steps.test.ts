@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { FakeHost } from "./__fixtures__/fake-host";
-import { applyApproved, planFor, provision } from "./__fixtures__/helpers";
+import { applyApproved, planFor, provision, removeApp } from "./__fixtures__/helpers";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { planUndo } from "./plan";
@@ -36,16 +36,16 @@ function withDocker(): FakeHost {
 
 describe("ufw that is on but lets everything in (T927)", () => {
   it("keeps plans where the default incoming policy already denies exactly as before", async () => {
-    // The hashes these fake servers gave before OpsCrew looked at ufw's default policies.
+    // The hashes these fake servers give without a default to change (pinned since 013's layout).
     expect(hostPlanHash(await planFor(activeUfw("deny")))).toBe(
-      "5919112415deba156e1a66479fc925943ec8d1dae6785e96e5ccdb6c473d9e2d",
+      "1cfb8e601e9ebb9ade0fdf31295b6736499cc37122c66848a38af319d7485a93",
     );
     const covered = activeUfw("deny");
     covered.ufwRules = WEB;
     const plan = await planFor(covered);
     expect(stepOf(plan, "ufw")).toMatchObject({ state: "in-place", reason: "Already set." });
     expect(hostPlanHash(plan)).toBe(
-      "0f124c5ff740384710fb4ef27f5bfab9d87d3e934cec5f5f27f1e7b0e9d7a81d",
+      "57970c4c3d14a1bead040bf1b7c87ec3f174de2870b5deeefd6edd6f5e65d8ac",
     );
     const reject = activeUfw("reject");
     reject.ufwRules = WEB;
@@ -137,7 +137,7 @@ describe("ufw that is on but lets everything in (T927)", () => {
   it("undo puts the old default incoming policy back and leaves ufw on", async () => {
     const fake = activeUfw("allow");
     await provision(fake);
-    fake.files.delete("/etc/opscrew/app.json");
+    await removeApp(fake);
     const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     const ufw = stepOf(undo, "ufw");
     expect(ufw?.state).toBe("change");
@@ -162,7 +162,7 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
   it("keeps today's step on servers with only OpsCrew's containers or none", async () => {
     const idle = withDocker();
     expect(hostPlanHash(await planFor(idle))).toBe(
-      "d4c09474ceda547df245340f0a38ecb996b612e44fe293b54ac0d956f114bd42",
+      "22c3e33e51bb735ff784e15fbe632aa04e9d6d76a4fb6e852883b791f6e30008",
     );
     // A server OpsCrew prepared whose daemon.json is gone again, running only the app.
     const own = withDocker();
@@ -175,7 +175,7 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
     const plan = await planFor(own);
     expect(stepOf(plan, "docker-daemon")?.state).toBe("change");
     expect(hostPlanHash(plan)).toBe(
-      "7306045d1e23890bd83a1f43024928a3972b602c33a8e614892aeb699dca1a4b",
+      "5f8859eb3ef52a901911f3a4fed5bd677d77db3d445d32f8e73e3c4d59dd61c8",
     );
     // OpsCrew's add-ons are its own too.
     own.containers.push(
@@ -196,6 +196,7 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
       id: "docker-daemon",
       title: "Docker daemon settings: log rotation, no-new-privileges, live-restore",
       state: "in-place",
+      scope: "shared",
       reason:
         "This server runs containers OpsCrew did not create (grafana, pihole), so OpsCrew leaves Docker's daemon settings alone and writes no daemon.json: your containers keep their behaviour. OpsCrew's own services set log rotation and no-new-privileges in their Compose files instead.",
       params: { path: "/etc/docker/daemon.json" },

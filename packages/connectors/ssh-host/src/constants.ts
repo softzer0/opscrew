@@ -1,34 +1,53 @@
-/** The app's directory, where the deploy workflow keeps OpsCrew's runtime files. */
-export const APP_DIR = "/srv/app";
-/** Where the app's databases keep their data. */
+/** The parent of each app's folder: its Compose project and env files (see {@link appDirs}). */
+export const APPS_DIR = "/srv/apps";
+/** The parent of each app's data folder. */
 export const DATA_DIR = "/srv/data";
-/** The runtime directories the `runtime-dirs` step creates for the deploy user. */
-export const RUNTIME_DIRS = [APP_DIR, DATA_DIR] as const;
+/** The shared edge every app on the server sits behind (Caddy and kamal-proxy). */
+export const EDGE_DIR = "/srv/edge";
+/**
+ * The edge's Compose project, and the network every app's web service joins. No app may use the
+ * name.
+ */
+export const EDGE_PROJECT = "opscrew-edge";
+/**
+ * The folder today's deploy workflow copies an app's runtime files to.
+ * T1308b: goes once the deploy works in `/srv/apps/<app>`.
+ */
+export const LEGACY_APP_DIR = "/srv/app";
+
+/** The folders the apps share, which the `runtime-dirs` step creates for the deploy user. */
+// T1308b: drop LEGACY_APP_DIR once the deploy works in /srv/apps/<app>.
+export const SHARED_DIRS = [EDGE_DIR, APPS_DIR, DATA_DIR, LEGACY_APP_DIR] as const;
+
+/** An app's own folders: `/srv/apps/<app>` (Compose project, env files) and `/srv/data/<app>`. */
+export function appDirs(app: string): { app: string; data: string } {
+  return { app: `${APPS_DIR}/${app}`, data: `${DATA_DIR}/${app}` };
+}
 
 /**
- * Runtime files OpsCrew renders into the repository and the deploy workflow copies to
- * {@link APP_DIR} unchanged: inspection reads their SHA-256 (never their content).
+ * Runtime files OpsCrew renders into the repository and the deploy workflow copies to the app's
+ * folder unchanged: inspection reads their SHA-256 (never their content).
  */
 export const HASHED_RUNTIME_FILES = ["compose.yaml", "Caddyfile"] as const;
 
 /**
- * Files the deploy workflow writes in {@link APP_DIR} from secrets or from the deploy itself
+ * Files the deploy workflow writes in the app's folder from secrets or from the deploy itself
  * (`app.env`, `db.env`: the app's and the database's secrets; `.env`: the running image).
  * Inspection reads only whether they exist, their owner and their mode: never their content and
  * never a checksum, since OpsCrew cannot render the same bytes without the secrets.
  */
 export const SECRET_RUNTIME_FILES = [".env", "app.env", "db.env"] as const;
 
-/** Every runtime file inspection looks at in {@link APP_DIR}. */
+/** Every runtime file inspection looks at in each app's folder. */
 export const RUNTIME_FILE_NAMES = [...HASHED_RUNTIME_FILES, ...SECRET_RUNTIME_FILES] as const;
 export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number];
 
-/** Where OpsCrew keeps its marker, host record and backups on the server (root only). */
+/** Where OpsCrew keeps its records and backups on the server (root only). */
 export const OPSCREW_DIR = "/etc/opscrew";
-/** The app the server belongs to (`{ app, projectId }`). */
-export const MARKER_PATH = `${OPSCREW_DIR}/app.json`;
-/** What OpsCrew changed on the server and the values it replaced. */
+/** What OpsCrew changed on the server, the values it replaced, and the apps on it. */
 export const RECORD_PATH = `${OPSCREW_DIR}/host.json`;
+/** Each app's record: `<APP_RECORDS_DIR>/<app>.json`. */
+export const APP_RECORDS_DIR = `${OPSCREW_DIR}/apps`;
 /** The dead-man switch's undo scripts, saved state, locks and marks. */
 export const DEAD_MAN_DIR = `${OPSCREW_DIR}/deadman`;
 /** Files OpsCrew replaced, kept for `opscrew destroy --undo-host`. */

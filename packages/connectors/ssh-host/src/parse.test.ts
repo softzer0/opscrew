@@ -8,6 +8,7 @@ import {
   isPublicAddress,
   parseAddresses,
   parseAptPeriodic,
+  parseAvx,
   parseContainers,
   parseDf,
   parseDirs,
@@ -330,11 +331,36 @@ describe("parsers", () => {
       { name: "alice", uid: 1000, password: true, keys: false },
     ]);
     expect(
-      parseDirs("/srv/app dir deploy deploy 750 3\n/srv/data absent", ["/srv/app", "/srv/data"]),
+      parseDirs(
+        [
+          "/srv/apps dir deploy deploy 750 1",
+          "/srv/data absent",
+          "/srv/data/shop dir deploy deploy 750 3",
+          "/srv/apps/shop link",
+          "/srv/apps/Bad dir root root 755 1",
+          "/srv/app dir root root 755 1",
+          "/srv/apps/shop/compose.yaml dir root root 755 1",
+        ].join("\n"),
+      ),
     ).toEqual([
-      { path: "/srv/app", kind: "dir", owner: "deploy", group: "deploy", mode: "750", entries: 3 },
+      { path: "/srv/edge", kind: "absent" },
+      { path: "/srv/apps", kind: "dir", owner: "deploy", group: "deploy", mode: "750", entries: 1 },
       { path: "/srv/data", kind: "absent" },
+      // T1308b: /srv/app is read with the shared folders while the deploy still uses it.
+      { path: "/srv/app", kind: "dir", owner: "root", group: "root", mode: "755", entries: 1 },
+      { path: "/srv/apps/shop", kind: "link" },
+      {
+        path: "/srv/data/shop",
+        kind: "dir",
+        owner: "deploy",
+        group: "deploy",
+        mode: "750",
+        entries: 3,
+      },
     ]);
+    expect(parseAvx("flags\t\t: fpu vme sse4_2 avx avx2\nbugs\t\t: spectre_v1")).toBe(true);
+    expect(parseAvx("flags\t\t: fpu vme sse4_2 avx512f")).toBe(false);
+    expect(parseAvx("")).toBe(false);
     expect(
       parseAptPeriodic(
         'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";',

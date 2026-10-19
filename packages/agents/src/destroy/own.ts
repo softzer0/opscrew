@@ -1,14 +1,17 @@
 import { join } from "node:path";
 import {
+  appDirs,
   applyHostPlan,
   HostApplyError,
   type HostFacts,
   type HostPlan,
   HostPlanSchema,
   hostPlanHash,
+  otherActiveApps,
   PORTAINER_PROJECT,
   planTeardown,
   planUndo,
+  readableRecords,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural, replaceNames } from "@opscrew/core";
@@ -79,16 +82,16 @@ export interface OwnHost {
 }
 
 /**
- * Stops before anything changes when the server belongs to another OpsCrew app (its marker, or
- * its host record when the marker is gone): OpsCrew removes only what it set up for this app.
+ * Stops before anything changes when the server runs another OpsCrew app and not this one, or
+ * this app's name belongs to another project there (the apps' records say so): OpsCrew removes
+ * only what it set up for this app.
  */
 function requireOwnApp(plan: DeployPlan, projectId: string, facts: HostFacts): void {
   const owner =
-    facts.marker ??
-    (facts.record === null ? null : { app: facts.record.app, projectId: facts.record.projectId });
-  if (owner === null || owner.app === "") return;
-  const same =
-    owner.app === plan.app.name && (owner.projectId === "" || owner.projectId === projectId);
+    readableRecords(facts.apps).find((record) => record.app === plan.app.name) ??
+    otherActiveApps(facts.apps, plan.app.name)[0];
+  if (owner === undefined) return;
+  const same = owner.app === plan.app.name && owner.projectId === projectId;
   if (same) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
@@ -222,9 +225,9 @@ function ownServerNames(session: Pick<OwnServerSession, "connection">): string[]
   );
 }
 
-/** True when app data is on the server: files in /srv/data or a Docker volume of the app. */
+/** True when app data is on the server: files in its data folder or a Docker volume of the app. */
 function hasAppData(facts: HostFacts, app: string): boolean {
-  const data = facts.dirs.find((dir) => dir.path === "/srv/data");
+  const data = facts.dirs.find((dir) => dir.path === appDirs(app).data);
   return (data?.entries ?? 0) > 0 || facts.volumeProjects.includes(app);
 }
 
@@ -233,7 +236,9 @@ function dataLoss(plan: DeployPlan, facts: HostFacts): string {
   const lost: string[] = [];
   if (serviceOf(plan, "postgres")) lost.push("the PostgreSQL database");
   if (serviceOf(plan, "valkey")) lost.push("the Redis data");
-  lost.push("everything the app stored in /srv/data and in its Docker volumes");
+  lost.push(
+    `everything the app stored in ${appDirs(plan.app.name).data} and in its Docker volumes`,
+  );
   if (facts.portainer.dataVolume) lost.push("Portainer's data");
   return `Removing the app also deletes its data on your server: ${listText(lost)}. OpsCrew takes no snapshot of your own server, so this cannot be undone unless you have your own backup.`;
 }
@@ -251,9 +256,10 @@ function volumeRm(project: string): string {
 function keptData(facts: HostFacts, app: string): string | undefined {
   const parts: string[] = [];
   const commands: string[] = [];
-  if ((facts.dirs.find((dir) => dir.path === "/srv/data")?.entries ?? 0) > 0) {
-    parts.push("the directory /srv/data");
-    commands.push("`rm -rf /srv/data`");
+  const data = appDirs(app).data;
+  if ((facts.dirs.find((dir) => dir.path === data)?.entries ?? 0) > 0) {
+    parts.push(`the directory ${data}`);
+    commands.push(`\`rm -rf ${data}\``);
   }
   if (facts.volumeProjects.includes(app)) {
     parts.push(`the Docker volumes of the Compose project "${app}"`);
@@ -332,7 +338,7 @@ function remainingOnOwnServer(input: {
  * before anything changes, shown, and confirmed once with the typed app name → the Cloudflare
  * destroy plan (`iac-apply`, `allowDestroy` + typed app name) → the teardown host plan
  * (`host-apply`, `allowDestroy` + typed app name: the app's containers, runtime files, the tunnel
- * connector, Portainer and the marker; the app's data only with `deleteData`). When the Cloudflare
+ * connector, Portainer and its record; the app's data only with `deleteData`). When the Cloudflare
  * plan deletes the tunnel, both are approved first, then the teardown is applied, then OpsCrew
  * waits until Cloudflare reports no active connections for the tunnel (it refuses to delete one
  * that has them) and only then applies the Cloudflare plan → the deploy secrets
@@ -421,8 +427,10 @@ export async function destroyOwnServer(
     iac = deletionSession(scope, { ...setup, dir });
     ({ resources, confirmed } = await previewCloudflareRemoval(iac, words));
   }
-  // Without the marker (deleted on the server) the record or the plan names the app (T931).
-  const teardown = removeApp ? planTeardown(facts, { deleteData, app: name }, command) : undefined;
+  // Without its record (deleted on the server) the plan names the app (T931).
+  const teardown = removeApp
+    ? planTeardown(facts, { deleteData, app: name, projectId: deps.paths.projectId }, command)
+    : undefined;
   if (teardown !== undefined) {
     requireNoHostBlockers(teardown, `remove ${name} from your server`, command);
   }
@@ -430,7 +438,7 @@ export async function destroyOwnServer(
   // The teardown deletes the app's data (with `deleteData`) in its step that removes the app.
   const deletesData =
     deleteData &&
-    (teardown?.steps ?? []).some((step) => step.id === "runtime-dirs" && step.state === "change");
+    (teardown?.steps ?? []).some((step) => step.id === "app-dirs" && step.state === "change");
   const kept = keptData(facts, name);
   if (deleteData && kept !== undefined) {
     // Never a `--delete-data` that silently keeps the data (Constitution IX).
@@ -451,15 +459,16 @@ export async function destroyOwnServer(
     if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
     if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
     else if (hasAppData(facts, name)) {
-      // `--delete-data` works only while the teardown still removes the app's runtime (its marker
-      // is there); after that OpsCrew no longer knows the data as the app's.
+      // `--delete-data` works only while the teardown still removes the app; after that OpsCrew
+      // deletes no data of it.
       const canDelete =
         plan.deployment.destroyedAt === undefined &&
-        (teardown?.steps ?? []).some((step) => step.id === "runtime-dirs");
+        (teardown?.steps ?? []).some((step) => step.id === "app-dirs");
+      const kept = `The app's data on your server (${appDirs(name).data} and its Docker volumes) is kept.`;
       deps.reporter.info(
         canDelete
-          ? "The app's data on your server (/srv/data and its Docker volumes) is kept. To delete the data as well, cancel now and run `opscrew destroy --delete-data`."
-          : "The app's data on your server (/srv/data and its Docker volumes) is kept.",
+          ? `${kept} To delete the data as well, cancel now and run \`opscrew destroy --delete-data\`.`
+          : kept,
       );
     }
     await confirmDeletion(
@@ -518,7 +527,7 @@ export async function destroyOwnServer(
         intro: [
           deleteData
             ? `This removes ${name} from your server, including its data.`
-            : `This removes ${name} from your server; its data in /srv/data and its Docker volumes stay.`,
+            : `This removes ${name} from your server; its data in ${appDirs(name).data} and its Docker volumes stay.`,
           ...(dataWarning !== undefined ? [dataWarning] : []),
           ...(serverFirst
             ? [

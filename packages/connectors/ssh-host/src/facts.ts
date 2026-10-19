@@ -1,12 +1,37 @@
 import { z } from "zod";
 import { RUNTIME_FILE_NAMES } from "./constants";
-import { HostStepIdSchema } from "./types";
+import { AccessModeSchema, HostStepIdSchema } from "./types";
 
 /** Version written to the host record (`opscrewVersion`). */
 export const HOST_ADAPTER_VERSION = "0.1.0";
 
-export const AppMarkerSchema = z.object({ app: z.string(), projectId: z.string() });
-export type AppMarker = z.infer<typeof AppMarkerSchema>;
+/**
+ * `/etc/opscrew/apps/<app>.json`: one OpsCrew app on the server. No secrets (the deploy key is a
+ * public key).
+ */
+export const AppRecordSchema = z.object({
+  schemaVersion: z.literal(1),
+  app: z.string(),
+  /** The project folder the app belongs to: another project may not use the same name. */
+  projectId: z.string(),
+  /**
+   * `active`: the app is set up here. `data-kept`: it was removed with its data kept (its data
+   * folder and Compose volumes), so its name stays its project's; it holds no hostname, service,
+   * memory or deploy key any more.
+   */
+  state: z.enum(["active", "data-kept"]),
+  /** How the app is served (see {@link AccessModeSchema}); null when data-kept. */
+  access: AccessModeSchema.nullable(),
+  hostnames: z.array(z.string()),
+  folders: z.object({ app: z.string(), data: z.string() }),
+  composeProject: z.string(),
+  services: z.array(z.string()),
+  /** The sum of the memory limits of its containers, in MB. */
+  memoryMb: z.number().int().nonnegative(),
+  /** Its deploy key (a public key) in the deploy user's authorized_keys, "" when data-kept. */
+  deployKey: z.string(),
+});
+export type AppRecord = z.infer<typeof AppRecordSchema>;
 
 const PreviousSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
 
@@ -19,11 +44,13 @@ export const HostRecordEntrySchema = z.object({
 });
 export type HostRecordEntry = z.infer<typeof HostRecordEntrySchema>;
 
-/** `/etc/opscrew/host.json`: what OpsCrew changed and the values it replaced. No secrets. */
+/**
+ * `/etc/opscrew/host.json`: the apps set up on the server (sorted), what OpsCrew changed on it
+ * and the values it replaced. No secrets.
+ */
 export const HostRecordSchema = z.object({
   schemaVersion: z.literal(1),
-  app: z.string(),
-  projectId: z.string(),
+  apps: z.array(z.string()),
   opscrewVersion: z.string(),
   changes: z.array(HostRecordEntrySchema),
 });
@@ -48,6 +75,8 @@ const DirSchema = z.object({
 export type DirFact = z.infer<typeof DirSchema>;
 
 const RuntimeFileSchema = z.object({
+  /** The app whose folder (`/srv/apps/<app>`) holds the file. */
+  app: z.string(),
   name: z.enum(RUNTIME_FILE_NAMES),
   /** `link` is a symbolic link (never followed), `other` neither a regular file nor a link. */
   kind: z.enum(["absent", "file", "link", "other"]),
@@ -130,6 +159,8 @@ export const HostFactsSchema = z.object({
   /** `uname -m`. */
   machine: z.string(),
   cpus: z.number().int().nonnegative(),
+  /** The CPU flags in /proc/cpuinfo include `avx` (x86 only; MongoDB 5 and later need it). */
+  avx: z.boolean(),
   memoryBytes: z.number().nonnegative(),
   diskFreeBytes: z.number().nonnegative(),
   systemd: z.boolean(),
@@ -241,15 +272,18 @@ export const HostFactsSchema = z.object({
   }),
   /** `/var/lib/opscrew-ready` exists (the setup finished). */
   ready: z.boolean(),
+  /**
+   * The shared folders (`/srv/edge`, `/srv/apps`, `/srv/data`, always listed), then every app's
+   * folder found in `/srv/apps` and `/srv/data` (only those that exist).
+   */
   dirs: z.array(DirSchema),
   /**
-   * OpsCrew's runtime files in /srv/app (see {@link RUNTIME_FILE_NAMES}): checksums of the
-   * rendered ones, only presence, owner and mode of the ones that hold secrets.
+   * OpsCrew's runtime files in each app's folder (see {@link RUNTIME_FILE_NAMES}): checksums of
+   * the rendered ones, only presence, owner and mode of the ones that hold secrets.
    */
   runtimeFiles: z.array(RuntimeFileSchema),
-  marker: AppMarkerSchema.nullable(),
-  /** True when `/etc/opscrew/app.json` exists but could not be read as JSON. */
-  markerDamaged: z.boolean(),
+  /** Every OpsCrew app on the server, by name; `record` is null when its file is damaged. */
+  apps: z.array(z.object({ name: z.string(), record: AppRecordSchema.nullable() })),
   record: HostRecordSchema.nullable(),
   recordDamaged: z.boolean(),
   /** Dead-man switches still waiting on the server (from an interrupted apply). */
@@ -261,3 +295,20 @@ export const HostFactsSchema = z.object({
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;
+
+/** The records of the apps on the server that could be read (`HostFacts["apps"]`). */
+export function readableRecords(apps: HostFacts["apps"]): AppRecord[] {
+  return apps.flatMap((app) => (app.record === null ? [] : [app.record]));
+}
+
+/** The apps set up on the server (not those removed with their data kept), other than `app`. */
+export function otherActiveApps(apps: HostFacts["apps"], app: string): AppRecord[] {
+  return readableRecords(apps).filter((record) => record.app !== app && record.state === "active");
+}
+
+/** What a plan assumes about the other apps (`HostPlan.otherApps`): by name, sorted. */
+export function assumedApps(others: readonly AppRecord[]): { app: string; deployKey: string }[] {
+  return others
+    .map((record) => ({ app: record.app, deployKey: record.deployKey }))
+    .sort((a, b) => a.app.localeCompare(b.app));
+}

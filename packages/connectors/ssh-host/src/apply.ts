@@ -4,18 +4,24 @@
  * not the approved one. Idempotent and resumable: steps already in place are skipped.
  */
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
+import { canonicalJson, isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
+import { z } from "zod";
 import { DEFAULT_DEAD_MAN_SECONDS } from "./constants";
-import { AppMarkerSchema, HOST_ADAPTER_VERSION, type HostRecord, HostRecordSchema } from "./facts";
-import { type HostFindings, hostFindings } from "./findings";
+import {
+  assumedApps,
+  HOST_ADAPTER_VERSION,
+  type HostRecord,
+  HostRecordSchema,
+  otherActiveApps,
+} from "./facts";
+import { claimFindings, type HostFindings, hostFindings } from "./findings";
 import { hostPlanHash } from "./hash";
-import { probePrivilege } from "./inspect";
-import { linesOf } from "./parse";
+import { probePrivilege, readAppsScript } from "./inspect";
+import { linesOf, parseAppRecords } from "./parse";
 import { asLogin, asRoot, type Privilege } from "./shell";
 import {
   armScript,
   cancelScript,
-  readMarkerScript,
   readRecordScript,
   runAsOf,
   type StepScripts,
@@ -24,6 +30,7 @@ import {
   writeRecordScript,
 } from "./steps";
 import {
+  AccessModeSchema,
   type ApplyOptions,
   type ApplyResult,
   type HostPlan,
@@ -143,6 +150,11 @@ class Recorder {
   private record: HostRecord;
   private readonly ctx: Context;
 
+  /** The apps the host record lists. */
+  get apps(): readonly string[] {
+    return this.record.apps;
+  }
+
   constructor(ctx: Context, record: HostRecord) {
     this.ctx = ctx;
     this.record = record;
@@ -165,35 +177,24 @@ class Recorder {
         throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
       }
     }
-    const plan = ctx.plan;
-    // A plan without an app-marker step (planPortainer run as root) never blanks the project id.
-    const projectId =
-      plan.purpose === "setup"
-        ? planProjectId(plan) || (record?.projectId ?? "")
-        : (record?.projectId ?? "");
-    // Never take over the record of another app: its host changes are its to undo.
-    if (
-      record !== undefined &&
-      record.app !== "" &&
-      plan.app !== "" &&
-      (record.app !== plan.app ||
-        (projectId !== "" && record.projectId !== "" && record.projectId !== projectId))
-    ) {
-      const finding = ctx.findings.hostRecordOtherApp(record.app);
-      throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
-    }
+    // The host record is shared by the apps on the server: no app owns it.
     if (record === undefined) {
-      record = {
-        schemaVersion: 1,
-        app: plan.app,
-        projectId,
-        opscrewVersion: ctx.version,
-        changes: [],
-      };
-    } else if (plan.purpose === "setup") {
-      record = { ...record, app: plan.app, projectId, opscrewVersion: ctx.version };
+      record = { schemaVersion: 1, apps: [], opscrewVersion: ctx.version, changes: [] };
+    } else if (ctx.plan.purpose === "setup") {
+      record = { ...record, opscrewVersion: ctx.version };
     }
     return new Recorder(ctx, record);
+  }
+
+  /** Lists `app` among the apps set up on the server, or no longer; written only on a change. */
+  async list(app: string, listed: boolean): Promise<void> {
+    const apps = new Set(this.record.apps);
+    if (listed) apps.add(app);
+    else apps.delete(app);
+    const next = [...apps].sort();
+    if (next.join(" ") === this.record.apps.join(" ")) return;
+    this.record = { ...this.record, apps: next };
+    await this.write();
   }
 
   /** Records the value a step is about to replace (the first setup change of a step only). */
@@ -217,7 +218,7 @@ class Recorder {
 
   /** After an undo step: OpsCrew no longer owns that change. */
   async undone(step: HostStepId): Promise<void> {
-    if (step === "app-marker") return; // the record itself is gone
+    if (step === "app-record") return; // the record itself is gone
     this.record = {
       ...this.record,
       changes: this.record.changes.filter(
@@ -378,40 +379,49 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   return true;
 }
 
-/** The project id a setup plan binds the server to (from its app-marker step). */
-function planProjectId(plan: HostPlan): string {
-  const marker = plan.steps.find((step) => step.id === "app-marker");
-  return typeof marker?.params.projectId === "string" ? marker.params.projectId : "";
-}
-
 /**
- * Read-only, before the first change of a setup plan: the server must not belong to another app
- * (another OpsCrew run may have claimed it since the plan was made).
+ * Read-only, before the first change: another OpsCrew run may have changed the apps on the server
+ * since the plan was made. A setup plan that records its app needs its name, hostnames and access
+ * mode to still fit them (`listed`: the apps the host record lists), and every plan made for the
+ * other apps as they were (`HostPlan.otherApps`) needs them unchanged, deploy keys included.
  */
-async function claimCheck(ctx: Context): Promise<void> {
+async function appsCheck(ctx: Context, listed: readonly string[]): Promise<void> {
+  const { plan } = ctx;
+  const step = plan.steps.find((item) => item.id === "app-record" && item.state === "change");
+  const claiming = plan.purpose === "setup" && step !== undefined;
+  if (!claiming && plan.otherApps === undefined) return;
   const result = await runOk(
     ctx,
-    wrapRoot(ctx, readMarkerScript()),
+    wrapRoot(ctx, readAppsScript()),
     { timeoutMs: 60_000 },
-    "checking which app the server belongs to",
+    "checking the other OpsCrew apps on the server",
   );
-  const text = result.stdout.trim();
-  if (text === "") return;
-  let marker: { app: string; projectId: string } | undefined;
-  try {
-    marker = AppMarkerSchema.parse(JSON.parse(text));
-  } catch {
-    const finding = ctx.findings.markerDamaged();
+  const apps = parseAppRecords(result.stdout);
+  const found = claiming
+    ? claimFindings(
+        apps,
+        listed,
+        ClaimSchema.parse({ ...step?.params, app: plan.app }),
+        ctx.findings,
+      )
+    : [];
+  const now = assumedApps(otherActiveApps(apps, plan.app));
+  if (plan.otherApps !== undefined && canonicalJson(now) !== canonicalJson(plan.otherApps)) {
+    found.push(ctx.findings.appsChanged(now.map((other) => other.app)));
+  }
+  const [finding] = found;
+  if (finding !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
   }
-  const projectId = planProjectId(ctx.plan);
-  if (marker.app === ctx.plan.app && (projectId === "" || marker.projectId === projectId)) return;
-  const finding =
-    marker.app === ctx.plan.app
-      ? ctx.findings.sameAppOtherProject(marker.app, marker.projectId)
-      : ctx.findings.anotherApp(marker.app);
-  throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
 }
+
+/** What an `app-record` step claims on the server (its scripts check the rest). */
+const ClaimSchema = z.object({
+  app: z.string(),
+  projectId: z.string(),
+  access: AccessModeSchema,
+  hostnames: z.string().transform((text) => text.split(" ").filter((name) => name !== "")),
+});
 
 /**
  * A host apply that stopped at a failed step: `applied` lists the steps of the plan that changed
@@ -575,8 +585,8 @@ export async function applyHostPlan(
       throw refuse(finding.message, finding.hint);
     }
     ctx.privilege = privilege;
-    if (valid.purpose === "setup") await claimCheck(ctx);
     ctx.recorder = await Recorder.load(ctx);
+    await appsCheck(ctx, ctx.recorder.apps);
   }
 
   const applied: HostStepId[] = [];
@@ -587,14 +597,16 @@ export async function applyHostPlan(
       skipped.push(step.id);
       continue;
     }
-    let changed: boolean;
     try {
-      changed = await runStep(ctx, step, work.scripts);
+      if (await runStep(ctx, step, work.scripts)) applied.push(step.id);
+      else skipped.push(step.id);
+      // The host record lists the apps set up on the server.
+      if (step.id === "app-record" && valid.purpose !== "undo") {
+        await ctx.recorder?.list(valid.app, valid.purpose === "setup");
+      }
     } catch (error) {
       throw failure(error, applied);
     }
-    if (changed) applied.push(step.id);
-    else skipped.push(step.id);
   }
   return { applied, skipped };
 }

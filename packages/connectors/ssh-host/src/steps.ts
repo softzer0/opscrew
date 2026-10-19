@@ -9,18 +9,19 @@ import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
 import {
   ADDONS_ROOT,
-  APP_DIR,
+  APP_RECORDS_DIR,
   APT_LOG,
   AUTO_UPGRADES_FILE,
+  appDirs,
   BACKUP_DIR,
-  DATA_DIR,
   DEAD_MAN_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   DOCKER_PACKAGES,
+  EDGE_DIR,
+  EDGE_PROJECT,
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
-  MARKER_PATH,
   MIN_DOCKER_MAJOR,
   OPSCREW_DIR,
   PORTAINER_DIR,
@@ -28,7 +29,7 @@ import {
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
-  RUNTIME_DIRS,
+  SHARED_DIRS,
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
@@ -39,16 +40,21 @@ import {
   UFW_WEB_COMMENT,
   WEB_RULES,
 } from "./constants";
+import type { AppRecord } from "./facts";
 import { canonicalIpv4Cidr } from "./parse";
 import { APT_FUNCTIONS, buildScript, type ScriptParams } from "./shell";
 import {
+  type AccessMode,
+  AccessModeSchema,
   AppNameSchema,
   ComposeTextSchema,
+  HostnameSchema,
   type HostPlan,
   type HostStep,
   type HostStepId,
   PortainerVersionSchema,
   ProjectIdSchema,
+  ServiceNameSchema,
   TunnelIdSchema,
 } from "./types";
 import {
@@ -319,10 +325,49 @@ function dockerUndoScripts(): StepScripts {
 // ---------------------------------------------------------------------------------------------
 // deploy-user
 
-const DeployParams = z.object({
+/** One public key line (`type base64 [comment]`). */
+const PublicKeySchema = z.string().regex(/^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}( [^\r\n\0]{0,200})?$/);
+
+const DeployKeysParams = z.object({
   user: z.literal("deploy"),
-  publicKey: z.string().regex(/^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}( [^\r\n\0]{0,200})?$/),
+  /** The deploy keys of the apps on the server, one per line: exactly what authorized_keys holds. */
+  keys: z
+    .string()
+    .refine((keys) => keys.split("\n").every((key) => PublicKeySchema.safeParse(key).success), {
+      message: "must be public key lines",
+    }),
 });
+
+/**
+ * `deploy-key` (setup and teardown): the deploy user's authorized_keys holds exactly the deploy
+ * keys of the apps on the server, so a removed app's key or an old key stops working.
+ */
+function deployKeyScripts(step: HostStep): StepScripts {
+  const p = params(step, DeployKeysParams);
+  const keys = `${p.keys}\n`;
+  return scripts({
+    name: "deploy-key",
+    params: { USER_NAME: p.user, KEYS_B64: base64(keys), KEYS_SHA256: sha256Hex(keys) },
+    helpers: `user_home() { getent passwd "$USER_NAME" | cut -d: -f6; }`,
+    verify: `  getent passwd "$USER_NAME" >/dev/null 2>&1 || return 1
+  home=$(user_home)
+  [ -f "$home/.ssh/authorized_keys" ] && [ ! -L "$home/.ssh/authorized_keys" ] || return 1
+  [ "$(sha256sum "$home/.ssh/authorized_keys" | cut -d ' ' -f 1)" = "$KEYS_SHA256" ]`,
+    apply: `getent passwd "$USER_NAME" >/dev/null 2>&1 || fail "The $USER_NAME user is missing; OpsCrew creates it first."
+home=$(user_home)
+if [ -z "$home" ] || [ "$home" = / ]; then fail "The $USER_NAME user has no home directory."; fi
+if [ -L "$home/.ssh" ]; then fail "$home/.ssh is a symbolic link; OpsCrew does not follow it."; fi
+install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$home/.ssh"
+keys="$home/.ssh/authorized_keys"
+if [ -L "$keys" ]; then fail "$keys is a symbolic link; OpsCrew does not follow it."; fi
+# OpsCrew created this user: its keys file holds exactly the deploy keys of the apps on the
+# server, so an old deploy key, or the key of an app that was removed, stops working.
+printf '%s' "$KEYS_B64" | base64 -d | write_file "$keys" 0600 "$USER_NAME:$USER_NAME"`,
+    failed: "The deploy user does not have the planned deploy keys after the change.",
+    doing: "writing the deploy user's keys",
+    timeoutMs: 2 * MINUTE,
+  });
+}
 
 function deployUserScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts {
   if (purpose === "undo") {
@@ -343,14 +388,11 @@ if getent group "$USER_NAME" >/dev/null 2>&1 && [ -z "$(getent group "$USER_NAME
       timeoutMs: 2 * MINUTE,
     });
   }
-  const p = params(step, DeployParams);
+  const p = params(step, z.object({ user: z.literal("deploy") }));
   return scripts({
     name: "deploy-user",
-    params: { USER_NAME: p.user, PUBLIC_KEY: p.publicKey },
-    helpers: `user_home() { getent passwd "$USER_NAME" | cut -d: -f6; }`,
+    params: { USER_NAME: p.user },
     verify: `  getent passwd "$USER_NAME" >/dev/null 2>&1 || return 1
-  home=$(user_home)
-  [ "$(cat "$home/.ssh/authorized_keys" 2>/dev/null)" = "$PUBLIC_KEY" ] || return 1
   id -nG "$USER_NAME" | tr ' ' '\\n' | grep -qx docker || return 1`,
     snapshot: `if getent passwd "$USER_NAME" >/dev/null 2>&1; then echo prev.existed=true; else echo prev.existed=false; fi
 if id -nG "$USER_NAME" 2>/dev/null | tr ' ' '\\n' | grep -qx docker; then echo prev.dockerGroup=true; else echo prev.dockerGroup=false; fi`,
@@ -360,17 +402,8 @@ if ! getent passwd "$USER_NAME" >/dev/null 2>&1; then
   # "*" means no password login at all, without marking the account locked for key logins.
   usermod -p '*' "$USER_NAME"
 fi
-home=$(user_home)
-if [ -z "$home" ] || [ "$home" = / ]; then fail "The $USER_NAME user has no home directory."; fi
-if [ -L "$home/.ssh" ]; then fail "$home/.ssh is a symbolic link; OpsCrew does not follow it."; fi
-install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$home/.ssh"
-keys="$home/.ssh/authorized_keys"
-if [ -L "$keys" ]; then fail "$keys is a symbolic link; OpsCrew does not follow it."; fi
-# OpsCrew created this user: its keys file holds exactly the current deploy key, so an old
-# deploy key stops working.
-printf '%s\\n' "$PUBLIC_KEY" | write_file "$keys" 0600 "$USER_NAME:$USER_NAME"
 usermod -aG docker "$USER_NAME"`,
-    failed: "The deploy user does not have the deploy key or Docker access after the change.",
+    failed: "The deploy user does not have Docker access after the change.",
     doing: "creating the deploy user",
     timeoutMs: 2 * MINUTE,
   });
@@ -1041,45 +1074,83 @@ project_gone() {
 }`;
 
 // ---------------------------------------------------------------------------------------------
-// runtime-dirs
+// runtime-dirs (the shared folders) and app-dirs (the app's own folders)
 
-function runtimeScripts(plan: HostPlan, step: HostStep): StepScripts {
-  if (plan.purpose === "teardown") {
-    const p = params(step, z.object({ app: AppNameSchema, deleteData: z.boolean() }));
-    return scripts({
-      name: "runtime-dirs.teardown",
-      params: {
-        APP: p.app,
-        DELETE_DATA: p.deleteData,
-        APP_DIR,
-        APP_COMPOSE: `${APP_DIR}/compose.yaml`,
-        DATA_DIR,
-      },
-      helpers: PROJECT_HELPERS,
-      verify: `  project_gone "$APP" "$DELETE_DATA" || return 1
-  if [ -d "$APP_DIR" ] && [ -n "$(ls -A "$APP_DIR")" ]; then return 1; fi
-  if [ "$DELETE_DATA" = true ] && [ -d "$DATA_DIR" ] && [ -n "$(ls -A "$DATA_DIR")" ]; then return 1; fi
+/** Creates `dirs` for the deploy user (0750). */
+function dirsScripts(name: string, dirs: readonly string[], snapshot?: string): StepScripts {
+  return scripts({
+    name,
+    params: { USER_NAME: "deploy", DIRS: dirs.join(" ") },
+    verify: `  for d in $DIRS; do
+    [ -d "$d" ] && [ ! -L "$d" ] || return 1
+    [ "$(stat -c '%U:%G:%a' "$d")" = "$USER_NAME:$USER_NAME:750" ] || return 1
+  done`,
+    ...(snapshot !== undefined ? { snapshot } : {}),
+    apply: `for d in $DIRS; do
+  if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
+  install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$d"
+  chown "$USER_NAME:$USER_NAME" "$d"
+  chmod 0750 "$d"
+done`,
+    failed: `${dirs.join(" and ")} are not set up for deploy.`,
+    doing: `creating ${dirs.join(" and ")}`,
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose === "setup") {
+    const dirs = appDirs(params(step, z.object({ app: AppNameSchema })).app);
+    return dirsScripts("app-dirs", [dirs.app, dirs.data]);
+  }
+  if (plan.purpose !== "teardown") throw invalid(step, "purpose");
+  const p = params(step, z.object({ app: AppNameSchema, deleteData: z.boolean() }));
+  const dirs = appDirs(p.app);
+  return scripts({
+    name: "app-dirs.teardown",
+    params: {
+      APP: p.app,
+      DELETE_DATA: p.deleteData,
+      APP_DIR: dirs.app,
+      APP_COMPOSE: `${dirs.app}/compose.yaml`,
+      DATA_DIR: dirs.data,
+    },
+    helpers: `${PROJECT_HELPERS}
+remove_dir() {
+  if [ -d "$1" ]; then
+    find "$1" -xdev -mindepth 1 -delete
+    rmdir "$1" || fail "OpsCrew could not remove $1 completely."
+  fi
+}`,
+    verify: `  project_gone "$APP" "$DELETE_DATA" || return 1
+  [ ! -e "$APP_DIR" ] || return 1
+  if [ "$DELETE_DATA" = true ] && [ -e "$DATA_DIR" ]; then return 1; fi
   return 0`,
-      snapshot: `echo "prev.appFiles=$(ls -A "$APP_DIR" 2>/dev/null | wc -l)"
+    snapshot: `echo "prev.appFiles=$(ls -A "$APP_DIR" 2>/dev/null | wc -l)"
 echo "prev.dataFiles=$(ls -A "$DATA_DIR" 2>/dev/null | wc -l)"`,
-      apply: `for d in "$APP_DIR" "$DATA_DIR"; do
+    apply: `for d in "$APP_DIR" "$DATA_DIR"; do
   if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
 done
 remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
-if [ -d "$APP_DIR" ]; then find "$APP_DIR" -xdev -mindepth 1 -delete; fi
-if [ "$DELETE_DATA" = true ] && [ -d "$DATA_DIR" ]; then find "$DATA_DIR" -xdev -mindepth 1 -delete; fi
+remove_dir "$APP_DIR"
+if [ "$DELETE_DATA" = true ]; then remove_dir "$DATA_DIR"; fi
 if [ "$DELETE_DATA" = true ] && ! project_gone "$APP" true; then
   fail 'Some Docker volumes of the app could not be removed.'
 fi`,
-      failed: "Some of the app's containers, volumes or files are still on the server.",
-      doing: "removing the app's containers and files",
-      timeoutMs: 10 * MINUTE,
-    });
-  }
+    failed: "Some of the app's containers, volumes or files are still on the server.",
+    doing: "removing the app's containers and files",
+    timeoutMs: 10 * MINUTE,
+  });
+}
+
+function runtimeScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (plan.purpose === "undo") {
     const p = params(
       step,
-      z.object({ dirs: z.string().regex(/^(\/srv\/(app|data))( \/srv\/(app|data))?$/) }),
+      z.object({
+        // T1308b: `app` (/srv/app) goes with LEGACY_APP_DIR.
+        dirs: z.string().regex(/^\/srv\/(edge|apps|data|app)( \/srv\/(edge|apps|data|app)){0,3}$/),
+      }),
     );
     const verify = `  for d in $DIRS; do
     if [ -d "$d" ] && [ ! -L "$d" ] && [ -z "$(ls -A "$d")" ]; then return 1; fi
@@ -1098,50 +1169,101 @@ done`,
       timeoutMs: 2 * MINUTE,
     });
   }
-  return scripts({
-    name: "runtime-dirs",
-    params: { USER_NAME: "deploy", DIRS: RUNTIME_DIRS.join(" ") },
-    verify: `  for d in $DIRS; do
-    [ -d "$d" ] && [ ! -L "$d" ] || return 1
-    [ "$(stat -c '%U:%G:%a' "$d")" = "$USER_NAME:$USER_NAME:750" ] || return 1
-  done`,
-    snapshot: `for d in $DIRS; do
+  return dirsScripts(
+    "runtime-dirs",
+    SHARED_DIRS,
+    `for d in $DIRS; do
   key=$(basename "$d")
   if [ -e "$d" ]; then echo "prev.$key=present"; else echo "prev.$key=absent"; fi
 done`,
-    apply: `for d in $DIRS; do
-  if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
-  install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$d"
-  chown "$USER_NAME:$USER_NAME" "$d"
-  chmod 0750 "$d"
-done`,
-    failed: "/srv/app and /srv/data are not set up for deploy.",
-    doing: "creating /srv/app and /srv/data",
-    timeoutMs: 2 * MINUTE,
-  });
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
-// app-marker
+// app-record: the app's record in /etc/opscrew/apps (the apply lists it in the host record)
 
-function markerScripts(plan: HostPlan, step: HostStep): StepScripts {
-  if (plan.purpose === "teardown") {
-    return scripts({
-      name: "app-marker.teardown",
-      params: { MARKER_PATH },
-      verify: `  [ ! -e "$MARKER_PATH" ]`,
-      apply: `rm -f "$MARKER_PATH"`,
-      failed: "The app marker is still there.",
-      doing: "removing the app marker",
-      timeoutMs: MINUTE,
-    });
-  }
+/** The record of an app set up on the server, as the `app-record` step writes it. */
+export function appRecord(input: {
+  app: string;
+  projectId: string;
+  access: AccessMode;
+  hostnames: readonly string[];
+  services: readonly string[];
+  memoryMb: number;
+  deployKey: string;
+}): AppRecord {
+  return {
+    schemaVersion: 1,
+    app: input.app,
+    projectId: input.projectId,
+    state: "active",
+    access: input.access,
+    hostnames: [...new Set(input.hostnames)].sort(),
+    folders: appDirs(input.app),
+    composeProject: input.app,
+    services: [...new Set(input.services)].sort(),
+    memoryMb: input.memoryMb,
+    deployKey: input.deployKey,
+  };
+}
+
+/** The record of an app removed with its data kept: its name stays its project's. */
+export function dataKeptRecord(app: string, projectId: string): AppRecord {
+  return {
+    schemaVersion: 1,
+    app,
+    projectId,
+    state: "data-kept",
+    access: null,
+    hostnames: [],
+    folders: appDirs(app),
+    composeProject: app,
+    services: [],
+    memoryMb: 0,
+    deployKey: "",
+  };
+}
+
+/** Words of a space-separated parameter, each checked by `schema`. */
+const words = <T extends z.ZodString>(schema: T) =>
+  z
+    .string()
+    .transform((text) => text.split(" ").filter((word) => word !== ""))
+    .pipe(z.array(schema));
+
+const AppRecordParams = z.object({
+  app: AppNameSchema.refine((app) => app !== EDGE_PROJECT, {
+    message: "is OpsCrew's own",
+  }),
+  projectId: ProjectIdSchema,
+  access: AccessModeSchema,
+  hostnames: words(HostnameSchema),
+  services: words(ServiceNameSchema),
+  memoryMb: z.number().int().positive(),
+  deployKey: PublicKeySchema,
+  ownProject: z.boolean(),
+});
+
+/** Refuses to touch `$RECORD_FILE` when it names another project than `$PROJECT_ID`. */
+const PROJECT_CHECK_LINES = `if [ -f "$RECORD_FILE" ] && ! grep -qF "\\"projectId\\":\\"$PROJECT_ID\\"" "$RECORD_FILE"; then
+  fail "Another project's OpsCrew app named $APP is already on this server."
+fi`;
+
+/** Shell lines that write `$RECORD` to `$RECORD_FILE` (root only). */
+function writeRecordLines(): string {
+  return `install -d -m 0700 ${OPSCREW_DIR} ${APP_RECORDS_DIR}
+printf '%s\\n' "$RECORD" | write_file "$RECORD_FILE" 0600`;
+}
+
+function appRecordScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (plan.purpose === "undo") {
     return scripts({
-      name: "app-marker.undo",
-      params: { OPSCREW_DIR, MARKER_PATH, READY_FLAG },
+      name: "app-record.undo",
+      params: { OPSCREW_DIR, APP_RECORDS_DIR, READY_FLAG },
       verify: `  [ ! -e "$OPSCREW_DIR" ] && [ ! -e "$READY_FLAG" ]`,
-      apply: `if [ -e "$MARKER_PATH" ]; then fail 'An OpsCrew app is still on this server; remove it first.'; fi
+      apply: `if grep -qs '"state":"active"' "$APP_RECORDS_DIR"/*.json; then
+  fail 'An OpsCrew app is still on this server; remove it first.'
+fi
 rm -f "$READY_FLAG"
 rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
       failed: `${OPSCREW_DIR} is still there.`,
@@ -1149,46 +1271,110 @@ rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
       timeoutMs: MINUTE,
     });
   }
-  const p = params(
-    step,
-    z.object({ app: AppNameSchema, projectId: ProjectIdSchema, ownProject: z.boolean() }),
-  );
+  if (plan.purpose === "teardown") {
+    const p = params(
+      step,
+      z.object({ app: AppNameSchema, keepData: z.boolean(), projectId: ProjectIdSchema }),
+    );
+    const own = {
+      APP: p.app,
+      PROJECT_ID: p.projectId,
+      RECORD_FILE: `${APP_RECORDS_DIR}/${p.app}.json`,
+    };
+    if (p.keepData) {
+      return scripts({
+        name: "app-record.keep",
+        params: { ...own, RECORD: JSON.stringify(dataKeptRecord(p.app, p.projectId)) },
+        verify: `  [ -f "$RECORD_FILE" ] && [ "$(cat "$RECORD_FILE")" = "$RECORD" ]`,
+        apply: `${PROJECT_CHECK_LINES}\n${writeRecordLines()}`,
+        failed: "The record of the kept data was not written.",
+        doing: "recording the app's kept data",
+        timeoutMs: MINUTE,
+      });
+    }
+    return scripts({
+      name: "app-record.teardown",
+      params: own,
+      verify: `  [ ! -e "$RECORD_FILE" ]`,
+      apply: `${PROJECT_CHECK_LINES}\nrm -f "$RECORD_FILE"`,
+      failed: "The app's record is still there.",
+      doing: "removing the app's record",
+      timeoutMs: MINUTE,
+    });
+  }
+  const p = params(step, AppRecordParams);
+  const record = appRecord(p);
   return scripts({
-    name: "app-marker",
+    name: "app-record",
     params: {
-      MARKER_PATH,
-      MARKER: JSON.stringify({ app: p.app, projectId: p.projectId }),
+      RECORD_FILE: `${APP_RECORDS_DIR}/${p.app}.json`,
+      RECORD: JSON.stringify(record),
+      PROJECT_ID: p.projectId,
       READY_FLAG,
       APP: p.app,
       OWN_PROJECT: p.ownProject,
     },
-    verify: `  [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" = "$MARKER" ] && [ -f "$READY_FLAG" ]`,
-    snapshot: `if [ -e "$MARKER_PATH" ]; then echo prev.marker=present; else echo prev.marker=absent; fi`,
-    apply: `install -d -m 0700 ${OPSCREW_DIR}
-if [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" != "$MARKER" ]; then
-  fail 'Another OpsCrew app is already on this server; one server runs one OpsCrew app for now.'
-fi
-# Before the server is marked for the app: no Compose project of that name that OpsCrew did not
-# deploy (the plan checked; this checks again on the server itself).
-if [ ! -f "$MARKER_PATH" ] && [ "$OWN_PROJECT" != true ] && command -v docker >/dev/null 2>&1; then
+    verify: `  [ -f "$RECORD_FILE" ] && [ "$(cat "$RECORD_FILE")" = "$RECORD" ] && [ -f "$READY_FLAG" ]`,
+    snapshot: `if [ -e "$RECORD_FILE" ]; then echo prev.record=present; else echo prev.record=absent; fi`,
+    apply: `${PROJECT_CHECK_LINES}
+# Before the app is recorded: no Compose project of that name that OpsCrew did not deploy (the
+# plan checked; this checks again on the server itself).
+if [ ! -f "$RECORD_FILE" ] && [ "$OWN_PROJECT" != true ] && command -v docker >/dev/null 2>&1; then
   if ! systemctl is-active --quiet docker; then
     fail 'Docker is installed but not running, so OpsCrew cannot see its containers. Start Docker (sudo systemctl start docker), then plan again.'
   fi
   containers=$(docker ps -aq --filter "label=com.docker.compose.project=$APP") ||
-    fail 'OpsCrew could not list the Docker containers on this server, so it does not mark the server for the app.'
+    fail 'OpsCrew could not list the Docker containers on this server, so it does not record the app.'
   volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$APP") ||
-    fail 'OpsCrew could not list the Docker volumes on this server, so it does not mark the server for the app.'
+    fail 'OpsCrew could not list the Docker volumes on this server, so it does not record the app.'
   if [ -n "$containers$volumes" ]; then
-    fail "Docker already has containers or volumes of a Compose project named $APP that OpsCrew did not deploy, so OpsCrew does not mark this server for the app."
+    fail "Docker already has containers or volumes of a Compose project named $APP that OpsCrew did not deploy, so OpsCrew does not record the app."
   fi
 fi
-printf '%s\\n' "$MARKER" | write_file "$MARKER_PATH" 0644
+${writeRecordLines()}
 # The same "setup finished" flag cloud-init sets on servers OpsCrew creates.
 install -d -m 0755 "$(dirname "$READY_FLAG")"
 touch "$READY_FLAG"`,
-    failed: "The app marker was not written.",
-    doing: "marking the server for the app",
+    failed: "The app's record was not written.",
+    doing: "recording the app on the server",
     timeoutMs: MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// edge: the shared edge goes with the last app (a teardown step only)
+
+function edgeScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "teardown") throw invalid(step, "purpose");
+  // The folder goes only when OpsCrew created it (the plan says so). A folder of the user's own is
+  // never read: the edge's containers, network and volumes go by their labels only.
+  const p = params(step, z.object({ removeDir: z.boolean() }));
+  return scripts({
+    name: "edge.teardown",
+    params: {
+      DIR: EDGE_DIR,
+      COMPOSE: p.removeDir ? `${EDGE_DIR}/compose.yaml` : "",
+      PROJECT: EDGE_PROJECT,
+      NETWORK: EDGE_PROJECT,
+      REMOVE_DIR: p.removeDir,
+    },
+    helpers: `${PROJECT_HELPERS}
+network_gone() {
+  ! command -v docker >/dev/null 2>&1 || ! docker network inspect "$NETWORK" >/dev/null 2>&1
+}`,
+    verify: `  if [ "$REMOVE_DIR" = true ] && [ -e "$DIR" ]; then return 1; fi
+  project_gone "$PROJECT" true || return 1
+  network_gone`,
+    apply: `if [ "$REMOVE_DIR" = true ] && [ -L "$DIR" ]; then fail "$DIR is a symbolic link; OpsCrew does not follow it."; fi
+remove_project "$PROJECT" "$COMPOSE" "$DIR" true
+# The apps' web services joined the edge's network; with the last app gone, so is the network.
+if ! network_gone; then
+  docker network rm "$NETWORK" >/dev/null || fail "The network $NETWORK is still in use, so OpsCrew could not remove it."
+fi
+if [ "$REMOVE_DIR" = true ]; then rm -rf "$DIR"; fi`,
+    failed: "The shared edge is still on the server.",
+    doing: "removing the shared edge",
+    timeoutMs: 5 * MINUTE,
   });
 }
 
@@ -1454,6 +1640,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return fail2banScripts(plan.purpose, step);
     case "deploy-user":
       return deployUserScripts(plan.purpose, step);
+    case "deploy-key":
+      return deployKeyScripts(step);
     case "sshd":
       return sshdScripts(plan.purpose, step);
     case "ufw":
@@ -1464,8 +1652,12 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return upgradesScripts(plan.purpose, step);
     case "runtime-dirs":
       return runtimeScripts(plan, step);
-    case "app-marker":
-      return markerScripts(plan, step);
+    case "app-dirs":
+      return appDirsScripts(plan, step);
+    case "app-record":
+      return appRecordScripts(plan, step);
+    case "edge":
+      return edgeScripts(plan, step);
     case "tunnel-connector":
       return tunnelScripts(plan, step);
     case "portainer":
@@ -1549,16 +1741,6 @@ export function triggerScript(step: GuardedStep): string {
 systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
 rm -f "${DEAD_MAN_DIR}/$STEP".*
 echo restored`,
-  );
-}
-
-/** Read-only: prints `/etc/opscrew/app.json` (the app the server belongs to), or nothing. */
-export function readMarkerScript(): string {
-  return buildScript(
-    "marker.read",
-    { MARKER_PATH },
-    `if [ -f "$MARKER_PATH" ]; then cat "$MARKER_PATH"; fi`,
-    { tolerant: true },
   );
 }
 

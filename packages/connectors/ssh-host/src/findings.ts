@@ -1,8 +1,15 @@
 /** Blocking findings: what OpsCrew found and what the user can do. Plain English, no secrets. */
 import { listText, upperFirst } from "@opscrew/core";
 import { MIN_DOCKER_MAJOR, PORTAINER_PORT, TUNNEL_APP_PORT } from "./constants";
-import type { HostFacts } from "./facts";
-import type { HostFinding } from "./types";
+import { type HostFacts, otherActiveApps, readableRecords } from "./facts";
+import type { AccessMode, HostFinding } from "./types";
+
+/** How an app of each access mode is served, for findings. */
+const SERVED: Readonly<Record<AccessMode, string>> = {
+  public: "directly on ports 80 and 443 (DNS only)",
+  "web-filter": "behind Cloudflare's proxy, with the web ports open to Cloudflare's addresses only",
+  tunnel: "through a Cloudflare Tunnel, with no web port open",
+};
 
 /** Why the login cannot change the server: it needs a password for sudo, or cannot become root. */
 export function privilegeFindings(
@@ -12,6 +19,54 @@ export function privilegeFindings(
   if (facts.privilege === "sudo-password") return [findings.sudoNeedsPassword(facts.user)];
   if (facts.privilege === "none") return [findings.noRoot(facts.user)];
   return [];
+}
+
+/**
+ * The apps whose records OpsCrew cannot rely on, so their hostnames and folders are unknown: a
+ * record file it cannot read, or an app the host record lists (`listed`) without a record file
+ * (except `app`, the one being planned: deleting its record lets its project take it again).
+ */
+export function damagedRecords(
+  apps: HostFacts["apps"],
+  listed: readonly string[],
+  app: string,
+  findings: HostFindings,
+): HostFinding[] {
+  const unreadable = apps.filter((item) => item.record === null).map((item) => item.name);
+  const missing = listed.filter((name) => name !== app && !apps.some((item) => item.name === name));
+  const damaged = [...unreadable, ...missing].sort();
+  return damaged.length > 0 ? [findings.appRecordDamaged(damaged)] : [];
+}
+
+/**
+ * Why the app `claim` cannot be recorded among `apps` (the records on the server, `listed` in the
+ * host record), each finding naming the other app: a record OpsCrew cannot rely on, the app's name
+ * used by another project, a hostname an app set up there holds, or an access mode other than
+ * theirs (the apps share the firewall, and each mode needs its own stance: open, Cloudflare only,
+ * or closed).
+ */
+export function claimFindings(
+  apps: HostFacts["apps"],
+  listed: readonly string[],
+  claim: { app: string; projectId: string; access: AccessMode; hostnames: readonly string[] },
+  findings: HostFindings,
+): HostFinding[] {
+  const found = damagedRecords(apps, listed, claim.app, findings);
+  const named = readableRecords(apps).find((record) => record.app === claim.app);
+  if (named !== undefined && named.projectId !== claim.projectId) {
+    found.push(findings.appNameTaken(claim.app, named.projectId, named.state === "data-kept"));
+  }
+  const others = otherActiveApps(apps, claim.app);
+  const wanted = new Set(claim.hostnames);
+  for (const other of others) {
+    const taken = other.hostnames.filter((hostname) => wanted.has(hostname));
+    if (taken.length > 0) found.push(findings.hostnameTaken(other.app, taken));
+  }
+  const differs = others.find((record) => record.access !== null && record.access !== claim.access);
+  if (differs?.access) {
+    found.push(findings.accessModeConflict(differs.app, differs.access, claim.access));
+  }
+  return found;
 }
 
 /** The findings of a run of one command ({@link hostFindings}). */
@@ -87,11 +142,6 @@ export function hostFindings(command: string) {
       message: `Users on this server may come from a directory service (${listText(what)}). OpsCrew cannot see whether they log in with passwords, so turning password logins off could lock them out.`,
       hint: "Make sure those users log in with SSH keys, then decide explicitly: turn password logins off anyway, or leave password logins as they are.",
     }),
-    hostRecordOtherApp: (app: string): HostFinding => ({
-      code: "host-record-other-app",
-      message: `OpsCrew prepared this server for the app "${app}" before, and its record of those host changes (/etc/opscrew/host.json) still belongs to "${app}".`,
-      hint: `Undo those host changes first with opscrew destroy --undo-host in the project of "${app}", ${rerun}.`,
-    }),
     composeProjectExists: (app: string): HostFinding => ({
       code: "compose-project-exists",
       message: `This server already has Docker containers or volumes of a Compose project named "${app}" that OpsCrew did not deploy. OpsCrew's app would take them over.`,
@@ -160,21 +210,41 @@ export function hostFindings(command: string) {
       message: `This server has packages that conflict with Docker Engine: ${listText(packages)}. Installing Docker would remove them.`,
       hint: `Remove them yourself if nothing needs them ("sudo apt-get remove ${packages.join(" ")}"), ${rerun}.`,
     }),
-    anotherApp: (app: string): HostFinding => ({
-      code: "another-app",
-      message: `This server already runs the OpsCrew app "${app}". One server runs one OpsCrew app for now; sharing a server between apps comes with a later version.`,
-      hint: `Use another server, or remove "${app}" first with opscrew destroy in its project.`,
+    appNameTaken: (app: string, projectId: string, dataKept: boolean): HostFinding => ({
+      code: "app-name-taken",
+      message: `This server already has the OpsCrew app "${app}" from another project folder (id ${projectId})${dataKept ? ", removed with its data kept" : ""}, and an app name belongs to one project.`,
+      hint: `Give this app another name (opscrew interview), or run OpsCrew from that project folder. If it is the same app checked out somewhere else and the old folder is gone, delete /etc/opscrew/apps/${app}.json on the server so this project can take over, ${rerun}.`,
     }),
-    sameAppOtherProject: (app: string, projectId: string): HostFinding => ({
-      code: "another-project",
-      message: `This server runs an OpsCrew app named "${app}" from another project folder (id ${projectId}).`,
-      hint: "Run OpsCrew from that project folder. If it is the same app checked out somewhere else and the old folder is gone, delete /etc/opscrew/app.json on the server so this project can take over.",
+    hostnameTaken: (app: string, hostnames: readonly string[]): HostFinding => ({
+      code: "hostname-taken",
+      message: `The OpsCrew app "${app}" on this server already serves ${listText(hostnames)}, and a hostname belongs to one app.`,
+      hint: `Use other hostnames for this app (opscrew interview), or remove "${app}" first with opscrew destroy in its project, ${rerun}.`,
     }),
-    markerDamaged: (): HostFinding => ({
-      code: "marker-damaged",
+    accessModeConflict: (app: string, theirs: AccessMode, mine: AccessMode): HostFinding => ({
+      code: "access-mode-conflict",
+      message: `The OpsCrew app "${app}" on this server is served ${SERVED[theirs]}, and this app would be served ${SERVED[mine]}. The apps share the server's firewall: ${theirs === "tunnel" || mine === "tunnel" ? "opening the web ports would also serve the tunnelled app's site on them, past its tunnel" : "the filter that lets only Cloudflare reach the web ports would cut the direct app off, and without it the other app is open to everyone"}.`,
+      hint: `Serve this app the same way as "${app}" (opscrew interview), or use another server for it, ${rerun}.`,
+    }),
+    reservedAppName: (app: string): HostFinding => ({
+      code: "reserved-app-name",
+      message: `The app name "${app}" is the name of OpsCrew's shared edge on every server, so an app cannot use it.`,
+      hint: `Give the app another name (opscrew interview), ${rerun}.`,
+    }),
+    appRecordDamaged: (apps: readonly string[]): HostFinding => ({
+      code: "app-record-damaged",
+      message: `OpsCrew's ${apps.length === 1 ? "record" : "records"} of ${listText(apps.map((app) => `"${app}"`))} on this server (in /etc/opscrew/apps) ${apps.length === 1 ? "is" : "are"} damaged or missing, so OpsCrew cannot tell which hostnames and folders ${apps.length === 1 ? "that app holds" : "those apps hold"}.`,
+      hint: `Look at /etc/opscrew/apps and the apps /etc/opscrew/host.json lists on the server: restore a damaged record from a backup or, when that app is no longer on the server, delete its record and its name in host.json, ${rerun}.`,
+    }),
+    appsChanged: (now: readonly string[]): HostFinding => ({
+      code: "apps-changed",
+      message: `The OpsCrew apps on this server changed since this host plan was made (now ${now.length === 0 ? "none besides this one" : listText(now.map((app) => `"${app}"`))}), and its shared parts were planned for the apps as they were, so OpsCrew changes nothing.`,
+      hint: `Run ${command} again to make a fresh host plan for the server as it is now, and approve that one.`,
+    }),
+    tunnelConnectorInUse: (): HostFinding => ({
+      code: "tunnel-connector-in-use",
       message:
-        "OpsCrew's app marker on this server (/etc/opscrew/app.json) is damaged, so OpsCrew cannot tell which app owns the server.",
-      hint: "Look at /etc/opscrew/app.json on the server. If no OpsCrew app runs there any more, delete the file and try again.",
+        "The Cloudflare Tunnel connector on this server runs the tunnel of another OpsCrew app, and replacing it would take that app offline.",
+      hint: `Serve this app directly on ports 80 and 443 (opscrew interview), or use another server for it, ${rerun}.`,
     }),
     recordDamaged: (): HostFinding => ({
       code: "host-record-damaged",
@@ -213,15 +283,10 @@ export function hostFindings(command: string) {
       message: `SSH port forwarding is turned off on this server (AllowTcpForwarding ${setting}), and the command that opens Portainer through SSH needs it.`,
       hint: `Allow local forwarding for the deploy user (a "Match User deploy" block with "AllowTcpForwarding local" at the end of /etc/ssh/sshd_config), or leave Portainer off, ${rerun}.`,
     }),
-    teardownOtherApp: (owner: string, app: string): HostFinding => ({
-      code: "teardown-other-app",
-      message: `This server belongs to the OpsCrew app "${owner}", not "${app}", so OpsCrew removes nothing from it.`,
-      hint: `Run opscrew destroy in the project of "${owner}", or check that this project points at the right server.`,
-    }),
-    appStillDeployed: (app: string): HostFinding => ({
+    appStillDeployed: (apps: readonly string[]): HostFinding => ({
       code: "app-still-deployed",
-      message: `The OpsCrew app "${app}" is still on this server, and undoing OpsCrew's host changes would break it.`,
-      hint: "Remove the app first with opscrew destroy, then undo the host changes.",
+      message: `The OpsCrew ${apps.length === 1 ? "app" : "apps"} ${listText(apps.map((app) => `"${app}"`))} ${apps.length === 1 ? "is" : "are"} still on this server, and undoing OpsCrew's host changes would break ${apps.length === 1 ? "it" : "them"}.`,
+      hint: `Remove ${apps.length === 1 ? "the app" : "each app"} first with opscrew destroy in ${apps.length === 1 ? "its project" : "their projects"}, then undo the host changes.`,
     }),
   } as const;
 }

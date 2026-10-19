@@ -2,10 +2,13 @@
  * Pure planning: from inspected facts to a host plan of fixed steps, each in place, to change or
  * blocked, plus blocking findings. No I/O; the plan holds no secrets.
  */
-import { OpsCrewError, plural, sha256Hex } from "@opscrew/core";
+import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
 import {
-  APP_DIR,
+  APPS_DIR,
+  appDirs,
   DATA_DIR,
+  EDGE_DIR,
+  EDGE_PROJECT,
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
   MIN_DOCKER_MAJOR,
@@ -13,7 +16,8 @@ import {
   PORTAINER_PORT,
   PORTAINER_PROJECT,
   PORTAINER_REPOSITORY,
-  RUNTIME_DIRS,
+  SHARED_DIRS,
+  SSHD_HEADER,
   SUPPORTED_ARCH,
   SUPPORTED_OS,
   sshdDropIn,
@@ -24,15 +28,26 @@ import {
   WEB_RULES,
 } from "./constants";
 import {
+  type AppRecord,
+  assumedApps,
   type HostFacts,
   HostFactsSchema,
   type HostRecordEntry,
+  otherActiveApps,
+  readableRecords,
   type WebFilterRules,
 } from "./facts";
-import { type HostFindings, hostFindings, privilegeFindings } from "./findings";
-import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
-import { type RunAs, stepScripts } from "./steps";
 import {
+  claimFindings,
+  damagedRecords,
+  type HostFindings,
+  hostFindings,
+  privilegeFindings,
+} from "./findings";
+import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
+import { appRecord, dataKeptRecord, type RunAs, stepScripts } from "./steps";
+import {
+  type AccessMode,
   AppNameSchema,
   type DesiredHost,
   DesiredHostSchema,
@@ -41,6 +56,7 @@ import {
   type HostPlan,
   type HostStep,
   type HostStepId,
+  ProjectIdSchema,
 } from "./types";
 import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-filter";
 
@@ -72,15 +88,33 @@ function setupEntry(facts: HostFacts, step: HostStepId): HostRecordEntry | undef
   return facts.record?.changes.find((entry) => entry.step === step && entry.purpose === "setup");
 }
 
+/** Steps that are the plan's app's own; every other step is shared by the apps on the server. */
+const APP_STEPS: ReadonlySet<HostStepId> = new Set(["deploy-key", "app-dirs", "app-record"]);
+
 function step(
   id: HostStepId,
   title: string,
   state: HostStep["state"],
   params: HostStep["params"],
   reason?: string,
+  scope: HostStep["scope"] = APP_STEPS.has(id) ? "app" : "shared",
 ): HostStep {
-  return reason === undefined ? { id, title, state, params } : { id, title, state, reason, params };
+  return reason === undefined
+    ? { id, title, state, scope, params }
+    : { id, title, state, scope, reason, params };
 }
+
+/** Compose projects OpsCrew runs: every recorded app's, the edge's, and the add-ons'. */
+function opscrewProjects(facts: HostFacts): Set<string> {
+  return new Set([
+    ...readableRecords(facts.apps).map((record) => record.composeProject),
+    EDGE_PROJECT,
+    TUNNEL_PROJECT,
+    PORTAINER_PROJECT,
+  ]);
+}
+
+const quoted = (apps: readonly AppRecord[]) => listText(apps.map((record) => `"${record.app}"`));
 
 /** Plain findings that make the rest of the facts unreliable; every step is blocked. */
 function fatalFindings(facts: HostFacts, findings: HostFindings): HostFinding[] {
@@ -97,7 +131,6 @@ function fatalFindings(facts: HostFacts, findings: HostFindings): HostFinding[] 
   }
   if (!facts.systemd) found.push(findings.noSystemd());
   if (facts.recordDamaged) found.push(findings.recordDamaged());
-  if (facts.markerDamaged) found.push(findings.markerDamaged());
   return found;
 }
 
@@ -105,9 +138,9 @@ function isWebPort(proto: string, port: number): boolean {
   return (proto === "tcp" && (port === 80 || port === 443)) || (proto === "udp" && port === 443);
 }
 
-/** What listens on 80/443 that is not OpsCrew's own app. */
-function webPortUsers(facts: HostFacts, app: string): string[] {
-  const ours = (project: string) => project === app && facts.marker?.app === app;
+/** What listens on 80/443 that is not OpsCrew's (the apps' Compose projects and the edge). */
+function webPortUsers(facts: HostFacts, projects: ReadonlySet<string>): string[] {
+  const ours = (project: string) => projects.has(project);
   const users = new Set<string>();
   for (const listener of facts.listeners) {
     if (!isWebPort(listener.proto, listener.port) || isLoopback(listener.address)) continue;
@@ -133,9 +166,9 @@ function webPortUsers(facts: HostFacts, app: string): string[] {
 
 /**
  * What holds a local-only port OpsCrew needs (18080 for the app in tunnel mode, 9443 for
- * Portainer), on any address, other than the Compose project `ownProject`.
+ * Portainer), on any address, other than the Compose projects `own`.
  */
-function localPortUsers(facts: HostFacts, port: number, ownProject: string | null): string[] {
+function localPortUsers(facts: HostFacts, port: number, own: ReadonlySet<string>): string[] {
   const users = new Set<string>();
   const anyContainer = facts.containers.some((container) =>
     publishesPort(container.ports, port, true),
@@ -149,7 +182,7 @@ function localPortUsers(facts: HostFacts, port: number, ownProject: string | nul
     users.add(listener.process || "another program");
   }
   for (const container of facts.containers) {
-    if (container.project === ownProject) continue;
+    if (own.has(container.project)) continue;
     if (publishesPort(container.ports, port, true)) users.add(`the container ${container.name}`);
   }
   return [...users];
@@ -231,11 +264,11 @@ function keyId(line: string): string {
 
 const TITLES = {
   docker: `Docker Engine ${MIN_DOCKER_MAJOR} or newer and the Compose plugin from Docker's repository`,
-  deployUser: "Deploy user with the deploy key and Docker access",
+  deployUser: "Deploy user with Docker access",
   sshd: "SSH hardening",
   ufw: "Firewall (ufw)",
   upgrades: "Turn on automatic security updates",
-  runtime: "Create /srv/app and /srv/data for the app, owned by deploy",
+  runtime: `Create ${listText([...SHARED_DIRS])}, shared by the apps, owned by deploy`,
   tunnel: "Run the Cloudflare Tunnel connector",
   portainer: "Run Portainer CE",
   removeWebFilter: "Remove OpsCrew's web filter for Cloudflare's addresses",
@@ -249,6 +282,17 @@ interface SetupContext {
   desired: DesiredHost;
   found: HostFinding[];
   findings: HostFindings;
+  /**
+   * The other apps set up on the server. While there are any, a shared part that is there stays
+   * as it is: it is planned only when missing, and never removed or rewritten for this app.
+   */
+  others: AppRecord[];
+  /** This app's record, when it is this project's (set up, or removed with its data kept). */
+  own: AppRecord | null;
+  /** Compose projects that are OpsCrew's (see {@link opscrewProjects}), this app's when `own`. */
+  projects: ReadonlySet<string>;
+  /** Why this app cannot be recorded on the server (its name or a hostname is taken). */
+  conflict: string | undefined;
 }
 
 function dockerStep({ facts, found, findings }: SetupContext): HostStep {
@@ -337,11 +381,10 @@ function packageRepairStep(facts: HostFacts): HostStep | undefined {
 }
 
 /**
- * Containers (running or stopped) and volume-only Compose projects OpsCrew did not create: not the
- * app's Compose project and not its add-ons (tunnel connector, Portainer). Sorted, at most `max`.
+ * Containers (running or stopped) and volume-only Compose projects OpsCrew did not create: not
+ * the Compose projects `ours` (the apps', the edge's and the add-ons'). Sorted, at most `max`.
  */
-function usersContainers(facts: HostFacts, app: string, max = 5): string[] {
-  const ours = new Set([app, TUNNEL_PROJECT, PORTAINER_PROJECT]);
+function usersContainers(facts: HostFacts, ours: ReadonlySet<string>, max = 5): string[] {
   const names = new Set<string>();
   for (const container of facts.containers) {
     if (!ours.has(container.project)) names.add(container.name);
@@ -355,7 +398,7 @@ function usersContainers(facts: HostFacts, app: string, max = 5): string[] {
   return sorted.length > max ? [...sorted.slice(0, max), `${sorted.length - max} more`] : sorted;
 }
 
-function dockerDaemonStep({ facts, desired }: SetupContext): HostStep {
+function dockerDaemonStep({ facts, desired, projects }: SetupContext): HostStep {
   const title = "Docker daemon settings: log rotation, no-new-privileges, live-restore";
   const params = { path: "/etc/docker/daemon.json" };
   if (facts.dockerDaemonJson === "opscrew") {
@@ -395,7 +438,7 @@ function dockerDaemonStep({ facts, desired }: SetupContext): HostStep {
   }
   // Daemon-wide defaults would change how the user's own containers log and run once they are
   // created again; OpsCrew's services set log rotation and no-new-privileges in their Compose files.
-  const others = usersContainers(facts, desired.app);
+  const others = usersContainers(facts, new Set([...projects, desired.app]));
   if (others.length > 0) {
     return step(
       "docker-daemon",
@@ -443,19 +486,24 @@ function fail2banStep({ facts, desired }: SetupContext): HostStep {
   );
 }
 
+/** A deploy user exists that OpsCrew did not create (OpsCrew never takes it over). */
+function foreignDeployUser(facts: HostFacts): boolean {
+  return facts.deployUser !== null && setupEntry(facts, "deploy-user")?.previous.existed !== false;
+}
+
 function deployUserStep({ facts, desired, found, findings }: SetupContext): HostStep {
-  const params = { user: desired.deploy.user, publicKey: desired.deploy.publicKey };
+  const params = { user: desired.deploy.user };
   const existing = facts.deployUser;
   if (existing === null) {
     return step(
       "deploy-user",
-      "Create the deploy user with the deploy key and Docker access",
+      "Create the deploy user with Docker access",
       "change",
       params,
       "GitHub Actions deploys as this non-root user; it gets no password and joins the docker group.",
     );
   }
-  if (setupEntry(facts, "deploy-user")?.previous.existed !== false) {
+  if (foreignDeployUser(facts)) {
     found.push(findings.deployUserExists());
     return step(
       "deploy-user",
@@ -465,33 +513,51 @@ function deployUserStep({ facts, desired, found, findings }: SetupContext): Host
       "A deploy user exists that OpsCrew did not create.",
     );
   }
-  // OpsCrew owns this user, so its authorized_keys holds exactly the current deploy key.
-  const onlyKey = existing.keys.length === 1 && existing.keys[0] === desired.deploy.publicKey;
-  const hasKey = existing.keys.some((line) => keyId(line) === keyId(desired.deploy.publicKey));
-  const inDocker = existing.groups.includes("docker");
-  if (onlyKey && inDocker) {
-    return step(
-      "deploy-user",
-      TITLES.deployUser,
-      "in-place",
-      params,
-      "The deploy user has the deploy key and Docker access.",
-    );
+  if (existing.groups.includes("docker")) {
+    return step("deploy-user", TITLES.deployUser, "in-place", params, "Already there.");
   }
   return step(
     "deploy-user",
-    "Give the deploy user the deploy key and Docker access",
+    "Give the deploy user Docker access",
     "change",
     params,
-    !inDocker && onlyKey
-      ? "The deploy user is not in the docker group."
-      : hasKey
-        ? "authorized_keys is rewritten with exactly the current deploy key (other keys are revoked)."
-        : "The deploy key changed: authorized_keys is rewritten with the new key, so the old one stops working.",
+    "The deploy user is not in the docker group.",
   );
 }
 
-function sshdStep({ facts, desired, found, findings }: SetupContext): HostStep {
+/** Each key once, sorted: the deploy user's authorized_keys as OpsCrew writes it. */
+function keyList(keys: readonly string[]): string[] {
+  return [...new Set(keys.filter((key) => key !== ""))].sort();
+}
+
+/**
+ * The app's own deploy key: the deploy user's authorized_keys holds exactly the deploy keys of
+ * the apps on the server, this app's current one included, so an app's old key stops working.
+ */
+function deployKeyStep({ facts, desired, others }: SetupContext): HostStep {
+  const keys = keyList([desired.deploy.publicKey, ...others.map((record) => record.deployKey)]);
+  const params = { user: desired.deploy.user, keys: keys.join("\n") };
+  const title = `Authorize the deploy key of "${desired.app}" for the deploy user`;
+  if (foreignDeployUser(facts)) {
+    return step("deploy-key", title, "blocked", params, "The deploy user is not OpsCrew's.");
+  }
+  const current = facts.deployUser?.keys ?? [];
+  if (current.join("\n") === params.keys) {
+    return step("deploy-key", title, "in-place", params, "Already authorized.");
+  }
+  const hasKey = current.some((line) => keyId(line) === keyId(desired.deploy.publicKey));
+  const revoked = current.some((line) => !keys.includes(line));
+  const reason = [
+    hasKey ? "" : `GitHub Actions deploys "${desired.app}" as the deploy user with this key.`,
+    revoked
+      ? "authorized_keys then holds exactly the deploy keys of the apps on this server, so any other key (an old deploy key too) stops working."
+      : "",
+    others.length > 0 ? `The deploy keys of ${quoted(others)} stay.` : "",
+  ];
+  return step("deploy-key", title, "change", params, reason.filter(Boolean).join(" "));
+}
+
+function sshdStep({ facts, desired, found, findings, others }: SetupContext): HostStep {
   const sshd = facts.sshd;
   const permitRootLogin = desired.admin.isRoot ? "prohibit-password" : "no";
   const rootText = desired.admin.isRoot
@@ -503,6 +569,20 @@ function sshdStep({ facts, desired, found, findings }: SetupContext): HostStep {
   }
   const blockedBy = deployBlockedBy(sshd);
   if (blockedBy !== null) found.push(findings.sshdDeploysBlocked(blockedBy));
+  // The other apps' setup chose these settings; this app never weakens or changes them.
+  if (others.length > 0 && sshd.dropIn?.startsWith(SSHD_HEADER) && !facts.pendingUndo.sshd) {
+    return step(
+      "sshd",
+      TITLES.sshd,
+      "in-place",
+      {
+        permitRootLogin: sshd.permitRootLogin,
+        disablePasswords: !sshd.passwordAuthentication,
+        kbdInteractiveOff: !sshd.kbdInteractiveAuthentication,
+      },
+      `SSH is already hardened for ${quoted(others)}; OpsCrew leaves it as it is.`,
+    );
+  }
 
   const lacking = facts.loginUsers
     .filter((user) => user.uid !== 0 && user.password && !user.keys)
@@ -628,6 +708,7 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
     found.push(findings.otherFirewall(facts.firewall.foreign));
     return step("ufw", TITLES.ufw, "blocked", params, "Another firewall manages this server.");
   }
+  // The apps on a server share one access mode (see conflicts): web rules no app needs go.
   const staleWeb = web
     ? []
     : facts.firewall.ufwRules.filter((rule) => rule.comment === UFW_WEB_COMMENT);
@@ -704,6 +785,8 @@ const TITLE_WEB_FILTER =
  */
 function webFilterStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
   const wf = facts.webFilter;
+  // The apps on a server share one access mode (see conflicts): no other app needs a filter
+  // this app does not want.
   if (desired.webFilter === undefined) {
     if (!webFilterPresent(facts)) return undefined;
     return step(
@@ -768,10 +851,15 @@ function upgradesStep({ facts }: SetupContext): HostStep {
   );
 }
 
+const deployOwned = (dir: HostFacts["dirs"][number] | undefined) =>
+  dir?.kind === "dir" && dir.owner === "deploy" && dir.group === "deploy" && dir.mode === "750";
+
+/** The folders the apps share: created once, by the first app. */
 function runtimeStep({ facts, found, findings }: SetupContext): HostStep {
   const ours = setupEntry(facts, "runtime-dirs") !== undefined;
   const params = { owner: "deploy" };
-  const foreign = facts.dirs.filter(
+  const dirs = facts.dirs.filter((dir) => (SHARED_DIRS as readonly string[]).includes(dir.path));
+  const foreign = dirs.filter(
     (dir) => dir.kind === "link" || dir.kind === "other" || (dir.kind === "dir" && !ours),
   );
   if (foreign.length > 0) {
@@ -784,51 +872,86 @@ function runtimeStep({ facts, found, findings }: SetupContext): HostStep {
       "The directories already exist.",
     );
   }
-  const ready = facts.dirs.every(
-    (dir) =>
-      dir.kind === "dir" && dir.owner === "deploy" && dir.group === "deploy" && dir.mode === "750",
-  );
-  return ready
+  return dirs.every(deployOwned)
     ? step("runtime-dirs", TITLES.runtime, "in-place", params, "Already there.")
     : step(
         "runtime-dirs",
         TITLES.runtime,
         "change",
         params,
-        "The deploy workflow copies the app's runtime files to /srv/app; databases keep their data in /srv/data.",
+        `${EDGE_DIR} holds the shared edge (Caddy and kamal-proxy) the apps sit behind; each app gets its own folder in ${APPS_DIR} and ${DATA_DIR}.`,
       );
 }
 
-function markerStep({ facts, desired, found, findings }: SetupContext): HostStep {
-  // A Compose project named like the app may only exist when OpsCrew deployed this app here before
-  // (its record says so, for example data kept by a teardown); the apply checks again.
-  const ownProject =
-    facts.record?.app === desired.app &&
-    (facts.record.projectId === "" || facts.record.projectId === desired.projectId);
-  const params = { app: desired.app, projectId: desired.projectId, ownProject };
-  const title = `Mark this server as running the OpsCrew app "${desired.app}"`;
-  const marker = facts.marker;
-  if (marker === null) {
-    return step(
-      "app-marker",
-      title,
-      "change",
-      params,
-      "Writes /etc/opscrew/app.json (one server runs one OpsCrew app) and /var/lib/opscrew-ready, the flag that says the setup finished.",
-    );
+/** The app's own folders, inside the shared ones. */
+function appDirsStep({ facts, desired, found, findings }: SetupContext): HostStep {
+  const dirs = appDirs(desired.app);
+  const params = { app: desired.app };
+  const title = `Create ${dirs.app} and ${dirs.data} for "${desired.app}", owned by deploy`;
+  const mine = facts.dirs.filter((dir) => dir.path === dirs.app || dir.path === dirs.data);
+  const odd = mine.filter((dir) => dir.kind === "link" || dir.kind === "other");
+  if (odd.length > 0) {
+    found.push(findings.runtimeDirExists(odd.map((dir) => dir.path)));
+    return step("app-dirs", title, "blocked", params, "They are not plain directories.");
   }
-  if (marker.app === desired.app && marker.projectId === desired.projectId) {
-    if (!facts.ready) {
-      return step("app-marker", title, "change", params, "The setup-finished flag is missing.");
-    }
-    return step("app-marker", title, "in-place", params, "Already marked.");
+  const at = (path: string) => mine.find((dir) => dir.path === path);
+  if (deployOwned(at(dirs.app)) && deployOwned(at(dirs.data))) {
+    return step("app-dirs", title, "in-place", params, "Already there.");
   }
-  found.push(
-    marker.app === desired.app
-      ? findings.sameAppOtherProject(marker.app, marker.projectId)
-      : findings.anotherApp(marker.app),
+  const kept =
+    (at(dirs.data)?.entries ?? 0) > 0
+      ? " Its data folder already holds files (kept when the app was removed before); the app uses them again."
+      : "";
+  return step(
+    "app-dirs",
+    title,
+    "change",
+    params,
+    `The deploy workflow copies the app's runtime files to ${dirs.app}; its databases keep their data in ${dirs.data}.${kept}`,
   );
-  return step("app-marker", title, "blocked", params, `The server belongs to "${marker.app}".`);
+}
+
+/** The app's record, which also lists it in the host record. */
+function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostStep {
+  const access = accessMode(desired);
+  const record = appRecord({
+    app: desired.app,
+    projectId: desired.projectId,
+    access,
+    hostnames: desired.hostnames,
+    services: desired.services,
+    memoryMb: desired.memoryMb,
+    deployKey: desired.deploy.publicKey,
+  });
+  // A Compose project named like the app may only exist when it is this project's (for example
+  // data kept by a teardown); the apply checks again.
+  const params = {
+    app: record.app,
+    projectId: record.projectId,
+    access,
+    hostnames: record.hostnames.join(" "),
+    services: record.services.join(" "),
+    memoryMb: record.memoryMb,
+    deployKey: record.deployKey,
+    ownProject: own !== null,
+  };
+  const title = `Record the OpsCrew app "${desired.app}" on this server`;
+  if (conflict !== undefined) return step("app-record", title, "blocked", params, conflict);
+  if (
+    own !== null &&
+    canonicalJson(own) === canonicalJson(record) &&
+    (facts.record?.apps ?? []).includes(desired.app) &&
+    facts.ready
+  ) {
+    return step("app-record", title, "in-place", params, "Already recorded.");
+  }
+  return step(
+    "app-record",
+    title,
+    "change",
+    params,
+    `Writes /etc/opscrew/apps/${desired.app}.json with how it is served, its hostnames, folders, Compose project, services and memory limits (the next app's checks read it), lists the app in /etc/opscrew/host.json, and sets /var/lib/opscrew-ready, the flag that says the setup finished.`,
+  );
 }
 
 /** ` (<image>)` for the image a rendered Compose file names first, for a step title. */
@@ -842,11 +965,19 @@ function imageIn(compose: string): string {
  * subdomain in either mode (the tunnel then serves only Portainer's hostname). Without one, a
  * connector OpsCrew left behind is removed.
  */
-function tunnelStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
+function tunnelStep({
+  facts,
+  desired,
+  found,
+  findings,
+  others,
+  projects,
+}: SetupContext): HostStep | undefined {
   const tunnel = facts.tunnel;
   const tunnelMode = desired.access === "tunnel";
   if (desired.tunnel === undefined) {
-    if (!tunnel.installed && !tunnel.running) return undefined;
+    // Another app on the server may use it.
+    if ((!tunnel.installed && !tunnel.running) || others.length > 0) return undefined;
     return step(
       "tunnel-connector",
       TITLES.removeTunnel,
@@ -856,11 +987,7 @@ function tunnelStep({ facts, desired, found, findings }: SetupContext): HostStep
     );
   }
   if (tunnelMode) {
-    const busy = localPortUsers(
-      facts,
-      TUNNEL_APP_PORT,
-      facts.marker?.app === desired.app ? desired.app : null,
-    );
+    const busy = localPortUsers(facts, TUNNEL_APP_PORT, projects);
     if (busy.length > 0) found.push(findings.tunnelPortInUse(busy));
     // The tunnel reaches SSH at ssh://localhost:<port>: sshd must listen on loopback or everywhere.
     const sshPorts = realSshPorts(facts, desired);
@@ -892,6 +1019,10 @@ function tunnelStep({ facts, desired, found, findings }: SetupContext): HostStep
     return step("tunnel-connector", title, "in-place", params, "Already running.");
   }
   if (tunnel.installed && tunnel.tunnelId !== null && !sameTunnel) {
+    if (others.length > 0) {
+      found.push(findings.tunnelConnectorInUse());
+      return step("tunnel-connector", title, "blocked", params, "It runs another app's tunnel.");
+    }
     return step(
       "tunnel-connector",
       title,
@@ -912,10 +1043,17 @@ function tunnelStep({ facts, desired, found, findings }: SetupContext): HostStep
   );
 }
 
-function portainerStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
+function portainerStep({
+  facts,
+  desired,
+  found,
+  findings,
+  others,
+}: SetupContext): HostStep | undefined {
   const portainer = facts.portainer;
   if (desired.portainer === undefined) {
-    if (!portainer.installed && !portainer.running) return undefined;
+    // Another app on the server may use it.
+    if ((!portainer.installed && !portainer.running) || others.length > 0) return undefined;
     return step(
       "portainer",
       TITLES.removePortainer,
@@ -934,7 +1072,16 @@ function portainerStep({ facts, desired, found, findings }: SetupContext): HostS
     needsPassword: !portainer.dataVolume,
   };
   const title = `${TITLES.portainer} ${version} (${PORTAINER_REPOSITORY}), reachable only from the server itself (127.0.0.1:${PORTAINER_PORT})`;
-  const busy = localPortUsers(facts, PORTAINER_PORT, PORTAINER_PROJECT);
+  if (portainer.installed && portainer.running && others.length > 0) {
+    return step(
+      "portainer",
+      title,
+      "in-place",
+      params,
+      `Portainer already runs on this server for ${quoted(others)}; OpsCrew leaves it as it is.`,
+    );
+  }
+  const busy = localPortUsers(facts, PORTAINER_PORT, new Set([PORTAINER_PROJECT]));
   if (busy.length > 0) {
     found.push(findings.portainerPortInUse(busy));
     return step("portainer", title, "blocked", params, `Port ${PORTAINER_PORT} is in use.`);
@@ -971,6 +1118,7 @@ function allBlocked(desired: DesiredHost): HostStep[] {
     step("docker", TITLES.docker, "blocked", {}, reason),
     step("docker-daemon", "Docker daemon settings", "blocked", {}, reason),
     step("deploy-user", TITLES.deployUser, "blocked", {}, reason),
+    step("deploy-key", `Authorize the deploy key of "${desired.app}"`, "blocked", {}, reason),
     step("sshd", TITLES.sshd, "blocked", {}, reason),
     step("ufw", TITLES.ufw, "blocked", {}, reason),
     ...(desired.webFilter !== undefined
@@ -979,13 +1127,8 @@ function allBlocked(desired: DesiredHost): HostStep[] {
     step("fail2ban", "Brute-force protection (fail2ban)", "blocked", {}, reason),
     step("unattended-upgrades", TITLES.upgrades, "blocked", {}, reason),
     step("runtime-dirs", TITLES.runtime, "blocked", {}, reason),
-    step(
-      "app-marker",
-      `Mark this server as running the OpsCrew app "${desired.app}"`,
-      "blocked",
-      {},
-      reason,
-    ),
+    step("app-dirs", `Create the folders of "${desired.app}"`, "blocked", {}, reason),
+    step("app-record", `Record the OpsCrew app "${desired.app}"`, "blocked", {}, reason),
   ];
   if (desired.tunnel !== undefined) {
     steps.push(step("tunnel-connector", TITLES.tunnel, "blocked", {}, reason));
@@ -994,12 +1137,37 @@ function allBlocked(desired: DesiredHost): HostStep[] {
   return steps;
 }
 
+/** How the desired app is served: through a tunnel, behind the web filter, or directly. */
+function accessMode(desired: DesiredHost): AccessMode {
+  if (desired.access === "tunnel") return "tunnel";
+  return desired.webFilter !== undefined ? "web-filter" : "public";
+}
+
 /**
- * The host plan that prepares the server for `desired`: Docker, the deploy user, SSH hardening,
- * ufw, automatic updates, the runtime directories, the app marker and, when asked for, the tunnel
- * connector and Portainer. Each step is in place, a change or blocked; every blocked step comes
- * with a finding that says what was found and what to do, and to run `command` (for example
- * `opscrew provision`) again once it is fixed.
+ * Refusals before any change, each naming the other app: the reserved name, then what
+ * {@link claimFindings} finds. Returns why the app cannot be recorded, or undefined.
+ */
+function conflicts(
+  facts: HostFacts,
+  desired: DesiredHost,
+  findings: HostFindings,
+  found: HostFinding[],
+): string | undefined {
+  const before = found.length;
+  if (desired.app === EDGE_PROJECT) found.push(findings.reservedAppName(desired.app));
+  const claim = { ...desired, access: accessMode(desired) };
+  found.push(...claimFindings(facts.apps, facts.record?.apps ?? [], claim, findings));
+  return found.length > before ? "See the findings." : undefined;
+}
+
+/**
+ * The host plan that prepares the server for `desired`. Each step is shared by the apps on the
+ * server (Docker, the deploy user, SSH hardening, ufw, the web filter, fail2ban, automatic
+ * updates, the shared folders and, when asked for, the tunnel connector and Portainer) or the
+ * app's own (its deploy key, its folders and its record). While other apps are on the server,
+ * a shared part that is there stays as it is: it is planned only when missing. Each step is in
+ * place, a change or blocked; every blocked step comes with a finding that says what was found
+ * and what to do, and to run `command` (for example `opscrew provision`) again once it is fixed.
  */
 export function planHost(facts: HostFacts, desired: DesiredHost, command: string): HostPlan {
   const f = parseFacts(facts);
@@ -1013,161 +1181,227 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
       );
     }
   }
+  const others = otherActiveApps(f.apps, d.app);
   const setup = (steps: HostStep[], found: HostFinding[]): HostPlan => ({
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
     purpose: "setup",
     app: d.app,
     steps,
     findings: found,
+    otherApps: assumedApps(others),
   });
   const findings = hostFindings(command);
   const fatal = fatalFindings(f, findings);
   if (fatal.length > 0) return setup(allBlocked(d), fatal);
-  const ctx: SetupContext = { facts: f, desired: d, found: [], findings };
-  const sameApp = (owner: { app: string; projectId: string } | null | undefined) =>
-    owner?.app === d.app && (owner.projectId === "" || owner.projectId === d.projectId);
-  // The host record belongs to another app (its marker is gone but its host changes remain).
-  if (f.record !== null && f.record.app !== "" && !sameApp(f.record)) {
-    if (f.marker === null || sameApp(f.marker)) {
-      ctx.found.push(findings.hostRecordOtherApp(f.record.app));
-    }
-  }
-  // A Compose project with the app's name that OpsCrew did not deploy would be taken over.
-  const ours = sameApp(f.marker) || sameApp(f.record);
+  const found: HostFinding[] = [];
+  const conflict = conflicts(f, d, findings, found);
+  const own =
+    readableRecords(f.apps).find(
+      (record) => record.app === d.app && record.projectId === d.projectId,
+    ) ?? null;
+  const projects = opscrewProjects(f);
+  const ctx: SetupContext = {
+    facts: f,
+    desired: d,
+    found,
+    findings,
+    others,
+    own,
+    projects,
+    conflict,
+  };
+  const ours = own !== null;
   // A stopped dockerd hides its containers and volumes: never start it from an inspection.
   if (f.docker.kind === "docker-repo" && !f.docker.running && !ours) {
-    ctx.found.push(findings.dockerStopped());
+    found.push(findings.dockerStopped());
   }
-  if (!f.flock) ctx.found.push(findings.noFlock());
+  if (!f.flock) found.push(findings.noFlock());
+  // A Compose project with the app's name that OpsCrew did not deploy would be taken over (one
+  // another project's app of that name runs is refused as a taken name).
   if (
-    !ours &&
+    !readableRecords(f.apps).some((record) => record.app === d.app) &&
     (f.containers.some((container) => container.project === d.app) ||
       f.volumeProjects.includes(d.app))
   ) {
-    ctx.found.push(findings.composeProjectExists(d.app));
+    found.push(findings.composeProjectExists(d.app));
   }
   if (d.access === "public") {
-    const users = webPortUsers(f, d.app);
-    if (users.length > 0) ctx.found.push(findings.portsInUse(users));
+    const users = webPortUsers(f, projects);
+    if (users.length > 0) found.push(findings.portsInUse(users));
   }
   const steps = [
     packageRepairStep(f),
     dockerStep(ctx),
     dockerDaemonStep(ctx),
     deployUserStep(ctx),
+    deployKeyStep(ctx),
     sshdStep(ctx),
     ufwStep(ctx),
     webFilterStep(ctx),
     fail2banStep(ctx),
     upgradesStep(ctx),
     runtimeStep(ctx),
-    markerStep(ctx),
+    appDirsStep(ctx),
+    appRecordStep(ctx),
     tunnelStep(ctx),
     portainerStep(ctx),
   ].filter((item): item is HostStep => item !== undefined);
-  return setup(steps, ctx.found);
+  return setup(steps, found);
 }
 
 /**
- * The host plan that removes the app from the server: its containers and runtime files, the
- * tunnel connector and Portainer, and the app marker. App data (/srv/data, Compose volumes,
- * Portainer's data) is deleted only with `deleteData`. The server itself is never touched.
- *
- * The app is `opts.app` (the deploy plan's app name), the one the marker (`/etc/opscrew/app.json`)
- * names, or when the marker is missing the one OpsCrew's host record names; so without a marker
- * the app's containers (by their Compose project label) and /srv/app still go. When the marker or
- * the record names another app, the plan removes nothing and says why. Findings say to run
- * `command` (for example `opscrew destroy`) again once fixed.
+ * The host plan that removes the app `opts.app` from the server, and only its own parts: its
+ * containers (by their Compose project label, so they go without a record too), its folder
+ * `/srv/apps/<app>`, its deploy key while other apps stay, and its record. Its data
+ * (`/srv/data/<app>`, its Compose volumes) is deleted only with `deleteData`; otherwise its record
+ * stays as `data-kept`, so only its project can take the data again. With the last app the shared
+ * edge goes too (the `opscrew-edge` project's containers, network and volumes, and `/srv/edge`
+ * when OpsCrew created it), and the tunnel connector and Portainer (its data only with
+ * `deleteData`). The server itself and OpsCrew's host settings stay (`planUndo` reverses those).
+ * Nothing is removed when the app's record names another project (`opts.projectId` is this
+ * one's). Findings say to run `command` (for example `opscrew destroy`) again once fixed.
  */
 export function planTeardown(
   facts: HostFacts,
-  opts: { deleteData: boolean; app: string },
+  opts: { deleteData: boolean; app: string; projectId: string },
   command: string,
 ): HostPlan {
   const f = parseFacts(facts);
-  if (!AppNameSchema.safeParse(opts.app).success) {
+  if (
+    !AppNameSchema.safeParse(opts.app).success ||
+    !ProjectIdSchema.safeParse(opts.projectId).success
+  ) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "The app name must be lower-case letters, digits and dashes.",
+      "The app name must be lower-case letters, digits and dashes, with a project id.",
     );
   }
-  const deleteData = opts.deleteData;
+  const { app, deleteData, projectId } = opts;
   const findings = hostFindings(command);
-  const found = privilegeFindings(f, findings);
-  if (f.markerDamaged) found.push(findings.markerDamaged());
-  // Who the server belongs to: the marker, else the host record (both empty when unknown).
-  const owner = f.marker?.app || (f.marker === null ? (f.record?.app ?? "") : "");
-  if (owner !== "" && owner !== opts.app) {
-    found.push(findings.teardownOtherApp(owner, opts.app));
-    return {
-      schemaVersion: HOST_PLAN_SCHEMA_VERSION,
-      purpose: "teardown",
-      app: opts.app,
-      steps: [],
-      findings: found,
-      deleteData,
-    };
-  }
-  const app = owner || (f.markerDamaged ? "" : opts.app);
-  const steps: HostStep[] = [];
-  if (app !== "") {
-    const appDir = f.dirs.find((dir) => dir.path === APP_DIR);
-    const dataDir = f.dirs.find((dir) => dir.path === DATA_DIR);
-    const containers = f.containers.filter((container) => container.project === app);
-    const busy =
-      containers.length > 0 ||
-      (appDir?.entries ?? 0) > 0 ||
-      (deleteData && (dataDir?.entries ?? 0) > 0);
-    steps.push(
-      step(
-        "runtime-dirs",
-        deleteData
-          ? `Remove the app "${app}": its containers, runtime files in /srv/app, and its data in /srv/data and Compose volumes`
-          : `Remove the app "${app}": its containers and runtime files in /srv/app (its data in /srv/data and Compose volumes stay)`,
-        busy ? "change" : "in-place",
-        { app, deleteData },
-        busy
-          ? `${plural(containers.length, "container")} of the app; runtime files in /srv/app.`
-          : "Nothing of the app is left.",
-      ),
-    );
-  }
-  if (f.tunnel.installed) {
-    steps.push(
-      step("tunnel-connector", `${TITLES.removeTunnel} and its token file`, "change", {
-        remove: true,
-      }),
-    );
-  }
-  if (f.portainer.installed || (deleteData && f.portainer.dataVolume)) {
-    steps.push(
-      step(
-        "portainer",
-        deleteData ? TITLES.removePortainerData : TITLES.removePortainer,
-        "change",
-        { remove: true, deleteData },
-      ),
-    );
-  }
-  if (f.marker !== null) {
-    steps.push(
-      step(
-        "app-marker",
-        `Remove the marker that binds this server to "${app}"`,
-        "change",
-        {},
-        "The server itself, Docker and OpsCrew's host settings stay; undo those separately if you want.",
-      ),
-    );
-  }
-  return {
+  const listed = f.record?.apps ?? [];
+  // Without every record OpsCrew cannot tell whether this is the last app.
+  const found = [
+    ...privilegeFindings(f, findings),
+    ...damagedRecords(f.apps, listed, app, findings),
+  ];
+  const own = readableRecords(f.apps).find((record) => record.app === app) ?? null;
+  const others = otherActiveApps(f.apps, app);
+  const plan = (steps: HostStep[]): HostPlan => ({
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
     purpose: "teardown",
     app,
     steps,
     findings: found,
     deleteData,
-  };
+    otherApps: assumedApps(others),
+  });
+  if (own !== null && own.projectId !== projectId) {
+    found.push(findings.appNameTaken(app, own.projectId, own.state === "data-kept"));
+    return plan([]);
+  }
+  const last = others.length === 0;
+  const dirs = appDirs(app);
+  const dir = (path: string) => f.dirs.find((item) => item.path === path);
+  const containers = f.containers.filter((container) => container.project === app);
+  const volumes = f.volumeProjects.includes(app);
+  const dataFiles = (dir(dirs.data)?.entries ?? 0) > 0;
+  const steps: HostStep[] = [];
+
+  // Data goes only together with the app (its containers or its folder, or files in its data
+  // folder), or with its record: never Compose volumes alone, which could be another project's.
+  const busy =
+    containers.length > 0 ||
+    dir(dirs.app) !== undefined ||
+    (deleteData && (dataFiles || (own !== null && volumes)));
+  steps.push(
+    step(
+      "app-dirs",
+      deleteData
+        ? `Remove the app "${app}": its containers, ${dirs.app}, and its data in ${dirs.data} and Compose volumes`
+        : `Remove the app "${app}": its containers and ${dirs.app} (its data in ${dirs.data} and Compose volumes stay)`,
+      busy ? "change" : "in-place",
+      { app, deleteData },
+      busy
+        ? `${plural(containers.length, "container")} of the app; its runtime files in ${dirs.app}.`
+        : "Nothing of the app is left.",
+    ),
+  );
+  const keys = keyList(others.map((record) => record.deployKey));
+  if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
+    steps.push(
+      step(
+        "deploy-key",
+        `Remove the deploy key of "${app}" from the deploy user`,
+        "change",
+        { user: "deploy", keys: keys.join("\n") },
+        `The deploy keys of ${quoted(others)} stay.`,
+      ),
+    );
+  }
+  if (last) {
+    // The folder goes only when OpsCrew created it; a /srv/edge of the user's own stays.
+    const removeDir =
+      setupEntry(f, "runtime-dirs")?.previous.edge === "absent" && dir(EDGE_DIR)?.kind !== "absent";
+    const edge =
+      removeDir ||
+      f.containers.some((container) => container.project === EDGE_PROJECT) ||
+      f.volumeProjects.includes(EDGE_PROJECT);
+    if (edge) {
+      steps.push(
+        step(
+          "edge",
+          removeDir
+            ? `Remove the shared edge in ${EDGE_DIR} (Caddy and kamal-proxy): its containers, network and volumes, and the folder`
+            : `Remove the shared edge (Caddy and kamal-proxy, Compose project ${EDGE_PROJECT}): its containers, network and volumes`,
+          "change",
+          { removeDir },
+          removeDir
+            ? "No other OpsCrew app is left on this server."
+            : `No other OpsCrew app is left on this server. ${EDGE_DIR} stays: it was there before OpsCrew.`,
+        ),
+      );
+    }
+    if (f.tunnel.installed) {
+      steps.push(
+        step("tunnel-connector", `${TITLES.removeTunnel} and its token file`, "change", {
+          remove: true,
+        }),
+      );
+    }
+    if (f.portainer.installed || (deleteData && f.portainer.dataVolume)) {
+      steps.push(
+        step(
+          "portainer",
+          deleteData ? TITLES.removePortainerData : TITLES.removePortainer,
+          "change",
+          { remove: true, deleteData },
+        ),
+      );
+    }
+  }
+  const isListed = listed.includes(app);
+  const keepData = !deleteData && own !== null && (dataFiles || volumes);
+  if (keepData) {
+    const kept = dataKeptRecord(app, projectId);
+    steps.push(
+      step(
+        "app-record",
+        `Record that only the data of "${app}" stays on this server`,
+        canonicalJson(own) === canonicalJson(kept) && !isListed ? "in-place" : "change",
+        { app, keepData: true, projectId },
+        "Its hostnames are free for other apps; its name stays with its project, which can take the data again.",
+      ),
+    );
+  } else if (own !== null || isListed) {
+    steps.push(
+      step("app-record", `Remove the record of "${app}" from this server`, "change", {
+        app,
+        keepData: false,
+        projectId,
+      }),
+    );
+  }
+  return plan(steps);
 }
 
 /** Rules OpsCrew added (by comment) that were not there before it, as `port/proto`. */
@@ -1190,22 +1424,29 @@ function rulesToRemove(
 
 /**
  * The host plan that reverses OpsCrew's own host changes, from the record in
- * `/etc/opscrew/host.json`: Portainer and the tunnel connector, empty runtime directories,
- * automatic updates, firewall rules, SSH settings and the deploy user. Anything OpsCrew did not
- * install is left alone, and Docker stays installed (other software may use it). Findings say to
- * run `command` (for example `opscrew destroy --undo-host`) again once fixed.
+ * `/etc/opscrew/host.json`: Portainer and the tunnel connector, the shared folders when empty,
+ * automatic updates, firewall rules, SSH settings and the deploy user, then OpsCrew's records.
+ * Refused while an app is still set up on the server (an app removed with its data kept is not:
+ * its data folder stays). Anything OpsCrew did not install is left alone, and Docker stays
+ * installed (other software may use it). Findings say to run `command` (for example
+ * `opscrew destroy --undo-host`) again once fixed.
  */
 export function planUndo(facts: HostFacts, command: string): HostPlan {
   const f = parseFacts(facts);
   const findings = hostFindings(command);
-  const found = privilegeFindings(f, findings);
+  const listed = f.record?.apps ?? [];
+  const found = [
+    ...privilegeFindings(f, findings),
+    ...damagedRecords(f.apps, listed, "", findings),
+  ];
   if (f.recordDamaged) found.push(findings.recordDamaged());
-  if (f.markerDamaged) found.push(findings.markerDamaged());
-  if (f.marker !== null) found.push(findings.appStillDeployed(f.marker.app));
+  const others = otherActiveApps(f.apps, "");
+  const active = others.map((record) => record.app);
+  if (active.length > 0) found.push(findings.appStillDeployed(active));
   if (!f.flock) found.push(findings.noFlock());
   const record = f.record;
   const steps: HostStep[] = [];
-  const app = record?.app ?? "";
+  const app = "";
   if (record === null) {
     return {
       schemaVersion: HOST_PLAN_SCHEMA_VERSION,
@@ -1238,22 +1479,20 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
   }
   const runtime = entry("runtime-dirs");
   if (runtime) {
-    const created = RUNTIME_DIRS.filter(
+    const created: string[] = SHARED_DIRS.filter(
       (path) => runtime.previous[path.slice("/srv/".length)] === "absent",
     );
-    const existing = f.dirs.filter(
-      (dir) => created.includes(dir.path as never) && dir.kind === "dir",
-    );
+    const existing = f.dirs.filter((dir) => created.includes(dir.path) && dir.kind === "dir");
     const kept = existing.filter((dir) => (dir.entries ?? 0) > 0).map((dir) => dir.path);
     if (created.length > 0 && existing.length > 0) {
       steps.push(
         step(
           "runtime-dirs",
-          `Remove ${created.join(" and ")} if they are empty`,
+          `Remove ${listText(created)} if they are empty`,
           existing.some((dir) => (dir.entries ?? 0) === 0) ? "change" : "in-place",
           { dirs: created.join(" ") },
           kept.length > 0
-            ? `${kept.join(" and ")} still ${kept.length === 1 ? "holds" : "hold"} files (for example app data you kept), so ${kept.length === 1 ? "it stays" : "they stay"}.`
+            ? `${listText(kept)} still ${kept.length === 1 ? "holds" : "hold"} files (for example app data you kept), so ${kept.length === 1 ? "it stays" : "they stay"}.`
             : undefined,
         ),
       );
@@ -1405,9 +1644,23 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
     );
   }
   steps.push(
-    step("app-marker", "Remove OpsCrew's record of its changes (/etc/opscrew)", "change", {}),
+    step(
+      "app-record",
+      "Remove OpsCrew's records of the apps and of its changes (/etc/opscrew)",
+      "change",
+      {},
+      undefined,
+      "shared",
+    ),
   );
-  return { schemaVersion: HOST_PLAN_SCHEMA_VERSION, purpose: "undo", app, steps, findings: found };
+  return {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "undo",
+    app,
+    steps,
+    findings: found,
+    otherApps: assumedApps(others),
+  };
 }
 
 /**
@@ -1444,12 +1697,14 @@ export function planPortainer(options: {
             id: "tunnel-connector",
             title: `${TITLES.removeTunnel} that served Portainer's subdomain`,
             state: "change",
+            scope: "shared",
             params: { remove: true, dir: connector.dir, runAs },
           }
         : {
             id: "tunnel-connector",
             title: `Run the Cloudflare Tunnel connector for Portainer's subdomain${imageIn(connector.compose)}`,
             state: "change",
+            scope: "shared",
             reason:
               "cloudflared runs as its own Compose project and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.",
             params: {
@@ -1484,6 +1739,7 @@ export function planPortainer(options: {
             ? TITLES.removePortainerData
             : TITLES.removePortainer,
         state: "change",
+        scope: "shared",
         params,
       },
     ],

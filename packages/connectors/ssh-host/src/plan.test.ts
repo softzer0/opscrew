@@ -10,6 +10,8 @@ import {
   portainerDesired,
   portainerPassword,
   provision,
+  removeApp,
+  SHOP_PROJECT,
   TUNNEL_COMPOSE,
   TUNNEL_ID,
   tunnelDesired,
@@ -18,6 +20,7 @@ import {
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { planHost, planTeardown, planUndo } from "./plan";
+import { appRecord } from "./steps";
 import type { HostPlan } from "./types";
 
 const codes = (plan: HostPlan) => plan.findings.map((finding) => finding.code);
@@ -309,9 +312,10 @@ describe("planHost: steps", () => {
     const deploy = fake.users.get("deploy");
     deploy?.keys.push("ssh-ed25519 AAAAstale stale");
     const plan = await planFor(fake);
-    expect(plan.steps.find((step) => step.id === "deploy-user")).toMatchObject({
+    expect(plan.steps.find((step) => step.id === "deploy-user")?.state).toBe("in-place");
+    expect(plan.steps.find((step) => step.id === "deploy-key")).toMatchObject({
       state: "change",
-      reason: expect.stringMatching(/exactly the current deploy key/),
+      reason: expect.stringMatching(/exactly the deploy keys of the apps.*any other key/),
     });
     await applyApproved(fake, plan);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
@@ -438,22 +442,29 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
       undefined,
     ],
     [
-      "another OpsCrew app",
-      (fake) => void fake.files.set("/etc/opscrew/app.json", '{"app":"blog","projectId":"blog-1"}'),
-      "another-app",
-      undefined,
-    ],
-    [
-      "the same app from another project",
+      "the same app name from another project",
       (fake) =>
-        void fake.files.set("/etc/opscrew/app.json", '{"app":"shop","projectId":"shop-other"}'),
-      "another-project",
+        void fake.files.set(
+          "/etc/opscrew/apps/shop.json",
+          JSON.stringify(
+            appRecord({
+              app: "shop",
+              projectId: "shop-other",
+              access: "public",
+              hostnames: [],
+              services: ["web"],
+              memoryMb: 256,
+              deployKey: DEPLOY_KEY,
+            }),
+          ),
+        ),
+      "app-name-taken",
       undefined,
     ],
     [
-      "a damaged marker",
-      (fake) => void fake.files.set("/etc/opscrew/app.json", "{"),
-      "marker-damaged",
+      "a damaged app record",
+      (fake) => void fake.files.set("/etc/opscrew/apps/blog.json", "{"),
+      "app-record-damaged",
       undefined,
     ],
     [
@@ -472,9 +483,9 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
       undefined,
     ],
     [
-      "an existing /srv/app",
+      "an existing /srv/data",
       (fake) =>
-        void fake.dirs.set("/srv/app", { owner: "root", group: "root", mode: "755", entries: 2 }),
+        void fake.dirs.set("/srv/data", { owner: "root", group: "root", mode: "755", entries: 2 }),
       "runtime-dir-exists",
       undefined,
     ],
@@ -519,7 +530,13 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
       expect.stringMatching(/, then run opscrew dns again\.$/),
     ]);
     expect(
-      hints(planTeardown(facts, { deleteData: false, app: "shop" }, "opscrew destroy")),
+      hints(
+        planTeardown(
+          facts,
+          { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+          "opscrew destroy",
+        ),
+      ),
     ).toEqual([expect.stringMatching(/, then run opscrew destroy again\.$/)]);
     expect(hints(planUndo(facts, "opscrew destroy --undo-host"))).toEqual([
       expect.stringMatching(/, then run opscrew destroy --undo-host again\.$/),
@@ -555,20 +572,29 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     fake.volumes.set("shop", 2);
     await applyApproved(
       fake,
-      planTeardown(await inspectHost(fake), { deleteData: false, app: "shop" }, "opscrew destroy"),
+      planTeardown(
+        await inspectHost(fake),
+        { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+        "opscrew destroy",
+      ),
     );
     expect(fake.volumes.get("shop")).toBe(2);
     const plan = await planFor(fake);
     expect(codes(plan)).toEqual([]);
-    // The app-marker apply checks the project again on the server; here it is OpsCrew's own.
-    expect(paramsOf(plan, "app-marker")).toMatchObject({ ownProject: true });
+    // The app-record apply checks the project again on the server; here it is OpsCrew's own.
+    expect(paramsOf(plan, "app-record")).toMatchObject({ ownProject: true });
   });
 
   it("marks a fresh server's Compose project as not OpsCrew's own", async () => {
     const fake = new FakeHost();
-    expect(paramsOf(await planFor(fake), "app-marker")).toEqual({
+    expect(paramsOf(await planFor(fake), "app-record")).toEqual({
       app: "shop",
       projectId: "shop-0123456789ab",
+      access: "public",
+      hostnames: "shop.example.com www.shop.example.com",
+      services: "web",
+      memoryMb: 512,
+      deployKey: DEPLOY_KEY,
       ownProject: false,
     });
   });
@@ -600,15 +626,6 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     const fake = new FakeHost();
     fake.flock = false;
     expect(codes(await planFor(fake))).toEqual(["no-flock"]);
-  });
-
-  it("refuses a server whose host record belongs to another app", async () => {
-    const fake = new FakeHost();
-    await provision(fake);
-    fake.files.delete("/etc/opscrew/app.json");
-    const plan = await planFor(fake, desiredFor(fake, { app: "blog", projectId: "blog-1" }));
-    expect(codes(plan)).toEqual(["host-record-other-app"]);
-    expect(plan.findings[0]?.hint).toMatch(/destroy --undo-host/);
   });
 
   it("names what listens on the web ports", async () => {
@@ -742,83 +759,115 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
 });
 
 describe("planTeardown and planUndo", () => {
-  it("removes the app's containers, files and marker; data only with deleteData", async () => {
+  it("removes the app's containers, folder and record; data only with deleteData", async () => {
     const fake = new FakeHost();
     await provision(fake, desiredFor(fake, { portainer: portainerDesired() }), {
       secrets: { portainerPassword: "Correct-Horse-Battery-9" },
     });
     deployApp(fake, "shop");
     const facts = await inspectHost(fake);
-    const keep = planTeardown(facts, { deleteData: false, app: "shop" }, "opscrew destroy");
+    const keep = planTeardown(
+      facts,
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
     expect(keep.purpose).toBe("teardown");
     expect(keep.deleteData).toBe(false);
     expect(keep.steps.map((step) => [step.id, step.state])).toEqual([
-      ["runtime-dirs", "change"],
+      ["app-dirs", "change"],
+      ["edge", "change"],
       ["portainer", "change"],
-      ["app-marker", "change"],
+      ["app-record", "change"],
     ]);
-    expect(keep.steps[0]?.title).toMatch(/data in \/srv\/data and Compose volumes stay/);
-    const wipe = planTeardown(facts, { deleteData: true, app: "shop" }, "opscrew destroy");
+    expect(keep.steps[0]?.title).toMatch(/data in \/srv\/data\/shop and Compose volumes stay/);
+    expect(paramsOf(keep, "app-record")).toEqual({
+      app: "shop",
+      keepData: true,
+      projectId: "shop-0123456789ab",
+    });
+    const wipe = planTeardown(
+      facts,
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
     expect(wipe.steps[0]?.params).toEqual({ app: "shop", deleteData: true });
+    expect(paramsOf(wipe, "app-record")).toEqual({
+      app: "shop",
+      keepData: false,
+      projectId: SHOP_PROJECT,
+    });
     expect(hostPlanHash(wipe)).not.toBe(hostPlanHash(keep));
     expect(JSON.stringify(keep)).not.toMatch(/docker|deploy-user|sshd|ufw/);
   });
 
-  it("still removes the app by its Compose label and /srv/app when the marker is missing", async () => {
+  it("still removes the app by its Compose label and folder when its record is missing", async () => {
     const fake = new FakeHost();
     await provision(fake);
     deployApp(fake, "shop");
     fake.containers.push({ name: "grafana", project: "monitoring", ports: "" });
-    fake.files.delete("/etc/opscrew/app.json");
+    fake.files.delete("/etc/opscrew/apps/shop.json");
     const facts = await inspectHost(fake);
-    expect(facts.marker).toBeNull();
+    expect(facts.apps).toEqual([]);
 
-    // The host record names the same app, so the teardown goes ahead.
-    const plan = planTeardown(facts, { deleteData: false, app: "shop" }, "opscrew destroy");
+    const plan = planTeardown(
+      facts,
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
     expect(plan.app).toBe("shop");
     expect(codes(plan)).toEqual([]);
-    expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
-    expect(paramsOf(plan, "runtime-dirs")).toEqual({ app: "shop", deleteData: false });
+    expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
+      ["app-dirs", "change"],
+      ["edge", "change"],
+      // The host record still lists it.
+      ["app-record", "change"],
+    ]);
+    expect(paramsOf(plan, "app-dirs")).toEqual({ app: "shop", deleteData: false });
     await applyApproved(fake, plan);
     expect(fake.containers.map((container) => container.name)).toEqual(["grafana"]);
-    expect(fake.dirs.get("/srv/app")?.entries).toBe(0);
+    expect(fake.dirs.has("/srv/apps/shop")).toBe(false);
     expect(fake.appFiles.size).toBe(0);
+    expect(JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "{}").apps).toEqual([]);
   });
 
-  it("takes the plan's app name when neither the marker nor the host record is there", async () => {
+  it("takes the plan's app name when neither its record nor the host record is there", async () => {
     const fake = new FakeHost();
     await provision(fake);
     deployApp(fake, "shop");
-    fake.files.delete("/etc/opscrew/app.json");
+    fake.files.delete("/etc/opscrew/apps/shop.json");
     fake.files.delete("/etc/opscrew/host.json");
     const facts = await inspectHost(fake);
-    const plan = planTeardown(facts, { deleteData: true, app: "shop" }, "opscrew destroy");
-    expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
+    const plan = planTeardown(
+      facts,
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
+    expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
+      ["app-dirs", "change"],
+      ["edge", "change"],
+    ]);
     expect(plan.steps[0]?.title).toMatch(/Remove the app "shop".*its data/);
   });
 
-  it("never removes another app's containers: the marker or the record names the owner", async () => {
+  it("never removes another app's containers: only the named app's project and folders", async () => {
     const fake = new FakeHost();
     await provision(fake);
     deployApp(fake, "shop");
     const facts = await inspectHost(fake);
-    const other = planTeardown(facts, { deleteData: true, app: "blog" }, "opscrew destroy");
-    expect(codes(other)).toEqual(["teardown-other-app"]);
-    expect(other.findings[0]?.message).toBe(
-      'This server belongs to the OpsCrew app "shop", not "blog", so OpsCrew removes nothing from it.',
-    );
-    expect(other.steps).toEqual([]);
-
-    fake.files.delete("/etc/opscrew/app.json");
-    const byRecord = planTeardown(
-      await inspectHost(fake),
-      { deleteData: false, app: "blog" },
+    const other = planTeardown(
+      facts,
+      { deleteData: true, app: "blog", projectId: "blog-1" },
       "opscrew destroy",
     );
-    expect(codes(byRecord)).toEqual(["teardown-other-app"]);
-    expect(byRecord.steps).toEqual([]);
+    expect(codes(other)).toEqual([]);
+    // "shop" stays, so the edge and the deploy key of "shop" stay too.
+    expect(other.steps.map((step) => [step.id, step.state])).toEqual([["app-dirs", "in-place"]]);
     expect(() =>
-      planTeardown(facts, { deleteData: false, app: "Not An App" }, "opscrew destroy"),
+      planTeardown(
+        facts,
+        { deleteData: false, app: "Not An App", projectId: SHOP_PROJECT },
+        "opscrew destroy",
+      ),
     ).toThrow(/lower-case letters/);
   });
 
@@ -834,7 +883,7 @@ describe("planTeardown and planUndo", () => {
     fake.packages.set("ufw", "0.36.2");
     fake.ufwRules = [{ rule: "allow 8080/tcp", comment: null }];
     await provision(fake);
-    fake.files.delete("/etc/opscrew/app.json");
+    await removeApp(fake);
     const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     expect(codes(plan)).toEqual([]);
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
@@ -846,8 +895,14 @@ describe("planTeardown and planUndo", () => {
       ["deploy-user", "change"],
       ["docker-daemon", "change"],
       ["docker", "in-place"],
-      ["app-marker", "change"],
+      ["app-record", "change"],
     ]);
+    expect(plan.steps.every((step) => step.scope === "shared")).toBe(true);
+    // The edge folder went with the last app.
+    expect(paramsOf(plan, "runtime-dirs")).toEqual({
+      dirs: "/srv/edge /srv/apps /srv/data /srv/app",
+    });
+    expect(fake.dirs.has("/srv/edge")).toBe(false);
     expect(paramsOf(plan, "ufw")).toEqual({
       removeRules: "22/tcp 80/tcp 443/tcp 443/udp",
       disable: true,
@@ -878,21 +933,21 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
   it("keeps every plan without the filter exactly as before (same steps, same hash)", async () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
-    // The hashes these fake servers gave before the web filter existed.
+    // The hashes these fake servers give without the filter (pinned since 013's host layout).
     expect(hostPlanHash(planHost(facts, desiredFor(fake), "opscrew provision"))).toBe(
-      "8bd89c637763c4e9cfd08f879e2aba4b8ef78d1ecfba19e51017cad421fa0094",
+      "4db85a86433672d9f98d42f68bf2ee9d104fa2fa62af0669a48a2328e2cb3818",
     );
     expect(hostPlanHash(planHost(facts, tunnelDesired(fake), "opscrew provision"))).toBe(
-      "677da9f02b897841fa98068ab9e9ec79293fac911438502a34aae7e75d9c09b0",
+      "4f7a6e6fb593f30ba8110b7f7d1540b50e8065f172456f93fb6cb0a86637932d",
     );
     const used = new FakeHost();
     await provision(used);
     expect(hostPlanHash(await planFor(used))).toBe(
-      "2d87883293aac5e108b8999375ccb6fab320ca4a5a122f4b3cb09ce2d90ae65f",
+      "5986f209c6f6610f75db80d374997a585cfe2ad0131b7d4b305cc959156521d1",
     );
-    used.files.delete("/etc/opscrew/app.json");
+    await removeApp(used);
     expect(hostPlanHash(planUndo(await inspectHost(used), "opscrew destroy --undo-host"))).toBe(
-      "f78e9cb81ccf608aa453e7d7cd2a4edd3bd23ec3d4fa9f76974e6e4ff899a7e8",
+      "60d4db46202cb95df763e3e0de475ae208950326565f1a64ae35b6a4e8f7d94b",
     );
   });
 
@@ -913,7 +968,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(codes(plan)).toEqual([]);
     // The filter plan of this fake server, pinned.
     expect(hostPlanHash(plan)).toBe(
-      "022628c6aca9d3acc5f1ee30ef6ee62bd39b1e39b3f96b1d88c70641c21ee0e9",
+      "98b2c80f1e5e3fe2a703896bb5e334a1c5b94126e2a203f7d91eca73ab7fe69a",
     );
   });
 
@@ -1024,7 +1079,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
 
     const undone = new FakeHost();
     await provision(undone, filtered(undone));
-    undone.files.delete("/etc/opscrew/app.json");
+    await removeApp(undone);
     const undo = planUndo(await inspectHost(undone), "opscrew destroy --undo-host");
     expect(undo.steps.map((s) => s.id)).toContain("web-filter");
     await applyApproved(undone, undo);

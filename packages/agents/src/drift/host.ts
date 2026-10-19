@@ -1,5 +1,5 @@
 import {
-  APP_DIR,
+  appDirs,
   type HASHED_RUNTIME_FILES,
   type HostFacts,
   type HostPlan,
@@ -9,6 +9,7 @@ import {
   planHost,
   type RuntimeFileName,
   SECRET_RUNTIME_FILES,
+  SHARED_DIRS,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "@opscrew/connector-ssh-host";
@@ -24,9 +25,8 @@ import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
-import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { committedText, lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
+import { lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
@@ -57,18 +57,21 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   docker: "Docker",
   "docker-daemon": "Docker daemon settings (/etc/docker/daemon.json)",
   "deploy-user": "The deploy user",
+  "deploy-key": "The app's deploy key",
   sshd: "SSH settings",
   ufw: "Firewall (ufw)",
   "web-filter": "Web filter (only Cloudflare reaches ports 80 and 443)",
   fail2ban: "Brute-force protection (fail2ban)",
   "unattended-upgrades": "Automatic security updates",
-  "runtime-dirs": "Runtime directories (/srv/app and /srv/data)",
-  "app-marker": "App marker (/etc/opscrew/app.json)",
+  "runtime-dirs": "Shared folders (/srv/edge, /srv/apps and /srv/data)",
+  "app-dirs": "The app's folders (in /srv/apps and /srv/data)",
+  "app-record": "The app's record (in /etc/opscrew/apps)",
+  edge: "The shared edge (/srv/edge)",
   "tunnel-connector": "Cloudflare Tunnel connector",
   portainer: "Portainer",
 };
 
-const RUNTIME_FILES_TITLE = "OpsCrew's runtime files in /srv/app";
+const RUNTIME_FILES_TITLE = "OpsCrew's runtime files in the app's folder";
 
 function portList(value: string | number | boolean | undefined): string[] {
   return String(value ?? "")
@@ -93,27 +96,37 @@ function dockerDetails(facts: HostFacts): string[] {
   return out;
 }
 
-function deployUserDetails(facts: HostFacts, step: HostStep): string[] {
+function deployUserDetails(facts: HostFacts): string[] {
   const user = facts.deployUser;
   if (user === null) {
     return ["The deploy user no longer exists, so deploys from GitHub Actions cannot log in."];
   }
-  const out: string[] = [];
-  if (!user.groups.includes("docker"))
-    out.push("The deploy user is no longer in the docker group.");
-  const key = String(step.params.publicKey ?? "");
+  return user.groups.includes("docker")
+    ? []
+    : ["The deploy user is no longer in the docker group."];
+}
+
+function deployKeyDetails(facts: HostFacts, step: HostStep): string[] {
+  const user = facts.deployUser;
+  // Said by the deploy user's own step.
+  if (user === null) return [];
+  const keys = String(step.params.keys ?? "")
+    .split("\n")
+    .filter((key) => key !== "");
   const id = (line: string) => line.trim().split(/\s+/).slice(0, 2).join(" ");
-  const hasKey = user.keys.some((line) => id(line) === id(key));
+  const missing = keys.filter((key) => !user.keys.some((line) => id(line) === id(key)));
   if (user.keys.length === 0) {
-    out.push("The deploy user's authorized_keys no longer holds the deploy key.");
-  } else if (!hasKey) {
-    out.push("The deploy user's authorized_keys does not hold this project's deploy key.");
-  } else if (user.keys.length > 1) {
-    out.push(
-      `The deploy user's authorized_keys holds ${user.keys.length} keys; OpsCrew set up only the deploy key.`,
-    );
+    return ["The deploy user's authorized_keys no longer holds the deploy key."];
   }
-  return out;
+  if (missing.length > 0) {
+    return ["The deploy user's authorized_keys does not hold this project's deploy key."];
+  }
+  if (user.keys.length > keys.length) {
+    return [
+      `The deploy user's authorized_keys holds ${user.keys.length} keys; OpsCrew set up only the deploy key.`,
+    ];
+  }
+  return [];
 }
 
 function sshdDetails(facts: HostFacts, step: HostStep): string[] {
@@ -347,7 +360,7 @@ function ufwSinceSetup(facts: HostFacts, step: HostStep): UfwChange[] {
   return out;
 }
 
-/** What OpsCrew renders now for the runtime files the deploy workflow copies to /srv/app. */
+/** What OpsCrew renders now for the runtime files the deploy workflow copies to the app folder. */
 export interface ExpectedRuntimeFiles {
   /** SHA-256 of each rendered file (`compose.yaml`, `Caddyfile`) as OpsCrew renders it now. */
   rendered: Readonly<Partial<Record<(typeof HASHED_RUNTIME_FILES)[number], string>>>;
@@ -357,9 +370,9 @@ export interface ExpectedRuntimeFiles {
 
 /**
  * The SHA-256 of `opscrew/runtime/compose.yaml` and `opscrew/runtime/Caddyfile` as OpsCrew renders
- * them from `plan` now (the deploy workflow copies exactly these to /srv/app). Both read only the
- * plan and the contact email for certificates, so no secret and no connection is needed. The
- * Compose file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
+ * them from `plan` now (the deploy workflow copies exactly these to the app's folder). Both read
+ * only the plan and the contact email for certificates, so no secret and no connection is needed.
+ * The Compose file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
  */
 export function expectedRuntimeFiles(
   plan: DeployPlan,
@@ -386,7 +399,7 @@ export function expectedRuntimeFiles(
 const REDEPLOY =
   "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.";
 
-/** Why each file in /srv/app matters, said when it is missing. */
+/** Why each file in the app's folder matters, said when it is missing. */
 const RUNTIME_FILE_ROLE: Readonly<Record<RuntimeFileName, string>> = {
   "compose.yaml": "which defines the app's containers",
   Caddyfile: "the web server's settings",
@@ -396,23 +409,24 @@ const RUNTIME_FILE_ROLE: Readonly<Record<RuntimeFileName, string>> = {
 };
 
 /**
- * How OpsCrew's runtime files in /srv/app differ from what OpsCrew renders now (FR-911, US4/AC1):
- * a rendered file edited, replaced or missing, and a file with secrets missing, owned by someone
- * else than deploy, or readable by other users. Files that hold secrets are compared by presence,
- * owner and mode only; no file content is ever read. Missing files count only once the app was
- * deployed (the deploy workflow writes them on its first run).
+ * How OpsCrew's runtime files in the app's folder differ from what OpsCrew renders now (FR-911,
+ * US4/AC1): a rendered file edited, replaced or missing, and a file with secrets missing, owned
+ * by someone else than deploy, or readable by other users. Files that hold secrets are compared
+ * by presence, owner and mode only; no file content is ever read. Missing files count only once
+ * the app was deployed (the deploy workflow writes them on its first run).
  */
 function runtimeFileDetails(
   facts: HostFacts,
+  app: string,
   expected: ExpectedRuntimeFiles,
   deployed: boolean,
 ): string[] {
-  const appDir = facts.dirs.find((dir) => dir.path === APP_DIR);
-  // No /srv/app at all is reported with the runtime directories already.
-  if (appDir?.kind !== "dir") return [];
+  const folder = appDirs(app).app;
+  // No app folder at all is reported with the app's folders already.
+  if (facts.dirs.find((dir) => dir.path === folder)?.kind !== "dir") return [];
   const out: string[] = [];
-  for (const file of facts.runtimeFiles) {
-    const path = `${APP_DIR}/${file.name}`;
+  for (const file of facts.runtimeFiles.filter((item) => item.app === app)) {
+    const path = `${folder}/${file.name}`;
     const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
     const secret = (SECRET_RUNTIME_FILES as readonly string[]).includes(file.name);
     if (file.name === "db.env" && !expected.dbEnv) continue;
@@ -463,19 +477,23 @@ function upgradesDetails(facts: HostFacts): string[] {
   return out;
 }
 
-function runtimeDetails(facts: HostFacts): string[] {
-  return facts.dirs.flatMap((dir) => {
-    if (dir.kind === "absent") return [`${dir.path} is missing.`];
-    if (dir.kind !== "dir") return [`${dir.path} is no longer a directory.`];
+/** How the folders `paths` differ from what OpsCrew set up (deploy:deploy, mode 750). */
+function dirDetails(facts: HostFacts, paths: readonly string[]): string[] {
+  return paths.flatMap((path) => {
+    const dir = facts.dirs.find((item) => item.path === path);
+    if (dir === undefined || dir.kind === "absent") return [`${path} is missing.`];
+    if (dir.kind !== "dir") return [`${path} is no longer a directory.`];
     if (dir.owner === "deploy" && dir.group === "deploy" && dir.mode === "750") return [];
     return [
-      `${dir.path} is owned by ${dir.owner ?? "?"}:${dir.group ?? "?"} with mode ${dir.mode ?? "?"}; OpsCrew set deploy:deploy and 750.`,
+      `${path} is owned by ${dir.owner ?? "?"}:${dir.group ?? "?"} with mode ${dir.mode ?? "?"}; OpsCrew set deploy:deploy and 750.`,
     ];
   });
 }
 
-function markerDetails(facts: HostFacts): string[] {
-  if (facts.marker === null) return ["The marker /etc/opscrew/app.json is missing."];
+function appRecordDetails(facts: HostFacts, app: string): string[] {
+  if (!facts.apps.some((item) => item.name === app)) {
+    return [`The app's record /etc/opscrew/apps/${app}.json is missing.`];
+  }
   return facts.ready ? [] : ["The setup-finished flag /var/lib/opscrew-ready is missing."];
 }
 
@@ -518,8 +536,8 @@ function portainerDetails(facts: HostFacts, step: HostStep): string[] {
   return out;
 }
 
-/** What differs for one step that is not in place, in plain English. */
-function stepDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): string[] {
+/** What differs for one step of `app`'s setup plan that is not in place, in plain English. */
+function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: HostPlan): string[] {
   switch (step.id) {
     case "package-repair":
       return ["A package installation stopped part-way (dpkg was interrupted)."];
@@ -530,7 +548,9 @@ function stepDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): stri
         "/etc/docker/daemon.json with OpsCrew's settings (log rotation, no-new-privileges, live-restore) is missing.",
       ];
     case "deploy-user":
-      return deployUserDetails(facts, step);
+      return deployUserDetails(facts);
+    case "deploy-key":
+      return deployKeyDetails(facts, step);
     case "sshd":
       return sshdDetails(facts, step);
     case "ufw":
@@ -542,9 +562,16 @@ function stepDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): stri
     case "unattended-upgrades":
       return upgradesDetails(facts);
     case "runtime-dirs":
-      return runtimeDetails(facts);
-    case "app-marker":
-      return markerDetails(facts);
+      return dirDetails(facts, SHARED_DIRS);
+    case "app-dirs": {
+      const dirs = appDirs(app);
+      return dirDetails(facts, [dirs.app, dirs.data]);
+    }
+    case "app-record":
+      return appRecordDetails(facts, app);
+    // Only in a teardown: never in the setup plan drift compares with.
+    case "edge":
+      return [];
     case "tunnel-connector":
       return tunnelDetails(facts, step);
     case "portainer":
@@ -556,8 +583,8 @@ function stepDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): stri
  * Every difference between the inspected server and what OpsCrew set up: OpsCrew's host record,
  * each step of the setup plan `setup` (planned from the same facts and the desired state) that is
  * not in place, ufw rules and default policies changed since OpsCrew's setup (from its record),
- * OpsCrew's runtime files in /srv/app (with `app.runtimeFiles`), the plan's findings (a blocked
- * step always has one), and the app's containers.
+ * OpsCrew's runtime files in the app's folder (with `app.runtimeFiles`), the plan's findings (a
+ * blocked step always has one), and the app's containers.
  * `applied` (the last setup plan the user approved) tells a change of Cloudflare's IP ranges from
  * a filter someone changed on the server. Pure; holds no secret and no address.
  */
@@ -567,7 +594,7 @@ export function hostDifferences(
   app: {
     name: string;
     deployed: boolean;
-    /** What OpsCrew renders now for /srv/app ({@link expectedRuntimeFiles}); unset skips the files. */
+    /** What OpsCrew renders now for the app folder ({@link expectedRuntimeFiles}); unset skips. */
     runtimeFiles?: ExpectedRuntimeFiles;
   },
   applied?: HostPlan,
@@ -588,13 +615,13 @@ export function hostDifferences(
       ...record,
       detail: "is missing, so `opscrew destroy --undo-host` cannot tell what to put back.",
     });
-  } else if (facts.record.app !== app.name) {
-    out.push({ ...record, detail: `belongs to the OpsCrew app "${facts.record.app}".` });
+  } else if (!facts.record.apps.includes(app.name)) {
+    out.push({ ...record, detail: `does not list the OpsCrew app "${app.name}".` });
   }
   for (const step of setup.steps) {
     const ufwSince = step.id === "ufw" ? ufwSinceSetup(facts, step) : [];
     if (step.state === "change") {
-      const details = stepDetails(facts, step, applied);
+      const details = stepDetails(facts, step, app.name, applied);
       // A default policy OpsCrew set (and the setup plan sets again) is told by ufwSince.
       const shown =
         details.length > 0 || ufwSince.length > 0
@@ -607,8 +634,8 @@ export function hostDifferences(
     }
     // Changes since OpsCrew's setup, from its record, whatever the step's state.
     for (const change of ufwSince) out.push({ area: "ufw", title: AREA_TITLES.ufw, ...change });
-    if (step.id === "runtime-dirs" && app.runtimeFiles !== undefined) {
-      for (const detail of runtimeFileDetails(facts, app.runtimeFiles, app.deployed)) {
+    if (step.id === "app-dirs" && app.runtimeFiles !== undefined) {
+      for (const detail of runtimeFileDetails(facts, app.name, app.runtimeFiles, app.deployed)) {
         out.push({ area: "app", title: RUNTIME_FILES_TITLE, detail, restoredByProvision: false });
       }
     }
@@ -689,22 +716,15 @@ export async function ownHostDrift(
       ...(passwordLogins !== undefined ? { passwordLogins } : {}),
     },
   );
-  const contactEmail = (await readRequirements(deps))?.contactEmail;
-  const runtimeFiles = expectedRuntimeFiles(
-    plan,
-    { opscrewVersion: deps.version, ...(contactEmail ? { acmeEmail: contactEmail } : {}) },
-    await committedText(deps.paths.root, [renderCompose(plan).path]),
-  );
   return {
     differences: hostDifferences(
       facts,
       // Its findings say what stops `opscrew provision`, which puts the setup back.
       planHost(facts, desired, "opscrew provision"),
-      {
-        name: plan.app.name,
-        deployed: plan.deployment.lastDeployAt !== undefined,
-        runtimeFiles,
-      },
+      // T1308b: the deploy still copies the runtime files to /srv/app, while inspection reads
+      // them in /srv/apps/<app>: their check (`runtimeFiles: expectedRuntimeFiles(...)`) comes
+      // back once the deploy works there.
+      { name: plan.app.name, deployed: plan.deployment.lastDeployAt !== undefined },
       setup,
     ),
   };

@@ -738,7 +738,7 @@ async function ownSetup(
   const adapter = {
     inspect: (remote: RemoteExec) => host.inspect(remote),
     apply: async (remote: RemoteExec, plan: HostPlan, options: ApplyOptions) => {
-      if (plan.steps.some((step) => step.id === "app-marker")) {
+      if (plan.steps.some((step) => step.id === "app-record")) {
         return host.apply(remote, plan, options);
       }
       if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");

@@ -13,8 +13,14 @@ const PLAN: HostPlan = {
   purpose: "setup",
   app: "shop",
   steps: [
-    { id: "docker", title: "Install Docker", state: "change", params: {} },
-    { id: "unattended-upgrades", title: "Automatic updates", state: "in-place", params: {} },
+    { id: "docker", title: "Install Docker", state: "change", scope: "shared", params: {} },
+    {
+      id: "unattended-upgrades",
+      title: "Automatic updates",
+      state: "in-place",
+      scope: "shared",
+      params: {},
+    },
   ],
   findings: [],
 };
@@ -148,6 +154,7 @@ describe("approveAndApplyHostPlan", () => {
           id: "docker",
           title: "Install Docker",
           state: "blocked",
+          scope: "shared",
           reason: "apt is busy.",
           params: {},
         },
