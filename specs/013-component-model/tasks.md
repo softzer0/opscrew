@@ -217,7 +217,11 @@ Effort`.
       - `CRON_SECRET` goes in the app's env when the plan has route jobs;
       - two databases both claiming `DATABASE_URL`: the one the app's detected variable names wins, and the other gets its own variable (`MYSQL_URL`, `MONGODB_URI`), said at design;
       - `adapt/build-files.ts` passes `supercronic: supercronicArch(plan)` to `renderDockerAssets` when the plan has cron jobs; your Owns include that call;
-      - a SQLite folder that is the app root (`.`) or holds the app's own code or schema (`prisma`) is refused at design, with the change to make (move the database into its own folder, e.g. `data/`).
+      - **SQLite in a folder with code:** where the framework reads the path from the environment, design moves the database into a folder of its own and sets the variable, saying so in one sentence:
+        - Laravel: `storage/database`, with `DB_DATABASE`;
+        - Prisma inside `prisma/`: `data/`, with a `file:` `DATABASE_URL`.
+        Where the path comes from code or settings (Django's `NAME` with the folder at the app root, a path in code), design refuses with the change to make. Rails 8's `storage/` stays as is.
+        The absolute path uses `appRoot(plan)` in `packages/iac-templates/src/app-root.ts` (also owned, with one export line in `index.ts`): Buildpacks `/workspace`; Railpack and the generated Dockerfile `/app`; undefined for the user's own Dockerfile, where design asks for the path. `examples/laravel-app` passes the e2e design test unchanged.
     - **Tests:**
       - one per kind;
       - prices;
@@ -297,6 +301,23 @@ Effort`.
     - **Tests with the fake connector:** two apps, the first's destroy leaving the second, a hostname conflict, and the memory check.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops`
   - Effort: xhigh
+
+- [ ] T1304b [P] [US2] The SQLite volume, in `packages/iac-templates/src/{runtime,portainer-target,docker,workflow}/**`
+  - Owns: those paths (+ tests and snapshots)
+  - Why: T1307 found that no merged task renders `storage.sqlite` (FR-1313).
+  - Reads: spec FR-1313; data-model.md `storage.sqlite`; T1307's `appRoot(plan)`; 012's seal steps
+  - Depends: T1307, T1308c
+  - Accept:
+    - **The volume:** `/srv/data/<app>/sqlite` (Portainer: a named volume, as its other volumes), mounted at `appRoot(plan)/<storage.sqlite.dir>` in the web, release, worker and cron containers.
+    - **Writable by the app's non-root user,** on a fresh server and after a redeploy:
+      - the generated Dockerfile creates the folder owned by that user;
+      - the Railpack and Buildpacks seals do the same;
+      - a bind folder on a server gets that user's uid at the first deploy;
+      - one local `docker run` per builder confirms a write.
+    - **Destroy** keeps the folder unless data is deleted, like the other data folders (check T1309's rules cover it).
+    - **Snapshots and tests.**
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: high
 
 ## Phase 6: Day 2, part 2 and Portainer
 
@@ -433,7 +454,7 @@ Effort`.
 
 ## Dependencies
 
-{T1301a, T1301b} → {T1302 (lead), T1303, T1306, T1308a} → {T1304, T1305} (after T1302) → T1305b → {T1307, T1308b} → T1308c → T1309 → T1311 → T1310 → {T1312, T1313} → T1314 → T1315.
+{T1301a, T1301b} → {T1302 (lead), T1303, T1306, T1308a} → {T1304, T1305} (after T1302) → T1305b → {T1307, T1308b} → T1308c → {T1309, T1304b} → T1311 → T1310 → {T1312, T1313} → T1314 → T1315.
 
 ## Parallel waves
 
@@ -443,7 +464,7 @@ Effort`.
 4. T1305b.
 5. T1307, T1308b (T1308b touches only iac-templates; if it breaks agents, it merges together with T1308c).
 6. T1308c.
-7. T1309.
+7. T1309, T1304b (agents and iac-templates, disjoint).
 8. T1311.
 9. T1310.
 10. T1312, T1313.
