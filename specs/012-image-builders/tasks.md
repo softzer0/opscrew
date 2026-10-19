@@ -379,7 +379,7 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew`, plus that pack build
   - Effort: high
 
-- [ ] T1218 Live check after the fixes (lead): one Hetzner builder pass (`go-api` or `nextjs-postgres`) with the new restart check, and the Docker pass for a handful of examples; results in `docs/e2e.md` and `docs/e2e-coverage.md`
+- [X] T1218 Live check after the fixes (lead): one Hetzner builder pass (`go-api` or `nextjs-postgres`) with the new restart check, and the Docker pass for a handful of examples; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
 

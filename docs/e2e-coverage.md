@@ -32,7 +32,9 @@ Run in development, not tracked by date:
 - `OPSCREW_DOCKER_TESTS=1` builds every example with its chosen builder (feature 012) and starts it
   in local Docker, and checks the Portainer stacks with `docker compose config` and
   `caddy validate`. All 25 examples (26 builds) passed on 2026-10-18 and 2026-10-19, after T1213's
-  fixes (see [e2e.md](e2e.md#live-results)).
+  fixes; after the end-of-feature review's fixes, 14 of them (one or more per stack and builder)
+  passed again, with the new search of each image's files, history and configuration (see
+  [e2e.md](e2e.md#live-results)).
 - `OPSCREW_IT=1` validates every infrastructure root with both OpenTofu and Terraform.
 
 ## Your existing Portainer, step by step
@@ -101,7 +103,7 @@ but the one still open below.
 ## Image builders (feature 012)
 
 The Hetzner pass checks these with `OPSCREW_E2E_BUILDS=1` and `OPSCREW_E2E_APP` set to
-`nextjs-postgres`, `go-api` or `rust-api` (see [e2e.md](e2e.md#the-builders)). Tick each one per app once it has passed live. All three passed on 2026-10-19, with signing.
+`nextjs-postgres`, `go-api` or `rust-api` (see [e2e.md](e2e.md#the-builders)). Tick each one per app once it has passed live. All three passed on 2026-10-19, with signing, and again after the end-of-feature review's fixes (T1218).
 
 | Check | `nextjs-postgres` (generated Dockerfile) | `go-api` (Buildpacks) | `rust-api` (Railpack) |
 |---|---|---|---|
@@ -111,6 +113,7 @@ The Hetzner pass checks these with `OPSCREW_E2E_BUILDS=1` and `OPSCREW_E2E_APP` 
 | The provenance (guide's command) names the repository and commit and holds no GitHub event data; the SBOM lists packages | [x] | [x] | [x] |
 | No known secret in the provenance or SBOM | [x] | [x] | [x] |
 | A merged change deploys under 20 requests per second with no failed request | [x] | [x] | [x] |
+| The change's deploy restarts none of `db`, `cache`, `proxy` and `caddy` (those the plan has; each container's `StartedAt`) | [x] 2026-10-19 (db, proxy, caddy) | [x] 2026-10-19 (proxy, caddy) | [x] 2026-10-19 (proxy, caddy) |
 | A release whose health route answers 500: no failed request, the run fails with the builder hint, the previous version still answers | [x] | [x] | [x] |
 | After the image retention job, GHCR still has every blob of the first and the running image (the `build-<commit>` images deleted) | [x] | [x] | [x] |
 | With `OPSCREW_E2E_SIGN=1`: `cosign verify` passes for the first and the running image after the later prunes (cosign v3 may store signatures as OCI referrers) | [x] | [x] | [x] |
