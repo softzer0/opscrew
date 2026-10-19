@@ -1,6 +1,5 @@
 export { renderPortainerDeployment } from "./deployment";
 export {
-  CURL_IMAGE,
   fillPortainerStack,
   PORTAINER_COMPOSE_FILE,
   PORTAINER_DEPLOY_BRANCH,

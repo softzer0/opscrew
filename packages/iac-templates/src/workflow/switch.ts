@@ -40,7 +40,8 @@ const RERUN = "run opscrew design, opscrew adapt and opscrew provision";
 /**
  * The failed-deploy hint (FR-1206): which builder made the image and its `opscrew/plan.yaml` line,
  * and, when design recorded another automatic choice (`app.build.automatic`), that builder and the
- * one setting that switches to it.
+ * settings that switch to it: the builder with `app.build.chosen: user`, as design keeps a builder
+ * only when it is the user's choice.
  */
 function builderHint(plan: DeployPlan): string {
   const build = plan.app.build;
@@ -54,7 +55,7 @@ function builderHint(plan: DeployPlan): string {
   }
   const built = `It was built with ${BUILDER_LABEL[builder]} ${line}.`;
   if (automatic === undefined) return built;
-  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} in opscrew/plan.yaml, then ${RERUN}.`;
+  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} and app.build.chosen: user in opscrew/plan.yaml, then ${RERUN}.`;
 }
 
 /** The services a deploy starts when they are not running, and never restarts otherwise. */

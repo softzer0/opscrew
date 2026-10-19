@@ -53,6 +53,13 @@ exports[`the build job > matches the snapshot for buildpacks 1`] = `
           BUILD_ENV: \${{ secrets.OPSCREW_BUILD_ENV }}
         run: |
           set -euo pipefail
+          # pack uploads the whole folder. .git holds every committed file, the removed secret files
+          # too, so it waits outside while pack runs, and is back for the seal's provenance.
+          git_dir="./.git"
+          if [[ -e "$git_dir" ]]; then
+            mv "$git_dir" "$RUNNER_TEMP/opscrew-git"
+            trap 'mv "$RUNNER_TEMP/opscrew-git" "$git_dir"' EXIT
+          fi
           settings=(--env BP_GO_VERSION=1.26)
           while IFS= read -r line; do
             [[ -z "$line" || "$line" == \\#* ]] && continue

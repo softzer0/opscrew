@@ -368,7 +368,7 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew`, plus that Docker pass
   - Effort: high
 
-- [ ] T1220 [US2] The hint switches the builder, and no `.git` in a Buildpacks image, in `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/portainer-target/stack.ts`
+- [X] T1220 [US2] The hint switches the builder, and no `.git` in a Buildpacks image, in `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/portainer-target/stack.ts`
   - Reads: the review of T1216's merged commit (the lead's brief); spec FR-1203, FR-1206; `src/workflow/{switch,build}.ts`; `packages/agents/src/design/builder.ts` (`chosen: user`)
   - Depends: T1216
   - Accept:

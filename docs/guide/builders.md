@@ -130,8 +130,9 @@ adapt` checks it against the baseline and lists each finding with its fix in its
 
 The app must listen on the port in its `PORT` variable and answer its health route. When the new
 version does not start or fails its health check, the deploy stops, the running version keeps
-serving, and the message names the builder OpsCrew would choose and the `plan.yaml` setting that
-switches to it.
+serving, and the message names the builder OpsCrew would choose and how to switch to it: set
+`app.build.builder` to it and `app.build.chosen: user` in `opscrew/plan.yaml`, then run
+`opscrew design`, `opscrew adapt` and `opscrew provision`.
 
 ## Runtime versions
 

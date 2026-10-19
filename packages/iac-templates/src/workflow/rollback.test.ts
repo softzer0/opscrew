@@ -509,20 +509,21 @@ describe("the deploy job per strategy", () => {
     /answers \/api\/health\. ([^']*)'/.exec(deploy(p))?.[1] ?? "no hint found";
   const RERUN = "then run opscrew design, opscrew adapt and opscrew provision.";
 
-  it("names the builder an automatic choice would pick and the one setting that switches to it", () => {
+  it("names the builder an automatic choice would pick and the settings that switch to it", () => {
+    // Design keeps a builder only with app.build.chosen: user, so the hint names both settings.
+    const SWITCH =
+      "OpsCrew would choose Buildpacks: set app.build.builder: buildpacks and app.build.chosen: user in opscrew/plan.yaml,";
     const user = withBuild(plan, "railpack", { chosen: "user", automatic: "buildpacks" });
     expect(hint(user)).toBe(
-      `It was built with Railpack (app.build.builder: railpack in opscrew/plan.yaml). OpsCrew would choose Buildpacks: set app.build.builder: buildpacks in opscrew/plan.yaml, ${RERUN}`,
+      `It was built with Railpack (app.build.builder: railpack in opscrew/plan.yaml). ${SWITCH} ${RERUN}`,
     );
+    // An own Dockerfile is chosen automatically: without chosen: user, design would keep it.
     const own = withBuild(plan, "own-dockerfile", { automatic: "buildpacks" });
+    expect(own.app.build?.chosen).toBe("auto");
     expect(hint(own)).toBe(
-      `It was built with your own Dockerfile (app.build.builder: own-dockerfile in opscrew/plan.yaml). OpsCrew would choose Buildpacks: set app.build.builder: buildpacks in opscrew/plan.yaml, ${RERUN}`,
+      `It was built with your own Dockerfile (app.build.builder: own-dockerfile in opscrew/plan.yaml). ${SWITCH} ${RERUN}`,
     );
-    // Neither app.build.chosen nor the other builders.
-    for (const p of [user, own]) {
-      expect(hint(p)).not.toContain("chosen");
-      expect(hint(p)).not.toContain("generated-dockerfile");
-    }
+    for (const p of [user, own]) expect(hint(p)).not.toContain("generated-dockerfile");
   });
 
   it("names only the builder when it is the one OpsCrew chooses", () => {

@@ -18,9 +18,6 @@ import {
 import type { RenderContext, RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN } from "../workflow/shared";
 
-/** The official curl image of the updater stack and the placeholder stack, from `pins.ts`. */
-export const CURL_IMAGE = IMAGES.curl.ref;
-
 /** Branch of the app's repository that holds only the stack file Portainer deploys. */
 export const PORTAINER_DEPLOY_BRANCH = "opscrew-deploy";
 
@@ -348,7 +345,7 @@ export function renderPlaceholderStack(plan: DeployPlan): RenderedFile {
     name: portainerStackName(plan),
     services: {
       app: {
-        image: CURL_IMAGE,
+        image: IMAGES.curl.ref,
         restart: "unless-stopped",
         entrypoint: ["/bin/sh", "-c", "while true; do sleep 3600; done"],
         init: true,
@@ -399,7 +396,7 @@ export function renderUpdaterStack(plan: DeployPlan): PortainerStackFile {
     name,
     services: {
       updater: {
-        image: CURL_IMAGE,
+        image: IMAGES.curl.ref,
         restart: "unless-stopped",
         entrypoint: ["/bin/sh", "-c", composeLiteral(UPDATER_LOOP)],
         environment: {

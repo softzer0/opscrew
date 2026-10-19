@@ -382,6 +382,8 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
   const DIGEST = `sha256:${"c".repeat(64)}`;
   function bash(script: string, env: Record<string, string>) {
     const result = spawnSync("bash", ["-c", script], {
+      // Never OpsCrew's own checkout: the pack step moves `.git` out of its build context.
+      cwd: work,
       env: {
         ...process.env,
         RUNNER_TEMP: `${work}/tmp`,
@@ -482,6 +484,62 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
       "removed apps/api/.env.local from the build: Buildpacks does not read .dockerignore",
     );
     expect(folder.left).toContain(".env");
+  });
+
+  /**
+   * Runs the pack step in a checkout (`work/repo`, with `.git` and an app folder) for the build
+   * `context`, with a fake pack that records whether `.git` is in its `--path` and at the
+   * checkout's root while it runs, then exits with `code`.
+   */
+  function packWithGit(context: string, code: number) {
+    const repo = join(work, "repo");
+    for (const dir of [".git/objects", "apps/api"]) mkdirSync(join(repo, dir), { recursive: true });
+    writeFileSync(join(repo, ".git/objects/blob"), "a committed file\n");
+    const fakePack = [
+      "pack() {",
+      "  local path; path=\"$(printf '%s\\n' \"$@\" | sed -n '/^--path$/{n;p;}')\"",
+      '  { [[ -e "$path/.git" ]] && echo "context: .git" || echo "context: none"',
+      '    [[ -e .git ]] && echo "root: .git" || echo "root: none"; } > "$RUNNER_TEMP/pack-saw"',
+      `  [[ ${code} -eq 0 ]] || return ${code}`,
+      `  printf '[image]\\n  digest = "${DIGEST}"\\n' > "\${@: -1}/report.toml"`,
+      "}",
+    ].join("\n");
+    const plan = {
+      ...planFor("buildpacks"),
+      app: { ...planFor("buildpacks").app, buildContext: context },
+    };
+    const script = step(buildJob(plan), "pack")?.run ?? "";
+    const result = bash(`cd "${repo}"\n${fakePack}\n${script}`, { NAME: "ghcr.io/acme/shop" });
+    return {
+      ...result,
+      saw: readFileSync(join(work, "tmp", "pack-saw"), "utf8"),
+      restored: existsSync(join(repo, ".git/objects/blob")),
+      leftInTemp: existsSync(join(work, "tmp", "opscrew-git")),
+    };
+  }
+
+  it("keeps .git out of a Buildpacks build of the checkout's root and restores it after pack", () => {
+    const root = packWithGit(".", 0);
+    expect(root.status, root.output).toBe(0);
+    expect(root.saw).toBe("context: none\nroot: none\n");
+    expect(root.restored).toBe(true);
+    expect(root.leftInTemp).toBe(false);
+    expect(output()).toBe(`digest=${DIGEST}\n`);
+  });
+
+  it("restores .git when pack fails", () => {
+    const failed = packWithGit(".", 3);
+    expect(failed.status).toBe(3);
+    expect(failed.saw).toBe("context: none\nroot: none\n");
+    expect(failed.restored).toBe(true);
+    expect(failed.leftInTemp).toBe(false);
+  });
+
+  it("leaves .git in place for an app folder, which does not contain it", () => {
+    const folder = packWithGit("apps/api", 0);
+    expect(folder.status, folder.output).toBe(0);
+    expect(folder.saw).toBe("context: none\nroot: .git\n");
+    expect(folder.restored).toBe(true);
   });
 
   it("stops when pack reports no digest", () => {

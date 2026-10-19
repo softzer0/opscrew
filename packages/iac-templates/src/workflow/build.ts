@@ -232,13 +232,16 @@ function removeSecretFiles(context: string): string[] {
  * Buildpacks: the secret files leave the checkout, then pack builds `build-<commit>` with the
  * version setting and the non-secret build values (`--env`), pushes it with its cache image, and
  * reports its digest in `report.toml`; then the seal. pack has no secret mounts, so it never reads
- * the secret build values.
+ * the secret build values. pack uploads the whole context, where `.git` would keep every committed
+ * file, the removed secret files too, so `.git` waits in `$RUNNER_TEMP` while pack runs; the trap
+ * puts it back even when pack fails, before the seal, whose provenance reads it.
  */
 function buildpacksSteps(plan: DeployPlan): string[] {
   const setting = versionSetting(plan, BUILDPACKS_VERSION_SETTING);
+  const context = plan.app.buildContext || ".";
   return [
     ...installTool("pack", buildArch(plan), "pack"),
-    ...removeSecretFiles(JSON.stringify(plan.app.buildContext || ".")),
+    ...removeSecretFiles(JSON.stringify(context)),
     "- id: pack",
     "  name: Build the image with Buildpacks",
     "  env:",
@@ -246,12 +249,19 @@ function buildpacksSteps(plan: DeployPlan): string[] {
     `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
     ...run([
       "set -euo pipefail",
+      "# pack uploads the whole folder. .git holds every committed file, the removed secret files",
+      "# too, so it waits outside while pack runs, and is back for the seal's provenance.",
+      `git_dir=${JSON.stringify(`${context}/.git`)}`,
+      'if [[ -e "$git_dir" ]]; then',
+      '  mv "$git_dir" "$RUNNER_TEMP/opscrew-git"',
+      '  trap \'mv "$RUNNER_TEMP/opscrew-git" "$git_dir"\' EXIT',
+      "fi",
       setting === undefined ? "settings=()" : `settings=(--env ${setting})`,
       ...envPairs("settings", '"${BUILD_ENV:-}"'),
       // pack writes a file instead when the folder is missing.
       'report="$RUNNER_TEMP/pack-report"',
       'mkdir -p "$report"',
-      `pack build "$NAME:build-$GITHUB_SHA" --path ${JSON.stringify(plan.app.buildContext || ".")} \\`,
+      `pack build "$NAME:build-$GITHUB_SHA" --path ${JSON.stringify(context)} \\`,
       `  --builder ${IMAGES.paketoBuilder.ref} \\`,
       `  --run-image ${IMAGES.paketoRun.ref} \\`,
       '  "${settings[@]}" --publish --cache-image "$NAME:buildcache" --report-output-dir "$report"',

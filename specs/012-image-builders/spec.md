@@ -297,7 +297,8 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 - **FR-1205**: A project's own Dockerfile MUST be used as it is, unless the user chooses another
   builder. OpsCrew MUST check it against the baseline and list each finding with its fix.
 - **FR-1206**: When a deploy's new version fails to start or fails its health check, the message
-  MUST name the builder OpsCrew would choose automatically and the one setting that switches to it.
+  MUST name the builder OpsCrew would choose automatically and the `plan.yaml` settings that switch
+  to it (`app.build.builder` with `app.build.chosen: user`), then the commands to run.
 - **FR-1207**: Builds MUST run in the repository's GitHub Actions, for every target (Hetzner,
   DigitalOcean, the user's own server, Portainer). They MUST produce the image for the server's
   architecture and push it to GHCR by digest, as today.

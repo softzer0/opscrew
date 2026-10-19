@@ -12,7 +12,6 @@ import { renderCaddyfile } from "../runtime";
 import { serviceLogging } from "../runtime/services";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
-  CURL_IMAGE,
   fillPortainerStack,
   PORTAINER_IMAGE_PLACEHOLDER,
   PORTAINER_STACK_TEMPLATE_PATH,
@@ -403,7 +402,7 @@ describe("renderPlaceholderStack", () => {
     expect(doc.name).toBe("opscrew-shop");
     expect(Object.keys(doc.services)).toEqual(["app"]);
     const app = doc.services.app;
-    expect(app?.image).toBe(CURL_IMAGE);
+    expect(app?.image).toBe(IMAGES.curl.ref);
     expect(app?.entrypoint).toEqual(["/bin/sh", "-c", "while true; do sleep 3600; done"]);
     expect(app?.ports).toBeUndefined();
     expect(app?.environment).toBeUndefined();
@@ -424,8 +423,8 @@ describe("renderUpdaterStack", () => {
     expect(portainerUpdaterStackName(full)).toBe("opscrew-shop-updater");
     expect(doc.name).toBe("opscrew-shop-updater");
     expect(Object.keys(doc.services)).toEqual(["updater"]);
-    expect(service?.image).toBe(CURL_IMAGE);
-    expect(CURL_IMAGE).toMatch(/^curlimages\/curl:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/);
+    expect(service?.image).toBe(IMAGES.curl.ref);
+    expect(IMAGES.curl.ref).toMatch(/^curlimages\/curl:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/);
   });
 
   it("reads the webhook URL and the pinned key from the stack's environment, never from the file", () => {
