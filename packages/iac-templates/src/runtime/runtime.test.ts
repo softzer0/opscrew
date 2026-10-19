@@ -3,6 +3,7 @@ import { type AppBuild, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan, testServices } from "../__fixtures__/plans";
+import { renderEdgeCompose } from "../edge";
 import { IMAGES } from "../pins";
 import { renderCaddyfile, renderCompose, renderTunnelConnectorCompose } from "./index";
 
@@ -63,15 +64,24 @@ function app(p: DeployPlan): Record<string, unknown> & { healthcheck?: { test: s
 const ctx = testContext({ acmeEmail: "ops@example.com" });
 
 describe("renderCompose", () => {
-  it("runs the app, Postgres, Valkey, the proxy and Caddy with only Caddy publishing ports", () => {
+  it("runs the app, Postgres and Valkey with no published port; Caddy and kamal-proxy are the edge's", () => {
     const file = renderCompose(plan({ redis: true }));
     expect(file.path).toBe("opscrew/runtime/compose.yaml");
     const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "db", "cache", "proxy", "caddy"]);
-    for (const name of ["app", "db", "cache", "proxy"]) {
+    expect(doc.name).toBe("shop");
+    expect(Object.keys(doc.services)).toEqual(["app", "db", "cache"]);
+    for (const name of ["app", "db", "cache"]) {
       expect(doc.services[name].ports).toBeUndefined();
     }
-    expect(doc.services.caddy.ports).toEqual(["80:80", "443:443", "443:443/udp"]);
+    expect(file.content).not.toMatch(/caddy|kamal-proxy|Caddyfile/);
+    // Only the web service joins the shared edge's network, where kamal-proxy reaches it.
+    expect(doc.services.app.networks).toEqual(["internal", "opscrew-edge"]);
+    expect(doc.services.db.networks).toEqual(["internal"]);
+    expect(doc.networks).toEqual({ internal: {}, "opscrew-edge": { external: true } });
+    expect(doc.volumes).toBeUndefined();
+    expect(file.content).toContain(
+      "# The deploy workflow copies it to /srv/apps/shop on the server.",
+    );
     expect(doc.services.app.image).toMatch(/^\$\{APP_IMAGE:\?/);
     expect(doc.services.app.cap_drop).toEqual(["ALL"]);
     // Every catalog service has a health check, Valkey's too.
@@ -85,13 +95,13 @@ describe("renderCompose", () => {
 
   it("omits the database and cache when the plan does not self-host them", () => {
     const doc = parse(renderCompose(plan({ postgres: false })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "proxy", "caddy"]);
+    expect(Object.keys(doc.services)).toEqual(["app"]);
     expect(doc.services.app.depends_on).toBeUndefined();
   });
 
   it("rotates every service's logs itself and keeps no-new-privileges (Docker's daemon settings stay as they are)", () => {
     const doc = parse(renderCompose(plan({ redis: true, release: "migrate" })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "proxy", "caddy"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache"]);
     for (const service of Object.values<Record<string, unknown>>(doc.services)) {
       expect(service.logging).toEqual({
         driver: "json-file",
@@ -109,12 +119,13 @@ describe("renderCompose", () => {
     const command = "python manage.py migrate --noinput && echo $HOME ${X}";
     const file = renderCompose(plan({ redis: true, release: command }));
     const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "proxy", "caddy"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache"]);
     const { app, release } = doc.services;
     expect(release.image).toBe(app.image);
     expect(release.env_file).toEqual(app.env_file);
     expect(release.environment).toEqual(app.environment);
-    expect(release.networks).toEqual(app.networks);
+    // Only the web service joins the shared edge.
+    expect(release.networks).toEqual(["internal"]);
     expect(release.cap_drop).toEqual(["ALL"]);
     expect(release.security_opt).toEqual(app.security_opt);
     // Only `docker compose run` starts it, never `docker compose up`, and it never restarts.
@@ -133,12 +144,14 @@ describe("renderCompose", () => {
   });
 });
 
-describe("renderCaddyfile", () => {
+describe("renderCaddyfile (the app's site on the shared edge)", () => {
   it("serves the domain (and www) with HSTS and the ACME email", () => {
-    const content = renderCaddyfile(plan({ domain: "example.com", www: true }), ctx).content;
+    const file = renderCaddyfile(plan({ domain: "example.com", www: true }), ctx);
+    expect(file.path).toBe("opscrew/runtime/edge/sites/shop.caddy");
+    const content = file.content;
     expect(content).toContain("example.com, www.example.com {");
-    expect(content).toContain("email ops@example.com");
-    expect(content).toContain("reverse_proxy proxy:80");
+    expect(content).toContain("\ttls ops@example.com\n");
+    expect(content).toContain("reverse_proxy kamal-proxy:80");
     expect(content).toContain("Strict-Transport-Security");
     expect(content).toMatchSnapshot();
   });
@@ -146,9 +159,9 @@ describe("renderCaddyfile", () => {
   it("serves plain HTTP on the IP without HSTS before a domain exists", () => {
     const content = renderCaddyfile(plan({ port: 8080 }), ctx).content;
     expect(content).toContain(":80 {");
-    expect(content).toContain("reverse_proxy proxy:80");
+    expect(content).toContain("reverse_proxy kamal-proxy:80");
     expect(content).not.toContain("Strict-Transport-Security");
-    expect(content).not.toContain("email");
+    expect(content).not.toContain("tls ");
   });
 });
 
@@ -276,34 +289,15 @@ describe("the app's healthcheck", () => {
   });
 });
 
-describe("the proxy service", () => {
-  const doc = parse(renderCompose(plan()).content);
-
-  it("runs pinned kamal-proxy on the internal network with its config volume and no host ports", () => {
-    const proxy = doc.services.proxy;
-    expect(proxy.image).toBe(IMAGES.kamalProxy.ref);
-    expect(proxy.restart).toBe("unless-stopped");
-    expect(proxy.networks).toEqual(["internal"]);
-    expect(proxy.volumes).toEqual(["kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy"]);
-    expect(proxy.ports).toBeUndefined();
-    expect(proxy.cap_drop).toEqual(["ALL"]);
-    expect(proxy.security_opt).toEqual(["no-new-privileges:true"]);
-    expect(doc.volumes).toHaveProperty("kamal-proxy-config");
-    expect(doc.services.caddy.depends_on).toEqual(["proxy"]);
-  });
-
-  it("sits between the backing services and Caddy", () => {
-    expect(Object.keys(doc.services)).toEqual(["app", "db", "proxy", "caddy"]);
-  });
-
-  it("is what Caddy proxies to, directly and through a tunnel", () => {
+describe("the switch between app copies", () => {
+  it("is the edge's kamal-proxy, which Caddy proxies to, directly and through a tunnel", () => {
     const direct = renderCaddyfile(testPlan({ domain: "shop.example.com" }), testContext()).content;
     const tunnel = renderCaddyfile(
       testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
       testContext(),
     ).content;
     for (const content of [direct, tunnel]) {
-      expect(content).toContain("\treverse_proxy proxy:80\n");
+      expect(content).toContain("\treverse_proxy kamal-proxy:80\n");
       expect(content).not.toContain("app:3000");
     }
   });
@@ -313,10 +307,12 @@ describe("image pins", () => {
   const pinned = new Set<string>(Object.values(IMAGES).map((image) => image.ref));
 
   it("takes every service image of the server's Compose files from pins.ts, by digest", () => {
-    const doc = parse(renderCompose(plan({ redis: true, release: "migrate" })).content);
-    const images = Object.entries<{ image: string }>(doc.services)
+    const p = plan({ redis: true, release: "migrate" });
+    const doc = parse(renderCompose(p).content);
+    const edge = parse(renderEdgeCompose(p).content);
+    const images = [...Object.entries(doc.services), ...Object.entries(edge.services)]
       .filter(([name]) => name !== "app" && name !== "release")
-      .map(([, service]) => service.image);
+      .map(([, service]) => (service as { image: string }).image);
     expect(images).toEqual([
       IMAGES.postgres.ref,
       IMAGES.valkey.ref,

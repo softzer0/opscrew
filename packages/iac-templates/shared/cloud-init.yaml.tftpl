@@ -100,9 +100,9 @@ write_files:
 runcmd:
   - [/usr/local/sbin/opscrew-install-docker]
   - [usermod, -aG, docker, deploy]
-  - [mkdir, -p, /srv/app, /srv/data]
-  - [chown, "deploy:deploy", /srv/app]
-  - [chmod, "750", /srv/app]
+  # The shared edge, the apps' folders and their data, as on servers the user owns; the first
+  # deploy brings up the edge.
+  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /srv/edge, /srv/apps, /srv/data]
   - [ufw, default, deny, incoming]
   - [ufw, allow, 22/tcp]
   - [ufw, allow, 80/tcp]

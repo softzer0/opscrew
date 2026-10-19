@@ -15,6 +15,7 @@ export type {
 } from "./catalog/types";
 export * from "./dependabot";
 export * from "./docker";
+export * from "./edge";
 export * from "./infra";
 export * from "./pins";
 export { keepNewerPins } from "./pins-carry";

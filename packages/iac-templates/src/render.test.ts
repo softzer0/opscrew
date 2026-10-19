@@ -12,7 +12,7 @@ const ctx: RenderContext = {
 };
 
 describe("renderDeployment", () => {
-  it("writes the services' settings files and the crontab next to compose.yaml", () => {
+  it("writes the services' settings files, the crontab and the edge next to compose.yaml, then the app's site", () => {
     const base = withServices([{ kind: "mysql" }, { kind: "rabbitmq" }]);
     const plan = DeployPlanSchema.parse({
       ...base,
@@ -27,8 +27,12 @@ describe("renderDeployment", () => {
       "opscrew/runtime/services/mysql/my.cnf",
       "opscrew/runtime/services/rabbitmq/rabbitmq.conf",
       "opscrew/runtime/crontab",
+      "opscrew/runtime/edge/compose.yaml",
     ]);
     const compose = paths.indexOf("opscrew/runtime/compose.yaml");
-    expect(paths.slice(compose + 1, compose + 1 + runtime.length)).toEqual(runtime);
+    expect(paths.slice(compose + 1, compose + 2 + runtime.length)).toEqual([
+      ...runtime,
+      "opscrew/runtime/edge/sites/shop.caddy",
+    ]);
   });
 });

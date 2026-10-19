@@ -72,8 +72,6 @@ describe("the services on a server", () => {
       "cron",
       "mysql",
       "rabbitmq",
-      "proxy",
-      "caddy",
     ]);
     expect(compose.content).toMatchSnapshot();
     const files = renderRuntimeFiles(FULL);
@@ -81,8 +79,10 @@ describe("the services on a server", () => {
       "opscrew/runtime/services/mysql/my.cnf",
       "opscrew/runtime/services/rabbitmq/rabbitmq.conf",
       "opscrew/runtime/crontab",
+      "opscrew/runtime/edge/compose.yaml",
     ]);
-    for (const file of files) {
+    // The edge's file has its own tests and snapshots (src/edge).
+    for (const file of files.filter((f) => !f.path.startsWith("opscrew/runtime/edge/"))) {
       expect(file.kind).toBe("runtime");
       expect(file.content).toMatchSnapshot(file.path);
     }
@@ -134,12 +134,7 @@ describe("the services on a server", () => {
     expect(all.garage?.volumes?.[0]).toBe("/srv/data/shop/garage:/var/lib/garage");
     expect(all.kafka?.volumes).toEqual(["kafka_data:/var/lib/kafka/data"]);
     const doc = parse(renderCompose(withServices([{ kind: "kafka" }])).content);
-    expect(Object.keys(doc.volumes)).toEqual([
-      "kafka_data",
-      "caddy_data",
-      "caddy_config",
-      "kamal-proxy-config",
-    ]);
+    expect(Object.keys(doc.volumes)).toEqual(["kafka_data"]);
   });
 
   it("reads a service's secrets from its env file and has the other settings inline", () => {
@@ -191,7 +186,9 @@ describe("the services on a server", () => {
     const all = services(withServices([{ kind: "mysql", enabled: false }]));
     expect(all.mysql).toBeUndefined();
     expect(all.app?.depends_on).toBeUndefined();
-    expect(renderRuntimeFiles(withServices([{ kind: "mysql", enabled: false }]))).toEqual([]);
+    expect(
+      renderRuntimeFiles(withServices([{ kind: "mysql", enabled: false }])).map((f) => f.path),
+    ).toEqual(["opscrew/runtime/edge/compose.yaml"]);
   });
 });
 
@@ -394,7 +391,9 @@ describe("cron", () => {
       cron: [{ name: "cleanup", schedule: "@daily", command: "node cleanup.js", enabled: false }],
     });
     expect(services(plan).cron).toBeUndefined();
-    expect(renderRuntimeFiles(plan)).toEqual([]);
+    expect(renderRuntimeFiles(plan).map((f) => f.path)).toEqual([
+      "opscrew/runtime/edge/compose.yaml",
+    ]);
   });
 });
 

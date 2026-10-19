@@ -2,6 +2,7 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { renderEdgeCompose } from "../edge";
 import { IMAGES } from "../pins";
 import {
   renderCaddyfile,
@@ -38,11 +39,12 @@ describe("tunnel hostnames", () => {
 });
 
 describe("runtime files in tunnel mode", () => {
-  it("publishes Caddy only on the loopback port the connector reaches", () => {
+  it("publishes the edge's Caddy only on the loopback port the connector reaches", () => {
+    const edge = parse(renderEdgeCompose(tunnelPlan()).content);
+    expect(edge.services.caddy.ports).toEqual([`127.0.0.1:${TUNNEL_ORIGIN_PORT}:80`]);
     const compose = parse(renderCompose(tunnelPlan()).content);
-    expect(compose.services.caddy.ports).toEqual([`127.0.0.1:${TUNNEL_ORIGIN_PORT}:80`]);
-    for (const [name, service] of Object.entries(compose.services)) {
-      if (name !== "caddy") expect((service as { ports?: unknown }).ports).toBeUndefined();
+    for (const service of [edge.services["kamal-proxy"], ...Object.values(compose.services)]) {
+      expect((service as { ports?: unknown }).ports).toBeUndefined();
     }
   });
 
@@ -82,21 +84,21 @@ describe("runtime files in tunnel mode", () => {
     expect(renderCaddyfile(own, context)).toEqual(renderCaddyfile(hetzner, context));
   });
 
-  it("publishes Caddy on IPv4 only behind OpsCrew's web filter; the Caddyfile is unchanged", () => {
+  it("publishes the edge's Caddy on IPv4 only behind OpsCrew's web filter; the site is unchanged", () => {
     const filtered = testPlan({ provider: "own", domain: "shop.example.com" });
     const hetzner = testPlan({ domain: "shop.example.com" });
     const context = testContext({ acmeEmail: "ops@example.com" });
     expect(webFilterMode(filtered)).toBe(true);
     expect(webFilterMode(hetzner)).toBe(false);
     expect(webFilterMode(tunnelPlan())).toBe(false);
-    const compose = parse(renderCompose(filtered).content);
-    expect(compose.services.caddy.ports).toEqual([
+    const edge = parse(renderEdgeCompose(filtered).content);
+    expect(edge.services.caddy.ports).toEqual([
       "0.0.0.0:80:80",
       "0.0.0.0:443:443",
       "0.0.0.0:443:443/udp",
     ]);
     // Hetzner and DigitalOcean (their cloud firewall filters both families) are unchanged.
-    expect(parse(renderCompose(hetzner).content).services.caddy.ports).toEqual([
+    expect(parse(renderEdgeCompose(hetzner).content).services.caddy.ports).toEqual([
       "80:80",
       "443:443",
       "443:443/udp",

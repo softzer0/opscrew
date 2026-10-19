@@ -1,10 +1,11 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { webOnlyFromCloudflare } from "../predicates";
 
 /**
- * Loopback port Caddy publishes on in tunnel mode (`127.0.0.1:18080` → Caddy's port 80). The
- * connector runs on the host network and reaches the app there; ports 80 and 443 stay free (another
- * web server may use them) and nothing listens on a public interface.
+ * Loopback port the shared edge's Caddy publishes on in tunnel mode (`127.0.0.1:18080` → Caddy's
+ * port 80). The connector runs on the host network and reaches the apps there; ports 80 and 443
+ * stay free (another web server may use them) and nothing listens on a public interface.
  */
 export const TUNNEL_ORIGIN_PORT = 18080;
 
@@ -20,6 +21,18 @@ export const PORTAINER_PORT = 9443;
 /** True when an own-server plan serves the app through a Cloudflare Tunnel. */
 export function tunnelMode(plan: DeployPlan): boolean {
   return plan.target.provider === "own" && plan.target.access === "tunnel";
+}
+
+/**
+ * True when a server the user owns serves the site directly behind Cloudflare's proxy with
+ * OpsCrew's web filter (public mode, a proxied Cloudflare domain, `security.httpAllowedFrom:
+ * cloudflare`). The site is then published on IPv4 only: Docker serves an IPv6 host port of a
+ * container without IPv6 through docker-proxy, around the filter in `DOCKER-USER`.
+ */
+export function webFilterMode(plan: DeployPlan): boolean {
+  return (
+    plan.target.provider === "own" && plan.target.access === "public" && webOnlyFromCloudflare(plan)
+  );
 }
 
 /** Portainer's hostname when the plan serves Portainer on a subdomain (behind Access). */

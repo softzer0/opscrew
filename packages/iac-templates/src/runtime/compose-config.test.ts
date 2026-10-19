@@ -90,6 +90,21 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
       expect(config.services.mongodb.volumes).toHaveLength(2);
       expect(config.services.mailer.command).toEqual(["exec node mailer.js $$QUEUE"]);
       expect(Object.keys(config.volumes)).toContain("kafka_data");
+      expect(config.services.app.networks).toHaveProperty("opscrew-edge");
+      expect(config.networks["opscrew-edge"]).toMatchObject({ external: true });
+
+      // The shared edge's file, uploaded with them.
+      const edge = spawnSync(
+        "docker",
+        ["compose", "-f", join(dir, "edge", "compose.yaml"), "config", "--format", "json"],
+        { cwd: dir, encoding: "utf8", timeout: 60_000 },
+      );
+      expect(edge.status, edge.stderr).toBe(0);
+      const edgeConfig = JSON.parse(edge.stdout);
+      expect(edgeConfig.name).toBe("opscrew-edge");
+      expect(Object.keys(edgeConfig.services)).toEqual(["caddy", "kamal-proxy"]);
+      expect(edgeConfig.configs.caddyfile.content).toContain("import /etc/caddy/sites/*.caddy");
+      expect(edgeConfig["x-opscrew-edge-version"]).toBeGreaterThan(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

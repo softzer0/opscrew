@@ -1,14 +1,24 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax, not JavaScript templates.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testServices } from "../__fixtures__/plans";
 import { withServices } from "../catalog/__fixtures__/plans";
+import { EDGE_VERSION, EDGE_VERSION_KEY, renderEdgeCompose } from "../edge";
+import { renderCaddyfile, renderCompose, renderRuntimeFiles } from "../runtime";
 import type { RenderContext } from "../types";
 import { jobYaml, NIGHTLY, withBuild, withPlan, withProcesses } from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
@@ -16,10 +26,10 @@ import { type ServiceInitStep, switchCommands } from "./switch";
 
 /*
  * Runs the generated "Start the new version" and "Roll back" scripts in bash against a fake server:
- * `ssh` runs the server script with `sh` locally, /srv/app mapped to a temp dir, `scp` only logs
- * its arguments, and `docker` is a
- * fake that keeps the app's containers in a file and plays kamal-proxy, which routes to a container
- * unless its image is in UNHEALTHY.
+ * `ssh` runs the server script with `sh` locally, /srv mapped to $WORK/srv, `scp` logs its
+ * arguments and copies the repository's files that exist, `flock` only logs, and `docker` is a fake
+ * that keeps each Compose project's containers in a file and plays the shared edge's kamal-proxy,
+ * which routes to a container unless its image is in UNHEALTHY.
  */
 
 const plan: DeployPlan = DeployPlanSchema.parse({
@@ -109,26 +119,44 @@ const PRELUDE = [
   "    shift 3",
   // The script reaches sh on its stdin, as over ssh: a command that reads stdin would eat it.
   '    local script; script="$(cat)"',
-  '    printf "%s\\n" "${script//\\/srv\\/app/$WORK/app}" | sh -s -- "$@"',
+  '    printf "%s\\n" "${script//\\/srv\\//$WORK/srv/}" | sh -s -- "$@"',
   "  else",
-  '    sh -c "${*//\\/srv\\/app/$WORK/app}"',
+  '    sh -c "${*//\\/srv\\//$WORK/srv/}"',
   "  fi",
   "}",
-  'scp() { echo "scp $*" >> "$WORK/scp.log"; }',
+  "scp() {",
+  '  echo "scp $*" >> "$WORK/scp.log"',
+  '  local dest="${*: -1}"; dest="$WORK${dest#*:}"',
+  '  local arg; for arg in "$@"; do if [[ "$arg" == opscrew/* && -e "$arg" ]]; then cp -r "$arg" "$dest"; fi; done',
+  "}",
 ].join("\n");
 
 /**
- * The fake `docker`: logs every call; `compose` and kamal-proxy act on $WORK/containers. The
- * workers and cron named in PROCESSES live in $WORK/processes, one container each unless REPLICAS
- * says otherwise (`worker=2`), as `p<n> <service> <image> <status> <restarts>`; they are recreated
- * only when their image changed, as Compose does, and `compose stop` exits them. Any other
- * `compose exec` is a setup step: it fails when its words are a line of $WORK/failing.
+ * The fake `docker`: logs every call, and each Compose call as `<project> <arguments>` in
+ * $WORK/projects.log (the project is the folder's name unless `-p` names one). An app project's
+ * `compose` calls act on $WORK/containers-<project>; the workers and cron named in PROCESSES live
+ * in $WORK/processes-<project>, one container each unless REPLICAS says otherwise (`worker=2`), as
+ * `p<n> <service> <image> <status> <restarts>`; they are recreated only when their image changed,
+ * as Compose does, and `compose stop` exits them. Any other `compose exec` in an app project is a
+ * setup step: it fails when its words are a line of $WORK/failing. In the edge's project, `up`
+ * fails with EDGE_UP_FAIL, Caddy's reload with CADDY_RELOAD_FAIL, and kamal-proxy's `deploy
+ * <service>` writes the target it routes to in $WORK/routes/<service>.
  */
 const FAKE_DOCKER = [
   "#!/usr/bin/env bash",
   'echo "docker $*" >> "$WORK/docker.log"',
-  'state="$WORK/containers"',
-  'processes="$WORK/processes"',
+  'project="$(basename "$PWD")"',
+  'if [[ "$1" == compose ]]; then',
+  "  shift",
+  '  while [[ "$1" == -p || "$1" == -f ]]; do',
+  '    if [[ "$1" == -p ]]; then project="$2"; fi',
+  "    shift 2",
+  "  done",
+  '  echo "$project $*" >> "$WORK/projects.log"',
+  '  set -- compose "$@"',
+  "fi",
+  'state="$WORK/containers-$project"',
+  'processes="$WORK/processes-$project"',
   'touch "$state" "$processes" "$WORK/failing"',
   'image_now() { echo "${APP_IMAGE:-$(sed -n "s/^APP_IMAGE=//p" .env)}"; }',
   'next_id() { local n; n="$(cat "$WORK/next" 2>/dev/null || echo 1)"; echo $(( n + 1 )) > "$WORK/next"; echo "$n"; }',
@@ -136,7 +164,7 @@ const FAKE_DOCKER = [
   '  local n; n="$(next_id)"',
   '  local image; image="$(image_now)"',
   '  local status=running; [[ " ${EXITED:-} " == *" $image "* ]] && status=exited',
-  '  echo "c$n shop-app-$n $image $status" >> "$state"',
+  '  echo "c$n $project-app-$n $image $status" >> "$state"',
   "}",
   "up_process() {",
   '  local image; image="$(image_now)"',
@@ -148,7 +176,10 @@ const FAKE_DOCKER = [
   "}",
   'case "$1 $2" in',
   '  "login ghcr.io") cat > /dev/null; [[ -z "${DOCKER_LOGIN_FAIL:-}" ]] ;;',
+  '  "network inspect") [[ -f "$WORK/network-$3" ]] ;;',
+  '  "network create") touch "$WORK/network-$3" ;;',
   '  "compose up")',
+  '    if [[ "$project" == opscrew-edge ]]; then [[ -z "${EDGE_UP_FAIL:-}" ]]; exit; fi',
   '    [[ -z "${COMPOSE_UP_FAIL:-}" ]] || exit 1',
   '    if [[ "${@: -1}" != app ]]; then',
   '      for arg in "${@:3}"; do [[ " ${PROCESSES:-} " != *" $arg "* ]] || up_process "$arg"; done',
@@ -175,21 +206,25 @@ const FAKE_DOCKER = [
   '    if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; exit 3; fi ;;',
   '  "compose exec")',
   "    cat > /dev/null",
-  '    if [[ "$4" != proxy ]]; then',
+  '    if [[ "$project" != opscrew-edge ]]; then',
   '      if grep -qxF "${*:5}" "$WORK/failing"; then echo "setup output for ${*:5}"; exit 1; fi',
   "      exit 0",
   "    fi",
+  '    if [[ "$4" == caddy ]]; then',
+  '      if [[ -n "${CADDY_RELOAD_FAIL:-}" ]]; then echo "Error: ambiguous site definition: :80" >&2; exit 1; fi',
+  "      exit 0",
+  "    fi",
   '    target=""; prev=""; for arg in "$@"; do [[ "$prev" == --target ]] && target="$arg"; prev="$arg"; done',
-  '    image="$(awk -v n="${target%:*}" \'$2 == n { print $3 }\' "$state")"',
-  '    status="$(awk -v n="${target%:*}" \'$2 == n { print $4 }\' "$state")"',
+  '    image="$(cat "$WORK"/containers-* | awk -v n="${target%:*}" \'$2 == n { print $3 }\')"',
+  '    status="$(cat "$WORK"/containers-* | awk -v n="${target%:*}" \'$2 == n { print $4 }\')"',
   '    if [[ "$status" != running || " ${UNHEALTHY:-} " == *" $image "* ]]; then',
   '      echo "Error: target failed to become healthy within configured timeout (60s)" >&2; exit 1',
   "    fi",
-  '    echo "$target" > "$WORK/routed" ;;',
+  '    mkdir -p "$WORK/routes"; echo "$target" > "$WORK/routes/$7" ;;',
   '  "inspect --format")',
   '    if [[ "${@: -1}" == p* ]]; then',
-  '      awk -v id="${@: -1}" -v f="$3" \'$1 == id { print (f == "{{.RestartCount}}" ? $5 : $4 ":" $5) }\' "$processes"',
-  '    else awk -v id="${@: -1}" \'$1 == id { print "/" $2 }\' "$state" | grep .; fi ;;',
+  '      cat "$WORK"/processes-* | awk -v id="${@: -1}" -v f="$3" \'$1 == id { print (f == "{{.RestartCount}}" ? $5 : $4 ":" $5) }\'',
+  '    else cat "$WORK"/containers-* | awk -v id="${@: -1}" \'$1 == id { print "/" $2 }\' | grep .; fi ;;',
   "  *)",
   '    if [[ "$1" == rm ]]; then grep -v "^${@: -1} " "$state" > "$state.tmp" || true; mv "$state.tmp" "$state"; fi ;;',
   "esac",
@@ -202,14 +237,18 @@ const FAKE_DOCKER = [
 const FAKE_SLEEP = [
   "#!/usr/bin/env bash",
   'echo "sleep $*" >> "$WORK/docker.log"',
-  'touch "$WORK/processes"',
+  'processes="$WORK/processes-$(basename "$PWD")"',
+  'touch "$processes"',
   'awk -v crash=" ${CRASH:-} " -v stop=" ${STOP:-} " \'{',
   "  k[$2]++",
   '  if (index(crash, " " $2 " ") || index(crash, " " $2 "/" k[$2] " ")) $5 = $5 + 1',
   '  if (index(stop, " " $2 " ")) $4 = "exited"',
   "  print",
-  '}\' "$WORK/processes" > "$WORK/processes.tmp" && mv "$WORK/processes.tmp" "$WORK/processes"',
+  '}\' "$processes" > "$processes.tmp" && mv "$processes.tmp" "$processes"',
 ].join("\n");
+
+/** The fake `flock`: the server's lock around the shared edge, logged. */
+const FAKE_FLOCK = ["#!/usr/bin/env bash", 'echo "flock $*" >> "$WORK/flock.log"'].join("\n");
 
 let work = "";
 
@@ -230,9 +269,10 @@ function bashWorks(): boolean {
 
 const hasBash = bashWorks();
 
-function run(script: string, env: Record<string, string> = {}) {
+/** Runs a step's script on the runner, in the app's repository (`repos/<app>`, default `shop`). */
+function run(script: string, env: Record<string, string> = {}, app = "shop") {
   const result = spawnSync("bash", ["-c", `${PRELUDE}\n${script}`], {
-    cwd: join(work, "app"),
+    cwd: join(work, "repos", app),
     env: {
       ...process.env,
       WORK: work,
@@ -250,9 +290,33 @@ function run(script: string, env: Record<string, string> = {}) {
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
-const appFile = (name: string) => join(work, "app", name);
-const read = (name: string) =>
-  existsSync(appFile(name)) ? readFileSync(appFile(name), "utf8").trim() : undefined;
+/** `p`'s files in opscrew/runtime as provision renders them, the edge's stamped `version`. */
+function runtimeFiles(p: DeployPlan, version = EDGE_VERSION): Record<string, string> {
+  const stamp = (text: string) =>
+    text.replace(`\n${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, `\n${EDGE_VERSION_KEY}: ${version}\n`);
+  return Object.fromEntries(
+    [renderCompose(p), ...renderRuntimeFiles(p), renderCaddyfile(p, ctx)].map((f) => [
+      f.path.replace(/^opscrew\/runtime\//, ""),
+      stamp(f.content),
+    ]),
+  );
+}
+function writeAll(dir: string, files: Record<string, string>): void {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+}
+/** The app's repository with `p`'s runtime files, which the upload copies. */
+const repo = (p: DeployPlan, version = EDGE_VERSION) =>
+  writeAll(join(work, "repos", p.app.name, "opscrew", "runtime"), runtimeFiles(p, version));
+/** `p`'s runtime files in its folder on the server, as the upload leaves them. */
+const uploaded = (p: DeployPlan, version = EDGE_VERSION) =>
+  writeAll(join(work, "srv", "apps", p.app.name), runtimeFiles(p, version));
+
+const appFile = (name: string, app = "shop") => join(work, "srv", "apps", app, name);
+const read = (name: string, app = "shop") =>
+  existsSync(appFile(name, app)) ? readFileSync(appFile(name, app), "utf8").trim() : undefined;
 const file = (name: string) =>
   existsSync(join(work, name)) ? readFileSync(join(work, name), "utf8").trim() : "";
 /** `.env` files with the given images, and the app containers running `running`. */
@@ -261,33 +325,34 @@ const server = (files: Record<string, string>, running: readonly string[] = []) 
     writeFileSync(appFile(name), `APP_IMAGE=${image}\n`);
   }
   writeFileSync(
-    join(work, "containers"),
+    join(work, "containers-shop"),
     running.map((image, i) => `c${90 + i} shop-app-${90 + i} ${image} running\n`).join(""),
   );
 };
-/** The images of the app containers that exist. */
-const containers = () =>
-  file("containers")
+/** The images of the app's containers that exist. */
+const containers = (app = "shop") =>
+  file(`containers-${app}`)
     .split("\n")
     .filter(Boolean)
     .map((line) => line.split(" ")[2]);
-/** The image of the container kamal-proxy sends traffic to. */
-const routed = () => {
-  const name = file("routed").split(":")[0];
-  return file("containers")
+/** The image of the container kamal-proxy sends the app's traffic to. */
+const routed = (app = "shop") => {
+  const name = file(`routes/${app}`).split(":")[0];
+  return file(`containers-${app}`)
     .split("\n")
     .find((line) => line.split(" ")[1] === name)
     ?.split(" ")[2];
 };
 const resetCalls = () => {
-  rmSync(join(work, "ssh-count"), { force: true });
-  rmSync(join(work, "docker.log"), { force: true });
+  for (const log of ["ssh-count", "docker.log", "projects.log"]) {
+    rmSync(join(work, log), { force: true });
+  }
 };
 const dockerCalls = () => file("docker.log");
 /** The image each worker and cron container runs, by service. */
 const processImages = () =>
   Object.fromEntries(
-    file("processes")
+    file("processes-shop")
       .split("\n")
       .filter(Boolean)
       .map((line) => line.split(" ").slice(1, 3)),
@@ -295,7 +360,7 @@ const processImages = () =>
 /** The status of each worker and cron container, by service. */
 const processStatus = () =>
   Object.fromEntries(
-    file("processes")
+    file("processes-shop")
       .split("\n")
       .filter(Boolean)
       .map((line) => [line.split(" ")[1], line.split(" ")[3]]),
@@ -303,7 +368,7 @@ const processStatus = () =>
 /** The workers and cron of an earlier deploy (`services`, default all three), running `image`. */
 const runningProcesses = (image: string, services = ["worker", "beat", "cron"]) =>
   writeFileSync(
-    join(work, "processes"),
+    join(work, "processes-shop"),
     services.map((s, i) => `p${80 + i} ${s} ${image} running 0\n`).join(""),
   );
 
@@ -312,11 +377,14 @@ const runningProcesses = (image: string, services = ["worker", "beat", "cron"]) 
 describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000 }, () => {
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-rollback-")).replaceAll("\\", "/");
-    mkdirSync(join(work, "app"));
-    mkdirSync(join(work, "tmp"));
-    mkdirSync(join(work, "bin"));
+    for (const dir of ["repos/shop", "srv/edge", "tmp", "bin"]) {
+      mkdirSync(join(work, dir), { recursive: true });
+    }
     writeFileSync(join(work, "bin", "docker"), `${FAKE_DOCKER}\n`, { mode: 0o755 });
     writeFileSync(join(work, "bin", "sleep"), `${FAKE_SLEEP}\n`, { mode: 0o755 });
+    writeFileSync(join(work, "bin", "flock"), `${FAKE_FLOCK}\n`, { mode: 0o755 });
+    // The server after an upload: the app's folder with its runtime files and the edge's.
+    uploaded(plan);
   });
   afterEach(() => rmSync(work, { recursive: true, force: true }));
 
@@ -327,14 +395,17 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(start.status, start.output).toBe(0);
       expect(containers()).toEqual([NEW]);
       expect(routed()).toBe(NEW);
-      expect(file("routed")).toBe("shop-app-1:3000");
+      expect(file("routes/shop")).toBe("shop-app-1:3000");
       expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
       expect(read(".env.previous")).toBe(`APP_IMAGE=${OLD}`);
       expect(file("output")).toBe(`previous=${OLD}`);
       const calls = dockerCalls();
-      expect(calls).toContain("docker compose up -d --no-deps --no-recreate --scale app=2 app");
       expect(calls).toContain(
-        "docker compose exec -T proxy kamal-proxy deploy app --target shop-app-1:3000 --health-check-path /api/health --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s",
+        "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
+      );
+      // The app is the edge's kamal-proxy service named after it (no hostname before a domain).
+      expect(file("projects.log")).toContain(
+        "opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop --target shop-app-1:3000 --health-check-path /api/health --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s",
       );
       // The old copy goes only after the switch, with a graceful stop.
       expect(calls.indexOf("kamal-proxy deploy")).toBeLessThan(calls.indexOf("docker stop c90"));
@@ -355,7 +426,8 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
 
     it("removes a new copy that never becomes healthy; the old one keeps serving", () => {
       server({ ".env": OLD }, [OLD]);
-      writeFileSync(join(work, "routed"), "shop-app-90:3000\n");
+      mkdirSync(join(work, "routes"));
+      writeFileSync(join(work, "routes", "shop"), "shop-app-90:3000\n");
       const start = run(rolling.start, { UNHEALTHY: NEW });
       expect(start.status).toBe(1);
       expect(containers()).toEqual([OLD]);
@@ -425,8 +497,8 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       const calls = dockerCalls().split("\n");
       const ups = calls.filter((c) => c.startsWith("docker compose up"));
       expect(ups).toEqual([
-        "docker compose up -d --no-deps --wait --remove-orphans db proxy caddy",
-        "docker compose up -d --no-deps --no-recreate --scale app=2 app",
+        "docker compose up -d --no-deps --wait db",
+        "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
       ]);
     });
   });
@@ -438,7 +510,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(start.status, start.output).toBe(0);
       expect(containers()).toEqual([NEW]);
       expect(routed()).toBe(NEW);
-      expect(dockerCalls()).toContain("docker compose up -d --no-deps app");
+      expect(dockerCalls()).toContain("docker compose up -d --no-deps --remove-orphans app");
       expect(dockerCalls()).not.toContain("--scale");
       expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
     });
@@ -575,16 +647,16 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(start.status, start.output).toBe(0);
       const calls = dockerCalls().split("\n");
       const at = (prefix: string) => {
-        const i = calls.findIndex((line) => line.startsWith(prefix));
+        const i = calls.findIndex((line) => line.includes(prefix));
         expect(i, prefix).toBeGreaterThan(-1);
         return i;
       };
       const order = [
         at("docker compose pull"),
-        at("docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy"),
+        at("docker compose up -d --no-deps --wait db cache"),
         at("docker compose run --rm --no-deps -T release"),
-        at("docker compose up -d --no-deps --no-recreate --scale app=2 app"),
-        at("docker compose exec -T proxy kamal-proxy deploy app"),
+        at("docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app"),
+        at("exec -T kamal-proxy kamal-proxy deploy shop "),
         at("docker stop c90"),
         at("docker compose up -d --no-deps worker beat cron"),
         at("docker inspect --format {{.RestartCount}}"),
@@ -603,7 +675,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       runningProcesses(OLD);
       const start = run(withWorkers.start, { CRASH: "worker" });
       expect(start.status).toBe(1);
-      // The fake ssh maps /srv/app to the test's folder.
+      // The fake ssh maps /srv to the test's folder.
       expect(start.output).toContain(
         "::error::The worker container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with `docker compose logs worker` in ",
       );
@@ -666,7 +738,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       const start = run(withWorkers.start, { REPLICAS: "worker=2", CRASH: "worker/2" });
       expect(start.status).toBe(1);
       expect(start.output).toContain("::error::The worker container did not keep running");
-      const workers = file("processes")
+      const workers = file("processes-shop")
         .split("\n")
         .filter((line) => line.split(" ")[1] === "worker")
         .map((line) => line.split(" ")[0]);
@@ -695,8 +767,8 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
         .split("\n")
         .filter((call) => call.startsWith("docker compose up"));
       expect(ups).toEqual([
-        "docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy",
-        "docker compose up -d --no-deps --no-recreate --scale app=2 app",
+        "docker compose up -d --no-deps --wait db cache",
+        "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
         "docker compose up -d --no-deps worker beat cron",
       ]);
       const job = renderWorkflow(components, ctx).content;
@@ -711,7 +783,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       runningProcesses(NEW);
       expect(run(withWorkers.start).status).toBe(0);
       expect(
-        file("processes")
+        file("processes-shop")
           .split("\n")
           .map((line) => line.split(" ")[0]),
       ).toEqual(["p80", "p81", "p82"]);
@@ -730,7 +802,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
           storage: { sqlite: { dir: "storage" } },
         }),
       );
-      expect(sqlite.start).toContain("docker compose up -d --no-deps app\n");
+      expect(sqlite.start).toContain("docker compose up -d --no-deps --remove-orphans app\n");
       expect(sqlite.start).not.toContain("--scale");
     });
   });
@@ -765,7 +837,9 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(result.status, result.output).toBe(0);
       const calls = dockerCalls().split("\n");
       const at = (text: string) => calls.findIndex((line) => line.endsWith(text));
-      expect(at("--remove-orphans db proxy caddy")).toBeLessThan(at("/garage layout show"));
+      expect(at("docker compose up -d --no-deps --wait db")).toBeLessThan(
+        at("/garage layout show"),
+      );
       expect(at("/garage layout show")).toBeLessThan(at(LAYOUT));
       expect(at(LAYOUT)).toBeLessThan(at("/garage bucket info uploads"));
       expect(at("/garage bucket info uploads")).toBeLessThan(at(BUCKET));
@@ -789,7 +863,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       failing("/garage layout show", LAYOUT);
       const result = run(start);
       expect(result.status).toBe(1);
-      // The fake ssh maps /srv/app to the test's folder.
+      // The fake ssh maps /srv to the test's folder.
       expect(result.output).toContain(
         "::error::The one-time setup of the garage service failed, so the new version was not started and the previous version keeps serving. The step's output stays on the server in ",
       );
@@ -821,7 +895,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       ];
       const lines = switchCommands(plan, steps);
       expect(lines).toContain(
-        `  if ! (umask 077; (set -a; . ./garage.env; set +a; docker compose exec -T garage '/garage' 'key' 'import' '--yes' "\${GARAGE_KEY_ID}" "\${GARAGE_KEY_SECRET}" < /dev/null) > /srv/app/init.log 2>&1); then`,
+        `  if ! (umask 077; (set -a; . ./garage.env; set +a; docker compose exec -T garage '/garage' 'key' 'import' '--yes' "\${GARAGE_KEY_ID}" "\${GARAGE_KEY_SECRET}" < /dev/null) > /srv/apps/shop/init.log 2>&1); then`,
       );
       const result = run(
         ['ssh "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'', ...lines, "REMOTE"].join("\n"),
@@ -846,19 +920,32 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       { cron: [NIGHTLY] },
     );
 
-    it("copies the services' settings files and the crontab next to compose.yaml", () => {
+    it("copies the services' settings files, the crontab and the edge's files to the app's folder", () => {
       expect(run(scripts(services).upload).status).toBe(0);
       expect(file("scp.log")).toMatch(
-        / opscrew\/runtime\/compose\.yaml opscrew\/runtime\/Caddyfile opscrew\/runtime\/services opscrew\/runtime\/crontab deploy@203\.0\.113\.10:\/srv\/app\/$/,
+        / opscrew\/runtime\/compose\.yaml opscrew\/runtime\/services opscrew\/runtime\/crontab opscrew\/runtime\/edge deploy@203\.0\.113\.10:\/srv\/apps\/shop\/$/,
       );
       expect(file("scp.log")).toMatch(/^scp -r /);
     });
 
-    it("copies only compose.yaml and the Caddyfile when the plan has nothing else", () => {
+    it("copies only compose.yaml and the edge's files when the plan has nothing else", () => {
       expect(run(rolling.upload).status).toBe(0);
       expect(file("scp.log")).toMatch(
-        / opscrew\/runtime\/compose\.yaml opscrew\/runtime\/Caddyfile deploy@203\.0\.113\.10:\/srv\/app\/$/,
+        / opscrew\/runtime\/compose\.yaml opscrew\/runtime\/edge deploy@203\.0\.113\.10:\/srv\/apps\/shop\/$/,
       );
+    });
+
+    it("creates the app's folder on a server that has only /srv/apps, then fills it", () => {
+      rmSync(join(work, "srv", "apps", "shop"), { recursive: true });
+      repo(plan);
+      const result = run(rolling.upload, { OPSCREW_APP_ENV: "LOG_LEVEL=info" });
+      expect(result.status, result.output).toBe(0);
+      expect(read("compose.yaml")).toBe(renderCompose(plan).content.trim());
+      expect(read("edge/compose.yaml")).toBe(renderEdgeCompose(plan).content.trim());
+      expect(read("edge/sites/shop.caddy")).toBe(renderCaddyfile(plan, ctx).content.trim());
+      expect(read("app.env")).toBe("LOG_LEVEL=info");
+      // Nothing reaches the edge's folder before the start step's lock.
+      expect(readdirSync(join(work, "srv", "edge"))).toEqual([]);
     });
 
     it("writes each service's env file from its own secret, printing none of its values", () => {
@@ -874,6 +961,229 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(read("rabbitmq.env")).toBe(rabbitmq);
       expect(read("app.env")).toBe("LOG_LEVEL=info");
       expect(result.output).toBe("");
+    });
+  });
+
+  describe("the shared edge", () => {
+    const edgeFile = (name: string) => join(work, "srv", "edge", name);
+    const serverEdge = () => readFileSync(edgeFile("compose.yaml"), "utf8");
+    /** The server's edge Compose file from another app's deploy, stamped `version`. */
+    const otherEdge = (version: number) => {
+      const content = `name: opscrew-edge\n${EDGE_VERSION_KEY}: ${version}\n# another app's edge\n`;
+      writeFileSync(edgeFile("compose.yaml"), content);
+      return content;
+    };
+    const edgeCalls = () =>
+      file("projects.log")
+        .split("\n")
+        .filter((line) => line.startsWith("opscrew-edge "));
+
+    it("keeps the server's edge when the uploaded one is older, and still adds the app's site", () => {
+      const theirs = otherEdge(EDGE_VERSION + 1);
+      const start = run(rolling.start);
+      expect(start.status, start.output).toBe(0);
+      expect(serverEdge()).toBe(theirs);
+      expect(start.output).toContain(
+        `The server's shared edge (version ${EDGE_VERSION + 1}) is newer than this app's (${EDGE_VERSION}), so it stays.`,
+      );
+      expect(readFileSync(edgeFile("sites/shop.caddy"), "utf8")).toBe(
+        renderCaddyfile(plan, ctx).content,
+      );
+      expect(edgeCalls().slice(0, 2)).toEqual([
+        "opscrew-edge up -d --wait",
+        "opscrew-edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile",
+      ]);
+    });
+
+    it("keeps the server's edge when the uploaded one has the same version", () => {
+      const theirs = otherEdge(EDGE_VERSION);
+      const start = run(rolling.start);
+      expect(start.status, start.output).toBe(0);
+      expect(serverEdge()).toBe(theirs);
+      expect(start.output).not.toContain("shared edge");
+    });
+
+    it("replaces the server's edge with a newer upload", () => {
+      otherEdge(EDGE_VERSION - 1);
+      const start = run(rolling.start);
+      expect(start.status, start.output).toBe(0);
+      expect(serverEdge()).toBe(renderEdgeCompose(plan).content);
+      expect(start.output).toContain(
+        `OpsCrew's shared edge on this server is now version ${EDGE_VERSION}.`,
+      );
+    });
+
+    it("sets the edge up on the first deploy: its network, its file, then Caddy and kamal-proxy", () => {
+      const start = run(rolling.start);
+      expect(start.status, start.output).toBe(0);
+      expect(serverEdge()).toBe(renderEdgeCompose(plan).content);
+      expect(existsSync(join(work, "network-opscrew-edge"))).toBe(true);
+      const calls = dockerCalls().split("\n");
+      const at = (text: string) => calls.findIndex((line) => line.includes(text));
+      // Under the lock, the network comes before the edge, the edge before the app's switch.
+      expect(file("flock.log")).toBe("flock 9");
+      expect(at("docker network create opscrew-edge")).toBeGreaterThan(at("docker compose pull"));
+      expect(at("docker network create opscrew-edge")).toBeLessThan(at(" up -d --wait"));
+      expect(at(" up -d --wait")).toBeLessThan(at("caddy reload"));
+      expect(at("caddy reload")).toBeLessThan(at("--scale app=1 app"));
+      expect(routed()).toBe(NEW);
+    });
+
+    it("puts the app's previous site back when Caddy refuses the new one, and stops before the switch", () => {
+      server({ ".env": OLD }, [OLD]);
+      mkdirSync(edgeFile("sites"));
+      writeFileSync(edgeFile("sites/shop.caddy"), "# the site Caddy serves now\n");
+      const start = run(rolling.start, { CADDY_RELOAD_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("Error: ambiguous site definition: :80");
+      expect(start.output).toContain(
+        "::error::OpsCrew's shared edge on the server (Caddy and kamal-proxy, in ",
+      );
+      expect(start.output).toContain(
+        "did not accept this app's site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had.",
+      );
+      expect(readFileSync(edgeFile("sites/shop.caddy"), "utf8")).toBe(
+        "# the site Caddy serves now\n",
+      );
+      expect(containers()).toEqual([OLD]);
+      expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+      expect(dockerCalls()).not.toContain("--scale");
+
+      resetCalls();
+      expect(run(rolling.rollback).output).toContain("still runs the version it had");
+    });
+
+    it("removes a first site Caddy refuses, or that the edge could not start with", () => {
+      for (const failure of ["CADDY_RELOAD_FAIL", "EDGE_UP_FAIL"]) {
+        const start = run(rolling.start, { [failure]: "1" });
+        expect(start.status, failure).toBe(1);
+        expect(existsSync(edgeFile("sites/shop.caddy")), failure).toBe(false);
+        expect(containers(), failure).toEqual([]);
+      }
+    });
+
+    describe("with two apps on one server", () => {
+      const cloudflare = (domain: string, www: boolean) => ({
+        provider: "cloudflare",
+        domain,
+        zone: "example.com",
+        proxied: true,
+        www,
+      });
+      const shop = DeployPlanSchema.parse({ ...plan, dns: cloudflare("example.com", true) });
+      const blog = withProcesses(
+        DeployPlanSchema.parse({
+          ...plan,
+          app: { ...plan.app, name: "blog" },
+          dns: cloudflare("blog.example.com", false),
+        }),
+        { workers: [{ name: "worker", command: "node worker.js" }] },
+      );
+      /** Every file of the app's folder on the server, by path. */
+      const folder = (app: string) => {
+        const root = join(work, "srv", "apps", app);
+        const files: Record<string, string> = {};
+        const walk = (dir: string) => {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            const path = join(dir, entry.name);
+            if (entry.isDirectory()) walk(path);
+            else
+              files[path.slice(root.length + 1).replaceAll("\\", "/")] = readFileSync(path, "utf8");
+          }
+        };
+        walk(root);
+        return files;
+      };
+      const deploy = (p: DeployPlan) => {
+        repo(p);
+        const steps = scripts(p);
+        const upload = run(steps.upload, { OPSCREW_APP_ENV: `APP=${p.app.name}` }, p.app.name);
+        expect(upload.status, upload.output).toBe(0);
+        const start = run(steps.start, {}, p.app.name);
+        expect(start.status, start.output).toBe(0);
+        return steps;
+      };
+
+      it("deploys each in its own folder and project, the edge serving both", () => {
+        rmSync(join(work, "srv", "apps", "shop"), { recursive: true });
+        deploy(shop);
+        const shopFolder = folder("shop");
+        const shopContainers = file("containers-shop");
+        const shopRoute = file("routes/shop");
+        const edgeAfterShop = serverEdge();
+        resetCalls();
+
+        const blogSteps = deploy(blog);
+        // Not a word of blog's scripts names shop's folder or project.
+        for (const script of Object.values(blogSteps)) {
+          expect(script).not.toMatch(/\/srv\/apps\/shop|\bshop\b/);
+        }
+        // Every Compose call of blog's deploy is in blog's project or the edge's.
+        const projects = file("projects.log")
+          .split("\n")
+          .map((line) => line.split(" ")[0]);
+        expect(new Set(projects)).toEqual(new Set(["blog", "opscrew-edge"]));
+        expect(dockerCalls()).not.toContain("shop");
+
+        // shop is untouched: its files, its containers and its route.
+        expect(folder("shop")).toEqual(shopFolder);
+        expect(file("containers-shop")).toBe(shopContainers);
+        expect(file("routes/shop")).toBe(shopRoute);
+        // blog runs in its own project, with its own route and hostname on the same edge.
+        expect(containers("blog")).toEqual([NEW]);
+        expect(routed("blog")).toBe(NEW);
+        expect(file("routes/blog")).toMatch(/^blog-app-\d+:3000$/);
+        expect(processImages()).toEqual({});
+        expect(file("processes-blog")).toMatch(/^p\d+ worker /);
+        expect(read("app.env", "blog")).toBe("APP=blog");
+        expect(read("app.env")).toBe("APP=shop");
+        expect(serverEdge()).toBe(edgeAfterShop);
+        expect(readdirSync(join(work, "srv", "edge", "sites")).sort()).toEqual([
+          "blog.caddy",
+          "shop.caddy",
+        ]);
+        expect(file("projects.log")).toContain(
+          "opscrew-edge exec -T kamal-proxy kamal-proxy deploy blog --target blog-app-",
+        );
+        expect(file("projects.log")).toMatch(
+          /deploy blog --target blog-app-\d+:3000 --host blog\.example\.com --health-check-path/,
+        );
+      });
+
+      it("gives kamal-proxy the domain and www, redirecting www to the domain", () => {
+        expect(scripts(shop).start).toContain(
+          " kamal-proxy deploy shop --target \"${name#/}:3000\" --host example.com,www.example.com --canonical-host example.com --health-check-path '/api/health' ",
+        );
+        expect(scripts(shop).rollback).toContain(
+          " --host example.com,www.example.com --canonical-host example.com ",
+        );
+      });
+
+      it("rolls one app back without touching the other", () => {
+        server({ ".env": OLD }, [OLD]);
+        deploy(shop);
+        const shopFolder = folder("shop");
+        const shopContainers = file("containers-shop");
+        const steps = scripts(blog);
+        repo(blog);
+        expect(run(steps.upload, {}, "blog").status).toBe(0);
+        writeFileSync(appFile(".env", "blog"), `APP_IMAGE=${OLD}\n`);
+        expect(run(steps.start, { CRASH: "worker" }, "blog").status).toBe(1);
+        resetCalls();
+        const rollback = run(steps.rollback, {}, "blog");
+        expect(rollback.output).toContain("restored the previous version");
+        expect(routed("blog")).toBe(OLD);
+        expect(
+          new Set(
+            file("projects.log")
+              .split("\n")
+              .map((l) => l.split(" ")[0]),
+          ),
+        ).toEqual(new Set(["blog", "opscrew-edge"]));
+        expect(folder("shop")).toEqual(shopFolder);
+        expect(file("containers-shop")).toBe(shopContainers);
+        expect(routed()).toBe(NEW);
+      });
     });
   });
 

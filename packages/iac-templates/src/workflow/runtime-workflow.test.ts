@@ -161,7 +161,7 @@ describe("renderWorkflow", () => {
       "${{ secrets.OPSCREW_SERVICE_MAIN_DB_ENV }}",
     );
     expect(upload?.run).toContain(
-      `printf '%s\\n' "\${OPSCREW_SERVICE_MAIN_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/main-db.env'`,
+      `printf '%s\\n' "\${OPSCREW_SERVICE_MAIN_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/main-db.env'`,
     );
     // Valkey as a cache has no secret, so it has no env file.
     expect(upload?.run).not.toContain("cache.env");
@@ -234,7 +234,7 @@ describe("renderWorkflow", () => {
       const order = [
         'export APP_IMAGE="$1"',
         "docker compose pull",
-        "docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy",
+        "docker compose up -d --no-deps --wait db cache",
         "docker compose run --rm --no-deps -T release",
         "--scale",
         "> .env",
@@ -250,14 +250,15 @@ describe("renderWorkflow", () => {
 
     it("starts only the backing services the plan has", () => {
       const dbOnly = serverScript(plan({ release: "x", redis: false }));
-      expect(dbOnly).toContain(
-        "docker compose up -d --no-deps --wait --remove-orphans db proxy caddy\n",
-      );
+      expect(dbOnly).toContain("docker compose up -d --no-deps --wait db\n");
+      // Without services nothing is started before the release command (Caddy and kamal-proxy
+      // are the shared edge's), and the switch removes containers the Compose file no longer has.
       const none = serverScript(plan({ release: "x", postgres: false, redis: false }));
-      expect(none).toContain(
-        "docker compose up -d --no-deps --wait --remove-orphans proxy caddy\n",
-      );
+      expect(none).not.toContain("docker compose up -d --no-deps --wait");
       expect(none).toContain("docker compose run --rm --no-deps -T release");
+      expect(none).toContain(
+        "docker compose up -d --no-deps --no-recreate --remove-orphans --scale",
+      );
     });
 
     it("stops with a plain message that names neither the server nor a secret", () => {

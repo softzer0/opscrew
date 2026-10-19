@@ -2,6 +2,7 @@
 
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
+import { appDir } from "../edge";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { renderRuntimeFiles } from "../runtime";
 import { sshHostname } from "../tunnel";
@@ -152,8 +153,9 @@ function envFileServices(plan: DeployPlan): string[] {
 }
 
 /**
- * What the upload copies next to compose.yaml and the Caddyfile: the `opscrew/runtime/services`
- * folder and the crontab, when {@link renderRuntimeFiles} renders them.
+ * What the upload copies next to compose.yaml: the `opscrew/runtime/services` folder and the
+ * crontab when {@link renderRuntimeFiles} renders them, and the `opscrew/runtime/edge` folder (the
+ * edge's Compose file and the app's site), which the start step puts in place.
  */
 function runtimeUploads(plan: DeployPlan): string[] {
   const top = renderRuntimeFiles(plan).map((file) => file.path.split("/").slice(0, 3).join("/"));
@@ -209,14 +211,16 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     ...hostEnv,
     ...envFiles.map((env) => `    ${env.secret}: ${secret(env.secret)}`),
   ];
-  const uploads = ["compose.yaml", "Caddyfile"].map((name) => `opscrew/runtime/${name}`);
+  // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
+  const dir = appDir(plan);
   const uploadRun = [
     "    set -euo pipefail",
     `    ${sshOpts}`,
-    `    scp -r "\${ssh_opts[@]}" ${[...uploads, ...runtimeUploads(plan)].join(" ")} "deploy@\${HOST}:/srv/app/"`,
+    `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p ${dir}'`,
+    `    scp -r "\${ssh_opts[@]}" ${["opscrew/runtime/compose.yaml", ...runtimeUploads(plan)].join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFiles.map(
       (env) =>
-        `    printf '%s\\n' "\${${env.secret}:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/${env.file}'`,
+        `    printf '%s\\n' "\${${env.secret}:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > ${dir}/${env.file}'`,
     ),
   ];
 
@@ -265,7 +269,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "    fi",
     '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
     `    ${sshOpts}`,
-    '    previous="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi\')"',
+    `    previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd ${dir} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"`,
     `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
     '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
@@ -302,7 +306,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "      no-previous)",
     '        echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;',
     "      *)",
-    '        echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\`docker compose ps\\` in /srv/app." ;;',
+    `        echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in ${dir}." ;;`,
     "    esac",
     "    exit 1",
   ];

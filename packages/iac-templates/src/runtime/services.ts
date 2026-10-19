@@ -43,22 +43,6 @@ export function hardened(o: { noCapabilities?: boolean; internal?: boolean } = {
   };
 }
 
-/** Where Caddy sends the app's traffic on a server: kamal-proxy, which switches between copies. */
-export const PROXY_UPSTREAM = "proxy:80";
-
-/**
- * The switch between app copies on a server: kamal-proxy on ports 80 and 443 of the internal
- * network, with no host port. Its named volume keeps the routes it was given across restarts.
- */
-export function proxyService(): object {
-  return {
-    image: IMAGES.kamalProxy.ref,
-    restart: "unless-stopped",
-    volumes: ["kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy"],
-    ...hardened({ noCapabilities: true, internal: true }),
-  };
-}
-
 /**
  * A Cloudflare Tunnel connector with `fields` (its token and how it reaches the origin). Metrics,
  * diagnostics and pprof listen on loopback only: on the host network the image default would
@@ -75,6 +59,9 @@ export function cloudflaredService(fields: object, internal = false): object {
   };
 }
 
+const TUNNEL_NOTE =
+  "# Served through a Cloudflare Tunnel: Cloudflare terminates TLS, Caddy serves plain HTTP.";
+
 /** How visitors reach Caddy, for {@link caddyfile}. */
 export interface CaddySite {
   /**
@@ -83,7 +70,7 @@ export interface CaddySite {
    */
   mode: "tunnel" | "proxy" | "direct";
   hosts: readonly string[];
-  /** What Caddy proxies to on the Compose network: {@link PROXY_UPSTREAM} or `app:<port>`. */
+  /** What Caddy proxies to: the shared edge's kamal-proxy on a server, `app:<port>` in a stack. */
   upstream: string;
   acmeEmail?: string | undefined;
   /** Extra response header lines, before `-Server`. */
@@ -100,13 +87,10 @@ export interface CaddySite {
  * the `X-Forwarded-*` headers of a proxy on a private address.
  */
 export function caddyfile(site: CaddySite): string[] {
-  const { mode, hosts } = site;
   const lines: string[] = [];
-  if (mode === "tunnel") {
-    lines.push(
-      "# Served through a Cloudflare Tunnel: Cloudflare terminates TLS, Caddy serves plain HTTP.",
-    );
-  } else if (mode === "proxy") {
+  if (site.mode === "tunnel") {
+    lines.push(TUNNEL_NOTE);
+  } else if (site.mode === "proxy") {
     lines.push(
       "# Behind your own reverse proxy: it terminates TLS and forwards to Caddy over plain HTTP.",
       "{",
@@ -116,11 +100,33 @@ export function caddyfile(site: CaddySite): string[] {
       "}",
       "",
     );
-  } else if (site.acmeEmail && hosts.length > 0) {
+  } else if (site.acmeEmail && site.hosts.length > 0) {
     lines.push("{", `\temail ${site.acmeEmail}`, "}", "");
   }
+  return [...lines, ...siteBlock(site, [])];
+}
+
+/**
+ * One app's site file for the shared edge's Caddy on a server, served as {@link caddyfile} serves
+ * it but without global options, which an imported file cannot have: the certificates' contact
+ * email is the site's `tls` line.
+ */
+export function caddySite(site: CaddySite & { mode: "tunnel" | "direct" }): string[] {
+  const tls =
+    site.mode === "direct" && site.acmeEmail && site.hosts.length > 0
+      ? [`\ttls ${site.acmeEmail}`]
+      : [];
+  return [...(site.mode === "tunnel" ? [TUNNEL_NOTE] : []), ...siteBlock(site, tls)];
+}
+
+/** The site block: its addresses, then `first`, the redirect, compression, the proxy and headers. */
+function siteBlock(site: CaddySite, first: readonly string[]): string[] {
+  const { mode, hosts } = site;
   const sites = mode === "tunnel" ? hosts.map((host) => `http://${host}`) : hosts;
-  lines.push(`${mode === "proxy" || sites.length === 0 ? ":80" : sites.join(", ")} {`);
+  const lines = [
+    `${mode === "proxy" || sites.length === 0 ? ":80" : sites.join(", ")} {`,
+    ...first,
+  ];
   if (mode === "tunnel") {
     // Caddy orders `redir` before `reverse_proxy`, so plain-HTTP visitors are redirected first.
     lines.push(

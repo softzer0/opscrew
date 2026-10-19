@@ -118,9 +118,10 @@ jobs:
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
-          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
-          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop'
+          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop/"
+          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/app.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/db.env'
       - id: start
         name: Start the new version
         env:
@@ -136,25 +137,47 @@ jobs:
           fi
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
           set -eu
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
-          cd /srv/app
+          cd /srv/apps/shop
           export APP_IMAGE="$1"
+          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
           docker compose pull
-          docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy
+          mkdir -p /srv/edge/sites
+          (
+            flock 9
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
+            current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            if [ "$uploaded" -gt "\${current:-0}" ]; then
+              cp edge/compose.yaml /srv/edge/compose.yaml
+              echo "OpsCrew's shared edge on this server is now version $uploaded."
+            elif [ "$uploaded" -lt "\${current:-0}" ]; then
+              echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
+            fi
+            rm -f .site.previous
+            if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+            cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
+            if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+              if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              exit 1
+            fi
+          ) 9> /srv/edge/.lock
+          docker compose up -d --no-deps --wait db cache
           old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
           new=""
           for id in $(docker compose ps -aq app); do
             case " $old " in *" $id "*) ;; *) new="$id" ;; esac
           done
           name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+          if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
             echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
@@ -198,20 +221,21 @@ jobs:
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
           set -eu
-          cd /srv/app
+          cd /srv/apps/shop
+          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
           {
             old="$(docker compose ps -aq app | tr '\\n' ' ')"
-            docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
             new=""
             for id in $(docker compose ps -aq app); do
               case " $old " in *" $id "*) ;; *) new="$id" ;; esac
             done
             name="$(docker inspect --format '{{.Name}}' "$new")"
-            if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
               docker rm -f "$new" > /dev/null
               echo '::error::The previous version did not pass its health check either.'
               exit 1
@@ -237,7 +261,7 @@ jobs:
             no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
-              echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/app." ;;
+              echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
           esac
           exit 1
 
@@ -525,9 +549,10 @@ jobs:
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
-          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
-          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop'
+          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop/"
+          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/app.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/db.env'
       - id: start
         name: Start the new version
         env:
@@ -543,30 +568,52 @@ jobs:
           fi
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
           set -eu
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
-          cd /srv/app
+          cd /srv/apps/shop
           export APP_IMAGE="$1"
+          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
           docker compose pull
-          docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy
-          if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > /srv/app/release.log 2>&1); then
-            echo '::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in /srv/app/release.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.'
+          mkdir -p /srv/edge/sites
+          (
+            flock 9
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
+            current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            if [ "$uploaded" -gt "\${current:-0}" ]; then
+              cp edge/compose.yaml /srv/edge/compose.yaml
+              echo "OpsCrew's shared edge on this server is now version $uploaded."
+            elif [ "$uploaded" -lt "\${current:-0}" ]; then
+              echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
+            fi
+            rm -f .site.previous
+            if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+            cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
+            if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+              if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              exit 1
+            fi
+          ) 9> /srv/edge/.lock
+          docker compose up -d --no-deps --wait db cache
+          if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > /srv/apps/shop/release.log 2>&1); then
+            echo '::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in /srv/apps/shop/release.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.'
             exit 1
           fi
-          echo 'The release command finished; its output is in /srv/app/release.log on the server.'
+          echo 'The release command finished; its output is in /srv/apps/shop/release.log on the server.'
           old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
           new=""
           for id in $(docker compose ps -aq app); do
             case " $old " in *" $id "*) ;; *) new="$id" ;; esac
           done
           name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+          if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
             echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
@@ -610,20 +657,21 @@ jobs:
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
           set -eu
-          cd /srv/app
+          cd /srv/apps/shop
+          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
           {
             old="$(docker compose ps -aq app | tr '\\n' ' ')"
-            docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
             new=""
             for id in $(docker compose ps -aq app); do
               case " $old " in *" $id "*) ;; *) new="$id" ;; esac
             done
             name="$(docker inspect --format '{{.Name}}' "$new")"
-            if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
               docker rm -f "$new" > /dev/null
               echo '::error::The previous version did not pass its health check either.'
               exit 1
@@ -649,7 +697,7 @@ jobs:
             no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
-              echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/app." ;;
+              echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
           esac
           exit 1
 
