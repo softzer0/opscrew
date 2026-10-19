@@ -1,5 +1,5 @@
 import { type DeployPlan, DeployPlanSchema, type PortainerWeb } from "@opscrew/plan-schema";
-import { testPlan } from "../../__fixtures__/plans";
+import { testPlan, testServices } from "../../__fixtures__/plans";
 
 export interface PortainerTestPlanOptions {
   /** How visitors reach the app (default `tunnel`). */
@@ -40,7 +40,7 @@ export function portainerTestPlan(o: PortainerTestPlanOptions = {}): DeployPlan 
       redeploy: o.redeploy ?? "updater",
       web: o.web ?? { mode: "tunnel" },
     },
-    services: { postgres: o.postgres ?? false, redis: o.redis ?? false },
+    services: testServices({ postgres: o.postgres ?? false, redis: o.redis ?? false }),
     externalServices: [],
     cost: {
       monthly: { amount: 0, currency: "EUR" },

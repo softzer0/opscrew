@@ -9,6 +9,7 @@ import {
   type ProjectFacts,
   type Retarget,
   readArtifact,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
@@ -303,7 +304,7 @@ export async function startMove(
   // What it means: database size (over SSH to the old server) and the summary.
   const oldHost = address.ipv4;
   let databaseBytes: number | undefined;
-  if (plan.services.postgres) {
+  if (serviceOf(plan, "postgres")) {
     await pinHost(session, oldHost, from.provider);
     deps.reporter.step("Measuring the database on the old server");
     const old = remoteFor(deps, services, session.deployKey.privateKeyFile, oldHost);

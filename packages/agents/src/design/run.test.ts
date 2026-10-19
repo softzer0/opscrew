@@ -11,6 +11,7 @@ import {
   type DeployPlan,
   type Requirements,
   readArtifact,
+  serviceOf,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -369,7 +370,7 @@ describe("runDesign", () => {
       ["env-example", ".env.example"],
       ["secret-removal", "src/pay.ts"],
     ]);
-    expect(result.plan.services.postgres).toBe(true);
+    expect(serviceOf(result.plan, "postgres")).toBeDefined();
     expect(result.plan.target).toMatchObject({ backups: true });
   });
 
@@ -1216,7 +1217,7 @@ describe("runDesign: the image builder and the deploy strategy", () => {
       // Postgres off: DATABASE_URL is the user's.
       await reanalysed(deps, nextPostgresFacts({ services: [] }));
       const off = await runDesign(await later(deps), { catalog: euCatalog() });
-      expect(off.plan.services.postgres).toBe(false);
+      expect(serviceOf(off.plan, "postgres")).toBeUndefined();
       expect(variable(off.plan, "DATABASE_URL")).toEqual({
         name: "DATABASE_URL",
         secret: true,

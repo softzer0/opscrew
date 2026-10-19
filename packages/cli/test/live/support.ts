@@ -18,7 +18,7 @@ import {
 } from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
 import { TOOLS } from "@opscrew/iac-templates";
-import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
+import { type DeployPlan, type ImageBuilder, serviceOf } from "@opscrew/plan-schema";
 
 /** The variables both server live tests need besides their gate. */
 export const SERVER_E2E_VARIABLES = [
@@ -658,8 +658,8 @@ export function applyEdit(text: string, edit: SourceEdit): string {
  */
 export function steadyServices(plan: Pick<DeployPlan, "services">): string[] {
   return [
-    ...(plan.services.postgres ? ["db"] : []),
-    ...(plan.services.redis ? ["cache"] : []),
+    ...(serviceOf(plan, "postgres") ? ["db"] : []),
+    ...(serviceOf(plan, "valkey") ? ["cache"] : []),
     "proxy",
     "caddy",
   ];

@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import type { ApprovalRecord, FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
 import {
@@ -109,7 +109,7 @@ async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<Ops
   } catch (error) {
     return asOpsCrewError(error);
   }
-  const again = plan.services.postgres
+  const again = serviceOf(plan, "postgres")
     ? `run \`${RUN_COMMAND}\` again (it repeats the maintenance window)`
     : `run \`${RUN_COMMAND}\` again`;
   // A failed apply may have updated some records before it stopped; they point at the new server,
@@ -345,7 +345,8 @@ export async function switchStep(
 ): Promise<RetargetResult | undefined> {
   // Stops before the window and the switch when the new server's address is unknown here.
   const next = newServer(session);
-  const windowAhead = session.plan.services.postgres && moveOf(session).step === "deployed";
+  const windowAhead =
+    serviceOf(session.plan, "postgres") !== undefined && moveOf(session).step === "deployed";
   return managedDns(session.plan)
     ? switchManagedDns(session, options, windowAhead, next)
     : switchByHand(session, options, windowAhead, next);

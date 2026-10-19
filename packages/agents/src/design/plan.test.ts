@@ -8,6 +8,7 @@ import {
   type ProjectFacts,
   parseArtifact,
   serializeArtifact,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { assembleAppEnv, parseDotenv } from "../shared";
@@ -22,6 +23,7 @@ import {
 import { deriveCodeChanges } from "./code-changes";
 import { buildDesignOptions } from "./options";
 import { appNameFor, appPortFor, optionToPlan } from "./plan";
+import { selfHostedServices } from "./sizing";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 
@@ -102,7 +104,7 @@ describe("optionToPlan", () => {
         image: "ubuntu-24.04",
         backups: true,
       },
-      services: { postgres: true, redis: false },
+      services: selfHostedServices({ postgres: true, redis: false }),
       externalServices: [],
       dns: { provider: "cloudflare", domain: "shop.example.com", proxied: true, www: false },
       cicd: {
@@ -218,7 +220,7 @@ describe("optionToPlan", () => {
         codeChanges: [],
         build: autoBuild(facts),
       });
-      expect(plan.services.postgres).toBe(false);
+      expect(serviceOf(plan, "postgres")).toBeUndefined();
       expect(plan.externalServices).toEqual(["postgres", "supabase"]);
       expect(plan.app.env.find((v) => v.name === "DATABASE_URL")?.source).toBe("user");
       expect(plan.dns).toMatchObject({ provider: "none", domain: "app.example.org" });
@@ -289,7 +291,7 @@ describe("optionToPlan", () => {
       codeChanges: [],
       build: autoBuild(facts),
     });
-    expect(plan.services.redis).toBe(true);
+    expect(serviceOf(plan, "valkey")).toBeDefined();
     expect(plan.app.env).toEqual([{ name: "REDIS_URL", secret: false, source: "derived" }]);
     expect(plan.app.port).toBe(8000);
     expect(plan.app.healthPath).toBe("/health");
@@ -348,7 +350,17 @@ describe("connection settings under the app's own names (FR-814)", () => {
 
   it("derives aliases of the planned Postgres and Redis, and generates Flask secret keys", async () => {
     const plan = await planFor(BOTH);
-    expect(plan.services).toMatchObject({ postgres: true, redis: true });
+    expect(plan.services).toEqual([
+      expect.objectContaining({ name: "db", kind: "postgres", version: "17", memoryMb: 512 }),
+      expect.objectContaining({
+        name: "cache",
+        kind: "valkey",
+        version: "8",
+        memoryMb: 128,
+        options: { mode: "cache" },
+      }),
+    ]);
+    expect(plan.services.every((s) => s.enabled && s.reason !== "" && s.licence !== "")).toBe(true);
     expect(plan.app.env).toEqual([
       { name: "BROKER_URL", secret: false, source: "derived" },
       { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
@@ -423,7 +435,7 @@ describe("connection settings under the app's own names (FR-814)", () => {
 
   it("leaves the aliases to the user when OpsCrew runs neither service", async () => {
     const plan = await planFor([{ kind: "queue", evidence: ["dependency:celery"] }]);
-    expect(plan.services).toMatchObject({ postgres: false, redis: false });
+    expect(plan.services).toEqual([]);
     const byName = Object.fromEntries(plan.app.env.map((v) => [v.name, v]));
     expect(byName.DATABASE_URI).toEqual({ name: "DATABASE_URI", secret: true, source: "user" });
     expect(byName.CELERY_BROKER_URI).toEqual({
@@ -476,7 +488,7 @@ describe("connection settings under the app's own names (FR-814)", () => {
         codeChanges: [],
         build: autoBuild(facts),
       });
-      expect(plan.services).toMatchObject({ postgres: true, redis: true });
+      expect(plan.services.map((s) => s.kind)).toEqual(["postgres", "valkey"]);
       expect(plan.app.env).toEqual([
         { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
         { name: "DATABASE_URI", secret: true, source: "derived" },
@@ -573,7 +585,7 @@ describe("examples/django-postgres: facts → plan → production environment", 
     expect(byName.DJANGO_ALLOWED_HOSTS).toMatchObject({ source: "derived", optional: true });
     expect(byName.DJANGO_SECRET_KEY).toMatchObject({ source: "generated", secret: true });
     expect(byName.DATABASE_URL).toMatchObject({ source: "derived" });
-    expect(plan.services.postgres).toBe(true);
+    expect(serviceOf(plan, "postgres")).toBeDefined();
   });
 
   it("provisions from an empty env file with a domain, or with only the server's address", async () => {

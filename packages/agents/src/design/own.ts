@@ -8,6 +8,7 @@ import {
   type OwnDeployTarget,
   type ProjectFacts,
   type Requirements,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import {
   containersText,
@@ -244,7 +245,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
     tradeoffs.push("Your server uses arm64, so OpsCrew builds the app image for arm64.");
   }
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
-  if (sizing.services.postgres) {
+  if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
       "Postgres runs in a container on the same server; back up its data yourself, because OpsCrew cannot turn on backups on your own server.",
     );
@@ -266,7 +267,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
       cpuType: server.cpuType,
       architecture: server.architecture,
     },
-    services: { ...sizing.services },
+    services: [...sizing.services],
     externalServices: [...sizing.externalServices],
     backups: false,
     cost,

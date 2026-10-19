@@ -3,6 +3,7 @@ import { autoBuild, euCatalog, makeFacts, makeRequirements, nextPostgresFacts } 
 import { buildDesignOptions } from "./options";
 import { optionToPlan } from "./plan";
 import { releaseCommandNote } from "./release";
+import { selfHostedServices } from "./sizing";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 
@@ -55,7 +56,7 @@ describe("releaseCommandNote", () => {
   it("says which command runs, when, what a failure does and how to change it", () => {
     const note = releaseCommandNote({
       app: { releaseCommand: "python manage.py migrate --noinput" } as never,
-      services: { postgres: true, redis: false },
+      services: selfHostedServices({ postgres: true, redis: false }),
     });
     expect(note?.warning).toBe(false);
     expect(note?.text).toContain("`python manage.py migrate --noinput`");
@@ -67,7 +68,7 @@ describe("releaseCommandNote", () => {
   it("points to app.releaseCommand when a database has no detected command", () => {
     const note = releaseCommandNote({
       app: {} as never,
-      services: { postgres: true, redis: false },
+      services: selfHostedServices({ postgres: true, redis: false }),
     });
     expect(note?.warning).toBe(false);
     expect(note?.text).toContain("no database migration command");
@@ -175,7 +176,10 @@ describe("releaseCommandNote", () => {
 
   it("says nothing without a command or a database", () => {
     expect(
-      releaseCommandNote({ app: {} as never, services: { postgres: false, redis: true } }),
+      releaseCommandNote({
+        app: {} as never,
+        services: selfHostedServices({ postgres: false, redis: true }),
+      }),
     ).toBeUndefined();
   });
 });

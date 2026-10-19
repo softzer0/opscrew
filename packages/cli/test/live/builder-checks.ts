@@ -18,6 +18,7 @@ import {
   type ImageBuilder,
   ImageBuilderSchema,
   readArtifact,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import { expect } from "vitest";
 import { type GitHubRepo, ghcrMissingBlobs, minutes } from "./cloud";
@@ -225,7 +226,7 @@ async function knownSecrets(
     for (const value of jsonStrings(JSON.parse(await readFile(generated, "utf8")))) {
       scrubber.add(value, "generated-value");
     }
-  } else if (plan.services.postgres || plan.app.env.some((v) => v.source === "generated")) {
+  } else if (serviceOf(plan, "postgres") || plan.app.env.some((v) => v.source === "generated")) {
     throw new Error(
       `The plan has values OpsCrew generates, but ${generated}, where provision keeps them, is missing, so the leak search cannot look for them.`,
     );

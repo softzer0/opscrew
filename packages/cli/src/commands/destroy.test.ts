@@ -124,7 +124,7 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
     const plan = await readArtifact("plan", paths.files.plan);
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
-      services: { ...plan.services, postgres: false },
+      services: plan.services.filter((service) => service.kind !== "postgres"),
       target: { ...cloudTarget(plan.target), backups: false },
     });
     expect(await run(ctx, "destroy", "--confirm", "shop", "--snapshot")).toBe(0);
@@ -136,7 +136,7 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
     const plan = await readArtifact("plan", paths.files.plan);
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
-      services: { ...plan.services, postgres: false },
+      services: plan.services.filter((service) => service.kind !== "postgres"),
       target: { ...cloudTarget(plan.target), backups: false },
     });
     expect(await run(ctx, "destroy", "--confirm", "shop")).toBe(0);

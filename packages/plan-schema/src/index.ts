@@ -5,6 +5,7 @@
  */
 export type { Currency, Money, PhaseName } from "@opscrew/contracts";
 export * from "./architecture";
+export * from "./components";
 export * from "./design";
 export * from "./enums";
 export * from "./facts";

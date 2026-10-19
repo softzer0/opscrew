@@ -11,6 +11,7 @@ import {
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { selfHostedServices } from "../design/sizing";
 import { providerProfile } from "../providers";
 import { ScriptedRunner } from "../testing";
 import {
@@ -296,10 +297,7 @@ describe("waiting for the server", () => {
   });
 });
 
-function plan(
-  env: DeployPlan["app"]["env"],
-  services = { postgres: true, redis: true },
-): DeployPlan {
+function plan(env: DeployPlan["app"]["env"], run = { postgres: true, redis: true }): DeployPlan {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T12:00:00.000Z",
@@ -312,7 +310,7 @@ function plan(
       serverType: "cx23",
       backups: false,
     },
-    services,
+    services: selfHostedServices(run),
     externalServices: [],
     cost: {
       monthly: { amount: 5.99, currency: "EUR" },

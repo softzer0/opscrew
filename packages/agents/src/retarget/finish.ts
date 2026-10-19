@@ -1,5 +1,5 @@
 import { isUserFacingError, lowerFirst, OpsCrewError } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { dataWarning } from "../destroy/checks";
 import {
@@ -83,7 +83,10 @@ async function finish(
     throw unknownOldServer(FINISH_COMMAND);
   }
   const warning = dataWarning(session.plan, serverInState, old);
-  const data = { postgres: session.plan.services.postgres, backups: old.backups };
+  const data = {
+    postgres: serviceOf(session.plan, "postgres") !== undefined,
+    backups: old.backups,
+  };
   const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
   if (preview.changes.length > 0) {
     deps.reporter.info(

@@ -1,4 +1,5 @@
 import { type CloudProvider, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { selfHostedServices } from "../../design/sizing";
 
 export const SERVER_IPV4 = "203.0.113.10";
 export const SERVER_IPV6 = "2001:db8::10";
@@ -36,7 +37,7 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
     updatedAt: "2026-10-01T12:00:00.000Z",
     app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
     target: { mode: "vps-compose", ...TARGETS[o.provider ?? "hetzner"], backups: true },
-    services: { postgres: true, redis: false },
+    services: selfHostedServices({ postgres: true, redis: false }),
     externalServices: [],
     cost: {
       monthly: { amount: 7.09, currency: "EUR" },

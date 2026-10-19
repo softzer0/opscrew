@@ -6,9 +6,16 @@ import {
   type DesignOption,
   type ProjectFacts,
   type Requirements,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { deepDomainProblem, FRAMEWORK_ENV, hostListKind, serviceUrlKind } from "../shared";
+import {
+  deepDomainProblem,
+  FRAMEWORK_ENV,
+  hostListKind,
+  serviceUrlKind,
+  URL_SERVICE_KINDS,
+} from "../shared";
 import type { BuilderChoice } from "./builder";
 import {
   appDirOf,
@@ -137,7 +144,6 @@ export function appPortFor(facts: ProjectFacts): number {
 export function optionToPlan(option: DesignOption, input: OptionToPlanInput): DeployPlan {
   const { facts, requirements } = input;
   const now = input.now.toISOString();
-  const services = option.services;
 
   const env = new Map<string, DeployPlan["app"]["env"][number]>();
   for (const variable of facts.envVars) {
@@ -148,7 +154,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     const service = serviceUrlKind(variable.name);
     if (
       service !== undefined &&
-      services[service] &&
+      serviceOf(option, URL_SERVICE_KINDS[service]) &&
       (variable.urlScheme === undefined || variable.urlScheme === service)
     ) {
       env.set(variable.name, derived(variable.name, service === "postgres"));
@@ -175,8 +181,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       env.set(name, { name, secret: true, source: "generated" });
     }
   }
-  if (services.postgres) env.set("DATABASE_URL", derived("DATABASE_URL", true));
-  if (services.redis) env.set("REDIS_URL", derived("REDIS_URL", false));
+  if (serviceOf(option, "postgres")) env.set("DATABASE_URL", derived("DATABASE_URL", true));
+  if (serviceOf(option, "valkey")) env.set("REDIS_URL", derived("REDIS_URL", false));
 
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
@@ -238,7 +244,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     },
     target: targetFor(option, input.access, input.portainer),
     deploy: deployStrategyFor(option),
-    services: { postgres: services.postgres, redis: services.redis },
+    services: option.services,
     externalServices: [...option.externalServices],
     cost: option.cost,
     codeChanges: input.codeChanges,

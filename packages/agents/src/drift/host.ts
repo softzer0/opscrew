@@ -20,7 +20,7 @@ import {
   renderCaddyfile,
   renderCompose,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
@@ -379,7 +379,7 @@ export function expectedRuntimeFiles(
       "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
       Caddyfile: sha256Hex(renderCaddyfile(plan, full).content),
     },
-    dbEnv: plan.services.postgres,
+    dbEnv: serviceOf(plan, "postgres") !== undefined,
   };
 }
 

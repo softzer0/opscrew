@@ -1,4 +1,4 @@
-import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
@@ -54,7 +54,7 @@ export function renderOwnRunbook(
     : proxied
       ? "kept private behind Cloudflare: `opscrew status` shows them"
       : "kept out of this repository: `opscrew status` shows them";
-  const db = plan.services.postgres
+  const db = serviceOf(plan, "postgres")
     ? "PostgreSQL 17 in a container on the server, data in `/srv/data/postgres`; backups are your responsibility"
     : externalDatabaseCell(plan);
   const dns = tunnel
@@ -123,7 +123,7 @@ export function renderOwnRunbook(
     "the server the way your hosting provider or your own setup allows, and keep copies somewhere else.",
     "",
   ];
-  if (plan.services.postgres) {
+  if (serviceOf(plan, "postgres")) {
     lines.push("Back up the database regularly, for example:", "", ...DATABASE_DUMP);
   }
 

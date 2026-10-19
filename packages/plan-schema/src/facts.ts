@@ -155,6 +155,8 @@ export const ProjectFactsSchema = z.strictObject({
       z.strictObject({
         kind: ServiceKindSchema,
         evidence: z.array(z.string().min(1)),
+        /** The variable the app reads the service's URL from, when detection finds it. */
+        variable: EnvVarNameSchema.optional(),
       }),
     )
     .superRefine((items, ctx) => {
@@ -170,6 +172,64 @@ export const ProjectFactsSchema = z.strictObject({
         seen.add(item.kind);
       });
     }),
+  /** Processes besides the web process: Procfile types and job libraries. Absent when none. */
+  workers: z
+    .array(
+      z.strictObject({
+        /** The Procfile type, or the library's conventional name. */
+        name: z.string().min(1),
+        /** Absent when no convention gives it (BullMQ): the interview asks. */
+        command: CommandLineSchema.optional(),
+        source: z.enum(["procfile", "library"]),
+        /** A scheduler that must run exactly once. */
+        single: z.boolean(),
+        evidence: z.array(z.string().min(1)),
+      }),
+    )
+    .min(1)
+    .optional(),
+  /** Scheduled calls of the app's routes. Absent when none. */
+  cronJobs: z
+    .array(
+      z.strictObject({
+        schedule: z.string().min(1),
+        route: UrlPathSchema,
+        source: z.literal("vercel.json"),
+      }),
+    )
+    .min(1)
+    .optional(),
+  /** Services the app reaches at a hosting provider (Atlas, PlanetScale, Upstash, Neon). */
+  hostedServices: z
+    .array(
+      z.strictObject({
+        kind: ServiceKindSchema,
+        /** The variable that holds the service's URL. */
+        variable: EnvVarNameSchema,
+        /** The provider's name, for example `MongoDB Atlas`. */
+        provider: z.string().min(1),
+      }),
+    )
+    .min(1)
+    .optional(),
+  /** SQLite's database files, relative to the app, and their folder. Absent without SQLite. */
+  sqlite: z
+    .strictObject({
+      paths: z.array(RepoPathSchema).min(1),
+      dir: RepoPathSchema,
+    })
+    .optional(),
+  /** The app's S3 client. Absent without one. */
+  objectStorage: z
+    .strictObject({
+      /** The client library, for example `@aws-sdk/client-s3`. */
+      client: z.string().min(1),
+      /** True when the app hands browsers presigned upload URLs (the bucket then needs CORS). */
+      presignedUploads: z.boolean(),
+      /** The variable names the app reads its bucket and endpoint from. */
+      variables: z.array(EnvVarNameSchema),
+    })
+    .optional(),
   docker: z.strictObject({
     dockerfile: RepoPathSchema.optional(),
     compose: RepoPathSchema.optional(),

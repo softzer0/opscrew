@@ -1,6 +1,7 @@
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { selfHostedServices } from "../design/sizing";
 import {
   assembleAppEnv,
   dotenvLine,
@@ -25,7 +26,7 @@ function plan(env: Env, dns: Record<string, unknown> = { provider: "none" }): De
       serverType: "cx23",
       backups: false,
     },
-    services: { postgres: true, redis: false },
+    services: selfHostedServices({ postgres: true, redis: false }),
     externalServices: [],
     cost: {
       monthly: { amount: 5.99, currency: "EUR" },
@@ -267,7 +268,7 @@ describe("connection settings under the app's own names (FR-814)", () => {
   ];
   const withRedis = (env: Env): DeployPlan => {
     const base = plan(env);
-    return { ...base, services: { ...base.services, postgres: true, redis: true } };
+    return { ...base, services: selfHostedServices({ postgres: true, redis: true }) };
   };
 
   it("fills database and Redis aliases from the services OpsCrew runs", async () => {

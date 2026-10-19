@@ -33,6 +33,7 @@ import {
   QuestionSchema,
   RepoPathSchema,
   RequirementsSchema,
+  SelfHostedServiceKindSchema,
   ServiceKindSchema,
   serializeArtifact,
   VpsProviderSchema,
@@ -86,6 +87,35 @@ describe("types", () => {
       "queue",
       "websocket",
       "cron",
+      "mariadb",
+      "amqp",
+      "nats",
+      "kafka",
+      "opensearch",
+      "elasticsearch",
+      "meilisearch",
+      "typesense",
+      "clickhouse",
+      "neo4j",
+      "cassandra",
+    ]);
+    expect(SelfHostedServiceKindSchema.options).toEqual([
+      "postgres",
+      "mysql",
+      "mariadb",
+      "mongodb",
+      "valkey",
+      "rabbitmq",
+      "nats",
+      "kafka",
+      "redpanda",
+      "garage",
+      "opensearch",
+      "elasticsearch",
+      "meilisearch",
+      "typesense",
+      "clickhouse",
+      "neo4j",
     ]);
   });
 });
@@ -281,7 +311,18 @@ describe("DesignOption", () => {
       cpuType: "shared",
       architecture: "x86",
     },
-    services: { postgres: true, redis: false },
+    services: [
+      {
+        name: "db",
+        kind: "postgres",
+        version: "17",
+        memoryMb: 512,
+        enabled: true,
+        options: {},
+        reason: "The app uses PostgreSQL.",
+        licence: "PostgreSQL",
+      },
+    ],
     externalServices: [],
     backups: true,
     cost: {
@@ -1106,11 +1147,12 @@ describe("DeployPlan serialisation of existing targets", () => {
   // SHA-256 of `serializeArtifact("plan", …)` before feature 010: adding the Portainer target must
   // not change one byte of a Hetzner, DigitalOcean or own-server plan. Updated in 012, which adds
   // `deploy`, `supplyChain`, `cicd.deployTags` and `cicd.imageRetention` (with their defaults) to
-  // every plan.
+  // every plan, and in 013, which adds `app.memoryMb` and `processes` (with their defaults) and
+  // turns `services` into a list.
   const BEFORE_010 = {
-    hetzner: "a93c5747a0506f2bdacf997c9abab62ff11b42fea0947634f9ee9c6cb5ab6ea5",
-    digitalocean: "807128853570e94a3badf1b9ebad4488634283e669f45513d1c177ab880da0a8",
-    own: "0c91ae1ed8f5a65031e6121ea279a15cda261a36f8983c8ea6bd2b385542d5f0",
+    hetzner: "e1dcd6cddbb198cb799fd62413f281b2ae0c8e4837b01178e976462076c15d6a",
+    digitalocean: "831991400e66bd0b5b3ce628997f45a7494224c5522bc438e57739a9df0a47b3",
+    own: "836e166881ee9bf1175d3f01cb4b2cb840e1e88b5f471d03e8b8d2eee54700ef",
   };
 
   it("keeps Hetzner, DigitalOcean and own-server plans byte-identical", async () => {

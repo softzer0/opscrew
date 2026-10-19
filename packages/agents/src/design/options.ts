@@ -12,6 +12,7 @@ import {
   DesignOptionListSchema,
   type ProjectFacts,
   type Requirements,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import { requestedProvider, requestedRegion } from "../providers";
 import {
@@ -253,7 +254,7 @@ function toOption(
   const tradeoffs = [...TIER_TRADEOFFS[tier]];
   if (context.regionNote !== undefined) tradeoffs.push(context.regionNote);
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
-  if (sizing.services.postgres) {
+  if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
       "Postgres runs in a container on the same server; restoring it relies on the server backups.",
     );
@@ -305,7 +306,7 @@ function toOption(
       cpuType: offer.cpuType,
       architecture: offer.architecture,
     },
-    services: { ...sizing.services },
+    services: [...sizing.services],
     externalServices: [...sizing.externalServices],
     backups,
     cost,

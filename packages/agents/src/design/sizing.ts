@@ -1,13 +1,14 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
 import type {
+  PlanService,
   ProjectFacts,
   Region,
   Requirements,
   ServiceKind,
   UserScale,
 } from "@opscrew/plan-schema";
-import { ServiceKindSchema } from "@opscrew/plan-schema";
+import { ServiceKindSchema, serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
 /**
@@ -27,7 +28,7 @@ export interface Sizing {
   /** Minimum disk in GB. */
   diskGb: number;
   /** Containers that run next to the app on the server. */
-  services: { postgres: boolean; redis: boolean };
+  services: PlanService[];
   /** Services the app keeps using outside the server (sorted in schema order). */
   externalServices: ServiceKind[];
 }
@@ -36,9 +37,46 @@ export interface Sizing {
 export function containersText(sizing: Pick<Sizing, "services">): string {
   return listText([
     "the app",
-    ...(sizing.services.postgres ? ["Postgres"] : []),
-    ...(sizing.services.redis ? ["Redis"] : []),
+    ...(serviceOf(sizing, "postgres") ? ["Postgres"] : []),
+    ...(serviceOf(sizing, "valkey") ? ["Redis"] : []),
   ]);
+}
+
+/**
+ * The plan's entries for the services design runs: Postgres (`db`) and, for an app on Redis, Valkey
+ * as a cache (`cache`), at the pinned major versions with conservative memory limits.
+ */
+export function selfHostedServices(run: { postgres: boolean; redis: boolean }): PlanService[] {
+  return [
+    ...(run.postgres
+      ? [
+          {
+            name: "db",
+            kind: "postgres",
+            version: "17",
+            memoryMb: 512,
+            enabled: true,
+            options: {},
+            reason: "The app uses PostgreSQL.",
+            licence: "PostgreSQL",
+          } as const,
+        ]
+      : []),
+    ...(run.redis
+      ? [
+          {
+            name: "cache",
+            kind: "valkey",
+            version: "8",
+            memoryMb: 128,
+            enabled: true,
+            options: { mode: "cache" },
+            reason: "The app uses Redis; Valkey is its open-source fork.",
+            licence: "BSD-3-Clause",
+          } as const,
+        ]
+      : []),
+  ];
 }
 
 /** Base (vCPU, GB RAM) for the app by expected monthly users. */
@@ -92,7 +130,8 @@ export const OWN_SERVER_MEMORY_TOLERANCE = 0.9;
 /** Free disk (GB) the app needs on a server the user already owns. */
 export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
   return (
-    OWN_SERVER_APP_FREE_DISK_GB + (sizing.services.postgres ? OWN_SERVER_POSTGRES_FREE_DISK_GB : 0)
+    OWN_SERVER_APP_FREE_DISK_GB +
+    (serviceOf(sizing, "postgres") ? OWN_SERVER_POSTGRES_FREE_DISK_GB : 0)
   );
 }
 
@@ -128,5 +167,11 @@ export function sizeFor(facts: ProjectFacts, requirements: Requirements): Sizing
   if (redis) external.delete("redis");
   const externalServices = ServiceKindSchema.options.filter((kind) => external.has(kind));
 
-  return { vcpus, memoryGb, diskGb, services: { postgres, redis }, externalServices };
+  return {
+    vcpus,
+    memoryGb,
+    diskGb,
+    services: selfHostedServices({ postgres, redis }),
+    externalServices,
+  };
 }

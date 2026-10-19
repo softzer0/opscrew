@@ -1,4 +1,4 @@
-import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
+import { type DeployPlan, type ImageBuilder, serviceOf } from "@opscrew/plan-schema";
 import { healthPath } from "./shared";
 
 /**
@@ -61,8 +61,8 @@ function builderHint(plan: DeployPlan): string {
 /** The services a deploy starts when they are not running, and never restarts otherwise. */
 function steadyServices(plan: DeployPlan): string[] {
   return [
-    ...(plan.services.postgres ? ["db"] : []),
-    ...(plan.services.redis ? ["cache"] : []),
+    ...(serviceOf(plan, "postgres") ? ["db"] : []),
+    ...(serviceOf(plan, "valkey") ? ["cache"] : []),
     "proxy",
     "caddy",
   ];

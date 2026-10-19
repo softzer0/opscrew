@@ -4,6 +4,7 @@ import {
   DesignOptionSchema,
   type Requirements,
   readArtifact,
+  serviceOf,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -101,7 +102,7 @@ describe("the design option in an existing Portainer", () => {
       "Your Portainer host uses arm64, so OpsCrew builds the app image for arm64.",
     );
     expect(option.tradeoffs).toContain(PORTAINER_BACKUPS_NOTE);
-    expect(option.services.postgres).toBe(true);
+    expect(serviceOf(option, "postgres")).toBeDefined();
     // Never Portainer's address.
     expect(JSON.stringify(option)).not.toContain("nas.home");
   });

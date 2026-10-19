@@ -13,7 +13,7 @@ import {
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural, replaceNames } from "@opscrew/core";
 import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, serviceOf, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   checkProvider,
@@ -231,8 +231,8 @@ function hasAppData(facts: HostFacts, app: string): boolean {
 /** What is deleted with `deleteData`, for the warning shown before the typed confirmation. */
 function dataLoss(plan: DeployPlan, facts: HostFacts): string {
   const lost: string[] = [];
-  if (plan.services.postgres) lost.push("the PostgreSQL database");
-  if (plan.services.redis) lost.push("the Redis data");
+  if (serviceOf(plan, "postgres")) lost.push("the PostgreSQL database");
+  if (serviceOf(plan, "valkey")) lost.push("the Redis data");
   lost.push("everything the app stored in /srv/data and in its Docker volumes");
   if (facts.portainer.dataVolume) lost.push("Portainer's data");
   return `Removing the app also deletes its data on your server: ${listText(lost)}. OpsCrew takes no snapshot of your own server, so this cannot be undone unless you have your own backup.`;

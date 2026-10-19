@@ -64,7 +64,11 @@ export type AppKind = z.infer<typeof AppKindSchema>;
 export const PlatformExportSchema = z.enum(["lovable", "bolt", "replit", "v0", "base44", "none"]);
 export type PlatformExport = z.infer<typeof PlatformExportSchema>;
 
-/** Backing services an application uses. */
+/**
+ * Backing services an application uses, as detection names them: by what the app talks to (`redis`
+ * for a Redis client, `amqp` for an AMQP client), not by what OpsCrew runs for it
+ * ({@link SelfHostedServiceKindSchema}).
+ */
 export const ServiceKindSchema = z.enum([
   "postgres",
   "mysql",
@@ -79,8 +83,44 @@ export const ServiceKindSchema = z.enum([
   "queue",
   "websocket",
   "cron",
+  "mariadb",
+  "amqp",
+  "nats",
+  "kafka",
+  "opensearch",
+  "elasticsearch",
+  "meilisearch",
+  "typesense",
+  "clickhouse",
+  "neo4j",
+  "cassandra",
 ]);
 export type ServiceKind = z.infer<typeof ServiceKindSchema>;
+
+/**
+ * Backing services OpsCrew runs as containers next to the app (`plan.services[].kind`), one entry
+ * per kind in the service catalog: Valkey for an app on Redis, RabbitMQ for AMQP, Garage for
+ * object storage on a server the user owns.
+ */
+export const SelfHostedServiceKindSchema = z.enum([
+  "postgres",
+  "mysql",
+  "mariadb",
+  "mongodb",
+  "valkey",
+  "rabbitmq",
+  "nats",
+  "kafka",
+  "redpanda",
+  "garage",
+  "opensearch",
+  "elasticsearch",
+  "meilisearch",
+  "typesense",
+  "clickhouse",
+  "neo4j",
+]);
+export type SelfHostedServiceKind = z.infer<typeof SelfHostedServiceKindSchema>;
 
 /** Provider-neutral deployment regions. */
 export const RegionSchema = z.enum([
@@ -201,3 +241,6 @@ export const PlanHashSchema = z
 
 /** TCP port number. */
 export const PortSchema = z.int().min(1).max(65535);
+
+/** A container's memory limit in MB (Compose `mem_limit`). */
+export const MemoryMbSchema = z.int().positive();

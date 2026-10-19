@@ -1,5 +1,5 @@
 import type { ApprovalRequest, VpsProviderId } from "@opscrew/contracts";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { HUNDRED_MB } from "./server-ops";
 
@@ -51,7 +51,7 @@ export function managedDns(plan: Pick<DeployPlan, "dns">): boolean {
  * (or, without a domain, the users' move to the new address) has taken effect.
  */
 export function downtimeUntilDnsChange(plan: Pick<DeployPlan, "dns" | "services">): boolean {
-  return plan.services.postgres && !managedDns(plan);
+  return serviceOf(plan, "postgres") !== undefined && !managedDns(plan);
 }
 
 /** `until your DNS change has reached your users` (or, without a domain, the new address). */

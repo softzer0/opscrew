@@ -1,5 +1,5 @@
 import { formatMoney, taxLabel } from "@opscrew/core";
-import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
+import { type CloudDeployTarget, type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
 import { siteHosts } from "../runtime";
@@ -57,7 +57,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     ? "kept private behind Cloudflare: `opscrew status` shows them"
     : `${ip ?? PENDING} / ${ipv6 ?? PENDING}`;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
-  const db = plan.services.postgres
+  const db = serviceOf(plan, "postgres")
     ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${target.backups ? `; ${provider.runbook.backupsOnDatabaseCell}` : "; automated backups are off"}`
     : externalDatabaseCell(plan);
   const dns = usesCloudflare(plan)
@@ -102,7 +102,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     ...provider.runbook.connectNote,
   ];
 
-  if (plan.services.postgres) {
+  if (serviceOf(plan, "postgres")) {
     lines.push(
       "## Database backups",
       "",
@@ -159,7 +159,7 @@ function moving(plan: DeployPlan): string[] {
     : plan.dns.domain !== undefined
       ? `shows you the DNS records to change at your DNS provider (${confirm}).`
       : `shows you the new server's address (${confirm}).`;
-  const copy = plan.services.postgres ? ", copies the database" : "";
+  const copy = serviceOf(plan, "postgres") ? ", copies the database" : "";
   return [
     "## Moving to another provider",
     "",
@@ -174,7 +174,7 @@ function moving(plan: DeployPlan): string[] {
     ),
     "",
     ...wrap(
-      plan.services.postgres
+      serviceOf(plan, "postgres")
         ? "- **Maintenance window:** the database is copied while the app is stopped, so the app is offline for a few " +
             "minutes. OpsCrew shows the database size and the expected downtime first and asks before it stops the app " +
             "(in scripts, pass `--allow-downtime`). If the copy or the new app fails, the app starts again on the current server." +
@@ -255,8 +255,10 @@ function teardown(
   const deletes = usesCloudflare(plan)
     ? `${text.deletes(name)}, and the Cloudflare DNS records and rules OpsCrew created`
     : text.deletes(name);
-  const keepsData = plan.services.postgres || backups;
-  const reason = plan.services.postgres ? `the database lives on the ${noun}` : text.snapshotReason;
+  const keepsData = serviceOf(plan, "postgres") !== undefined || backups;
+  const reason = serviceOf(plan, "postgres")
+    ? `the database lives on the ${noun}`
+    : text.snapshotReason;
   const [snapshotLead = "", ...snapshotRest] = text.snapshotFirst;
   return [
     "## Tear it down",

@@ -306,7 +306,7 @@ export function domainTestPlan(
     updatedAt: "2026-10-01T10:00:00.000Z",
     app: { name: "shop", port: 3000, env: [] },
     target,
-    services: { postgres: false, redis: false },
+    services: [],
     externalServices: [],
     cost: {
       monthly: { amount: 7.09, currency: "EUR" },

@@ -26,8 +26,14 @@ target:
   image: ubuntu-24.04
   backups: true
 services:
-  postgres: true
-  redis: false
+  - name: db
+    kind: postgres
+    version: "17"
+    memoryMb: 512
+    enabled: true
+    options: {}
+    reason: The app uses PostgreSQL.
+    licence: PostgreSQL
 externalServices:
   - stripe
   - supabase

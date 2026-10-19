@@ -56,7 +56,7 @@ import { assembleAppEnv, fixedProductionValue } from "@opscrew/agents";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { FakeAgentRuntime, fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { IMAGES, type PinArch, renderCompose } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, serviceOf } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import {
@@ -609,7 +609,7 @@ describe.skipIf(SKIP !== undefined)(
         await writeFile(path.join(server, ".env"), `APP_IMAGE=${tag}\n`);
         const appEnv = new Map(env);
         appEnv.delete("PORT");
-        if (plan.services.postgres) {
+        if (serviceOf(plan, "postgres")) {
           const password = randomBytes(16).toString("hex");
           known.push({ label: "the database password", value: password });
           await writeFile(
@@ -618,7 +618,7 @@ describe.skipIf(SKIP !== undefined)(
           );
           appEnv.set("DATABASE_URL", `postgresql://app:${password}@db:5432/app`);
         }
-        if (plan.services.redis) appEnv.set("REDIS_URL", "redis://cache:6379");
+        if (serviceOf(plan, "valkey")) appEnv.set("REDIS_URL", "redis://cache:6379");
         await writeFile(
           path.join(server, "app.env"),
           [...appEnv].map(([name, value]) => `${name}=${value}\n`).join(""),
@@ -626,8 +626,8 @@ describe.skipIf(SKIP !== undefined)(
         composeProjects.set(container, file);
 
         const backing = [
-          ...(plan.services.postgres ? ["db"] : []),
-          ...(plan.services.redis ? ["cache"] : []),
+          ...(serviceOf(plan, "postgres") ? ["db"] : []),
+          ...(serviceOf(plan, "valkey") ? ["cache"] : []),
         ];
         if (backing.length > 0) {
           const up = await compose(container, file, ["up", "-d", "--wait", ...backing]);
@@ -818,8 +818,8 @@ describe.skipIf(SKIP !== undefined)(
                 placeholder(variable.name, exampleValues.get(variable.name)),
             );
           }
-          if (plan.services.postgres) env.set("DATABASE_URL", placeholder("DATABASE_URL"));
-          if (plan.services.redis) env.set("REDIS_URL", placeholder("REDIS_URL"));
+          if (serviceOf(plan, "postgres")) env.set("DATABASE_URL", placeholder("DATABASE_URL"));
+          if (serviceOf(plan, "valkey")) env.set("REDIS_URL", placeholder("REDIS_URL"));
           const release = plan.app.releaseCommand !== undefined;
           const name = release ? await deployWithRelease(plan, env) : container;
           if (!release) {

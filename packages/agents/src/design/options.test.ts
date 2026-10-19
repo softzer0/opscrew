@@ -1,6 +1,6 @@
 import { STATIC_PRICES_AS_OF, StaticHetznerCatalog } from "@opscrew/connector-hetzner";
 import type { ProviderExtras } from "@opscrew/contracts";
-import { CostEstimateSchema, DesignOptionListSchema } from "@opscrew/plan-schema";
+import { CostEstimateSchema, DesignOptionListSchema, serviceOf } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   AS_OF,
@@ -112,7 +112,7 @@ describe("buildDesignOptions", () => {
     ]);
     expect(lean?.cost.monthly).toEqual({ amount: 4.69, currency: "EUR" });
     expect(lean).toMatchObject({ fitsBudget: true, recommended: true, backups: false });
-    expect(lean?.services).toEqual({ postgres: false, redis: false });
+    expect(lean?.services).toEqual([]);
 
     expect(comfortable?.target).toMatchObject({ serverType: "cx33", location: "nbg1" });
     expect(comfortable?.title.startsWith("Comfortable")).toBe(true);
@@ -149,7 +149,7 @@ describe("buildDesignOptions", () => {
     });
     expect(options.map((o) => o.target.serverType)).toEqual(["cx33", "cx43"]);
     for (const option of options) {
-      expect(option.services.postgres).toBe(true);
+      expect(serviceOf(option, "postgres")).toBeDefined();
       expect(option.backups).toBe(true);
       expect(option.summary).toContain("Postgres");
       const backup = option.cost.breakdown.find((l) => l.item.startsWith("Automated backups"));

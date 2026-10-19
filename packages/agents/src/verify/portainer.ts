@@ -10,7 +10,7 @@ import {
   type RenderedFile,
   runbookHead,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, type PortainerDeployTarget, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { portainerDnsRecordNote } from "../provision/publish";
@@ -149,7 +149,7 @@ export function renderPortainerRunbook(
       : target.web.mode === "proxy"
         ? `your reverse proxy's route to port ${target.web.port} of the host`
         : "not set yet";
-  const database = plan.services.postgres
+  const database = serviceOf(plan, "postgres")
     ? `PostgreSQL in the app's stack, data in the volume \`${app}_postgres_data\``
     : externalDatabaseCell(plan);
   const dns = portainerDnsRecordNote(plan);

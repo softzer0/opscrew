@@ -23,7 +23,7 @@ Effort`.
 
 ## Phase 1: Foundation
 
-- [ ] T1301a Components in the plan and the facts, and the catalog's types, in `packages/plan-schema/**`, `packages/iac-templates/src/catalog/types.ts`, and every reader and writer of today's `services` booleans
+- [X] T1301a Components in the plan and the facts, and the catalog's types, in `packages/plan-schema/**`, `packages/iac-templates/src/catalog/types.ts`, and every reader and writer of today's `services` booleans
   - Owns:
     - `packages/plan-schema/**` (+ tests, fixtures, the generated JSON schemas);
     - `packages/iac-templates/src/catalog/types.ts`, and `packages/iac-templates/src/index.ts` for its export;

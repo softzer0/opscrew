@@ -1,3 +1,4 @@
+import { serviceOf } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, nextPostgresFacts, staticSpaFacts } from "../testing";
 import { regionLocations, sizeFor } from "./sizing";
@@ -26,7 +27,7 @@ describe("sizeFor", () => {
   ] as const)("sizes a plain app for %s users", (users, vcpus, memoryGb) => {
     const sizing = sizeFor(makeFacts(), makeRequirements({ expectedMonthlyUsers: users }));
     expect(sizing).toMatchObject({ vcpus, memoryGb, diskGb: 40 });
-    expect(sizing.services).toEqual({ postgres: false, redis: false });
+    expect(sizing.services).toEqual([]);
   });
 
   it("halves memory for static sites with a 1 GB minimum", () => {
@@ -48,7 +49,7 @@ describe("sizeFor", () => {
   ] as const)("adds self-hosted Postgres for %s users", (users, vcpus, memoryGb) => {
     const sizing = sizeFor(nextPostgresFacts(), makeRequirements({ expectedMonthlyUsers: users }));
     expect(sizing).toMatchObject({ vcpus, memoryGb, diskGb: 60 });
-    expect(sizing.services.postgres).toBe(true);
+    expect(serviceOf(sizing, "postgres")).toBeDefined();
     expect(sizing.externalServices).toEqual([]);
   });
 
@@ -56,7 +57,7 @@ describe("sizeFor", () => {
     const facts = makeFacts({ services: [{ kind: "redis", evidence: ["dependency:ioredis"] }] });
     const sizing = sizeFor(facts, makeRequirements({ expectedMonthlyUsers: "1k-10k" }));
     expect(sizing).toMatchObject({ vcpus: 2, memoryGb: 4.5, diskGb: 40 });
-    expect(sizing.services).toEqual({ postgres: false, redis: true });
+    expect(sizing.services.map((s) => s.kind)).toEqual(["valkey"]);
   });
 
   it("keeps an external database when the user asked for it", () => {
@@ -70,12 +71,12 @@ describe("sizeFor", () => {
       ],
     });
     const kept = sizeFor(facts, makeRequirements({ keepExternalServices: ["supabase", "redis"] }));
-    expect(kept.services).toEqual({ postgres: false, redis: false });
+    expect(kept.services).toEqual([]);
     expect(kept).toMatchObject({ vcpus: 1, memoryGb: 2, diskGb: 40 });
     expect(kept.externalServices).toEqual(["postgres", "redis", "supabase", "stripe"]);
 
     const selfHosted = sizeFor(facts, makeRequirements());
-    expect(selfHosted.services).toEqual({ postgres: true, redis: true });
+    expect(selfHosted.services.map((s) => s.kind)).toEqual(["postgres", "valkey"]);
     // A self-hosted Postgres replaces the external database providers.
     expect(selfHosted.externalServices).toEqual(["stripe"]);
   });
@@ -85,7 +86,7 @@ describe("sizeFor", () => {
       nextPostgresFacts(),
       makeRequirements({ keepExternalServices: ["postgres"] }),
     );
-    expect(sizing.services.postgres).toBe(false);
+    expect(serviceOf(sizing, "postgres")).toBeUndefined();
     expect(sizing.externalServices).toEqual(["postgres"]);
   });
 });

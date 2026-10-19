@@ -2,6 +2,7 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { testServices } from "../__fixtures__/plans";
 import { ACTIONS, IMAGES } from "../pins";
 import type { RenderContext } from "../types";
 import { DEPLOY_SECRETS, healthUrl, renderWorkflow } from "./index";
@@ -35,7 +36,7 @@ function plan(
       serverType: "cx23",
       backups: true,
     },
-    services: { postgres: o.postgres ?? true, redis: o.redis ?? true },
+    services: testServices({ postgres: o.postgres ?? true, redis: o.redis ?? true }),
     externalServices: [],
     cost: {
       monthly: { amount: 7.09, currency: "EUR" },

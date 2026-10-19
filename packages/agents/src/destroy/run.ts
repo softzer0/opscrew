@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural } from "@opscrew/core";
 import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision";
@@ -524,7 +524,8 @@ export async function runDestroy(
   if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
   const warning = dataWarning(plan, serverInState);
   if (warning) deps.reporter.warn(warning);
-  const data = { postgres: plan.services.postgres, backups: cloudTarget(plan.target).backups };
+  const postgres = serviceOf(plan, "postgres") !== undefined;
+  const data = { postgres, backups: cloudTarget(plan.target).backups };
   const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
   if (snapshotFirst) {
     deps.reporter.info(

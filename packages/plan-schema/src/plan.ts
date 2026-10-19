@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PlanServiceSchema, ProcessesSchema, StorageSchema, serviceOf } from "./components";
 import { CostEstimateSchema } from "./design";
 import {
   type CloudProvider,
@@ -10,6 +11,7 @@ import {
   FqdnSchema,
   ImageBuilderSchema,
   IsoDateTimeSchema,
+  MemoryMbSchema,
   PhaseNameSchema,
   PlanHashSchema,
   PortSchema,
@@ -491,6 +493,8 @@ const DeployPlanFieldsSchema = z.strictObject({
      * stops the deploy and the previous version keeps serving. Change or remove it freely.
      */
     releaseCommand: CommandLineSchema.optional(),
+    /** The web process's memory limit. */
+    memoryMb: MemoryMbSchema.default(512),
     /** Names only, never values. */
     env: z.array(
       z.strictObject({
@@ -514,8 +518,14 @@ const DeployPlanFieldsSchema = z.strictObject({
   target: DeployTargetSchema,
   /** How a new version replaces the running one. */
   deploy: DeploySettingsSchema.prefault({}),
-  services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
+  /** Workers and cron jobs, from the app's image. */
+  processes: ProcessesSchema,
+  /** The backing services OpsCrew runs next to the app (read them with `serviceOf`). */
+  services: z.array(PlanServiceSchema).default(() => []),
+  /** Services the app keeps using where they are hosted now. */
   externalServices: z.array(ServiceKindSchema),
+  /** Persistent storage; absent when the app keeps no files. */
+  storage: StorageSchema.optional(),
   cost: CostEstimateSchema,
   codeChanges: z.array(
     z.strictObject({
@@ -683,18 +693,50 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   checkPortainerSubdomain(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
-  if (plan.services.postgres) {
+  checkComponents(plan, ctx);
+});
+
+/**
+ * Worker and service names are unique within the app (each is a Compose service), a self-hosted
+ * Postgres excludes an external one, and an app on SQLite stops its old copy before starting the
+ * new one.
+ */
+function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const names = new Set<string>();
+  const unique = (name: string, path: (string | number)[]) => {
+    if (names.has(name)) {
+      ctx.addIssue({
+        code: "custom",
+        path,
+        message: `"${name}" is already the name of another worker or service; give each its own`,
+      });
+    }
+    names.add(name);
+  };
+  for (const [i, worker] of plan.processes.workers.entries()) {
+    unique(worker.name, ["processes", "workers", i, "name"]);
+  }
+  for (const [i, service] of plan.services.entries()) unique(service.name, ["services", i, "name"]);
+  if (serviceOf(plan, "postgres")) {
     plan.externalServices.forEach((service, i) => {
       if (POSTGRES_PROVIDERS.has(service)) {
         ctx.addIssue({
           code: "custom",
           path: ["externalServices", i],
-          message: `"${service}" conflicts with services.postgres: use either the self-hosted Postgres container or the external database, not both`,
+          message: `"${service}" conflicts with the Postgres service: use either the self-hosted Postgres container or the external database, not both`,
         });
       }
     });
   }
-});
+  if (plan.storage?.sqlite !== undefined && plan.deploy.strategy !== "recreate") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["deploy", "strategy"],
+      message:
+        'must be "recreate" when storage.sqlite is set: one SQLite database cannot serve the old and the new copy of the app at once',
+    });
+  }
+}
 
 /**
  * Ubuntu 24.04 LTS image name per cloud provider, used when `target.image` is omitted. A server the

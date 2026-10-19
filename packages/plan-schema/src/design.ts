@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PlanServiceSchema } from "./components";
 import { DeployProviderSchema, IsoDateTimeSchema, MoneySchema, ServiceKindSchema } from "./enums";
 
 /** Allowed difference between the breakdown sum and the monthly total (rounding to cents). */
@@ -55,8 +56,8 @@ export const DesignOptionSchema = z.strictObject({
     cpuType: z.enum(["shared", "dedicated"]),
     architecture: z.enum(["x86", "arm"]),
   }),
-  /** Self-hosted containers. */
-  services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
+  /** The services that run as containers next to the app, as the plan lists them. */
+  services: z.array(PlanServiceSchema),
   externalServices: z.array(ServiceKindSchema),
   backups: z.boolean(),
   cost: CostEstimateSchema,

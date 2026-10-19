@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { testServices } from "../__fixtures__/plans";
 import type { RenderContext } from "../types";
 import { jobYaml, withBuild, withPlan } from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
@@ -29,7 +30,7 @@ const plan: DeployPlan = DeployPlanSchema.parse({
     serverType: "cx23",
     backups: true,
   },
-  services: { postgres: true, redis: false },
+  services: testServices({ postgres: true }),
   externalServices: [],
   cost: {
     monthly: { amount: 7.09, currency: "EUR" },

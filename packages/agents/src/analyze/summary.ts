@@ -85,6 +85,17 @@ export const SERVICE_NAMES: Record<ServiceKind, string> = {
   queue: "a job queue",
   websocket: "WebSockets",
   cron: "scheduled jobs",
+  mariadb: "MariaDB",
+  amqp: "an AMQP message broker (RabbitMQ)",
+  nats: "NATS",
+  kafka: "Kafka",
+  opensearch: "OpenSearch",
+  elasticsearch: "Elasticsearch",
+  meilisearch: "Meilisearch",
+  typesense: "Typesense",
+  clickhouse: "ClickHouse",
+  neo4j: "Neo4j",
+  cassandra: "Cassandra",
 };
 
 /** Display name of a detected framework (`next` → `Next.js`). */

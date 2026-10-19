@@ -1,5 +1,5 @@
 import { imageReleaseCommand } from "@opscrew/iac-templates";
-import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
+import { type DeployPlan, type ProjectFacts, serviceOf } from "@opscrew/plan-schema";
 
 /** The database-migrations note and whether it needs the user's attention. */
 export interface ReleaseCommandNote {
@@ -38,7 +38,7 @@ export function releaseCommandNote(
     return { warning: true, text: `${notRun}${extra}` };
   }
   if (detected !== undefined) return { warning: !detected.atStartup, text: detected.text };
-  if (!plan.services.postgres) return undefined;
+  if (!serviceOf(plan, "postgres")) return undefined;
   return {
     warning: false,
     text: "OpsCrew found no database migration command for this app, so deploys run none. If the app creates or updates its tables with a command, set it as `app.releaseCommand` in opscrew/plan.yaml: every deploy then runs it before the new version takes traffic.",

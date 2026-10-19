@@ -126,7 +126,7 @@ export function makePlan(codeChanges: CodeChange[], healthPath = "/api/health"):
       serverType: "cx23",
       backups: true,
     },
-    services: { postgres: false, redis: false },
+    services: [],
     externalServices: [],
     cost: {
       monthly: { amount: 5.99, currency: "EUR" },

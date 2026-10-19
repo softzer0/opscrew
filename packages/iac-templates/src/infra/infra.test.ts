@@ -12,6 +12,7 @@ import {
   testCloudflareAccount,
   testContext,
   testPlan,
+  testServices,
 } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
@@ -52,7 +53,7 @@ function plan(overrides: { domain?: string; www?: boolean; backups?: boolean } =
       serverType: "cx23",
       backups: overrides.backups ?? true,
     },
-    services: { postgres: true, redis: false },
+    services: testServices({ postgres: true }),
     externalServices: [],
     cost: {
       monthly: { amount: 7.09, currency: "EUR" },

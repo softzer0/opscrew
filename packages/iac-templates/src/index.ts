@@ -1,3 +1,9 @@
+export type {
+  GeneratedSecret,
+  ImagePinKey,
+  ServiceContext,
+  ServiceSpec,
+} from "./catalog/types";
 export * from "./dependabot";
 export * from "./docker";
 export * from "./infra";

@@ -692,16 +692,33 @@ describe("the builder checks of the Hetzner pass (feature 012)", () => {
   });
 
   it("names the services next to the app that the plan has", () => {
-    expect(steadyServices({ services: { postgres: true, redis: true } })).toEqual([
-      "db",
-      "cache",
-      "proxy",
-      "caddy",
-    ]);
-    expect(steadyServices({ services: { postgres: false, redis: false } })).toEqual([
-      "proxy",
-      "caddy",
-    ]);
+    expect(
+      steadyServices({
+        services: [
+          {
+            name: "db",
+            kind: "postgres",
+            version: "17",
+            memoryMb: 512,
+            enabled: true,
+            options: {},
+            reason: "The app uses PostgreSQL.",
+            licence: "PostgreSQL",
+          },
+          {
+            name: "cache",
+            kind: "valkey",
+            version: "8",
+            memoryMb: 128,
+            enabled: true,
+            options: { mode: "cache" },
+            reason: "The app uses Redis.",
+            licence: "BSD-3-Clause",
+          },
+        ],
+      }),
+    ).toEqual(["db", "cache", "proxy", "caddy"]);
+    expect(steadyServices({ services: [] })).toEqual(["proxy", "caddy"]);
     const command = startedAtCommand(["db", "proxy"]);
     expect(command).toMatch(/^cd \/srv\/app && for service in db proxy; do /);
     expect(command).toContain(`docker inspect --format '{{.State.StartedAt}}' "$id"`);

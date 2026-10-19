@@ -22,7 +22,18 @@ function deployPlan(
       image: "ubuntu-24-04-x64",
       backups: overrides.backups ?? true,
     },
-    services: { postgres: true, redis: false },
+    services: [
+      {
+        name: "db",
+        kind: "postgres",
+        version: "17",
+        memoryMb: 512,
+        enabled: true,
+        options: {},
+        reason: "The app uses PostgreSQL.",
+        licence: "PostgreSQL",
+      },
+    ],
     externalServices: [],
     cost: {
       monthly: { amount: 28.8, currency: "USD" },

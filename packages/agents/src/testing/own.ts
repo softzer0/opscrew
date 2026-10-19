@@ -24,6 +24,7 @@ import type {
 } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { selfHostedServices } from "../design/sizing";
 import type { HostAdapterApi } from "../shared";
 import { fakeCloudflare } from "./deploy";
 import { ScriptedRunner } from "./deps";
@@ -101,7 +102,7 @@ export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
       arch: o.arch ?? "amd64",
       access: o.access ?? "public",
     },
-    services: { postgres, redis: false },
+    services: selfHostedServices({ postgres, redis: false }),
     externalServices: [],
     cost: {
       monthly: { amount: 0, currency: "EUR" },

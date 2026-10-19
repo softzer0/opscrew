@@ -1,5 +1,6 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { testServices } from "../__fixtures__/plans";
 import {
   cell,
   deployRows,
@@ -28,7 +29,7 @@ function plan(
       serverType: "cx23",
       backups: o.backups ?? true,
     },
-    services: { postgres: o.postgres ?? true, redis: false },
+    services: testServices({ postgres: o.postgres ?? true }),
     externalServices: o.postgres === false ? ["supabase"] : [],
     cost: {
       monthly: { amount: 7.09, currency: "EUR" },

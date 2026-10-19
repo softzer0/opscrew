@@ -17,6 +17,7 @@ import {
   type Region,
   type Requirements,
   readArtifact,
+  serviceOf,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { appCandidatesText } from "../analyze/summary";
@@ -37,6 +38,7 @@ import {
   readPortainerConnection,
   serverAddress,
   serviceUrlKind,
+  URL_SERVICE_KINDS,
 } from "../shared";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { backgroundJobsWarning } from "./background-jobs";
@@ -736,8 +738,12 @@ function keepPlanSettings(
         const before = variables.get(variable.name);
         if (before === undefined) return variable;
         // A service turned on or off decides the variables OpsCrew fills from it.
-        const service = serviceUrlKind(variable.name);
-        if (service !== undefined && previous.services[service] !== fresh.services[service]) {
+        const url = serviceUrlKind(variable.name);
+        const kind = url === undefined ? undefined : URL_SERVICE_KINDS[url];
+        if (
+          kind !== undefined &&
+          (serviceOf(previous, kind) === undefined) !== (serviceOf(fresh, kind) === undefined)
+        ) {
           return variable;
         }
         // Fail closed: a name now detected as secret stays secret, never a build argument.

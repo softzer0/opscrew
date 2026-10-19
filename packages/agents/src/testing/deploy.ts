@@ -28,6 +28,7 @@ import {
   type Retarget,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { selfHostedServices } from "../design/sizing";
 import type { CloudflareApi, GitHubApi } from "../provision/types";
 import { hasDeployment, updateServerAddresses } from "../shared";
 import { ScriptedRunner } from "./deps";
@@ -96,7 +97,7 @@ export function testPlan(options: PlanInputOptions = {}) {
       ...TARGETS[provider],
       backups: true,
     },
-    services: { postgres: options.postgres ?? true, redis: false },
+    services: selfHostedServices({ postgres: options.postgres ?? true, redis: false }),
     externalServices: [],
     cost: {
       monthly: { amount: 8.41, currency },

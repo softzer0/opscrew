@@ -2,7 +2,7 @@
 import { type AppBuild, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testContext, testPlan } from "../__fixtures__/plans";
+import { testContext, testPlan, testServices } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { renderCaddyfile, renderCompose, renderTunnelConnectorCompose } from "./index";
 
@@ -52,7 +52,7 @@ function plan(
           }),
     },
     deploy: o.drainSeconds === undefined ? {} : { drainSeconds: o.drainSeconds },
-    services: { ...base.services, redis: o.redis ?? false },
+    services: [...base.services, ...testServices({ redis: o.redis ?? false })],
   });
 }
 

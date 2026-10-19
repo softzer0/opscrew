@@ -3,8 +3,9 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { readArtifact, serviceOf, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { selfHostedServices } from "../design/sizing";
 import { lastHostSetup, passwordLoginChoice, recordOwnServer } from "../shared";
 import { CF_V4, CF_V6, ownCloudflare, ownPlan } from "../testing";
 import {
@@ -436,7 +437,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
           { name: "Caddyfile", ...file("644", sums.caddy) },
           { name: ".env", ...file("644") },
           { name: "app.env", ...file("600") },
-          plan.services.postgres
+          serviceOf(plan, "postgres")
             ? { name: "db.env", ...file("600") }
             : { name: "db.env", kind: "absent", sha256: null },
         ];
@@ -522,7 +523,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       });
       const plan = await readArtifact("plan", s.deps.paths.files.plan);
       const expected = expectedRuntimeFiles(
-        { ...plan, services: { ...plan.services, postgres: true } },
+        { ...plan, services: selfHostedServices({ postgres: true, redis: false }) },
         { opscrewVersion: "0.0.0" },
       );
       expect(expected.dbEnv).toBe(true);

@@ -1,4 +1,9 @@
-import { type AppBuild, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import {
+  type AppBuild,
+  type DeployPlan,
+  DeployPlanSchema,
+  type PlanService,
+} from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 
 /**
@@ -58,6 +63,40 @@ const TARGETS = {
   },
 } as const;
 
+/** The services design writes for an app on PostgreSQL (`db`) and one on Redis (`cache`). */
+export function testServices(o: { postgres?: boolean; redis?: boolean }): PlanService[] {
+  return [
+    ...(o.postgres
+      ? [
+          {
+            name: "db",
+            kind: "postgres",
+            version: "17",
+            memoryMb: 512,
+            enabled: true,
+            options: {},
+            reason: "The app uses PostgreSQL.",
+            licence: "PostgreSQL",
+          } as const,
+        ]
+      : []),
+    ...(o.redis
+      ? [
+          {
+            name: "cache",
+            kind: "valkey",
+            version: "8",
+            memoryMb: 128,
+            enabled: true,
+            options: { mode: "cache" },
+            reason: "The app uses Redis.",
+            licence: "BSD-3-Clause",
+          } as const,
+        ]
+      : []),
+  ];
+}
+
 /** A valid deploy plan for `shop` on the given provider (Hetzner by default). */
 export function testPlan(o: TestPlanOptions = {}): DeployPlan {
   const provider = o.provider ?? "hetzner";
@@ -79,7 +118,7 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
             image: t.image,
             backups: o.backups ?? true,
           },
-    services: { postgres: o.postgres ?? true, redis: false },
+    services: testServices({ postgres: o.postgres ?? true }),
     externalServices: o.postgres === false ? ["supabase"] : [],
     cost: {
       monthly: { amount, currency: t.currency },

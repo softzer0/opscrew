@@ -8,6 +8,7 @@ app:
   healthPath: /api/health
   buildContext: .
   dockerfile: Dockerfile
+  memoryMb: 512
   env:
     - name: DATABASE_URL
       secret: true
@@ -28,9 +29,18 @@ target:
 deploy:
   strategy: rolling
   drainSeconds: 30
+processes:
+  workers: []
+  cron: []
 services:
-  postgres: true
-  redis: false
+  - name: db
+    kind: postgres
+    version: "17"
+    memoryMb: 512
+    enabled: true
+    options: {}
+    reason: The app uses PostgreSQL.
+    licence: PostgreSQL
 externalServices:
   - stripe
   - email

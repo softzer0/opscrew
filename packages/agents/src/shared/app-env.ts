@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
 import { isClientExposedEnvName, siteHosts } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, type SelfHostedServiceKind, serviceOf } from "@opscrew/plan-schema";
 import { randomPassword } from "./ssh-keys";
 
 /** Parses a dotenv file (quotes, `export` prefixes, `#` comments, escaped newlines). */
@@ -104,6 +104,12 @@ export function fixedProductionValue(name: string): string | undefined {
 
 /** A service OpsCrew runs next to the app, whose connection URL a variable can hold. */
 export type ServiceUrlKind = "postgres" | "redis";
+
+/** The service OpsCrew runs for each kind of URL: Postgres, and Valkey for Redis. */
+export const URL_SERVICE_KINDS = {
+  postgres: "postgres",
+  redis: "valkey",
+} as const satisfies Record<ServiceUrlKind, SelfHostedServiceKind>;
 
 const POSTGRES_URL_NAME =
   /^(?:DATABASE_URL|DATABASE_URI|SQLALCHEMY_DATABASE_URI|POSTGRES_UR[LI]|DB_UR[LI])$/;
@@ -283,7 +289,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
 
   // Connection URLs of the services OpsCrew runs, by kind.
   const serviceUrls = new Map<ServiceUrlKind, string>();
-  if (plan.services.postgres) {
+  if (serviceOf(plan, "postgres")) {
     const password = options.previous?.dbPassword ?? newPassword();
     generated.dbPassword = password;
     db = { user: "app", name: "app", password };
@@ -293,7 +299,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     app.set("DATABASE_URL", url);
     serviceUrls.set("postgres", url);
   }
-  if (plan.services.redis) {
+  if (serviceOf(plan, "valkey")) {
     app.set("REDIS_URL", "redis://cache:6379");
     serviceUrls.set("redis", "redis://cache:6379");
   }

@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
-import type { DeployPlan } from "@opscrew/plan-schema";
+
+import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -158,7 +159,7 @@ function remote(script: readonly string[]): string[] {
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
-  const hasDb = plan.services.postgres;
+  const hasDb = serviceOf(plan, "postgres") !== undefined;
   checkSshPort(ctx.sshPort);
 
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed

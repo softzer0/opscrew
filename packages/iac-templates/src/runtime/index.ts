@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
+
 import type { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { webOnlyFromCloudflare } from "../predicates";
@@ -93,11 +94,11 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
       ...hardened({ noCapabilities: true, internal: true }),
     };
   }
-  if (plan.services.postgres) {
+  if (serviceOf(plan, "postgres")) {
     services.db = dbService({ env_file: ["db.env"] }, "/srv/data/postgres");
     dependsOn.db = { condition: "service_healthy" };
   }
-  if (plan.services.redis) {
+  if (serviceOf(plan, "valkey")) {
     services.cache = cacheService("/srv/data/valkey");
     dependsOn.cache = { condition: "service_started" };
   }

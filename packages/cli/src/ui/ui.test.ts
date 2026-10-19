@@ -107,7 +107,7 @@ function option(id: string, amount: number, extra: Partial<DesignOption> = {}): 
       cpuType: "shared",
       architecture: "x86",
     },
-    services: { postgres: false, redis: false },
+    services: [],
     externalServices: [],
     backups: true,
     cost: {

@@ -73,7 +73,18 @@
           "email",
           "queue",
           "websocket",
-          "cron"
+          "cron",
+          "mariadb",
+          "amqp",
+          "nats",
+          "kafka",
+          "opensearch",
+          "elasticsearch",
+          "meilisearch",
+          "typesense",
+          "clickhouse",
+          "neo4j",
+          "cassandra"
         ]
       }
     },

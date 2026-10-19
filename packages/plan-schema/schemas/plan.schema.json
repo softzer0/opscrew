@@ -49,6 +49,12 @@
           "type": "string",
           "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
         },
+        "memoryMb": {
+          "default": 512,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
         "env": {
           "type": "array",
           "items": {
@@ -268,18 +274,306 @@
       },
       "additionalProperties": false
     },
-    "services": {
+    "processes": {
+      "default": {},
       "type": "object",
       "properties": {
-        "postgres": {
-          "type": "boolean"
+        "workers": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "command": {
+                "type": "string",
+                "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["procfile", "library", "user"]
+              },
+              "count": {
+                "default": 1,
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "single": {
+                "default": false,
+                "type": "boolean"
+              },
+              "stopGraceSeconds": {
+                "default": 30,
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 600
+              },
+              "memoryMb": {
+                "default": 256,
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": ["name", "command", "source"],
+            "additionalProperties": false
+          }
         },
-        "redis": {
-          "type": "boolean"
+        "cron": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "schedule": {
+                "type": "string",
+                "pattern": "^(?:@[a-z]+|\\S+(?: +\\S+){4,6})$"
+              },
+              "command": {
+                "type": "string",
+                "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+              },
+              "route": {
+                "type": "string",
+                "pattern": "^\\/\\S*$"
+              },
+              "timeZone": {
+                "default": "UTC",
+                "type": "string"
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": ["name", "schedule"],
+            "additionalProperties": false
+          }
         }
       },
-      "required": ["postgres", "redis"],
       "additionalProperties": false
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "kind": {
+                "type": "string",
+                "const": "valkey"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+              },
+              "memoryMb": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": ["cache", "queue"]
+                  }
+                },
+                "required": ["mode"],
+                "additionalProperties": false
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "licence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["kind", "version", "memoryMb", "options", "reason", "licence"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "kind": {
+                "type": "string",
+                "const": "mongodb"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+              },
+              "memoryMb": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "options": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "replicaSet": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "licence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["kind", "version", "memoryMb", "reason", "licence"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "kind": {
+                "type": "string",
+                "const": "kafka"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+              },
+              "memoryMb": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "options": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "retentionHours": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "retentionGb": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "licence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["kind", "version", "memoryMb", "reason", "licence"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "postgres",
+                  "mysql",
+                  "mariadb",
+                  "rabbitmq",
+                  "nats",
+                  "redpanda",
+                  "garage",
+                  "opensearch",
+                  "elasticsearch",
+                  "meilisearch",
+                  "typesense",
+                  "clickhouse",
+                  "neo4j"
+                ]
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+              },
+              "memoryMb": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "options": {
+                "default": {},
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "licence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["kind", "version", "memoryMb", "reason", "licence"],
+            "additionalProperties": false
+          }
+        ]
+      }
     },
     "externalServices": {
       "type": "array",
@@ -298,9 +592,99 @@
           "email",
           "queue",
           "websocket",
-          "cron"
+          "cron",
+          "mariadb",
+          "amqp",
+          "nats",
+          "kafka",
+          "opensearch",
+          "elasticsearch",
+          "meilisearch",
+          "typesense",
+          "clickhouse",
+          "neo4j",
+          "cassandra"
         ]
       }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "sqlite": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            }
+          },
+          "required": ["dir"],
+          "additionalProperties": false
+        },
+        "objectStorage": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["r2", "digitalocean", "hetzner", "garage"]
+            },
+            "bucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+            },
+            "region": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cors": {
+              "default": false,
+              "type": "boolean"
+            },
+            "expected": {
+              "type": "object",
+              "properties": {
+                "storageGb": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "egressGbPerMonth": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": ["storageGb", "egressGbPerMonth"],
+              "additionalProperties": false
+            },
+            "price": {
+              "type": "object",
+              "properties": {
+                "monthly": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "currency": {
+                  "type": "string",
+                  "enum": ["EUR", "USD"]
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "checkedOn": {
+                  "type": "string",
+                  "format": "date",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+                }
+              },
+              "required": ["monthly", "currency", "source", "checkedOn"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["provider", "bucket", "region", "expected", "price"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "cost": {
       "type": "object",
@@ -843,7 +1227,6 @@
     "updatedAt",
     "app",
     "target",
-    "services",
     "externalServices",
     "cost",
     "codeChanges",

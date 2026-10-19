@@ -5,6 +5,7 @@ import {
   type PortainerDeployTarget,
   type ProjectFacts,
   type Requirements,
+  serviceOf,
 } from "@opscrew/plan-schema";
 import type { PortainerConnection } from "../shared";
 import { hasCloudflareDomain, noServerCost, OWN_SERVER_LOCATION } from "./own";
@@ -171,7 +172,7 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
     "A single Docker host: if it fails, the app is down until the host is restored.",
     "OpsCrew does not check the host's memory or disk: make sure it has room for the app next to your other stacks.",
   );
-  if (sizing.services.postgres) {
+  if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
       "Postgres runs in the app's stack with a named volume on the same host; back up its data yourself.",
     );
@@ -192,7 +193,7 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
       cpuType: "shared",
       architecture: choice.arch === "arm64" ? "arm" : "x86",
     },
-    services: { ...sizing.services },
+    services: [...sizing.services],
     externalServices: [...sizing.externalServices],
     backups: false,
     cost,

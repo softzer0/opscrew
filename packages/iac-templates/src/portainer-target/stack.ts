@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose and shell syntax, not JavaScript templates.
+
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import type { DeployPlan, PortainerWeb } from "@opscrew/plan-schema";
+import { type DeployPlan, type PortainerWeb, serviceOf } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { isClientExposedEnvName } from "../docker";
 import { IMAGES } from "../pins";
@@ -136,8 +137,8 @@ export function fillPortainerStack(template: string, image: string): string {
  */
 function appEnvKeys(plan: DeployPlan): string[] {
   const names = new Set<string>();
-  if (plan.services.postgres) names.add("DATABASE_URL");
-  if (plan.services.redis) names.add("REDIS_URL");
+  if (serviceOf(plan, "postgres")) names.add("DATABASE_URL");
+  if (serviceOf(plan, "valkey")) names.add("REDIS_URL");
   for (const variable of plan.app.env) {
     if (variable.name === "PORT" || isClientExposedEnvName(variable.name)) continue;
     names.add(variable.name);
@@ -189,7 +190,7 @@ export function portainerStackEnvKeys(plan: DeployPlan): PortainerStackEnvKeys {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
   const opscrew: string[] = [];
-  if (plan.services.postgres) opscrew.push(...DB_ENV.map(([, variable]) => variable));
+  if (serviceOf(plan, "postgres")) opscrew.push(...DB_ENV.map(([, variable]) => variable));
   if (web.mode === "tunnel") opscrew.push(PORTAINER_STACK_VARIABLES.tunnelToken);
   return { app: appEnvKeys(plan), opscrew: opscrew.sort() };
 }
@@ -197,8 +198,8 @@ export function portainerStackEnvKeys(plan: DeployPlan): PortainerStackEnvKeys {
 /** Named volumes of the app stack, in the order the stack declares them. */
 function volumeNames(plan: DeployPlan, web: PortainerWeb): string[] {
   return [
-    ...(plan.services.postgres ? ["postgres_data"] : []),
-    ...(plan.services.redis ? ["valkey_data"] : []),
+    ...(serviceOf(plan, "postgres") ? ["postgres_data"] : []),
+    ...(serviceOf(plan, "valkey") ? ["valkey_data"] : []),
     ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : []),
   ];
 }
@@ -252,8 +253,8 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     ...Object.fromEntries(appEnvKeys(plan).map((name) => [name, `\${${name}}`])),
   });
   const backing = () => ({
-    ...(plan.services.postgres ? { db: { condition: "service_healthy" } } : {}),
-    ...(plan.services.redis ? { cache: { condition: "service_started" } } : {}),
+    ...(serviceOf(plan, "postgres") ? { db: { condition: "service_healthy" } } : {}),
+    ...(serviceOf(plan, "valkey") ? { cache: { condition: "service_started" } } : {}),
   });
 
   const app: Record<string, unknown> = {
@@ -279,11 +280,11 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     appDependsOn.release = { condition: "service_completed_successfully" };
   }
   if (Object.keys(appDependsOn).length > 0) app.depends_on = appDependsOn;
-  if (plan.services.postgres) {
+  if (serviceOf(plan, "postgres")) {
     const credentials = DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]);
     services.db = dbService({ environment: Object.fromEntries(credentials) }, "postgres_data");
   }
-  if (plan.services.redis) services.cache = cacheService("valkey_data");
+  if (serviceOf(plan, "valkey")) services.cache = cacheService("valkey_data");
 
   const config = caddyfile({
     mode: web.mode === "caddy" ? "direct" : web.mode,

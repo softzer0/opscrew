@@ -11,7 +11,7 @@ import {
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
 import { portainerCloudflare } from "../provision/credentials";
@@ -423,7 +423,7 @@ export async function destroyPortainer(
   const dataNames =
     deletesData && Array.isArray(volumes?.params.names) ? [...volumes.params.names] : [];
   const dataWarning = deletesData
-    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${plan.services.postgres ? " (with the PostgreSQL database)" : ""}. OpsCrew takes no backup of your Portainer host, so this cannot be undone unless you have your own backup.`
+    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${serviceOf(plan, "postgres") ? " (with the PostgreSQL database)" : ""}. OpsCrew takes no backup of your Portainer host, so this cannot be undone unless you have your own backup.`
     : undefined;
   if (deleteData && !deletesData) {
     deps.reporter.info(

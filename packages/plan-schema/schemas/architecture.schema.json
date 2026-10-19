@@ -282,8 +282,56 @@
                   "email",
                   "queue",
                   "websocket",
-                  "cron"
+                  "cron",
+                  "mariadb",
+                  "amqp",
+                  "nats",
+                  "kafka",
+                  "opensearch",
+                  "elasticsearch",
+                  "meilisearch",
+                  "typesense",
+                  "clickhouse",
+                  "neo4j",
+                  "cassandra"
                 ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            },
+            "required": ["kind", "evidence"],
+            "additionalProperties": false
+          }
+        },
+        "workers": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "command": {
+                "type": "string",
+                "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["procfile", "library"]
+              },
+              "single": {
+                "type": "boolean"
               },
               "evidence": {
                 "type": "array",
@@ -293,9 +341,120 @@
                 }
               }
             },
-            "required": ["kind", "evidence"],
+            "required": ["name", "source", "single", "evidence"],
             "additionalProperties": false
           }
+        },
+        "cronJobs": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "schedule": {
+                "type": "string",
+                "minLength": 1
+              },
+              "route": {
+                "type": "string",
+                "pattern": "^\\/\\S*$"
+              },
+              "source": {
+                "type": "string",
+                "const": "vercel.json"
+              }
+            },
+            "required": ["schedule", "route", "source"],
+            "additionalProperties": false
+          }
+        },
+        "hostedServices": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "postgres",
+                  "mysql",
+                  "mongodb",
+                  "redis",
+                  "sqlite",
+                  "supabase",
+                  "firebase",
+                  "s3",
+                  "stripe",
+                  "email",
+                  "queue",
+                  "websocket",
+                  "cron",
+                  "mariadb",
+                  "amqp",
+                  "nats",
+                  "kafka",
+                  "opensearch",
+                  "elasticsearch",
+                  "meilisearch",
+                  "typesense",
+                  "clickhouse",
+                  "neo4j",
+                  "cassandra"
+                ]
+              },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["kind", "variable", "provider"],
+            "additionalProperties": false
+          }
+        },
+        "sqlite": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+              }
+            },
+            "dir": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            }
+          },
+          "required": ["paths", "dir"],
+          "additionalProperties": false
+        },
+        "objectStorage": {
+          "type": "object",
+          "properties": {
+            "client": {
+              "type": "string",
+              "minLength": 1
+            },
+            "presignedUploads": {
+              "type": "boolean"
+            },
+            "variables": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            }
+          },
+          "required": ["client", "presignedUploads", "variables"],
+          "additionalProperties": false
         },
         "docker": {
           "type": "object",

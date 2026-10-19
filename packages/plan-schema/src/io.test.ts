@@ -100,7 +100,6 @@ describe("input tolerance", () => {
       "updatedAt: 2026-10-11T14:03:00.000Z",
       "app: { name: demo, port: 8080, env: [] }",
       "target: { provider: hetzner, mode: vps-compose, location: fsn1, serverType: cx22, backups: false }",
-      "services: { postgres: false, redis: false }",
       "externalServices: []",
       "cost:",
       "  monthly: { amount: 4.5, currency: EUR }",
@@ -117,10 +116,14 @@ describe("input tolerance", () => {
       healthPath: "/health",
       buildContext: ".",
       dockerfile: "Dockerfile",
+      memoryMb: 512,
     });
     expect(plan.app.build).toBeUndefined();
     expect(plan.target).toMatchObject({ image: "ubuntu-24.04" });
     expect(plan.deploy).toEqual({ strategy: "rolling", drainSeconds: 30 });
+    expect(plan.processes).toEqual({ workers: [], cron: [] });
+    expect(plan.services).toEqual([]);
+    expect(plan.storage).toBeUndefined();
     expect(plan.supplyChain).toEqual({ sign: false });
     expect(plan.infra).toEqual({
       engine: "auto",

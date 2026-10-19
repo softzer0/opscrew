@@ -30,7 +30,18 @@ function movingPlan(step: Retarget["step"], abort?: AbortStep) {
       serverType: "s-1vcpu-2gb",
       backups: false,
     },
-    services: { postgres: true, redis: false },
+    services: [
+      {
+        name: "db",
+        kind: "postgres",
+        version: "17",
+        memoryMb: 512,
+        enabled: true,
+        options: {},
+        reason: "The app uses PostgreSQL.",
+        licence: "PostgreSQL",
+      },
+    ],
     externalServices: [],
     cost: {
       monthly: { amount: 12, currency: "USD" },
