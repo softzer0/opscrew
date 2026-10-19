@@ -339,6 +339,9 @@ Effort`.
       - rerun with nothing changed, changes no file (SC-1307);
       - adds every service's generated secrets (`values.services`, T1307) and the storage key to the redactor, as the app's values and Postgres's password are today;
       - when the provider says the bucket name is taken (Spaces and Hetzner names are shared by all their customers), stops with a plain message naming `storage.objectStorage.bucket` in plan.yaml as the field to change.
+    - **Text left over from T1308c:**
+      - `provision/dependabot.ts` joins its list of missing folders with `listText`;
+      - dns's warning (`dns/run.ts`, that line and its tests only) names the app's Caddy site file, not "the new Caddyfile".
     - **destroy:** removes every component, and keeps data folders and the `storage` root unless `--delete-data` is given with the typed confirmation, saying where they are. With `--delete-data`, the storage root is rendered without `prevent_destroy` (with `force_destroy` on the aws provider's bucket) and destroyed through its own approved plan. Cloudflare deletes an R2 bucket only when it is empty: OpsCrew then says how to empty it in the dashboard, and never deletes files itself.
     - **drift:** reports a component that differs from the plan.
     - **secure:** checks that no service port is public, and that each service with `auth` other than `internal-only` has its login set (a secops check per kind).
@@ -398,7 +401,8 @@ Effort`.
     - **`status`** lists each component and whether it runs, over SSH on servers and through Portainer's API.
     - **Design's output and the MCP tools** show components, licences, and each component's memory and price share.
     - **The plugin's deploy and adapt skills** cover workers, cron and the storage key.
-    - **The runbook** describes the components, the edge and the storage key, with the per-app data paths (`/srv/data/<app>/<name>`).
+    - **The runbook** describes the components, the edge and the storage key, with the per-app data paths (`/srv/data/<app>/<name>`). `runbook/shared.ts` still names `/srv/app` and the Caddyfile: it becomes `/srv/apps/<app>`, the edge at `/srv/edge`, and the app's site file.
+    - **The other `/srv/app` leftovers from T1308c:** `plugin/skills/opscrew-deploy/SKILL.md`'s host-plan line and `docs/guide/own-server.md` describe several apps, the edge and the per-app folders.
     - **Guide pages**, written for users:
       - `components.md`;
       - `workers-and-cron.md`;
@@ -450,6 +454,10 @@ Effort`.
     - **Part 2:** Meilisearch and ClickHouse.
     - **Leftovers:** buckets included. The cleanup removes the `storage` root, and the user's test keys stay theirs.
     - **The coverage page** gets the new rows.
+    - **The layout from T1308c:**
+      - the live tests' `/srv/app` paths become `/srv/apps/<app>`, in `builder-checks.ts`, `live.test.ts`, `own-server.test.ts` and `support.ts`;
+      - `secondAppSkip` in `harness.ts` goes, now that two apps may share a server;
+      - so does `docs/e2e.md`'s `/srv/app/.env`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
