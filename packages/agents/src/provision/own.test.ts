@@ -304,6 +304,28 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(ufw?.params.sshPorts).toBe("2222");
   });
 
+  it("raises vm.max_map_count for OpenSearch through the approved host plan", async () => {
+    const base = ownPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: [
+        ...base.services,
+        {
+          kind: "opensearch",
+          version: "3.9",
+          memoryMb: 1024,
+          reason: "The app uses OpenSearch.",
+          licence: "Apache-2.0",
+        },
+      ],
+    });
+    const s = await setup({ plan });
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+    const step = s.host.applies[0]?.plan.steps.find((entry) => entry.id === "sysctl");
+    expect(step?.params).toEqual({ settings: "vm.max_map_count=262144" });
+    expect(step?.state).toBe("change");
+  });
+
   it("public mode behind a router forwarding 2222 to sshd's 22: the deploy uses the login port", async () => {
     const s = await setup({
       own: { host: OWN_IPV4, port: 2222, user: "root", agent: true, reachable: true },

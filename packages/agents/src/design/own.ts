@@ -16,6 +16,7 @@ import {
   OWN_SERVER_MEMORY_TOLERANCE,
   ownServerFreeDiskGb,
   sizeFor,
+  smallServerWarnings,
 } from "./sizing";
 
 /** How the internet reaches a server the user owns: directly, or through a Cloudflare Tunnel. */
@@ -192,8 +193,9 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   const containers = containersText(sizing);
   const arch = server.architecture === "arm" ? "arm64" : "amd64";
 
-  const warnings: string[] = [];
-  if (server.memoryGb < sizing.memoryGb * OWN_SERVER_MEMORY_TOLERANCE) {
+  // One warning per shortfall: a service's own smallest server, else the server's size overall.
+  const warnings = smallServerWarnings(sizing.services, server.memoryGb * 1024);
+  if (warnings.length === 0 && server.memoryGb < sizing.memoryGb * OWN_SERVER_MEMORY_TOLERANCE) {
     const [has, needs] = distinctAmounts(server.memoryGb, sizing.memoryGb);
     warnings.push(
       `Your server has ${has} GB of memory, but OpsCrew plans at least ${needs} GB for ${containers} at the number of users you expect. The app may slow down or stop when memory runs out: add memory to the server, or expect fewer users.`,

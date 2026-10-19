@@ -33,6 +33,8 @@ import {
 import type { HostPlan } from "./types";
 import { WEB_FILTER_DROP_IN_TEXT, WEB_FILTER_UNIT_TEXT, webFilterScript } from "./web-filter";
 
+const MAX_MAP_COUNT = { "vm.max_map_count": "262144" };
+
 /** Every script of every step of `plan`, including the dead-man scripts. */
 function allScripts(plan: HostPlan): Map<string, string> {
   const scripts = new Map<string, string>();
@@ -63,7 +65,7 @@ async function everyPlan(): Promise<HostPlan[]> {
   plans.push(
     planHost(
       await inspectHost(fresh),
-      desiredFor(fresh, { portainer: portainerDesired() }),
+      desiredFor(fresh, { portainer: portainerDesired(), sysctl: MAX_MAP_COUNT }),
       "opscrew provision",
     ),
   );
@@ -76,9 +78,13 @@ async function everyPlan(): Promise<HostPlan[]> {
   );
 
   const used = new FakeHost();
-  await provision(used, tunnelDesired(used, { portainer: portainerDesired() }), {
-    secrets: { tunnelToken: tunnelToken(), portainerPassword: portainerPassword() },
-  });
+  await provision(
+    used,
+    tunnelDesired(used, { portainer: portainerDesired(), sysctl: MAX_MAP_COUNT }),
+    {
+      secrets: { tunnelToken: tunnelToken(), portainerPassword: portainerPassword() },
+    },
+  );
   deployApp(used, "shop", "tunnel");
   // Switching to public mode removes the tunnel connector and Portainer.
   plans.push(planHost(await inspectHost(used), desiredFor(used), "opscrew provision"));
@@ -164,6 +170,7 @@ describe("generated scripts", () => {
         "setup/web-filter",
         "setup/fail2ban",
         "setup/unattended-upgrades",
+        "setup/sysctl",
         "setup/runtime-dirs",
         "setup/app-dirs",
         "setup/app-record",
@@ -177,6 +184,7 @@ describe("generated scripts", () => {
         "teardown/app-record",
         "undo/runtime-dirs",
         "undo/unattended-upgrades",
+        "undo/sysctl",
         "undo/fail2ban",
         "undo/ufw",
         "undo/web-filter",
@@ -489,6 +497,54 @@ esac`;
     expect(Buffer.from(jail, "base64").toString("utf8")).toBe(
       "# Managed by OpsCrew: brute-force protection for SSH.\n[sshd]\nenabled = true\nport = 22,2222\nbackend = systemd\nmaxretry = 5\nbantime = 1h\n",
     );
+  });
+
+  it("sysctl: raises vm.max_map_count in OpsCrew's file and now, never lowering a higher value", async () => {
+    const scripts = await stepOf((f) => desiredFor(f, { sysctl: MAX_MAP_COUNT }), "sysctl");
+    const h = new ShellHarness();
+    try {
+      // The kernel's value lives in $S/<key>; `-p` applies a file's `key = value` lines.
+      h.stub(
+        "sysctl",
+        `case "$1" in
+  -n) cat "$S/$2" ;;
+  -w) echo "\${2#*=}" > "$S/\${2%%=*}" ;;
+  -p) while read -r k _ v; do case "$k" in \\#*|'') ;; *) echo "$v" > "$S/$k" ;; esac; done < "$2" ;;
+esac`,
+      );
+      const live = (value?: string) => {
+        if (value !== undefined) h.write("/state/vm.max_map_count", `${value}\n`);
+        return h.read("/state/vm.max_map_count")?.trim();
+      };
+      const file = () => h.read("/etc/sysctl.d/90-opscrew.conf");
+
+      h.write("/etc/sysctl.d/99-sysctl.conf", "");
+      live("65530");
+      const before = h.run(scripts.check).stdout;
+      expect(before).toContain("prev.values=vm.max_map_count=65530");
+      expect(before).toContain("state=change");
+      expect(h.run(scripts.apply).status).toBe(0);
+      expect(file()).toBe(
+        "# Managed by OpsCrew: kernel settings the services of its apps need.\nvm.max_map_count = 262144\n",
+      );
+      expect(live()).toBe("262144");
+      expect(h.run(scripts.verify).status).toBe(0);
+      expect(h.run(scripts.check).stdout).toContain("state=in-place");
+
+      // A higher value the server already uses stays, in the file too.
+      live("1048576");
+      h.write("/etc/sysctl.d/90-opscrew.conf", "");
+      expect(h.run(scripts.apply).status).toBe(0);
+      expect(file()).toContain("vm.max_map_count = 1048576\n");
+      expect(live()).toBe("1048576");
+
+      // Lowered by hand: the check sees it.
+      live("65530");
+      expect(h.run(scripts.check).stdout).toContain("state=change");
+      expect(h.run(scripts.verify).status).not.toBe(0);
+    } finally {
+      h.dispose();
+    }
   });
 
   it("docker-daemon: never overwrites an existing daemon.json and restarts Docker only when idle", async () => {

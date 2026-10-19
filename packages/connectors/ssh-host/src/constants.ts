@@ -33,9 +33,20 @@ export const HASHED_RUNTIME_FILES = ["compose.yaml", "site"] as const;
  */
 export const SECRET_RUNTIME_FILES = [".env", "app.env", "db.env"] as const;
 
-/** Every runtime file inspection looks at for each app. */
+/** The runtime files inspection always reports for each app, `absent` when missing. */
 export const RUNTIME_FILE_NAMES = [...HASHED_RUNTIME_FILES, ...SECRET_RUNTIME_FILES] as const;
-export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number];
+
+/**
+ * A runtime file inspection reports: one of {@link RUNTIME_FILE_NAMES}, or the env file of one of
+ * the app's services with secrets (`<service>.env`, which the deploy workflow writes like
+ * `db.env`), reported when it is there, by presence, owner and mode only.
+ */
+export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number] | `${string}.env`;
+
+/** The kernel settings a host plan may raise for the apps' services (each a minimum). */
+export const HOST_SYSCTL_KEYS = ["vm.max_map_count"] as const;
+/** OpsCrew's file of those settings, which keeps them after a restart. */
+export const SYSCTL_FILE = "/etc/sysctl.d/90-opscrew.conf";
 
 /** Where an app's runtime file is: its site on the shared edge, the others in the app's folder. */
 export function runtimeFilePath(app: string, name: RuntimeFileName): string {

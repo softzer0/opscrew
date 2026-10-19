@@ -1,4 +1,8 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: Compose and shell syntax in expected contents, not JavaScript templates.
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type AppBuild, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -6,7 +10,12 @@ import { serviceSpec } from "../catalog";
 import { GARAGE_STORAGE, type ServiceEntry, withServices } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { withBuild, withSqlite } from "../workflow/__fixtures__/plans";
-import { renderCompose, renderRuntimeFiles } from "./index";
+import {
+  hostSettingsServices,
+  renderCompose,
+  renderRuntimeFiles,
+  sqliteVolumeOwner,
+} from "./index";
 
 type Service = Record<string, unknown> & {
   mem_limit?: string;
@@ -102,6 +111,12 @@ describe("the services on a server", () => {
         { kind: "kafka" },
         { kind: "redpanda" },
         { kind: "garage" },
+        { kind: "opensearch" },
+        { kind: "elasticsearch" },
+        { kind: "meilisearch" },
+        { kind: "typesense" },
+        { kind: "clickhouse" },
+        { kind: "neo4j" },
       ],
       { storage: GARAGE_STORAGE },
     );
@@ -190,6 +205,116 @@ describe("the services on a server", () => {
     expect(
       renderRuntimeFiles(withServices([{ kind: "mysql", enabled: false }])).map((f) => f.path),
     ).toEqual(["opscrew/runtime/edge/compose.yaml"]);
+  });
+});
+
+describe("the search engines' host setting", () => {
+  const plan = (provider: "hetzner" | "own" = "hetzner") =>
+    withServices(
+      [{ kind: "opensearch" }, { kind: "elasticsearch" }, { kind: "meilisearch" }],
+      {},
+      { provider },
+    );
+
+  it("is raised on a cloud server by one privileged one-shot container per app, which every engine that needs it waits for (snapshot)", () => {
+    const compose = renderCompose(plan());
+    expect(compose.content).toMatchSnapshot();
+    const all = services(plan());
+    expect(Object.keys(all)).toEqual([
+      "app",
+      "sysctl",
+      "opensearch",
+      "elasticsearch",
+      "meilisearch",
+    ]);
+    const sysctl = all.sysctl as Service;
+    expect(sysctl).toMatchObject({
+      image: IMAGES.caddy.ref,
+      privileged: true,
+      network_mode: "none",
+      read_only: true,
+      mem_limit: "16m",
+      security_opt: ["no-new-privileges:true"],
+    });
+    expect(sysctl.networks).toBeUndefined();
+    expect(sysctl.restart).toBeUndefined();
+    // Only that one setting, also in the host's /etc/sysctl.d so a restart keeps it.
+    expect(sysctl.command).toEqual([
+      "sh",
+      "-c",
+      [
+        "set -e",
+        "echo '# Managed by OpsCrew: kernel settings the services of its apps need.' > /etc/sysctl.d/90-opscrew.conf.tmp",
+        'v=$$(sysctl -n vm.max_map_count); if [ "$$v" -lt 262144 ]; then v=262144; sysctl -w vm.max_map_count=$$v; fi; echo "vm.max_map_count = $$v" >> /etc/sysctl.d/90-opscrew.conf.tmp',
+        "mv /etc/sysctl.d/90-opscrew.conf.tmp /etc/sysctl.d/90-opscrew.conf",
+      ].join("; "),
+    ]);
+    expect(sysctl.volumes).toEqual(["/etc/sysctl.d:/etc/sysctl.d"]);
+    // The engine itself gets the open-file limit it needs.
+    expect(all.opensearch?.ulimits).toEqual({ nofile: { soft: 65536, hard: 65536 } });
+    expect(all.meilisearch?.ulimits).toBeUndefined();
+    expect(all.elasticsearch?.ulimits).toEqual({ nofile: { soft: 65536, hard: 65536 } });
+    for (const engine of ["opensearch", "elasticsearch"]) {
+      expect(all[engine]?.depends_on, engine).toEqual({
+        sysctl: { condition: "service_completed_successfully" },
+      });
+    }
+    expect(all.meilisearch?.depends_on).toBeUndefined();
+    // The app waits for the engines, not for the one-shot container.
+    expect(all.app?.depends_on).toEqual({
+      opensearch: { condition: "service_healthy" },
+      elasticsearch: { condition: "service_healthy" },
+      meilisearch: { condition: "service_healthy" },
+    });
+    expect(hostSettingsServices(plan())).toEqual(["sysctl"]);
+  });
+
+  it.skipIf(spawnSync("sh", ["-c", "true"]).error !== undefined)(
+    "keeps the higher of the wanted and the kernel's value, live and in the file (real shell)",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "opscrew-sysctl-"));
+      try {
+        const root = spawnSync("sh", ["-c", 'cd "$1" && pwd', "_", dir], {
+          encoding: "utf8",
+        }).stdout.trim();
+        const [, , command] = (services(plan()).sysctl?.command ?? []) as string[];
+        const script = (command ?? "").replaceAll("$$", "$").replaceAll("/etc/sysctl.d", root);
+        // The kernel's value lives in the file `live`.
+        const stub = `sysctl() { if [ "$1" = -n ]; then cat "${root}/live"; else echo "\${2#*=}" > "${root}/live"; fi; }`;
+        const run = (live: string) => {
+          writeFileSync(join(dir, "live"), `${live}\n`);
+          const result = spawnSync("sh", ["-c", `${stub}\n${script}`], { encoding: "utf8" });
+          expect(result.status, result.stderr).toBe(0);
+          return {
+            live: readFileSync(join(dir, "live"), "utf8").trim(),
+            file: readFileSync(join(dir, "90-opscrew.conf"), "utf8"),
+          };
+        };
+        expect(run("65530")).toEqual({
+          live: "262144",
+          file: "# Managed by OpsCrew: kernel settings the services of its apps need.\nvm.max_map_count = 262144\n",
+        });
+        expect(run("1048576")).toEqual({
+          live: "1048576",
+          file: "# Managed by OpsCrew: kernel settings the services of its apps need.\nvm.max_map_count = 1048576\n",
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("is left to the host plan on a server the user owns", () => {
+    const all = services(plan("own"));
+    expect(all.sysctl).toBeUndefined();
+    expect(all.opensearch?.depends_on).toBeUndefined();
+    expect(hostSettingsServices(plan("own"))).toEqual([]);
+  });
+
+  it("is left out with the engine turned off", () => {
+    const off = withServices([{ kind: "elasticsearch", enabled: false }]);
+    expect(services(off).sysctl).toBeUndefined();
+    expect(hostSettingsServices(off)).toEqual([]);
   });
 });
 
@@ -513,6 +638,18 @@ describe("SQLite", () => {
     expect(() => renderCompose(withSqlite(withBuild(app, "own-dockerfile")))).toThrow(
       "The app keeps its SQLite database in storage/ on a persistent volume, but OpsCrew does not know the folder the app runs in: the last stage of your Dockerfile (Dockerfile) has no WORKDIR with an absolute path.",
     );
+  });
+
+  it("gets its owner from the user each builder's image runs as, unknown for an own Dockerfile", () => {
+    expect(sqliteVolumeOwner(withBuild(app, "buildpacks"))).toBe("1002:1001");
+    expect(sqliteVolumeOwner(withBuild(app, "railpack"))).toBe("10001:10001");
+    expect(sqliteVolumeOwner(withBuild(app, "generated-dockerfile", { language: "node" }))).toBe(
+      "1000:1000",
+    );
+    expect(sqliteVolumeOwner(withBuild(app, "generated-dockerfile", { language: "python" }))).toBe(
+      "10001:10001",
+    );
+    expect(sqliteVolumeOwner(withBuild(app, "own-dockerfile"))).toBeUndefined();
   });
 
   it("is left out without storage.sqlite", () => {

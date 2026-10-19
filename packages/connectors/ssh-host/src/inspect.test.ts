@@ -5,8 +5,21 @@ import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, type OsPreset } from "./__fixtures__/fake-host";
 import { desiredFor, planFor, provision } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
-import { dockerFirewall, inspectHost, inspectScript, RUNTIME_FILES_SNIPPET } from "./inspect";
-import { parseAddons, parseAppRecords, parseDirs, parseRuntimeFiles, splitSections } from "./parse";
+import {
+  dockerFirewall,
+  inspectHost,
+  inspectScript,
+  RUNTIME_FILES_SNIPPET,
+  SYSCTL_SNIPPET,
+} from "./inspect";
+import {
+  parseAddons,
+  parseAppRecords,
+  parseDirs,
+  parseRuntimeFiles,
+  parseSysctl,
+  splitSections,
+} from "./parse";
 import { planHost } from "./plan";
 import { appRecord } from "./steps";
 
@@ -219,6 +232,10 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
         sh.write("/srv/edge/sites/shop.caddy", ":80 {\n}\n");
         sh.write("/srv/apps/shop/app.env", `SECRET_KEY=${secret}\n`);
         sh.write("/srv/apps/shop/db.env", `POSTGRES_PASSWORD=${secret}\n`);
+        // Each service's env file, by its name; other names are never reported.
+        sh.write("/srv/apps/shop/search.env", `MEILI_MASTER_KEY=${secret}\n`);
+        sh.write("/srv/apps/shop/Odd Name.env", `X=${secret}\n`);
+        sh.write("/srv/apps/shop/notes.env.bak", `X=${secret}\n`);
         sh.write("/srv/apps/blog/compose.yaml", "services: {}\n");
         sh.write("/srv/apps/Not An App/compose.yaml", "services: {}\n");
         const result = sh.run(RUNTIME_FILES_SNIPPET);
@@ -240,6 +257,18 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
         );
         expect(byName.get("app.env")).toMatchObject({ kind: "file", sha256: null });
         expect(byName.get("db.env")).toMatchObject({ kind: "file", sha256: null });
+        expect(byName.get("search.env")).toMatchObject({ kind: "file", sha256: null });
+        expect([...byName.keys()]).toEqual([
+          "compose.yaml",
+          "site",
+          ".env",
+          "app.env",
+          "db.env",
+          "search.env",
+        ]);
+        expect(files.filter((file) => file.app === "blog").map((file) => file.name)).not.toContain(
+          "search.env",
+        );
         expect(byName.get(".env")).toEqual({
           app: "shop",
           name: ".env",
@@ -320,6 +349,41 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
       { app: "shop", name: "db.env", kind: "absent", sha256: null },
     ]);
     expect(RUNTIME_FILES_SNIPPET).toMatch(/if \[ -L "\$p" \]; then echo "\$app \$f link"/);
+  });
+});
+
+describe("inspectHost: the kernel settings a host plan may raise", () => {
+  it("reads the kernel's value and the one OpsCrew's file sets", async () => {
+    expect(
+      parseSysctl(
+        ["live vm.max_map_count 65530", "file vm.max_map_count 262144", "live x", "odd line"].join(
+          "\n",
+        ),
+      ),
+    ).toEqual({ live: { "vm.max_map_count": 65530 }, file: { "vm.max_map_count": 262144 } });
+    const fake = new FakeHost();
+    expect((await inspectHost(fake)).sysctl).toEqual({
+      live: { "vm.max_map_count": 65530 },
+      file: {},
+    });
+  });
+
+  it.skipIf(!BASH_AVAILABLE)("reads them with sysctl and from OpsCrew's file (real shell)", () => {
+    const sh = new ShellHarness();
+    try {
+      sh.stub("sysctl", "echo 65530", { log: false });
+      sh.write(
+        "/etc/sysctl.d/90-opscrew.conf",
+        "# Managed by OpsCrew.\nvm.max_map_count = 262144\n",
+      );
+      const path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+      expect(parseSysctl(sh.run(`${path}\n${SYSCTL_SNIPPET}`).stdout)).toEqual({
+        live: { "vm.max_map_count": 65530 },
+        file: { "vm.max_map_count": 262144 },
+      });
+    } finally {
+      sh.dispose();
+    }
   });
 });
 

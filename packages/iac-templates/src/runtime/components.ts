@@ -5,10 +5,18 @@
  */
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
-import { checkServiceVersion, enabledServices, renderContext, serviceSpec } from "../catalog";
+import {
+  checkServiceVersion,
+  enabledServices,
+  hostSysctl,
+  renderContext,
+  serviceSpec,
+} from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
+import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
 import type { RenderedFile } from "../types";
+import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { hasCronJobs, sqliteFolder } from "../workflow/shared";
 import { composeLiteral, hardened } from "./services";
 
@@ -109,6 +117,63 @@ function healthcheck(spec: ServiceSpec): object {
   };
 }
 
+/** The app's one-shot container that sets the host kernel settings its services need. */
+const SYSCTL_SERVICE = "sysctl";
+
+/** OpsCrew's file of kernel settings, the same as the own-server host plan's. */
+const HOST_SYSCTL_FILE = "/etc/sysctl.d/90-opscrew.conf";
+
+const SYSCTL_MEMORY_MB = 16;
+
+/**
+ * `["sysctl"]` when the plan's services need host kernel settings on a server OpsCrew created
+ * ({@link sysctlService}), which the deploy starts with the services; else none. On a server the
+ * user owns the host plan sets them (in `/etc/sysctl.d`, approved by its hash).
+ */
+export function hostSettingsServices(plan: DeployPlan): string[] {
+  return Object.keys(hostSysctl(plan)).length > 0 && plan.target.provider !== "own"
+    ? [SYSCTL_SERVICE]
+    : [];
+}
+
+/**
+ * The container that raises the host kernel settings of all the plan's services
+ * ({@link hostSysctl}: `vm.max_map_count` for the search engines) once before they start on each
+ * deploy; a value already at least as high stays. Privileged because these settings belong to the
+ * host kernel, not the container: Docker's `sysctls` takes only the per-container ones. It runs
+ * the edge's Caddy image, which is on every server, with no network, sets only these settings and
+ * exits.
+ *
+ * It also writes them to the host's {@link HOST_SYSCTL_FILE} (through a mount of
+ * `/etc/sysctl.d`), so a restart of the server keeps them: cloud-init runs only when a server is
+ * created, so it would not cover an engine added later. Each value is the higher of the wanted one
+ * and the kernel's, as on a server the user owns.
+ */
+function sysctlService(plan: DeployPlan): object {
+  const file = HOST_SYSCTL_FILE;
+  const raise = Object.entries(hostSysctl(plan)).map(
+    ([key, value]) =>
+      `v=$(sysctl -n ${key}); if [ "$v" -lt ${value} ]; then v=${value}; sysctl -w ${key}=$v; fi; echo "${key} = $v" >> ${file}.tmp`,
+  );
+  const script = [
+    "set -e",
+    `echo '# Managed by OpsCrew: kernel settings the services of its apps need.' > ${file}.tmp`,
+    ...raise,
+    `mv ${file}.tmp ${file}`,
+  ];
+  return {
+    // No restart policy: it runs once and exits.
+    image: IMAGES.caddy.ref,
+    privileged: true,
+    network_mode: "none",
+    command: ["sh", "-c", composeLiteral(script.join("; "))],
+    volumes: ["/etc/sysctl.d:/etc/sysctl.d"],
+    read_only: true,
+    ...memoryLimit(SYSCTL_MEMORY_MB),
+    ...hardened(),
+  };
+}
+
 /**
  * The plan's services in Compose: each with its pinned image, its environment, its data and
  * settings files, health check, memory limit, `restart: unless-stopped`, the app's internal
@@ -124,6 +189,8 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
     configs: {},
     files: [],
   };
+  const sysctl = target.kind === "server" && hostSettingsServices(plan).length > 0;
+  if (sysctl) rendered.services[SYSCTL_SERVICE] = sysctlService(plan);
   for (const service of enabledServices(plan)) {
     const spec = serviceSpec(service.kind);
     checkServiceVersion(service, spec);
@@ -162,7 +229,17 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
         : {}),
       healthcheck: healthcheck(spec),
       ...memoryLimit(service.memoryMb),
+      ...(spec.ulimits === undefined
+        ? {}
+        : {
+            ulimits: {
+              nofile: { soft: spec.ulimits.nofile, hard: spec.ulimits.nofile },
+            },
+          }),
       ...hardened({ internal: true }),
+      ...(sysctl && spec.hostSettings !== undefined
+        ? { depends_on: { [SYSCTL_SERVICE]: { condition: "service_completed_successfully" } } }
+        : {}),
     };
     rendered.dependsOn[service.name] = { condition: "service_healthy" };
   }
@@ -172,7 +249,26 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
 }
 
 /** The volume of the app's Compose project that keeps a SQLite database's folder. */
-const SQLITE_VOLUME = "sqlite";
+export const SQLITE_VOLUME = "sqlite";
+
+/**
+ * The owner (`uid:gid`) Docker gives the SQLite volume when it creates it: the user the app's
+ * image runs as, for the plan's builder. Undefined for the user's own Dockerfile, whose user
+ * OpsCrew does not read.
+ */
+export function sqliteVolumeOwner(plan: DeployPlan): string | undefined {
+  const build = plan.app.build;
+  switch (build?.builder) {
+    case "buildpacks":
+      return BUILDPACKS_RUN_USER;
+    case "railpack":
+      return RAILPACK_USER;
+    case "generated-dockerfile":
+      return GENERATED_USERS[build.runtime.language === "python" ? "python" : "node"].owner;
+    default:
+      return undefined;
+  }
+}
 
 /**
  * The `volumes` of a container of the app's image (the app, the release command, the workers and

@@ -68,6 +68,22 @@ describe("keepNewerPins", () => {
     ).toBe(`FROM python:3.15-slim@${digest("a")}\n`);
   });
 
+  it("keeps the committed minor of the images Dependabot keeps on their minor (Meilisearch)", () => {
+    const pin = (tag: string, c: string) => `    image: getmeili/meilisearch:${tag}@${digest(c)}\n`;
+    // A new OpsCrew minor, newer or older, leaves the committed one alone.
+    expect(keepNewerPins(pin("v1.55.0", "b"), pin("v1.56.0", "a"))).toBe(pin("v1.55.0", "b"));
+    expect(keepNewerPins(pin("v1.56.0", "b"), pin("v1.55.0", "a"))).toBe(pin("v1.56.0", "b"));
+    // Within the minor the higher patch still wins.
+    expect(keepNewerPins(pin("v1.55.0", "b"), pin("v1.55.1", "a"))).toBe(pin("v1.55.1", "a"));
+    // Typesense keeps only its major.
+    expect(
+      keepNewerPins(
+        `    image: typesense/typesense:30.2@${digest("b")}\n`,
+        `    image: typesense/typesense:30.3@${digest("a")}\n`,
+      ),
+    ).toBe(`    image: typesense/typesense:30.3@${digest("a")}\n`);
+  });
+
   it("keeps OpsCrew's image when the committed one is another variant or not comparable", () => {
     const rendered = `FROM node:24-alpine@${digest("a")}\nFROM python:3.14-slim@${digest("a")}\n`;
     for (const committed of [

@@ -88,7 +88,7 @@ const RAILPACK_SEAL: Partial<Record<RuntimeLanguage, readonly string[]>> = {
 };
 
 /** The user every Railpack image runs as after the seal. */
-const RAILPACK_USER = "10001:10001";
+export const RAILPACK_USER = "10001:10001";
 
 /** `owner/name@<sha> # vX` for `uses:`. */
 const uses = (key: keyof typeof ACTIONS) => `  uses: ${ACTIONS[key]}`;
@@ -141,7 +141,7 @@ function supercronicSeal(plan: DeployPlan): string[] {
 }
 
 /** The user of the pinned Paketo run image (`IMAGES.paketoRun`), which a Buildpacks image runs as. */
-const BUILDPACKS_RUN_USER = "1002:1001";
+export const BUILDPACKS_RUN_USER = "1002:1001";
 
 /**
  * The seal's lines that make an app's SQLite folder ({@link sqliteFolder}) the app's user's, so

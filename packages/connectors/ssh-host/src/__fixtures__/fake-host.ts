@@ -26,6 +26,7 @@ import {
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
+  SYSCTL_FILE,
   TUNNELS_DIR,
 } from "../constants";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
@@ -256,6 +257,8 @@ export class FakeHost implements RemoteExec {
   dirs = new Map<string, { owner: string; group: string; mode: string; entries: number }>();
   /** Each app's files in /srv/apps/<app> by name (the deploy workflow's copies). */
   appFiles = new Map<string, Map<string, FakeFile>>();
+  /** The kernel's live settings (`sysctl -n`), the distribution's default first. */
+  sysctl = new Map<string, number>([["vm.max_map_count", 65530]]);
   /** Docker networks by name (the edge's network). */
   networks = new Set<string>();
   /** The edge's kamal-proxy services, by app (a deploy registers its app). */
@@ -654,7 +657,13 @@ export class FakeHost implements RemoteExec {
       "runtime-files",
       apps
         .flatMap((app) =>
-          RUNTIME_FILE_NAMES.map((name) => {
+          [
+            ...RUNTIME_FILE_NAMES,
+            ...[...(this.appFiles.get(app)?.keys() ?? [])].filter(
+              (name) =>
+                name.endsWith(".env") && !(RUNTIME_FILE_NAMES as readonly string[]).includes(name),
+            ),
+          ].map((name) => {
             // The app's site on the edge is a file of the edge's folder (deploy:deploy, 644).
             const site = this.files.get(runtimeFilePath(app, "site"));
             const file =
@@ -675,6 +684,13 @@ export class FakeHost implements RemoteExec {
     add(
       "apt-periodic",
       `APT::Periodic::Update-Package-Lists "${periodic}";\nAPT::Periodic::Unattended-Upgrade "${periodic}";`,
+    );
+    add(
+      "sysctl",
+      [
+        ...[...this.sysctl].map(([key, value]) => `live ${key} ${value}`),
+        ...[...this.sysctlFile()].map(([key, value]) => `file ${key} ${value}`),
+      ].join("\n"),
     );
     add("apps", this.appRecordLines());
     const record = this.files.get(RECORD_PATH);
@@ -794,6 +810,26 @@ export class FakeHost implements RemoteExec {
     const lines = Object.entries(prev).map(([key, value]) => `prev.${key}=${value}`);
     lines.push(`state=${inPlace ? "in-place" : "change"}`);
     return result(`${lines.join("\n")}\n`);
+  }
+
+  /** The settings OpsCrew's file in /etc/sysctl.d sets, by key. */
+  private sysctlFile(): Map<string, number> {
+    const lines = (this.files.get(SYSCTL_FILE) ?? "").split("\n");
+    return new Map(
+      lines.flatMap((line) => {
+        const match = /^([a-z0-9_.]+) = (\d+)$/.exec(line);
+        return match ? [[match[1] as string, Number(match[2])] as const] : [];
+      }),
+    );
+  }
+
+  /** Each `key=value` of the step's settings holds live and in OpsCrew's file. */
+  private sysctlOk(settings: string): boolean {
+    const file = this.sysctlFile();
+    return settings.split(" ").every((setting) => {
+      const [key = "", want = ""] = setting.split("=");
+      return (this.sysctl.get(key) ?? 0) >= Number(want) && (file.get(key) ?? 0) >= Number(want);
+    });
   }
 
   private verify(ok: boolean, params: Record<string, string>): CommandResult {
@@ -1142,6 +1178,42 @@ export class FakeHost implements RemoteExec {
         this.files.delete(AUTO_UPGRADES_FILE);
         if (p.DISABLE_SERVICE === "true") this.upgradesServiceEnabled = false;
         if (p.REMOVE_PACKAGE === "true") this.packages.delete("unattended-upgrades");
+        return result();
+
+      // kernel settings
+      case "sysctl.check":
+        return this.check(this.sysctlOk(p.SETTINGS ?? ""), {
+          values: (p.SETTINGS ?? "")
+            .split(" ")
+            .map((setting) => {
+              const key = setting.split("=")[0] ?? "";
+              return `${key}=${this.sysctl.get(key) ?? ""}`;
+            })
+            .join(" "),
+        });
+      case "sysctl.apply": {
+        const lines = (p.SETTINGS ?? "").split(" ").map((setting) => {
+          const [key = "", want = ""] = setting.split("=");
+          const value = Math.max(Number(want), this.sysctl.get(key) ?? 0);
+          this.sysctl.set(key, value);
+          return `${key} = ${value}`;
+        });
+        this.files.set(SYSCTL_FILE, `# Managed by OpsCrew.\n${lines.join("\n")}\n`);
+        return result();
+      }
+      case "sysctl.verify":
+        return this.verify(this.sysctlOk(p.SETTINGS ?? ""), p);
+      case "sysctl.undo.check":
+      case "sysctl.undo.verify": {
+        const ok = !this.files.has(SYSCTL_FILE);
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "sysctl.undo.apply":
+        this.files.delete(SYSCTL_FILE);
+        for (const setting of (p.RESTORE ?? "").split(" ").filter(Boolean)) {
+          const [key = "", value = ""] = setting.split("=");
+          this.sysctl.set(key, Number(value));
+        }
         return result();
 
       // docker daemon settings

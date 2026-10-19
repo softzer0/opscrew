@@ -7,24 +7,25 @@ import type { ServiceContext, ServiceSpec } from "./types";
 
 export { SERVICE_SPECS };
 
-/** {@link SERVICE_SPECS} by kind. */
-export const CATALOG: Readonly<Partial<Record<SelfHostedServiceKind, ServiceSpec>>> =
-  Object.fromEntries(SERVICE_SPECS.map((spec) => [spec.kind, spec]));
+/** {@link SERVICE_SPECS} by kind: one entry for every kind (a test checks each is there). */
+export const CATALOG = Object.fromEntries(
+  SERVICE_SPECS.map((spec) => [spec.kind, spec]),
+) as Readonly<Record<SelfHostedServiceKind, ServiceSpec>>;
+
+/** The catalog's entry for `kind`. */
+export function serviceSpec(kind: SelfHostedServiceKind): ServiceSpec {
+  return CATALOG[kind];
+}
 
 /**
- * The catalog's entry for `kind`.
- * @throws OpsCrewError `INVALID_INPUT` for a kind OpsCrew cannot run yet.
+ * The kernel settings the plan's enabled services need from the host, each a minimum
+ * (`vm.max_map_count` for OpenSearch and Elasticsearch); empty when none does.
  */
-export function serviceSpec(kind: SelfHostedServiceKind): ServiceSpec {
-  const spec = CATALOG[kind];
-  if (spec === undefined) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `This version of OpsCrew cannot run ${kind} next to the app yet.`,
-      { hint: `Remove the ${kind} service from opscrew/plan.yaml (services) or keep it external.` },
-    );
-  }
-  return spec;
+export function hostSysctl(plan: DeployPlan): Record<string, string> {
+  return Object.assign(
+    {},
+    ...enabledServices(plan).map((service) => serviceSpec(service.kind).hostSettings?.sysctl),
+  );
 }
 
 /** The image of `spec` without its tag and digest, as Dependabot names it: `mysql`, `apache/kafka`. */

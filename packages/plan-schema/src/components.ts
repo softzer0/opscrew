@@ -14,7 +14,14 @@ import {
 } from "./enums";
 
 /** Compose service names OpsCrew gives its own containers. */
-const RESERVED_NAMES: ReadonlySet<string> = new Set(["app", "release", "cron", "proxy", "caddy"]);
+const RESERVED_NAMES: ReadonlySet<string> = new Set([
+  "app",
+  "release",
+  "cron",
+  "proxy",
+  "caddy",
+  "sysctl",
+]);
 
 /** A name in the app's Compose project and data folders: `worker`, `db`, `mail-2`. */
 const NAME = /^[a-z][a-z0-9-]*$/;

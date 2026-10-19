@@ -9,7 +9,6 @@ import {
   planHost,
   type RuntimeFileName,
   runtimeFilePath,
-  SECRET_RUNTIME_FILES,
   SHARED_DIRS,
   tunnelDir,
   tunnelOf,
@@ -68,6 +67,7 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "web-filter": "Web filter (only Cloudflare reaches ports 80 and 443)",
   fail2ban: "Brute-force protection (fail2ban)",
   "unattended-upgrades": "Automatic security updates",
+  sysctl: "Kernel settings for the app's services (/etc/sysctl.d/90-opscrew.conf)",
   "runtime-dirs": "Shared folders (/srv/edge, /srv/apps and /srv/data)",
   "app-dirs": "The app's folders (in /srv/apps and /srv/data)",
   "app-record": "The app's record (in /etc/opscrew/apps)",
@@ -435,7 +435,8 @@ function runtimeFileDetails(
   for (const file of facts.runtimeFiles.filter((item) => item.app === app)) {
     const path = runtimeFilePath(app, file.name);
     const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
-    const secret = (SECRET_RUNTIME_FILES as readonly string[]).includes(file.name);
+    // The env files, each service's `<service>.env` included.
+    const secret = file.name.endsWith(".env");
     if (file.name === "db.env" && !expected.dbEnv) continue;
     if (file.kind === "absent") {
       if (deployed) out.push(`${path} (${RUNTIME_FILE_ROLE[file.name]}) is missing. ${REDEPLOY}`);
@@ -569,6 +570,10 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
       return fail2banDetails(facts);
     case "unattended-upgrades":
       return upgradesDetails(facts);
+    case "sysctl":
+      return [
+        `The kernel's ${String(step.params.settings).replaceAll("=", " is below the ")} the app's services need, or /etc/sysctl.d/90-opscrew.conf no longer keeps it.`,
+      ];
     case "runtime-dirs":
       return dirDetails(facts, SHARED_DIRS);
     case "app-dirs": {

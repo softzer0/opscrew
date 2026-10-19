@@ -18,6 +18,7 @@ import {
   type HostFacts,
   type Listener,
   type RuntimeFileFact,
+  ServiceEnvFileSchema,
   type WebFilterRules,
 } from "./facts";
 
@@ -405,8 +406,10 @@ export function parseDirs(text: string): DirFact[] {
 /**
  * The runtime files section: `<app> <name> file <owner> <group> <mode> <sha256|->`,
  * `<app> <name> link`, `<app> <name> other` or `<app> <name> absent`, for every file of
- * {@link RUNTIME_FILE_NAMES} in each app's folder. A checksum is kept only for the rendered
- * files, never for a file that holds secrets. Sorted by app, each app with every file.
+ * {@link RUNTIME_FILE_NAMES} in each app's folder, then for each service's `<service>.env` found
+ * there. A checksum is kept only for the rendered files, never for a file that holds secrets.
+ * Sorted by app, each app with every file of {@link RUNTIME_FILE_NAMES}, then its services' env
+ * files by name.
  */
 export function parseRuntimeFiles(text: string): RuntimeFileFact[] {
   const found = new Map<string, Map<RuntimeFileName, RuntimeFileFact>>();
@@ -414,7 +417,8 @@ export function parseRuntimeFiles(text: string): RuntimeFileFact[] {
   const hashed: readonly string[] = HASHED_RUNTIME_FILES;
   for (const line of linesOf(text)) {
     const [app, name, kind, owner, group, mode, sum] = line.split(/\s+/);
-    if (!app || !APP_NAME_RE.test(app) || !name || !names.includes(name)) continue;
+    if (!app || !APP_NAME_RE.test(app) || !name) continue;
+    if (!names.includes(name) && !ServiceEnvFileSchema.safeParse(name).success) continue;
     const files = found.get(app) ?? new Map<RuntimeFileName, RuntimeFileFact>();
     found.set(app, files);
     const key = name as RuntimeFileName;
@@ -434,13 +438,27 @@ export function parseRuntimeFiles(text: string): RuntimeFileFact[] {
       files.set(key, { app, name: key, kind, sha256: null });
     }
   }
-  return [...found.keys()]
-    .sort()
-    .flatMap((app) =>
-      RUNTIME_FILE_NAMES.map(
-        (name) => found.get(app)?.get(name) ?? { app, name, kind: "absent" as const, sha256: null },
+  return [...found.keys()].sort().flatMap((app) => {
+    const files = found.get(app) ?? new Map<RuntimeFileName, RuntimeFileFact>();
+    const services = [...files.keys()].filter((name) => !names.includes(name)).sort();
+    return [
+      ...RUNTIME_FILE_NAMES.map(
+        (name) => files.get(name) ?? { app, name, kind: "absent" as const, sha256: null },
       ),
-    );
+      ...services.flatMap((name) => files.get(name) ?? []),
+    ];
+  });
+}
+
+/** The sysctl section: `live <key> <value>` and `file <key> <value>` lines, by key. */
+export function parseSysctl(text: string): HostFacts["sysctl"] {
+  const sysctl: HostFacts["sysctl"] = { live: {}, file: {} };
+  for (const line of linesOf(text)) {
+    const [where, key, value] = line.split(/\s+/);
+    if ((where !== "live" && where !== "file") || !key || !/^\d+$/.test(value ?? "")) continue;
+    sysctl[where][key] = Number(value);
+  }
+  return sysctl;
 }
 
 /**

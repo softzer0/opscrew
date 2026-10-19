@@ -32,6 +32,40 @@ function edit(s: OwnProject, change: (facts: OwnProject["host"]["facts"]) => voi
 const details = (report: Awaited<ReturnType<typeof runDrift>>) =>
   (report.host?.differences ?? []).map((d) => `${d.area}: ${d.detail}`);
 
+describe.skipIf(!findExecutable("git"))("runDrift: the kernel settings of the services", () => {
+  it("reports vm.max_map_count lowered on the server, which provision raises again", async () => {
+    const base = ownPlan({ access: "public" });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: [
+        ...base.services,
+        {
+          kind: "opensearch",
+          version: "3.9",
+          memoryMb: 1024,
+          reason: "The app uses OpenSearch.",
+          licence: "Apache-2.0",
+        },
+      ],
+    });
+    const s = await ownProject({ plan });
+    await provisionOwn(s);
+    expect((await runDrift(s.deps, { services: s.services })).host).toEqual({ differences: [] });
+    edit(s, (f) => {
+      f.sysctl.live["vm.max_map_count"] = 65530;
+    });
+    const [difference, ...rest] =
+      (await runDrift(s.deps, { services: s.services })).host?.differences ?? [];
+    expect(rest).toEqual([]);
+    expect(difference).toMatchObject({
+      area: "sysctl",
+      detail:
+        "The kernel's vm.max_map_count is below the 262144 the app's services need, or /etc/sysctl.d/90-opscrew.conf no longer keeps it.",
+      restoredByProvision: true,
+    });
+  });
+});
+
 describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", () => {
   it("public mode: a prepared server is clean; the address reaches the engine only as TF_VAR_*", async () => {
     const s = await ownProject();
@@ -597,6 +631,26 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         "~ OpsCrew's runtime files of the app: /srv/edge/sites/shop.caddy differs",
       );
       expect(s.host.applies).toHaveLength(1);
+    });
+
+    it("checks each service's env file as it checks app.env", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      await deployed(s);
+      edit(s, (f) => {
+        f.runtimeFiles.push({
+          app: "shop",
+          name: "search.env",
+          kind: "file",
+          owner: "deploy",
+          group: "deploy",
+          mode: "644",
+          sha256: null,
+        });
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "app: /srv/apps/shop/search.env holds secrets but other users on the server can read it (mode 644). Run `chmod 600 /srv/apps/shop/search.env` on the server.",
+      ]);
     });
 
     it("a missing file counts only after the first deploy; db.env only with PostgreSQL", async () => {

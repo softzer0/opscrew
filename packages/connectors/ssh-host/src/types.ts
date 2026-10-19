@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_COMPOSE_BYTES } from "./constants";
+import { HOST_SYSCTL_KEYS, MAX_COMPOSE_BYTES } from "./constants";
 import { canonicalIpv4Cidr } from "./parse";
 
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
@@ -21,6 +21,7 @@ export const HOST_STEP_IDS = [
   "web-filter",
   "fail2ban",
   "unattended-upgrades",
+  "sysctl",
   "runtime-dirs",
   "app-dirs",
   "app-record",
@@ -194,6 +195,12 @@ export const DesiredHostSchema = z
         ipv4: z.array(Ipv4NetworkSchema).min(1).max(MAX_WEB_FILTER_RANGES),
       })
       .optional(),
+    /**
+     * Kernel settings the app's services need (`vm.max_map_count` for the search engines), each
+     * a minimum: the `sysctl` step writes them to `/etc/sysctl.d/90-opscrew.conf` and applies
+     * them, keeping a value the server already has that is at least as high.
+     */
+    sysctl: z.partialRecord(z.enum(HOST_SYSCTL_KEYS), z.string().regex(/^\d{1,10}$/)).optional(),
     /**
      * Explicit choice for password logins, needed only when some login user has a password and no
      * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`

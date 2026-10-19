@@ -10,13 +10,16 @@ import {
   EDGE_DIR,
   FAIL2BAN_JAIL_PATH,
   HASHED_RUNTIME_FILES,
+  HOST_SYSCTL_KEYS,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
   RUNTIME_FILE_NAMES,
+  SECRET_RUNTIME_FILES,
   SHARED_DIRS,
   SSHD_DROP_IN,
+  SYSCTL_FILE,
   TUNNELS_DIR,
   tunnelProject,
 } from "./constants";
@@ -44,6 +47,7 @@ import {
   parseRuntimeFiles,
   parseSs,
   parseSshdT,
+  parseSysctl,
   parseUfwAdded,
   parseUfwDefaults,
   parseUsers,
@@ -137,8 +141,9 @@ done`;
 
 /**
  * OpsCrew's runtime files of each app with a folder (`/srv/apps/<app>`), the app's site on the
- * shared edge (`/srv/edge/sites/<app>.caddy`) included: kind, owner, group and mode of each, and
- * the SHA-256 of the rendered ones only. Never prints a file's content, never hashes a file that
+ * shared edge (`/srv/edge/sites/<app>.caddy`) included, then each service's `<service>.env` found
+ * in the app's folder: kind, owner, group and mode of each, and the SHA-256 of the rendered ones
+ * only. Never prints a file's content, never hashes a file that
  * holds secrets, and never follows a symbolic link (an app folder that is a link, or /srv/apps
  * itself, is skipped; a site under a linked edge folder is reported as a link).
  */
@@ -162,8 +167,24 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
       elif [ -e "$p" ]; then echo "$app $f other"
       else echo "$app $f absent"; fi
     done
+    for p in "$d"/*.env; do
+      f=\${p##*/}
+      case "$f" in ${SECRET_RUNTIME_FILES.join("|")}) continue ;; esac
+      case "\${f%.env}" in [a-z]*) ;; *) continue ;; esac
+      case "\${f%.env}" in *[!a-z0-9-]*) continue ;; esac
+      if [ -L "$p" ]; then echo "$app $f link"
+      elif [ -f "$p" ]; then echo "$app $f file $(stat -c '%U %G %a' "$p") -"
+      elif [ -e "$p" ]; then echo "$app $f other"; fi
+    done
   done
 fi`;
+
+/**
+ * The kernel settings a host plan may raise: `live <key> <value>` for each, and `file <key>
+ * <value>` for each line of OpsCrew's file in /etc/sysctl.d.
+ */
+export const SYSCTL_SNIPPET = `for k in ${HOST_SYSCTL_KEYS.join(" ")}; do printf 'live %s %s\\n' "$k" "$(sysctl -n "$k" 2>/dev/null)"; done
+if [ -f ${SYSCTL_FILE} ] && [ ! -L ${SYSCTL_FILE} ]; then sed -n 's/^\\([a-z0-9_.]*\\) = \\([0-9]*\\)$/file \\1 \\2/p' ${SYSCTL_FILE}; fi`;
 
 /** Each app's record on one line, after its name (records hold no secrets). */
 const APPS_SNIPPET = `${APP_NAME_FN}
@@ -288,6 +309,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ],
   ["dirs", DIRS_SNIPPET],
   ["runtime-files", RUNTIME_FILES_SNIPPET],
+  ["sysctl", SYSCTL_SNIPPET],
   [
     "apt-periodic",
     "apt-config dump | grep -E '^APT::Periodic::(Update-Package-Lists|Unattended-Upgrade) '",
@@ -570,6 +592,7 @@ export function factsFromOutput(
     ready: section(sections, "ready").exit === 0,
     dirs: parseDirs(text("dirs")),
     runtimeFiles: parseRuntimeFiles(text("runtime-files")),
+    sysctl: parseSysctl(text("sysctl")),
     apps: parseAppRecords(text("apps")),
     record: recordValue ?? null,
     recordDamaged: record.exit === 0 && recordValue === undefined,

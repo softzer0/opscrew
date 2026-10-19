@@ -34,6 +34,7 @@ import {
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
+  SYSCTL_FILE,
   sshdDropIn,
   TUNNELS_DIR,
   tunnelDir,
@@ -896,6 +897,64 @@ systemctl enable --now unattended-upgrades.service >/dev/null`,
 }
 
 // ---------------------------------------------------------------------------------------------
+// sysctl: the kernel settings the apps' services need, each a minimum
+
+/** `key=value` words, space-separated: `vm.max_map_count=262144`. */
+const SettingsSchema = z.string().regex(/^([a-z0-9_.]+=\d{1,10}( [a-z0-9_.]+=\d{1,10})*)?$/);
+
+const SysctlParams = z.object({ settings: SettingsSchema.refine((text) => text !== "") });
+const SysctlUndoParams = z.object({ restore: SettingsSchema });
+
+/** The value OpsCrew's file sets for `$k`, empty when it sets none. */
+const SYSCTL_HELPERS = `file_value() { [ -f "$FILE" ] && awk -F ' = ' -v k="$1" '$1 == k { v = $2 } END { print v }' "$FILE"; }`;
+
+function sysctlScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts {
+  if (purpose === "undo") {
+    const p = params(step, SysctlUndoParams);
+    return scripts({
+      name: "sysctl.undo",
+      params: { FILE: SYSCTL_FILE, RESTORE: p.restore },
+      verify: `  [ ! -e "$FILE" ]`,
+      apply: `rm -f "$FILE"
+for s in $RESTORE; do sysctl -w "$s" >/dev/null || true; done`,
+      failed: `${SYSCTL_FILE} is still there.`,
+      doing: "removing OpsCrew's kernel settings",
+      timeoutMs: MINUTE,
+    });
+  }
+  const p = params(step, SysctlParams);
+  return scripts({
+    name: "sysctl",
+    params: { FILE: SYSCTL_FILE, SETTINGS: p.settings },
+    helpers: SYSCTL_HELPERS,
+    verify: `  for s in $SETTINGS; do
+    k=\${s%%=*}; v=\${s#*=}
+    live=$(sysctl -n "$k" 2>/dev/null) || return 1
+    [ "$live" -ge "$v" ] || return 1
+    kept=$(file_value "$k")
+    [ -n "$kept" ] && [ "$kept" -ge "$v" ] || return 1
+  done`,
+    snapshot: `values=''
+for s in $SETTINGS; do k=\${s%%=*}; values="$values\${values:+ }$k=$(sysctl -n "$k" 2>/dev/null)"; done
+echo "prev.values=$values"`,
+    apply: `lines=''
+for s in $SETTINGS; do
+  k=\${s%%=*}; v=\${s#*=}
+  # A higher value the server already uses stays.
+  live=$(sysctl -n "$k")
+  if [ "$live" -gt "$v" ]; then v=$live; fi
+  lines="$lines$k = $v
+"
+done
+printf '# Managed by OpsCrew: kernel settings the services of its apps need.\\n%s' "$lines" | write_file "$FILE" 0644
+sysctl -p "$FILE" >/dev/null`,
+    failed: "The kernel settings are not in effect after the change.",
+    doing: "raising the kernel settings the app's services need",
+    timeoutMs: MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // docker-daemon: OpsCrew's /etc/docker/daemon.json, only where there is none
 
 function dockerDaemonScripts(purpose: HostPlan["purpose"]): StepScripts {
@@ -1686,6 +1745,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return webFilterScripts(step);
     case "unattended-upgrades":
       return upgradesScripts(plan.purpose, step);
+    case "sysctl":
+      return sysctlScripts(plan.purpose, step);
     case "runtime-dirs":
       return runtimeScripts(plan, step);
     case "app-dirs":

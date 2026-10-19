@@ -39,9 +39,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -57,6 +67,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -67,6 +80,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -122,9 +138,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -140,6 +166,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -150,6 +179,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -202,9 +234,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -220,6 +262,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -230,6 +275,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: docker-compose
@@ -253,9 +301,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -271,6 +329,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -281,6 +342,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -333,9 +397,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -351,6 +425,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -361,6 +438,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: docker-compose
@@ -384,9 +464,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -402,6 +492,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -412,6 +505,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -467,9 +563,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -485,6 +591,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -495,6 +604,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -561,9 +673,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -579,6 +701,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -589,6 +714,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -641,9 +769,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -659,6 +797,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -669,6 +810,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: docker-compose
@@ -692,9 +836,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -710,6 +864,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -720,6 +877,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -772,9 +932,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -790,6 +960,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -800,6 +973,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: docker-compose
@@ -823,9 +999,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -841,6 +1027,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -851,6 +1040,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -917,9 +1109,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -935,6 +1137,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -945,6 +1150,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -997,9 +1205,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -1015,6 +1233,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1025,6 +1246,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: docker-compose
@@ -1048,9 +1272,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -1066,6 +1300,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1076,6 +1313,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -1120,9 +1360,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -1138,6 +1388,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1148,6 +1401,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions
@@ -1200,9 +1456,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -1218,6 +1484,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1228,6 +1497,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: docker-compose
@@ -1251,9 +1523,19 @@ updates:
       - dependency-name: caddy
         update-types:
           - version-update:semver-major
+      - dependency-name: clickhouse
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
+      - dependency-name: elasticsearch
+        update-types:
+          - version-update:semver-major
+      - dependency-name: getmeili/meilisearch
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: mariadb
         update-types:
           - version-update:semver-major
@@ -1269,6 +1551,9 @@ updates:
       - dependency-name: node
         update-types:
           - version-update:semver-major
+      - dependency-name: opensearchproject/opensearch
+        update-types:
+          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1279,6 +1564,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typesense/typesense
         update-types:
           - version-update:semver-major
   - package-ecosystem: github-actions

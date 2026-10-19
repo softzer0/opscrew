@@ -1,7 +1,14 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { STORAGE_PRICES, type StoragePrice } from "@opscrew/iac-templates";
+import {
+  IMAGES,
+  portainerStackName,
+  SQLITE_VOLUME,
+  STORAGE_PRICES,
+  type StoragePrice,
+  sqliteVolumeOwner,
+} from "@opscrew/iac-templates";
 import type {
   DeployPlan,
   DeployProvider,
@@ -23,6 +30,39 @@ export const STORAGE_NAMES: Readonly<Record<StorageProvider, string>> = {
   hetzner: "Hetzner Object Storage",
   garage: "Garage on your server",
 };
+
+/**
+ * When a deployed plan on SQLite changes `app.build.builder` so that its image runs as another
+ * user: Docker gives the `sqlite` volume its owner only when it creates it, so the volume keeps the
+ * old user's and the new image may not write to it. Says how to give it the new owner: with the
+ * edge's pinned Caddy image, which every server has and which has `chown`, on a server; with the
+ * same as a one-off container in Portainer. For the user's own Dockerfile, the new owner is its
+ * image's user. Undefined otherwise.
+ */
+export function sqliteOwnerWarning(previous: DeployPlan, plan: DeployPlan): string | undefined {
+  const deployed =
+    previous.deployment.lastDeployAt !== undefined && previous.deployment.destroyedAt === undefined;
+  const before = previous.app.build?.builder;
+  const after = plan.app.build?.builder;
+  if (!deployed || previous.storage?.sqlite === undefined || plan.storage?.sqlite === undefined) {
+    return undefined;
+  }
+  const oldOwner = sqliteVolumeOwner(previous);
+  const owner = sqliteVolumeOwner(plan);
+  if (before === after || (owner !== undefined && owner === oldOwner)) return undefined;
+  const chownTo = owner ?? "<uid>:<gid>";
+  const ownImage =
+    owner === undefined
+      ? ` Put in ${chownTo} the user your Dockerfile's image runs as (its USER), as numbers.`
+      : "";
+  const changed = `The app's image is now built with ${after} instead of ${before} (app.build.builder in opscrew/plan.yaml), but its SQLite volume keeps the owner Docker gave it when it was made${oldOwner === undefined ? "" : ` (${oldOwner})`}, so the new version may not be able to write its database.`;
+  if (plan.target.provider === "portainer") {
+    const volume = `${portainerStackName(plan)}_${SQLITE_VOLUME}`;
+    return `${changed} Before you deploy it, run a one-off container in Portainer with the image ${IMAGES.caddy.ref}, user 0, entrypoint chown and command -R ${chownTo} /d, with the volume ${volume} mounted at /d.${ownImage}`;
+  }
+  const volume = `${plan.app.name}_${SQLITE_VOLUME}`;
+  return `${changed} Before you deploy it, run on the server: \`docker run --rm --user 0 --entrypoint chown -v ${volume}:/d ${IMAGES.caddy.ref} -R ${chownTo} /d\`.${ownImage}`;
+}
 
 /** What the app is expected to store and serve by its users a month (data-model.md). */
 const EXPECTED_USE: Readonly<Record<UserScale, ObjectStorage["expected"]>> = {

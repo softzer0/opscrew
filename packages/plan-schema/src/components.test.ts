@@ -155,7 +155,18 @@ describe("DeployPlan components", () => {
     expect(pathsOf(parse([{ ...worker, name: "db" }], [postgres]))).toEqual(["services.0.name"]);
     expect(pathsOf(parse([worker, worker], []))).toEqual(["processes.workers.1.name"]);
     expect(pathsOf(parse([], [valkey("cache"), valkey("cache")]))).toEqual(["services.1.name"]);
-    for (const name of ["app", "release", "cron", "proxy", "caddy", "Worker", "1st", "a_b", ""]) {
+    for (const name of [
+      "app",
+      "release",
+      "cron",
+      "proxy",
+      "caddy",
+      "sysctl",
+      "Worker",
+      "1st",
+      "a_b",
+      "",
+    ]) {
       expect(pathsOf(parse([{ ...worker, name }], [])), name).toEqual(["processes.workers.0.name"]);
       expect(pathsOf(parse([], [{ ...postgres, name }])), name).toEqual(["services.0.name"]);
     }

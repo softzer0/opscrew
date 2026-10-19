@@ -103,6 +103,11 @@ export interface ServiceSpec {
   auth: "password" | "token" | "key" | "internal-only";
   /** What the app receives, by the conventional names and its own detected name. */
   appVariables: (ctx: ServiceContext) => Record<string, string>;
+  /**
+   * The container's open-file limit, soft and hard alike, for an engine that needs more than
+   * Docker's default (OpenSearch and Elasticsearch: 65536).
+   */
+  ulimits?: { nofile: number };
   /** Kernel settings the host needs, for example `vm.max_map_count` for the search engines. */
   hostSettings?: { sysctl: Record<string, string> };
   /** Where it can run: `portainer` is left out when a host setting is needed. */

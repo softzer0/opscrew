@@ -1696,6 +1696,43 @@ describe("runDesign: components", () => {
     expect(env.values.app.DB_DATABASE).toBe("/var/www/html/storage/database/database.sqlite");
   });
 
+  it("refuses SQLite in the user's own image without a WORKDIR, before provision would stop", async () => {
+    const facts = makeFacts({
+      docker: { dockerfile: "Dockerfile" },
+      sqlite: { paths: ["data/app.db"], dir: "data" },
+    });
+    const deps = await setup(facts);
+    await expect(runDesign(deps, { catalog: euCatalog() })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The app keeps its SQLite database in data/ on a persistent volume, but OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (Dockerfile) has no WORKDIR with an absolute path. plan.yaml was not changed.",
+      hint: "Add a WORKDIR with an absolute path to the last stage of Dockerfile (for example WORKDIR /app), then run `opscrew analyze` and `opscrew design` again.",
+    });
+    await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toThrow();
+  });
+
+  it("warns that a deployed SQLite volume keeps its owner when the builder changes", async () => {
+    const facts = makeFacts({ sqlite: { paths: ["data/app.db"], dir: "data" } });
+    const deps = await setup(facts);
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    const builder = plan.app.build?.builder;
+    // The deployed plan was built with Buildpacks, whose image runs as 1002:1001.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, build: { ...plan.app.build, builder: "buildpacks" } },
+      deployment: { ...plan.deployment, lastDeployAt: "2026-10-12T10:00:00.000Z" },
+    } as DeployPlan);
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.app.build?.builder).toBe(builder);
+    const warning = result.warnings.find((text) => text.includes("SQLite volume"));
+    expect(warning).toContain(
+      `The app's image is now built with ${builder} instead of buildpacks (app.build.builder in opscrew/plan.yaml), but its SQLite volume keeps the owner Docker gave it when it was made (1002:1001)`,
+    );
+    expect(warning).toContain(
+      `docker run --rm --user 0 --entrypoint chown -v ${plan.app.name}_sqlite:/d`,
+    );
+  });
+
   it("stops the old copy first for an app on SQLite in its own folder", async () => {
     const facts = makeFacts({ sqlite: { paths: ["data/app.db"], dir: "data" } });
     const { plan } = await runDesign(await setup(facts), { catalog: euCatalog() });

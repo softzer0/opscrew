@@ -1,6 +1,7 @@
 export { appRoot } from "./app-root";
 export {
   CATALOG,
+  hostSysctl,
   initStepsFor,
   pinnedVersion,
   SERVICE_SPECS,

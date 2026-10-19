@@ -1098,3 +1098,69 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(undone.files.has("/usr/local/sbin/opscrew-web-filter")).toBe(false);
   });
 });
+
+describe("planHost: the kernel settings the app's services need", () => {
+  const sysctl = { "vm.max_map_count": "262144" };
+
+  it("raises vm.max_map_count through a shared step, approved with the plan, and records the old value", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake, desiredFor(fake, { sysctl }));
+    const step = plan.steps.find((item) => item.id === "sysctl");
+    expect(step).toMatchObject({
+      title: "Raise the kernel setting vm.max_map_count to at least 262144",
+      state: "change",
+      scope: "shared",
+      params: { settings: "vm.max_map_count=262144" },
+    });
+    expect(step?.reason).toContain("/etc/sysctl.d/90-opscrew.conf");
+    // A different minimum is a different plan, so a new approval.
+    const other = await planFor(
+      fake,
+      desiredFor(fake, { sysctl: { "vm.max_map_count": "524288" } }),
+    );
+    expect(hostPlanHash(other)).not.toBe(hostPlanHash(plan));
+
+    await applyApproved(fake, plan);
+    expect(fake.sysctl.get("vm.max_map_count")).toBe(262144);
+    const record = JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "{}");
+    expect(
+      record.changes.find((entry: { step: string }) => entry.step === "sysctl")?.previous,
+    ).toEqual({ values: "vm.max_map_count=65530" });
+    expect(stateOf(await planFor(fake, desiredFor(fake, { sysctl })), "sysctl")).toBe("in-place");
+  });
+
+  it("keeps a higher value the server already uses, and says so", async () => {
+    const fake = new FakeHost();
+    fake.sysctl.set("vm.max_map_count", 1048576);
+    const plan = await planFor(fake, desiredFor(fake, { sysctl }));
+    expect(plan.steps.find((item) => item.id === "sysctl")?.reason).toContain(
+      "The server already uses vm.max_map_count = 1048576, which stays.",
+    );
+    await applyApproved(fake, plan);
+    expect(fake.sysctl.get("vm.max_map_count")).toBe(1048576);
+    expect(fake.files.get("/etc/sysctl.d/90-opscrew.conf")).toContain("vm.max_map_count = 1048576");
+  });
+
+  it("has no step for an app without such services, and refuses a setting it does not know", async () => {
+    const fake = new FakeHost();
+    expect(stateOf(await planFor(fake), "sysctl")).toBeUndefined();
+    await expect(
+      planFor(fake, desiredFor(fake, { sysctl: { "kernel.panic": "1" } as never })),
+    ).rejects.toThrow("The settings for this server are not valid (sysctl");
+  });
+
+  it("is undone with the host: OpsCrew's file goes and the old value comes back", async () => {
+    const fake = new FakeHost();
+    await provision(fake, desiredFor(fake, { sysctl }));
+    await removeApp(fake);
+    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    expect(plan.steps.find((step) => step.id === "sysctl")).toMatchObject({
+      title:
+        "Remove OpsCrew's kernel settings (/etc/sysctl.d/90-opscrew.conf) and put back vm.max_map_count = 65530",
+      params: { restore: "vm.max_map_count=65530" },
+    });
+    await applyApproved(fake, plan, { command: "opscrew destroy --undo-host" });
+    expect(fake.files.has("/etc/sysctl.d/90-opscrew.conf")).toBe(false);
+    expect(fake.sysctl.get("vm.max_map_count")).toBe(65530);
+  });
+});

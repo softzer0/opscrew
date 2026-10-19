@@ -371,8 +371,22 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
       : filter.remove === true
         ? NO_WEB_FILTER
         : filteredFacts(String(filter.ipv4).split(" "));
+  // The kernel settings the sysctl step raises, live and in OpsCrew's file.
+  const raised = Object.fromEntries(
+    String(paramsOf(plan, "sysctl")?.settings ?? "")
+      .split(" ")
+      .filter(Boolean)
+      .map((setting) => {
+        const [key = "", value = ""] = setting.split("=");
+        return [key, Number(value)];
+      }),
+  );
   return HostFactsSchema.parse({
     ...before,
+    sysctl: {
+      live: { ...before.sysctl.live, ...raised },
+      file: { ...before.sysctl.file, ...raised },
+    },
     webFilter,
     sshd: {
       ...before.sshd,

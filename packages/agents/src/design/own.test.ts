@@ -15,6 +15,7 @@ import {
   autoBuild,
   createTestPhaseDeps,
   euCatalog,
+  makeFacts,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
@@ -178,6 +179,22 @@ describe("buildOwnServerOption", () => {
       expect(await warningsFor({}, { diskFreeGb: 20 })).toMatch(
         /has 20 GB of free disk, but OpsCrew plans at least 30 GB/,
       );
+    });
+
+    it("warns once below an engine's smallest server, naming the engine", async () => {
+      const { warnings } = await buildOwnServerOption({
+        facts: makeFacts({
+          services: [
+            { kind: "opensearch", evidence: ["dependency:@opensearch-project/opensearch"] },
+          ],
+        }),
+        requirements: ownRequirements(),
+        catalog: catalogOf({ arch: "amd64", vcpus: 2, memoryGb: 2, diskFreeGb: 100 }),
+        access: "public",
+      });
+      expect(warnings).toEqual([
+        "OpenSearch (opensearch) runs comfortably only on a server with at least 4 GB of memory, and yours has 2 GB, so it may slow down or stop when memory runs out. Add memory to the server, or turn the service off in opscrew/plan.yaml (enabled: false) and give the app a hosted OpenSearch's address instead.",
+      ]);
     });
 
     it("warns about a full disk instead of failing", async () => {

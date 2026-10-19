@@ -199,6 +199,26 @@ export function ownServerMemory(
   };
 }
 
+/**
+ * A warning for each enabled service whose smallest comfortable server (the catalog's
+ * `smallestServerMb`) is bigger than a server the user owns with `serverMb` of inspected memory,
+ * by the same tolerance as the server's own size check. A server OpsCrew creates is always sized
+ * to fit them.
+ */
+export function smallServerWarnings(services: readonly PlanService[], serverMb: number): string[] {
+  const gb = (mb: number) => `${Math.round((mb / 1024) * 10) / 10}`;
+  return services
+    .filter((service) => service.enabled)
+    .flatMap((service) => {
+      const spec = serviceSpec(service.kind);
+      const needs = spec.memory.smallestServerMb;
+      if (serverMb >= needs * OWN_SERVER_MEMORY_TOLERANCE) return [];
+      return [
+        `${spec.title} (${service.name}) runs comfortably only on a server with at least ${gb(needs)} GB of memory, and yours has ${gb(serverMb)} GB, so it may slow down or stop when memory runs out. Add memory to the server, or turn the service off in opscrew/plan.yaml (enabled: false) and give the app a hosted ${spec.title}'s address instead.`,
+      ];
+    });
+}
+
 /** Free disk (GB) the app needs on a server the user already owns. */
 export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
   return (

@@ -1,11 +1,16 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: shell syntax in expected values, not JavaScript templates.
-import type { DeployPlan, SelfHostedServiceKind } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type SelfHostedServiceKind,
+  SelfHostedServiceKindSchema,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
 import { GARAGE_STORAGE, withServices } from "./__fixtures__/plans";
 import {
   CATALOG,
   checkServiceVersion,
+  hostSysctl,
   initStepsFor,
   pinnedVersion,
   SERVICE_SPECS,
@@ -26,6 +31,18 @@ const PART_ONE_KINDS: SelfHostedServiceKind[] = [
   "garage",
 ];
 
+const PART_TWO_KINDS: SelfHostedServiceKind[] = [
+  "opensearch",
+  "elasticsearch",
+  "meilisearch",
+  "typesense",
+  "clickhouse",
+  "neo4j",
+];
+
+/** The engines that need a host kernel setting, which a Portainer stack cannot make. */
+const HOST_SETTING_KINDS: SelfHostedServiceKind[] = ["opensearch", "elasticsearch"];
+
 /** The context of the plan's service `name`, its secrets as `<name>`. */
 function ctx(plan: DeployPlan, name: string, variable?: string): ServiceContext {
   const service = plan.services.find((s) => s.name === name);
@@ -45,15 +62,26 @@ function only(kind: SelfHostedServiceKind, fields: Record<string, unknown> = {})
 }
 
 describe("the catalog", () => {
-  it("has one entry per part 1 kind, each pinned by digest on the version of its pin", () => {
-    expect(SERVICE_SPECS.map((spec) => spec.kind)).toEqual(PART_ONE_KINDS);
-    for (const kind of PART_ONE_KINDS) {
+  it("has one entry per kind, each pinned by digest on the version of its pin", () => {
+    expect(SERVICE_SPECS.map((spec) => spec.kind)).toEqual([...PART_ONE_KINDS, ...PART_TWO_KINDS]);
+    for (const kind of SelfHostedServiceKindSchema.options) {
       const spec = CATALOG[kind];
       expect(spec?.kind).toBe(kind);
-      if (spec === undefined) continue;
       expect(IMAGES[spec.image].ref).toMatch(/:[^:@]+@sha256:[0-9a-f]{64}$/);
       expect(`${pinnedVersion(spec)}.`.startsWith(`${spec.defaultVersion}.`)).toBe(true);
-      expect(spec.targets).toEqual(["server", "portainer"]);
+      // A new major of each engine may not read the data an older one wrote; Neo4j's "majors"
+      // are calendar years.
+      expect(spec.majorLocked).toBe(kind !== "valkey" && kind !== "neo4j");
+    }
+  });
+
+  it("runs the engines that need a host kernel setting on servers only", () => {
+    for (const spec of SERVICE_SPECS) {
+      const needsHost = HOST_SETTING_KINDS.includes(spec.kind);
+      expect(spec.hostSettings).toEqual(
+        needsHost ? { sysctl: { "vm.max_map_count": "262144" } } : undefined,
+      );
+      expect(spec.targets).toEqual(needsHost ? ["server"] : ["server", "portainer"]);
     }
   });
 
@@ -76,6 +104,12 @@ describe("the catalog", () => {
       kafka: [1024, 768, 2048],
       redpanda: [1536, 1024, 2048],
       garage: [64, 32, 512],
+      opensearch: [1024, 768, 4096],
+      elasticsearch: [1024, 768, 4096],
+      meilisearch: [512, 256, 2048],
+      typesense: [512, 256, 2048],
+      clickhouse: [1024, 768, 2048],
+      neo4j: [1536, 1024, 4096],
     });
   });
 
@@ -95,12 +129,20 @@ describe("the catalog", () => {
       kafka: ["Apache-2.0", true],
       redpanda: ["BSL-1.1", false],
       garage: ["AGPL-3.0", false],
+      opensearch: ["Apache-2.0", true],
+      elasticsearch: ["Elastic-2.0", false],
+      meilisearch: ["MIT", true],
+      typesense: ["GPL-3.0", false],
+      clickhouse: ["Apache-2.0", true],
+      neo4j: ["GPL-3.0", false],
     });
     for (const spec of SERVICE_SPECS) {
       if (spec.licence.permissive) {
         expect(spec.licence.note).toBeUndefined();
       } else {
-        expect(spec.licence.note).toMatch(new RegExp(`^${spec.title} is under .*your (own )?app`));
+        expect(spec.licence.note).toMatch(
+          new RegExp(`^${spec.title}('s official image)? is under .*your (own )?app`),
+        );
         expect(spec.licence.note?.split(". ")).toHaveLength(1);
       }
     }
@@ -118,6 +160,12 @@ describe("the catalog", () => {
       kafka: "internal-only",
       redpanda: "internal-only",
       garage: "key",
+      opensearch: "internal-only",
+      elasticsearch: "password",
+      meilisearch: "key",
+      typesense: "key",
+      clickhouse: "password",
+      neo4j: "password",
     });
     for (const spec of SERVICE_SPECS) {
       expect(spec.secrets.length > 0).toBe(spec.auth !== "internal-only");
@@ -128,16 +176,12 @@ describe("the catalog", () => {
     });
   });
 
-  it("refuses a kind it cannot run yet", () => {
-    expect(() => serviceSpec("opensearch")).toThrow(
-      "This version of OpsCrew cannot run opensearch next to the app yet.",
-    );
-  });
-
   it("puts no secret in a settings file, a command or a setup step", () => {
     const plan = withServices(
       [
-        ...PART_ONE_KINDS.filter((kind) => kind !== "mongodb").map((kind) => ({ kind })),
+        ...[...PART_ONE_KINDS, ...PART_TWO_KINDS]
+          .filter((kind) => kind !== "mongodb")
+          .map((kind) => ({ kind })),
         { kind: "mongodb", options: { replicaSet: true } },
       ],
       { storage: GARAGE_STORAGE },
@@ -188,6 +232,37 @@ describe("the app's variables", () => {
       AWS_REGION: "garage",
       AWS_ENDPOINT_URL_S3: "http://garage:3900",
     });
+    expect(vars("opensearch")).toEqual({ OPENSEARCH_URL: "http://opensearch:9200" });
+    expect(vars("elasticsearch")).toEqual({
+      ELASTICSEARCH_URL: "http://elastic:<password>@elasticsearch:9200",
+    });
+    expect(vars("meilisearch")).toEqual({
+      MEILISEARCH_HOST: "http://meilisearch:7700",
+      MEILISEARCH_KEY: "<master-key>",
+    });
+    expect(vars("typesense")).toEqual({
+      TYPESENSE_HOST: "typesense",
+      TYPESENSE_PORT: "8108",
+      TYPESENSE_PROTOCOL: "http",
+      TYPESENSE_API_KEY: "<api-key>",
+    });
+    expect(vars("clickhouse")).toEqual({
+      CLICKHOUSE_URL: "http://app:<password>@clickhouse:8123/app",
+      CLICKHOUSE_USER: "app",
+      CLICKHOUSE_PASSWORD: "<password>",
+    });
+    expect(vars("neo4j")).toEqual({
+      NEO4J_URI: "bolt://neo4j:7687",
+      NEO4J_USERNAME: "neo4j",
+      NEO4J_PASSWORD: "<password>",
+    });
+  });
+
+  it("give a search engine's own detected variable its address", () => {
+    const plan = withServices([{ kind: "typesense" }]);
+    expect(
+      serviceSpec("typesense").appVariables(ctx(plan, "typesense", "SEARCH_URL")).SEARCH_URL,
+    ).toBe("http://typesense:8108");
   });
 
   it("give the app's own detected variable the same address", () => {
@@ -423,6 +498,118 @@ describe("the services' settings", () => {
     ]);
     // Without a Garage bucket in the plan, only the key.
     expect(serviceSpec("garage").init?.(only("garage"))).toHaveLength(1);
+  });
+});
+
+describe("the search and analytics engines' settings", () => {
+  it("OpenSearch: one node with the security plugin off and half its limit as heap", () => {
+    const opensearch = serviceSpec("opensearch");
+    expect(opensearch.environment(only("opensearch"))).toEqual({
+      "discovery.type": "single-node",
+      DISABLE_SECURITY_PLUGIN: "true",
+      DISABLE_INSTALL_DEMO_CONFIG: "true",
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m",
+    });
+    expect(
+      opensearch.environment(only("opensearch", { memoryMb: 2048 })).OPENSEARCH_JAVA_OPTS,
+    ).toBe("-Xms1024m -Xmx1024m");
+    expect(opensearch.healthcheck.test).toEqual([
+      "CMD-SHELL",
+      "curl -fsS 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null",
+    ]);
+    // It runs as uid 1000.
+    expect(opensearch.namedVolume).toBe(true);
+  });
+
+  it("Elasticsearch: security on with ELASTIC_PASSWORD, plain HTTP inside, no machine learning", () => {
+    const elasticsearch = serviceSpec("elasticsearch");
+    expect(elasticsearch.environment(only("elasticsearch"))).toEqual({
+      "discovery.type": "single-node",
+      "xpack.security.enabled": "true",
+      "xpack.security.http.ssl.enabled": "false",
+      "xpack.security.transport.ssl.enabled": "false",
+      "xpack.ml.enabled": "false",
+      ELASTIC_PASSWORD: "<password>",
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m",
+    });
+    // The password comes from the container's own environment, never from a file.
+    expect(elasticsearch.healthcheck.test[1]).toContain('-u "elastic:$ELASTIC_PASSWORD"');
+    expect(elasticsearch.namedVolume).toBe(true);
+  });
+
+  it("Meilisearch: production mode with its master key and indexing capped at half its limit", () => {
+    expect(serviceSpec("meilisearch").environment(only("meilisearch"))).toEqual({
+      MEILI_ENV: "production",
+      MEILI_MASTER_KEY: "<master-key>",
+      MEILI_HTTP_ADDR: "0.0.0.0:7700",
+      MEILI_MAX_INDEXING_MEMORY: "256 MiB",
+      MEILI_NO_ANALYTICS: "true",
+    });
+  });
+
+  it("Typesense: its API key and data folder, checked through bash", () => {
+    const typesense = serviceSpec("typesense");
+    expect(typesense.environment(only("typesense"))).toEqual({
+      TYPESENSE_DATA_DIR: "/data",
+      TYPESENSE_API_KEY: "<api-key>",
+    });
+    expect(typesense.dataDir).toBe("/data");
+    expect(typesense.healthcheck.test).toEqual([
+      "CMD",
+      "bash",
+      "-c",
+      'exec 3<>/dev/tcp/127.0.0.1/8108 && printf \'GET /health HTTP/1.0\\r\\n\\r\\n\' >&3 && read -r _ code _ <&3 && [ "${code#2}" != "$code" ]',
+    ]);
+  });
+
+  it("ClickHouse: the low-memory profile, and the app's own user and database", () => {
+    const clickhouse = serviceSpec("clickhouse");
+    const c = only("clickhouse");
+    expect(clickhouse.environment(c)).toEqual({
+      CLICKHOUSE_DB: "app",
+      CLICKHOUSE_USER: "app",
+      CLICKHOUSE_PASSWORD: "<password>",
+    });
+    const [server, users] = clickhouse.configFiles?.(c) ?? [];
+    expect(server?.target).toBe("/etc/clickhouse-server/config.d/opscrew.xml");
+    expect(server?.content).toContain(
+      `<max_server_memory_usage>${768 * 1024 * 1024}</max_server_memory_usage>`,
+    );
+    expect(server?.content).toContain(`<mark_cache_size>${128 * 1024 * 1024}</mark_cache_size>`);
+    expect(server?.content).toContain('<trace_log remove="1" />');
+    expect(server?.content).toMatch(/^<!-- Generated by OpsCrew .* -->\n/);
+    expect(server?.content).not.toMatch(/<!--(?:(?!-->)[\s\S])*--(?!>)/);
+    expect(users?.target).toBe("/etc/clickhouse-server/users.d/opscrew.xml");
+    expect(users?.content).toContain("<max_threads>2</max_threads>");
+    expect(clickhouse.healthcheck.test).toEqual([
+      "CMD",
+      "wget",
+      "-q",
+      "--spider",
+      "http://127.0.0.1:8123/ping",
+    ]);
+  });
+
+  it("Neo4j: NEO4J_AUTH, and a heap and page cache of a third of its limit each", () => {
+    const neo4j = serviceSpec("neo4j");
+    expect(neo4j.environment(only("neo4j"))).toEqual({
+      NEO4J_AUTH: "neo4j/<password>",
+      NEO4J_server_memory_heap_initial__size: "512m",
+      NEO4J_server_memory_heap_max__size: "512m",
+      NEO4J_server_memory_pagecache_size: "512m",
+    });
+    expect(neo4j.dataDir).toEqual({ data: "/data", logs: "/logs" });
+    expect(neo4j.healthcheck.test.slice(0, 3)).toEqual(["CMD", "bash", "-c"]);
+  });
+
+  it("hostSysctl: the kernel settings the plan's enabled services need, once each", () => {
+    expect(
+      hostSysctl(
+        withServices([{ kind: "opensearch" }, { kind: "elasticsearch" }, { kind: "postgres" }]),
+      ),
+    ).toEqual({ "vm.max_map_count": "262144" });
+    expect(hostSysctl(withServices([{ kind: "opensearch", enabled: false }]))).toEqual({});
+    expect(hostSysctl(withServices([{ kind: "meilisearch" }]))).toEqual({});
   });
 });
 

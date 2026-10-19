@@ -11,6 +11,7 @@ import {
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
 import {
+  hostSysctl,
   keepNewerPins,
   renderPortainerCompose,
   renderTunnelConnectorCompose,
@@ -249,6 +250,8 @@ export async function desiredHost(
         },
       }
     : undefined;
+  // Kernel settings the services need (vm.max_map_count for the search engines).
+  const sysctl = hostSysctl(plan);
   return {
     app: plan.app.name,
     projectId: deps.paths.projectId,
@@ -264,6 +267,7 @@ export async function desiredHost(
     access: run.target.access,
     ...(tunnel !== undefined ? { tunnel } : {}),
     ...(portainer !== undefined ? { portainer } : {}),
+    ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
     ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
     ...(input.passwordLogins !== undefined
       ? { disablePasswords: input.passwordLogins === "off" }

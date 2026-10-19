@@ -84,7 +84,7 @@ import {
 } from "./portainer";
 import { releaseCommandNote } from "./release";
 import { ownServerMemory, type ServerApp } from "./sizing";
-import { checkSqliteFolder } from "./storage";
+import { checkSqliteFolder, sqliteOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
 
@@ -581,7 +581,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     }
     if (memory?.warning !== undefined) warn(memory.warning);
   }
-  if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
+  if (previous) {
+    for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
+    const owner = sqliteOwnerWarning(previous, plan);
+    if (owner !== undefined) warn(owner);
+  }
   if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);

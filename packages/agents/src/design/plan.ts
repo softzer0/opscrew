@@ -270,20 +270,24 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     supplyChain: { sign: requirements.signImages ?? false },
   });
   for (const variable of storageEnv(facts, plan)) env.set(variable.name, variable);
-  // A SQLite database moved into a folder of its own: its variable points the app there.
-  const move = components.storage?.sqlite === undefined ? undefined : sqliteMove(facts);
-  if (move !== undefined) {
-    if (appRoot(plan) === undefined) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        `The app keeps its SQLite database in ${move.from}/, which also holds the app's own files, so OpsCrew would move it to ${move.dir}/ and point ${move.variable} there. It cannot: OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path. plan.yaml was not changed.`,
-        {
-          hint: `Add a WORKDIR with an absolute path to the last stage of ${plan.app.dockerfile} (for example WORKDIR /app), then run \`opscrew analyze\` and \`opscrew design\` again.`,
-        },
-      );
-    }
-    env.set(move.variable, derived(move.variable, false));
+  // The SQLite volume is mounted in the folder the app runs in, which OpsCrew must know (the user's
+  // own Dockerfile needs a literal WORKDIR). A database moved into a folder of its own: its
+  // variable points the app there.
+  const sqlite = components.storage?.sqlite;
+  const move = sqlite === undefined ? undefined : sqliteMove(facts);
+  if (sqlite !== undefined && appRoot(plan) === undefined) {
+    const unknown = `OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path. plan.yaml was not changed.`;
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      move === undefined
+        ? `The app keeps its SQLite database in ${sqlite.dir}/ on a persistent volume, but ${unknown}`
+        : `The app keeps its SQLite database in ${move.from}/, which also holds the app's own files, so OpsCrew would move it to ${move.dir}/ and point ${move.variable} there. It cannot: ${unknown}`,
+      {
+        hint: `Add a WORKDIR with an absolute path to the last stage of ${plan.app.dockerfile} (for example WORKDIR /app), then run \`opscrew analyze\` and \`opscrew design\` again.`,
+      },
+    );
   }
+  if (move !== undefined) env.set(move.variable, derived(move.variable, false));
   // What the services give the app, from the catalog (FR-1314); a secret shows as SECRET.
   const SECRET = "\u0000secret\u0000";
   for (const [name, value] of serviceAppVariables(plan, () => SECRET)) {

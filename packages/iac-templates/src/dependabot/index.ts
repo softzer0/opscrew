@@ -6,7 +6,7 @@ import type {
   RuntimeLanguage,
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
-import { imageName, SERVICE_SPECS } from "../catalog";
+import { imageName, SERVICE_SPECS, serviceSpec } from "../catalog";
 import { appDirectory } from "../docker/stacks";
 import type { RenderedFile } from "../types";
 
@@ -48,6 +48,12 @@ export const NO_MAJOR_UPDATES: readonly string[] = [
 ].sort();
 
 /**
+ * Images of {@link NO_MAJOR_UPDATES} whose minor versions are the user's too: a new Meilisearch
+ * minor can need its data dumped and imported again.
+ */
+export const NO_MINOR_UPDATES: readonly string[] = [imageName(serviceSpec("meilisearch"))];
+
+/**
  * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper). A
  * Portainer target's stack template is committed here on the default branch too, the only branch
  * Dependabot reads; the orphan `opscrew-deploy` branch Portainer deploys holds only its copy. The
@@ -76,7 +82,10 @@ function update(
       ? {
           ignore: NO_MAJOR_UPDATES.map((name) => ({
             "dependency-name": name,
-            "update-types": ["version-update:semver-major"],
+            "update-types": [
+              "version-update:semver-major",
+              ...(NO_MINOR_UPDATES.includes(name) ? ["version-update:semver-minor"] : []),
+            ],
           })),
         }
       : {}),

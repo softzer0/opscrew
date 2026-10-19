@@ -21,6 +21,7 @@ const MOVED = [
   "/etc/docker",
   "/etc/fail2ban",
   "/etc/apt",
+  "/etc/sysctl.d",
   "/etc/default/ufw",
   "/etc/os-release",
   "/etc/nsswitch.conf",

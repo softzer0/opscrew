@@ -236,7 +236,7 @@ describe("renderDependabot", () => {
       const ignored = update?.ignore?.map((rule) => rule["dependency-name"]);
       expect(ignored, ecosystem).toEqual(expect.arrayContaining(["node", "python", "postgres"]));
       for (const rule of update?.ignore ?? []) {
-        expect(rule["update-types"]).toEqual(["version-update:semver-major"]);
+        expect(rule["update-types"]?.[0]).toBe("version-update:semver-major");
       }
     }
     expect(list.find((u) => u["package-ecosystem"] === "npm")?.ignore).toBeUndefined();
@@ -254,25 +254,49 @@ describe("renderDependabot", () => {
       "kafka",
       "redpanda",
       "garage",
+      "opensearch",
+      "elasticsearch",
+      "meilisearch",
+      "typesense",
+      "clickhouse",
     ]);
     expect(NO_MAJOR_UPDATES).toEqual([
       "apache/kafka",
       "caddy",
+      "clickhouse",
       "dxflrs/garage",
+      "elasticsearch",
+      "getmeili/meilisearch",
       "mariadb",
       "mongo",
       "mysql",
       "nats",
       "node",
+      "opensearchproject/opensearch",
       "postgres",
       "python",
       "rabbitmq",
       "redpandadata/redpanda",
+      "typesense/typesense",
     ]);
     const [sample, deployPlan] = EXAMPLES["nextjs-postgres (npm)"] as [ProjectFacts, DeployPlan];
     const compose = updates(sample, deployPlan).find(
       (u) => u["package-ecosystem"] === "docker-compose",
     );
     expect(compose?.ignore?.map((rule) => rule["dependency-name"])).toEqual(NO_MAJOR_UPDATES);
+  });
+
+  it("proposes no minor update of Meilisearch either: a new minor can need a dump and import", () => {
+    const [sample, deployPlan] = EXAMPLES["nextjs-postgres (npm)"] as [ProjectFacts, DeployPlan];
+    const compose = updates(sample, deployPlan).find(
+      (u) => u["package-ecosystem"] === "docker-compose",
+    );
+    const rule = (name: string) =>
+      compose?.ignore?.find((item) => item["dependency-name"] === name)?.["update-types"];
+    expect(rule("getmeili/meilisearch")).toEqual([
+      "version-update:semver-major",
+      "version-update:semver-minor",
+    ]);
+    expect(rule("typesense/typesense")).toEqual(["version-update:semver-major"]);
   });
 });

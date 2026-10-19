@@ -128,12 +128,39 @@ describe("designComponents: one service per kind the app uses", () => {
     expect(lines.join("\n")).toContain("DataStax Astra DB");
   });
 
-  it("keeps an engine OpsCrew cannot run yet external, and says so", () => {
-    const { components, lines } = designed({
-      services: [service("meilisearch", "dependency:meilisearch")],
+  it.each([
+    ["opensearch", "dependency:@opensearch-project/opensearch", "3.9", 1024, "Apache-2.0"],
+    ["elasticsearch", "dependency:@elastic/elasticsearch", "9.5", 1024, "Elastic-2.0"],
+    ["meilisearch", "dependency:meilisearch", "1.55", 512, "MIT"],
+    ["typesense", "dependency:typesense", "30.2", 512, "GPL-3.0"],
+    ["clickhouse", "dependency:@clickhouse/client", "26.3", 1024, "Apache-2.0"],
+    ["neo4j", "dependency:neo4j-driver", "2026.09", 1536, "GPL-3.0"],
+  ] as const)(
+    "runs %s on the server when the app uses it",
+    (kind, evidence, version, memoryMb, licence) => {
+      const { components, lines } = designed({ services: [service(kind, evidence)] });
+      expect(components.services).toEqual([
+        expect.objectContaining({ name: kind, kind, version, memoryMb, enabled: true, licence }),
+      ]);
+      expect(components.externalServices).toEqual([]);
+      expect(lines.join("\n")).not.toContain("cannot run");
+    },
+  );
+
+  it("names the licence of Elasticsearch, Typesense and Neo4j in plain words", () => {
+    const { lines } = designed({
+      services: [
+        service("elasticsearch", "dependency:@elastic/elasticsearch"),
+        service("typesense", "dependency:typesense"),
+        service("neo4j", "dependency:neo4j-driver"),
+        service("meilisearch", "dependency:meilisearch"),
+      ],
     });
-    expect(components.externalServices).toEqual(["meilisearch"]);
-    expect(lines.join("\n")).toContain("cannot run meilisearch next to the app yet");
+    const text = lines.join("\n");
+    expect(text).toContain("Elasticsearch's official image is under the Elastic License 2.0");
+    expect(text).toContain("Typesense is under the GPL 3.0");
+    expect(text).toContain("Neo4j Community is under the GPL 3.0");
+    expect(text).not.toContain("Meilisearch is under");
   });
 
   it("names each licence that is not permissive in one plain sentence (FR-1327)", () => {

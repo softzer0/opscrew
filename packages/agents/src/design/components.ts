@@ -4,7 +4,7 @@
  * (FR-1302), with the user's edits to an earlier plan kept (FR-1304).
  */
 import { canonicalJson, formatMoney, isUserFacingError, listText } from "@opscrew/core";
-import { CATALOG, renderRuntimeFiles, serviceSpec } from "@opscrew/iac-templates";
+import { renderRuntimeFiles, serviceSpec } from "@opscrew/iac-templates";
 import {
   ComponentNameSchema,
   type DeployPlan,
@@ -73,15 +73,6 @@ const RUNS: Readonly<Partial<Record<ServiceKind, SelfHostedServiceKind>>> = {
   neo4j: "neo4j",
 };
 
-/**
- * The service OpsCrew can run for a kind the app uses, when its catalog has one: Valkey for Redis,
- * RabbitMQ for AMQP. Undefined for a kind it does not run (Cassandra, Stripe).
- */
-function selfHostedKind(kind: ServiceKind): SelfHostedServiceKind | undefined {
-  const runs = RUNS[kind];
-  return runs !== undefined && CATALOG[runs] !== undefined ? runs : undefined;
-}
-
 /** A user's choice of another engine for the same clients (FR-1320: Redpanda for Kafka). */
 const ALTERNATIVES: Readonly<Partial<Record<SelfHostedServiceKind, SelfHostedServiceKind>>> = {
   kafka: "redpanda",
@@ -129,7 +120,7 @@ export function hostedChoices(facts: ProjectFacts): HostedChoice[] {
     });
   }
   for (const hosted of facts.hostedServices ?? []) {
-    const runs = selfHostedKind(hosted.kind);
+    const runs = RUNS[hosted.kind];
     if (runs === undefined || hosted.provider === ATLAS) continue;
     const choice = choices.get(hosted.kind) ?? {
       kind: hosted.kind,
@@ -279,7 +270,7 @@ function freshServices(facts: ProjectFacts, kept: (kind: ServiceKind) => boolean
   const used = new Set(facts.services.map((service) => service.kind));
   const services: PlanService[] = [];
   for (const kind of Object.keys(RUNS) as ServiceKind[]) {
-    const runs = selfHostedKind(kind);
+    const runs = RUNS[kind];
     if (!used.has(kind) || runs === undefined || kept(kind)) continue;
     // MariaDB only when the app declares it, and then instead of MySQL (FR-1311).
     if (kind === "mysql" && used.has("mariadb")) continue;
@@ -902,10 +893,6 @@ function externalLines(facts: ProjectFacts, external: readonly ServiceKind[]): s
     } else if (kind === "cassandra") {
       lines.push(
         "Cassandra stays where the app reaches it now: OpsCrew does not run it next to the app, because it needs several nodes and more memory than a small server has. A hosted Cassandra such as DataStax Astra DB works with the app's Cassandra driver.",
-      );
-    } else if (RUNS[kind] !== undefined && selfHostedKind(kind) === undefined) {
-      lines.push(
-        `This version of OpsCrew cannot run ${kind} next to the app yet, so the app keeps using its own; set its address in the app's production environment.`,
       );
     }
   }

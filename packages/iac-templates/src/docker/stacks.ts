@@ -83,6 +83,16 @@ function supercronic(arch: PinArch | undefined): string[] {
 }
 
 /**
+ * The users the generated Dockerfiles run as, by name and as `uid:gid` (the owner Docker gives a
+ * new volume on their folders): the Node image's own `node`, and the `app` user the Python stage
+ * adds (useradd gives its group the same id).
+ */
+export const GENERATED_USERS = {
+  node: { name: "node", owner: "1000:1000" },
+  python: { name: "app", uid: 10001, owner: "10001:10001" },
+} as const;
+
+/**
  * The runtime stage's `USER` line, then for an app on SQLite the database's folder (`sqlite`,
  * absolute): `WORKDIR` makes a missing folder as that user (the app's files are already theirs),
  * so Docker gives a new volume on it that owner; the stage then returns to `/app`.
@@ -601,7 +611,7 @@ export function nextStandaloneDockerfile(
     ...supercronic(cron),
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
     copyFromBuild("/out", "./"),
-    ...runAs("node", sqlite),
+    ...runAs(GENERATED_USERS.node.name, sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
     "",
@@ -648,7 +658,7 @@ export function nodeServerDockerfile(
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
     "COPY --from=build --chown=node:node /app ./",
     ...runtime.lines,
-    ...runAs("node", sqlite),
+    ...runAs(GENERATED_USERS.node.name, sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
     "",
@@ -725,7 +735,7 @@ function pythonBase(
     `ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=${port}`,
     "WORKDIR /app",
     ...supercronic(cron),
-    "RUN useradd --create-home --uid 10001 app",
+    `RUN useradd --create-home --uid ${GENERATED_USERS.python.uid} ${GENERATED_USERS.python.name}`,
     ...pythonInstall(facts, dir),
     copy("COPY --chown=app:app", [dir], "."),
   ];
@@ -959,7 +969,7 @@ export function fastapiDockerfile(
     ...pythonBase("python-fastapi", port, facts, base, cron),
     "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("uvicorn"),
-    ...runAs("app", sqlite),
+    ...runAs(GENERATED_USERS.python.name, sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
     "",
@@ -996,7 +1006,7 @@ export function djangoDockerfile(
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
     "# container runs.",
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
-    ...runAs("app", sqlite),
+    ...runAs(GENERATED_USERS.python.name, sqlite),
     `EXPOSE ${port}`,
     facts.build.releaseCommand === undefined
       ? "# Run migrations as part of your release process (for example `python manage.py migrate`)."
@@ -1017,7 +1027,7 @@ export function pythonGenericDockerfile(
   const start = pythonStart(facts) ?? "python main.py";
   return [
     ...pythonBase("python-generic", port, facts, base, cron),
-    ...runAs("app", sqlite),
+    ...runAs(GENERATED_USERS.python.name, sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(start)}]`,
     "",

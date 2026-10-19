@@ -1298,3 +1298,17 @@ describe("the deploy job per strategy", () => {
     );
   });
 });
+
+describe("the services' host settings in the deploy", () => {
+  it("start with the services, since --no-deps starts no dependency", () => {
+    const steady = (plan: DeployPlan) =>
+      switchCommands(plan, []).find((line) => line.includes("--no-deps --wait"));
+    expect(steady(withServices([{ kind: "opensearch" }, { kind: "postgres" }]))).toBe(
+      "docker compose up -d --no-deps --wait sysctl opensearch db",
+    );
+    // On a server the user owns, the host plan sets them.
+    expect(steady(withServices([{ kind: "opensearch" }], {}, { provider: "own" }))).toBe(
+      "docker compose up -d --no-deps --wait opensearch",
+    );
+  });
+});

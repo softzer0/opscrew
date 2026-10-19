@@ -112,6 +112,29 @@ export const IMAGES = {
   garage: {
     ref: "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
   },
+  // The 013 search and analytics engines (2026-10-19, research.md R5): each one's current
+  // release, or its LTS line.
+  opensearch: {
+    ref: "opensearchproject/opensearch:3.9.0@sha256:adfa61f85025d06b4aeb562e7e74fde7e31c437039c93c3862c17e9acebd6c7c",
+  },
+  /** Elastic's own image (Elastic License 2.0), as Docker Hub's official copy publishes it. */
+  elasticsearch: {
+    ref: "elasticsearch:9.5.5@sha256:33cae13fc18ef105e960cdd32327d402fbd7c6d4376c0b879ad703ee289d45d8",
+  },
+  meilisearch: {
+    ref: "getmeili/meilisearch:v1.55.0@sha256:ff546679970126f8822e15d1b6a06bfbff1f2ce2e43f810cfb5258012f92de5c",
+  },
+  typesense: {
+    ref: "typesense/typesense:30.2@sha256:610f2d34b1f93d00762869da2c67736775e5798d19a2c8b91b014b8a0cc1e110",
+  },
+  /** ClickHouse's LTS line, the one its `lts` tag points to. */
+  clickhouse: {
+    ref: "clickhouse:26.3@sha256:74ea7dc439d751248b2691a3d865af36ea5f2f16f28e0e6e2c8061224be147dd",
+  },
+  /** The Community edition, in calendar versions. */
+  neo4j: {
+    ref: "neo4j:2026.09-community@sha256:d6269a020149934597c8c3df926d080a612796dbbb48861ca9d5b1109cabf0d8",
+  },
 } as const satisfies Record<string, ImagePin>;
 
 export const TOOLS = {

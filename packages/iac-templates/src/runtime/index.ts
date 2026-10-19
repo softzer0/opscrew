@@ -17,6 +17,9 @@ import {
   SERVER_CRONTAB,
 } from "./components";
 import { appHealthcheck } from "./healthcheck";
+
+export { hostSettingsServices, SQLITE_VOLUME, sqliteVolumeOwner } from "./components";
+
 import { caddySite, cloudflaredService, composeLiteral, hardened, RELEASE_NOTE } from "./services";
 
 /** A Portainer target's stack holds both files: reaching these renderers with one is a bug. */

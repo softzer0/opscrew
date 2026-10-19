@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 import { appDir, EDGE_DIR, EDGE_PROJECT, EDGE_VERSION_KEY } from "../edge";
-import { siteHosts } from "../runtime";
+import { hostSettingsServices, siteHosts } from "../runtime";
 import { hasCronJobs, healthPath } from "./shared";
 
 /**
@@ -74,10 +74,14 @@ function builderHint(plan: DeployPlan): string {
 
 /**
  * The services a deploy starts when they are not running, and never restarts unless their own
- * configuration changed: the plan's enabled services by name.
+ * configuration changed: the plan's enabled services by name, after the one-shot containers that
+ * set their host kernel settings (named here, since `--no-deps` starts no dependency).
  */
 function steadyServices(plan: DeployPlan): string[] {
-  return plan.services.filter((service) => service.enabled).map((service) => service.name);
+  return [
+    ...hostSettingsServices(plan),
+    ...plan.services.filter((service) => service.enabled).map((service) => service.name),
+  ];
 }
 
 /** Where the output of a failed one-time setup step stays on the server, as {@link releaseLog}. */

@@ -74,10 +74,16 @@ const DirSchema = z.object({
 });
 export type DirFact = z.infer<typeof DirSchema>;
 
+/** A service's env file in the app's folder: `<service>.env`, by the plan's service name. */
+export const ServiceEnvFileSchema = z.templateLiteral([
+  z.string().regex(/^[a-z][a-z0-9-]*$/),
+  ".env",
+]);
+
 const RuntimeFileSchema = z.object({
   /** The app the file belongs to (where it is: `runtimeFilePath`). */
   app: z.string(),
-  name: z.enum(RUNTIME_FILE_NAMES),
+  name: z.union([z.enum(RUNTIME_FILE_NAMES), ServiceEnvFileSchema]),
   /** `link` is a symbolic link (never followed), `other` neither a regular file nor a link. */
   kind: z.enum(["absent", "file", "link", "other"]),
   owner: z.string().optional(),
@@ -275,6 +281,16 @@ export const HostFactsSchema = z.object({
   }),
   /** `/var/lib/opscrew-ready` exists (the setup finished). */
   ready: z.boolean(),
+  /**
+   * The kernel settings a host plan may raise ({@link HOST_SYSCTL_KEYS}): the values the kernel
+   * uses now (`live`), and those OpsCrew's file in `/etc/sysctl.d` sets (`file`), by key.
+   */
+  sysctl: z
+    .object({
+      live: z.record(z.string(), z.number().int()),
+      file: z.record(z.string(), z.number().int()),
+    })
+    .default({ live: {}, file: {} }),
   /**
    * The shared folders (`/srv/edge`, `/srv/apps`, `/srv/data`, always listed), then every app's
    * folder found in `/srv/apps` and `/srv/data` (only those that exist).

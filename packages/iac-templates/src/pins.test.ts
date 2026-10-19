@@ -67,6 +67,12 @@ describe("pins.ts", () => {
       kafka: "4.3.1",
       redpanda: "v26.2.5",
       garage: "v2.4.1",
+      opensearch: "3.9.0",
+      elasticsearch: "9.5.5",
+      meilisearch: "v1.55.0",
+      typesense: "30.2",
+      clickhouse: "26.3",
+      neo4j: "2026.09-community",
     });
     expect(parseImageRef(IMAGES.kafka.ref).repo).toBe("apache/kafka");
     expect(parseImageRef(IMAGES.redpanda.ref).repo).toBe("redpandadata/redpanda");
@@ -85,6 +91,12 @@ describe("pins.ts", () => {
         "mysql",
         "nats",
         "nodeAlpine",
+        "opensearch",
+        "elasticsearch",
+        "meilisearch",
+        "typesense",
+        "clickhouse",
+        "neo4j",
         "paketoBuilder",
         "paketoRun",
         "portainer",

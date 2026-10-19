@@ -20,6 +20,7 @@ import {
   SSHD_HEADER,
   SUPPORTED_ARCH,
   SUPPORTED_OS,
+  SYSCTL_FILE,
   sshdDropIn,
   TUNNEL_APP_PORT,
   tunnelDir,
@@ -865,6 +866,47 @@ function upgradesStep({ facts }: SetupContext): HostStep {
   );
 }
 
+/** `vm.max_map_count=262144` for each setting, sorted, space-separated (the step's parameter). */
+function sysctlSettings(desired: DesiredHost): string {
+  return Object.entries(desired.sysctl ?? {})
+    .map(([key, value]) => `${key}=${value}`)
+    .sort()
+    .join(" ");
+}
+
+/**
+ * The kernel settings the app's services need (`vm.max_map_count` for the search engines), when
+ * it needs any: in place when the kernel uses each at least as high and OpsCrew's file in
+ * /etc/sysctl.d keeps it after a restart. A higher value the server already has stays.
+ */
+function sysctlStep({ facts, desired }: SetupContext): HostStep | undefined {
+  const settings = Object.entries(desired.sysctl ?? {}).map(([key, value]) => ({
+    key,
+    want: Number(value),
+    live: facts.sysctl.live[key],
+    file: facts.sysctl.file[key],
+  }));
+  if (settings.length === 0) return undefined;
+  const params = { settings: sysctlSettings(desired) };
+  const title = `Raise the kernel ${settings.length === 1 ? "setting" : "settings"} ${listText(settings.map((s) => `${s.key} to at least ${s.want}`))}`;
+  const holds = (value: number | undefined, want: number) => value !== undefined && value >= want;
+  if (settings.every((s) => holds(s.live, s.want) && holds(s.file, s.want))) {
+    return step("sysctl", title, "in-place", params, "Already set.");
+  }
+  const higher = settings.filter((s) => holds(s.live, s.want) && s.live !== s.want);
+  const kept =
+    higher.length === 0
+      ? ""
+      : ` The server already uses ${listText(higher.map((s) => `${s.key} = ${s.live}`))}, which stays.`;
+  return step(
+    "sysctl",
+    title,
+    "change",
+    params,
+    `The app's search engine needs it. Writes ${SYSCTL_FILE}, so it stays after a restart, and applies it now.${kept}`,
+  );
+}
+
 const deployOwned = (dir: HostFacts["dirs"][number] | undefined) =>
   dir?.kind === "dir" && dir.owner === "deploy" && dir.group === "deploy" && dir.mode === "750";
 
@@ -1137,6 +1179,17 @@ function allBlocked(desired: DesiredHost): HostStep[] {
       : []),
     step("fail2ban", "Brute-force protection (fail2ban)", "blocked", {}, reason),
     step("unattended-upgrades", TITLES.upgrades, "blocked", {}, reason),
+    ...(sysctlSettings(desired) === ""
+      ? []
+      : [
+          step(
+            "sysctl",
+            "Raise the kernel settings the app's services need",
+            "blocked",
+            {},
+            reason,
+          ),
+        ]),
     step("runtime-dirs", TITLES.runtime, "blocked", {}, reason),
     step("app-dirs", `Create the folders of "${desired.app}"`, "blocked", {}, reason),
     step("app-record", `Record the OpsCrew app "${desired.app}"`, "blocked", {}, reason),
@@ -1257,6 +1310,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
     webFilterStep(ctx),
     fail2banStep(ctx),
     upgradesStep(ctx),
+    sysctlStep(ctx),
     runtimeStep(ctx),
     appDirsStep(ctx),
     appRecordStep(ctx),
@@ -1540,6 +1594,19 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
           : "Remove OpsCrew's automatic-update settings",
         "change",
         { removePackage, disableService },
+      ),
+    );
+  }
+  const sysctl = entry("sysctl");
+  if (sysctl) {
+    // The values the kernel used before OpsCrew raised them, as the setup recorded them.
+    const restore = String(sysctl.previous.values ?? "");
+    steps.push(
+      step(
+        "sysctl",
+        `Remove OpsCrew's kernel settings (${SYSCTL_FILE})${restore === "" ? "" : ` and put back ${listText(restore.split(" ").map((s) => s.replace("=", " = ")))}`}`,
+        "change",
+        { restore },
       ),
     );
   }

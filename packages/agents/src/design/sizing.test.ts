@@ -1,7 +1,38 @@
 import { serviceOf } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, nextPostgresFacts, staticSpaFacts } from "../testing";
-import { ownServerMemory, regionLocations, sizeFor } from "./sizing";
+import { designComponents } from "./components";
+import { ownServerMemory, regionLocations, sizeFor, smallServerWarnings } from "./sizing";
+
+describe("smallServerWarnings", () => {
+  const { services } = designComponents({
+    facts: makeFacts({
+      services: [
+        { kind: "opensearch", evidence: ["dependency:@opensearch-project/opensearch"] },
+        { kind: "meilisearch", evidence: ["dependency:meilisearch"] },
+      ],
+    }),
+    requirements: makeRequirements(),
+  }).components;
+
+  it("warns below each engine's smallest server, naming it and what to do", () => {
+    expect(smallServerWarnings(services, 2048)).toEqual([
+      "OpenSearch (opensearch) runs comfortably only on a server with at least 4 GB of memory, and yours has 2 GB, so it may slow down or stop when memory runs out. Add memory to the server, or turn the service off in opscrew/plan.yaml (enabled: false) and give the app a hosted OpenSearch's address instead.",
+    ]);
+    expect(smallServerWarnings(services, 1024)).toHaveLength(2);
+  });
+
+  it("says nothing at or near the smallest server, or for a service turned off", () => {
+    // A "4 GB" server reports a little less.
+    expect(smallServerWarnings(services, 3900)).toEqual([]);
+    expect(
+      smallServerWarnings(
+        services.map((service) => ({ ...service, enabled: false })),
+        1024,
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe("ownServerMemory", () => {
   const blog = { name: "blog", memoryMb: 1024, tunnel: false };
