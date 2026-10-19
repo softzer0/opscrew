@@ -24,6 +24,7 @@ import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   addressFromOutputs,
+  appMemoryMb,
   approveAndApplyHostPlan,
   committedText,
   ensureSecretFile,
@@ -196,22 +197,6 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
   const ports = facts.sshd?.ports ?? [];
   if (ports.length === 0 || ports.includes(loginPort)) return loginPort;
   return ports[0] as number;
-}
-
-/**
- * The sum of the memory limits of the app's containers in MB, recorded with the app on its server:
- * the web process, each enabled worker times its copies, each enabled service, and the cron
- * container when a cron job is enabled (it runs the app's image with the web process's limit).
- */
-export function appMemoryMb(plan: DeployPlan): number {
-  const workers = plan.processes.workers
-    .filter((worker) => worker.enabled)
-    .reduce((sum, worker) => sum + worker.memoryMb * worker.count, 0);
-  const services = plan.services
-    .filter((service) => service.enabled)
-    .reduce((sum, service) => sum + service.memoryMb, 0);
-  const cron = plan.processes.cron.some((job) => job.enabled) ? plan.app.memoryMb : 0;
-  return plan.app.memoryMb + workers + services + cron;
 }
 
 /**

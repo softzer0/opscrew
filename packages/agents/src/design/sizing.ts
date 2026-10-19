@@ -1,5 +1,6 @@
 import type { VpsProviderId } from "@opscrew/contracts";
-import { listText } from "@opscrew/core";
+import { listText, plural } from "@opscrew/core";
+import { serviceSpec } from "@opscrew/iac-templates";
 import type {
   PlanService,
   ProjectFacts,
@@ -8,8 +9,10 @@ import type {
   ServiceKind,
   UserScale,
 } from "@opscrew/plan-schema";
-import { ServiceKindSchema, serviceOf } from "@opscrew/plan-schema";
+import { serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { appMemoryMb, EDGE_MEMORY_MB, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { type Components, designComponents } from "./components";
 
 /**
  * A provider's locations for a region, in order of preference (Hetzner by default); none for a
@@ -19,7 +22,7 @@ export function regionLocations(region: Region, provider: VpsProviderId = "hetzn
   return [...providerProfile(provider).regionLocations[region]];
 }
 
-/** What the server must provide and which services run on it. */
+/** What the server must provide and which components run on it. */
 export interface Sizing {
   /** Minimum vCPUs. */
   vcpus: number;
@@ -27,24 +30,45 @@ export interface Sizing {
   memoryGb: number;
   /** Minimum disk in GB. */
   diskGb: number;
+  /** The containers' memory limits added up (web, workers, cron, services), in MB. */
+  limitsMb: number;
+  /** What runs next to the app. */
+  components: Components;
   /** Containers that run next to the app on the server. */
   services: PlanService[];
   /** Services the app keeps using outside the server (sorted in schema order). */
   externalServices: ServiceKind[];
 }
 
-/** What runs on the server, in a sentence: `the app`, `the app, Postgres and Redis`. */
-export function containersText(sizing: Pick<Sizing, "services">): string {
+/**
+ * What runs on the server, in a sentence: `the app`, `the app, a worker, cron jobs, Postgres and
+ * Redis`.
+ */
+export function containersText(sizing: Pick<Sizing, "components">): string {
+  const { processes, services } = sizing.components;
+  const workers = processes.workers.filter((worker) => worker.enabled).length;
+  const names = new Set(
+    services
+      .filter((service) => service.enabled)
+      .map((service) =>
+        service.kind === "postgres"
+          ? "Postgres"
+          : service.kind === "valkey"
+            ? "Redis"
+            : serviceSpec(service.kind).title,
+      ),
+  );
   return listText([
     "the app",
-    ...(serviceOf(sizing, "postgres") ? ["Postgres"] : []),
-    ...(serviceOf(sizing, "valkey") ? ["Redis"] : []),
+    ...(workers === 0 ? [] : [workers === 1 ? "a worker" : plural(workers, "worker")]),
+    ...(processes.cron.some((job) => job.enabled) ? ["its cron jobs"] : []),
+    ...names,
   ]);
 }
 
 /**
- * The plan's entries for the services design runs: Postgres (`db`) and, for an app on Redis, Valkey
- * as a cache (`cache`), at the pinned major versions with conservative memory limits.
+ * The plan's entries for Postgres (`db`) and, for an app on Redis, Valkey as a cache (`cache`), at
+ * the catalog's versions and memory limits.
  */
 export function selfHostedServices(run: { postgres: boolean; redis: boolean }): PlanService[] {
   return [
@@ -95,19 +119,6 @@ const POSTGRES_SIZE: Record<UserScale, readonly [number, number]> = {
   ">100k": [2, 8],
 };
 
-/** Service kinds that are hosted somewhere else when not run as a container. */
-const EXTERNAL_KINDS: ReadonlySet<ServiceKind> = new Set([
-  "postgres",
-  "mysql",
-  "mongodb",
-  "redis",
-  "supabase",
-  "firebase",
-  "s3",
-  "stripe",
-  "email",
-]);
-
 const MIN_DISK_GB = 40;
 const POSTGRES_DISK_GB = 20;
 const REDIS_MEMORY_GB = 0.5;
@@ -136,15 +147,19 @@ export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
 }
 
 /**
- * Minimum server size and service layout for the app (plan.md sizing table). Postgres is
- * self-hosted when the app uses it and the user did not keep `supabase` or `postgres` as an
- * external provider; Redis likewise unless `redis` is kept.
+ * Minimum server size for the app and what runs next to it (`components`, by default designed
+ * from the facts and requirements alone): the plan.md sizing table by expected users (more with
+ * Postgres and Redis), and at least the containers' memory limits plus OpsCrew's edge (128 MB) and
+ * the system's reserve (384 MB) (FR-1325), and at least the smallest server of each service.
  */
-export function sizeFor(facts: ProjectFacts, requirements: Requirements): Sizing {
-  const used = new Set(facts.services.map((service) => service.kind));
-  const keep = new Set(requirements.keepExternalServices);
-  const postgres = used.has("postgres") && !keep.has("postgres") && !keep.has("supabase");
-  const redis = used.has("redis") && !keep.has("redis");
+export function sizeFor(
+  facts: ProjectFacts,
+  requirements: Requirements,
+  components: Components = designComponents({ facts, requirements }).components,
+): Sizing {
+  const { services } = components;
+  const postgres = serviceOf(components, "postgres") !== undefined;
+  const redis = serviceOf(components, "valkey") !== undefined;
 
   const users = requirements.expectedMonthlyUsers;
   let [vcpus, memoryGb] = APP_SIZE[users];
@@ -157,21 +172,26 @@ export function sizeFor(facts: ProjectFacts, requirements: Requirements): Sizing
     diskGb += POSTGRES_DISK_GB;
   }
   if (redis) memoryGb += REDIS_MEMORY_GB;
-
-  const external = new Set<ServiceKind>();
-  for (const kind of [...used, ...keep]) if (EXTERNAL_KINDS.has(kind)) external.add(kind);
-  if (postgres) {
-    external.delete("postgres");
-    external.delete("supabase");
-  }
-  if (redis) external.delete("redis");
-  const externalServices = ServiceKindSchema.options.filter((kind) => external.has(kind));
+  const limitsMb = appMemoryMb(components);
+  const smallestServerMb = Math.max(
+    0,
+    ...services
+      .filter((service) => service.enabled)
+      .map((service) => serviceSpec(service.kind).memory.smallestServerMb),
+  );
+  memoryGb = Math.max(
+    memoryGb,
+    (limitsMb + EDGE_MEMORY_MB + SYSTEM_RESERVE_MB) / 1024,
+    smallestServerMb / 1024,
+  );
 
   return {
     vcpus,
     memoryGb,
     diskGb,
-    services: selfHostedServices({ postgres, redis }),
-    externalServices,
+    limitsMb,
+    components,
+    services: [...services],
+    externalServices: [...components.externalServices],
   };
 }

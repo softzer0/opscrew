@@ -71,8 +71,21 @@ describe("releaseCommandNote", () => {
       services: selfHostedServices({ postgres: true, redis: false }),
     });
     expect(note?.warning).toBe(false);
-    expect(note?.text).toContain("no database migration command");
+    expect(note?.text).toContain("no database migration command for this app's PostgreSQL");
     expect(note?.text).toContain("app.releaseCommand");
+    const mysql = {
+      name: "mysql",
+      kind: "mysql" as const,
+      version: "8.4",
+      memoryMb: 512,
+      enabled: true,
+      options: {},
+      reason: "The app uses MySQL.",
+      licence: "GPL-2.0",
+    };
+    expect(releaseCommandNote({ app: {} as never, services: [mysql] })?.text).toContain(
+      "for this app's MySQL",
+    );
   });
 
   it("keeps Prisma migrations for a Next.js standalone image, which holds the Prisma CLI (012)", async () => {

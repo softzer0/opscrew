@@ -1,5 +1,6 @@
 import type { ComputeCatalog, VpsProviderId } from "@opscrew/contracts";
 import {
+  canonicalJson,
   formatMoney,
   isUserFacingError,
   lowerFirst,
@@ -17,7 +18,6 @@ import {
   type Region,
   type Requirements,
   readArtifact,
-  serviceOf,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { appCandidatesText } from "../analyze/summary";
@@ -31,14 +31,15 @@ import {
 } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
 import {
+  appMemoryMb,
   designOptionLine,
   hasDeployment,
   hasState,
+  memoryHeadroom,
   readOwnServer,
   readPortainerConnection,
   serverAddress,
-  serviceUrlKind,
-  URL_SERVICE_KINDS,
+  serviceFilledNames,
 } from "../shared";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { backgroundJobsWarning } from "./background-jobs";
@@ -49,8 +50,15 @@ import {
   deriveCodeChanges,
   readScanReport,
 } from "./code-changes";
+import {
+  type Components,
+  designComponents,
+  memoryText,
+  routeJobsOffText,
+  uncallableRouteJobs,
+} from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
-import { buildDesignOptions, minimumMonthlyCost } from "./options";
+import { buildDesignOptions, lowHeadroomText, minimumMonthlyCost } from "./options";
 import {
   buildOwnServerOption,
   mayHavePublicIpv4,
@@ -75,6 +83,7 @@ import {
   portainerDesignChoice,
 } from "./portainer";
 import { releaseCommandNote } from "./release";
+import { checkSqliteFolder } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
 
@@ -166,6 +175,10 @@ export interface DesignPreview {
   serving?: OwnServerServing;
   /** An existing Portainer: the environment, its architecture and the chosen modes. */
   portainer?: PortainerDesignChoice;
+  /** What runs next to the app, with the previous plan's edits kept. */
+  components: Components;
+  /** One plain sentence per component, licence, storage choice and kept edit. */
+  lines: string[];
 }
 
 interface DesignInputs {
@@ -210,7 +223,7 @@ export async function previewDesignOptions(
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
   }
-  return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer);
+  return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer, previous);
 }
 
 /**
@@ -247,11 +260,21 @@ async function ownServerAccess(
 }
 
 /** Warnings about the app itself: background jobs and what detection noted. */
-function appWarnings(facts: ProjectFacts, warn: (text: string) => void): void {
-  const jobs = backgroundJobsWarning(facts);
+function appWarnings(
+  facts: ProjectFacts,
+  components: Components,
+  warn: (text: string) => void,
+): void {
+  const jobs = backgroundJobsWarning(facts, components);
   if (jobs !== undefined) warn(jobs);
   // What detection noted about the app, such as parts of it OpsCrew does not deploy yet.
   for (const note of facts.notes ?? []) warn(note);
+}
+
+/** What runs next to the app, from the facts, the interview and the previous plan's edits. */
+interface Designed {
+  components: Components;
+  lines: string[];
 }
 
 /**
@@ -264,6 +287,7 @@ async function priceOwnServer(
   override: ComputeCatalog | undefined,
   warnings: string[],
   input: OwnServerDesignInput | undefined,
+  designed: Designed,
 ): Promise<DesignPreview> {
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
@@ -275,14 +299,21 @@ async function priceOwnServer(
       now: () => deps.clock.now(),
       ...(input?.facts !== undefined ? { ownServer: input.facts } : {}),
     }).catalog();
-  const own = await buildOwnServerOption({ facts, requirements, catalog, access, serving });
+  const own = await buildOwnServerOption({
+    facts,
+    requirements,
+    catalog,
+    access,
+    serving,
+    components: designed.components,
+  });
   for (const warning of own.warnings) warn(warning);
   const { option } = own;
   deps.reporter.info(
     say(`${option.title} (${option.id}): ${lowerFirst(OWN_SERVER_PRICE_NOTE)} — recommended`),
   );
   deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
-  appWarnings(facts, warn);
+  appWarnings(facts, designed.components, warn);
   return {
     options: [option],
     priceSource: "live",
@@ -291,6 +322,7 @@ async function priceOwnServer(
     requirements,
     access,
     serving,
+    ...designed,
   };
 }
 
@@ -305,6 +337,7 @@ async function pricePortainer(
   deps: PhaseDeps,
   { facts, requirements }: DesignInputs,
   warnings: string[],
+  designed: Designed,
 ): Promise<DesignPreview> {
   const choice = portainerDesignChoice(await readPortainerConnection(deps.paths));
   const problem = portainerChoiceProblem(requirements, choice);
@@ -319,7 +352,7 @@ async function pricePortainer(
   );
   deps.reporter.info(PORTAINER_HOST_NOTE);
   deps.reporter.info(PORTAINER_BACKUPS_NOTE);
-  appWarnings(facts, warner(deps, warnings));
+  appWarnings(facts, designed.components, warner(deps, warnings));
   return {
     options: [option],
     priceSource: "live",
@@ -327,6 +360,7 @@ async function pricePortainer(
     facts,
     requirements,
     portainer: choice,
+    ...designed,
   };
 }
 
@@ -340,17 +374,42 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   return { facts: resolvedFacts, requirements };
 }
 
+/**
+ * What runs next to the app ({@link designComponents}), its warnings said, after refusing an
+ * SQLite folder a persistent volume cannot take (the folder the database is moved to, when the
+ * framework reads its path from the environment, `sqliteMove`).
+ */
+async function componentsFor(
+  deps: PhaseDeps,
+  { facts, requirements }: DesignInputs,
+  previous: DeployPlan | undefined,
+  warn: (text: string) => void,
+): Promise<Designed> {
+  const designed = designComponents({ facts, requirements, previous });
+  const sqlite = designed.components.storage?.sqlite;
+  if (sqlite !== undefined) await checkSqliteFolder(deps.paths.root, facts, sqlite.dir);
+  for (const warning of designed.warnings) warn(warning);
+  return { components: designed.components, lines: designed.lines };
+}
+
 async function priceOptions(
   deps: PhaseDeps,
   inputs: DesignInputs,
   override: ComputeCatalog | undefined,
   warnings: string[],
-  ownServer?: OwnServerDesignInput,
+  ownServer: OwnServerDesignInput | undefined,
+  previous: DeployPlan | undefined,
 ): Promise<DesignPreview> {
   const { facts, requirements } = inputs;
-  if (requirements.provider === "portainer") return pricePortainer(deps, inputs, warnings);
+  const designed = await componentsFor(deps, inputs, previous, warner(deps, warnings));
+  if (requirements.provider === "portainer") {
+    return pricePortainer(deps, inputs, warnings, designed);
+  }
   const provider = requestedProvider(requirements);
-  if (provider === "own") return priceOwnServer(deps, inputs, override, warnings, ownServer);
+  if (provider === "own") {
+    return priceOwnServer(deps, inputs, override, warnings, ownServer, designed);
+  }
+  const { components } = designed;
   const { reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
@@ -369,7 +428,7 @@ async function priceOptions(
   }
   let designOptions: DesignOption[];
   try {
-    designOptions = await buildDesignOptions({ facts, requirements, catalog, now });
+    designOptions = await buildDesignOptions({ facts, requirements, catalog, now, components });
   } catch (error) {
     // A live catalogue that fails half-way falls back to the static table; sizing errors do not.
     if (override !== undefined || isStatic) throw error;
@@ -380,7 +439,7 @@ async function priceOptions(
     warn(
       `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
     );
-    designOptions = await buildDesignOptions({ facts, requirements, catalog, now });
+    designOptions = await buildDesignOptions({ facts, requirements, catalog, now, components });
   }
   const priceSource = designOptions.every((option) => option.cost.source === "live")
     ? "live"
@@ -404,8 +463,8 @@ async function priceOptions(
       ),
     );
   }
-  appWarnings(facts, warn);
-  return { options: designOptions, priceSource, warnings, facts, requirements };
+  appWarnings(facts, components, warn);
+  return { options: designOptions, priceSource, warnings, facts, requirements, ...designed };
 }
 
 async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<DesignResult> {
@@ -444,8 +503,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     ownServer = { ...ownServer, access, serving };
   }
 
-  const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer);
-  const { facts, requirements, priceSource } = preview;
+  const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer, previous);
+  const { facts, requirements, priceSource, components } = preview;
   const designOptions = preview.options;
   const budget = requirements.budgetMonthly;
   const now = deps.clock.now();
@@ -468,21 +527,39 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     readScanReport(paths.files.scanReportJson),
   ]);
   const codeChanges = deriveCodeChanges(facts, build.builder, scan, signals);
-  const fresh = optionToPlan(chosen, {
-    facts,
-    requirements,
-    now,
-    codeChanges,
-    signals,
-    ...(previous ? { createdAt: previous.createdAt } : {}),
-    ...(preview.access !== undefined ? { access: preview.access } : {}),
-    ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
-    ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
-    build,
-  });
-  const plan = previous ? keepPlanSettings(fresh, previous, requirements) : fresh;
+  const planFor = (planned: Components) =>
+    optionToPlan(chosen, {
+      facts,
+      requirements,
+      now,
+      codeChanges,
+      signals,
+      ...(previous ? { createdAt: previous.createdAt } : {}),
+      ...(preview.access !== undefined ? { access: preview.access } : {}),
+      ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
+      ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
+      build,
+      components: planned,
+    });
+  let fresh = planFor(components);
+  // New cron jobs on routes the image cannot call are planned turned off, with what to do.
+  const off = uncallableRouteJobs(fresh, previous);
+  if (off.length > 0) {
+    const cron = components.processes.cron.map((job) =>
+      off.includes(job.name) ? { ...job, enabled: false } : job,
+    );
+    fresh = planFor({ ...components, processes: { ...components.processes, cron } });
+  }
+  const kept = previous ? keepPlanSettings(fresh, previous, requirements) : fresh;
+  // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
+  // a newer interview it is written anyway: its date then says the answers are in it, so the next
+  // design keeps what the user edits in plan.yaml instead of taking the answers again.
+  const answeredLater =
+    previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
+  const plan =
+    previous !== undefined && !answeredLater && samePlan(kept, previous) ? previous : kept;
   if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
-  await writeArtifact("plan", paths.files.plan, plan);
+  if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
   const inPortainer = chosen.target.provider === "portainer";
@@ -499,12 +576,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       : `${cost}/month${inBudget}`;
   reporter.success(
     say(
-      `Wrote ${planFile}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
+      `${plan === previous ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
   );
   const buildLines = buildStatusLines(plan, fresh.deploy).map(say);
   const supplyLines = supplyChainLines(plan);
   for (const line of buildLines) reporter.info(line);
+  // The components, with each one's memory on the chosen server (SC-1308).
+  const serverMb = chosen.target.memoryGb * 1024;
+  const componentLines = [
+    ...preview.lines.filter((line) => !off.some((name) => line.startsWith(`Cron job ${name} (`))),
+    ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
+    ...(inPortainer
+      ? []
+      : [memoryText(plan, serverMb, ownsServer ? undefined : chosen.cost.monthly)]),
+  ].map(say);
+  for (const line of componentLines) reporter.info(line);
+  const headroom = memoryHeadroom(serverMb, appMemoryMb(plan));
+  if (!ownsServer && headroom.low) warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   const migrations = releaseCommandNote(plan, facts);
   if (migrations?.warning) warn(migrations.text);
   else if (migrations !== undefined) reporter.info(say(migrations.text));
@@ -525,8 +614,21 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     plan,
     priceSource,
     warnings,
-    lines: [...buildLines, ...supplyLines],
+    lines: [...buildLines, ...componentLines, ...supplyLines],
   };
+}
+
+/**
+ * True when two plans differ only in when they were written and when their price was read
+ * (SC-1307): a design with nothing changed then leaves plan.yaml as it is.
+ */
+function samePlan(a: DeployPlan, b: DeployPlan): boolean {
+  const undated = (plan: DeployPlan) => ({
+    ...plan,
+    updatedAt: "",
+    cost: { ...plan.cost, asOf: "" },
+  });
+  return canonicalJson(undated(a)) === canonicalJson(undated(b));
 }
 
 /**
@@ -706,8 +808,11 @@ async function requireChosenApp(
  * signing and deploy tags too unless the interview was answered after the previous plan was
  * written. The deploy settings come from {@link keptDeploy}. Of the app, each variable that is
  * still there keeps its `secret` (secret if either plan says so), `source` and `optional`, except
- * the variables a service fills (`serviceUrlKind`) when that service was turned on or off; and the
- * user's own Dockerfile they chose (`app.build.chosen: user`) keeps its path.
+ * the variables what runs fills in either plan (`serviceFilledNames`), which follow it, and one it
+ * filled that nothing fills now, which is the user's again; and the user's own
+ * Dockerfile they chose (`app.build.chosen: user`) keeps its path. The components (workers, cron,
+ * services, storage, the web process's memory) are already the user's: `fresh` was made from
+ * `designComponents` with this previous plan.
  */
 function keepPlanSettings(
   fresh: DeployPlan,
@@ -729,6 +834,8 @@ function keepPlanSettings(
     (fresh.dns.domain === zone || (fresh.dns.domain ?? "").endsWith(`.${zone}`));
   // The interview's answers on signing and deploy tags replace plan.yaml's only when newer.
   const answeredLater = Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
+  const filledBefore = serviceFilledNames(previous);
+  const filledNow = serviceFilledNames(fresh);
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
     app: {
@@ -738,14 +845,11 @@ function keepPlanSettings(
         const before = variables.get(variable.name);
         if (before === undefined) return variable;
         // A service turned on or off decides the variables OpsCrew fills from it.
-        const url = serviceUrlKind(variable.name);
-        const kind = url === undefined ? undefined : URL_SERVICE_KINDS[url];
-        if (
-          kind !== undefined &&
-          (serviceOf(previous, kind) === undefined) !== (serviceOf(fresh, kind) === undefined)
-        ) {
-          return variable;
-        }
+        // What runs decides the variables it fills, and one it filled that nothing fills now (a
+        // service turned off) is the user's again.
+        const filled = filledBefore.has(variable.name) || filledNow.has(variable.name);
+        const unfilled = before.source === "derived" && variable.source !== "derived";
+        if (filled || unfilled) return { ...variable, secret: before.secret || variable.secret };
         // Fail closed: a name now detected as secret stays secret, never a build argument.
         return { ...before, secret: before.secret || variable.secret };
       }),

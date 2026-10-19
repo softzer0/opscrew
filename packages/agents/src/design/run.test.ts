@@ -16,14 +16,16 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runInterview } from "../interview";
-import { recordServerAddress } from "../shared";
+import { assembleAppEnv, recordServerAddress } from "../shared";
 import {
   createTestPhaseDeps,
   doEuCatalog,
   euCatalog,
+  MemoryCatalog,
   makeFacts,
   makeRequirements,
   nextPostgresFacts,
+  offer,
   staticSpaFacts,
   type TestPhaseDeps,
 } from "../testing";
@@ -251,7 +253,7 @@ describe("runDesign", () => {
     expect(result.plan.cost.source).toBe("static");
   });
 
-  it("FR-812: warns once that background jobs will not run, naming the library", async () => {
+  it("FR-812: warns once that background jobs without a worker will not run, naming the library", async () => {
     const facts = nextPostgresFacts({
       appKind: "api",
       services: [{ kind: "queue", evidence: ["dependency:celery"] }],
@@ -261,8 +263,8 @@ describe("runDesign", () => {
     const notes = result.warnings.filter((w) => w.includes("background jobs"));
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("Celery");
-    expect(notes[0]).toContain("only the web process");
-    expect(notes[0]).toContain("run the worker yourself");
+    expect(notes[0]).toContain("OpsCrew found no worker that runs them");
+    expect(notes[0]).toContain("processes.workers in opscrew/plan.yaml");
     expect(deps.reporter.lines.some((l) => l.level === "warn" && l.message === notes[0])).toBe(
       true,
     );
@@ -374,14 +376,25 @@ describe("runDesign", () => {
     expect(result.plan.target).toMatchObject({ backups: true });
   });
 
-  it("keeps createdAt of an earlier plan", async () => {
+  it("keeps createdAt of an earlier plan, and the whole plan when nothing changed (SC-1307)", async () => {
     const deps = await setup();
     await runDesign(deps, { catalog: euCatalog() });
+    const first = await readFile(deps.paths.files.plan, "utf8");
     const later = await createTestPhaseDeps({
       root: deps.paths.root,
       env: deps.env,
       clock: { now: () => new Date("2026-10-12T08:00:00.000Z") },
     });
+    const same = await runDesign(later, { catalog: euCatalog() });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(first);
+    expect(same.plan.updatedAt).toBe("2026-10-11T12:00:00.000Z");
+    expect(later.reporter.text()).toContain("opscrew/plan.yaml is up to date");
+    // A changed answer changes the plan: it gets a new date and keeps its first one.
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({ answeredAt: "2026-10-12T07:00:00.000Z", signImages: true }),
+    );
     const result = await runDesign(later, { catalog: euCatalog() });
     expect(result.plan.createdAt).toBe("2026-10-11T12:00:00.000Z");
     expect(result.plan.updatedAt).toBe("2026-10-12T08:00:00.000Z");
@@ -609,7 +622,7 @@ describe("runDesign", () => {
             dataCriticality: "none",
             domain: "shop.example.com",
             dnsProvider: "cloudflare",
-            keepExternalServices: [],
+            keepExternalServices: {},
           },
         });
         const result = await runDesign(deps, {
@@ -1214,8 +1227,14 @@ describe("runDesign: the image builder and the deploy strategy", () => {
       });
       await writeArtifact("plan", deps.paths.files.plan, own(first.plan));
 
-      // Postgres off: DATABASE_URL is the user's.
-      await reanalysed(deps, nextPostgresFacts({ services: [] }));
+      // Postgres turned off in plan.yaml: DATABASE_URL is the user's.
+      const turned = (plan: DeployPlan, enabled: boolean) => ({
+        ...plan,
+        services: plan.services.map((s) => ({ ...s, enabled })),
+        // Postgres turned off is reached where it is hosted; on again, it is not.
+        externalServices: plan.externalServices.filter((kind) => kind !== "postgres"),
+      });
+      await writeArtifact("plan", deps.paths.files.plan, turned(own(first.plan), false));
       const off = await runDesign(await later(deps), { catalog: euCatalog() });
       expect(serviceOf(off.plan, "postgres")).toBeUndefined();
       expect(variable(off.plan, "DATABASE_URL")).toEqual({
@@ -1226,7 +1245,7 @@ describe("runDesign: the image builder and the deploy strategy", () => {
       expect(variable(off.plan, "NEXTAUTH_SECRET")).toMatchObject({ source: "user" });
 
       // Postgres on again: OpsCrew fills DATABASE_URL from it.
-      await reanalysed(deps, nextPostgresFacts());
+      await writeArtifact("plan", deps.paths.files.plan, turned(off.plan, true));
       const on = await runDesign(await later(deps), { catalog: euCatalog() });
       expect(variable(on.plan, "DATABASE_URL")).toEqual({
         name: "DATABASE_URL",
@@ -1324,5 +1343,377 @@ describe("runDesign: the image builder and the deploy strategy", () => {
       ),
     });
     expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+  });
+});
+
+describe("runDesign: components", () => {
+  const later = (deps: TestPhaseDeps) =>
+    createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      clock: { now: () => new Date("2026-10-12T08:00:00.000Z") },
+    });
+  const two = () =>
+    makeFacts({
+      services: [
+        { kind: "postgres", evidence: ["dependency:pg"], variable: "DATABASE_URL" },
+        { kind: "mysql", evidence: ["dependency:mysql2"] },
+      ],
+    });
+
+  it("writes the components and says what each is, with their memory on the server", async () => {
+    const deps = await setup(two());
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.services.map((s) => [s.name, s.variable])).toEqual([
+      ["db", "DATABASE_URL"],
+      ["mysql", "MYSQL_URL"],
+    ]);
+    // The DATABASE_URL both databases claim is said at design.
+    const said = deps.reporter.text();
+    expect(said).toContain(
+      "PostgreSQL keeps it, and MySQL's address goes to MYSQL_URL. Make sure the app reads MySQL's address from MYSQL_URL.",
+    );
+    expect(said).toContain("MySQL 8.4 (mysql, 512 MB): The app uses MySQL through mysql2.");
+    expect(said).toContain("MySQL is under the GPL 2.0");
+    expect(result.lines.join("\n")).toMatch(
+      /Memory limits: the app 512 MB \(€[\d.]+\/month\), db 512 MB \(€[\d.]+\/month\), mysql 512 MB/,
+    );
+    expect(result.plan.app.env.map((v) => [v.name, v.source])).toEqual([
+      ["DATABASE_URL", "derived"],
+      ["MYSQL_URL", "derived"],
+    ]);
+  });
+
+  it("keeps the user's component edits in plan.yaml, says so and sizes the server again", async () => {
+    const deps = await setup(
+      makeFacts({ services: [{ kind: "mysql", evidence: ["dependency:mysql2"] }] }),
+    );
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.target).toMatchObject({ serverType: "cx13", location: "fsn1" });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, memoryMb: 2048 },
+      services: plan.services.map((s) => ({ ...s, memoryMb: 2048 })),
+      // An earlier apply: the server exists, so design says it would be resized.
+      deployment: { ...plan.deployment, lastApplyAt: "2026-10-11T13:00:00.000Z" },
+    });
+    const rerun = await later(deps);
+    const result = await runDesign(rerun, { catalog: euCatalog() });
+    expect(result.plan.app.memoryMb).toBe(2048);
+    expect(result.plan.services[0]?.memoryMb).toBe(2048);
+    expect(rerun.reporter.text()).toContain(
+      "Kept your changes in opscrew/plan.yaml: the app's memory (2048 MB) and the service mysql (memory 2048 MB).",
+    );
+    // 2048 + 2048 MB, plus the edge and the system, no longer fit 4 GB: the next server has 8.
+    expect(result.plan.target).toMatchObject({ serverType: "cx33" });
+    expect(result.warnings.join("\n")).toContain(
+      "Your server already runs in fsn1 (cx13). The chosen option uses nbg1 (cx33)",
+    );
+  });
+
+  it("changes no file when run again with nothing changed, components included (SC-1307)", async () => {
+    const deps = await setup(
+      makeFacts({
+        services: [
+          { kind: "mysql", evidence: ["dependency:mysql2"] },
+          { kind: "queue", evidence: ["dependency:bullmq"] },
+          { kind: "redis", evidence: ["dependency:bullmq"] },
+          { kind: "s3", evidence: ["dependency:@aws-sdk/client-s3"] },
+        ],
+        workers: [
+          { name: "bullmq", source: "library", single: false, evidence: ["dependency:bullmq"] },
+        ],
+        cronJobs: [{ schedule: "0 5 * * *", route: "/api/cron/cleanup", source: "vercel.json" }],
+        objectStorage: { client: "@aws-sdk/client-s3", presignedUploads: true, variables: [] },
+      }),
+      makeRequirements({ workerCommands: { bullmq: "node dist/worker.js" } }),
+    );
+    await runDesign(deps, { catalog: euCatalog() });
+    const files = async () =>
+      Promise.all(
+        [deps.paths.files.plan, deps.paths.files.requirements, deps.paths.files.architecture].map(
+          (file) => readFile(file, "utf8"),
+        ),
+      );
+    const first = await files();
+    const rerun = await later(deps);
+    const again = await runDesign(rerun, { catalog: euCatalog() });
+    expect(await files()).toEqual(first);
+    expect(again.plan.processes.workers.map((w) => w.command)).toEqual(["node dist/worker.js"]);
+    expect(again.plan.storage?.objectStorage?.provider).toBe("hetzner");
+    expect(rerun.reporter.text()).not.toContain("Kept your changes");
+  });
+
+  it("writes the plan after a newer interview with nothing changed, so a later hand edit stays", async () => {
+    const deps = await setup();
+    await runDesign(deps, { catalog: euCatalog() });
+    // The same answers again, after the plan was written.
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({ answeredAt: "2026-10-12T07:00:00.000Z" }),
+    );
+    const noop = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(noop.plan.updatedAt).toBe("2026-10-12T08:00:00.000Z");
+    // The user turns signing on by hand; the next design keeps it.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...noop.plan,
+      supplyChain: { sign: true },
+    });
+    const third = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      clock: { now: () => new Date("2026-10-13T08:00:00.000Z") },
+    });
+    const result = await runDesign(third, { catalog: euCatalog() });
+    expect(result.plan.supplyChain).toEqual({ sign: true });
+  });
+
+  it("keeps a service plan.yaml lists that detection no longer finds, and a kept options edit", async () => {
+    const deps = await setup(
+      makeFacts({
+        services: [
+          { kind: "mongodb", evidence: ["dependency:@prisma/client", "prisma:mongodb"] },
+          { kind: "queue", evidence: ["dependency:bullmq"] },
+          { kind: "redis", evidence: ["dependency:bullmq"] },
+          { kind: "nats", evidence: ["dependency:nats"] },
+        ],
+      }),
+    );
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.services.map((s) => [s.name, s.options])).toEqual([
+      ["mongodb", { replicaSet: true }],
+      ["queue", { mode: "queue" }],
+      ["nats", {}],
+    ]);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      services: plan.services.map((s) =>
+        s.kind === "mongodb"
+          ? { ...s, options: { replicaSet: false } }
+          : s.kind === "valkey"
+            ? { ...s, options: { mode: "cache" as const } }
+            : s,
+      ),
+    });
+    // The app no longer uses NATS.
+    const architecture = await readArtifact("architecture", deps.paths.files.architecture);
+    await writeArtifact("architecture", deps.paths.files.architecture, {
+      ...architecture,
+      facts: {
+        ...architecture.facts,
+        services: architecture.facts.services.filter((s) => s.kind !== "nats"),
+      },
+    });
+    const rerun = await later(deps);
+    const result = await runDesign(rerun, { catalog: euCatalog() });
+    expect(result.plan.services.map((s) => [s.name, s.options])).toEqual([
+      ["mongodb", { replicaSet: false }],
+      ["queue", { mode: "cache" }],
+      ["nats", {}],
+    ]);
+    const said = rerun.reporter.text();
+    expect(said).toContain(
+      "nats stays because plan.yaml lists it, though the app no longer seems to use it. Delete it there to remove it.",
+    );
+    expect(said).toContain("the service mongodb (its options) and the service queue (its options)");
+  });
+
+  it("keeps a user's own variable that merely looks like a storage one when a bucket comes", async () => {
+    const endpoint = {
+      name: "API_ENDPOINT",
+      files: ["src/api.ts"],
+      clientExposed: false,
+      secretLikely: false,
+    };
+    const deps = await setup(makeFacts({ envVars: [endpoint] }));
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, env: plan.app.env.map((v) => ({ ...v, secret: true })) },
+    });
+    const architecture = await readArtifact("architecture", deps.paths.files.architecture);
+    await writeArtifact("architecture", deps.paths.files.architecture, {
+      ...architecture,
+      facts: {
+        ...architecture.facts,
+        services: [{ kind: "s3", evidence: ["dependency:@aws-sdk/client-s3"] }],
+        objectStorage: { client: "@aws-sdk/client-s3", presignedUploads: false, variables: [] },
+      },
+    });
+    const result = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(result.plan.storage?.objectStorage).toBeDefined();
+    expect(result.plan.app.env.find((v) => v.name === "API_ENDPOINT")).toEqual({
+      name: "API_ENDPOINT",
+      secret: true,
+      source: "user",
+    });
+  });
+
+  it("plans cron routes the image cannot call turned off, says what to do, and keeps them on once turned on", async () => {
+    const facts = {
+      ...staticSpaFacts(),
+      cronJobs: [
+        { schedule: "0 5 * * *", route: "/api/cron/cleanup", source: "vercel.json" as const },
+      ],
+    };
+    const deps = await setup(facts);
+    // A first design, with no plan.yaml yet: the plan is written with the job off.
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.plan.app.build?.probe).toBe("wget");
+    expect(first.plan.processes.cron).toEqual([
+      { name: "cleanup", schedule: "0 5 * * *", route: "/api/cron/cleanup", enabled: false },
+    ]);
+    expect(first.plan.app.env.map((v) => v.name)).not.toContain("CRON_SECRET");
+    const said = deps.reporter.text();
+    expect(said).toContain(
+      "The cron job cleanup calls the app's routes, but the image is a static site served by Caddy, whose busybox wget cannot send the job's secret, and a static site answers no route, so OpsCrew turned it off in opscrew/plan.yaml (processes.cron). To run it, deploy the app with a server that answers the routes (app.build.builder: railpack with app.build.chosen: user), or give each job a command that runs its code in the image instead of the route; then set enabled: true.",
+    );
+    expect(said).not.toContain("Cron job cleanup (");
+    // The user turns it on; the next design keeps it on (provision's renderer is the backstop).
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      processes: {
+        ...first.plan.processes,
+        cron: first.plan.processes.cron.map((job) => ({ ...job, enabled: true })),
+      },
+    });
+    const rerun = await later(deps);
+    const second = await runDesign(rerun, { catalog: euCatalog() });
+    expect(second.plan.processes.cron[0]?.enabled).toBe(true);
+    expect(rerun.reporter.text()).not.toContain("OpsCrew turned it off");
+  });
+
+  it("says how to run cron routes when the user's own Dockerfile builds the image", async () => {
+    const facts = makeFacts({
+      docker: { dockerfile: "Dockerfile" },
+      cronJobs: [
+        { schedule: "0 5 * * *", route: "/api/cron/a", source: "vercel.json" },
+        { schedule: "0 6 * * *", route: "/api/cron/b", source: "vercel.json" },
+      ],
+    });
+    const deps = await setup(facts);
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.processes.cron.map((job) => job.enabled)).toEqual([false, false]);
+    expect(deps.reporter.text()).toContain(
+      "The cron jobs a and b call the app's routes, but your own Dockerfile builds the image, so OpsCrew knows no tool in it that can call a route with the job's secret, so OpsCrew turned them off in opscrew/plan.yaml (processes.cron). To run them, let OpsCrew build the image (app.build.builder: railpack with app.build.chosen: user)",
+    );
+  });
+
+  it("refuses an SQLite folder that holds the app's own files, before writing anything", async () => {
+    const facts = makeFacts({ sqlite: { paths: ["prisma/dev.db"], dir: "prisma" } });
+    const deps = await setup(facts);
+    await mkdir(join(deps.paths.root, "prisma"), { recursive: true });
+    await writeFile(join(deps.paths.root, "prisma", "schema.prisma"), "datasource db {}\n");
+    await expect(runDesign(deps, { catalog: euCatalog() })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("prisma/, which also holds the app's own files"),
+      hint: expect.stringContaining("for example data/"),
+    });
+    await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toThrow();
+  });
+
+  it("refuses Django's SQLite database in the app's root, saying how to move it", async () => {
+    const facts = makeFacts({
+      languages: ["python"],
+      frameworks: [{ name: "django", path: "." }],
+      sqlite: { paths: ["db.sqlite3"], dir: "." },
+    });
+    await expect(runDesign(await setup(facts), { catalog: euCatalog() })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("in the app's own folder, which holds the app's code"),
+      hint: expect.stringContaining("Move the database into a folder of its own"),
+    });
+  });
+
+  it("moves Laravel's stock database out of database/ and points DB_DATABASE there", async () => {
+    const facts = makeFacts({
+      languages: ["php"],
+      packageManager: "none",
+      frameworks: [{ name: "laravel", path: "." }],
+      services: [{ kind: "sqlite", evidence: ["env:DB_CONNECTION=sqlite"] }],
+      sqlite: { paths: ["database/database.sqlite"], dir: "database" },
+    });
+    const deps = await setup(facts);
+    await mkdir(join(deps.paths.root, "database", "migrations"), { recursive: true });
+    await writeFile(join(deps.paths.root, "database", "migrations", "0001_users.php"), "<?php\n");
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.app.build?.builder).toBe("railpack");
+    expect(plan.storage).toEqual({ sqlite: { dir: "storage/database" } });
+    expect(plan.app.env).toContainEqual({ name: "DB_DATABASE", secret: false, source: "derived" });
+    expect(deps.reporter.text()).toContain(
+      "The database moves there from database/, which also holds the app's own files, and DB_DATABASE points Laravel at it.",
+    );
+    const env = await assembleAppEnv({ plan, dotenvText: "", password: () => "x" });
+    expect(env.values.app.DB_DATABASE).toBe("/app/storage/database/database.sqlite");
+  });
+
+  it("moves Prisma's database out of prisma/ and points DATABASE_URL there", async () => {
+    const facts = makeFacts({
+      frameworks: [{ name: "express", path: "." }],
+      build: { startCommand: "node server.js" },
+      envVars: [
+        {
+          name: "DATABASE_URL",
+          files: ["prisma/schema.prisma"],
+          clientExposed: false,
+          secretLikely: true,
+        },
+      ],
+      services: [{ kind: "sqlite", evidence: ["dependency:@prisma/client", "prisma:sqlite"] }],
+      sqlite: { paths: ["prisma/dev.db"], dir: "prisma" },
+    });
+    const deps = await setup(facts);
+    await mkdir(join(deps.paths.root, "prisma"), { recursive: true });
+    await writeFile(join(deps.paths.root, "prisma", "schema.prisma"), "datasource db {}\n");
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.storage).toEqual({ sqlite: { dir: "data" } });
+    expect(plan.app.env).toEqual([{ name: "DATABASE_URL", secret: false, source: "derived" }]);
+    const env = await assembleAppEnv({ plan, dotenvText: "", password: () => "x" });
+    expect(env.values.app.DATABASE_URL).toBe("file:/app/data/app.db");
+  });
+
+  it("moves the database into the user's own image at its WORKDIR, and refuses without one", async () => {
+    const facts = (workdir?: string) =>
+      makeFacts({
+        languages: ["php"],
+        packageManager: "none",
+        frameworks: [{ name: "laravel", path: "." }],
+        build: workdir === undefined ? {} : { workdir },
+        docker: { dockerfile: "Dockerfile" },
+        sqlite: { paths: ["database/database.sqlite"], dir: "database" },
+      });
+    await expect(runDesign(await setup(facts()), { catalog: euCatalog() })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("has no WORKDIR with an absolute path"),
+      hint: "Add a WORKDIR with an absolute path to the last stage of Dockerfile (for example WORKDIR /app), then run `opscrew analyze` and `opscrew design` again.",
+    });
+    const { plan } = await runDesign(await setup(facts("/var/www/html")), {
+      catalog: euCatalog(),
+    });
+    expect(plan.app.build).toMatchObject({ builder: "own-dockerfile", workdir: "/var/www/html" });
+    const env = await assembleAppEnv({ plan, dotenvText: "", password: () => "x" });
+    expect(env.values.app.DB_DATABASE).toBe("/var/www/html/storage/database/database.sqlite");
+  });
+
+  it("stops the old copy first for an app on SQLite in its own folder", async () => {
+    const facts = makeFacts({ sqlite: { paths: ["data/app.db"], dir: "data" } });
+    const { plan } = await runDesign(await setup(facts), { catalog: euCatalog() });
+    expect(plan.storage).toEqual({ sqlite: { dir: "data" } });
+    expect(plan.deploy).toMatchObject({ strategy: "recreate" });
+    expect(plan.deploy.reason).toContain("SQLite");
+  });
+
+  it("warns when the chosen server keeps less than 15% of its memory free", async () => {
+    const deps = await setup(
+      makeFacts({ services: [{ kind: "kafka", evidence: ["dependency:kafkajs"] }] }),
+    );
+    const catalog = new MemoryCatalog([
+      offer({ id: "cx22", vcpus: 2, memoryGb: 2, diskGb: 40, price: 4 }),
+    ]);
+    const result = await runDesign(deps, { catalog });
+    expect(result.warnings).toContain(
+      "The cx22 server keeps only 0% of its memory free after the containers' memory limits, OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Choose a bigger option, or lower a memory limit in opscrew/plan.yaml.",
+    );
   });
 });

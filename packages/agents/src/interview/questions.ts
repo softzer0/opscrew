@@ -10,6 +10,7 @@ import {
   type ServiceKind,
 } from "@opscrew/plan-schema";
 import { frameworkName } from "../analyze/summary";
+import { hostedKinds } from "../design/components";
 import { withDefault } from "./follow-ups";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
@@ -24,9 +25,6 @@ const DATA_SERVICES: ReadonlySet<ServiceKind> = new Set([
   "supabase",
   "firebase",
 ]);
-
-const usesService = (facts: ProjectFacts, kind: ServiceKind) =>
-  facts.services.some((s) => s.kind === kind);
 
 /** True when the app stores data in a database, so data criticality must be asked. */
 export function storesData(facts: ProjectFacts): boolean {
@@ -66,8 +64,9 @@ export function defaultProvider(
 
 /**
  * Answers inferred from the facts for questions that are not asked (no database → data
- * criticality `none`; no Supabase → keep nothing), the provider inferred from tokens (else
- * `hetzner`) and defaults for optional questions.
+ * criticality `none`; every hosted service the app uses is kept until the user says otherwise,
+ * `hostedKinds`), the provider inferred from tokens (else `hetzner`) and defaults for optional
+ * questions.
  */
 export function inferredAnswers(
   facts: ProjectFacts,
@@ -76,7 +75,9 @@ export function inferredAnswers(
   const inferred: Partial<Record<QuestionId, unknown>> = {};
   inferred.provider = defaultProvider(undefined, context);
   if (!storesData(facts)) inferred.dataCriticality = "none";
-  inferred.keepExternalServices = usesService(facts, "supabase") ? ["supabase"] : [];
+  inferred.keepExternalServices = Object.fromEntries(
+    hostedKinds(facts).map((kind) => [kind, true]),
+  );
   return inferred;
 }
 
@@ -102,8 +103,9 @@ function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
  * Portainer (`portainer`, whose follow-ups come from `buildPortainerQuestions`); for both the
  * region is ignored. It defaults to the previous answer, then `context.inferredProvider`, then
  * `hetzner`. The last two offer image signing (saying what a private repository makes public,
- * from `context.repositoryPrivate`) and deploy tags, both off by default. Every question is
- * validated with `QuestionSchema`.
+ * from `context.repositoryPrivate`) and deploy tags, both off by default. The questions about the
+ * app's components (its hosted services, its workers' commands) come from
+ * `buildComponentQuestions`. Every question is validated with `QuestionSchema`.
  */
 export function buildQuestions(
   facts: ProjectFacts,
@@ -257,17 +259,6 @@ export function buildQuestions(
       required: false,
     },
   );
-
-  if (usesService(facts, "supabase")) {
-    questions.push({
-      id: "keepExternalServices",
-      prompt: "Keep using your hosted Supabase project?",
-      help: "Yes (recommended) keeps the database and sign-in on Supabase. No runs PostgreSQL on your own server, and you move the data and replace Supabase features yourself.",
-      kind: "confirm",
-      default: previous !== undefined ? previous.keepExternalServices.includes("supabase") : true,
-      required: false,
-    });
-  }
 
   const publicLog = signingPublicLog(context.repositoryPrivate);
   questions.push(

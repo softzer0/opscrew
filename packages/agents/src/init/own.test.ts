@@ -97,7 +97,7 @@ async function checks(o: Setup = {}): Promise<{ checks: InitCheck[]; hosts: stri
     dataCriticality: "important",
     dnsProvider: "cloudflare",
     domain: "shop.example.com",
-    keepExternalServices: [],
+    keepExternalServices: {},
   };
   await writeArtifact("requirements", deps.paths.files.requirements, requirements);
   if (o.plan !== undefined) {

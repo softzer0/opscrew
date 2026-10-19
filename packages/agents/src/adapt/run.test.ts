@@ -535,7 +535,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(repo.deps.reporter.text()).toContain("Nothing to commit");
   });
 
-  it("tells the pull request that background jobs will not run yet", async () => {
+  it("tells the pull request that background jobs without a worker will not run", async () => {
     const repo = await setup({
       facts: { ...nextFacts(), services: [{ kind: "queue", evidence: ["dependency:bullmq"] }] },
     });
@@ -546,7 +546,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     const body = github.created[0]?.body ?? "";
     expect(body).toContain("## Background jobs");
     expect(body).toContain("background jobs with BullMQ");
-    expect(body).toContain("run the worker yourself");
+    expect(body).toContain("add the worker's command to processes.workers");
   });
 
   it("tells the pull request which migration command every deploy runs", async () => {

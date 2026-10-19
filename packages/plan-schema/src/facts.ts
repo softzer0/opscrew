@@ -49,6 +49,14 @@ function strictlyAscending<T>(key: (item: T) => string, what: string) {
   };
 }
 
+/**
+ * An absolute POSIX path in an image, such as `/app` or `/srv/app`: no trailing `/`, spaces or
+ * variables.
+ */
+export const AbsolutePathSchema = z.string().regex(/^\/(?:[^/\s\\$]+(?:\/[^/\s\\$]+)*)?$/, {
+  message: "must be an absolute path such as /app, without spaces, variables or a trailing slash",
+});
+
 /** Matches `scheme://userinfo@host...`; credentials must never be stored in a remote URL. */
 const URL_WITH_USERINFO = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*@/;
 
@@ -96,6 +104,12 @@ export const ProjectFactsSchema = z.strictObject({
       })
       .optional(),
     outputDir: z.string().min(1).optional(),
+    /**
+     * The working directory of the last stage of the app's own Dockerfile (its last `WORKDIR`,
+     * resolved), where the app runs in the image. Absent without a Dockerfile, or when it is not
+     * known (no `WORKDIR` there, a relative one with nothing to resolve against, or a variable).
+     */
+    workdir: AbsolutePathSchema.optional(),
   }),
   port: PortSchema.optional(),
   /** Runtime versions as the app declares them, not yet normalised. */

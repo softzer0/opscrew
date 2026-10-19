@@ -53,6 +53,22 @@ describe("opscrew interview", () => {
     expect(ctx.output).toContain("opscrew design");
   });
 
+  it("takes a worker's command from the answers file, nested as YAML", async () => {
+    project = await tempProject();
+    await writeFile(
+      path.join(project.root, "package.json"),
+      JSON.stringify({ name: "jobs", dependencies: { express: "^5.0.0", bullmq: "^5.0.0" } }),
+    );
+    await writeFile(
+      path.join(project.dir, "answers.yaml"),
+      `${ANSWERS}workerCommands:\n  bullmq: node dist/worker.js\n`,
+    );
+    const ctx = projectContext(project);
+    expect(await run(ctx, "interview", "--answers", "../answers.yaml")).toBe(0);
+    const requirements = await requirementsOf(project.root, project.env);
+    expect(requirements.workerCommands).toEqual({ bullmq: "node dist/worker.js" });
+  });
+
   it("asks the questions in a terminal, pre-filling defaults", async () => {
     project = await tempProject("nextjs-postgres");
     const prompts = new ScriptedPrompts([

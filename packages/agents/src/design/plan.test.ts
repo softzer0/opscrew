@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeSecret } from "@opscrew/core/testing";
 import { detectProject } from "@opscrew/detect";
 import {
   DeployPlanSchema,
@@ -21,8 +22,9 @@ import {
   staticSpaFacts,
 } from "../testing";
 import { deriveCodeChanges } from "./code-changes";
+import { appNameFor } from "./components";
 import { buildDesignOptions } from "./options";
-import { appNameFor, appPortFor, optionToPlan } from "./plan";
+import { appPortFor, optionToPlan } from "./plan";
 import { selfHostedServices } from "./sizing";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
@@ -69,7 +71,7 @@ describe("optionToPlan", () => {
       dataCriticality: "critical",
       dnsProvider: "cloudflare",
       domain: "shop.example.com",
-      keepExternalServices: [],
+      keepExternalServices: {},
     });
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");
@@ -104,7 +106,12 @@ describe("optionToPlan", () => {
         image: "ubuntu-24.04",
         backups: true,
       },
-      services: selfHostedServices({ postgres: true, redis: false }),
+      services: [
+        {
+          ...selfHostedServices({ postgres: true, redis: false })[0],
+          reason: "The app uses PostgreSQL through pg.",
+        },
+      ],
       externalServices: [],
       dns: { provider: "cloudflare", domain: "shop.example.com", proxied: true, www: false },
       cicd: {
@@ -207,7 +214,7 @@ describe("optionToPlan", () => {
       ],
     });
     const requirements = makeRequirements({
-      keepExternalServices: ["supabase"],
+      keepExternalServices: { supabase: true },
       dnsProvider: "other",
       domain: "app.example.org",
     });
@@ -501,6 +508,149 @@ describe("connection settings under the app's own names (FR-814)", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("plans a Django + Celery + MySQL + S3 app on Hetzner, and provisions its variables", async () => {
+    const variable = (name: string, extra: Partial<ProjectFacts["envVars"][number]> = {}) => ({
+      name,
+      files: [".env.example"],
+      clientExposed: false,
+      secretLikely: false,
+      ...extra,
+    });
+    const facts = makeFacts({
+      name: "shop",
+      languages: ["python"],
+      frameworks: [{ name: "django", path: "." }],
+      appKind: "ssr",
+      port: 8000,
+      envVars: [
+        variable("AWS_STORAGE_BUCKET_NAME"),
+        variable("CELERY_BROKER_URL", { urlScheme: "redis" }),
+        variable("DATABASE_URL", { secretLikely: true, urlScheme: "mysql" }),
+        variable("DJANGO_SECRET_KEY", { secretLikely: true }),
+      ],
+      services: [
+        { kind: "mysql", evidence: ["dependency:mysqlclient"], variable: "DATABASE_URL" },
+        { kind: "queue", evidence: ["dependency:celery"] },
+        {
+          kind: "redis",
+          evidence: ["config:redis-broker", "dependency:celery[redis]"],
+          variable: "CELERY_BROKER_URL",
+        },
+        { kind: "s3", evidence: ["dependency:boto3", "dependency:django-storages"] },
+      ],
+      workers: [
+        {
+          name: "celery-beat",
+          command: "celery -A shop beat --loglevel=info",
+          source: "library",
+          single: true,
+          evidence: ["code:celery-beat", "dependency:celery"],
+        },
+        {
+          name: "celery-worker",
+          command: "celery -A shop worker --loglevel=info",
+          source: "library",
+          single: false,
+          evidence: ["dependency:celery"],
+        },
+      ],
+      objectStorage: {
+        client: "django-storages",
+        presignedUploads: false,
+        variables: ["AWS_STORAGE_BUCKET_NAME"],
+      },
+    });
+    const requirements = makeRequirements({
+      dnsProvider: "cloudflare",
+      domain: "shop.example.com",
+    });
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    const plan = optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
+    expect(plan.app.memoryMb).toBe(512);
+    expect(plan.processes.workers.map((w) => [w.name, w.single, w.memoryMb])).toEqual([
+      ["celery-beat", true, 256],
+      ["celery-worker", false, 256],
+    ]);
+    expect(plan.services).toEqual([
+      expect.objectContaining({
+        name: "mysql",
+        kind: "mysql",
+        version: "8.4",
+        variable: "DATABASE_URL",
+      }),
+      expect.objectContaining({
+        name: "queue",
+        kind: "valkey",
+        options: { mode: "queue" },
+        variable: "CELERY_BROKER_URL",
+      }),
+    ]);
+    expect(plan.storage?.objectStorage).toMatchObject({ provider: "r2", bucket: "shop-uploads" });
+    expect(plan.externalServices).toEqual([]);
+    expect(plan.app.env).toEqual([
+      // R2's key is the user's, and its endpoint names their Cloudflare account.
+      { name: "AWS_ACCESS_KEY_ID", secret: true, source: "user" },
+      { name: "AWS_ENDPOINT_URL_S3", secret: false, source: "user" },
+      { name: "AWS_REGION", secret: false, source: "derived" },
+      { name: "AWS_SECRET_ACCESS_KEY", secret: true, source: "user" },
+      { name: "AWS_STORAGE_BUCKET_NAME", secret: false, source: "derived" },
+      { name: "CELERY_BROKER_URL", secret: false, source: "derived" },
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      { name: "DJANGO_SECRET_KEY", secret: true, source: "generated" },
+      { name: "REDIS_URL", secret: false, source: "derived" },
+    ]);
+    expect(plan.app.env.map((v) => v.name)).not.toContain("CRON_SECRET");
+
+    const key = fakeSecret("aws-access-key-id");
+    const env = await assembleAppEnv({
+      plan,
+      dotenvText: `AWS_ACCESS_KEY_ID=${key}\nAWS_SECRET_ACCESS_KEY=${fakeSecret("aws-secret-access-key")}\nAWS_ENDPOINT_URL_S3=https://example.r2.cloudflarestorage.com\n`,
+    });
+    const password = env.generated.services?.mysql?.password;
+    expect(env.values.app).toMatchObject({
+      AWS_REGION: "auto",
+      AWS_STORAGE_BUCKET_NAME: "shop-uploads",
+      CELERY_BROKER_URL: "redis://queue:6379",
+      DATABASE_URL: `mysql://app:${password}@mysql:3306/app`,
+      REDIS_URL: "redis://queue:6379",
+    });
+  });
+
+  it("generates CRON_SECRET for the cron jobs that call the app's routes (FR-1309)", async () => {
+    const facts = makeFacts({
+      envVars: [
+        {
+          name: "CRON_SECRET",
+          files: ["app/api/cron/route.ts"],
+          clientExposed: false,
+          secretLikely: true,
+        },
+      ],
+      cronJobs: [{ schedule: "0 5 * * *", route: "/api/cron/cleanup", source: "vercel.json" }],
+    });
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    const plan = optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(facts),
+    });
+    expect(plan.processes.cron).toEqual([
+      { name: "cleanup", schedule: "0 5 * * *", route: "/api/cron/cleanup", enabled: true },
+    ]);
+    expect(plan.app.env).toEqual([{ name: "CRON_SECRET", secret: true, source: "generated" }]);
   });
 
   it("never builds a dev container's Dockerfile as the app's own", async () => {

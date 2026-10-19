@@ -116,6 +116,10 @@
             "automatic": {
               "type": "string",
               "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
+            },
+            "workdir": {
+              "type": "string",
+              "pattern": "^\\/(?:[^/\\s\\\\$]+(?:\\/[^/\\s\\\\$]+)*)?$"
             }
           },
           "required": ["builder", "chosen", "reason", "runtime", "probe"],
@@ -400,6 +404,10 @@
                 "required": ["mode"],
                 "additionalProperties": false
               },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
               "reason": {
                 "type": "string",
                 "minLength": 1
@@ -446,6 +454,10 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
               },
               "reason": {
                 "type": "string",
@@ -499,6 +511,10 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
               },
               "reason": {
                 "type": "string",
@@ -555,6 +571,10 @@
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
+              },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
               },
               "reason": {
                 "type": "string",
@@ -1178,6 +1198,10 @@
                 "automatic": {
                   "type": "string",
                   "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
+                },
+                "workdir": {
+                  "type": "string",
+                  "pattern": "^\\/(?:[^/\\s\\\\$]+(?:\\/[^/\\s\\\\$]+)*)?$"
                 }
               },
               "required": ["builder", "chosen", "reason", "runtime", "probe"],

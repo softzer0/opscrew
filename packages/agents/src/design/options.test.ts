@@ -334,6 +334,47 @@ describe("buildDesignOptions", () => {
       hint: expect.stringContaining("opscrew interview"),
     });
   });
+
+  const kafka = makeFacts({ services: [{ kind: "kafka", evidence: ["dependency:kafkajs"] }] });
+
+  it("refuses a server below a service's smallest one, naming the memory that fits", async () => {
+    const promise = buildDesignOptions({
+      facts: kafka,
+      requirements: makeRequirements(),
+      // Only 1 GB servers: Kafka needs a 2 GB one.
+      catalog: new MemoryCatalog([
+        offer({ id: "cx12", vcpus: 2, memoryGb: 1, diskGb: 40, price: 3 }),
+      ]),
+    });
+    await expect(promise).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining(
+        "has the 1 vCPU, 2 GB memory and 40 GB disk this app needs (its containers' memory limits add up to 1536 MB, plus 512 MB for OpsCrew's edge and the system)",
+      ),
+      hint: expect.stringContaining("lower the memory limits in opscrew/plan.yaml"),
+    });
+  });
+
+  it("shows each component's memory and price share, and warns below 15% free memory", async () => {
+    const options = await buildDesignOptions({
+      facts: kafka,
+      requirements: makeRequirements(),
+      catalog: new MemoryCatalog([
+        offer({ id: "cx22", vcpus: 2, memoryGb: 2, diskGb: 40, price: 4 }),
+        offer({ id: "cx32", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8 }),
+      ]),
+    });
+    const [lean, comfortable] = options;
+    expect(lean?.target.serverType).toBe("cx22");
+    // €4 server + €0.50 IPv4: 512 MB of 2 GB is a quarter of €4.50.
+    expect(lean?.summary).toContain(
+      "Memory limits: the app 512 MB (€1.13/month), kafka 1024 MB (€2.25/month); OpsCrew's edge and the system 512 MB; 0.0 GB of 2.0 GB free.",
+    );
+    expect(lean?.tradeoffs).toContain(
+      "The cx22 server keeps only 0% of its memory free after the containers' memory limits, OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Choose a bigger option, or lower a memory limit in opscrew/plan.yaml.",
+    );
+    expect(comfortable?.tradeoffs.join("\n")).not.toContain("keeps only");
+  });
 });
 
 describe("live prices with published rates (DigitalOcean)", () => {

@@ -162,6 +162,39 @@ describe("DeployPlan components", () => {
     expect(parse([{ ...worker, name: "mail-2" }], [postgres]).success).toBe(true);
   });
 
+  it("gives each running service's address its own variable", async () => {
+    const plan = await validPlan();
+    const parse = (services: object[]) =>
+      DeployPlanSchema.safeParse({ ...plan, externalServices: [], services });
+    const mysql = { ...postgres, kind: "mysql", version: "8.4", licence: "GPL-2.0" };
+    const parsed = parse([
+      { ...postgres, variable: "DATABASE_URL" },
+      { ...mysql, variable: "MYSQL_URL" },
+    ]);
+    expect(parsed.data?.services.map((s) => [s.name, s.variable])).toEqual([
+      ["db", "DATABASE_URL"],
+      ["mysql", "MYSQL_URL"],
+    ]);
+    expect(
+      pathsOf(
+        parse([
+          { ...postgres, variable: "DATABASE_URL" },
+          { ...mysql, variable: "DATABASE_URL" },
+        ]),
+      ),
+    ).toEqual(["services.1.variable"]);
+    // A service turned off fills nothing.
+    expect(
+      parse([
+        { ...postgres, variable: "DATABASE_URL" },
+        { ...mysql, variable: "DATABASE_URL", enabled: false },
+      ]).success,
+    ).toBe(true);
+    expect(pathsOf(parse([{ ...postgres, variable: "database-url" }]))).toEqual([
+      "services.0.variable",
+    ]);
+  });
+
   it("runs a cron job's command or calls its route, never both or neither", async () => {
     const plan = await validPlan();
     const parse = (job: object) =>

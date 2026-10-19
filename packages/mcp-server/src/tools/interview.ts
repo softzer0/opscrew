@@ -1,11 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  answeredKinds,
+  buildComponentQuestions,
   buildPortainerQuestions,
   buildQuestions,
   buildServerQuestions,
   CHECK_PORTAINER_CERTIFICATE,
   type ConfirmPortainerCertificate,
   createPortainerAccess,
+  hostedAdditions,
   inferredAnswers,
   NEW_CERTIFICATE_WARNING,
   PORTAINER_FIELDS,
@@ -64,6 +67,12 @@ async function loadPrevious(paths: ProjectPaths): Promise<Requirements | undefin
   }
 }
 
+/** The kinds the requirements answer `keep` for, as one comma-separated entry, or none. */
+function answered(requirements: Requirements, keep: boolean): string[] {
+  const kinds = answeredKinds(requirements, keep);
+  return kinds.length > 0 ? [kinds.join(", ")] : [];
+}
+
 function formatDefault(value: Question["default"]): string {
   if (value === undefined) return "";
   if (typeof value === "object" && !Array.isArray(value))
@@ -109,7 +118,10 @@ const ANSWER_HELP: Record<string, string> = {
   dataCriticality: "How bad losing data would be (a choice value from the question).",
   domain: "Domain name, for example app.example.com.",
   dnsProvider: "DNS provider (a choice value from the question).",
-  keepExternalServices: 'External services to keep, for example ["supabase"].',
+  keepExternalServices:
+    "Not answered as one value: answer each hosted service of componentQuestions as keepExternalServices.<kind>, true to keep it where it is hosted, false to let OpsCrew run one on the server. An unanswered hosted service is kept. keepExternalServices.s3: true keeps the app's own file storage instead of a new bucket.",
+  workerCommands:
+    "Not answered as one value: give each worker's command as workerCommands.<worker>, as componentQuestions lists them.",
   contactEmail: "Contact email for certificates and alerts.",
   notes: "Anything else the user wants to note.",
   signImages:
@@ -254,7 +266,7 @@ export function registerInterviewTools(
     {
       title: "Interview questions",
       description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services, image signing, deploy tags). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -276,6 +288,16 @@ export function registerInterviewTools(
         };
         const questions = buildQuestions(facts, previous, appCandidates, context);
         const inferred = inferredAnswers(facts, context);
+        // The app's hosted services and its workers without a conventional command; what running
+        // a hosted service would add is priced for the previous answers, when there are any.
+        const componentQuestions = buildComponentQuestions(
+          facts,
+          previous ?? {
+            keepExternalServices:
+              inferred.keepExternalServices as Requirements["keepExternalServices"],
+          },
+          previous === undefined ? undefined : await hostedAdditions(phase, facts, previous),
+        );
         // How OpsCrew reached the user's own server or Portainer before (the defaults), if known.
         const recorded = await readServerAddresses(paths).catch(() => undefined);
         const server = recorded?.own;
@@ -308,6 +330,14 @@ export function registerInterviewTools(
           "",
           ...questions.map(renderQuestion),
           "",
+          ...(componentQuestions.length > 0
+            ? [
+                "Also ask these about the app's components and pass them under their answer ids (keepExternalServices.<kind>: true keeps the hosted service, false lets OpsCrew run one on the server; workerCommands.<worker>: the command that starts the worker).",
+                "",
+                ...componentQuestions.map(renderQuestion),
+                "",
+              ]
+            : []),
           'Only when the user chooses "own" (a server they already have), also ask these and pass them as server.* answers. Never ask for a password, a passphrase or the private key itself: OpsCrew uses the key file or the SSH agent. The address stays on the user\'s computer only; do not write it into any file.',
           ...(server !== undefined
             ? ["How OpsCrew reached the server before is saved; leave server.host out to keep it."]
@@ -328,6 +358,7 @@ export function registerInterviewTools(
           text,
           data: {
             questions,
+            componentQuestions,
             serverQuestions,
             portainerQuestions,
             inferred,
@@ -411,9 +442,8 @@ export function registerInterviewTools(
           ...(requirements.domain !== undefined
             ? [`- Domain: ${requirements.domain} (DNS: ${requirements.dnsProvider})`]
             : ["- Domain: none yet"]),
-          ...(requirements.keepExternalServices.length > 0
-            ? [`- Keep external services: ${requirements.keepExternalServices.join(", ")}`]
-            : []),
+          ...answered(requirements, true).map((kinds) => `- Keep where hosted: ${kinds}`),
+          ...answered(requirements, false).map((kinds) => `- Run on the server: ${kinds}`),
           "",
           own
             ? "Next: call opscrew_design_options; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key."

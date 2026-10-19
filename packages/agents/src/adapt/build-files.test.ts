@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
-import { IMAGES } from "@opscrew/iac-templates";
+import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import { type AppBuild, type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts } from "../testing";
@@ -196,6 +196,21 @@ describe.skipIf(GIT === undefined)("runAdapt with the plan's builder", () => {
     });
     expect(registry.urls).toEqual([]);
     expect(await read("Dockerfile")).toContain(`FROM ${IMAGES.nodeAlpine.ref} AS`);
+  });
+
+  it("adds supercronic to the image only when the plan has an enabled cron job", async () => {
+    const job = { name: "cleanup", schedule: "@daily", command: "node cleanup.js", enabled: true };
+    const withCron = (plan: DeployPlan, enabled: boolean): DeployPlan => ({
+      ...withBuild(plan, node24),
+      processes: { workers: [], cron: [{ ...job, enabled }] },
+    });
+    const on = await adapt((plan) => withCron(plan, true));
+    // amd64, the server's architecture.
+    expect(await on.read("Dockerfile")).toContain(
+      `ADD --checksum=sha256:${TOOLS.supercronic.sha256.amd64} `,
+    );
+    const off = await adapt((plan) => withCron(plan, false));
+    expect(await off.read("Dockerfile")).not.toContain("supercronic");
   });
 
   it("checks the user's own Dockerfile against the baseline and lists each finding with its fix", async () => {

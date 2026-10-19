@@ -1,5 +1,5 @@
-import { imageReleaseCommand } from "@opscrew/iac-templates";
-import { type DeployPlan, type ProjectFacts, serviceOf } from "@opscrew/plan-schema";
+import { imageReleaseCommand, serviceSpec } from "@opscrew/iac-templates";
+import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 
 /** The database-migrations note and whether it needs the user's attention. */
 export interface ReleaseCommandNote {
@@ -38,9 +38,13 @@ export function releaseCommandNote(
     return { warning: true, text: `${notRun}${extra}` };
   }
   if (detected !== undefined) return { warning: !detected.atStartup, text: detected.text };
-  if (!serviceOf(plan, "postgres")) return undefined;
+  const database = plan.services.find((s) => s.enabled && DATABASES.has(s.kind));
+  if (database === undefined) return undefined;
   return {
     warning: false,
-    text: "OpsCrew found no database migration command for this app, so deploys run none. If the app creates or updates its tables with a command, set it as `app.releaseCommand` in opscrew/plan.yaml: every deploy then runs it before the new version takes traffic.",
+    text: `OpsCrew found no database migration command for this app's ${serviceSpec(database.kind).title}, so deploys run none. If the app creates or updates its tables with a command, set it as \`app.releaseCommand\` in opscrew/plan.yaml: every deploy then runs it before the new version takes traffic.`,
   };
 }
+
+/** The services whose tables an app migrates. */
+const DATABASES: ReadonlySet<string> = new Set(["postgres", "mysql", "mariadb", "mongodb"]);

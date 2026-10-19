@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { ComponentNameSchema } from "./components";
 import {
+  CommandLineSchema,
   CurrencySchema,
   DataCriticalitySchema,
   DeployProviderSchema,
@@ -36,8 +38,15 @@ export const RequirementsSchema = z
     domain: FqdnSchema.optional(),
     /** `cloudflare` or `other` requires `domain`. */
     dnsProvider: z.enum(["cloudflare", "other", "none"]),
-    /** External services to keep (for example `supabase` instead of self-hosting Postgres). */
-    keepExternalServices: z.array(ServiceKindSchema),
+    /**
+     * Whether the app keeps each service where it is hosted now, by kind: `true` keeps it (for
+     * example `supabase` instead of Postgres on the server, `s3` for the app's own storage),
+     * `false` lets OpsCrew run one on the server. A hosted service the app uses with no answer is
+     * kept; any other kind is kept only when its answer is `true`.
+     */
+    keepExternalServices: z.partialRecord(ServiceKindSchema, z.boolean()).default(() => ({})),
+    /** Commands of detected workers that no convention gives one (BullMQ, asynq, river), by worker name. */
+    workerCommands: z.record(ComponentNameSchema, CommandLineSchema).optional(),
     /** Used for TLS certificate registration. */
     contactEmail: z.email().optional(),
     /** In a repository with several apps: the repo-relative directory of the app to deploy. */

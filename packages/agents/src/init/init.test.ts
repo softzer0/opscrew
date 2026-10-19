@@ -253,7 +253,7 @@ async function writeRequirements(deps: TestPhaseDeps, extra: Partial<Requirement
     uptime: "standard",
     dataCriticality: "important",
     dnsProvider: "none",
-    keepExternalServices: [],
+    keepExternalServices: {},
     ...extra,
   };
   await writeArtifact("requirements", deps.paths.files.requirements, requirements);

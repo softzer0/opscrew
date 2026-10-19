@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { type InterviewAnswers, repositoryPrivate, runInterview } from "@opscrew/agents";
+import {
+  answeredKinds,
+  type InterviewAnswers,
+  repositoryPrivate,
+  runInterview,
+} from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { Requirements } from "@opscrew/plan-schema";
 import type { Command } from "commander";
@@ -53,6 +58,12 @@ async function readAnswersFile(file: string): Promise<InterviewAnswers> {
   return value as InterviewAnswers;
 }
 
+/** The kinds the requirements answer `keep` for, as one comma-separated entry, or none. */
+function answered(requirements: Requirements, keep: boolean): string[] {
+  const kinds = answeredKinds(requirements, keep);
+  return kinds.length > 0 ? [kinds.join(", ")] : [];
+}
+
 function describe(requirements: Requirements): string[] {
   const budget = requirements.budgetMonthly;
   return [
@@ -70,9 +81,8 @@ function describe(requirements: Requirements): string[] {
     `Uptime: ${requirements.uptime}`,
     `Data criticality: ${requirements.dataCriticality}`,
     `Domain: ${requirements.domain ?? "none yet"}${requirements.domain === undefined ? "" : ` (DNS: ${requirements.dnsProvider})`}`,
-    ...(requirements.keepExternalServices.length > 0
-      ? [`Keep using: ${requirements.keepExternalServices.join(", ")}`]
-      : []),
+    ...answered(requirements, true).map((kinds) => `Keep where hosted: ${kinds}`),
+    ...answered(requirements, false).map((kinds) => `Run on the server: ${kinds}`),
   ];
 }
 
@@ -127,7 +137,9 @@ export function register(program: Command, ctx: CliContext): void {
       const { requirements } = await runInterview(deps, {
         ...(answers === undefined ? {} : { answers }),
         ...(isPrivate === undefined ? {} : { repositoryPrivate: isPrivate }),
-        ...(ask === undefined ? {} : { ask, askServer: ask, askPortainer: ask }),
+        ...(ask === undefined
+          ? {}
+          : { ask, askServer: ask, askPortainer: ask, askComponents: ask }),
         portainer: portainerInterviewOptions(ctx, prompts, certFingerprint),
       });
       ctx.stdout(

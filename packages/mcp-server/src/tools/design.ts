@@ -137,6 +137,15 @@ function costText(option: DesignOption): string {
     : `${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)}`;
 }
 
+/**
+ * What runs next to the app, one line each (workers, cron, services and storage, with their
+ * licences and the edits kept from plan.yaml), for the preview; nothing for an app alone.
+ */
+function componentText(preview: Pick<DesignPreview, "lines">): string[] {
+  if (preview.lines.length === 0) return [];
+  return ["What runs next to the app:", ...preview.lines.map((line) => `- ${line}`), ""];
+}
+
 /** Plain-text block for one option. */
 function renderOption(option: DesignOption): string {
   const unpriced = isUnpriced(option);
@@ -256,6 +265,7 @@ export function registerDesignTools(
             "",
             ...result.options.map(renderOption),
             "",
+            ...componentText(result),
             `After the user agrees, call opscrew_select_design with the option id (${recommended?.id ?? result.options[0]?.id}).`,
           ].join("\n");
           return {
@@ -264,6 +274,7 @@ export function registerDesignTools(
               options: result.options.map(optionData),
               recommendedId: recommended?.id,
               ...(unpriced === "own" ? { ownServer: true } : { portainer: true }),
+              components: result.components,
               warnings: result.warnings,
             },
           };
@@ -279,6 +290,7 @@ export function registerDesignTools(
           "",
           ...result.options.map(renderOption),
           "",
+          ...componentText(result),
           ...(fitting ? [] : ["None of the options fits the budget."]),
           `OpsCrew recommends ${recommended?.id ?? "the first option"}. After the user chooses, call opscrew_select_design with the option id.`,
         ].join("\n");
@@ -290,6 +302,7 @@ export function registerDesignTools(
             priceSource: result.priceSource,
             budget: requirements.budgetMonthly,
             fitsBudget: fitting,
+            components: result.components,
             warnings: result.warnings,
           },
         };

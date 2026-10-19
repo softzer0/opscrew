@@ -103,7 +103,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
       uptime: "standard",
       dataCriticality: "important",
       dnsProvider: "none",
-      keepExternalServices: [],
+      keepExternalServices: {},
     });
 
     const result = await runDns(deps, { domain: "Shop.Example.com", services });

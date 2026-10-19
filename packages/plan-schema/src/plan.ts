@@ -21,6 +21,7 @@ import {
   ServiceKindSchema,
   UrlPathSchema,
 } from "./enums";
+import { AbsolutePathSchema } from "./facts";
 
 /** Services that conflict with a self-hosted Postgres container. */
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
@@ -432,6 +433,11 @@ export const AppBuildSchema = z.strictObject({
    * when the user chose another one.
    */
   automatic: ImageBuilderSchema.optional(),
+  /**
+   * For the user's own Dockerfile only: the working directory of its last stage, where the app
+   * runs in the image, as detection read it (`facts.build.workdir`). Set by design.
+   */
+  workdir: AbsolutePathSchema.optional(),
 });
 export type AppBuild = z.output<typeof AppBuildSchema>;
 
@@ -717,6 +723,20 @@ function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
     unique(worker.name, ["processes", "workers", i, "name"]);
   }
   for (const [i, service] of plan.services.entries()) unique(service.name, ["services", i, "name"]);
+  // One variable holds one address: two running services cannot both fill it.
+  const variables = new Map<string, string>();
+  for (const [i, service] of plan.services.entries()) {
+    if (!service.enabled || service.variable === undefined) continue;
+    const other = variables.get(service.variable);
+    if (other !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["services", i, "variable"],
+        message: `"${service.variable}" already gets the address of the service ${other}; give each service its own variable`,
+      });
+    }
+    variables.set(service.variable, service.name);
+  }
   if (serviceOf(plan, "postgres")) {
     plan.externalServices.forEach((service, i) => {
       if (POSTGRES_PROVIDERS.has(service)) {

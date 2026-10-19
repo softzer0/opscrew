@@ -1,3 +1,4 @@
+export { appRoot } from "./app-root";
 export {
   CATALOG,
   initStepsFor,

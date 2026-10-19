@@ -47,7 +47,7 @@ async function writeRequirements(t: DomainTestProject, domain: string): Promise<
     dataCriticality: "important",
     domain,
     dnsProvider: "cloudflare",
-    keepExternalServices: [],
+    keepExternalServices: {},
   };
   await writeArtifact(
     "requirements",

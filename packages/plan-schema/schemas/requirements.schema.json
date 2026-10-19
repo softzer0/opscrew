@@ -57,8 +57,9 @@
       "enum": ["cloudflare", "other", "none"]
     },
     "keepExternalServices": {
-      "type": "array",
-      "items": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
         "type": "string",
         "enum": [
           "postgres",
@@ -86,6 +87,20 @@
           "neo4j",
           "cassandra"
         ]
+      },
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "workerCommands": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
       }
     },
     "contactEmail": {
@@ -116,8 +131,7 @@
     "provider",
     "uptime",
     "dataCriticality",
-    "dnsProvider",
-    "keepExternalServices"
+    "dnsProvider"
   ],
   "additionalProperties": false
 }

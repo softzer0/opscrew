@@ -347,7 +347,7 @@ export function testRequirements(domain?: string): Requirements {
     uptime: "standard",
     dataCriticality: "important",
     ...(domain === undefined ? { dnsProvider: "none" } : { domain, dnsProvider: "cloudflare" }),
-    keepExternalServices: [],
+    keepExternalServices: {},
   };
 }
 

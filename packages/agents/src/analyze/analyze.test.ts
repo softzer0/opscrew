@@ -430,7 +430,7 @@ describe("runAnalyze", () => {
         uptime: "standard",
         dataCriticality: "none",
         dnsProvider: "none",
-        keepExternalServices: [],
+        keepExternalServices: {},
         appDir: "apps/web",
       });
       const { architecture } = await runAnalyze(deps, { ai: false });

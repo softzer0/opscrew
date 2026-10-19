@@ -11,7 +11,7 @@ uptime: standard
 dataCriticality: important
 dnsProvider: cloudflare
 keepExternalServices:
-  - stripe
+  stripe: true
 contactEmail: ops@example.com
 notes: |-
   Launching in November.

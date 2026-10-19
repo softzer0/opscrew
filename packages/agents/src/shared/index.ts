@@ -9,6 +9,7 @@ export * from "./files";
 export * from "./github";
 export * from "./host-plan";
 export * from "./ipv6-probe";
+export * from "./memory";
 export * from "./portainer-stacks";
 export * from "./provider-text";
 export * from "./public-dns";

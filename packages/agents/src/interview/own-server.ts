@@ -7,7 +7,14 @@ import {
   readOwnServer,
   recordOwnServer,
 } from "../shared";
-import { FIX_ANSWERS_HINT, type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
+import {
+  booleanAnswer,
+  FIX_ANSWERS_HINT,
+  type FollowUps,
+  isBlank,
+  portAnswer,
+  withDefault,
+} from "./follow-ups";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
 export const SERVER_FIELDS = ["host", "port", "user", "key", "reachable", "serve"] as const;
@@ -242,16 +249,6 @@ export function buildServerQuestions(context: OwnServerContext = {}): ServerQues
   ];
 }
 
-function boolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const text = value.trim().toLowerCase();
-    if (["yes", "y", "true"].includes(text)) return true;
-    if (["no", "n", "false"].includes(text)) return false;
-  }
-  return undefined;
-}
-
 /**
  * Validates the follow-up answers for a server the user already has. Answers that were not given
  * fall back to the previous ones (port 22, the SSH agent and the reachability suggestion when
@@ -336,7 +333,7 @@ export function answersToOwnServer(
 
   let reachable: boolean | undefined;
   if (given("reachable")) {
-    reachable = boolean(split.values.reachable);
+    reachable = booleanAnswer(split.values.reachable);
     if (reachable === undefined) problems.push("server.reachable: answer yes or no");
   }
 

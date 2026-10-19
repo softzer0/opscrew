@@ -1,7 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
-import { isClientExposedEnvName, siteHosts } from "@opscrew/iac-templates";
-import { type DeployPlan, type SelfHostedServiceKind, serviceOf } from "@opscrew/plan-schema";
+import {
+  appRoot,
+  type GeneratedSecret,
+  isClientExposedEnvName,
+  serviceSpec,
+  siteHosts,
+} from "@opscrew/iac-templates";
+import {
+  type DeployPlan,
+  type PlanService,
+  type SelfHostedServiceKind,
+  serviceOf,
+} from "@opscrew/plan-schema";
 import { randomPassword } from "./ssh-keys";
 
 /** Parses a dotenv file (quotes, `export` prefixes, `#` comments, escaped newlines). */
@@ -154,10 +165,11 @@ const OTHER_DATABASE_SEGMENTS = new Set([
 ]);
 
 /**
- * The service whose connection URL a variable holds, from its name: `DATABASE_URL` and the
- * names apps use for it (`DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`, `POSTGRES_URL`, `DB_URL`,
- * `*_DATABASE_URL`/`_URI`) hold Postgres; `REDIS_URL`/`_URI`, `*_REDIS_URL`/`_URI`, Celery's broker
- * and result backend hold Redis. Undefined for any other name, for names bundlers expose to
+ * The service whose connection URL a variable holds, from its name, for the aliases an app reads
+ * besides the names the catalog gives (`DATABASE_URL`, `REDIS_URL`) and the variable detection
+ * found (`services[].variable`): `DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`, `POSTGRES_URL`,
+ * `DB_URL` and `*_DATABASE_URL`/`_URI` hold Postgres; `REDIS_URI`, `*_REDIS_URL`/`_URI`, Celery's
+ * broker and result backend hold Redis. Undefined for any other name, for names bundlers expose to
  * browsers (`NEXT_PUBLIC_DATABASE_URL`) and for prefixes naming another engine or a non-production
  * database (`MONGO_DATABASE_URL`, `TEST_DATABASE_URL`). `design` plans these as `derived` when the
  * service runs on the server, and {@link assembleAppEnv} fills them in.
@@ -171,6 +183,165 @@ export function serviceUrlKind(name: string): ServiceUrlKind | undefined {
   const segments = (prefixed[1] ?? "").split("_");
   if (segments.some((segment) => OTHER_DATABASE_SEGMENTS.has(segment))) return undefined;
   return prefixed[2] === "DATABASE" ? "postgres" : "redis";
+}
+
+/**
+ * The app's variables each running service gives it, from the catalog (`appVariables`, FR-1314):
+ * the conventional names and the service's own `variable`. A name one service has as its
+ * `variable` comes only from that one (the database whose variable is `DATABASE_URL` keeps it);
+ * a name two services give otherwise comes from the first. Client-exposed names are never filled.
+ * Each secret is what `secret` returns for the service and the secret's name.
+ */
+export function serviceAppVariables(
+  plan: DeployPlan,
+  secret: (service: PlanService, name: string) => string,
+): Map<string, string> {
+  const running = plan.services.filter((service) => service.enabled);
+  const own = new Set(running.flatMap((s) => (s.variable === undefined ? [] : [s.variable])));
+  const values = new Map<string, string>();
+  for (const service of running) {
+    const variables = serviceSpec(service.kind).appVariables({
+      plan,
+      service,
+      secretRef: (name) => secret(service, name),
+      ...(service.variable === undefined ? {} : { variable: service.variable }),
+    });
+    for (const [name, value] of Object.entries(variables)) {
+      if (values.has(name) || isClientExposedEnvName(name)) continue;
+      if (own.has(name) && service.variable !== name) continue;
+      values.set(name, value);
+    }
+  }
+  return values;
+}
+
+/** The address of a running service, as its catalog entry gives the app's own variable. */
+function serviceAddress(
+  plan: DeployPlan,
+  service: PlanService,
+  secret: (service: PlanService, name: string) => string,
+): string {
+  const probe = "OPSCREW_SERVICE_ADDRESS";
+  return serviceSpec(service.kind).appVariables({
+    plan,
+    service,
+    secretRef: (name) => secret(service, name),
+    variable: probe,
+  })[probe] as string;
+}
+
+/** The running service a {@link serviceUrlKind} alias holds the address of: Redis's is the queue's. */
+function aliasService(plan: DeployPlan, kind: ServiceUrlKind): PlanService | undefined {
+  if (kind === "redis") {
+    const queue = plan.services.find(
+      (s) => s.enabled && s.kind === "valkey" && s.options.mode === "queue",
+    );
+    if (queue !== undefined) return queue;
+  }
+  return serviceOf(plan, URL_SERVICE_KINDS[kind]);
+}
+
+/** What an object storage variable holds, from its name. */
+export type StorageVariableKind = "key" | "bucket" | "region" | "endpoint" | "path-style";
+
+/** The S3 keys every SDK reads, and the region and endpoint names besides the app's own. */
+const STORAGE_KEYS = new Set(["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]);
+/** The object storage variables every plan with a bucket gives the app, the keys included. */
+export const STORAGE_VARIABLES: ReadonlySet<string> = new Set([
+  ...STORAGE_KEYS,
+  "AWS_REGION",
+  "AWS_ENDPOINT_URL_S3",
+]);
+const STORAGE_REGIONS = new Set(["AWS_REGION", "AWS_DEFAULT_REGION"]);
+/** The variables an S3 client reads, as detection names them (`S3_BUCKET`, `AWS_S3_ENDPOINT_URL`). */
+const BUCKET_VARIABLE = /(?:^|_)BUCKET(?:_NAME)?$/;
+const ENDPOINT_VARIABLE = /(?:^|_)ENDPOINT(?:_URL)?(?:_S3)?$/;
+
+/**
+ * What an object storage variable holds (plan.md "6."): the keys, the bucket, the region, the
+ * endpoint (`AWS_ENDPOINT_URL_S3` and the app's own name for it) or Laravel's path-style switch.
+ */
+export function storageVariableKind(name: string): StorageVariableKind | undefined {
+  if (STORAGE_KEYS.has(name)) return "key";
+  if (STORAGE_REGIONS.has(name)) return "region";
+  if (name === "AWS_USE_PATH_STYLE_ENDPOINT") return "path-style";
+  if (BUCKET_VARIABLE.test(name)) return "bucket";
+  if (ENDPOINT_VARIABLE.test(name)) return "endpoint";
+  return undefined;
+}
+
+/** The S3 endpoints of the providers whose endpoint the plan alone gives (R2's needs the account). */
+const STORAGE_ENDPOINTS: Readonly<Record<string, (region: string) => string>> = {
+  hetzner: (region) => `https://${region}.your-objectstorage.com`,
+  digitalocean: (region) => `https://${region}.digitaloceanspaces.com`,
+};
+
+/**
+ * The value of a derived object storage variable from the plan's bucket, or undefined: the keys
+ * (Garage's come from its catalog entry; a provider's are the user's) and R2's endpoint.
+ */
+function storageValue(name: string, plan: DeployPlan): string | undefined {
+  const storage = plan.storage?.objectStorage;
+  if (storage === undefined) return undefined;
+  switch (storageVariableKind(name)) {
+    case "bucket":
+      return storage.bucket;
+    case "region":
+      return storage.region;
+    case "path-style":
+      return "true";
+    case "endpoint":
+      return STORAGE_ENDPOINTS[storage.provider]?.(storage.region);
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The file of a SQLite database moved into a folder of its own (`storage.sqlite.dir`), by the
+ * variable that points the app at it: Laravel's `DB_DATABASE`, Prisma's `DATABASE_URL`.
+ */
+const MOVED_SQLITE: Readonly<Record<string, (path: string) => string>> = {
+  DB_DATABASE: (folder) => `${folder}/database.sqlite`,
+  DATABASE_URL: (folder) => `file:${folder}/app.db`,
+};
+
+/**
+ * The value of the variable that points the app at its SQLite database in a folder of its own,
+ * in the image (`<appRoot>/<dir>/<file>`, see `appRoot`): `/app/storage/database/database.sqlite`
+ * for Laravel's `DB_DATABASE`, `file:/app/data/app.db` for Prisma's `DATABASE_URL`. Undefined for
+ * any other variable, without SQLite, or when the image's layout is unknown.
+ */
+export function sqliteVariableValue(name: string, plan: DeployPlan): string | undefined {
+  const dir = plan.storage?.sqlite?.dir;
+  const root = appRoot(plan);
+  const value = MOVED_SQLITE[name];
+  if (dir === undefined || root === undefined || value === undefined) return undefined;
+  return value(`${root}/${dir}`);
+}
+
+/**
+ * The app's variables OpsCrew fills from what runs (FR-1314): the services' (catalog names and
+ * own variables), the aliases of a running Postgres or Valkey, the object storage's, and
+ * `CRON_SECRET` for the cron jobs that call the app's routes.
+ */
+export function serviceFilledNames(plan: DeployPlan): Set<string> {
+  const names = new Set(serviceAppVariables(plan, () => "").keys());
+  if (plan.processes.cron.some((job) => job.enabled && job.route !== undefined)) {
+    names.add("CRON_SECRET");
+  }
+  const storage = plan.storage?.objectStorage !== undefined;
+  for (const variable of plan.app.env) {
+    const { name } = variable;
+    // Only what OpsCrew planned as its own: a user's variable that merely looks like one stays.
+    if (storage && STORAGE_VARIABLES.has(name)) names.add(name);
+    if (variable.source !== "derived") continue;
+    const alias = serviceUrlKind(name);
+    if (alias !== undefined && aliasService(plan, alias) !== undefined) names.add(name);
+    if (storage && storageVariableKind(name) !== undefined) names.add(name);
+    if (sqliteVariableValue(name, plan) !== undefined) names.add(name);
+  }
+  return names;
 }
 
 /**
@@ -218,9 +389,12 @@ export interface AssembleAppEnvOptions {
 
 /** Generated values to keep between runs (stored privately, never committed or logged). */
 export interface GeneratedValues {
+  /** Postgres's password. */
   dbPassword?: string;
   /** Generated app variables by name. */
   env?: Record<string, string>;
+  /** The other services' generated secrets, by service name and the catalog's secret name. */
+  services?: Record<string, Record<string, string>>;
 }
 
 export interface AppEnvironment {
@@ -259,7 +433,19 @@ export interface AppEnvironment {
     app: Record<string, string>;
     build: Record<string, string>;
     db?: { user: string; name: string; password: string };
+    /**
+     * Each running service's secrets (Postgres's too) by service name and the catalog's secret
+     * name, for the service's own environment (`environment(ctx)`).
+     */
+    services: Record<string, Record<string, string>>;
   };
+}
+
+/** A new secret in the catalog's format: 32 random bytes as hex, or a Garage key ID. */
+function newSecret(format: GeneratedSecret["format"]): string {
+  return format === "garage-key-id"
+    ? `GK${randomBytes(12).toString("hex")}`
+    : randomBytes(32).toString("hex");
 }
 
 /**
@@ -282,35 +468,54 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const missing: string[] = [];
   const defaulted: string[] = [];
   const unresolved: string[] = [];
-  let db: { user: string; name: string; password: string } | undefined;
   const newPassword = options.password ?? randomPassword;
   const generatedEnv: Record<string, string> = {};
   const generated: GeneratedValues = { env: generatedEnv };
 
-  // Connection URLs of the services OpsCrew runs, by kind.
-  const serviceUrls = new Map<ServiceUrlKind, string>();
-  if (serviceOf(plan, "postgres")) {
-    const password = options.previous?.dbPassword ?? newPassword();
-    generated.dbPassword = password;
-    db = { user: "app", name: "app", password };
-    // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
-    // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
-    const url = `postgresql://app:${password}@db:5432/app`;
-    app.set("DATABASE_URL", url);
-    serviceUrls.set("postgres", url);
+  // Each running service's secrets: generated once, then kept (Postgres's as `dbPassword`).
+  const secrets: Record<string, Record<string, string>> = {};
+  const secret = (service: PlanService, name: string): string => {
+    const known = secrets[service.name]?.[name];
+    if (known !== undefined) return known;
+    let value: string;
+    if (service.kind === "postgres" && name === "password") {
+      value = options.previous?.dbPassword ?? newPassword();
+      generated.dbPassword = value;
+    } else {
+      const format = serviceSpec(service.kind).secrets.find((s) => s.name === name)?.format;
+      value =
+        options.previous?.services?.[service.name]?.[name] ??
+        options.password?.() ??
+        newSecret(format ?? "hex32");
+      generated.services ??= {};
+      generated.services[service.name] = { ...generated.services[service.name], [name]: value };
+    }
+    secrets[service.name] = { ...secrets[service.name], [name]: value };
+    return value;
+  };
+  for (const service of plan.services.filter((s) => s.enabled)) {
+    for (const { name } of serviceSpec(service.kind).secrets) secret(service, name);
   }
-  if (serviceOf(plan, "valkey")) {
-    app.set("REDIS_URL", "redis://cache:6379");
-    serviceUrls.set("redis", "redis://cache:6379");
-  }
+  const postgres = serviceOf(plan, "postgres");
+  const db =
+    postgres === undefined
+      ? undefined
+      : { user: "app", name: "app", password: secret(postgres, "password") };
+  for (const [name, value] of serviceAppVariables(plan, secret)) app.set(name, value);
 
   for (const variable of plan.app.env) {
     if (app.has(variable.name) || variable.name === "PORT") continue;
     const optional = variable.optional === true;
     const derived = variable.source === "derived";
     const hostList = derived ? hostListKind(variable.name) : undefined;
-    const serviceKind = derived ? serviceUrlKind(variable.name) : undefined;
-    const serviceUrl = serviceKind !== undefined ? serviceUrls.get(serviceKind) : undefined;
+    const alias = derived ? serviceUrlKind(variable.name) : undefined;
+    const aliased = alias === undefined ? undefined : aliasService(plan, alias);
+    const serviceUrl =
+      aliased === undefined
+        ? derived
+          ? (storageValue(variable.name, plan) ?? sqliteVariableValue(variable.name, plan))
+          : undefined
+        : serviceAddress(plan, aliased, secret);
     const fixed = derived ? FIXED_VALUES.get(variable.name) : undefined;
     // The file of a non-interactive run holds production values; the local `.env` of an
     // interactive run holds development ones (`APP_ENV=local`), so it never overrides a default.
@@ -394,6 +599,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       app: Object.fromEntries([...app.entries()].sort(([a], [b]) => a.localeCompare(b))),
       build: Object.fromEntries(allBuild.sort(([a], [b]) => a.localeCompare(b))),
       ...(db !== undefined ? { db } : {}),
+      services: secrets,
     },
   };
 }

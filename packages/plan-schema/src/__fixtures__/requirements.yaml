@@ -12,7 +12,7 @@ dataCriticality: important
 domain: app.example.com
 dnsProvider: cloudflare
 keepExternalServices:
-  - stripe
+  stripe: true
 contactEmail: ops@example.com
 notes: |-
   Launching in November.

@@ -1,5 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
-import { containerPort, detectStack, releaseCommandInImage } from "@opscrew/iac-templates";
+import { appRoot, containerPort, detectStack, releaseCommandInImage } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -13,7 +13,10 @@ import {
   deepDomainProblem,
   FRAMEWORK_ENV,
   hostListKind,
+  STORAGE_VARIABLES,
+  serviceAppVariables,
   serviceUrlKind,
+  storageVariableKind,
   URL_SERVICE_KINDS,
 } from "../shared";
 import type { BuilderChoice } from "./builder";
@@ -25,8 +28,10 @@ import {
   type CodeChangeSignals,
   healthRouteFor,
 } from "./code-changes";
+import { appNameFor, type Components, designComponents } from "./components";
 import type { OwnServerAccess, OwnServerServing } from "./own";
 import type { PortainerDesignChoice } from "./portainer";
+import { sqliteMove } from "./storage";
 import { deployStrategyFor } from "./strategy";
 
 export interface OptionToPlanInput {
@@ -56,6 +61,8 @@ export interface OptionToPlanInput {
   portainer?: PortainerDesignChoice;
   /** Who builds the image (`chooseBuilder`). */
   build: BuilderChoice;
+  /** What runs next to the app (`designComponents`); by default designed from the facts. */
+  components?: Components;
 }
 
 /**
@@ -112,17 +119,6 @@ function targetFor(
 const GENERATED_SECRETS =
   /^(?:DJANGO_)?SECRET_KEY$|^(?:NEXTAUTH|AUTH|BETTER_AUTH|SESSION|JWT|COOKIE)_SECRET$|^FLASK_(?:SECRET_KEY|JWT_SECRET_KEY|WTF_CSRF_SECRET_KEY)$/;
 
-/** DNS-label-safe app name (`^[a-z0-9][a-z0-9-]{0,40}$`) from the project name. */
-export function appNameFor(facts: ProjectFacts): string {
-  const name = facts.name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .slice(0, 41)
-    .replace(/-+$/, "");
-  return name === "" ? "app" : name;
-}
-
 /** Port the app container listens on (static sites are served by Caddy on 8080). */
 export function appPortFor(facts: ProjectFacts): number {
   const fallback = facts.languages.includes("python") ? 8000 : 3000;
@@ -132,18 +128,22 @@ export function appPortFor(facts: ProjectFacts): number {
 }
 
 /**
- * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release command,
- * environment variable names), target (the option's provider and its default image; for the user's
- * own server its architecture and `input.access`), services, cost, code changes, DNS from the requirements and
- * GitHub Actions + GHCR for CI/CD, with deploy tags and signing as the interview answered. The
- * image's builder comes from `input.build` (Buildpacks and Railpack build an app in a subfolder
- * from that folder), and the deploy strategy from the option's server (`deployStrategyFor`).
- * Every documented default is filled by `DeployPlanSchema`.
+ * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release
+ * command, memory limit, environment variable names), target (the option's provider and its default
+ * image; for the user's own server its architecture and `input.access`), the components
+ * (`input.components`: workers, cron jobs, services and storage), cost, code changes, DNS from the
+ * requirements and GitHub Actions + GHCR for CI/CD, with deploy tags and signing as the interview
+ * answered. The image's builder comes from `input.build` (Buildpacks and Railpack build an app in a
+ * subfolder from that folder), and the deploy strategy from the option's server and SQLite
+ * (`deployStrategyFor`). The variables the services and the object storage fill come from the
+ * catalog ({@link serviceAppVariables}), and `CRON_SECRET` is generated for route jobs. Every
+ * documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
  */
 export function optionToPlan(option: DesignOption, input: OptionToPlanInput): DeployPlan {
   const { facts, requirements } = input;
   const now = input.now.toISOString();
+  const components = input.components ?? designComponents({ facts, requirements }).components;
 
   const env = new Map<string, DeployPlan["app"]["env"][number]>();
   for (const variable of facts.envVars) {
@@ -154,7 +154,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     const service = serviceUrlKind(variable.name);
     if (
       service !== undefined &&
-      serviceOf(option, URL_SERVICE_KINDS[service]) &&
+      serviceOf(components, URL_SERVICE_KINDS[service]) &&
       (variable.urlScheme === undefined || variable.urlScheme === service)
     ) {
       env.set(variable.name, derived(variable.name, service === "postgres"));
@@ -181,9 +181,10 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       env.set(name, { name, secret: true, source: "generated" });
     }
   }
-  if (serviceOf(option, "postgres")) env.set("DATABASE_URL", derived("DATABASE_URL", true));
-  if (serviceOf(option, "valkey")) env.set("REDIS_URL", derived("REDIS_URL", false));
-
+  // Vercel's cron jobs send the generated secret the app checks (FR-1309).
+  if (components.processes.cron.some((job) => job.enabled && job.route !== undefined)) {
+    env.set("CRON_SECRET", { name: "CRON_SECRET", secret: true, source: "generated" });
+  }
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
   const ownDirect = option.target.provider === "own" && input.access === "public";
@@ -220,7 +221,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         : undefined;
   const buildContext = buildContextFor(facts, build.builder);
 
-  return DeployPlanSchema.parse({
+  const plan = DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: input.createdAt ?? now,
     updatedAt: now,
@@ -232,7 +233,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       ...(dockerfile !== undefined ? { dockerfile } : {}),
       // Database migrations, run before each new version takes traffic (FR-813).
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
-      env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      memoryMb: components.app.memoryMb,
+      env: [...env.values()],
       build: {
         builder: build.builder,
         chosen: build.chosen,
@@ -240,12 +242,18 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         runtime: build.runtime,
         probe: build.probe,
         automatic: build.automatic,
+        // Where the app runs in the user's own image, as detection read it.
+        ...(build.builder === "own-dockerfile" && facts.build.workdir !== undefined
+          ? { workdir: facts.build.workdir }
+          : {}),
       },
     },
     target: targetFor(option, input.access, input.portainer),
-    deploy: deployStrategyFor(option),
-    services: option.services,
-    externalServices: [...option.externalServices],
+    deploy: deployStrategyFor(option, components.storage?.sqlite !== undefined),
+    processes: components.processes,
+    services: components.services,
+    externalServices: [...components.externalServices],
+    ...(components.storage === undefined ? {} : { storage: components.storage }),
     cost: option.cost,
     codeChanges: input.codeChanges,
     dns,
@@ -260,6 +268,60 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       },
     },
     supplyChain: { sign: requirements.signImages ?? false },
+  });
+  for (const variable of storageEnv(facts, plan)) env.set(variable.name, variable);
+  // A SQLite database moved into a folder of its own: its variable points the app there.
+  const move = components.storage?.sqlite === undefined ? undefined : sqliteMove(facts);
+  if (move !== undefined) {
+    if (appRoot(plan) === undefined) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `The app keeps its SQLite database in ${move.from}/, which also holds the app's own files, so OpsCrew would move it to ${move.dir}/ and point ${move.variable} there. It cannot: OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path. plan.yaml was not changed.`,
+        {
+          hint: `Add a WORKDIR with an absolute path to the last stage of ${plan.app.dockerfile} (for example WORKDIR /app), then run \`opscrew analyze\` and \`opscrew design\` again.`,
+        },
+      );
+    }
+    env.set(move.variable, derived(move.variable, false));
+  }
+  // What the services give the app, from the catalog (FR-1314); a secret shows as SECRET.
+  const SECRET = "\u0000secret\u0000";
+  for (const [name, value] of serviceAppVariables(plan, () => SECRET)) {
+    env.set(name, derived(name, value.includes(SECRET)));
+  }
+  return DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+    },
+  });
+}
+
+/**
+ * The object storage variables of the app (plan.md "6."): the keys, `AWS_REGION`,
+ * `AWS_ENDPOINT_URL_S3` and the bucket and endpoint names the app reads, plus Laravel's region
+ * and path-style switch when it reads them. They are derived from the bucket, except a provider's
+ * keys, which are the user's, and R2's endpoint, which needs the user's Cloudflare account.
+ * Garage's keys and endpoint come from its catalog entry.
+ */
+function storageEnv(facts: ProjectFacts, plan: DeployPlan): DeployPlan["app"]["env"] {
+  const storage = plan.storage?.objectStorage;
+  if (storage === undefined) return [];
+  const names = new Set([
+    ...STORAGE_VARIABLES,
+    ...(facts.objectStorage?.variables ?? []),
+    ...facts.envVars
+      .map((variable) => variable.name)
+      .filter((name) => name === "AWS_DEFAULT_REGION" || name === "AWS_USE_PATH_STYLE_ENDPOINT"),
+  ]);
+  return [...names].flatMap((name) => {
+    const kind = storageVariableKind(name);
+    if (kind === undefined) return [];
+    const theUsers =
+      (kind === "key" && storage.provider !== "garage") ||
+      (kind === "endpoint" && storage.provider === "r2");
+    return [{ name, secret: kind === "key", source: theUsers ? "user" : "derived" } as const];
   });
 }
 

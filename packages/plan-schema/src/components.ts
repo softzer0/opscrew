@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   CommandLineSchema,
   CurrencySchema,
+  EnvVarNameSchema,
   MemoryMbSchema,
   RepoPathSchema,
   SelfHostedServiceKindSchema,
@@ -20,7 +21,7 @@ const NAME = /^[a-z][a-z0-9-]*$/;
 const NAME_MESSAGE = "must start with a lower-case letter and hold only letters, digits or hyphens";
 
 /** A worker's or service's name: its Compose service and data folder, never one of OpsCrew's own. */
-const ComponentNameSchema = z
+export const ComponentNameSchema = z
   .string()
   .regex(NAME, { message: NAME_MESSAGE })
   .refine((name) => !RESERVED_NAMES.has(name), {
@@ -98,6 +99,8 @@ function serviceEntry<K extends z.ZodType, O extends z.ZodType>(kind: K, options
     /** `false` keeps the entry and runs nothing. */
     enabled: z.boolean().default(true),
     options,
+    /** The app's own variable for the service's address, when detection found one; it gets the address too. */
+    variable: EnvVarNameSchema.optional(),
     /** One plain sentence on why the app gets it, for example "The app uses mysql2." */
     reason: z.string().min(1),
     /** The catalog's SPDX id or name, shown at design when it is not permissive. */

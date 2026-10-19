@@ -16,6 +16,7 @@ import { runAnalyze } from "../analyze";
 import { runDesign } from "../design";
 import { createTestPhaseDeps, euCatalog, testPlan } from "../testing";
 import { answersToRequirements, normaliseDomain, parseMoney } from "./answers";
+import { buildComponentQuestions } from "./components";
 import { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
 import { IMAGE_RETENTION_NOTE, runInterview } from "./run";
 
@@ -47,7 +48,7 @@ function facts(services: ProjectFacts["services"] = []): ProjectFacts {
   };
 }
 
-const ids = (questions: Question[]) => questions.map((q) => q.id);
+const ids = (questions: readonly { id: string }[]) => questions.map((q) => q.id);
 
 const BASE_ANSWERS: InterviewAnswers = {
   expectedMonthlyUsers: "<1k",
@@ -88,10 +89,21 @@ describe("buildQuestions", () => {
         "deployTags",
       ],
     );
-    const questions = buildQuestions(facts([{ kind: "supabase", evidence: [] }]));
+    const supabase = facts([{ kind: "supabase", evidence: [] }]);
+    const questions = buildQuestions(supabase);
     expect(ids(questions)).toContain("dataCriticality");
-    const keep = questions.find((q) => q.id === "keepExternalServices");
-    expect(keep).toMatchObject({ kind: "confirm", default: true, required: false });
+    // The hosted-service questions are the component questions now.
+    expect(ids(questions)).not.toContain("keepExternalServices");
+    const keep = buildComponentQuestions(supabase, { keepExternalServices: {} });
+    expect(keep).toEqual([
+      expect.objectContaining({
+        id: "keepExternalServices.supabase",
+        prompt: "Keep using your hosted Supabase project?",
+        kind: "confirm",
+        default: true,
+        required: false,
+      }),
+    ]);
   });
 
   it("pre-fills previous answers", () => {
@@ -106,7 +118,7 @@ describe("buildQuestions", () => {
       dataCriticality: "critical",
       domain: "app.example.com",
       dnsProvider: "other",
-      keepExternalServices: [],
+      keepExternalServices: { supabase: false },
       signImages: true,
       deployTags: "tag",
     };
@@ -121,10 +133,11 @@ describe("buildQuestions", () => {
       dataCriticality: "critical",
       domain: "app.example.com",
       dnsProvider: "other",
-      keepExternalServices: false,
       signImages: true,
       deployTags: "tag",
     });
+    const supabase = facts([{ kind: "supabase", evidence: [] }]);
+    expect(buildComponentQuestions(supabase, previous)[0]?.default).toBe(false);
     expect(buildQuestions(facts()).find((q) => q.id === "budgetMonthly")?.default).toBeUndefined();
   });
 });
@@ -200,7 +213,7 @@ describe("provider question", () => {
     uptime: "standard",
     dataCriticality: "none",
     dnsProvider: "none",
-    keepExternalServices: [],
+    keepExternalServices: {},
   });
   const providerQuestion = (questions: Question[]) => questions.find((q) => q.id === "provider");
 
@@ -412,7 +425,7 @@ describe("answersToRequirements", () => {
       dataCriticality: "none",
       domain: "app.example.com",
       dnsProvider: "cloudflare",
-      keepExternalServices: [],
+      keepExternalServices: {},
     });
   });
 
@@ -424,12 +437,25 @@ describe("answersToRequirements", () => {
     );
     expect(kept.dnsProvider).toBe("none");
     expect(kept.domain).toBeUndefined();
-    expect(kept.keepExternalServices).toEqual(["supabase"]);
+    expect(kept.keepExternalServices).toEqual({ supabase: true });
     const dropped = answersToRequirements(
       { ...BASE_ANSWERS, dataCriticality: "important", keepExternalServices: false },
       { now, facts: supabase },
     );
-    expect(dropped.keepExternalServices).toEqual([]);
+    expect(dropped.keepExternalServices).toEqual({ supabase: false });
+    // Per kind, with the earlier answers carried over and the hosted service kept.
+    const mapped = answersToRequirements(
+      { ...BASE_ANSWERS, dataCriticality: "important", keepExternalServices: { s3: true } },
+      {
+        now,
+        facts: supabase,
+        previous: {
+          ...answersToRequirements({ ...BASE_ANSWERS, dataCriticality: "none" }, { now }),
+          keepExternalServices: { stripe: true },
+        },
+      },
+    );
+    expect(mapped.keepExternalServices).toEqual({ supabase: true, stripe: true, s3: true });
   });
 
   it("refuses a Cloudflare domain two levels below its zone for a cloud server", () => {
@@ -536,21 +562,21 @@ describe("runInterview", () => {
   it("asks the questions interactively and pre-fills them on a re-run", async () => {
     const deps = await createTestPhaseDeps({ root: await project("lovable-supabase") });
     await runAnalyze(deps, { ai: false });
-    const asked: Question[][] = [];
+    const asked: { id: string; default?: unknown }[][] = [];
     const first = await runInterview(deps, {
       ask: async (questions) => {
         asked.push(questions);
-        return {
-          ...BASE_ANSWERS,
-          dataCriticality: "critical",
-          keepExternalServices: true,
-          domain: "app.example.com",
-        };
+        return { ...BASE_ANSWERS, dataCriticality: "critical", domain: "app.example.com" };
+      },
+      askComponents: async (questions) => {
+        asked.push(questions);
+        return { "keepExternalServices.supabase": true };
       },
     });
-    expect(ids(asked[0] ?? [])).toContain("keepExternalServices");
     expect(ids(asked[0] ?? [])).toContain("dataCriticality");
-    expect(first.requirements.keepExternalServices).toEqual(["supabase"]);
+    // The hosted service is asked about once the provider is known (FR-1315).
+    expect(ids(asked[1] ?? [])).toEqual(["keepExternalServices.supabase"]);
+    expect(first.requirements.keepExternalServices).toEqual({ supabase: true });
     expect(first.requirements.dnsProvider).toBe("cloudflare");
 
     const second = await runInterview(deps, {
@@ -558,12 +584,18 @@ describe("runInterview", () => {
         asked.push(questions);
         return Object.fromEntries(questions.map((q) => [q.id, q.default]));
       },
+      askComponents: async (questions) => {
+        asked.push(questions);
+        return Object.fromEntries(questions.map((q) => [q.id, q.default]));
+      },
     });
-    const defaults = Object.fromEntries((asked[1] ?? []).map((q) => [q.id, q.default]));
+    const defaults = Object.fromEntries(
+      [...(asked[2] ?? []), ...(asked[3] ?? [])].map((q) => [q.id, q.default]),
+    );
     expect(defaults).toMatchObject({
       dataCriticality: "critical",
       domain: "app.example.com",
-      keepExternalServices: true,
+      "keepExternalServices.supabase": true,
       budgetMonthly: { amount: 10, currency: "EUR" },
     });
     // The signing and deploy-tag defaults are recorded as answered: off.

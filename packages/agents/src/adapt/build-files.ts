@@ -5,6 +5,7 @@ import {
   imageDigest,
   type RenderedFile,
   renderDockerAssets,
+  supercronicArch,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, ImageBuilder, ProjectFacts, RuntimeLanguage } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -51,11 +52,14 @@ export async function renderDockerFiles(
   plan: DeployPlan,
   { dockerfile, warn }: { dockerfile: boolean; warn: (text: string) => void },
 ): Promise<RenderedFile[]> {
+  const supercronic = supercronicArch(plan);
   const options: DockerAssetOptions = {
     appPort: plan.app.port,
     healthPath: plan.app.healthPath,
     app: plan.app,
     dockerfile,
+    // The cron service runs supercronic from the app's image.
+    ...(supercronic === undefined ? {} : { supercronic }),
   };
   // The images the templates have no pin for, found by rendering once without digests.
   const unpinned = new Set<string>();

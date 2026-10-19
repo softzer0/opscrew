@@ -19,6 +19,14 @@ import {
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { answersToRequirements } from "./answers";
+import {
+  applyComponentAnswers,
+  buildComponentQuestions,
+  type ComponentQuestion,
+  hasComponentAnswers,
+  hostedAdditions,
+  splitComponentAnswers,
+} from "./components";
 import { hasFollowUps, splitFollowUps } from "./follow-ups";
 import {
   answersToOwnServer,
@@ -58,8 +66,17 @@ export interface InterviewOptions {
    */
   askServer?: (questions: ServerQuestion[]) => Promise<InterviewAnswers>;
   /**
+   * Asks the questions about the app's components (keep each hosted service, each worker's
+   * command when no convention gives one) and returns the answers keyed by question id
+   * (`keepExternalServices.mongodb`, `workerCommands.bullmq`). Called after `ask`, so the hosted
+   * services' questions can say what a bigger server would cost; only when `answers` holds none.
+   */
+  askComponents?: (questions: ComponentQuestion[]) => Promise<InterviewAnswers>;
+  /**
    * Answers given up front (for example from `--answers <file>`); `ask` is then not called. May
-   * include the server follow-ups as `server.host` keys or a nested `server:` mapping.
+   * include the server follow-ups as `server.host` keys or a nested `server:` mapping, and the
+   * component answers as `keepExternalServices.<kind>` and `workerCommands.<worker>` keys or
+   * nested mappings.
    */
   answers?: InterviewAnswers;
   /** Whether the internet reaches the server, as inspection suggests (the reachability default). */
@@ -256,7 +273,9 @@ async function portainerAnswers(
  * `opscrew/requirements.yaml`. For an existing Portainer (`provider: portainer`) it takes the
  * follow-ups (`portainer.*`) from the answers or `options.askPortainer`, confirms Portainer's
  * certificate and lists its environments through `options.portainer`, and saves them in
- * `.opscrew/server.json` (never the token). Missing or invalid answers throw `OpsCrewError("INVALID_INPUT")`
+ * `.opscrew/server.json` (never the token). The questions about the app's components (each hosted
+ * service, each worker's command when no convention gives it) come from the answers or
+ * `options.askComponents`. Missing or invalid answers throw `OpsCrewError("INVALID_INPUT")`
  * listing them; nothing is written then.
  */
 export async function runInterview(
@@ -285,14 +304,28 @@ export async function runInterview(
     else if (options.ask !== undefined) answers = await options.ask(questions);
     let split = splitFollowUps(answers, "server", SERVER_FIELDS);
     const portainerSplit = splitFollowUps(split.rest, "portainer", PORTAINER_FIELDS);
+    let componentSplit = splitComponentAnswers(portainerSplit.rest, facts);
 
-    const requirements = answersToRequirements(portainerSplit.rest, {
+    let requirements = answersToRequirements(componentSplit.rest, {
       now: deps.clock.now(),
       facts,
       appCandidates,
       ...context,
       ...(previous !== undefined ? { previous } : {}),
     });
+    // Asked once the provider and region are known: a hosted service's question names the price
+    // of the server running it would need.
+    if (!hasComponentAnswers(componentSplit) && options.askComponents !== undefined) {
+      const questions = buildComponentQuestions(
+        facts,
+        requirements,
+        await hostedAdditions(deps, facts, requirements),
+      );
+      if (questions.length > 0) {
+        componentSplit = splitComponentAnswers(await options.askComponents(questions), facts);
+      }
+    }
+    requirements = applyComponentAnswers(requirements, componentSplit);
     let ownServer: OwnServerAnswers | undefined;
     let damagedRecord = false;
     if (requirements.provider === "own") {

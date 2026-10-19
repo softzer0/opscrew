@@ -65,6 +65,17 @@ export function hasFollowUps(split: Pick<FollowUps<string>, "values" | "unknown"
   return split.unknown.length > 0 || Object.keys(split.values).length > 0;
 }
 
+/** A yes-or-no answer: a boolean, or `yes`, `y`, `true`, `no`, `n`, `false`; `undefined` otherwise. */
+export function booleanAnswer(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    if (["yes", "y", "true"].includes(text)) return true;
+    if (["no", "n", "false"].includes(text)) return false;
+  }
+  return undefined;
+}
+
 /** A port answer (a number, or its digits as text) from 1 to 65535; `undefined` otherwise. */
 export function portAnswer(value: unknown): number | undefined {
   const text = String(value).trim();

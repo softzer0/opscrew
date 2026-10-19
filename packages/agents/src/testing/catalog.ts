@@ -181,7 +181,7 @@ export function makeRequirements(overrides: Partial<Requirements> = {}): Require
     uptime: "standard",
     dataCriticality: "none",
     dnsProvider: "none",
-    keepExternalServices: [],
+    keepExternalServices: {},
     ...overrides,
   };
 }

@@ -10,6 +10,7 @@ import {
   type Requirements,
   serviceOf,
 } from "@opscrew/plan-schema";
+import { type Components, memoryText } from "./components";
 import {
   containersText,
   OWN_SERVER_MEMORY_TOLERANCE,
@@ -116,6 +117,8 @@ export interface OwnServerOptionInput {
   access: OwnServerAccess;
   /** How the site is served (default: from `access`, a public server as DNS only). */
   serving?: OwnServerServing;
+  /** What runs next to the app (`designComponents`); by default designed from the facts. */
+  components?: Components;
 }
 
 export interface OwnServerDesign {
@@ -185,7 +188,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
       },
     );
   }
-  const sizing = sizeFor(facts, requirements);
+  const sizing = sizeFor(facts, requirements, input.components);
   const containers = containersText(sizing);
   const arch = server.architecture === "arm" ? "arm64" : "amd64";
 
@@ -223,6 +226,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
         : "";
   const summary = [
     `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind Caddy.${served}`,
+    memoryText(sizing.components, server.memoryGb * 1024),
     OWN_SERVER_PRICE_NOTE,
     OWN_SERVER_BACKUPS_NOTE,
   ].join(" ");

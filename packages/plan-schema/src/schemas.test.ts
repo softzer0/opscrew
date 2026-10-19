@@ -1273,6 +1273,7 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
       };
       probe: "node" | "python" | "ruby" | "php" | "wget" | "bash" | "none";
       automatic?: "generated-dockerfile" | "own-dockerfile" | "buildpacks" | "railpack";
+      workdir?: string;
     }>();
     for (const probe of ["node", "python", "ruby", "php", "wget", "bash", "none"]) {
       expect(DeployPlanSchema.parse(withBuild(plan, { ...build, probe })).app.build?.probe).toBe(
@@ -1287,6 +1288,23 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
     expect(pathsOf(DeployPlanSchema.safeParse(withBuild(plan, noProbe)))).toEqual([
       "app.build.probe",
     ]);
+  });
+
+  it("keeps the user's own Dockerfile's working directory, an absolute path", async () => {
+    const plan = await validPlan();
+    const own = { ...build, builder: "own-dockerfile", probe: "none", workdir: "/srv/app" };
+    expect(DeployPlanSchema.parse(withBuild(plan, own)).app.build?.workdir).toBe("/srv/app");
+    for (const workdir of ["app", "/app/", "/my app", "$HOME"]) {
+      const result = DeployPlanSchema.safeParse(withBuild(plan, { ...own, workdir }));
+      expect(pathsOf(result), workdir).toEqual(["app.build.workdir"]);
+    }
+    const architecture = parseArtifact("architecture", await fixture("architecture.json"), "f");
+    const facts = (workdir: string) => ({
+      ...architecture.facts,
+      build: { ...architecture.facts.build, workdir },
+    });
+    expect(ProjectFactsSchema.parse(facts("/app")).build.workdir).toBe("/app");
+    expect(pathsOf(ProjectFactsSchema.safeParse(facts("app")))).toEqual(["build.workdir"]);
   });
 
   it("keeps the version as the app declares it: major, major.minor or major.minor.patch", async () => {

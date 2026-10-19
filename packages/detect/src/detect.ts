@@ -86,6 +86,7 @@ import {
   scanSource,
 } from "./sources";
 import { detectObjectStorage, detectSqlite } from "./storage";
+import { dockerfileWorkdir } from "./workdir";
 
 /** Options for {@link detectProject}. */
 export interface DetectOptions {
@@ -586,6 +587,8 @@ export async function detectProjectDetails(
     (f) => isWithin(appDir, f) && isAppCodeFile(relativeTo(appDir, f)),
   );
   const dockerText = dockerfile ? await read(dockerfile) : undefined;
+  const workdir = dockerText === undefined ? undefined : dockerfileWorkdir(dockerText);
+  if (workdir !== undefined) build.workdir = workdir;
   const explicitPort = [
     scripts["start:prod"],
     scripts["start:production"],

@@ -120,6 +120,29 @@ describe("opscrew_interview_questions signing and deploy-tags defaults", () => {
   });
 });
 
+describe("the interview tools and the app's components", () => {
+  it("ask for a worker's command no convention gives, and save the flat answer", async () => {
+    const { call, root } = await connect({});
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "shop", dependencies: { express: "^5.0.0", bullmq: "^5.0.0" } }),
+    );
+    const listed = await call("opscrew_interview_questions");
+    const data = listed.structuredContent as { componentQuestions: { id: string }[] };
+    expect(data.componentQuestions.map((q) => q.id)).toEqual(["workerCommands.bullmq"]);
+    expect(textOf(listed)).toContain(
+      "Which command starts the worker bullmq? (answer id: workerCommands.bullmq)",
+    );
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, "workerCommands.bullmq": "node dist/worker.js" },
+    });
+    expect(saved.isError).toBeFalsy();
+    const { files } = resolveProjectPaths(root, { env: {} });
+    const requirements = await readArtifact("requirements", files.requirements);
+    expect(requirements.workerCommands).toEqual({ bullmq: "node dist/worker.js" });
+  });
+});
+
 describe("opscrew_save_requirements provider summary", () => {
   it("reports DigitalOcean when no provider is given and only DIGITALOCEAN_TOKEN is set", async () => {
     const token = fakeSecret("digitalocean-token");

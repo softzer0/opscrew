@@ -137,6 +137,10 @@
             "outputDir": {
               "type": "string",
               "minLength": 1
+            },
+            "workdir": {
+              "type": "string",
+              "pattern": "^\\/(?:[^/\\s\\\\$]+(?:\\/[^/\\s\\\\$]+)*)?$"
             }
           },
           "additionalProperties": false

@@ -15,6 +15,8 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import { requestedProvider, requestedRegion } from "../providers";
+import { EDGE_MEMORY_MB, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { type Components, memoryText } from "./components";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -31,6 +33,8 @@ export interface BuildDesignOptionsInput {
   catalog: ComputeCatalog;
   /** Current time; used to say how old a static price table is. Defaults to the catalogue date. */
   now?: Date;
+  /** What runs next to the app (`designComponents`); by default designed from the facts. */
+  components?: Components;
 }
 
 /** Option tiers, in display order. */
@@ -70,7 +74,7 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   const { profile } = wording;
   const region = requestedRegion(requirements);
   if (region === undefined) throw new Error(`${provider} requirements need a region.`);
-  const sizing = sizeFor(facts, requirements);
+  const sizing = sizeFor(facts, requirements, input.components);
   const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";
 
@@ -130,11 +134,12 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   if (dedicated) picked.push(["dedicated", dedicated]);
   if (picked.length === 0) {
     const where = locations.map((l) => profile.locationNames[l] ?? l).join(" or ");
+    const memory = Math.round(sizing.memoryGb * 10) / 10;
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `No available x86 ${wording.name} ${profile.serverNoun} in ${where} has the ${sizing.vcpus} vCPU, ${sizing.memoryGb} GB memory and ${sizing.diskGb} GB disk this app needs.`,
+      `No available x86 ${wording.name} ${profile.serverNoun} in ${where} has the ${sizing.vcpus} vCPU, ${memory} GB memory and ${sizing.diskGb} GB disk this app needs (its containers' memory limits add up to ${sizing.limitsMb} MB, plus ${EDGE_MEMORY_MB + SYSTEM_RESERVE_MB} MB for OpsCrew's edge and the system).`,
       {
-        hint: "Run `opscrew interview` again and choose another region or a smaller expected number of users.",
+        hint: "Run `opscrew interview` again and choose another region or a smaller expected number of users, or lower the memory limits in opscrew/plan.yaml, then run `opscrew design` again.",
       },
     );
   }
@@ -245,13 +250,17 @@ function toOption(
     ? `live ${wording.profile.serverNoun} price, ${notLive.map((r) => `${r.what} at ${r.rate}`).join(", ")}`
     : priceLabel(cost);
   const price = `${formatMoney(cost.monthly)}/month (${label}, ${cost.pricesIncludeVat ? "including" : "excluding"} ${tax})`;
+  const serverMb = offer.memoryGb * 1024;
   const summary = [
     `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind Caddy.`,
     `${price}.`,
     backups ? "Automated backups are on." : "Automated backups are off.",
+    memoryText(sizing.components, serverMb, cost.monthly),
   ].join(" ");
 
   const tradeoffs = [...TIER_TRADEOFFS[tier]];
+  const headroom = memoryHeadroom(serverMb, sizing.limitsMb);
+  if (headroom.low) tradeoffs.push(lowHeadroomText(offer.id, headroom.free));
   if (context.regionNote !== undefined) tradeoffs.push(context.regionNote);
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
   if (serviceOf(sizing, "postgres")) {
@@ -314,6 +323,14 @@ function toOption(
     recommended: context.recommended,
     tradeoffs,
   };
+}
+
+/**
+ * The warning for a server whose memory the containers' limits leave less than 15% of free, after
+ * OpsCrew's edge and the system's reserve.
+ */
+export function lowHeadroomText(serverType: string, free: number): string {
+  return `The ${serverType} server keeps only ${Math.max(0, Math.round(free * 100))}% of its memory free after the containers' memory limits, OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Choose a bigger option, or lower a memory limit in opscrew/plan.yaml.`;
 }
 
 /** The cheapest option's monthly cost converted to the budget currency. */

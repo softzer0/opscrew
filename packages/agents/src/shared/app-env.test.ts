@@ -392,6 +392,7 @@ describe("assembleAppEnv: exact values", () => {
       },
       build: { NEXT_PUBLIC_SITE: "https://shop.example.com" },
       db: { user: "app", name: "app", password: "generated-value-0123456789" },
+      services: { db: { password: "generated-value-0123456789" } },
     });
     // The env-file texts are what they always were (the value with a quote is escaped for Compose).
     expect(result.appEnv).toBe(
@@ -405,5 +406,163 @@ describe("assembleAppEnv: exact values", () => {
     );
     expect(result.buildEnv).toBe("NEXT_PUBLIC_SITE=https://shop.example.com\n");
     expect(result.defaulted).toEqual(["DJANGO_DEBUG"]);
+  });
+});
+
+describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", () => {
+  const VERSIONS: Record<string, string> = {
+    garage: "2.4",
+    kafka: "4.3",
+    mysql: "8.4",
+    postgres: "17",
+    rabbitmq: "4.3",
+    valkey: "8",
+  };
+  const entry = (kind: string, extra: Record<string, unknown> = {}) => ({
+    kind,
+    version: VERSIONS[kind],
+    memoryMb: 512,
+    reason: "The app uses it.",
+    licence: "test",
+    ...extra,
+  });
+  const derived = (name: string, secret = false) => ({ name, secret, source: "derived" as const });
+  const withComponents = (env: Env, components: Record<string, unknown>): DeployPlan =>
+    DeployPlanSchema.parse({ ...plan(env), ...components });
+  const HEX = /^[0-9a-f]{64}$/;
+
+  it("fills each running service's variables, with secrets generated once and kept", async () => {
+    const components = {
+      services: [
+        entry("mysql"),
+        entry("rabbitmq", { variable: "CELERY_BROKER_URL" }),
+        entry("valkey", { options: { mode: "queue" } }),
+        entry("kafka"),
+      ],
+    };
+    const env: Env = [derived("CELERY_BROKER_URL", true), derived("DATABASE_URL", true)];
+    const first = await assembleAppEnv({ plan: withComponents(env, components), dotenvText: "" });
+    const mysql = first.generated.services?.mysql;
+    const rabbitmq = first.generated.services?.rabbitmq;
+    expect(mysql?.password).toMatch(HEX);
+    expect(mysql?.["root-password"]).toMatch(HEX);
+    expect(rabbitmq?.password).toMatch(HEX);
+    const amqp = `amqp://app:${rabbitmq?.password}@rabbitmq:5672/%2F`;
+    expect(first.values.app).toEqual({
+      AMQP_URL: amqp,
+      CELERY_BROKER_URL: amqp,
+      DATABASE_URL: `mysql://app:${mysql?.password}@mysql:3306/app`,
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092",
+      KAFKA_BROKERS: "kafka:9092",
+      RABBITMQ_URL: amqp,
+      REDIS_URL: "redis://queue:6379",
+    });
+    // For the services' own environment.
+    expect(first.values.services).toEqual({ mysql, rabbitmq });
+    const again = await assembleAppEnv({
+      plan: withComponents(env, components),
+      dotenvText: "",
+      previous: first.generated,
+    });
+    expect(again.values.app).toEqual(first.values.app);
+    expect(again.generated).toEqual(first.generated);
+  });
+
+  it("gives DATABASE_URL to the database whose variable it is, and the other its own name", async () => {
+    const components = {
+      services: [
+        entry("postgres", { variable: "POSTGRES_URL" }),
+        entry("mysql", { variable: "DATABASE_URL" }),
+      ],
+    };
+    const env: Env = [
+      derived("DATABASE_URI", true),
+      derived("DATABASE_URL", true),
+      derived("POSTGRES_URL", true),
+    ];
+    const result = await assembleAppEnv({
+      plan: withComponents(env, components),
+      dotenvText: "",
+      password: () => "pw",
+    });
+    expect(result.values.app).toEqual({
+      // An alias of Postgres's address keeps Postgres's.
+      DATABASE_URI: "postgresql://app:pw@db:5432/app",
+      DATABASE_URL: "mysql://app:pw@mysql:3306/app",
+      POSTGRES_URL: "postgresql://app:pw@db:5432/app",
+    });
+    expect(result.dbEnv).toContain("POSTGRES_PASSWORD=pw");
+  });
+
+  it("generates CRON_SECRET once for the cron jobs that call the app's routes", async () => {
+    const env: Env = [{ name: "CRON_SECRET", secret: true, source: "generated" }];
+    const first = await assembleAppEnv({ plan: plan(env), dotenvText: "" });
+    const secret = first.values.app.CRON_SECRET;
+    expect(secret).toMatch(/^\S{32}$/);
+    expect(first.generated.env).toMatchObject({ CRON_SECRET: secret });
+    const again = await assembleAppEnv({ plan: plan(env), previous: first.generated });
+    expect(again.values.app.CRON_SECRET).toBe(secret);
+  });
+
+  const storage = (provider: string, region: string) => ({
+    provider,
+    bucket: "mysite-uploads",
+    region,
+    expected: { storageGb: 10, egressGbPerMonth: 50 },
+    price: { monthly: 0, currency: "USD", source: "test", checkedOn: "2026-10-19" },
+  });
+
+  it("gives Garage's keys, endpoint, region and bucket to the app", async () => {
+    const env: Env = [
+      derived("AWS_ACCESS_KEY_ID", true),
+      derived("AWS_ENDPOINT_URL_S3"),
+      derived("AWS_REGION"),
+      derived("AWS_S3_ENDPOINT_URL"),
+      derived("AWS_SECRET_ACCESS_KEY", true),
+      derived("S3_BUCKET"),
+    ];
+    const result = await assembleAppEnv({
+      plan: withComponents(env, {
+        services: [entry("garage", { memoryMb: 64, variable: "AWS_S3_ENDPOINT_URL" })],
+        storage: { objectStorage: storage("garage", "garage") },
+      }),
+      dotenvText: "",
+    });
+    const garage = result.generated.services?.garage;
+    expect(garage?.["key-id"]).toMatch(/^GK[0-9a-f]{24}$/);
+    expect(garage?.["rpc-secret"]).toMatch(HEX);
+    expect(result.values.app).toEqual({
+      AWS_ACCESS_KEY_ID: garage?.["key-id"],
+      AWS_ENDPOINT_URL_S3: "http://garage:3900",
+      AWS_REGION: "garage",
+      AWS_S3_ENDPOINT_URL: "http://garage:3900",
+      AWS_SECRET_ACCESS_KEY: garage?.["secret-key"],
+      S3_BUCKET: "mysite-uploads",
+    });
+  });
+
+  it("gives a provider's bucket its endpoint, region and name, and takes the user's key", async () => {
+    const key = fakeSecret("aws-access-key-id");
+    const secret = fakeSecret("aws-secret-access-key");
+    const env: Env = [
+      { name: "AWS_ACCESS_KEY_ID", secret: true, source: "user" },
+      derived("AWS_BUCKET"),
+      derived("AWS_DEFAULT_REGION"),
+      derived("AWS_ENDPOINT_URL_S3"),
+      { name: "AWS_SECRET_ACCESS_KEY", secret: true, source: "user" },
+      derived("AWS_USE_PATH_STYLE_ENDPOINT"),
+    ];
+    const result = await assembleAppEnv({
+      plan: withComponents(env, { storage: { objectStorage: storage("hetzner", "fsn1") } }),
+      dotenvText: `AWS_ACCESS_KEY_ID=${key}\nAWS_SECRET_ACCESS_KEY=${secret}\n`,
+    });
+    expect(result.values.app).toMatchObject({
+      AWS_ACCESS_KEY_ID: key,
+      AWS_BUCKET: "mysite-uploads",
+      AWS_DEFAULT_REGION: "fsn1",
+      AWS_ENDPOINT_URL_S3: "https://fsn1.your-objectstorage.com",
+      AWS_SECRET_ACCESS_KEY: secret,
+      AWS_USE_PATH_STYLE_ENDPOINT: "true",
+    });
   });
 });

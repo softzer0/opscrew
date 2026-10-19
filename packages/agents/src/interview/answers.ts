@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { isRecord, OpsCrewError } from "@opscrew/core";
 import { normalizeAppDir } from "@opscrew/detect";
 import {
   type Money,
@@ -8,6 +8,7 @@ import {
   type Requirements,
   RequirementsSchema,
 } from "@opscrew/plan-schema";
+import { hostedKinds } from "../design/components";
 import { deepDomainProblem } from "../shared";
 import { isBlank } from "./follow-ups";
 import {
@@ -52,7 +53,8 @@ const DESCRIPTIONS: Record<QuestionId, string> = {
   dataCriticality: "how bad losing data would be",
   domain: "domain",
   dnsProvider: "DNS provider",
-  keepExternalServices: "external services to keep",
+  keepExternalServices: "whether to keep each hosted service",
+  workerCommands: "commands of the workers",
   contactEmail: "contact email",
   notes: "notes",
   appDir: "app to deploy",
@@ -133,18 +135,36 @@ export function parseMoney(value: unknown): Money | undefined {
   return undefined;
 }
 
-function serviceList(value: unknown): unknown {
-  if (typeof value === "boolean") return value ? ["supabase"] : [];
-  if (typeof value === "string") {
-    return value
-      .split(/[\s,]+/)
-      .map((s) => s.trim().toLowerCase())
-      .filter((s) => s !== "");
+/**
+ * The `keepExternalServices` answers (FR-1315): every hosted service the app uses (`hosted`) is
+ * kept unless an answer says otherwise, each previous answer carries over kind by kind, and a
+ * given answer wins: `true` or `false` for every hosted service, a mapping by kind, or the kinds to
+ * keep as text or a list. Anything else is left for the schema to refuse.
+ */
+function keepAnswers(
+  given: unknown,
+  previous: Requirements["keepExternalServices"] | undefined,
+  hosted: readonly string[],
+): unknown {
+  const keep: Record<string, unknown> = {
+    ...Object.fromEntries(hosted.map((kind) => [kind, true])),
+    ...previous,
+  };
+  const kinds =
+    typeof given === "string" ? given.split(/[\s,]+/) : Array.isArray(given) ? given : undefined;
+  if (typeof given === "boolean") {
+    for (const kind of hosted) keep[kind] = given;
+  } else if (isRecord(given)) {
+    Object.assign(keep, given);
+  } else if (kinds !== undefined) {
+    for (const kind of kinds) {
+      if (typeof kind !== "string") return given;
+      if (kind.trim() !== "") keep[kind.trim().toLowerCase()] = true;
+    }
+  } else if (given !== undefined) {
+    return given;
   }
-  if (Array.isArray(value)) {
-    return [...new Set(value.map((s) => (typeof s === "string" ? s.trim().toLowerCase() : s)))];
-  }
-  return value;
+  return keep;
 }
 
 /**
@@ -220,7 +240,13 @@ export function answersToRequirements(
     schemaVersion: 1,
     answeredAt: options.now.toISOString(),
   };
+  draft.keepExternalServices = keepAnswers(
+    given("keepExternalServices") ? answers.keepExternalServices : undefined,
+    options.previous?.keepExternalServices,
+    options.facts === undefined ? [] : hostedKinds(options.facts),
+  );
   for (const id of QUESTION_IDS) {
+    if (id === "keepExternalServices") continue;
     let value = pick(id);
     if (isBlank(value)) continue;
     if (ENUM_FIELDS.has(id) && typeof value === "string") value = value.trim().toLowerCase();
@@ -236,7 +262,6 @@ export function answersToRequirements(
     if ((id === "contactEmail" || id === "notes") && typeof value === "string") {
       value = value.trim();
     }
-    if (id === "keepExternalServices") value = serviceList(value);
     if (id === "appDir" && typeof value === "string") {
       value = normalizeAppDir(value);
       if (given(id) && appCandidates.length > 0 && !appCandidates.includes(value as string)) {
@@ -249,7 +274,6 @@ export function answersToRequirements(
     if (isBlank(value)) continue;
     draft[id] = value;
   }
-  draft.keepExternalServices ??= [];
   if (draft.domain === undefined) draft.dnsProvider = "none";
   else draft.dnsProvider ??= "cloudflare";
 

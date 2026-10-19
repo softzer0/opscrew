@@ -141,7 +141,7 @@ async function checks(o: Setup = {}) {
     dataCriticality: "important",
     dnsProvider: "cloudflare",
     domain: "shop.example.com",
-    keepExternalServices: [],
+    keepExternalServices: {},
   };
   await writeArtifact("requirements", deps.paths.files.requirements, requirements);
   if (o.plan) await writeArtifact("plan", deps.paths.files.plan, portainerPlan());
