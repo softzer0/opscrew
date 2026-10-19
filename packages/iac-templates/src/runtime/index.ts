@@ -1,20 +1,26 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
 
 import type { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { webOnlyFromCloudflare } from "../predicates";
 import { wrongTarget } from "../providers";
 import { TUNNEL_ORIGIN_PORT, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
+import { hasCronJobs } from "../workflow/shared";
+import {
+  crontab,
+  memoryLimit,
+  renderProcesses,
+  renderServices,
+  SERVER_CRONTAB,
+} from "./components";
 import { appHealthcheck } from "./healthcheck";
 import {
-  cacheService,
   caddyfile,
   cloudflaredService,
   composeLiteral,
-  dbService,
   hardened,
   PROXY_UPSTREAM,
   proxyService,
@@ -60,26 +66,34 @@ export function siteHosts(plan: DeployPlan): string[] {
 }
 
 /**
- * `opscrew/runtime/compose.yaml`: app, optional Postgres and Valkey, kamal-proxy (`proxy`) switching
- * between app copies, and Caddy in front. The app has no container name and no host port, so a
- * second copy can start next to it. Throws for a Portainer target, whose stack
+ * `opscrew/runtime/compose.yaml`: the app, its workers and cron, the plan's services (see
+ * {@link renderServices}), kamal-proxy (`proxy`) switching between app copies, and Caddy in front.
+ * The app has no container name and no host port, so a second copy can start next to it. Every
+ * container of the app's image has the memory limit its plan entry gives (`app.memoryMb` for the
+ * app, the release command and cron). Throws for a Portainer target, whose stack
  * `renderPortainerStack` renders.
+ * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned.
  */
 export function renderCompose(plan: DeployPlan): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
   const image = "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}";
   const healthcheck = appHealthcheck(plan);
+  const backing = renderServices(plan, { kind: "server" });
+  const environment = () => ({
+    env_file: ["app.env"],
+    environment: { PORT: String(plan.app.port) },
+  });
   const app: Record<string, unknown> = {
     image,
     restart: "unless-stopped",
-    env_file: ["app.env"],
-    environment: { PORT: String(plan.app.port) },
+    ...environment(),
     ...(healthcheck === undefined ? {} : { healthcheck }),
     // Docker waits this long after SIGTERM: the drain, plus time to finish shutting down.
     stop_grace_period: `${plan.deploy.drainSeconds + 5}s`,
+    ...memoryLimit(plan.app.memoryMb),
     ...hardened({ noCapabilities: true, internal: true }),
+    ...(Object.keys(backing.dependsOn).length > 0 ? { depends_on: backing.dependsOn } : {}),
   };
-  const dependsOn: Record<string, { condition: string }> = {};
   const services: Record<string, unknown> = { app };
   const release = plan.app.releaseCommand;
   if (release !== undefined) {
@@ -88,21 +102,22 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     services.release = {
       image,
       profiles: ["release"],
-      env_file: ["app.env"],
-      environment: { PORT: String(plan.app.port) },
+      ...environment(),
       command: ["sh", "-c", composeLiteral(release)],
+      ...memoryLimit(plan.app.memoryMb),
       ...hardened({ noCapabilities: true, internal: true }),
     };
   }
-  if (serviceOf(plan, "postgres")) {
-    services.db = dbService({ env_file: ["db.env"] }, "/srv/data/postgres");
-    dependsOn.db = { condition: "service_healthy" };
-  }
-  if (serviceOf(plan, "valkey")) {
-    services.cache = cacheService("/srv/data/valkey");
-    dependsOn.cache = { condition: "service_started" };
-  }
-  if (Object.keys(dependsOn).length > 0) app.depends_on = dependsOn;
+  Object.assign(
+    services,
+    renderProcesses(plan, {
+      image,
+      environment,
+      dependsOn: backing.dependsOn,
+      crontab: { volumes: [SERVER_CRONTAB.mount] },
+    }),
+    backing.services,
+  );
 
   services.proxy = proxyService();
   services.caddy = {
@@ -117,11 +132,12 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     ...hardened({ internal: true }),
   };
 
+  const volumes = [...backing.volumes, "caddy_data", "caddy_config", "kamal-proxy-config"];
   const document = {
     name: plan.app.name,
     services,
     networks: { internal: {} },
-    volumes: { caddy_data: {}, caddy_config: {}, "kamal-proxy-config": {} },
+    volumes: Object.fromEntries(volumes.map((volume) => [volume, {}])),
   };
   const header = release === undefined ? HEADER : `${HEADER}\n${RELEASE_NOTE}`;
   return {
@@ -129,6 +145,24 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     content: `${header}\n${stringify(document, { lineWidth: 0 })}`,
     kind: "runtime",
   };
+}
+
+/**
+ * The files next to `opscrew/runtime/compose.yaml` on a server: each service's settings files in
+ * `opscrew/runtime/services/<name>/` (MySQL's `my.cnf`, `rabbitmq.conf`, `nats.conf`,
+ * `garage.toml`) and, with an enabled cron job, `opscrew/runtime/crontab`. None holds a secret.
+ * Throws for a Portainer target, whose stack holds them inline.
+ * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned, or a cron
+ * route the image cannot call.
+ */
+export function renderRuntimeFiles(plan: DeployPlan): RenderedFile[] {
+  if (plan.target.provider === "portainer") throw notForPortainer();
+  return [
+    ...renderServices(plan, { kind: "server" }).files,
+    ...(hasCronJobs(plan)
+      ? [{ path: SERVER_CRONTAB.path, content: crontab(plan), kind: "runtime" as const }]
+      : []),
+  ];
 }
 
 /**

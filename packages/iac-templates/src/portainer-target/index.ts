@@ -12,6 +12,7 @@ export {
   type PortainerStackFile,
   portainerConnectorStackName,
   portainerImageVersion,
+  portainerServiceVariable,
   portainerStackEnvKeys,
   portainerStackName,
   portainerStackVolumes,

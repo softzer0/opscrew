@@ -4,7 +4,7 @@
  */
 import type { DeployPlan, PlanService, SelfHostedServiceKind } from "@opscrew/plan-schema";
 import type { IMAGES } from "../pins";
-import type { RenderedFile } from "../types";
+import type { ServiceInitStep } from "../workflow/switch";
 
 /** A key of `IMAGES` in pins.ts: an image pinned as `repo:tag@sha256:…`. */
 export type ImagePinKey = keyof typeof IMAGES;
@@ -13,8 +13,11 @@ export type ImagePinKey = keyof typeof IMAGES;
 export interface GeneratedSecret {
   /** The secret's name within the service, for example `password`. */
   name: string;
-  /** `hex32`: 32 random bytes as hex. */
-  format: "hex32";
+  /**
+   * `hex32`: 32 random bytes as hex. `garage-key-id`: `GK` and 12 random bytes as hex, the form of
+   * the key IDs Garage makes itself.
+   */
+  format: "hex32" | "garage-key-id";
 }
 
 /**
@@ -28,14 +31,30 @@ export interface ServiceContext {
   service: PlanService;
   /** The reference to one of the entry's {@link ServiceSpec.secrets}, by its name. */
   secretRef: (name: string) => string;
+  /**
+   * The app's own variable for the service's address, when detection found one
+   * (`facts.services[].variable`): {@link ServiceSpec.appVariables} gives it the address too.
+   */
+  variable?: string;
+}
+
+/** A settings file OpsCrew writes for a service and mounts read-only. */
+export interface ServiceConfigFile {
+  /** Its name in `opscrew/runtime/services/<service>/`, for example `my.cnf`. */
+  name: string;
+  /** Where it is mounted in the container. */
+  target: string;
+  content: string;
 }
 
 /** One kind of backing service: everything the renderers and design need to run it. */
 export interface ServiceSpec {
   /** The kind in `plan.services[].kind`. */
   kind: SelfHostedServiceKind;
+  /** Its name in plain text, for example `MySQL`. */
+  title: string;
   image: ImagePinKey;
-  /** Conservative: the LTS line or the one before the newest. */
+  /** Conservative: the LTS line or the one before the newest; the version of the pin's tag. */
   defaultVersion: string;
   /** True when Dependabot proposes no major update. */
   majorLocked: boolean;
@@ -44,25 +63,45 @@ export interface ServiceSpec {
   memory: { defaultMb: number; minimumMb: number; smallestServerMb: number };
   /** Internal only, never published. */
   port: number;
-  /** In the container; mounted from `/srv/data/<app>/<service>`. */
-  dataDir: string;
+  /**
+   * Where the data is in the container: one folder, mounted from `/srv/data/<app>/<service>`
+   * (Portainer: the volume `<service>_data`), or several by name, each mounted from
+   * `/srv/data/<app>/<service>/<name>` (Portainer: `<service>_<name>`), for images that declare
+   * several volumes (MongoDB's `db` and `configdb`).
+   */
+  dataDir: string | Record<string, string>;
+  /**
+   * True for an image that starts as its own user (Kafka, Redpanda): it cannot write to a folder
+   * Docker creates for it as root, so on a server too it keeps its data in the volume
+   * `<service>_data`, which Docker creates with the image's owner.
+   */
+  namedVolume?: boolean;
   /** Mounted settings files, for example `my.cnf` or `rabbitmq.conf`. */
-  configFiles?: (ctx: ServiceContext) => RenderedFile[];
+  configFiles?: (ctx: ServiceContext) => ServiceConfigFile[];
   /** The container's command, for example `mongod --wiredTigerCacheSizeGB <n>`. */
   command?: (ctx: ServiceContext) => string[];
+  /** The container's hostname, for a service whose data is named after it (RabbitMQ). */
+  hostname?: boolean;
   /** The service's own settings, secrets by reference. */
   environment: (ctx: ServiceContext) => Record<string, string>;
-  /** A Compose `CMD` health check that works with the image's own tools. */
-  healthcheck: string[];
-  /** A one-shot container after the first start: MongoDB's replica set, Garage's layout. */
-  init?: (ctx: ServiceContext) => { command: string[] };
+  /**
+   * A Compose health check that works with the image's own tools (`test` with `CMD` or
+   * `CMD-SHELL` first), checked every 10 seconds and unhealthy after 6 failures; `startSeconds`
+   * for a service whose first start takes longer (failures then do not count).
+   */
+  healthcheck: { test: string[]; timeoutSeconds?: number; startSeconds?: number };
+  /**
+   * The one-time setup the deploy runs in the healthy service on a server, each step only when its
+   * check fails: MongoDB's replica set, Garage's key and bucket.
+   */
+  init?: (ctx: ServiceContext) => ServiceInitStep[];
   secrets: GeneratedSecret[];
   /**
    * How the app logs in. `internal-only`: no login, reachable only from the app's own containers
    * (Valkey, Kafka, Redpanda, OpenSearch).
    */
   auth: "password" | "token" | "key" | "internal-only";
-  /** What the app receives, by its detected names. */
+  /** What the app receives, by the conventional names and its own detected name. */
   appVariables: (ctx: ServiceContext) => Record<string, string>;
   /** Kernel settings the host needs, for example `vm.max_map_count` for the search engines. */
   hostSettings?: { sysctl: Record<string, string> };

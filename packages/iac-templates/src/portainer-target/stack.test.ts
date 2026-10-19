@@ -4,9 +4,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DeployPlanSchema, type SelfHostedServiceKind } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { serviceSpec } from "../catalog";
 import { IMAGES } from "../pins";
 import { renderCaddyfile } from "../runtime";
 import { serviceLogging } from "../runtime/services";
@@ -19,6 +21,7 @@ import {
   PORTAINER_VERSION_PLACEHOLDER,
   portainerConnectorStackName,
   portainerImageVersion,
+  portainerServiceVariable,
   portainerStackEnvKeys,
   portainerStackName,
   portainerStackVolumes,
@@ -46,6 +49,9 @@ type Service = {
   cap_drop?: string[];
   restart?: string;
   healthcheck?: unknown;
+  mem_limit?: string;
+  memswap_limit?: string;
+  deploy?: unknown;
 };
 type Stack = {
   name: string;
@@ -200,11 +206,11 @@ describe("renderPortainerStack", () => {
     expect(release?.restart).toBeUndefined();
     expect(release?.depends_on).toEqual({
       db: { condition: "service_healthy" },
-      cache: { condition: "service_started" },
+      cache: { condition: "service_healthy" },
     });
     expect(fullStack.services.app?.depends_on).toEqual({
       db: { condition: "service_healthy" },
-      cache: { condition: "service_started" },
+      cache: { condition: "service_healthy" },
       release: { condition: "service_completed_successfully" },
     });
     const noRelease = stack(renderPortainerStack(portainerTestPlan(), ctx).content);
@@ -213,12 +219,12 @@ describe("renderPortainerStack", () => {
   });
 
   it("keeps Postgres and Valkey data in named volumes, with no file next to the stack", () => {
-    expect(fullStack.services.db?.volumes).toEqual(["postgres_data:/var/lib/postgresql/data"]);
-    expect(fullStack.services.cache?.volumes).toEqual(["valkey_data:/data"]);
-    expect(Object.keys(fullStack.volumes ?? {})).toEqual(["postgres_data", "valkey_data"]);
+    expect(fullStack.services.db?.volumes).toEqual(["db_data:/var/lib/postgresql/data"]);
+    expect(fullStack.services.cache?.volumes).toEqual(["cache_data:/data"]);
+    expect(Object.keys(fullStack.volumes ?? {})).toEqual(["db_data", "cache_data"]);
     expect(portainerStackVolumes(full)).toEqual([
-      "opscrew-shop_postgres_data",
-      "opscrew-shop_valkey_data",
+      "opscrew-shop_db_data",
+      "opscrew-shop_cache_data",
     ]);
     for (const service of Object.values(fullStack.services)) {
       for (const volume of service.volumes ?? []) expect(volume).not.toMatch(/^[./~]/);
@@ -390,6 +396,173 @@ describe("renderPortainerStack", () => {
       renderPortainerStack(portainerTestPlan({ web: { mode: "caddy" }, proxied: false }), ctx)
         .content,
     ).toMatchSnapshot("caddy");
+  });
+});
+
+/** A plan entry for a service of `kind` at the catalog's defaults. */
+function entry(kind: SelfHostedServiceKind, fields: Record<string, unknown> = {}) {
+  const spec = serviceSpec(kind);
+  return {
+    kind,
+    version: spec.defaultVersion,
+    memoryMb: spec.memory.defaultMb,
+    options: {},
+    reason: "The app uses it.",
+    licence: spec.licence.id,
+    ...fields,
+  };
+}
+
+const componentsBase = portainerTestPlan({ releaseCommand: "npm run migrate", env: TEST_ENV });
+/** A worker, a cron route, MySQL, RabbitMQ and Kafka in a stack (the acceptance snapshot). */
+const components = DeployPlanSchema.parse({
+  ...componentsBase,
+  app: {
+    ...componentsBase.app,
+    memoryMb: 768,
+    build: {
+      builder: "railpack",
+      chosen: "auto",
+      reason: "test",
+      runtime: { language: "node", version: "24" },
+      probe: "node",
+    },
+  },
+  processes: {
+    workers: [{ name: "worker", command: "node worker.js", source: "library", count: 2 }],
+    cron: [{ name: "report", schedule: "0 * * * *", route: "/api/cron/report" }],
+  },
+  services: [entry("mysql"), entry("rabbitmq"), entry("kafka")],
+});
+const componentsFile = renderPortainerStack(components, ctx);
+const componentsStack = stack(componentsFile.content);
+
+describe("the components in a stack", () => {
+  it("runs the workers, cron and services with the app, as on a server (snapshot)", () => {
+    expect(Object.keys(componentsStack.services)).toEqual([
+      "app",
+      "release",
+      "worker",
+      "cron",
+      "mysql",
+      "rabbitmq",
+      "kafka",
+      "caddy",
+      "cloudflared",
+    ]);
+    expect(componentsFile.content).toMatchSnapshot();
+  });
+
+  it("gives every container of the app's image and every service its memory limit", () => {
+    const limits = Object.fromEntries(
+      Object.entries(componentsStack.services)
+        .filter(([name]) => name !== "caddy" && name !== "cloudflared")
+        .map(([name, service]) => [name, [service.mem_limit, service.memswap_limit]]),
+    );
+    expect(limits).toEqual({
+      app: ["768m", "768m"],
+      release: ["768m", "768m"],
+      worker: ["256m", "256m"],
+      cron: ["768m", "768m"],
+      mysql: ["512m", "512m"],
+      rabbitmq: ["384m", "384m"],
+      kafka: ["1024m", "1024m"],
+    });
+    for (const [name, service] of Object.entries(componentsStack.services)) {
+      if (name !== "caddy") expect(service.ports).toBeUndefined();
+    }
+  });
+
+  it("starts the workers and cron after the release command, from the image the stack runs", () => {
+    const { worker, cron, app } = componentsStack.services;
+    expect(worker?.image).toBe(PORTAINER_IMAGE_PLACEHOLDER);
+    expect(worker?.environment).toEqual(app?.environment);
+    expect(worker?.command).toEqual(["exec node worker.js"]);
+    expect(worker?.deploy).toEqual({ replicas: 2 });
+    expect(worker?.depends_on).toEqual(app?.depends_on);
+    expect(worker?.depends_on).toMatchObject({
+      release: { condition: "service_completed_successfully" },
+    });
+    expect(cron?.command).toEqual(["exec supercronic /etc/opscrew/crontab"]);
+    expect(cron?.configs).toEqual([{ source: "crontab", target: "/etc/opscrew/crontab" }]);
+    expect(componentsStack.configs?.crontab?.content).toContain(
+      "0 * * * * node -e \"fetch('http://app:3000/api/cron/report'",
+    );
+  });
+
+  it("passes each service's secrets as OpsCrew's stack variables, its settings files inline and its data in named volumes", () => {
+    const { mysql, rabbitmq, kafka } = componentsStack.services;
+    expect(mysql?.environment).toEqual({
+      MYSQL_DATABASE: "app",
+      MYSQL_USER: "app",
+      MYSQL_PASSWORD: "${OPSCREW_SVC_MYSQL_PASSWORD}",
+      MYSQL_ROOT_PASSWORD: "${OPSCREW_SVC_MYSQL_ROOT_PASSWORD}",
+    });
+    expect(rabbitmq?.environment?.RABBITMQ_DEFAULT_PASS).toBe("${OPSCREW_SVC_RABBITMQ_PASSWORD}");
+    expect(kafka?.environment?.KAFKA_ADVERTISED_LISTENERS).toBe("PLAINTEXT://kafka:9092");
+    expect(mysql?.volumes).toEqual(["mysql_data:/var/lib/mysql"]);
+    expect(mysql?.configs).toEqual([
+      { source: "mysql-my.cnf", target: "/etc/mysql/conf.d/opscrew.cnf" },
+    ]);
+    expect(componentsStack.configs?.["mysql-my.cnf"]?.content).toContain(
+      "innodb_buffer_pool_size = 128M",
+    );
+    expect(mysql?.labels?.["dev.opscrew.config-sha256"]).toMatch(/^[0-9a-f]{64}$/);
+    expect(Object.keys(componentsStack.volumes ?? {})).toEqual([
+      "mysql_data",
+      "rabbitmq_data",
+      "kafka_data",
+    ]);
+    expect(portainerStackVolumes(components)).toEqual([
+      "opscrew-shop_mysql_data",
+      "opscrew-shop_rabbitmq_data",
+      "opscrew-shop_kafka_data",
+    ]);
+  });
+
+  it("lists every variable the stack interpolates: the services' addresses for the app, their secrets for OpsCrew", () => {
+    const keys = portainerStackEnvKeys(components);
+    expect(keys.opscrew).toEqual([
+      "OPSCREW_SVC_MYSQL_PASSWORD",
+      "OPSCREW_SVC_MYSQL_ROOT_PASSWORD",
+      "OPSCREW_SVC_RABBITMQ_PASSWORD",
+      "OPSCREW_TUNNEL_TOKEN",
+    ]);
+    for (const name of ["DATABASE_URL", "AMQP_URL", "RABBITMQ_URL", "KAFKA_BROKERS"]) {
+      expect(keys.app).toContain(name);
+    }
+    expect(interpolated(componentsFile.content)).toEqual([...keys.app, ...keys.opscrew].sort());
+    expect(portainerServiceVariable("search-db", "root-password")).toBe(
+      "OPSCREW_SVC_SEARCH_DB_ROOT_PASSWORD",
+    );
+  });
+
+  it("keeps a service's secrets apart from OpsCrew's own variables, whatever it is called", () => {
+    const tunnel = DeployPlanSchema.parse({
+      ...componentsBase,
+      services: [entry("nats", { name: "tunnel" })],
+    });
+    expect(portainerStackEnvKeys(tunnel).opscrew).toEqual([
+      "OPSCREW_SVC_TUNNEL_TOKEN",
+      "OPSCREW_TUNNEL_TOKEN",
+    ]);
+  });
+
+  it("recreates cron when its crontab changes", () => {
+    const label = (schedule: string) => {
+      const plan = DeployPlanSchema.parse({
+        ...components,
+        processes: {
+          ...components.processes,
+          cron: [{ ...components.processes.cron[0], schedule }],
+        },
+      });
+      return stack(renderPortainerStack(plan, ctx).content).services.cron?.labels?.[
+        "dev.opscrew.config-sha256"
+      ];
+    };
+    expect(label("0 * * * *")).toMatch(/^[0-9a-f]{64}$/);
+    expect(label("*/5 * * * *")).not.toBe(label("0 * * * *"));
   });
 });
 

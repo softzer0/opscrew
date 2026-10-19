@@ -43,34 +43,6 @@ export function hardened(o: { noCapabilities?: boolean; internal?: boolean } = {
   };
 }
 
-/** The Postgres service: `credentials` (`env_file` or `environment`) and its data in `data`. */
-export function dbService(credentials: object, data: string): object {
-  return {
-    image: IMAGES.postgres.ref,
-    restart: "unless-stopped",
-    ...credentials,
-    volumes: [`${data}:/var/lib/postgresql/data`],
-    healthcheck: {
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"],
-      interval: "10s",
-      timeout: "5s",
-      retries: 6,
-    },
-    ...hardened({ internal: true }),
-  };
-}
-
-/** The Valkey service (the app's Redis), its data in `data`. */
-export function cacheService(data: string): object {
-  return {
-    image: IMAGES.valkey.ref,
-    restart: "unless-stopped",
-    command: ["valkey-server", "--appendonly", "yes"],
-    volumes: [`${data}:/data`],
-    ...hardened({ internal: true }),
-  };
-}
-
 /** Where Caddy sends the app's traffic on a server: kamal-proxy, which switches between copies. */
 export const PROXY_UPSTREAM = "proxy:80";
 

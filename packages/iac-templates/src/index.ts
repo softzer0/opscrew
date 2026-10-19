@@ -1,6 +1,14 @@
+export {
+  CATALOG,
+  initStepsFor,
+  pinnedVersion,
+  SERVICE_SPECS,
+  serviceSpec,
+} from "./catalog";
 export type {
   GeneratedSecret,
   ImagePinKey,
+  ServiceConfigFile,
   ServiceContext,
   ServiceSpec,
 } from "./catalog/types";

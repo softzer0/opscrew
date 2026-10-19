@@ -149,8 +149,9 @@ export function renderPortainerRunbook(
       : target.web.mode === "proxy"
         ? `your reverse proxy's route to port ${target.web.port} of the host`
         : "not set yet";
-  const database = serviceOf(plan, "postgres")
-    ? `PostgreSQL in the app's stack, data in the volume \`${app}_postgres_data\``
+  const postgres = serviceOf(plan, "postgres");
+  const database = postgres
+    ? `PostgreSQL in the app's stack, data in the volume \`${app}_${postgres.name}_data\``
     : externalDatabaseCell(plan);
   const dns = portainerDnsRecordNote(plan);
   const lines = [

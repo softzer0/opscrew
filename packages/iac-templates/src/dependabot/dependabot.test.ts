@@ -2,9 +2,10 @@ import type { AppBuild, DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { designProbe, testPlan } from "../__fixtures__/plans";
+import { SERVICE_SPECS } from "../catalog";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { PORTAINER_STACK_TEMPLATE_PATH } from "../portainer-target/stack";
-import { renderDependabot } from "./index";
+import { NO_MAJOR_UPDATES, renderDependabot } from "./index";
 
 function facts(overrides: Partial<ProjectFacts>): ProjectFacts {
   return {
@@ -225,5 +226,39 @@ describe("renderDependabot", () => {
       }
     }
     expect(list.find((u) => u["package-ecosystem"] === "npm")?.ignore).toBeUndefined();
+  });
+
+  it("proposes no major updates of the catalog's services whose majors are the user's", () => {
+    const locked = SERVICE_SPECS.filter((spec) => spec.majorLocked).map((spec) => spec.kind);
+    expect(locked).toEqual([
+      "postgres",
+      "mysql",
+      "mariadb",
+      "mongodb",
+      "rabbitmq",
+      "nats",
+      "kafka",
+      "redpanda",
+      "garage",
+    ]);
+    expect(NO_MAJOR_UPDATES).toEqual([
+      "apache/kafka",
+      "caddy",
+      "dxflrs/garage",
+      "mariadb",
+      "mongo",
+      "mysql",
+      "nats",
+      "node",
+      "postgres",
+      "python",
+      "rabbitmq",
+      "redpandadata/redpanda",
+    ]);
+    const [sample, deployPlan] = EXAMPLES["nextjs-postgres (npm)"] as [ProjectFacts, DeployPlan];
+    const compose = updates(sample, deployPlan).find(
+      (u) => u["package-ecosystem"] === "docker-compose",
+    );
+    expect(compose?.ignore?.map((rule) => rule["dependency-name"])).toEqual(NO_MAJOR_UPDATES);
   });
 });

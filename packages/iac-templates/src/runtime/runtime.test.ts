@@ -74,9 +74,10 @@ describe("renderCompose", () => {
     expect(doc.services.caddy.ports).toEqual(["80:80", "443:443", "443:443/udp"]);
     expect(doc.services.app.image).toMatch(/^\$\{APP_IMAGE:\?/);
     expect(doc.services.app.cap_drop).toEqual(["ALL"]);
+    // Every catalog service has a health check, Valkey's too.
     expect(doc.services.app.depends_on).toEqual({
       db: { condition: "service_healthy" },
-      cache: { condition: "service_started" },
+      cache: { condition: "service_healthy" },
     });
     expect(doc.services.db.healthcheck.test[1]).toContain("$${POSTGRES_USER}");
     expect(file.content).toMatchSnapshot();

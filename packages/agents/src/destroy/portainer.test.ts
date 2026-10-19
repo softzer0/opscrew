@@ -63,7 +63,7 @@ async function deployed(o: PortainerProjectOptions = {}) {
   // The app stack's database volume (Compose made it at the first deploy) and the decoy's.
   s.fake.volumes.push(
     {
-      Name: "opscrew-shop_postgres_data",
+      Name: "opscrew-shop_db_data",
       Labels: { "com.docker.compose.project": "opscrew-shop" },
     },
     { Name: "media_data", Labels: { "com.docker.compose.project": "media" } },
@@ -195,9 +195,9 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.fake.registries).toEqual([]);
     expect(s.fake.volumes.map((volume) => volume.Name).sort()).toEqual([
       "media_data",
-      "opscrew-shop_postgres_data",
+      "opscrew-shop_db_data",
     ]);
-    expect(app).toEqual({ stacks: [], volumes: ["opscrew-shop_postgres_data"] });
+    expect(app).toEqual({ stacks: [], volumes: ["opscrew-shop_db_data"] });
 
     // The webhook, the value key and the saved stack plans leave this computer.
     expect(await exists(s.deps.paths.projectHomeDir, "portainer-webhook")).toBe(false);
@@ -220,7 +220,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       "stack-apply",
       "cloudflare-apply",
     ]);
-    expect(result.remaining.join("\n")).toContain("opscrew-shop_postgres_data");
+    expect(result.remaining.join("\n")).toContain("opscrew-shop_db_data");
     expect(result.remaining.join("\n")).toContain("OpsCrew does not change the host");
     const text = await everythingShown(s);
     for (const secret of forbiddenIn(s)) expect(text).not.toContain(secret);
@@ -296,7 +296,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     const s = await deployed();
     const result = await destroy(s, { deleteData: true });
     expect(s.events).toContain(
-      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_postgres_data",
+      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_db_data",
     );
     expect(s.events.findIndex((event) => /\/stop$/.test(event))).toBeLessThan(
       s.events.findIndex((event) => event.includes("docker/volumes")),
@@ -359,7 +359,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     await destroy(s, { deleteData: true });
     expect(s.events).toEqual([
       "approve:stack-apply",
-      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_postgres_data",
+      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_db_data",
     ]);
     expect(s.fake.volumes.map((volume) => volume.Name)).toEqual(["media_data"]);
 

@@ -2,9 +2,11 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
+import { GARAGE_STORAGE, withServices } from "../catalog/__fixtures__/plans";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
@@ -135,6 +137,54 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
       expect(run.stdout + run.stderr).toContain("Valid configuration");
     }, 300_000);
   }
+
+  it("accepts a stack with every part 1 service, workers and cron", () => {
+    const base = portainerTestPlan({ releaseCommand: "npm run migrate", env: TEST_ENV });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      ...withServices(
+        [
+          { kind: "postgres" },
+          { kind: "valkey", options: { mode: "queue" } },
+          { kind: "mysql" },
+          { kind: "mariadb" },
+          { kind: "mongodb", options: { replicaSet: true } },
+          { kind: "rabbitmq" },
+          { kind: "nats" },
+          { kind: "kafka" },
+          { kind: "redpanda" },
+          { kind: "garage" },
+        ],
+        { storage: GARAGE_STORAGE },
+      ),
+      target: base.target,
+      dns: base.dns,
+      app: {
+        ...base.app,
+        build: {
+          builder: "railpack",
+          chosen: "auto",
+          reason: "test",
+          runtime: { language: "node", version: "24" },
+          probe: "node",
+        },
+      },
+      processes: {
+        workers: [{ name: "worker", command: "node worker.js", source: "library", count: 2 }],
+        cron: [{ name: "report", schedule: "0 * * * *", route: "/api/cron/report" }],
+      },
+    });
+    const content = fillPortainerStack(renderPortainerStack(plan, ctx).content, IMAGE);
+    const run = composeConfig(content, valuesFor(portainerStackEnvKeys(plan)));
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/variable is not set/);
+    const config = JSON.parse(run.stdout);
+    expect(config.services.mysql.environment.MYSQL_PASSWORD).toBe(
+      "value-of-opscrew_svc_mysql_password",
+    );
+    expect(config.configs["nats-nats.conf"].content).toContain("token: $$NATS_TOKEN");
+    expect(config.services.worker.deploy.replicas).toBe(2);
+  }, 60_000);
 
   it("accepts the template before the image is filled in", () => {
     const plan = portainerTestPlan();

@@ -74,22 +74,54 @@ function steadyServices(plan: DeployPlan): string[] {
 const INIT_LOG = "/srv/app/init.log";
 
 /**
- * A step of a service's one-time setup, from the catalog (for example Garage's layout, key and
- * bucket): `run` executes in the running `service` only when `check` fails there, so a deploy
- * skips the steps an earlier one did. Both are argument lists for `docker compose exec`, which
- * needs no shell in the image.
+ * A step of a service's one-time setup, from the catalog (for example Garage's key and bucket):
+ * `run` executes in the running `service` only when `check` fails there, so a deploy skips the
+ * steps an earlier one did. Both are argument lists for `docker compose exec`, which needs no
+ * shell in the image.
  */
 export interface ServiceInitStep {
   /** The Compose service, started by the deploy just before. */
   service: string;
-  /** Exits 0 when the step is already done. */
-  check: readonly string[];
+  /** Exits 0 when the step is already done; without it, `run` (harmless to repeat) always runs. */
+  check?: readonly string[];
   run: readonly string[];
+  /**
+   * The service's env file in the app's folder, for example `garage.env`: the step loads it in a
+   * subshell, and a word may name one of its variables as `${NAME}`, which the server's shell
+   * fills in. Its values reach only the command, never the output.
+   */
+  envFile?: string;
+}
+
+/** A variable of a step's env file, as a word names it. */
+const ENV_REFERENCE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g;
+
+/**
+ * A word for the server's shell: single-quoted, or, with `expand` and a `${NAME}` in it,
+ * double-quoted with only those references left for the shell to fill in.
+ */
+function shellWord(word: string, expand: boolean): string {
+  if (!expand || !word.match(ENV_REFERENCE)) return shellQuote(word);
+  const literal = (text: string) => text.replace(/[\\"`$]/g, "\\$&");
+  let quoted = "";
+  let last = 0;
+  for (const match of word.matchAll(ENV_REFERENCE)) {
+    quoted += literal(word.slice(last, match.index)) + match[0];
+    last = match.index + match[0].length;
+  }
+  return `"${quoted}${literal(word.slice(last))}"`;
 }
 
 /** `words` in the running `service`, without a TTY and with no stdin (the script arrives on it). */
-function exec(service: string, words: readonly string[]): string {
-  return `docker compose exec -T ${service} ${words.map(shellQuote).join(" ")} < /dev/null`;
+function exec(service: string, words: readonly string[], expand = false): string {
+  const quoted = words.map((word) => shellWord(word, expand)).join(" ");
+  return `docker compose exec -T ${service} ${quoted} < /dev/null`;
+}
+
+/** `exec`, in a subshell that first loads `envFile` (`set -a` exports its variables) when given. */
+function stepExec(service: string, words: readonly string[], envFile?: string): string {
+  if (envFile === undefined) return exec(service, words);
+  return `(set -a; . ./${envFile}; set +a; ${exec(service, words, true)})`;
 }
 
 /** Shown when a setup step fails; names the service only. */
@@ -99,14 +131,20 @@ function initFailed(service: string): string {
 
 /** The one-time setup steps in order, each run only when its check fails; a failure stops here. */
 function serviceInit(steps: readonly ServiceInitStep[]): string[] {
-  return steps.flatMap(({ service, check, run }) => [
-    `if ! ${exec(service, check)} > /dev/null 2>&1; then`,
-    `  if ! (umask 077; ${exec(service, run)} > ${INIT_LOG} 2>&1); then`,
-    `    echo ${shellQuote(initFailed(service))}`,
-    "    exit 1",
-    "  fi",
-    "fi",
-  ]);
+  return steps.flatMap(({ service, check, run, envFile }) => {
+    const step = [
+      `if ! (umask 077; ${stepExec(service, run, envFile)} > ${INIT_LOG} 2>&1); then`,
+      `  echo ${shellQuote(initFailed(service))}`,
+      "  exit 1",
+      "fi",
+    ];
+    if (check === undefined) return step;
+    return [
+      `if ! ${stepExec(service, check, envFile)} > /dev/null 2>&1; then`,
+      ...step.map((line) => `  ${line}`),
+      "fi",
+    ];
+  });
 }
 
 /** The Compose services of the enabled workers, and `cron` when a cron job is enabled. */

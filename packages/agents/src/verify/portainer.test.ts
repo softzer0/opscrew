@@ -138,7 +138,7 @@ describe("opscrew verify for the user's Portainer", () => {
     expect(runbook).toContain("as the stack `opscrew-shop`");
     expect(runbook).toContain("OpsCrew does not change the host");
     expect(runbook).toContain("Backups, including the app's data volumes, are your responsibility");
-    expect(runbook).toContain("`opscrew-shop_postgres_data`");
+    expect(runbook).toContain("`opscrew-shop_db_data`");
     expect(runbook).toContain("opscrew-shop-updater");
     expect(runbook).not.toContain(PORTAINER_HOST);
     const plan = await readArtifact("plan", deps.paths.files.plan);

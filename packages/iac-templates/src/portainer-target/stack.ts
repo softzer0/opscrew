@@ -1,23 +1,31 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose and shell syntax, not JavaScript templates.
 
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import { type DeployPlan, type PortainerWeb, serviceOf } from "@opscrew/plan-schema";
+import type { DeployPlan, PlanService, PortainerWeb } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
+import { enabledServices, renderContext, serviceSpec } from "../catalog";
+import type { ServiceSpec } from "../catalog/types";
 import { isClientExposedEnvName } from "../docker";
 import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { siteHosts } from "../runtime";
 import {
-  cacheService,
+  crontab,
+  memoryLimit,
+  type RenderedServices,
+  renderProcesses,
+  renderServices,
+  STACK_CRONTAB,
+} from "../runtime/components";
+import {
   caddyfile,
   cloudflaredService,
   composeLiteral,
-  dbService,
   hardened,
   RELEASE_NOTE,
 } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
-import { DIGEST_REF_PATTERN } from "../workflow/shared";
+import { DIGEST_REF_PATTERN, hasCronJobs } from "../workflow/shared";
 
 /** Branch of the app's repository that holds only the stack file Portainer deploys. */
 export const PORTAINER_DEPLOY_BRANCH = "opscrew-deploy";
@@ -58,12 +66,47 @@ export const PORTAINER_STACK_VARIABLES = {
   tunnelToken: "OPSCREW_TUNNEL_TOKEN",
 } as const;
 
-/** The Postgres service's variables and the stack variable each one reads. */
+/**
+ * The Postgres service's variables and the stack variable each one reads: Postgres keeps the
+ * variables it had before the other services, which provision and drift fill in.
+ */
 const DB_ENV = [
   ["POSTGRES_USER", PORTAINER_STACK_VARIABLES.dbUser],
   ["POSTGRES_DB", PORTAINER_STACK_VARIABLES.dbName],
   ["POSTGRES_PASSWORD", PORTAINER_STACK_VARIABLES.dbPassword],
 ] as const;
+
+/**
+ * The stack variable that holds a service's secret, for every service but Postgres:
+ * `OPSCREW_SVC_<SERVICE>_<SECRET>`, upper case with `_` for `-` (`OPSCREW_SVC_MYSQL_ROOT_PASSWORD`).
+ * The `SVC_` keeps a service's names apart from OpsCrew's other variables, whatever the service is
+ * called (a service named `tunnel` and {@link PORTAINER_STACK_VARIABLES}' tunnel token).
+ */
+export function portainerServiceVariable(service: string, secret: string): string {
+  return `OPSCREW_SVC_${service}_${secret}`.toUpperCase().replaceAll("-", "_");
+}
+
+/** The stack variables of a service's secrets (Postgres: {@link DB_ENV}'s). */
+function serviceVariables(service: PlanService, spec: ServiceSpec): string[] {
+  if (service.kind === "postgres") return DB_ENV.map(([, variable]) => variable);
+  return spec.secrets.map((secret) => portainerServiceVariable(service.name, secret.name));
+}
+
+/** A service's environment in the stack, with its secrets as stack variables. */
+function stackEnvironment(plan: DeployPlan) {
+  return (service: PlanService, spec: ServiceSpec): Record<string, string> => {
+    if (service.kind === "postgres") {
+      return Object.fromEntries(DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]));
+    }
+    const ref = (secret: string) => `\${${portainerServiceVariable(service.name, secret)}}`;
+    return spec.environment(renderContext(plan, service, ref));
+  };
+}
+
+/** The plan's services as the stack runs them. */
+function stackServices(plan: DeployPlan): RenderedServices {
+  return renderServices(plan, { kind: "portainer", environment: stackEnvironment(plan) });
+}
 
 /** Variable the tunnel connectors read their token from. */
 const TUNNEL_TOKEN = "TUNNEL_TOKEN";
@@ -131,14 +174,19 @@ export function fillPortainerStack(template: string, image: string): string {
 }
 
 /**
- * The app's variables in its stack: the Postgres and Redis URLs OpsCrew sets and every variable of
- * `app.env`, except `PORT` (fixed) and the build-time variables of the frontend (they go to the
- * image build, as on other targets). Sorted by code point.
+ * The app's variables in its stack: the conventional ones of each service OpsCrew runs (the
+ * catalog's, such as `DATABASE_URL` and `REDIS_URL`) and every variable of `app.env`, except
+ * `PORT` (fixed) and the build-time variables of the frontend (they go to the image build, as on
+ * other targets). Sorted by code point.
  */
 function appEnvKeys(plan: DeployPlan): string[] {
   const names = new Set<string>();
-  if (serviceOf(plan, "postgres")) names.add("DATABASE_URL");
-  if (serviceOf(plan, "valkey")) names.add("REDIS_URL");
+  for (const service of enabledServices(plan)) {
+    const variables = serviceSpec(service.kind).appVariables(
+      renderContext(plan, service, () => ""),
+    );
+    for (const name of Object.keys(variables)) names.add(name);
+  }
   for (const variable of plan.app.env) {
     if (variable.name === "PORT" || isClientExposedEnvName(variable.name)) continue;
     names.add(variable.name);
@@ -170,13 +218,16 @@ function checkAppEnvNames(plan: DeployPlan): void {
 /** The variables of an app stack's environment in Portainer, by whose values they hold. */
 export interface PortainerStackEnvKeys {
   /**
-   * The app's variables: `DATABASE_URL` and `REDIS_URL` when OpsCrew runs those services, and every
-   * variable of `app.env` except `PORT` and the frontend's build-time variables. Their values are
-   * the app's production environment (`OPSCREW_APP_ENV` on other targets); an optional variable
-   * left unset is sent as an empty string.
+   * The app's variables: the conventional ones of the services OpsCrew runs (`DATABASE_URL`,
+   * `REDIS_URL`, …), and every variable of `app.env` except `PORT` and the frontend's build-time
+   * variables. Their values are the app's production environment (`OPSCREW_APP_ENV` on other
+   * targets); an optional variable left unset is sent as an empty string.
    */
   app: string[];
-  /** OpsCrew's own variables, from {@link PORTAINER_STACK_VARIABLES}. */
+  /**
+   * OpsCrew's own variables: from {@link PORTAINER_STACK_VARIABLES}, and each service's secrets
+   * ({@link portainerServiceVariable}).
+   */
   opscrew: string[];
 }
 
@@ -189,28 +240,31 @@ export interface PortainerStackEnvKeys {
 export function portainerStackEnvKeys(plan: DeployPlan): PortainerStackEnvKeys {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
-  const opscrew: string[] = [];
-  if (serviceOf(plan, "postgres")) opscrew.push(...DB_ENV.map(([, variable]) => variable));
-  if (web.mode === "tunnel") opscrew.push(PORTAINER_STACK_VARIABLES.tunnelToken);
-  return { app: appEnvKeys(plan), opscrew: opscrew.sort() };
+  const opscrew = new Set<string>();
+  for (const service of enabledServices(plan)) {
+    for (const variable of serviceVariables(service, serviceSpec(service.kind))) {
+      opscrew.add(variable);
+    }
+  }
+  if (web.mode === "tunnel") opscrew.add(PORTAINER_STACK_VARIABLES.tunnelToken);
+  return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
 }
 
 /** Named volumes of the app stack, in the order the stack declares them. */
-function volumeNames(plan: DeployPlan, web: PortainerWeb): string[] {
-  return [
-    ...(serviceOf(plan, "postgres") ? ["postgres_data"] : []),
-    ...(serviceOf(plan, "valkey") ? ["valkey_data"] : []),
-    ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : []),
-  ];
+function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
+  return [...services.volumes, ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : [])];
 }
 
 /**
- * The Docker volumes the app stack creates (`<stack>_<volume>`): Postgres and Valkey data, and
- * Caddy's certificates in `caddy` mode. Stack deletion keeps them; they go only with data deletion.
+ * The Docker volumes the app stack creates (`<stack>_<volume>`): each service's data
+ * (`<service>_data`, for example `db_data`), and Caddy's certificates in `caddy` mode. Stack
+ * deletion keeps them; they go only with data deletion.
  */
 export function portainerStackVolumes(plan: DeployPlan): string[] {
   const { web } = portainerTarget(plan.target);
-  return volumeNames(plan, web).map((volume) => `${portainerStackName(plan)}_${volume}`);
+  return volumeNames(stackServices(plan), web).map(
+    (volume) => `${portainerStackName(plan)}_${volume}`,
+  );
 }
 
 /** Caddy's published ports: none behind the tunnel, the chosen port for a proxy, else 80/443. */
@@ -238,12 +292,16 @@ const STACK_HEADER = [
  *
  * Every app variable is an explicit `${VAR}` in `environment:` (values only in the stack's `Env`,
  * see {@link portainerStackEnvKeys}; OpsCrew's own values are `OPSCREW_*` variables, see
- * {@link PORTAINER_STACK_VARIABLES}); the release command runs as the one-off service `release` the
- * app waits for; Postgres and Valkey keep their data in named volumes; Caddy's configuration is
+ * {@link PORTAINER_STACK_VARIABLES} and {@link portainerServiceVariable}); the release command runs
+ * as the one-off service `release` the app, its workers and cron wait for; the services keep their
+ * data in named volumes; Caddy's configuration, the services' settings files and the crontab are
  * inline (`configs.<name>.content`, Compose 2.23 or newer), so no file sits next to the stack; the
  * web mode adds a cloudflared service (`tunnel`), publishes the chosen port (`proxy`) or ports
- * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`.
- * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`.
+ * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`. The
+ * services' one-time setup (MongoDB's replica set, Garage's key and bucket) runs only in a
+ * server's deploy.
+ * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, a
+ * service OpsCrew cannot run as planned, or a cron route the image cannot call.
  */
 export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const { web } = portainerTarget(plan.target);
@@ -252,39 +310,42 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     PORT: String(plan.app.port),
     ...Object.fromEntries(appEnvKeys(plan).map((name) => [name, `\${${name}}`])),
   });
-  const backing = () => ({
-    ...(serviceOf(plan, "postgres") ? { db: { condition: "service_healthy" } } : {}),
-    ...(serviceOf(plan, "valkey") ? { cache: { condition: "service_started" } } : {}),
-  });
+  const backing = stackServices(plan);
 
   const app: Record<string, unknown> = {
     image: PORTAINER_IMAGE_PLACEHOLDER,
     restart: "unless-stopped",
     environment: environment(),
+    ...memoryLimit(plan.app.memoryMb),
     ...hardened({ noCapabilities: true, internal: true }),
   };
   const services: Record<string, unknown> = { app };
   const release = plan.app.releaseCommand;
-  const appDependsOn: Record<string, { condition: string }> = backing();
+  const appDependsOn: Record<string, { condition: string }> = { ...backing.dependsOn };
   if (release !== undefined) {
     // A one-off container of the new image: Compose starts the app only after it succeeded.
-    const releaseDependsOn = backing();
     services.release = {
       image: PORTAINER_IMAGE_PLACEHOLDER,
       environment: environment(),
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       command: ["sh", "-c", composeLiteral(release)],
-      ...(Object.keys(releaseDependsOn).length > 0 ? { depends_on: releaseDependsOn } : {}),
+      ...memoryLimit(plan.app.memoryMb),
+      ...(Object.keys(backing.dependsOn).length > 0 ? { depends_on: backing.dependsOn } : {}),
       ...hardened({ noCapabilities: true, internal: true }),
     };
     appDependsOn.release = { condition: "service_completed_successfully" };
   }
   if (Object.keys(appDependsOn).length > 0) app.depends_on = appDependsOn;
-  if (serviceOf(plan, "postgres")) {
-    const credentials = DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]);
-    services.db = dbService({ environment: Object.fromEntries(credentials) }, "postgres_data");
-  }
-  if (serviceOf(plan, "valkey")) services.cache = cacheService("valkey_data");
+  Object.assign(
+    services,
+    renderProcesses(plan, {
+      image: PORTAINER_IMAGE_PLACEHOLDER,
+      environment: () => ({ environment: environment() }),
+      dependsOn: appDependsOn,
+      crontab: { configs: [STACK_CRONTAB] },
+    }),
+    backing.services,
+  );
 
   const config = caddyfile({
     mode: web.mode === "caddy" ? "direct" : web.mode,
@@ -319,13 +380,19 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     );
   }
 
-  const volumes = volumeNames(plan, web);
+  const volumes = volumeNames(backing, web);
   const document = {
     name: portainerStackName(plan),
     services,
     networks: { internal: {} },
     ...(volumes.length > 0 ? { volumes: Object.fromEntries(volumes.map((v) => [v, {}])) } : {}),
-    configs: { caddyfile: { content: composeLiteral(config) } },
+    configs: {
+      caddyfile: { content: composeLiteral(config) },
+      ...backing.configs,
+      ...(hasCronJobs(plan)
+        ? { [STACK_CRONTAB.source]: { content: composeLiteral(crontab(plan)) } }
+        : {}),
+    },
   };
   const header = release === undefined ? STACK_HEADER : `${STACK_HEADER}\n${RELEASE_NOTE}`;
   return {

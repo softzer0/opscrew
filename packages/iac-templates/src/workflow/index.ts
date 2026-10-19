@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 
 import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import { initStepsFor } from "../catalog";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -246,7 +247,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
     '    ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
     // The services' one-time setup steps come from the catalog; no entry has any yet.
-    ...remote(switchCommands(plan, [])),
+    ...remote(switchCommands(plan, initStepsFor(plan))),
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",
