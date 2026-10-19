@@ -100,7 +100,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect`
   - Effort: high
 
-- [ ] T1304 [US1] [US2] [US4] [US6] The catalog's part 1 entries, and services, workers and cron in Compose and Portainer stacks, in `packages/iac-templates/src/{catalog,runtime,portainer-target,dependabot}/**`
+- [X] T1304 [US1] [US2] [US4] [US6] The catalog's part 1 entries, and services, workers and cron in Compose and Portainer stacks, in `packages/iac-templates/src/{catalog,runtime,portainer-target,dependabot}/**`
   - Owns: those folders (+ tests and snapshots); `packages/iac-templates/src/index.ts` for their exports
   - Reads: contracts/components.md; research.md R1–R4, R7 and "Spike results"; spec FR-1305–FR-1314, FR-1320–FR-1321, FR-1325, FR-1328
   - Depends: T1301a, T1301b, T1302
