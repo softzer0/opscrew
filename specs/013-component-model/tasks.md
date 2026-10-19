@@ -390,6 +390,7 @@ Effort`.
     - a component with `hostSettings` is refused before any change, with the setting to make by hand;
     - design treats route cron jobs the image can't call as it does on servers (T1307): it plans them turned off, with the line saying why, using the stack renderer's own check;
     - **From T1309:** `buildAppEnvironment` gets `requireStorageKey` and `storageLogin` for R2 as on servers; secure checks each service's login through the stack's variables (names only); `AppEnvironment.dbEnv`, now read only by `drift/portainer.ts`, goes if the stack variables cover it.
+    - **From T1311:** stacks render a service's `ulimits` (OpenSearch and Elasticsearch `nofile`), and refuse the engines with `hostSettings` as Accept says.
     - drift and destroy cover the components;
     - tests for each, including the refusal for OpenSearch.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
@@ -404,6 +405,7 @@ Effort`.
   - Accept:
     - **`status`** lists each component and whether it runs, over SSH on servers and through Portainer's API.
     - **Drift on Hetzner and DigitalOcean** (deferred from T1309, which had no SSH read on cloud servers) reuses status's SSH read to report a component that differs from the plan, as drift already does on an own server (`drift/host.ts`). Owns `packages/agents/src/drift/**` for this.
+    - **From T1311:** `RUNTIME_FILE_NAMES` stops always listing `db.env` once drift reads the services' env files from the catalog; the guide says that a changed `USER` in an own Dockerfile isn't detected (fix the SQLite volume's owner by hand, with the command), and that the app gets Meilisearch's master key.
     - **Design's output and the MCP tools** show components, licences, and each component's memory and price share.
     - **The plugin's deploy and adapt skills** cover workers, cron and the storage key.
     - **The runbook** describes the components, the edge and the storage key, with the per-app data paths (`/srv/data/<app>/<name>`). `runbook/shared.ts` still names `/srv/app` and the Caddyfile: it becomes `/srv/apps/<app>`, the edge at `/srv/edge`, and the app's site file.
@@ -436,6 +438,7 @@ Effort`.
       - a cron job runs within one minute;
       - every container's memory limit;
       - no published service port.
+    - **Image facts T1311 assumed:** curl in the OpenSearch and Elasticsearch images and wget in ClickHouse's (their healthchecks); ClickHouse accepting `remove="1"` on log tables it doesn't define; Neo4j's `/logs` volume; `up --wait` with a one-shot `-sysctl` container the engine depends on (`service_completed_successfully`). Fix what fails, in the catalog (approved outside Owns for these lines).
     - **Hygiene:** remove only what the pass created, by id.
     - **Run the pass** for every new example, and report the results.
   - Verify:
