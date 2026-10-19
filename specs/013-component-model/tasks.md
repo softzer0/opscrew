@@ -368,6 +368,7 @@ Effort`.
     - **Design** warns below each engine's smallest server, and keeps Cassandra external with a hosted option named.
     - **From T1304b:** design refuses a SQLite plan whose app folder is unknown (the user's own Dockerfile has no literal `WORKDIR`), with the same hint as the move case in `design/plan.ts`, instead of provision stopping later.
     - **Also from T1304b's review:** when a plan with `storage.sqlite` changes `app.build.builder` (or an own Dockerfile changes its `USER`), design warns that the existing `sqlite` volume keeps the old owner (Docker sets it only when the volume is created), and gives the fix: on a server, `docker run --rm -v <app>_sqlite:/d <pinned small image> chown -R <uid>:<gid> /d`; on Portainer, the same through a one-off container.
+    - **From T1309:** the ssh-host inspection checks every service's `<name>.env` (mode and owner, as it does `db.env` today), so drift sees them.
     - **Snapshots and tests.**
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
@@ -388,6 +389,7 @@ Effort`.
     - Garage is allowed;
     - a component with `hostSettings` is refused before any change, with the setting to make by hand;
     - design treats route cron jobs the image can't call as it does on servers (T1307): it plans them turned off, with the line saying why, using the stack renderer's own check;
+    - **From T1309:** `buildAppEnvironment` gets `requireStorageKey` and `storageLogin` for R2 as on servers; secure checks each service's login through the stack's variables (names only); `AppEnvironment.dbEnv`, now read only by `drift/portainer.ts`, goes if the stack variables cover it.
     - drift and destroy cover the components;
     - tests for each, including the refusal for OpenSearch.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
