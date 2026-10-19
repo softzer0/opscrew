@@ -5,7 +5,7 @@
     "frameworkNames": ["laravel", "vite"],
     "port": 8000,
     "languages": ["php", "javascript"],
-    "services": [],
+    "services": ["sqlite"],
     "clientExposedEnv": ["VITE_APP_NAME"],
     "secretEnv": ["APP_KEY"]
   },
