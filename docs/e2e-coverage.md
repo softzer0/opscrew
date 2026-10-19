@@ -11,11 +11,11 @@ tests that need real accounts, Docker or the infrastructure engines.
 
 | Live test | Gate | Status | Last passed | Needs to run |
 |---|---|---|---|---|
-| Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-18 (after 011's simplification) | — |
+| Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-19 (with 012's builders) | — |
 | Hetzner with a Cloudflare domain, the app's hostnames in OpsCrew's shared rules after provision and gone after destroy (feature 011) | + `OPSCREW_E2E_DOMAIN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Passed (the zone had no rule lists: OpsCrew created both and deleted them again on destroy) | 2026-10-18 | — |
 | Framework matrix on Hetzner (19 apps) | `OPSCREW_E2E_APP` per app | Passed | 2026-10-14 | — |
-| Hetzner builder checks (feature 012): the builder, non-root, the attestations and their leak search, a change and a broken release under load, GHCR's blobs after the image retention job ([details below](#image-builders-feature-012-added-not-yet-run-live)) | `OPSCREW_E2E_BUILDS=1`, `OPSCREW_E2E_APP` = `nextjs-postgres`, `go-api` or `rust-api`, + `OPSCREW_E2E_GHCR_READ_TOKEN` | **Added, not yet run live** | — | The three runs (T1211) |
-| Image signing with the builder checks | + `OPSCREW_E2E_SIGN=1` (only with `OPSCREW_E2E_BUILDS=1`) | **Added, not yet run live** (opt-in) | — | The repository owner's agreement: it publishes the repository's name in Sigstore's public log |
+| Hetzner builder checks (feature 012): the builder, non-root, the attestations and their leak search, a change and a broken release under load, GHCR's blobs after the image retention job ([details below](#image-builders-feature-012)) | `OPSCREW_E2E_BUILDS=1`, `OPSCREW_E2E_APP` = `nextjs-postgres`, `go-api` or `rust-api`, + `OPSCREW_E2E_GHCR_READ_TOKEN` | Passed, all three apps (generated Dockerfile, Buildpacks, Railpack) | 2026-10-19 | — |
+| Image signing with the builder checks | + `OPSCREW_E2E_SIGN=1` (only with `OPSCREW_E2E_BUILDS=1`; opt-in: it publishes the throwaway repository's name in Sigstore's public log) | Passed, all three apps (the owner agreed on 2026-10-18) | 2026-10-19 | — |
 | With a model (`adapt`, `analyze`) | `OPSCREW_E2E_AI=1` | Passed (FastAPI + Redis) | 2026-10-14 | — |
 | DigitalOcean, full flow (`live.test.ts`) | `OPSCREW_E2E_DIGITALOCEAN_TOKEN` + GitHub | **Not run yet** | — | A DigitalOcean API token for a throwaway project |
 | Retarget Hetzner → DigitalOcean (`live.test.ts`) | both provider tokens, the default app | **Not run yet** | — | Both tokens |
@@ -23,15 +23,16 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Porkbun sandbox (`registrars.test.ts`) | Porkbun sandbox keys | Passed | 2026-10-14 | — |
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
-| Your own server (`own-server.test.ts`), with a second app in the same zone and account, seeded rules and shared-rule checks (steps 6b, 7b; feature 011) | `OPSCREW_E2E_OWN_SERVER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (all 10 steps), again after 011's simplification | 2026-10-18 | — |
-| Your existing Portainer, core pass (`portainer-target.test.ts`), with a second app in the same Portainer, zone and account, seeded rules and shared-rule checks (steps 7b, 9b; feature 011) | `OPSCREW_E2E_PORTAINER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (after T1109), again after 011's simplification | 2026-10-18 | — |
+| Your own server (`own-server.test.ts`), with a second app in the same zone and account, seeded rules and shared-rule checks (steps 6b, 7b; feature 011) | `OPSCREW_E2E_OWN_SERVER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (all 10 steps), again after 011's simplification | 2026-10-19 (with 012's switch, pins and builds) | — |
+| Your existing Portainer, core pass (`portainer-target.test.ts`), with a second app in the same Portainer, zone and account, seeded rules and shared-rule checks (steps 7b, 9b; feature 011) | `OPSCREW_E2E_PORTAINER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (after T1109), again after 011's simplification | 2026-10-19 (with 012, and the tunnel token) | — |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
 
 Run in development, not tracked by date:
 
-- `OPSCREW_DOCKER_TESTS=1` builds and starts the example apps in local Docker (the framework matrix
-  passed on 2026-10-14) and checks the Portainer stacks with `docker compose config` and
-  `caddy validate`.
+- `OPSCREW_DOCKER_TESTS=1` builds every example with its chosen builder (feature 012) and starts it
+  in local Docker, and checks the Portainer stacks with `docker compose config` and
+  `caddy validate`. All 25 examples (26 builds) passed on 2026-10-18 and 2026-10-19, after T1213's
+  fixes (see [e2e.md](e2e.md#live-results)).
 - `OPSCREW_IT=1` validates every infrastructure root with both OpenTofu and Terraform.
 
 ## Your existing Portainer, step by step
@@ -78,7 +79,7 @@ live test records each one as an `observed:` line.
 | The updater reaches a loopback Portainer through `host.docker.internal` | full (step 10) | [x] 2026-10-16 |
 | cloudflared reaches Portainer with `no_tls_verify`; the hostname answers 404 outside `/api/stacks/webhooks/` | full (step 7) | [x] 2026-10-16 (401 without the service token) |
 | GitHub accepts the orphan-branch calls and drift's `git fetch` with the user's fine-grained token | core | [x] 2026-10-15 |
-| The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [ ] |
+| The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [x] 2026-10-19: steps 2–3 (and up to step 8) ran with it; it was made from [the starting list](e2e.md#your-existing-portainer). Whether a smaller list also works is not tested |
 | The guide's `openssl` command shows the fingerprint OpsCrew pins | core | [x] 2026-10-15 |
 | Two OpsCrew apps in one environment stay apart (their own stacks, registry entries and volumes, and their ports, 80/443 among them) | core (steps 7b, 8, 9b) | [x] 2026-10-18: their own stacks, registry entries and tunnels; volumes and ports are not checked |
 | The guide's steps that need a person: the certificate fingerprint in a browser, the registry steps in Portainer's UI | not automated | [ ] |
@@ -93,34 +94,43 @@ but the one still open below.
 | A rule the test seeds as the user's (a `block` WAF custom rule, a configuration rule with Automatic HTTPS Rewrites) is taken on the Free plan: `POST` to an existing rule list, `PUT` of the list only when the zone has none (404) | own server step 2, Portainer step 2a | [x] 2026-10-18, the `PUT` path (the zone had no rule lists); OpsCrew's own rule then went in by `POST` to the lists the seeds created |
 | Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked", error 1020 or "access denied" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [x] 2026-10-18 (own server and Portainer, both apps, also after the first app's destroy) |
 | The zone's rules OpsCrew did not create read back byte-identical (each whole rule, apart from the `version` and `last_updated` Cloudflare changes on its own) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [x] 2026-10-18 (own server: after each of the 4 provisions that changed something and both destroys; Portainer: after every provision and destroy) |
-| After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain and `OPSCREW_E2E_SKIP_DESTROY=1` (which skips destroy, so the fallback runs), or when destroy fails | [ ] added, not yet run live |
+| After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain and `OPSCREW_E2E_SKIP_DESTROY=1` (which skips destroy, so the fallback runs), or when destroy fails | [x] 2026-10-19 (both of OpsCrew's rules held only the run's hostname, so they and the run's two rulesets were deleted) |
 | The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [x] 2026-10-18 (own server and Portainer) |
 | The leak search finds no token in the Cloudflare plans (CLI output; MCP in Portainer) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [x] 2026-10-18 (own server and Portainer) |
 
-## Image builders (feature 012): added, not yet run live
+## Image builders (feature 012)
 
 The Hetzner pass checks these with `OPSCREW_E2E_BUILDS=1` and `OPSCREW_E2E_APP` set to
-`nextjs-postgres`, `go-api` or `rust-api` (see [e2e.md](e2e.md#the-builders)). Tick each one per app once it has passed live.
+`nextjs-postgres`, `go-api` or `rust-api` (see [e2e.md](e2e.md#the-builders)). Tick each one per app once it has passed live. All three passed on 2026-10-19, with signing.
 
 | Check | `nextjs-postgres` (generated Dockerfile) | `go-api` (Buildpacks) | `rust-api` (Railpack) |
 |---|---|---|---|
-| `app.build.builder` is the expected one, the strategy is `rolling`, and the build job ran the builder's steps | [ ] | [ ] | [ ] |
-| pack ran with the pinned builder and run images (`repo:tag@sha256:…`) | — | [ ] | — |
-| The app container's user is not root (`docker exec … id -u`) | [ ] | [ ] | [ ] |
-| The provenance (guide's command) names the repository and commit and holds no GitHub event data; the SBOM lists packages | [ ] | [ ] | [ ] |
-| No known secret in the provenance or SBOM | [ ] | [ ] | [ ] |
-| A merged change deploys under 20 requests per second with no failed request | [ ] | [ ] | [ ] |
-| A release whose health route answers 500: no failed request, the run fails with the builder hint, the previous version still answers | [ ] | [ ] | [ ] |
-| After the image retention job, GHCR still has every blob of the first and the running image (the `build-<commit>` images deleted) | [ ] | [ ] | [ ] |
-| With `OPSCREW_E2E_SIGN=1`: `cosign verify` passes for the first and the running image after the later prunes (cosign v3 may store signatures as OCI referrers) | [ ] | [ ] | [ ] |
+| `app.build.builder` is the expected one, the strategy is `rolling`, and the build job ran the builder's steps | [x] | [x] | [x] |
+| pack ran with the pinned builder and run images (`repo:tag@sha256:…`) | — | [x] | — |
+| The app container's user is not root (`docker exec … id -u`) | [x] | [x] | [x] |
+| The provenance (guide's command) names the repository and commit and holds no GitHub event data; the SBOM lists packages | [x] | [x] | [x] |
+| No known secret in the provenance or SBOM | [x] | [x] | [x] |
+| A merged change deploys under 20 requests per second with no failed request | [x] | [x] | [x] |
+| A release whose health route answers 500: no failed request, the run fails with the builder hint, the previous version still answers | [x] | [x] | [x] |
+| After the image retention job, GHCR still has every blob of the first and the running image (the `build-<commit>` images deleted) | [x] | [x] | [x] |
+| With `OPSCREW_E2E_SIGN=1`: `cosign verify` passes for the first and the running image after the later prunes (cosign v3 may store signatures as OCI referrers) | [x] | [x] | [x] |
 
 Not covered by any live test:
 
 - **Image retention on a package owned by an organization** (the `/orgs` endpoints of the
   retention job): the throwaway repository is owned by a user. Unit tests only.
-- **Signing**, unless a run opts in with `OPSCREW_E2E_SIGN=1` (it publishes the throwaway
-  repository's name in Sigstore's public log, so it needs the owner's agreement).
 - **kamal-proxy's `--target-timeout 300s`** letting a 60-second request through: no example has a
   slow route.
 - **Railpack with a secret build value that is empty at `prepare`**: no example has a secret build
   value.
+- **The `recreate` strategy** (servers under 1 GiB) and its rollback: unit tests only; every live
+  server had more memory.
+- **Rails, Laravel, Spring Boot and .NET on a real server**: only the local Docker pass builds and
+  starts them. The framework matrix on Hetzner (19 apps) last ran on 2026-10-14, before 012's
+  builders.
+- **DigitalOcean with kamal-proxy, and an arm64 server's build**: no live run (no DigitalOcean
+  token; every Hetzner run used x86).
+- **A request in flight while the old copy drains**: no example has a slow route.
+- **Dependabot's first runs after the deploy-setup pull request** (T1214): checked by the lead in
+  the throwaway repository's Actions after the pass on 2026-10-19 (all four succeeded); no test
+  asserts it.
