@@ -405,7 +405,7 @@ Effort`.
   - Accept:
     - **`status`** lists each component and whether it runs, over SSH on servers and through Portainer's API.
     - **Drift on Hetzner and DigitalOcean** (deferred from T1309, which had no SSH read on cloud servers) reuses status's SSH read to report a component that differs from the plan, as drift already does on an own server (`drift/host.ts`). Owns `packages/agents/src/drift/**` for this.
-    - **From T1311:** `RUNTIME_FILE_NAMES` stops always listing `db.env` once drift reads the services' env files from the catalog; the guide says that a changed `USER` in an own Dockerfile isn't detected (fix the SQLite volume's owner by hand, with the command), and that the app gets Meilisearch's master key.
+    - **From T1311:** `RUNTIME_FILE_NAMES` stops always listing `db.env` once drift reads the services' env files from the catalog; the guide says that a changed `USER` in an own Dockerfile isn't detected (fix the SQLite volume's owner by hand, with the command), that the app gets Meilisearch's master key, and that ClickHouse's long-term releases are YY.3 and YY.8 (Dependabot also offers the others).
     - **Design's output and the MCP tools** show components, licences, and each component's memory and price share.
     - **The plugin's deploy and adapt skills** cover workers, cron and the storage key.
     - **The runbook** describes the components, the edge and the storage key, with the per-app data paths (`/srv/data/<app>/<name>`). `runbook/shared.ts` still names `/srv/app` and the Caddyfile: it becomes `/srv/apps/<app>`, the edge at `/srv/edge`, and the app's site file.
@@ -439,6 +439,7 @@ Effort`.
       - every container's memory limit;
       - no published service port.
     - **Image facts T1311 assumed:** curl in the OpenSearch and Elasticsearch images and wget in ClickHouse's (their healthchecks); ClickHouse accepting `remove="1"` on log tables it doesn't define; Neo4j's `/logs` volume; `up --wait` with a one-shot `-sysctl` container the engine depends on (`service_completed_successfully`). Fix what fails, in the catalog (approved outside Owns for these lines).
+    - **An engines check** (from T1311's review): a gated Docker test that renders OpenSearch, Elasticsearch, Typesense and Neo4j from the catalog and starts each alone with its memory limit, one at a time, checking its healthcheck passes and that its login is required (Elasticsearch, Typesense, Neo4j). It also checks bash with `/dev/tcp` in the Typesense and Neo4j images, busybox `wget` in Meilisearch's, and OpenSearch 3.9 honouring `DISABLE_SECURITY_PLUGIN` and `DISABLE_INSTALL_DEMO_CONFIG`.
     - **Hygiene:** remove only what the pass created, by id.
     - **Run the pass** for every new example, and report the results.
   - Verify:
