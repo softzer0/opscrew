@@ -302,7 +302,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops`
   - Effort: xhigh
 
-- [ ] T1304b [P] [US2] The SQLite volume, in `packages/iac-templates/src/{runtime,portainer-target,docker,workflow}/**`
+- [X] T1304b [P] [US2] The SQLite volume, in `packages/iac-templates/src/{runtime,portainer-target,docker,workflow}/**`
   - Owns: those paths (+ tests and snapshots)
   - Why: T1307 found that no merged task renders `storage.sqlite` (FR-1313).
   - Reads: spec FR-1313; data-model.md `storage.sqlite`; T1307's `appRoot(plan)`; 012's seal steps
