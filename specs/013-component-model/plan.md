@@ -80,7 +80,9 @@ The same layout is used on cloud servers, which keep one app each.
     values. It reaches the server only in that app's env files. It is never printed, and never in
     a plan, a pull request or the repository.
   - The user's storage key is kept like a provider token. It reaches the engine only as an
-    environment variable (`TF_VAR_…`), never a committed file, so no key is in infrastructure state.
+    environment variable the provider reads itself (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), never a
+    Terraform variable: a sensitive `TF_VAR_` value is kept in the saved plan file (found in T1306). So
+    no key is in a plan or in infrastructure state.
     It reaches the app as one of its secrets.
   - Kafka and Redpanda run without a login, reachable only from the app's own containers on its
     internal network, as Valkey is today (FR-1320).
@@ -215,7 +217,8 @@ Results go in research.md.
   bucket alone unless the user asks to delete data. It holds only the bucket and its CORS.
 - **OpsCrew never creates storage keys.** The user creates one in the provider's console with
   OpsCrew's steps, and pastes it once. It is kept like a provider token, and reaches the engine as
-  `TF_VAR_…` environment variables and the app as its secrets.
+  the provider's own environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`; never
+  `TF_VAR_`, which the saved plan file would keep) and the app as its secrets.
 - **R2:** `cloudflare_r2_bucket` (and its CORS) through the Cloudflare provider, with OpsCrew's
   Cloudflare token, which then needs the R2 storage permission; the guide and `init` name it. After
   the bucket exists, the user creates an R2 token limited to it, in Cloudflare's dashboard.

@@ -160,7 +160,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1306 [P] [US3] The `storage` root, in `packages/iac-templates/src/infra/**`, `packages/iac-templates/modules/**`, `packages/iac-templates/src/generated/**`
+- [X] T1306 [P] [US3] The `storage` root, in `packages/iac-templates/src/infra/**`, `packages/iac-templates/modules/**`, `packages/iac-templates/src/generated/**`
   - Owns: those paths (+ tests and snapshots); `packages/iac-templates/src/index.ts` for new exports
   - Reads: plan.md "6."; research.md R3; spec FR-1316–FR-1319; constitution III and IV
   - Depends: T1301a
@@ -168,7 +168,7 @@ Effort`.
     - **A separate root**, `opscrew/infra/storage`, rendered only when `storage.objectStorage` is a provider bucket:
       - R2: `cloudflare_r2_bucket` and its CORS through the Cloudflare provider;
       - Spaces and Hetzner: `hashicorp/aws` pointed at the provider's S3 endpoint, with path-style addressing and its account and region checks off, and the bucket and its CORS.
-    - **Keys:** the storage key comes only from `TF_VAR_…` variables marked sensitive. No key appears in a rendered file, an output or the state.
+    - **Keys:** the storage key comes only from the provider's own environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), never a Terraform variable (a sensitive `TF_VAR_` value is kept in the saved plan file). No key appears in a rendered file, a plan, an output or the state.
     - **CORS** allows only the app's own origins, and only when `cors` is set.
     - **The bucket** is never destroyed by a plan unless the plan allows deleting data. Use the roots' existing destroy guard, or a separate apply path that destroy skips.
     - **Engines:** the root validates with OpenTofu and Terraform (`OPSCREW_IT=1`), and its providers are pinned like the others.
@@ -276,12 +276,13 @@ Effort`.
     - **provision:**
       - asks for the storage key once, with the console steps for its provider: before the bucket for Hetzner and Spaces, and after it for R2, scoped to that bucket;
       - in a non-interactive run, reads the key from environment variables, and stops with the steps when they are missing;
-      - keeps the key like a provider token, passes it to the engine as `TF_VAR_…`, and gives it to the app as its secrets;
+      - keeps the key like a provider token, passes it to the engine as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (clearing `AWS_SESSION_TOKEN`, `AWS_PROFILE` and the other `AWS_*` login variables, so the user's own AWS login is never used), and gives it to the app as its secrets;
+      - renders the `storage` root with `renderStorage` (T1306) and applies it through its own approved plan; R2 is offered only when the plan uses Cloudflare (it needs OpsCrew's Cloudflare token and account);
       - applies the `storage` root through its own approved plan;
       - for MongoDB on x86, stops before any change when the CPU lacks AVX, saying why and what to do (the own-server flags from T1308c; on cloud targets, a check only when the server type's CPU is known);
       - stores the components' generated secrets;
       - rerun with nothing changed, changes no file (SC-1307).
-    - **destroy:** removes every component, and keeps data folders and the `storage` root unless `--delete-data` is given with the typed confirmation, saying where they are.
+    - **destroy:** removes every component, and keeps data folders and the `storage` root unless `--delete-data` is given with the typed confirmation, saying where they are. With `--delete-data`, the storage root is rendered without `prevent_destroy` (with `force_destroy` on the aws provider's bucket) and destroyed through its own approved plan. Cloudflare deletes an R2 bucket only when it is empty: OpsCrew then says how to empty it in the dashboard, and never deletes files itself.
     - **drift:** reports a component that differs from the plan.
     - **secure:** checks that no service port is public, and that each service with `auth` other than `internal-only` has its login set (a secops check per kind).
     - **retarget:** refuses before any change when the app has a stateful service other than Postgres and Valkey. The `storage` root stays.
