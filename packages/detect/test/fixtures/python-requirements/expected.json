@@ -21,9 +21,22 @@
     { "name": "DATABASE_URL", "files": ["app.py"], "clientExposed": false, "secretLikely": true }
   ],
   "services": [
-    { "kind": "postgres", "evidence": ["dependency:psycopg2-binary", "env:DATABASE_URL"] },
+    {
+      "kind": "postgres",
+      "evidence": ["dependency:psycopg2-binary", "env:DATABASE_URL"],
+      "variable": "DATABASE_URL"
+    },
     { "kind": "queue", "evidence": ["dependency:celery"] },
     { "kind": "redis", "evidence": ["dependency:celery[redis]"] }
+  ],
+  "workers": [
+    {
+      "name": "worker",
+      "command": "celery -A tasks worker",
+      "source": "procfile",
+      "single": false,
+      "evidence": ["procfile:worker"]
+    }
   ],
   "docker": {},
   "healthEndpoint": "/ping",

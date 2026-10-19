@@ -648,27 +648,3 @@ describe("the app's own Dockerfile", () => {
     expect((await detectProject(root)).docker.dockerfile).toBe("docker/Dockerfile.prod");
   });
 });
-
-describe("Procfile process types", () => {
-  it("notes the process types besides web and release, which OpsCrew does not run", async () => {
-    const root = await tree({
-      "package.json": JSON.stringify({ name: "api", dependencies: { express: "^5" } }),
-      "server.js": "app.listen(process.env.PORT);\n",
-      Procfile:
-        "web: node server.js\nrelease: npm run migrate\nworker: node worker.js\nclock: node clock.js\n",
-    });
-    const facts = await detectProject(root);
-    expect(facts.build.startCommand).toBe("node server.js");
-    expect(facts.notes).toEqual([
-      "The Procfile also declares the clock and worker processes. OpsCrew deploys only the web process for now, so they will not run until support for apps made of several parts arrives. Meanwhile, run them yourself, for example on the same server next to the app.",
-    ]);
-  });
-
-  it("notes nothing for a Procfile with only web and release", async () => {
-    const root = await tree({
-      "package.json": JSON.stringify({ name: "api", dependencies: { express: "^5" } }),
-      Procfile: "web: node server.js\nrelease: npm run migrate\n",
-    });
-    expect((await detectProject(root)).notes).toBeUndefined();
-  });
-});

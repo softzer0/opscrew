@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { exists, listText, stripBom, zodIssues } from "@opscrew/core";
+import { exists, stripBom, zodIssues } from "@opscrew/core";
 import {
   type AppKind,
   type EnvUrlScheme,
@@ -11,7 +11,11 @@ import {
 import { normalizeAppDir, unknownAppDirError } from "./app-dir";
 import {
   composeUsesRedis,
+  type EnvUrl,
   envFileSchemes,
+  envFileUrls,
+  envFileValue,
+  hostedService,
   isCommittedEnvFile,
   isComposeFile,
   prefixedConfigNames,
@@ -51,6 +55,7 @@ import {
   uniqueSorted,
 } from "./paths";
 import { detectPlatform } from "./platform";
+import { detectWorkers, inProcessSchedulerNote, vercelCronJobs } from "./processes";
 import { detectRelease } from "./release";
 import { byDepth, inFolder } from "./release/context";
 import { runtimeEvidence } from "./runtime-evidence";
@@ -59,14 +64,19 @@ import {
   addDependencyServices,
   addDjangoServices,
   addEnvServices,
+  addLaravelRedis,
   addPrismaServices,
+  LARAVEL_REDIS_SETTINGS,
+  laravelConfigDefault,
   ServiceCollector,
+  withUrlVariables,
 } from "./services";
 import {
   BUILT_IN_HEALTH_FILES,
   builtInHealthEndpoint,
   healthRouteFromPath,
   isAppCodeFile,
+  isRuntimeCodeFile,
   isSourceFile,
   nestRoutePath,
   nextBasePathLiteral,
@@ -75,6 +85,7 @@ import {
   type SourceSignals,
   scanSource,
 } from "./sources";
+import { detectObjectStorage, detectSqlite } from "./storage";
 
 /** Options for {@link detectProject}. */
 export interface DetectOptions {
@@ -367,27 +378,38 @@ export async function detectProjectDetails(
     if (text !== undefined) signals.set(file, scanSource(text));
   });
 
-  const { envVars, configUrlSchemes } = await collectEnvVars(
-    signals,
-    scopedFiles.filter(isCommittedEnvFile),
-    read,
-  );
+  const envFiles: { path: string; text: string }[] = [];
+  for (const path of scopedFiles.filter(isCommittedEnvFile)) {
+    envFiles.push({ path, text: (await read(path)) ?? "" });
+  }
+  const envTexts = envFiles.map((file) => file.text);
+  const { envVars, configUrlSchemes, envUrls } = collectEnvVars(signals, envFiles);
+  const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
   for (const file of scopedFiles.filter(isComposeFile)) {
     if (composeUsesRedis((await read(file)) ?? "")) composeRedis = true;
   }
 
-  // Services.
+  // Services. Celery's broker is the `*BROKER*` variable's URL.
   const pythonUrlSchemes = new Set<string>();
+  let pythonS3 = false;
   for (const [file, found] of signals) {
-    if (file.endsWith(".py")) for (const scheme of found.urlSchemes) pythonUrlSchemes.add(scheme);
+    if (!file.endsWith(".py")) continue;
+    for (const scheme of found.urlSchemes) pythonUrlSchemes.add(scheme);
+    const s3 = found.markers.some((m) => m === "s3-client" || m === "presigned-upload");
+    if (s3 && isRuntimeCodeFile(file)) pythonS3 = true;
   }
+  const brokerScheme = envVars.find(
+    (envVar) => /(?:^|_)BROKER(?:_|$)/.test(envVar.name) && envVar.urlScheme !== undefined,
+  )?.urlScheme;
   const services = new ServiceCollector();
   for (const info of relevant) {
     addDependencyServices(services, info.unit, {
       pythonUrlSchemes,
       configUrlSchemes,
       composeRedis,
+      ...(brokerScheme ? { brokerScheme } : {}),
+      pythonS3,
     });
   }
   for (const file of scopedFiles.filter((f) => f.endsWith(".prisma"))) {
@@ -404,9 +426,31 @@ export async function detectProjectDetails(
     settingsTexts.set(file, text);
     addDjangoServices(services, text);
   }
-  addEnvServices(
-    services,
-    envVars.map((envVar) => envVar.name),
+  const dbConnection = envTexts
+    .map((text) => envFileValue(text, "DB_CONNECTION"))
+    .find((value) => value !== undefined);
+  addEnvServices(services, envVars, envUrls, dbConnection);
+  // Laravel's queue, cache and session stores: the env example's value, else the config default.
+  const laravelSettings: string[] = [];
+  for (const [name, configFile] of LARAVEL_REDIS_SETTINGS) {
+    const value = envTexts.map((text) => envFileValue(text, name)).find((v) => v !== undefined);
+    const fallback = laravelConfigDefault((await read(joinRel(appDir, configFile))) ?? "", name);
+    if (value !== undefined) laravelSettings.push(`env:${name}=${value}`);
+    else if (fallback !== undefined) laravelSettings.push(`config:${name}=${fallback}`);
+  }
+  addLaravelRedis(services, laravelSettings);
+  const serviceList = withUrlVariables(services.toList(), envNames, envUrls);
+  // An app on Supabase's client already has its `supabase` service.
+  const supabase = serviceList.some((service) => service.kind === "supabase");
+  const hostedServices = [...envUrls]
+    .flatMap(([variable, url]) => {
+      const hosted = hostedService(url);
+      if (!hosted || (supabase && hosted.provider === "Supabase")) return [];
+      return [{ kind: hosted.kind, variable, provider: hosted.provider }];
+    })
+    .sort((a, b) => (a.variable < b.variable ? -1 : 1));
+  const runtimeDependencies = relevant.flatMap((info) =>
+    info.unit.dependencies.filter((dep) => !dep.dev),
   );
 
   // Platform fingerprints.
@@ -561,17 +605,34 @@ export async function detectProjectDetails(
     : undefined;
 
   const notes: string[] = [];
-  // OpsCrew runs the web process; the Procfile's other process types (workers, clocks) do not run.
-  const otherProcesses = [...(procfile ?? "").matchAll(/^([\w-]+):/gm)]
-    .map((match) => match[1] as string)
-    .filter((type) => type !== "web" && type !== "release")
-    .sort();
-  if (otherProcesses.length > 0) {
-    const one = otherProcesses.length === 1;
-    notes.push(
-      `The Procfile also declares the ${listText(otherProcesses)} process${one ? "" : "es"}. OpsCrew deploys only the web process for now, so ${one ? "it" : "they"} will not run until support for apps made of several parts arrives. Meanwhile, run ${one ? "it" : "them"} yourself, for example on the same server next to the app.`,
-    );
-  }
+  // Processes besides the web one, and the app's storage.
+  const processContext = {
+    appDir,
+    files: scopedFiles,
+    read,
+    signals,
+    settingsTexts,
+    dependencies: runtimeDependencies,
+    frameworks: appFrameworkNames,
+    procfile,
+    redisVariable: serviceList.find((service) => service.kind === "redis")?.variable,
+  };
+  const workers = await detectWorkers(processContext);
+  const schedulerNote = await inProcessSchedulerNote(processContext);
+  if (schedulerNote) notes.push(schedulerNote);
+  const vercelJson = findIn("vercel.json");
+  const cronJobs = vercelCronJobs(vercelJson ? await read(vercelJson) : undefined);
+  const sqlite = await detectSqlite({
+    appDir,
+    files: scopedFiles,
+    read,
+    signals,
+    settingsTexts,
+    envTexts,
+    dbConnection,
+    frameworks: appFrameworkNames,
+  });
+  const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
   if (appKind !== "static-spa") {
     let start: string | undefined;
     const hasNpmDependency = (name: string) =>
@@ -743,7 +804,12 @@ export async function detectProjectDetails(
     runtimeVersions,
     ...(evidence ? { runtimeEvidence: evidence } : {}),
     envVars,
-    services: services.toList(),
+    services: serviceList,
+    ...(workers.length > 0 ? { workers } : {}),
+    ...(cronJobs.length > 0 ? { cronJobs } : {}),
+    ...(hostedServices.length > 0 ? { hostedServices } : {}),
+    ...(sqlite ? { sqlite } : {}),
+    ...(objectStorage ? { objectStorage } : {}),
     docker: {
       ...(dockerfile ? { dockerfile } : {}),
       ...(compose ? { compose } : {}),
@@ -781,14 +847,17 @@ export async function detectProject(
 /**
  * The app's environment variables: the names the code reads, every name of an example env file,
  * and the names Flask loads by prefix (`app.config.from_prefixed_env()`) from the other committed
- * env files. Values are only looked at for their URL scheme (`configUrlSchemes`, and each
- * variable's `urlScheme`), never kept.
+ * env files. Values are only looked at for their URL scheme and host (`configUrlSchemes`, each
+ * variable's `urlScheme`, and `envUrls`, the first file's URL per variable), never kept.
  */
-async function collectEnvVars(
+function collectEnvVars(
   signals: ReadonlyMap<string, SourceSignals>,
-  committedEnvFiles: readonly string[],
-  read: ReadText,
-): Promise<{ envVars: ProjectFacts["envVars"]; configUrlSchemes: Set<string> }> {
+  committedEnvFiles: readonly { path: string; text: string }[],
+): {
+  envVars: ProjectFacts["envVars"];
+  configUrlSchemes: Set<string>;
+  envUrls: Map<string, EnvUrl>;
+} {
   const envFiles = new Map<string, Set<string>>();
   const addEnv = (name: string, file: string) => {
     const set = envFiles.get(name) ?? new Set<string>();
@@ -809,8 +878,9 @@ async function collectEnvVars(
   const configUrlSchemes = new Set<string>();
   // URL kinds per variable; files that disagree make it `other` (the plan then leaves it alone).
   const envSchemes = new Map<string, EnvUrlScheme>();
-  for (const file of committedEnvFiles) {
-    const text = (await read(file)) ?? "";
+  const envUrls = new Map<string, EnvUrl>();
+  for (const { path: file, text } of committedEnvFiles) {
+    for (const [name, url] of envFileUrls(text)) if (!envUrls.has(name)) envUrls.set(name, url);
     for (const [name, scheme] of envFileSchemes(text)) {
       configUrlSchemes.add(scheme);
       const known = envSchemes.get(name);
@@ -828,7 +898,7 @@ async function collectEnvVars(
     ...(envDefaults.get(name) === true ? { hasDefault: true } : {}),
     ...(envSchemes.has(name) ? { urlScheme: envSchemes.get(name) } : {}),
   }));
-  return { envVars, configUrlSchemes };
+  return { envVars, configUrlSchemes, envUrls };
 }
 
 function pythonStartCommand(

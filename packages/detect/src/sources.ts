@@ -1,6 +1,7 @@
 /**
  * Per-file signal extraction from source code: environment-variable names, listening ports,
- * health routes, Python ASGI/WSGI app objects and database URL schemes. Pure functions over text.
+ * health routes, Python app objects (ASGI/WSGI, Celery, Huey), service URL schemes, job and storage
+ * library uses, and SQLite file names. Pure functions over text.
  */
 import { parseAllDocuments } from "yaml";
 import { schemeKind } from "./connections";
@@ -39,11 +40,35 @@ export function isAppCodeFile(path: string): boolean {
   return !/(?:^|\/)(?:tests?|__tests__|e2e|cypress|playwright|scripts?)\//.test(path);
 }
 
-/** A Python web-app object such as `app = FastAPI()`. */
+/** Code the running app uses: {@link isAppCodeFile}, database migrations left out too. */
+export function isRuntimeCodeFile(path: string): boolean {
+  return isAppCodeFile(path) && !/(?:^|\/)migrations\//.test(path);
+}
+
+/** A Python app object such as `app = FastAPI()`, `app = Celery("proj")` or `huey = RedisHuey()`. */
 export interface PythonAppObject {
-  framework: "fastapi" | "flask";
+  framework: "fastapi" | "flask" | "celery" | "huey";
   variable: string;
 }
+
+/**
+ * Uses of a library the code shows: a Celery beat schedule, Dramatiq actors, presigned upload
+ * URLs (boto3, the AWS SDK's presigned POST, MinIO), and an S3 client made with boto3.
+ */
+export type SourceMarker = "celery-beat" | "dramatiq-actor" | "presigned-upload" | "s3-client";
+
+const MARKERS: readonly (readonly [SourceMarker, RegExp])[] = [
+  [
+    "celery-beat",
+    /\bbeat_schedule\b|\bCELERY_BEAT_SCHEDULE\b|\bCELERYBEAT_SCHEDULE\b|\.add_periodic_task\(/,
+  ],
+  ["dramatiq-actor", /^\s*@(?:dramatiq\.)?actor\b/m],
+  [
+    "presigned-upload",
+    /\bgenerate_presigned_(?:url|post)\b|\bcreatePresignedPost\b|\bpresigned_?[Pp]ut_?[Oo]bject\b|\bpresigned_?[Pp]ost_?[Pp]olicy\b/,
+  ],
+  ["s3-client", /\.(?:client|resource)\(\s*["']s3["']/],
+];
 
 /** Signals found in one source file. */
 export interface SourceSignals {
@@ -57,8 +82,14 @@ export interface SourceSignals {
   /** The NestJS global prefix the file sets with `app.setGlobalPrefix(…)`, if it sets one. */
   nestPrefix?: NestGlobalPrefix;
   appObjects: PythonAppObject[];
-  /** URL schemes seen in string literals (`postgres`, `mysql`, `mongodb`, `redis`). */
+  /** URL schemes seen in string literals (`postgres`, `mysql`, `mongodb`, `redis`, `amqp`). */
   urlSchemes: string[];
+  markers: SourceMarker[];
+  /**
+   * SQLite database files named in the code, as written: `new Database("data/app.db")`
+   * (better-sqlite3, sqlite3) and the `url` of a Drizzle config with the `sqlite` dialect.
+   */
+  sqliteFiles: string[];
   /**
    * Prefixes of Flask's `app.config.from_prefixed_env()` calls (`FLASK` by default), sorted and
    * unique. A call whose prefix is not a string literal is skipped.
@@ -128,7 +159,14 @@ const FILE_ROUTES: readonly RegExp[] = [
 ];
 
 const APP_OBJECT =
-  /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[\w.]+\s*)?=\s*(?:fastapi\.|flask\.)?(FastAPI|Flask)\(/gm;
+  /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[\w.]+\s*)?=\s*(?:fastapi\.|flask\.|celery\.|huey\.)?(FastAPI|Flask|Celery|(?:Redis|PriorityRedis|RedisExpire|PriorityRedisExpire|Sqlite|Memory|File)?Huey)\(/gm;
+const APP_FRAMEWORKS: Record<string, PythonAppObject["framework"]> = {
+  FastAPI: "fastapi",
+  Flask: "flask",
+  Celery: "celery",
+};
+const SQLITE_FILE = /\bnew\s+(?:\w+\.)?Database\(\s*["'`]([^"'`]+\.(?:db|sqlite3?))["'`]/g;
+const DRIZZLE_SQLITE_URL = /\burl\s*:\s*["'`]([^"'`]+)["'`]/;
 const PREFIXED_ENV = /\.from_prefixed_env\(/g;
 const PREFIX_LITERAL = /^["']([A-Za-z_][A-Za-z0-9_]*)["']$/;
 
@@ -155,7 +193,8 @@ function prefixOf(args: string): string | undefined {
   if (first === "" || /^\*{0,2}\w+\s*=/.test(first)) return "FLASK";
   return PREFIX_LITERAL.exec(first)?.[1];
 }
-const URL_SCHEME = /["'`](postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?)(?:\+\w+)?:\/\//g;
+const URL_SCHEME =
+  /["'`](postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|pyamqp)(?:\+\w+)?:\/\//g;
 
 function toPort(value: string | undefined): number | undefined {
   const port = Number(value);
@@ -237,16 +276,19 @@ export function scanSource(text: string): SourceSignals {
   const appObjects: PythonAppObject[] = [];
   for (const match of text.matchAll(APP_OBJECT)) {
     if (match[1] && match[2]) {
-      appObjects.push({
-        variable: match[1],
-        framework: match[2] === "FastAPI" ? "fastapi" : "flask",
-      });
+      appObjects.push({ variable: match[1], framework: APP_FRAMEWORKS[match[2]] ?? "huey" });
     }
   }
   const urlSchemes = new Set<string>();
   for (const match of text.matchAll(URL_SCHEME)) {
     const kind = schemeKind(match[1] ?? "");
     if (kind) urlSchemes.add(kind);
+  }
+  const markers = MARKERS.filter(([, pattern]) => pattern.test(text)).map(([marker]) => marker);
+  const sqliteFiles = [...text.matchAll(SQLITE_FILE)].map((match) => match[1] as string);
+  if (/\bdialect\s*:\s*["'`]sqlite["'`]/.test(text)) {
+    const url = DRIZZLE_SQLITE_URL.exec(text)?.[1];
+    if (url) sqliteFiles.push(url);
   }
   const configPrefixes = new Set<string>();
   for (const match of text.matchAll(PREFIXED_ENV)) {
@@ -264,6 +306,8 @@ export function scanSource(text: string): SourceSignals {
     ...(nestPrefix === undefined ? {} : { nestPrefix }),
     appObjects,
     urlSchemes: [...urlSchemes].sort(),
+    markers,
+    sqliteFiles,
     configPrefixes: [...configPrefixes].sort(),
   };
 }

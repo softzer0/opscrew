@@ -109,7 +109,13 @@ describe("chosen app directory: two-app monorepo", () => {
           hasDefault: true,
         },
       ],
-      services: [{ kind: "postgres", evidence: ["dependency:pg", "env:DATABASE_URL"] }],
+      services: [
+        {
+          kind: "postgres",
+          evidence: ["dependency:pg", "env:DATABASE_URL"],
+          variable: "DATABASE_URL",
+        },
+      ],
       docker: {},
       healthEndpoint: "/healthz",
       monorepo: true,

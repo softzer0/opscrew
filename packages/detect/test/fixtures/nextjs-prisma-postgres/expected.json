@@ -38,7 +38,8 @@
   "services": [
     {
       "kind": "postgres",
-      "evidence": ["dependency:@prisma/client", "env:DATABASE_URL", "prisma:postgresql"]
+      "evidence": ["dependency:@prisma/client", "env:DATABASE_URL", "prisma:postgresql"],
+      "variable": "DATABASE_URL"
     }
   ],
   "docker": { "dockerfile": "Dockerfile", "dockerignore": ".dockerignore" },

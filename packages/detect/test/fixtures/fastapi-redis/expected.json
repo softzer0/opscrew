@@ -15,7 +15,9 @@
     { "name": "API_TOKEN", "files": ["app/main.py"], "clientExposed": false, "secretLikely": true },
     { "name": "REDIS_URL", "files": ["app/main.py"], "clientExposed": false, "secretLikely": false }
   ],
-  "services": [{ "kind": "redis", "evidence": ["dependency:redis", "env:REDIS_URL"] }],
+  "services": [
+    { "kind": "redis", "evidence": ["dependency:redis", "env:REDIS_URL"], "variable": "REDIS_URL" }
+  ],
   "docker": {},
   "healthEndpoint": "/health",
   "monorepo": false,

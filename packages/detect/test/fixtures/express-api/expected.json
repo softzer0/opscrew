@@ -27,7 +27,11 @@
   ],
   "services": [
     { "kind": "email", "evidence": ["dependency:nodemailer"] },
-    { "kind": "postgres", "evidence": ["dependency:pg", "env:DATABASE_URL"] },
+    {
+      "kind": "postgres",
+      "evidence": ["dependency:pg", "env:DATABASE_URL"],
+      "variable": "DATABASE_URL"
+    },
     { "kind": "stripe", "evidence": ["dependency:stripe"] }
   ],
   "docker": { "dockerfile": "Dockerfile", "compose": "compose.yaml" },

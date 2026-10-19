@@ -1,23 +1,27 @@
 /**
  * Manifest readers. A "unit" is a directory holding at least one manifest (package.json,
- * pyproject.toml, requirements*.txt, Pipfile, Gemfile, composer.json, go.mod, Cargo.toml);
- * detection reasons about units rather than single files.
+ * pyproject.toml, requirements*.txt, Pipfile, Gemfile, composer.json, go.mod, Cargo.toml, pom.xml,
+ * build.gradle(.kts), *.csproj); detection reasons about units rather than single files.
  */
 import { isRecord, stripBom } from "@opscrew/core";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
-import { basenameRel, dirnameRel, sortStrings } from "./paths";
+import { basenameRel, dirnameRel, joinRel, sortStrings } from "./paths";
 
-/** Where a dependency was declared. */
-export type DependencyEcosystem = "npm" | "pypi" | "gem" | "composer";
+/** Where a dependency was declared (`maven` covers Gradle too: both name `group:artifact`). */
+export type DependencyEcosystem = "npm" | "pypi" | "gem" | "composer" | "go" | "maven" | "nuget";
 
-/** One declared dependency, with its name normalised for its ecosystem. */
+/**
+ * One declared dependency, with its name normalised for its ecosystem: Go module paths lose their
+ * major version suffix (`/v9`), Maven and Gradle ones are `group:artifact`, NuGet ones keep their
+ * case.
+ */
 export interface Dependency {
   ecosystem: DependencyEcosystem;
   name: string;
   /** Version spec as written (`^18.3.1`, `==0.115.0`), when present. */
   version?: string;
-  /** Declared only for development (devDependencies). */
+  /** Declared only for development or tests (devDependencies, a test scope, group or project). */
   dev: boolean;
   /** Python extras such as `redis` in `celery[redis]`. */
   extras: string[];
@@ -65,6 +69,9 @@ const MANIFEST_NAMES = new Set([
   "composer.json",
   "go.mod",
   "Cargo.toml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
 ]);
 
 /** True for `requirements.txt`, `requirements-dev.txt`, `requirements_prod.txt`, … */
@@ -74,7 +81,7 @@ export function isRequirementsFile(name: string): boolean {
 
 function isManifest(path: string): boolean {
   const name = basenameRel(path);
-  return MANIFEST_NAMES.has(name) || isRequirementsFile(name);
+  return MANIFEST_NAMES.has(name) || isRequirementsFile(name) || name.endsWith(".csproj");
 }
 
 /** Normalises a PyPI project name (PEP 503): lower case, runs of `-_.` become `-`. */
@@ -245,17 +252,161 @@ function readPipfile(data: Record<string, unknown>, deps: Dependency[], py: Pyth
   py.pipfilePython ??= nonEmpty(requires.python_full_version) ?? nonEmpty(requires.python_version);
 }
 
+/** True when a Gemfile group list (`:development, :test`, `[:test]`) names only those groups. */
+function devGemGroups(list: string): boolean {
+  const groups = [...list.matchAll(/:(\w+)|["'](\w+)["']/g)].map((match) => match[1] ?? match[2]);
+  return groups.length > 0 && groups.every((group) => group === "development" || group === "test");
+}
+
+/** Gems, those of `development` and `test` groups (a block or a `group:` option) as dev. */
 function readGemfile(text: string, deps: Dependency[]): void {
-  for (const match of text.matchAll(/^\s*gem\s+["']([\w.-]+)["'](?:\s*,\s*["']([^"']+)["'])?/gm)) {
-    if (match[1]) {
+  // The open `do … end` (and `if`/`unless`) blocks, each true for a development or test group.
+  const blocks: boolean[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const code = line.replace(/#.*$/, "").trim();
+    const gem = /^gem\s+["']([\w.-]+)["'](?:\s*,\s*["']([^"']+)["'])?(.*)$/.exec(code);
+    if (gem?.[1]) {
+      const option = /\bgroups?:\s*(\[[^\]]*\]|:\w+|["']\w+["'])/.exec(gem[3] ?? "")?.[1];
       deps.push({
         ecosystem: "gem",
-        name: match[1],
-        ...(match[2] ? { version: match[2] } : {}),
-        dev: false,
+        name: gem[1],
+        ...(gem[2] ? { version: gem[2] } : {}),
+        dev: blocks.includes(true) || (option !== undefined && devGemGroups(option)),
         extras: [],
       });
+      continue;
     }
+    const group = /^group\s+(.+?)\s+do\b/.exec(code);
+    if (group?.[1]) blocks.push(devGemGroups(group[1]));
+    else if (/\bdo(?:\s*\|[^|]*\|)?$/.test(code) || /^(?:if|unless)\b/.test(code)) {
+      blocks.push(false);
+    } else if (/^end\b/.test(code)) blocks.pop();
+  }
+}
+
+/** go.mod requirements (single-line and blocks), without `// indirect` ones. */
+function readGoMod(text: string, deps: Dependency[]): void {
+  let inBlock = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (inBlock && line === ")") {
+      inBlock = false;
+      continue;
+    }
+    if (/^require\s*\($/.test(line)) {
+      inBlock = true;
+      continue;
+    }
+    const spec = inBlock ? line : /^require\s+(.+)$/.exec(line)?.[1];
+    if (!spec || spec.startsWith("//") || /\/\/\s*indirect\b/.test(spec)) continue;
+    const match = /^(\S+)\s+(v\S+)/.exec(spec);
+    if (match?.[1]) {
+      const name = match[1].replace(/\/v\d+$/, "");
+      deps.push({ ecosystem: "go", name, version: match[2] as string, dev: false, extras: [] });
+    }
+  }
+}
+
+/** The text of the first `<name>` element in `xml`, trimmed. */
+function xmlElement(xml: string, name: string): string | undefined {
+  return new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`).exec(xml)?.[1] || undefined;
+}
+
+/**
+ * pom.xml dependencies (`group:artifact`), `test` scope as dev. Managed versions
+ * (`<dependencyManagement>`) and build plugins' dependencies are not the app's.
+ */
+function readPom(text: string, deps: Dependency[]): void {
+  const body = text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<dependencyManagement>[\s\S]*?<\/dependencyManagement>/g, "")
+    .replace(/<build>[\s\S]*?<\/build>/g, "");
+  for (const match of body.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g)) {
+    const xml = match[1] ?? "";
+    const group = xmlElement(xml, "groupId");
+    const artifact = xmlElement(xml, "artifactId");
+    if (!group || !artifact) continue;
+    const version = xmlElement(xml, "version");
+    deps.push({
+      ecosystem: "maven",
+      name: `${group}:${artifact}`,
+      ...(version ? { version } : {}),
+      dev: xmlElement(xml, "scope") === "test",
+      extras: [],
+    });
+  }
+}
+
+/** Gradle configurations whose dependencies are on the app's runtime classpath. */
+const GRADLE_RUNTIME = new Set(["implementation", "api", "runtimeOnly", "compile", "runtime"]);
+
+/**
+ * The libraries of a Gradle version catalog (`gradle/libs.versions.toml`) by their accessor
+ * (`spring-kafka` is `libs.spring.kafka`), as `group:artifact`.
+ */
+export function gradleCatalog(text: string | undefined): Map<string, string> {
+  const catalog = new Map<string, string>();
+  const libraries = parseTomlSafe(text)?.libraries;
+  if (!isRecord(libraries)) return catalog;
+  for (const [alias, entry] of Object.entries(libraries)) {
+    const coordinates =
+      typeof entry === "string"
+        ? entry
+        : isRecord(entry) && typeof entry.module === "string"
+          ? entry.module
+          : isRecord(entry) && typeof entry.group === "string" && typeof entry.name === "string"
+            ? `${entry.group}:${entry.name}`
+            : undefined;
+    const [group, artifact] = coordinates?.split(":") ?? [];
+    if (group && artifact) catalog.set(alias.replace(/[-_.]/g, "."), `${group}:${artifact}`);
+  }
+  return catalog;
+}
+
+/**
+ * Gradle `configuration("group:artifact:version")` and `configuration(libs.alias)` lines (through
+ * `catalog`); other configurations than the runtime ones are dev. `constraints { … }` only pin
+ * versions, like Maven's `<dependencyManagement>`.
+ */
+function readGradle(text: string, deps: Dependency[], catalog: ReadonlyMap<string, string>): void {
+  const body = text.replace(/\bconstraints\s*\{[^{}]*\}/g, "");
+  const add = (configuration: string, name: string, version?: string) =>
+    deps.push({
+      ecosystem: "maven",
+      name,
+      ...(version ? { version } : {}),
+      dev: !GRADLE_RUNTIME.has(configuration),
+      extras: [],
+    });
+  for (const match of body.matchAll(
+    /^\s*(\w+)\s*\(?\s*["']([\w.-]+):([\w.-]+)(?::([^"'@:]+))?[^"']*["']/gm,
+  )) {
+    add(match[1] as string, `${match[2]}:${match[3]}`, match[4]);
+  }
+  for (const match of body.matchAll(/^\s*(\w+)\s*\(?\s*libs\.([\w.]+?)\s*\)?\s*$/gm)) {
+    const name = catalog.get(match[2] as string);
+    if (name) add(match[1] as string, name);
+  }
+}
+
+/** A .NET project's package references; every one of a test project is dev. */
+function readCsproj(path: string, text: string, deps: Dependency[]): void {
+  const testProject =
+    /\.Tests?\.csproj$/i.test(path) ||
+    /<IsTestProject>\s*true\s*</i.test(text) ||
+    /\bInclude\s*=\s*"Microsoft\.NET\.Test\.Sdk"/i.test(text);
+  for (const match of text.matchAll(/<PackageReference\b([^>]*)>/g)) {
+    const attributes = match[1] ?? "";
+    const name = /\bInclude\s*=\s*"([^"]+)"/.exec(attributes)?.[1];
+    if (!name) continue;
+    const version = /\bVersion\s*=\s*"([^"]+)"/.exec(attributes)?.[1];
+    deps.push({
+      ecosystem: "nuget",
+      name,
+      ...(version ? { version } : {}),
+      dev: testProject,
+      extras: [],
+    });
   }
 }
 
@@ -337,6 +488,17 @@ export async function readUnits(files: readonly string[], read: ReadText): Promi
         readGemfile(text, dependencies);
       } else if (name === "composer.json") {
         readComposer(parseJson(text), dependencies);
+      } else if (name === "go.mod") {
+        readGoMod(text, dependencies);
+      } else if (name === "pom.xml") {
+        readPom(text, dependencies);
+      } else if (name.startsWith("build.gradle")) {
+        const catalog =
+          (await read(joinRel(dir, "gradle/libs.versions.toml"))) ??
+          (await read("gradle/libs.versions.toml"));
+        readGradle(text, dependencies, gradleCatalog(catalog));
+      } else if (name.endsWith(".csproj")) {
+        readCsproj(name, text, dependencies);
       }
     }
     if (hasPython) unit.python = python;

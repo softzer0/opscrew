@@ -56,6 +56,10 @@ const WORKER_LIBRARIES: Record<DependencyEcosystem, readonly string[]> = {
   pypi: ["celery", "rq", "dramatiq", "huey", "apscheduler", "arq"],
   gem: ["sidekiq"],
   composer: [],
+  // No web framework is detected for these yet, so a job library must not make the app a worker.
+  go: [],
+  maven: [],
+  nuget: [],
 };
 
 const ASTRO_ADAPTERS = /^@astrojs\/(?:node|vercel|netlify|cloudflare|deno)$/;
