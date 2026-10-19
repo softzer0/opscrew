@@ -36,6 +36,8 @@ services:
     enabled: true
     options: {}                    # per kind, e.g. valkey { mode: queue|cache }, mongodb
                                    # { replicaSet: true }, kafka { retentionHours, retentionGb }
+    variable: DATABASE_URL         # optional: the app's own variable for the address, from detection;
+                                   # it gets the address too; unique among enabled services
     reason: "The app uses mysql2."
     licence: GPL-2.0               # the catalog's; shown at design when not permissive
 storage:
