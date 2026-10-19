@@ -183,9 +183,9 @@ export const PYPI_PACKAGES = {
 } as const satisfies Record<string, string>;
 
 /**
- * The pnpm and Yarn releases on npm that corepack activates when package.json names no
- * `packageManager` (it would fetch the newest otherwise). Yarn's is the last Yarn 1 release, the
- * one whose lockfiles such projects have.
+ * The pnpm and Yarn releases on npm the generated Dockerfiles install with npm when package.json
+ * names no `packageManager`. Yarn's is the last Yarn 1 release, the one whose lockfiles such
+ * projects have.
  */
 export const PACKAGE_MANAGERS = {
   pnpm: "12.14.0",

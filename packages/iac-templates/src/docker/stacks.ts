@@ -67,23 +67,127 @@ const header = (stack: DockerStack, base: BaseImage) =>
   ].join("\n");
 
 /**
- * Activates OpsCrew's pinned pnpm or Yarn when package.json names no `packageManager`, where
- * corepack would fetch the newest; with one, corepack uses the project's.
+ * Installs pnpm or Yarn with the image's npm, as root (Node 25 and later ship no corepack): the
+ * exact version package.json's `packageManager` names, without corepack's `+sha…` hash, else
+ * OpsCrew's pin; a range, tag or URL there stops the build. Yarn 2 and later are published as
+ * `@yarnpkg/cli-dist`. The Node image's own Yarn 1 (Node 24 and earlier) is unlinked first,
+ * because npm will not overwrite it.
  */
-function pinnedPackageManager(pm: "pnpm" | "yarn"): string {
-  return `grep -q '"packageManager"' package.json || corepack prepare ${pm}@${PACKAGE_MANAGERS[pm]} --activate`;
+function packageManagerInstall(pm: "pnpm" | "yarn"): string {
+  const pin = PACKAGE_MANAGERS[pm];
+  const exact = `/^${pm}@(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\+.*)?$/`;
+  // `\x27` is an apostrophe: the script sits in single quotes.
+  const version = `const p=require("./package.json").packageManager||"";const m=${exact}.exec(p);if(!m&&p.startsWith("${pm}@")){console.error("package.json\\x27s packageManager must name an exact version, such as ${pm}@${pin}");process.exit(1)}const v=m?m[1]:"${pin}";`;
+  const name = pm === "pnpm" ? '"pnpm@"' : '(/^1\\./.test(v)?"yarn@":"@yarnpkg/cli-dist@")';
+  const install = `spec="$(node -e '${version}console.log(${name}+v)')" && npm install -g --no-audit --no-fund "$spec"`;
+  return pm === "yarn" ? `rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg && ${install}` : install;
 }
 
 /** Shell snippet installing JS dependencies with the detected package manager. */
 function jsInstall(facts: ProjectFacts): string {
   switch (facts.packageManager) {
     case "pnpm":
-      return `corepack enable && { ${pinnedPackageManager("pnpm")}; } && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi`;
+      return `${packageManagerInstall("pnpm")} && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi`;
     case "yarn":
-      return `corepack enable && { ${pinnedPackageManager("yarn")}; } && if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install; fi`;
+      return `${packageManagerInstall("yarn")} && if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install; fi`;
     default:
       return "if [ -f package-lock.json ]; then npm ci; else npm install; fi";
   }
+}
+
+/** Regex source matching a shell command that runs `pm` (`pnpm` or `pnpx`, or `yarn`). */
+const callsSource = (pm: "pnpm" | "yarn") =>
+  `(^|[\\s;&|(])${pm === "pnpm" ? "(pnpm|pnpx)" : "yarn"}(\\s|$)`;
+
+/** True when `command` runs `pm`. */
+function calls(pm: "pnpm" | "yarn", command: string | undefined): boolean {
+  return command !== undefined && new RegExp(callsSource(pm)).test(command);
+}
+
+/**
+ * A pnpm start command that runs a package script of the app (`pnpm start`, `pnpm run <script>`,
+ * their `cd <dir> && ` form, and `--filter` for a workspace member, as detection and
+ * {@link jsScript} write them), as `npm run <script>` in the app folder. A filter must be
+ * `./<dir>` or a package name, which the build checks is the app's (`filterName`). Undefined
+ * otherwise.
+ */
+function npmStart(
+  command: string,
+  dir: string,
+): { command: string; script: string; filterName?: string } | undefined {
+  const inDir = inAppFolder(command, dir);
+  const pattern =
+    dir === "." || inDir !== command
+      ? /^pnpm (?:start|run ([\w:][\w:.-]*))$/
+      : /^pnpm --filter ('[^']*'|\S+) (?:start|run ([\w:][\w:.-]*))$/;
+  const match = pattern.exec(inDir);
+  if (match === null) return undefined;
+  const filter = inDir === command && dir !== "." ? match[1] : undefined;
+  const script = (filter === undefined ? match[1] : match[2]) ?? "start";
+  const translated = {
+    script,
+    command: `${dir === "." ? "" : `cd ${shellQuote(dir)} && `}npm run ${script}`,
+  };
+  if (filter === undefined || filter === shellQuote(`./${dir}`)) return translated;
+  return PACKAGE_NAME.test(filter) ? { ...translated, filterName: filter } : undefined;
+}
+
+/** An npm package name (`api`, `@acme/api`). */
+const PACKAGE_NAME = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
+
+/**
+ * Stops the build when the workspace package a `--filter <name>` start command names is not the
+ * app's: `node -e '…' <app's package.json> <name> <app folder>`.
+ */
+const FILTER_NAME_CHECK = `node -e 'const n=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).name;if(n!==process.argv[2]){console.error("The start command runs pnpm --filter "+process.argv[2]+", but the app in "+process.argv[3]+" is named "+n+": change the CMD line of this Dockerfile to the command that starts the app.");process.exit(1)}'`;
+
+/**
+ * How the Node.js server image starts with nothing to download: its start command, and the
+ * runtime stage's lines (run as root) that install pnpm or Yarn when the image runs it. A pnpm
+ * app's package script runs with `npm run`, so pnpm (a 60 MB binary) goes in only when the release
+ * command, a start command other than a package script, or the script itself calls it. Yarn goes in
+ * whenever the start or release command calls it: a Plug'n'Play install needs Yarn's loader, and
+ * which linker the app uses shows only once it is installed. Either is the build stage's version.
+ */
+function runtimePackageManager(
+  facts: ProjectFacts,
+  dir: string,
+  start: string,
+  releaseCommand: string | undefined,
+): { start: string; lines: string[] } {
+  const pm = facts.packageManager;
+  if (pm !== "pnpm" && pm !== "yarn") return { start, lines: [] };
+  const install = `${atInstallRoot(facts, dir, packageManagerInstall(pm))} && rm -rf /root/.npm`;
+  const name = pm === "pnpm" ? "pnpm" : "Yarn";
+  const always = [
+    `# ${name} runs the start or release command, so it is installed here, at the build stage's`,
+    "# version: nothing is downloaded when the container starts.",
+    `RUN ${install}`,
+  ];
+  const npm = pm === "pnpm" ? npmStart(start, dir) : undefined;
+  if (npm === undefined) {
+    return { start, lines: calls(pm, start) || calls(pm, releaseCommand) ? always : [] };
+  }
+  const manifest = shellQuote(dir === "." ? "package.json" : `${dir}/package.json`);
+  const nameCheck =
+    npm.filterName === undefined
+      ? []
+      : [
+          `# npm runs the script of the app in ${dir}: the build stops if \`--filter ${npm.filterName}\` names another package.`,
+          `RUN ${FILTER_NAME_CHECK} ${manifest} ${npm.filterName} ${shellQuote(dir)}`,
+        ];
+  if (calls(pm, releaseCommand)) return { start: npm.command, lines: [...nameCheck, ...always] };
+  // npm runs the script's `pre` and `post` scripts too.
+  const scriptCallsPnpm = `node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).scripts||{};const n=process.argv[2];process.exit(["pre"+n,n,"post"+n].some((k)=>/${callsSource("pnpm")}/.test(s[k]))?0:1)' ${manifest} ${npm.script}`;
+  return {
+    start: npm.command,
+    lines: [
+      ...nameCheck,
+      `# The app starts with npm, so the image needs no pnpm, unless the \`${npm.script}\` script (or its`,
+      "# pre or post script) calls it; then it is installed here, at the build stage's version.",
+      `RUN if ${scriptCallsPnpm}; then ${install}; fi`,
+    ],
+  };
 }
 
 function jsRun(facts: ProjectFacts, script: string): string {
@@ -133,7 +237,7 @@ const YARN_FOCUS_MISSING =
 /**
  * What the image must keep for a release command: the packages of the migration tool it runs, or
  * the package script whose tool the build stage looks up. Undefined when it runs no known tool.
- * `npmScriptsOnly`: only `npm run` scripts count (the Next.js runtime has no corepack, Bun or
+ * `npmScriptsOnly`: only `npm run` scripts count (the Next.js runtime has no pnpm, Yarn, Bun or
  * workspace root).
  */
 function releaseNeeds(
@@ -464,7 +568,8 @@ export function nextStandaloneDockerfile(
 /**
  * Node.js server image; an app in a subfolder is built from the root and started from there. The
  * image holds the built repository with the production dependencies, plus the packages of the
- * migration tool `releaseCommand` runs.
+ * migration tool `releaseCommand` runs, and pnpm or Yarn only when a command the image runs calls
+ * it (see {@link runtimePackageManager}).
  */
 export function nodeServerDockerfile(
   facts: ProjectFacts,
@@ -473,7 +578,12 @@ export function nodeServerDockerfile(
   releaseCommand?: string,
 ): string {
   const dir = appDirectory(facts);
-  const start = facts.build.startCommand ?? jsScript(facts, dir, "start");
+  const runtime = runtimePackageManager(
+    facts,
+    dir,
+    facts.build.startCommand ?? jsScript(facts, dir, "start"),
+    releaseCommand,
+  );
   const values = buildValues(facts);
   const lines = [
     header("node-server", base),
@@ -490,18 +600,13 @@ export function nodeServerDockerfile(
     "WORKDIR /app",
     // HOST: servers such as @astrojs/node standalone listen on localhost unless told otherwise.
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
+    "COPY --from=build --chown=node:node /app ./",
+    ...runtime.lines,
+    "USER node",
+    `EXPOSE ${port}`,
+    `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
+    "",
   );
-  const pm = facts.packageManager;
-  const corepack = pm === "pnpm" || pm === "yarn";
-  if (corepack) lines.push("RUN corepack enable");
-  lines.push("COPY --from=build --chown=node:node /app ./", "USER node");
-  if (corepack) {
-    lines.push(
-      `# corepack keeps OpsCrew's pinned ${pm === "pnpm" ? "pnpm" : "Yarn"} for the app's user when package.json names no packageManager.`,
-      `RUN ${atInstallRoot(facts, dir, pinnedPackageManager(pm))}`,
-    );
-  }
-  lines.push(`EXPOSE ${port}`, `CMD ["sh", "-c", ${JSON.stringify(start)}]`, "");
   return lines.join("\n");
 }
 

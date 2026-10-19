@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { designProbe } from "../__fixtures__/plans";
 import { IMAGES, PACKAGE_MANAGERS, PYPI_PACKAGES } from "../pins";
 import {
   containerPort,
@@ -621,8 +625,11 @@ describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
 
   it("builds a pnpm workspace member with --filter ./<dir>", () => {
     const lines = dockerfileOf(pnpmWorkspaceSite, 8080).split("\n");
-    expect(lines).toContain(
-      `RUN corepack enable && { grep -q '"packageManager"' package.json || corepack prepare pnpm@${PACKAGE_MANAGERS.pnpm} --activate; } && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi`,
+    // The workspace is installed from the root, with no `cd`.
+    expect(lines).toContainEqual(
+      expect.stringMatching(
+        /^RUN spec=.* && if \[ -f pnpm-lock\.yaml \]; then pnpm install --frozen-lockfile; else pnpm install; fi$/,
+      ),
     );
     expect(lines).toContain("RUN pnpm --filter ./apps/site run build");
     expect(lines).toContain("COPY --from=build /app/apps/site/dist /srv");
@@ -752,31 +759,270 @@ describe("pinned build tools (FR-1203)", () => {
       }
     }
   });
+});
 
-  it("activates the pinned pnpm or Yarn when package.json names no packageManager", () => {
-    const prepare = (pm: "pnpm" | "yarn") =>
-      `grep -q '"packageManager"' package.json || corepack prepare ${pm}@${PACKAGE_MANAGERS[pm]} --activate`;
-    for (const [sample, pm] of [
-      [viteApp, "pnpm"],
-      [nextMonorepoApp, "pnpm"],
-      [expressApp, "yarn"],
-    ] as const) {
-      const install = runs(sample).find((line) => line.includes("corepack enable"));
-      expect(install, sample.name).toMatch(/^RUN corepack enable && \{ grep /);
-      expect(install, sample.name).toContain(`{ ${prepare(pm)}; } && if [ -f `);
+/** The `monorepo-two-apps` example's API as detection reports it: a pnpm workspace member. */
+const pnpmMemberApi = facts({
+  name: "duo",
+  languages: ["javascript"],
+  packageManager: "pnpm",
+  frameworks: [{ name: "express", path: "apps/api" }],
+  appKind: "api",
+  port: 4001,
+  build: {
+    installCommand: "pnpm install --frozen-lockfile",
+    startCommand: "pnpm --filter api start",
+  },
+  monorepo: true,
+  appDir: "apps/api",
+});
+/** A Yarn app at the root whose start command is its `start` script. */
+const yarnApi = facts({ ...expressApp, build: { startCommand: "yarn start" } });
+
+/** The Dockerfile on a Node 26 base (the plan's runtime, digest from a fake registry lookup). */
+function onNode26(sample: ProjectFacts, releaseCommand?: string): string {
+  return (
+    renderDockerAssets(sample, {
+      appPort: sample.port ?? 3000,
+      healthPath: "/health",
+      app: {
+        build: {
+          builder: "generated-dockerfile",
+          chosen: "auto",
+          reason: "OpsCrew's Dockerfile builds it.",
+          runtime: { language: "node", version: "26" },
+          probe: designProbe("generated-dockerfile", "node"),
+        },
+        releaseCommand,
+      },
+      resolveImageDigest: () => `sha256:${"ab".repeat(32)}`,
+    })[0]?.content ?? ""
+  );
+}
+
+/** The lines of the runtime stage. */
+function runtimeStage(dockerfile: string): string[] {
+  const lines = dockerfile.split("\n");
+  return lines.slice(lines.findIndex((line) => / AS runtime$/.test(line)));
+}
+
+describe("pnpm and Yarn without corepack (T1219)", () => {
+  const JS = { ...ALL, pnpmMemberApi, yarnApi, npmWorkspaceApi, pnpmWorkspaceSite };
+
+  it.each([
+    ["pnpmMemberApi", "Node 24", dockerfileOf(pnpmMemberApi)],
+    ["pnpmMemberApi", "Node 26", onNode26(pnpmMemberApi)],
+    ["yarnApi", "Node 26", onNode26(yarnApi)],
+    [
+      "pnpmMemberApi with a pnpm release command",
+      "Node 26",
+      onNode26(pnpmMemberApi, "pnpm --filter api run migrate"),
+    ],
+  ])("renders %s on %s", (_name, _base, dockerfile) => {
+    expect(dockerfile).toMatchSnapshot();
+  });
+
+  it("never uses corepack, on Node 24 or Node 26", () => {
+    for (const [name, sample] of Object.entries(JS)) {
+      expect(dockerfileOf(sample), name).not.toContain("corepack");
+      expect(onNode26(sample), name).not.toContain("corepack");
     }
-    // The Node.js server's runtime stage runs pnpm or Yarn too: the same pin, in the home of the
-    // user that starts the app.
-    const lines = dockerfileOf(expressApp).split("\n");
-    const runtime = lines.slice(lines.indexOf(`FROM ${IMAGES.nodeAlpine.ref} AS runtime`));
-    expect(runtime).toContain("RUN corepack enable");
-    expect(runtime.slice(runtime.indexOf("USER node"))).toContain(`RUN ${prepare("yarn")}`);
-    const folder = facts({
-      ...expressApp,
-      appDir: "api",
-      frameworks: [{ name: "express", path: "api" }],
+  });
+
+  it("starts a pnpm app's package script with npm, so the image has no pnpm", () => {
+    const runtime = runtimeStage(dockerfileOf(pnpmMemberApi));
+    expect(runtime).toContain('CMD ["sh", "-c", "cd apps/api && npm run start"]');
+    expect(runtime.filter((line) => line.startsWith("RUN "))).toEqual([
+      expect.stringMatching(/^RUN node -e '.*' apps\/api\/package\.json api apps\/api$/),
+      expect.stringMatching(/^RUN if node -e '.*' apps\/api\/package\.json start; then spec=/),
+    ]);
+    // The forms detection and OpsCrew's own default write.
+    const start = (sample: ProjectFacts, startCommand?: string) =>
+      runtimeStage(dockerfileOf({ ...sample, build: { startCommand } })).at(-2);
+    const root = facts({ ...pnpmMemberApi, monorepo: false, appDir: ".", frameworks: [] });
+    const folder = facts({ ...root, appDir: "api" });
+    expect(start(root, "pnpm start")).toBe('CMD ["sh", "-c", "npm run start"]');
+    expect(start(root, "pnpm run start:prod")).toBe('CMD ["sh", "-c", "npm run start:prod"]');
+    expect(start(folder, "cd api && pnpm run start:prod")).toBe(
+      'CMD ["sh", "-c", "cd api && npm run start:prod"]',
+    );
+    expect(start(folder)).toBe('CMD ["sh", "-c", "cd api && npm run start"]');
+    expect(start(pnpmMemberApi)).toBe('CMD ["sh", "-c", "cd apps/api && npm run start"]');
+    expect(start(pnpmMemberApi, "pnpm --filter api run start:prod")).toBe(
+      'CMD ["sh", "-c", "cd apps/api && npm run start:prod"]',
+    );
+    // A `./<dir>` filter needs no name check.
+    const byPath = runtimeStage(dockerfileOf({ ...pnpmMemberApi, build: {} }));
+    expect(byPath.filter((line) => line.startsWith("RUN "))).toEqual([
+      expect.stringMatching(/^RUN if node -e /),
+    ]);
+    // Other filters (another folder, a selector) keep pnpm.
+    for (const filter of ["./apps/web", "...api", "'{apps/api}'"]) {
+      expect(start(pnpmMemberApi, `pnpm --filter ${filter} start`)).toBe(
+        `CMD ["sh", "-c", ${JSON.stringify(`pnpm --filter ${filter} start`)}]`,
+      );
+    }
+  });
+
+  it("installs pnpm or Yarn in the runtime stage, as root, when a command the image runs calls it", () => {
+    const installs = (dockerfile: string) => {
+      const runtime = runtimeStage(dockerfile);
+      const runs = runtime.filter((line) => line.startsWith("RUN "));
+      for (const line of runs)
+        expect(runtime.indexOf(line)).toBeLessThan(runtime.indexOf("USER node"));
+      return runs;
+    };
+    const pnpmInstall = expect.stringMatching(
+      /^RUN spec=.* && npm install -g .* && rm -rf \/root\/\.npm$/,
+    );
+    // The release command runs pnpm.
+    const release = onNode26(pnpmMemberApi, "pnpm --filter api run migrate");
+    expect(installs(release)).toEqual([expect.stringMatching(/^RUN node -e /), pnpmInstall]);
+    expect(runtimeStage(release).at(-2)).toBe('CMD ["sh", "-c", "cd apps/api && npm run start"]');
+    // A start command other than a package script keeps pnpm, and so does pnpx.
+    const pnpx = dockerfileOf({ ...pnpmMemberApi, build: { startCommand: "pnpx serve dist" } });
+    expect(installs(pnpx)).toEqual([pnpmInstall]);
+    const flags = dockerfileOf({
+      ...pnpmMemberApi,
+      build: { startCommand: "pnpm start --port 4001" },
     });
-    expect(dockerfileOf(folder)).toContain(`RUN cd api && ${prepare("yarn")}`);
+    expect(installs(flags)).toEqual([pnpmInstall]);
+    expect(runtimeStage(flags).at(-2)).toBe('CMD ["sh", "-c", "pnpm start --port 4001"]');
+    // Yarn runs its start command (Plug'n'Play needs Yarn's loader), installed at build time.
+    expect(installs(onNode26(yarnApi))).toEqual([
+      expect.stringMatching(
+        /^RUN rm -f \/usr\/local\/bin\/yarn \/usr\/local\/bin\/yarnpkg && spec=/,
+      ),
+    ]);
+    expect(runtimeStage(onNode26(yarnApi)).at(-2)).toBe('CMD ["sh", "-c", "yarn start"]');
+    // Neither when nothing calls it.
+    for (const sample of [
+      expressApp,
+      { ...pnpmMemberApi, build: { startCommand: "node src/server.js" } },
+    ]) {
+      expect(installs(onNode26(sample))).toEqual([]);
+    }
+  });
+});
+
+describe.skipIf(!shWorks())("installing pnpm and Yarn in sh (T1219)", () => {
+  /**
+   * Runs `command` in a folder holding `files`, with `npm`, `pnpm`, `yarn` and `rm` replaced by
+   * functions that print their arguments (the real `node` reads package.json).
+   */
+  async function run(command: string, files: Record<string, unknown>) {
+    const dir = await mkdtemp(join(tmpdir(), "opscrew-pm-"));
+    try {
+      for (const [file, content] of Object.entries(files)) {
+        await mkdir(join(dir, file, ".."), { recursive: true });
+        await writeFile(join(dir, file), JSON.stringify(content));
+      }
+      const fakes = ["npm", "pnpm", "yarn", "rm"].map((name) => `${name}() { echo "${name} $*"; }`);
+      const result = spawnSync("sh", ["-c", `${fakes.join("\n")}\n${command}`], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  /** The build stage's install line, without `RUN `. */
+  const buildInstall = (sample: ProjectFacts) =>
+    (
+      dockerfileOf(sample)
+        .split("\n")
+        .find((line) => line.includes(" install -g ")) ?? ""
+    ).replace(/^RUN /, "");
+  const npmInstall = (spec: string) => `npm install -g --no-audit --no-fund ${spec}`;
+
+  it("installs the version packageManager names, without its hash, else the pin", async () => {
+    const pnpm = buildInstall(viteApp);
+    const declared = await run(pnpm, {
+      "package.json": { packageManager: "pnpm@9.15.0+sha512.abc123" },
+    });
+    expect(declared).toMatchObject({
+      status: 0,
+      stdout: `${npmInstall("pnpm@9.15.0")}\npnpm install\n`,
+    });
+    const none = await run(pnpm, { "package.json": { name: "app" } });
+    expect(none.stdout).toBe(`${npmInstall(`pnpm@${PACKAGE_MANAGERS.pnpm}`)}\npnpm install\n`);
+    // Another package manager's field leaves the pin.
+    const other = await run(pnpm, { "package.json": { packageManager: "yarn@4.6.0" } });
+    expect(other.stdout).toContain(npmInstall(`pnpm@${PACKAGE_MANAGERS.pnpm}`));
+  });
+
+  it("stops the build when packageManager names no exact version", async () => {
+    for (const [pm, install] of [
+      ["pnpm", buildInstall(viteApp)],
+      ["yarn", buildInstall(expressApp)],
+    ] as const) {
+      for (const declared of ["^12", "latest", "https://example.com/pm.tgz", "npm:other@1.0.0"]) {
+        const result = await run(install, {
+          "package.json": { packageManager: `${pm}@${declared}` },
+        });
+        expect(result.status, declared).not.toBe(0);
+        expect(result.stdout, declared).not.toContain("npm install");
+        expect(result.stderr, declared).toContain(
+          `package.json's packageManager must name an exact version, such as ${pm}@${PACKAGE_MANAGERS[pm]}`,
+        );
+      }
+    }
+    const prerelease = await run(buildInstall(viteApp), {
+      "package.json": { packageManager: "pnpm@11.0.0-rc.1" },
+    });
+    expect(prerelease.stdout).toContain(npmInstall("pnpm@11.0.0-rc.1"));
+  });
+
+  it("installs Yarn 1 as yarn and later Yarn as @yarnpkg/cli-dist, unlinking the image's Yarn", async () => {
+    const yarn = buildInstall(expressApp);
+    const unlink = "rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg\n";
+    expect(
+      await run(yarn, { "package.json": { packageManager: "yarn@4.6.0+sha224.abc" } }),
+    ).toMatchObject({
+      status: 0,
+      stdout: `${unlink}${npmInstall("@yarnpkg/cli-dist@4.6.0")}\nyarn install\n`,
+    });
+    expect((await run(yarn, { "package.json": { packageManager: "yarn@1.22.19" } })).stdout).toBe(
+      `${unlink}${npmInstall("yarn@1.22.19")}\nyarn install\n`,
+    );
+    expect((await run(yarn, { "package.json": {} })).stdout).toBe(
+      `${unlink}${npmInstall(`yarn@${PACKAGE_MANAGERS.yarn}`)}\nyarn install\n`,
+    );
+  });
+
+  it("puts pnpm into the runtime image only when the start script calls it", async () => {
+    const check = (
+      runtimeStage(dockerfileOf(pnpmMemberApi)).find((line) => line.startsWith("RUN if ")) ?? ""
+    ).replace(/^RUN /, "");
+    const tree = (start: string, more: Record<string, string> = {}) => ({
+      "package.json": { packageManager: "pnpm@9.15.0" },
+      "apps/api/package.json": { scripts: { start, ...more } },
+    });
+    expect(await run(check, tree("node src/server.js"))).toMatchObject({ status: 0, stdout: "" });
+    expect(await run(check, tree("pnpm run build && node dist/server.js"))).toMatchObject({
+      status: 0,
+      stdout: `${npmInstall("pnpm@9.15.0")}\nrm -rf /root/.npm\n`,
+    });
+    expect((await run(check, tree("node-pnpm-free.js"))).stdout).toBe("");
+    // npm runs prestart and poststart too.
+    const pre = tree("node dist/server.js", { prestart: "pnpm prisma migrate deploy" });
+    expect((await run(check, pre)).stdout).toContain(npmInstall("pnpm@9.15.0"));
+    const post = tree("node dist/server.js", { poststart: "pnpx cleanup" });
+    expect((await run(check, post)).stdout).toContain(npmInstall("pnpm@9.15.0"));
+  });
+
+  it("stops the build when --filter names another package than the app", async () => {
+    const check = (
+      runtimeStage(dockerfileOf(pnpmMemberApi)).find((line) => line.startsWith("RUN node ")) ?? ""
+    ).replace(/^RUN /, "");
+    const tree = (name: string) => ({ "apps/api/package.json": { name } });
+    expect(await run(check, tree("api"))).toMatchObject({ status: 0, stderr: "" });
+    const other = await run(check, tree("@duo/api"));
+    expect(other.status).toBe(1);
+    expect(other.stderr).toContain(
+      "The start command runs pnpm --filter api, but the app in apps/api is named @duo/api",
+    );
   });
 });
 

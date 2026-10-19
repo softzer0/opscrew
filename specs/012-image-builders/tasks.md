@@ -355,7 +355,7 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops --filter=opscrew`, `node plugin/validate.mjs`, plus that Docker pass
   - Effort: high
 
-- [ ] T1219 [US1] pnpm and Yarn without corepack, and no download when the app starts, in `packages/iac-templates/src/docker/**`
+- [X] T1219 [US1] pnpm and Yarn without corepack, and no download when the app starts, in `packages/iac-templates/src/docker/**`
   - Reads: spec FR-1203, FR-1204, FR-1228; T1216's report (the lead's brief); `src/docker/stacks.ts` (`pinnedPackageManager`, `jsInstall`, the node-server runtime stage), `src/pins.ts` `PACKAGE_MANAGERS`
   - Depends: T1216
   - Why: T1216 found that Node 25 and later ship no corepack (nodejs.org), so a pnpm or Yarn app on Node 26, which becomes LTS in late October 2026, fails at `corepack enable`. pnpm 12 also downloads a native binary on its first run, and Yarn 4 with `packageManager` downloads Yarn at every container start, so the app needs the network to start.
