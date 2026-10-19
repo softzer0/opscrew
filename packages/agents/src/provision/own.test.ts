@@ -48,6 +48,7 @@ import {
   TUNNEL_CHANGES,
   TUNNEL_ID,
   tunnelOutputs,
+  writeArchitecture,
 } from "../testing";
 import { runProvision } from "./run";
 import { zeroTrustAuthDomain } from "./shared-cloudflare";
@@ -268,6 +269,18 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     );
     expect(s.github.secrets.get("OPSCREW_BUILD_SECRETS")).toBe(`NEXT_PUBLIC_MAPS_KEY=${mapsKey}\n`);
     expect(everythingPrinted(s.deps)).not.toContain(mapsKey);
+  });
+
+  it("adds Dependabot's configuration to the pull request with the deployment files", async () => {
+    const s = await setup();
+    await writeArchitecture(s.deps.paths.files.architecture, "shop");
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+
+    const committed = await s.git(s.root, "show", "--name-only", "--format=", "HEAD");
+    expect(committed.split("\n")).toEqual(
+      expect.arrayContaining([".github/dependabot.yml", "opscrew/runtime/compose.yaml"]),
+    );
+    expect(s.github.pulls[0]?.body).toContain("- `.github/dependabot.yml`: weekly");
   });
 
   it("public mode on SSH port 2222: the workflow uses the port and known_hosts holds [ip]:2222", async () => {

@@ -6,6 +6,7 @@ import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-
 import type { PhaseDeps } from "../context";
 import { type PlanApproval, type ProjectEngine, projectEngine } from "../shared";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
+import type { DependabotStep } from "./dependabot";
 import type { PlanAndApplyResult } from "./plan-apply";
 import {
   chooseDeployBranch,
@@ -201,6 +202,8 @@ export async function publishDeployment(
     secretsStored: boolean;
     phase: ProvisionPhase;
     branch: DeployBranch | undefined;
+    /** Dependabot's configuration (`deploySetupDependabot`), for the pull request's body. */
+    dependabot: DependabotStep | undefined;
   },
 ): Promise<{ plan: DeployPlan; published: PublishResult }> {
   const plan: DeployPlan = {
@@ -217,6 +220,7 @@ export async function publishDeployment(
     secretsStored: input.secretsStored,
     phase: input.phase,
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
+    ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
   });
   return { plan, published };
 }

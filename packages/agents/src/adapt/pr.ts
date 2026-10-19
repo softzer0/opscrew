@@ -3,7 +3,7 @@ import { upperFirst } from "@opscrew/core";
 import type { CodeChangeKind, ImageBuilder } from "@opscrew/plan-schema";
 import { BUILDER_NAMES } from "../design/builder";
 import type { CodeChange } from "../design/code-changes";
-import { BASELINE_MET, type DependabotStep, NO_DOCKERFILE_NEEDED } from "./build-files";
+import { BASELINE_MET, NO_DOCKERFILE_NEEDED } from "./build-files";
 
 /** Title of the pull request opened by `opscrew adapt`. */
 export const PULL_REQUEST_TITLE = "OpsCrew: prepare the app for deployment";
@@ -62,8 +62,6 @@ export interface PullRequestBuild {
   /** `app.dockerfile` and `app.buildContext`, for the `docker build` line. */
   dockerfile: string;
   context: string;
-  /** `.github/dependabot.yml` written by OpsCrew, or the user's file and the entries it lacks. */
-  dependabot?: DependabotStep;
   /** The runtime version file adapt added, with the version in it. */
   versionFile?: { path: string; version: string };
   /** The user's own Dockerfile's baseline findings, each with its fix (empty: it meets it). */
@@ -86,16 +84,6 @@ function buildSection(build: PullRequestBuild): string[] {
       ? `${named} ${NO_DOCKERFILE_NEEDED}.`
       : `The deploy workflow builds the image with ${BUILDER_NAMES[build.builder ?? "generated-dockerfile"]}, \`${build.dockerfile}\`.`,
   ];
-  const dependabot = build.dependabot;
-  if (dependabot?.action === "write") {
-    lines.push(
-      `- \`${dependabot.file.path}\` (added by OpsCrew): weekly dependency updates, with minor and patch versions grouped; major versions of the runtime images are left to you.`,
-    );
-  } else if (dependabot?.missing !== undefined && dependabot.missing.length > 0) {
-    lines.push(
-      `- \`${dependabot.path}\` is yours and stays as it is; OpsCrew's would also update: ${dependabot.missing.join(", ")}.`,
-    );
-  }
   if (build.versionFile !== undefined) {
     lines.push(
       `- \`${build.versionFile.path}\` (added by OpsCrew): the runtime version the image uses, ${build.versionFile.version}, as recorded in \`opscrew/plan.yaml\` (\`app.build.runtime\`).`,

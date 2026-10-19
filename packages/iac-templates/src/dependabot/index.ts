@@ -39,7 +39,11 @@ const RUNTIME_ECOSYSTEM: Partial<Record<RuntimeLanguage, string>> = {
  */
 const NO_MAJOR_UPDATES = ["caddy", "node", "postgres", "python"];
 
-/** The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper). */
+/**
+ * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper). A
+ * Portainer target's stack template is committed here on the default branch too, the only branch
+ * Dependabot reads; the orphan `opscrew-deploy` branch Portainer deploys holds only its copy.
+ */
 const RUNTIME_FOLDERS = ["/opscrew/runtime", "/opscrew/runtime/*"];
 
 function update(

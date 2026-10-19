@@ -135,26 +135,17 @@ describe("renderPullRequestBody", () => {
   });
 
   describe("the image build", () => {
-    const dependabot = {
-      action: "write" as const,
-      file: { path: ".github/dependabot.yml", content: "", kind: "workflow" as const },
-    };
-
     it("names the builder, the files adapt added and a build line for it", () => {
       const body = render({
         build: {
           builder: "railpack",
           dockerfile: "Dockerfile",
           context: ".",
-          dependabot,
           versionFile: { path: "rust-toolchain.toml", version: "1.98" },
         },
       });
       expect(body).toContain(
         "## Image build\n\nRailpack builds the image from the code, so the app needs no Dockerfile.",
-      );
-      expect(body).toContain(
-        "- `.github/dependabot.yml` (added by OpsCrew): weekly dependency updates, with minor and patch versions grouped;",
       );
       expect(body).toContain(
         "- `rust-toolchain.toml` (added by OpsCrew): the runtime version the image uses, 1.98, as recorded in `opscrew/plan.yaml` (`app.build.runtime`).",
@@ -166,17 +157,12 @@ describe("renderPullRequestBody", () => {
       expect(body).not.toContain("docker run");
     });
 
-    it("lists what the user's Dependabot file lacks, and the own Dockerfile's findings with their fixes", () => {
+    it("lists the own Dockerfile's findings with their fixes", () => {
       const body = render({
         build: {
           builder: "own-dockerfile",
           dockerfile: "docker/Dockerfile.prod",
           context: ".",
-          dependabot: {
-            action: "keep",
-            path: ".github/dependabot.yml",
-            missing: ["docker in /docker", "github-actions in /"],
-          },
           baseline: [
             {
               line: 1,
@@ -188,9 +174,6 @@ describe("renderPullRequestBody", () => {
       });
       expect(body).toContain(
         "The deploy workflow builds the image with your own Dockerfile, `docker/Dockerfile.prod`.",
-      );
-      expect(body).toContain(
-        "- `.github/dependabot.yml` is yours and stays as it is; OpsCrew's would also update: docker in /docker, github-actions in /.",
       );
       expect(body).toContain(
         "- `docker/Dockerfile.prod` (yours, unchanged) misses OpsCrew's image baseline:\n  - line 1: Base image is not pinned by digest. Fix: Add the digest.",

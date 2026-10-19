@@ -2,6 +2,8 @@ import type { AppBuild, DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
+import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
+import { PORTAINER_STACK_TEMPLATE_PATH } from "../portainer-target/stack";
 import { renderDependabot } from "./index";
 
 function facts(overrides: Partial<ProjectFacts>): ProjectFacts {
@@ -147,6 +149,15 @@ describe("renderDependabot", () => {
     // An app in a folder that is not a workspace has its manifest there.
     const folder = facts({ languages: ["python"], packageManager: "poetry", appDir: "api" });
     expect(entries(updates(folder, plan("generated-dockerfile", "python")))[0]).toBe("pip /api");
+  });
+
+  it("watches a Portainer target's stack template, committed in opscrew/runtime", () => {
+    // Dependabot reads only the default branch. The deploy-setup pull request commits the stack
+    // template there; the `opscrew-deploy` branch only gets the copy with each new image.
+    expect(PORTAINER_STACK_TEMPLATE_PATH).toBe("opscrew/runtime/compose.yaml");
+    expect(entries(updates(facts({}), portainerTestPlan()))).toContain(
+      "docker-compose /opscrew/runtime,/opscrew/runtime/*",
+    );
   });
 
   it("covers each language the builders take", () => {

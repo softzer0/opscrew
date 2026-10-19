@@ -55,8 +55,9 @@ To accept any workflow of your repository instead, replace `--certificate-identi
 ## Updates with Dependabot
 
 OpsCrew pins every image and tool it uses to an exact version, and GitHub's Dependabot keeps those
-pins current. When your repository has no `.github/dependabot.yml`, the adapt pull request adds
-one. It covers:
+pins current. When your repository has no `.github/dependabot.yml`, the pull request that
+`npx opscrew provision` opens with the deployment setup adds one, together with the deploy workflow
+and the Compose files it watches, so Dependabot's first check finds them. It covers:
 
 - your app's packages (npm, pnpm and Yarn, Bun, pip, Poetry, Pipenv, uv, Bundler, Go modules,
   Composer, Cargo, NuGet, Maven or Gradle, whichever your app uses);
@@ -72,7 +73,7 @@ app's libraries, and a new Postgres major cannot read the old one's data. Those 
 [Runtime versions](builders.md#runtime-versions)).
 
 When your repository already has a Dependabot configuration, OpsCrew leaves it as it is and lists
-the entries it would add in the adapt pull request.
+the entries it would add, in the output of `npx opscrew provision` and in that pull request.
 
 When Dependabot updates a pin in a file OpsCrew generated, OpsCrew keeps the newer pin on the next
 `npx opscrew provision` and does not put the old one back.

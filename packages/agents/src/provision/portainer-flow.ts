@@ -50,6 +50,7 @@ import {
   setupCloudflare,
   setupGitHub,
 } from "./credentials";
+import { deploySetupDependabot } from "./dependabot";
 import { deployBranchState, startDeployBranch } from "./deploy-branch";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import {
@@ -348,20 +349,26 @@ export async function provisionPortainer(
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
 
   // 3b. Render and write the files (skipped when applying a saved plan: --plan-only wrote them).
-  const files = deploymentFiles(
-    plan,
-    deploymentRenderContext(deps, {
+  // Dependabot's configuration comes with the workflow and the stack template it watches
+  // (FR-1221); the template is committed in `opscrew/runtime` on the default branch, which is the
+  // only branch Dependabot reads, so its Compose entry applies here too.
+  const writes = saved.apply === undefined && saved.removal === undefined;
+  const dependabot = await deploySetupDependabot(deps, plan, { writes });
+  const files = [
+    ...deploymentFiles(
       plan,
-      requirements: input.requirements,
-      github,
-      // A Portainer target has no SSH deploy: its files never use the deploy key.
-      deployPublicKey: "",
-      cloudflare,
-    }),
-  );
-  if (saved.apply === undefined && saved.removal === undefined) {
-    await approveAndWriteRenderedFiles(deps, root, files);
-  }
+      deploymentRenderContext(deps, {
+        plan,
+        requirements: input.requirements,
+        github,
+        // A Portainer target has no SSH deploy: its files never use the deploy key.
+        deployPublicKey: "",
+        cloudflare,
+      }),
+    ),
+    ...(dependabot?.action === "write" ? [dependabot.file] : []),
+  ];
+  if (writes) await approveAndWriteRenderedFiles(deps, root, files);
 
   // The app's values, the webhook and the certificate's key, read once and only when needed.
   let environment: AppEnvironment | undefined;
@@ -764,6 +771,7 @@ export async function provisionPortainer(
     secretsStored,
     phase,
     branch: deployBranch,
+    dependabot,
   });
   plan = published.plan;
   const dns = portainerDnsRecordNote(plan);

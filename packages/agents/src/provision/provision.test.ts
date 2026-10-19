@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { renderRunbook } from "@opscrew/iac-templates";
+import { renderDependabot, renderRunbook } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readServerAddresses } from "../shared";
@@ -19,6 +19,7 @@ import {
   fakeCloudflare,
   fakeSharedCloudflare,
   HOST_KEY,
+  makeFacts,
   movingPlan,
   opscrewRecord,
   planJsonFor,
@@ -28,6 +29,7 @@ import {
   SERVER_IPV4,
   SERVER_IPV6,
   testPlan,
+  writeArchitecture,
   writeFakeState,
 } from "../testing";
 import { findSavedPlan } from "./plan-apply";
@@ -1630,6 +1632,114 @@ describe.skipIf(!findExecutable("git"))("runProvision apply hints on Hetzner", (
     const error = await runProvision(deps, { services }).catch((e: unknown) => e);
     expect((error as OpsCrewError).hint).toContain(
       "Hetzner Cloud cannot create a cx23 server in nbg1 right now",
+    );
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision and Dependabot's configuration", () => {
+  const DEPENDABOT = ".github/dependabot.yml";
+
+  /** A project with its analysis (`opscrew/architecture.json`), as after `opscrew adapt`. */
+  async function analysed(files: Record<string, string> = {}) {
+    const run = await setup();
+    await writeArchitecture(run.deps.paths.files.architecture, "shop");
+    for (const [path, content] of Object.entries(files)) {
+      await mkdir(join(run.root, ".github"), { recursive: true });
+      await writeFile(join(run.root, path), content);
+      await run.git(run.root, "add", path);
+      await run.git(run.root, "commit", "-qm", `add ${path}`);
+    }
+    return run;
+  }
+
+  const committedIn = async (run: Awaited<ReturnType<typeof analysed>>) =>
+    (await run.git(run.root, "show", "--name-only", "--format=", "HEAD")).split("\n");
+  /** The files the run's `repo-write` approvals listed. */
+  const writesOf = (run: Awaited<ReturnType<typeof analysed>>) =>
+    run.handler.requests
+      .filter((request) => request.kind === "repo-write")
+      .map((request) => request.details)
+      .join("\n");
+
+  it("adds OpsCrew's file to the deploy-setup pull request when the repository has none; a rerun leaves it", async () => {
+    const run = await analysed();
+    await runProvision(run.deps, { services: run.services });
+
+    const expected = renderDependabot(makeFacts({ name: "shop" }), testPlan());
+    expect(await readFile(join(run.root, DEPENDABOT), "utf8")).toBe(expected.content);
+    // Written under the deployment files' approval, and in their commit.
+    expect(run.handler.requests.filter((r) => r.kind === "repo-write")).toHaveLength(1);
+    expect(writesOf(run)).toContain(`new      ${DEPENDABOT}`);
+    expect(await committedIn(run)).toEqual(
+      expect.arrayContaining([DEPENDABOT, ".github/workflows/opscrew-deploy.yml"]),
+    );
+    expect(run.github.pulls[0]?.body).toContain(
+      "- `.github/dependabot.yml`: weekly dependency updates, with minor and patch versions grouped; major versions of the runtime images are left to you.",
+    );
+
+    // The pull request is merged; a later run keeps the committed file as it is.
+    await run.git(run.root, "checkout", "-q", "main");
+    await run.git(run.root, "merge", "-q", "--ff-only", DEPLOY_SETUP_BRANCH);
+    run.handler.requests.length = 0;
+    run.deps.reporter.lines.length = 0;
+    await runProvision(run.deps, { services: run.services });
+    expect(await readFile(join(run.root, DEPENDABOT), "utf8")).toBe(expected.content);
+    const log = await run.git(run.root, "log", "--all", "--format=%H", "--", DEPENDABOT);
+    expect(log.split("\n")).toHaveLength(1);
+    expect(writesOf(run)).not.toContain(DEPENDABOT);
+    expect(run.deps.reporter.text()).not.toContain("is yours");
+  });
+
+  it("--plan-only writes it with the other files, and --approve commits it with them", async () => {
+    const run = await analysed();
+    const planned = await runProvision(run.deps, { services: run.services, planOnly: true });
+    expect(await readFile(join(run.root, DEPENDABOT), "utf8")).toContain("package-ecosystem");
+    await runProvision(run.deps, {
+      services: run.services,
+      approveHashes: [planned.planHash as string],
+    });
+    expect(await committedIn(run)).toContain(DEPENDABOT);
+    expect(run.github.pulls[0]?.body).toContain("- `.github/dependabot.yml`: weekly");
+  });
+
+  it("--approve commits no Dependabot file when the one --plan-only wrote is gone", async () => {
+    const run = await analysed();
+    const planned = await runProvision(run.deps, { services: run.services, planOnly: true });
+    await rm(join(run.root, DEPENDABOT));
+    const applied = await runProvision(run.deps, {
+      services: run.services,
+      approveHashes: [planned.planHash as string],
+    });
+    expect(applied.applied).toBe(true);
+    expect(await committedIn(run)).toEqual(
+      expect.arrayContaining([".github/workflows/opscrew-deploy.yml"]),
+    );
+    expect(await committedIn(run)).not.toContain(DEPENDABOT);
+    expect(run.github.pulls[0]?.body).not.toContain("dependabot");
+  });
+
+  it("leaves the user's configuration as it is, listing what it lacks in the output and the pull request", async () => {
+    const own = [
+      "version: 2",
+      "updates:",
+      "  - package-ecosystem: npm",
+      '    directory: "/"',
+      "    schedule: { interval: daily }",
+      "",
+    ].join("\n");
+    const run = await analysed({ [DEPENDABOT]: own });
+    await runProvision(run.deps, { services: run.services });
+
+    expect(await readFile(join(run.root, DEPENDABOT), "utf8")).toBe(own);
+    expect(await committedIn(run)).not.toContain(DEPENDABOT);
+    expect(writesOf(run)).not.toContain(DEPENDABOT);
+    const missing =
+      "docker in /, docker-compose in /opscrew/runtime and /opscrew/runtime/*, github-actions in /";
+    expect(run.deps.reporter.text()).toContain(
+      `.github/dependabot.yml is yours, so OpsCrew left it as it is. OpsCrew's would also update: ${missing}.`,
+    );
+    expect(run.github.pulls[0]?.body).toContain(
+      `- \`.github/dependabot.yml\` is yours and stays as it is; OpsCrew's would also update: ${missing}.`,
     );
   });
 });

@@ -57,6 +57,7 @@ import {
   projectRunner,
   ScriptedApprovalHandler,
   withStateList,
+  writeArchitecture,
   writeFakeState,
 } from "../testing";
 import {
@@ -531,6 +532,27 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     const connector = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop-portainer-tunnel");
     expect(connector?.file).toContain(newer);
     expect(connector?.file).not.toContain(IMAGES.cloudflared.ref);
+  });
+
+  it("adds Dependabot's configuration to the pull request, watching the stack template on the default branch", async () => {
+    const s = await setup({ changes: APP_TUNNEL });
+    await writeArchitecture(s.deps.paths.files.architecture, "shop");
+    await s.run();
+
+    // Dependabot reads only the default branch: the deploy-setup pull request brings the stack
+    // template there (the `opscrew-deploy` branch only gets the copy with each new image).
+    const committed = await s.git(s.root, "show", "--name-only", "--format=", "HEAD");
+    expect(committed.split("\n")).toEqual(
+      expect.arrayContaining([".github/dependabot.yml", PORTAINER_STACK_TEMPLATE_PATH]),
+    );
+    const writes = s.handler.requests.filter((request) => request.kind === "repo-write");
+    expect(writes.map((request) => request.details).join("\n")).toContain(
+      "new      .github/dependabot.yml",
+    );
+    const config = await readFile(join(s.root, ".github/dependabot.yml"), "utf8");
+    expect(config).toContain("package-ecosystem: docker-compose");
+    expect(config).toContain("/opscrew/runtime\n");
+    expect(s.github.pulls[0]?.body).toContain("- `.github/dependabot.yml`: weekly");
   });
 
   it("shows no changes and changes nothing in Portainer when run again", async () => {

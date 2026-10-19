@@ -31,6 +31,7 @@ import {
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
+import { deploySetupDependabot } from "./dependabot";
 import { requireNoMoveInProgress } from "./guard";
 import {
   applyOwnHostPlan,
@@ -376,7 +377,12 @@ async function provisionFlow(
     server: knownServer,
     ...(ownRender !== undefined ? { own: ownRender } : {}),
   });
-  const files = deploymentFiles(plan, ctx);
+  // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).
+  const dependabot = await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
+  const files = [
+    ...deploymentFiles(plan, ctx),
+    ...(dependabot?.action === "write" ? [dependabot.file] : []),
+  ];
   if (approveHash === undefined) await approveAndWriteRenderedFiles(deps, root, files);
 
   // 5. Plan → policies → approval → apply. A plan that deletes the tunnel (for example when
@@ -600,6 +606,7 @@ async function provisionFlow(
     secretsStored,
     phase,
     branch: deployBranch,
+    dependabot,
   });
   plan = published.plan;
   if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));

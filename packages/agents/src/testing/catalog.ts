@@ -4,7 +4,7 @@ import type {
   ProviderExtras,
   VpsProviderId,
 } from "@opscrew/contracts";
-import type { ProjectFacts, Requirements } from "@opscrew/plan-schema";
+import { type ProjectFacts, type Requirements, writeArtifact } from "@opscrew/plan-schema";
 
 export const AS_OF = "2026-09-01T00:00:00.000Z";
 
@@ -89,6 +89,19 @@ export function euCatalog(): MemoryCatalog {
       cpuType: "dedicated",
     }),
   ]);
+}
+
+/** Writes `opscrew/architecture.json` (at `file`) for the app `name`, with {@link makeFacts}. */
+export async function writeArchitecture(file: string, name: string): Promise<void> {
+  await writeArtifact("architecture", file, {
+    schemaVersion: 1,
+    generatedAt: "2026-10-11T09:00:00.000Z",
+    generator: { tool: "opscrew", version: "0.0.0-test" },
+    facts: makeFacts({ name }),
+    summary: "A shop.",
+    risks: [],
+    aiEnriched: false,
+  });
 }
 
 export function makeFacts(overrides: Partial<ProjectFacts> = {}): ProjectFacts {

@@ -40,7 +40,7 @@ import type { PhaseDeps } from "../context";
 import { isMaintenanceWindowRequest } from "../retarget/texts";
 import type { RetargetGitHubApi, RetargetServices } from "../retarget/types";
 import { ensureDeployKey, ensureStatePassphrase } from "../shared";
-import { doEuCatalog, euCatalog, makeFacts, makeRequirements } from "./catalog";
+import { doEuCatalog, euCatalog, makeRequirements, writeArchitecture } from "./catalog";
 import {
   createProject,
   FakeGitHub,
@@ -830,15 +830,7 @@ export async function moveFakes(
     OPSCREW_APP_ENV_FILE: "production.env",
   };
   const paths = resolveProjectPaths(root, { env });
-  await writeArtifact("architecture", paths.files.architecture, {
-    schemaVersion: 1,
-    generatedAt: "2026-10-11T09:00:00.000Z",
-    generator: { tool: "opscrew", version: "0.0.0-test" },
-    facts: makeFacts({ name: APP }),
-    summary: "A shop.",
-    risks: [],
-    aiEnriched: false,
-  });
+  await writeArchitecture(paths.files.architecture, APP);
   await writeArtifact(
     "requirements",
     paths.files.requirements,

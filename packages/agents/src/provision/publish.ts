@@ -7,6 +7,7 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { planProvider, providerProfile } from "../providers";
 import { type GitHubSetup, portainerCloudflare } from "./credentials";
+import { type DependabotStep, dependabotPullRequestLines } from "./dependabot";
 
 /** Branch holding the generated deployment files. */
 export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
@@ -37,6 +38,14 @@ function nextStepLines(secretsStored: boolean | undefined, ready: string, where:
       ];
 }
 
+/** What the deploy-setup pull request's body says beyond the plan. */
+interface DeploySetupBodyOptions {
+  /** Whether the deploy secrets are known to be stored (default true). */
+  secretsStored?: boolean;
+  /** Dependabot's configuration: added in this pull request, or the user's and what it lacks. */
+  dependabot?: DependabotStep;
+}
+
 /**
  * Pull request body for the generated deployment files. `secretsStored` (default true) says
  * whether the GitHub Actions deploy secrets are known to be stored for this server; when they are
@@ -46,7 +55,7 @@ function nextStepLines(secretsStored: boolean | undefined, ready: string, where:
 export function deploySetupPullRequestBody(
   plan: DeployPlan,
   version: string,
-  options: { secretsStored?: boolean } = {},
+  options: DeploySetupBodyOptions = {},
 ): string {
   if (plan.target.provider === "portainer") return portainerPullRequestBody(plan, version, options);
   const profile = providerProfile(planProvider(plan));
@@ -68,6 +77,7 @@ export function deploySetupPullRequestBody(
       : "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
+    ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, ready, host),
     ...(own
@@ -125,7 +135,7 @@ export function portainerDnsRecordNote(plan: DeployPlan): string | undefined {
 function portainerPullRequestBody(
   plan: DeployPlan,
   version: string,
-  options: { secretsStored?: boolean },
+  options: DeploySetupBodyOptions,
 ): string {
   const target = portainerTarget(plan.target);
   const { appTunnel, webhook } = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
@@ -154,6 +164,7 @@ function portainerPullRequestBody(
     `- \`opscrew/runtime/compose.yaml\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`opscrew-deploy\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`opscrew-deploy\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran `opscrew provision`.",
+    ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, "The app's stacks are set up in your Portainer", where),
     ...(dns !== undefined ? ["", dns] : []),
@@ -430,12 +441,15 @@ export async function publishDeploySetup(
     phase?: PublishPhase;
     /** The branch from {@link chooseDeployBranch}, when the caller chose it up front. */
     branch?: DeployBranch;
+    /** Dependabot's configuration, for the pull request's file list. */
+    dependabot?: DependabotStep;
   },
 ): Promise<PublishResult> {
   const { git, github, plan } = input;
   const phase = input.phase ?? "provision";
   const body = deploySetupPullRequestBody(plan, deps.version, {
     secretsStored: input.secretsStored !== false,
+    ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
   });
   const chosen =
     input.branch ??

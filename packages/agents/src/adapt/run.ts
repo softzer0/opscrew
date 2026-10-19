@@ -37,7 +37,6 @@ import { githubClientFromToken, requireGitRepo, writeRenderedFiles } from "../sh
 import { runPhase } from "../shared/phase-status";
 import {
   BASELINE_MET,
-  dependabotStep,
   noDockerfileNote,
   renderDockerFiles,
   runtimeVersionFile,
@@ -161,8 +160,8 @@ function templateFor(
  * it; it stops before changing anything while a pull request from an earlier run's branch is still
  * open), writes the Dockerfile (only for the `generated-dockerfile` builder, its runtime image
  * pinned by the registry's digest), `.dockerignore` and `.env.example` when the plan asks for them
- * and they are missing, adds the runtime version file and `.github/dependabot.yml` when the
- * repository has none (else lists what the user's lacks), checks the user's own Dockerfile against
+ * and they are missing, adds the runtime version file when the repository has none, checks the
+ * user's own Dockerfile against
  * the image baseline, adds the health route itself for the frameworks it knows (`./health`), makes
  * the deterministic Next.js standalone edit, runs the Code-change agent (`edit-repo` profile)
  * for the other pending changes when a model is configured, updates the statuses in
@@ -388,28 +387,13 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       byOpsCrew.add(change.id);
     }
   }
-  // The runtime version file (FR-1228 rule 5) and Dependabot's configuration (FR-1221), each
-  // only when the repository has none.
+  // The runtime version file (FR-1228 rule 5), only when the repository has none. Dependabot's
+  // configuration comes with provision's deploy-setup pull request, with the files it watches.
   const versionFile = await runtimeVersionFile(paths.root, facts, plan);
   if (versionFile !== undefined) toWrite.push(versionFile);
-  const dependabot = await dependabotStep(paths.root, facts, plan);
-  if (dependabot.action === "write") toWrite.push(dependabot.file);
   await writeRenderedFiles(paths.root, toWrite);
   for (const file of toWrite) createdFiles.push(file.path);
   if (createdFiles.length > 0) reporter.success(`Wrote ${createdFiles.join(", ")}.`);
-  if (dependabot.action === "keep") {
-    if (dependabot.missing === undefined) {
-      warn(
-        `OpsCrew could not read ${dependabot.path}, so it left it as it is and cannot tell which updates it lacks.`,
-      );
-    } else if (dependabot.missing.length > 0) {
-      reporter.info(
-        say(
-          `${dependabot.path} is yours, so OpsCrew left it as it is. OpsCrew's would also update: ${dependabot.missing.join(", ")}.`,
-        ),
-      );
-    }
-  }
 
   // 3a. The user's own Dockerfile against the image baseline: each finding with its fix.
   const baseline =
@@ -432,7 +416,6 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     ...(builder !== undefined ? { builder } : {}),
     dockerfile: plan.app.dockerfile,
     context: plan.app.buildContext,
-    dependabot,
     ...(versionFile !== undefined && version !== undefined
       ? { versionFile: { path: versionFile.path, version } }
       : {}),

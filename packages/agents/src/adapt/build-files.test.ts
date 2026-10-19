@@ -14,7 +14,7 @@ import {
   nextChanges,
   nextFacts,
 } from "./__fixtures__/repo";
-import { dependabotStep, runtimeVersionFile } from "./build-files";
+import { runtimeVersionFile } from "./build-files";
 import { runAdapt } from "./run";
 
 const DIGEST = `sha256:${"ab".repeat(32)}`;
@@ -102,51 +102,6 @@ describe("runtimeVersionFile", () => {
   });
 });
 
-describe("dependabotStep", () => {
-  it("writes OpsCrew's file when the repository has none", async () => {
-    const step = await dependabotStep(await temp(), nextFacts(), makePlan([]));
-    expect(step.action).toBe("write");
-    expect(step.action === "write" && step.file.path).toBe(".github/dependabot.yml");
-  });
-
-  it("names Maven or Gradle for a Java app, from its build file", async () => {
-    const java = withBuild(makePlan([]), build("buildpacks", { language: "java", version: "25" }));
-    const facts = makeFacts({ languages: ["java"], packageManager: "none" });
-    const content = async (files: Record<string, string>) => {
-      const step = await dependabotStep(await temp(files), facts, java);
-      return step.action === "write" ? step.file.content : "";
-    };
-    expect(await content({ "pom.xml": "<project/>\n" })).toContain("package-ecosystem: maven");
-    expect(await content({ "build.gradle.kts": "plugins {}\n" })).toContain(
-      "package-ecosystem: gradle",
-    );
-    expect(await content({})).not.toMatch(/package-ecosystem: (?:maven|gradle)/);
-  });
-
-  it("keeps the user's file, listing the folders its entries lack, or saying it cannot read it", async () => {
-    const yaml = [
-      "version: 2",
-      "updates:",
-      "  - package-ecosystem: github-actions",
-      "    directory: /",
-      "  - package-ecosystem: docker-compose",
-      "    directories: [/opscrew/runtime/]",
-      "",
-    ].join("\n");
-    const root = await temp({ ".github/dependabot.yaml": yaml });
-    expect(await dependabotStep(root, nextFacts(), makePlan([]))).toEqual({
-      action: "keep",
-      path: ".github/dependabot.yaml",
-      missing: ["npm in /", "docker in /", "docker-compose in /opscrew/runtime/*"],
-    });
-    const broken = await temp({ ".github/dependabot.yml": "updates: [\n" });
-    expect(await dependabotStep(broken, nextFacts(), makePlan([]))).toEqual({
-      action: "keep",
-      path: ".github/dependabot.yml",
-    });
-  });
-});
-
 describe.skipIf(GIT === undefined)("runAdapt with the plan's builder", () => {
   async function adapt(
     plan: (base: DeployPlan) => DeployPlan,
@@ -192,18 +147,13 @@ describe.skipIf(GIT === undefined)("runAdapt with the plan's builder", () => {
     const github = new FakeGitHub();
     const result = await runAdapt(repo.deps, { ai: false, github });
 
-    expect(result.createdFiles).toEqual([
-      ".dockerignore",
-      ".env.example",
-      ".github/dependabot.yml",
-    ]);
+    expect(result.createdFiles).toEqual([".dockerignore", ".env.example"]);
     expect(result.changes.map((change) => change.status)).toEqual(["applied", "applied"]);
     expect(repo.deps.reporter.text()).not.toContain("no container template");
     const body = github.created[0]?.body ?? "";
     expect(body).toContain(
       "Railpack builds the image from the code, so the app needs no Dockerfile.",
     );
-    expect(body).toContain("- `.github/dependabot.yml` (added by OpsCrew)");
     expect(body).toContain("- [ ] The image is built with Railpack in the deploy workflow");
     expect(body).not.toContain("docker build");
   });
