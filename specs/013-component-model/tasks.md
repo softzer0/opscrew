@@ -350,7 +350,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops`
   - Effort: xhigh
 
-- [ ] T1311 [US7] Part 2 engines and the host setting, in `packages/iac-templates/src/{catalog,runtime}/**`, `packages/connectors/ssh-host/src/**`, `packages/agents/src/design/**` (not the Portainer files)
+- [X] T1311 [US7] Part 2 engines and the host setting, in `packages/iac-templates/src/{catalog,runtime}/**`, `packages/connectors/ssh-host/src/**`, `packages/agents/src/design/**` (not the Portainer files)
   - Owns: those paths (+ tests and snapshots)
   - Reads: research.md R5; spec FR-1330; contracts/components.md
   - Depends: T1309
