@@ -24,6 +24,7 @@ export interface ServiceSpec {
                                         // OpenSearch (reachable only from the app's own containers)
   appVariables: (ctx: ServiceContext) => Record<string, string>;  // what the app receives, by its detected names
   hostSettings?: { sysctl: Record<string, string> };              // vm.max_map_count for the search engines
+  ulimits?: { nofile: number };        // the open-file limit, soft and hard (OpenSearch, Elasticsearch: 65536)
   targets: ("server" | "portainer")[]; // portainer omitted when a host setting is needed
 }
 ```
