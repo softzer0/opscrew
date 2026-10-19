@@ -250,7 +250,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
   - Effort: xhigh
 
-- [ ] T1308b [US5] The shared edge and the per-app layout on every server, in `packages/iac-templates/src/{edge,runtime,workflow}/**`, `packages/iac-templates/modules/**`, `packages/iac-templates/src/generated/**`
+- [X] T1308b [US5] The shared edge and the per-app layout on every server, in `packages/iac-templates/src/{edge,runtime,workflow}/**`, `packages/iac-templates/modules/**`, `packages/iac-templates/src/generated/**`
   - Owns: those paths (+ tests and snapshots)
   - Reads: contracts/components.md "The edge on a server"; "Spike results" (kamal-proxy); 011's tunnel templates
   - Depends: T1304, T1305, T1306
@@ -274,7 +274,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1308c [US5] Several apps on an own server in the flows, and every `/srv/app` path, in `packages/agents/src/**` (own-server files and path users), `packages/secops/src/**` (path users)
+- [X] T1308c [US5] Several apps on an own server in the flows, and every `/srv/app` path, in `packages/agents/src/**` (own-server files and path users), `packages/secops/src/**` (path users)
   - Owns:
     - the own-server files in `packages/agents/src/{provision,destroy,drift}` (`own*.ts`, `host*.ts`, + tests);
     - every file in `packages/agents/src` and `packages/secops/src` that names `/srv/app`, for those lines only.
