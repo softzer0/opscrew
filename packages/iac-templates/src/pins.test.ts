@@ -14,10 +14,12 @@ import {
   parseImageRef,
   platformManifest,
   readBuilderConfig,
+  releaseNotesSha1,
   replaceOffers,
   replacePin,
   setPackageVersion,
   setToolChecksum,
+  verifiedSha256,
 } from "../scripts/update-pins-lib";
 import {
   ACTIONS,
@@ -57,14 +59,31 @@ describe("pins.ts", () => {
       railpackFrontend: "v0.42.0",
       paketoBuilder: "0.0.203",
       paketoRun: "0.0.145",
+      mysql: "8.4",
+      mariadb: "12.3",
+      mongodb: "8.0",
+      rabbitmq: "4.3",
+      nats: "2.15-alpine",
+      kafka: "4.3.1",
+      redpanda: "v26.2.5",
+      garage: "v2.4.1",
     });
+    expect(parseImageRef(IMAGES.kafka.ref).repo).toBe("apache/kafka");
+    expect(parseImageRef(IMAGES.redpanda.ref).repo).toBe("redpandadata/redpanda");
+    expect(parseImageRef(IMAGES.garage.ref).repo).toBe("dxflrs/garage");
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
         "caddy",
         "cloudflared",
         "curl",
         "dockerfileSyntax",
+        "garage",
+        "kafka",
         "kamalProxy",
+        "mariadb",
+        "mongodb",
+        "mysql",
+        "nats",
         "nodeAlpine",
         "paketoBuilder",
         "paketoRun",
@@ -72,15 +91,18 @@ describe("pins.ts", () => {
         "postgres",
         "python",
         "railpackFrontend",
+        "rabbitmq",
+        "redpanda",
         "trivy",
         "valkey",
       ].sort(),
     );
   });
 
-  it("pins pack and Railpack by version and a SHA-256 per architecture, cosign by version", async () => {
+  it("pins pack, Railpack and supercronic by version and a SHA-256 per architecture, cosign by version", async () => {
     expect(TOOLS.pack.version).toBe("0.40.9");
     expect(TOOLS.railpack.version).toBe("0.42.0");
+    expect(TOOLS.supercronic.version).toBe("0.2.50");
     expect(TOOLS.cosign).not.toHaveProperty("sha256");
     for (const [tool, pin] of Object.entries(TOOLS)) {
       for (const [arch, value] of Object.entries("sha256" in pin ? pin.sha256 : {})) {
@@ -251,7 +273,17 @@ describe("the pin script's helpers", () => {
       "railpack-v0.42.0-x86_64-unknown-linux-musl.tar.gz",
     );
     expect(TOOL_RELEASES.pack.asset.arm64("0.40.9")).toBe("pack-v0.40.9-linux-arm64.tgz");
-    expect(Object.keys(TOOL_RELEASES).sort()).toEqual(["cloudflared", "pack", "railpack"]);
+    expect(Object.keys(TOOL_RELEASES).sort()).toEqual([
+      "cloudflared",
+      "pack",
+      "railpack",
+      "supercronic",
+    ]);
+    expect(toolDownloadUrl("supercronic", "arm64")).toBe(
+      `https://github.com/aptible/supercronic/releases/download/v${TOOLS.supercronic.version}/supercronic-linux-arm64`,
+    );
+    expect(TOOL_RELEASES.supercronic.sha1InReleaseNotes).toBe(true);
+    expect(TOOL_RELEASES.pack.sha1InReleaseNotes).toBeUndefined();
     expect(toolDownloadUrl("railpack", "arm64")).toBe(
       `https://github.com/railwayapp/railpack/releases/download/v${TOOLS.railpack.version}/railpack-v${TOOLS.railpack.version}-arm64-unknown-linux-musl.tar.gz`,
     );
@@ -323,5 +355,40 @@ describe("the pin script's helpers", () => {
     );
     expect(() => setPackageVersion(source, "PYPI_PACKAGES", "pnpm", "1.0.0")).toThrow(/pnpm/);
     expect(() => setPackageVersion(source, "NOPE", "uv", "1.0.0")).toThrow(/NOPE/);
+  });
+
+  it("reads the SHA-1 a release's notes list for one asset", async () => {
+    const release = JSON.parse(
+      await readFile(new URL("supercronic-release.json", FIXTURES), "utf8"),
+    ) as { body: string };
+    expect(releaseNotesSha1(release.body, "supercronic-linux-amd64")).toBe(
+      "0795da10bf6303e9680a2c2bd8dd6b9aa33ebda2",
+    );
+    expect(releaseNotesSha1(release.body, "supercronic-linux-arm64")).toBe(
+      "e0023a0346354a153a4a2708c657308890823d14",
+    );
+    // The arm asset's name is a prefix of arm64's, and it has its own checksum.
+    expect(releaseNotesSha1(release.body, "supercronic-linux-arm")).toBe(
+      "1d03803120f035569dc528cee117b9220ee959b8",
+    );
+    const lf = release.body.replaceAll("\r\n", "\n");
+    expect(releaseNotesSha1(lf, "supercronic-linux-arm64")).toBe(
+      "e0023a0346354a153a4a2708c657308890823d14",
+    );
+    expect(() => releaseNotesSha1(release.body, "supercronic-darwin-arm64")).toThrow(
+      /no SHA-1 for supercronic-darwin-arm64/,
+    );
+    expect(() => releaseNotesSha1("", "supercronic-linux-amd64")).toThrow(/SHA-1/);
+  });
+
+  it("gives an asset's SHA-256 only when its SHA-1 matches", () => {
+    // The FIPS 180 test vectors for "abc".
+    const abc = new TextEncoder().encode("abc");
+    const sha1 = "a9993e364706816aba3e25717850c26c9cd0d89d";
+    expect(verifiedSha256(abc, sha1, "abc.bin")).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    const other = new TextEncoder().encode("abd");
+    expect(() => verifiedSha256(other, sha1, "abc.bin")).toThrow(/abc\.bin.*SHA-1/);
   });
 });

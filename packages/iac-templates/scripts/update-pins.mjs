@@ -2,7 +2,8 @@
 // Usage: pnpm --filter @opscrew/iac-templates exec tsx scripts/update-pins.mjs [--offers]
 //
 // Without flags it refreshes src/pins.ts: image digests from the registries (the multi-arch
-// index), tool checksums from the GitHub releases (each asset's SHA-256 digest) and action commits
+// index), tool checksums from the GitHub releases (each asset's SHA-256 digest; for a release whose
+// notes give only a SHA-1, the asset is downloaded, checked against it and hashed) and action commits
 // from the GitHub tags. Tags and versions stay as written in pins.ts: change one there first, then
 // run this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
 // their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
@@ -25,6 +26,7 @@ import {
   PYPI_PACKAGES,
   TOOL_RELEASES,
   TOOLS,
+  toolDownloadUrl,
 } from "../src/pins.ts";
 import { imageDigest, registryRequest } from "../src/registry.ts";
 import {
@@ -40,10 +42,12 @@ import {
   parseImageRef,
   platformManifest,
   readBuilderConfig,
+  releaseNotesSha1,
   replaceOffers,
   replacePin,
   setPackageVersion,
   setToolChecksum,
+  verifiedSha256,
 } from "./update-pins-lib.ts";
 
 /** Each package table of pins.ts, its values and where they are published. */
@@ -75,6 +79,13 @@ async function tagCommit(repo, tag) {
   return object.sha;
 }
 
+/** Downloads a release asset and returns its SHA-256 once it matches the published SHA-1. */
+async function downloadedSha256(url, sha1) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} answered ${response.status}.`);
+  return verifiedSha256(new Uint8Array(await response.arrayBuffer()), sha1, url);
+}
+
 /** Digests, commits, checksums and package versions; returns the new source and what changed. */
 async function updatePins(source) {
   const changes = [];
@@ -96,7 +107,10 @@ async function updatePins(source) {
     const tool = TOOLS[key];
     const release = await github(`/repos/${where.repo}/releases/tags/${where.tag(tool.version)}`);
     for (const arch of ["amd64", "arm64"]) {
-      const sha256 = assetSha256(release, where.asset[arch](tool.version));
+      const asset = where.asset[arch](tool.version);
+      const sha256 = where.sha1InReleaseNotes
+        ? await downloadedSha256(toolDownloadUrl(key, arch), releaseNotesSha1(release.body, asset))
+        : assetSha256(release, asset);
       if (sha256 === tool.sha256[arch]) continue;
       source = setToolChecksum(source, key, arch, sha256);
       changes.push(`TOOLS.${key}.sha256.${arch}: ${sha256}`);

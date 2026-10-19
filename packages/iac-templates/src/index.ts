@@ -6,6 +6,7 @@ export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";
 export * from "./portainer-target";
 export { webOnlyFromCloudflare } from "./predicates";
+export * from "./prices";
 export { cloudTarget, portainerTarget, wrongTarget } from "./providers";
 export { imageDigest } from "./registry";
 export * from "./render";

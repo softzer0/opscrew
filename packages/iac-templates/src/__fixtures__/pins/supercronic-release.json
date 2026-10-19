@@ -1,0 +1,18 @@
+{
+  "tag_name": "v0.2.50",
+  "body": "## What's Changed\r\n* Go version bump, package version bumps by @almathew in https://github.com/aptible/supercronic/pull/250\r\n\r\n\r\n**Full Changelog**: https://github.com/aptible/supercronic/compare/v0.2.49...v0.2.50\r\n\r\n\r\n# Installation Instructions #\r\n\r\n## supercronic-linux-amd64 ##\r\nAdd the following stanza to your Dockerfile to install `supercronic-linux-amd64`.\r\n\r\nYou will need to install `curl` beforehand.\r\n\r\n```\r\n# Latest releases available at https://github.com/aptible/supercronic/releases\r\nENV SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-amd64 \\\r\n    SUPERCRONIC_SHA1SUM=0795da10bf6303e9680a2c2bd8dd6b9aa33ebda2 \\\r\n    SUPERCRONIC=supercronic-linux-amd64\r\n\r\nRUN curl -fsSLO \"$SUPERCRONIC_URL\" \\\r\n && echo \"${SUPERCRONIC_SHA1SUM}  ${SUPERCRONIC}\" | sha1sum -c - \\\r\n && chmod +x \"$SUPERCRONIC\" \\\r\n && mv \"$SUPERCRONIC\" \"/usr/local/bin/${SUPERCRONIC}\" \\\r\n && ln -s \"/usr/local/bin/${SUPERCRONIC}\" /usr/local/bin/supercronic\r\n```\r\n\r\n## supercronic-linux-386 ##\r\nAdd the following stanza to your Dockerfile to install `supercronic-linux-386`.\r\n\r\nYou will need to install `curl` beforehand.\r\n\r\n```\r\n# Latest releases available at https://github.com/aptible/supercronic/releases\r\nENV SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-386 \\\r\n    SUPERCRONIC_SHA1SUM=675087d86db3e0b57330d040e99b2f428bcfc2f0 \\\r\n    SUPERCRONIC=supercronic-linux-386\r\n\r\nRUN curl -fsSLO \"$SUPERCRONIC_URL\" \\\r\n && echo \"${SUPERCRONIC_SHA1SUM}  ${SUPERCRONIC}\" | sha1sum -c - \\\r\n && chmod +x \"$SUPERCRONIC\" \\\r\n && mv \"$SUPERCRONIC\" \"/usr/local/bin/${SUPERCRONIC}\" \\\r\n && ln -s \"/usr/local/bin/${SUPERCRONIC}\" /usr/local/bin/supercronic\r\n```\r\n\r\n## supercronic-linux-arm ##\r\nAdd the following stanza to your Dockerfile to install `supercronic-linux-arm`.\r\n\r\nYou will need to install `curl` beforehand.\r\n\r\n```\r\n# Latest releases available at https://github.com/aptible/supercronic/releases\r\nENV SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-arm \\\r\n    SUPERCRONIC_SHA1SUM=1d03803120f035569dc528cee117b9220ee959b8 \\\r\n    SUPERCRONIC=supercronic-linux-arm\r\n\r\nRUN curl -fsSLO \"$SUPERCRONIC_URL\" \\\r\n && echo \"${SUPERCRONIC_SHA1SUM}  ${SUPERCRONIC}\" | sha1sum -c - \\\r\n && chmod +x \"$SUPERCRONIC\" \\\r\n && mv \"$SUPERCRONIC\" \"/usr/local/bin/${SUPERCRONIC}\" \\\r\n && ln -s \"/usr/local/bin/${SUPERCRONIC}\" /usr/local/bin/supercronic\r\n```\r\n\r\n## supercronic-linux-arm64 ##\r\nAdd the following stanza to your Dockerfile to install `supercronic-linux-arm64`.\r\n\r\nYou will need to install `curl` beforehand.\r\n\r\n```\r\n# Latest releases available at https://github.com/aptible/supercronic/releases\r\nENV SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/v0.2.50/supercronic-linux-arm64 \\\r\n    SUPERCRONIC_SHA1SUM=e0023a0346354a153a4a2708c657308890823d14 \\\r\n    SUPERCRONIC=supercronic-linux-arm64\r\n\r\nRUN curl -fsSLO \"$SUPERCRONIC_URL\" \\\r\n && echo \"${SUPERCRONIC_SHA1SUM}  ${SUPERCRONIC}\" | sha1sum -c - \\\r\n && chmod +x \"$SUPERCRONIC\" \\\r\n && mv \"$SUPERCRONIC\" \"/usr/local/bin/${SUPERCRONIC}\" \\\r\n && ln -s \"/usr/local/bin/${SUPERCRONIC}\" /usr/local/bin/supercronic\r\n```\r\n",
+  "assets": [
+    {
+      "name": "supercronic-linux-386"
+    },
+    {
+      "name": "supercronic-linux-amd64"
+    },
+    {
+      "name": "supercronic-linux-arm"
+    },
+    {
+      "name": "supercronic-linux-arm64"
+    }
+  ]
+}

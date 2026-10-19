@@ -1,8 +1,10 @@
 /**
  * Pure helpers of `scripts/update-pins.mjs`: parsing image and action pins, release, package and
- * builder metadata, and rewriting values in `src/pins.ts`. Tested in `src/pins.test.ts`; nothing
- * here touches the network. The registry requests are in `src/registry.ts`.
+ * builder metadata, checking downloaded assets, and rewriting values in `src/pins.ts`. Tested in
+ * `src/pins.test.ts`; nothing here touches the network. The registry requests are in
+ * `src/registry.ts`.
  */
+import { createHash } from "node:crypto";
 import type { BUILDPACKS_OFFERS, PinArch } from "../src/pins";
 
 type OfferLanguage = keyof typeof BUILDPACKS_OFFERS;
@@ -66,6 +68,28 @@ export function assetSha256(release: unknown, name: string): string {
     typeof asset.digest === "string" ? /^sha256:([0-9a-f]{64})$/.exec(asset.digest) : null;
   if (!digest) throw new Error(`GitHub lists no SHA-256 for ${name}.`);
   return digest[1] as string;
+}
+
+/**
+ * The SHA-1 a release's notes give for the asset `name`, as supercronic writes them: the asset's
+ * download URL, then `…_SHA1SUM=<hex>` on the next line.
+ */
+export function releaseNotesSha1(body: string, name: string): string {
+  const pattern = new RegExp(`/${escapeRegExp(name)}[\\s\\\\]+\\w*SHA1SUM=([0-9a-f]{40})\\b`);
+  const found = pattern.exec(body);
+  if (!found) throw new Error(`The release notes give no SHA-1 for ${name}.`);
+  return found[1] as string;
+}
+
+/** The SHA-256 of a downloaded asset, after checking it against the SHA-1 upstream publishes. */
+export function verifiedSha256(bytes: Uint8Array, sha1: string, name: string): string {
+  const actual = createHash("sha1").update(bytes).digest("hex");
+  if (actual !== sha1) {
+    throw new Error(
+      `${name} does not match its published SHA-1 (${sha1}); it hashes to ${actual}.`,
+    );
+  }
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function escapeRegExp(text: string): string {

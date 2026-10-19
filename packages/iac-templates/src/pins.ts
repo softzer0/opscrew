@@ -79,6 +79,37 @@ export const IMAGES = {
   railpackFrontend: {
     ref: "ghcr.io/railwayapp/railpack-frontend:v0.42.0@sha256:a42a12399fa9e83a09e475f69dbf8a45a8a74ea38a4485fcb401356d84317a14",
   },
+  // The 013 services (2026-10-19): each image's LTS or stable line, never a rolling tag such as
+  // `latest` (research.md R2, R3, R4 and R8).
+  /** MySQL 8.4 LTS (Docker's `latest` is an Innovation release). */
+  mysql: {
+    ref: "mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70",
+  },
+  /** MariaDB's current LTS line, the one its `lts` tag points to. */
+  mariadb: {
+    ref: "mariadb:12.3@sha256:99c125f103f5d081ebbc9ffe064e63daf7f688ac33a5f7f29af2d7260a96debf",
+  },
+  mongodb: {
+    ref: "mongo:8.0@sha256:4a4ab5d4834207389e0d7270fac988e21ffedccecba77991a552f755df229907",
+  },
+  /** Without the management plugin. */
+  rabbitmq: {
+    ref: "rabbitmq:4.3@sha256:3e5cc23235b0eb850f604e8ace10d9a9b6d05be3e36730e53522ee9ead707a9e",
+  },
+  /** The alpine variant has the shell and `wget` a healthcheck needs; the default is scratch. */
+  nats: {
+    ref: "nats:2.15-alpine@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
+  },
+  /** Kafka publishes only version tags and `latest`, so this is an exact release. */
+  kafka: {
+    ref: "apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+  },
+  redpanda: {
+    ref: "redpandadata/redpanda:v26.2.5@sha256:badca2d958f81da675c3055a9ecb6ebb590325582bcf16936148ffd65e96e920",
+  },
+  garage: {
+    ref: "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
+  },
 } as const satisfies Record<string, ImagePin>;
 
 export const TOOLS = {
@@ -111,6 +142,18 @@ export const TOOLS = {
       arm64: "7b7a8b9a2764acab0fecda633cb54a6c0df42d7f8ca1ec45c78333c2227d8d91",
     },
   },
+  /**
+   * The cron runner built into app images that have cron jobs (the release assets
+   * `supercronic-linux-amd64` and `supercronic-linux-arm64`). Upstream publishes only SHA-1s, so
+   * the pin script checks those and records the SHA-256 of the downloaded binary.
+   */
+  supercronic: {
+    version: "0.2.50",
+    sha256: {
+      amd64: "d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0",
+      arm64: "a1c0af9872e8de89a1ce5c1b596e26c42917d5a2cf914d98faee2e28156899e2",
+    },
+  },
   /** The cosign release `sigstore/cosign-installer` installs; the installer verifies it. */
   cosign: {
     version: "v3.1.3",
@@ -124,6 +167,7 @@ export type ReleasedTool = Exclude<ToolKey, "cosign">;
 /**
  * Where each tool with a checksum releases: the GitHub repository, its tag and archive per
  * architecture. cosign has none: `sigstore/cosign-installer` verifies the binary it installs.
+ * `sha1InReleaseNotes` marks a release whose notes give only a SHA-1 per asset.
  */
 export const TOOL_RELEASES: Record<
   ReleasedTool,
@@ -131,6 +175,7 @@ export const TOOL_RELEASES: Record<
     repo: string;
     tag: (version: string) => string;
     asset: Record<PinArch, (version: string) => string>;
+    sha1InReleaseNotes?: true;
   }
 > = {
   pack: {
@@ -150,6 +195,12 @@ export const TOOL_RELEASES: Record<
       amd64: (v) => `railpack-v${v}-x86_64-unknown-linux-musl.tar.gz`,
       arm64: (v) => `railpack-v${v}-arm64-unknown-linux-musl.tar.gz`,
     },
+  },
+  supercronic: {
+    repo: "aptible/supercronic",
+    tag: (v) => `v${v}`,
+    asset: { amd64: () => "supercronic-linux-amd64", arm64: () => "supercronic-linux-arm64" },
+    sha1InReleaseNotes: true,
   },
 };
 
