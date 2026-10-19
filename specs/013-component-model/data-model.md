@@ -63,8 +63,12 @@ storage:
 - The sum of all limits, plus the edge and the system reserve, fits the server. Design checks this
   and the schema does not.
 - `storage.objectStorage.provider` is offered by design for the target: `digitalocean` on
-  DigitalOcean, `hetzner` on Hetzner, `garage` only on an own server or Portainer, `r2`
-  everywhere. After a retarget, an existing provider stays valid: the bucket is kept.
+  DigitalOcean, `hetzner` on Hetzner (fsn1, nbg1, hel1), `garage` only on an own server or
+  Portainer, `r2` when the plan uses Cloudflare (it needs OpsCrew's Cloudflare token and account).
+  After a retarget, an existing provider stays valid: the bucket is kept.
+- `storage.sqlite.dir` is relative to the app's folder in the image, `appRoot(plan)`: Buildpacks
+  `/workspace`; Railpack `/app`; the generated Dockerfile `/app`, or `/app/<appDir>` for a Node.js
+  app in a subfolder; the user's own Dockerfile, the last `WORKDIR` detect read.
 - Part 2 kinds that need host settings are refused for a Portainer target.
 
 **Expected storage use** (`storage.objectStorage.expected`), from the interview's
@@ -91,6 +95,11 @@ storage:
 `workerCommands` (optional): the commands the interview asked for detected workers with no
 conventional command (BullMQ, asynq, river), by worker name. Design uses one when `facts.workers`
 has no command; later designs keep the plan's command. Question ids `workerCommands.<name>`.
+
+`keepExternalServices`: one answer per kind, `true` to keep the service the app uses now, `false` to
+let OpsCrew run one on the server. A detected hosted service with no answer is kept, so OpsCrew never
+replaces one unasked. `s3: true` keeps the app's own storage instead of a planned bucket. Question
+ids `keepExternalServices.<kind>`.
 
 ## `ProjectFacts` (opscrew/architecture.json)
 
