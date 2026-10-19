@@ -229,7 +229,7 @@ Effort`.
 
 ## Phase 5: Several apps on one server
 
-- [ ] T1308a [P] [US5] Several apps per host in the ssh-host connector, in `packages/connectors/ssh-host/**`
+- [X] T1308a [P] [US5] Several apps per host in the ssh-host connector, in `packages/connectors/ssh-host/**`
   - Owns: `packages/connectors/ssh-host/src/**` (+ tests). If the host contract in `packages/contracts` must change, stop and report it.
   - Reads: contracts/components.md "The edge on a server"; data-model.md "Host record"; plan.md "8."; spec FR-1322–FR-1324
   - Depends: T1301a
