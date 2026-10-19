@@ -160,7 +160,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1305b [US1] Fixes from T1305's review, in `packages/iac-templates/src/{workflow,docker}/**` (after T1304 merges)
+- [ ] T1305b [US1] Fixes from T1305's review, and the runtime files' wiring, in `packages/iac-templates/src/{workflow,docker}/**`, `packages/iac-templates/src/render.ts` (after T1304 merges)
   - Depends: T1304
   - Accept:
     - **Before the workers and cron are replaced,** the start script records which worker and cron services already have containers (`.processes.previous`). The rollback runs `up -d --no-deps` only for those, and `docker compose stop`s the rest. So a deploy that adds the first cron job or a new worker and then fails still ends `restored`, and leaves no container crash-looping on the old image.
@@ -170,6 +170,9 @@ Effort`.
       - a worker with two containers (replicas);
       - a worker failure on a first deploy.
     - **Caching:** supercronic's `ADD` moves right after the runtime stage's `FROM`/`WORKDIR` (still before `USER`), so its layer stays cached across code changes.
+    - **Wiring (from T1304):**
+      - `renderDeployment` (`render.ts`) includes `renderRuntimeFiles(plan)` (the services' config files and the crontab);
+      - the deploy workflow uploads `opscrew/runtime/services/`, the crontab, and each service's `<name>.env` (made by T1309 from the GitHub secret, as `db.env` is today) to the server.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
@@ -210,6 +213,11 @@ Effort`.
     - **Sizing on cloud targets:** the sum of the limits, plus the edge (128 MB) and the system reserve (384 MB), picks the server type. Design warns below 15% headroom, and refuses below a component's smallest server. The own-server check is T1308c's.
     - **`keepPlanSettings`** keeps the user's component edits (counts, memory, versions, options, a component turned off) and says what changed.
     - **The app's variables** for every service and storage come from the catalog. Generated secrets (each service's, and `CRON_SECRET`) are stored like today's.
+    - **From T1304 and T1305:**
+      - `CRON_SECRET` goes in the app's env when the plan has route jobs;
+      - two databases both claiming `DATABASE_URL`: the one the app's detected variable names wins, and the other gets its own variable (`MYSQL_URL`, `MONGODB_URI`), said at design;
+      - `adapt/build-files.ts` passes `supercronic: supercronicArch(plan)` to `renderDockerAssets` when the plan has cron jobs; your Owns include that call;
+      - a SQLite folder that is the app root (`.`) or holds the app's own code or schema (`prisma`) is refused at design, with the change to make (move the database into its own folder, e.g. `data/`).
     - **Tests:**
       - one per kind;
       - prices;
@@ -293,7 +301,8 @@ Effort`.
       - renders the `storage` root with `renderStorage` (T1306) and applies it through its own approved plan; R2 is offered only when the plan uses Cloudflare (it needs OpsCrew's Cloudflare token and account);
       - applies the `storage` root through its own approved plan;
       - for MongoDB on x86, stops before any change when the CPU lacks AVX, saying why and what to do (the own-server flags from T1308c; on cloud targets, a check only when the server type's CPU is known);
-      - stores the components' generated secrets;
+      - stores the components' generated secrets, and writes each service's `<name>.env` from the catalog's `environment(ctx)` with the real values into the deploy secrets, as `db.env` is today;
+      - removes named volumes (Kafka, Redpanda) and data folders alike on `--delete-data`;
       - rerun with nothing changed, changes no file (SC-1307).
     - **destroy:** removes every component, and keeps data folders and the `storage` root unless `--delete-data` is given with the typed confirmation, saying where they are. With `--delete-data`, the storage root is rendered without `prevent_destroy` (with `force_destroy` on the aws provider's bucket) and destroyed through its own approved plan. Cloudflare deletes an R2 bucket only when it is empty: OpsCrew then says how to empty it in the dashboard, and never deletes files itself.
     - **drift:** reports a component that differs from the plan.
@@ -335,6 +344,7 @@ Effort`.
   - Depends: T1311
   - Accept:
     - stacks hold the components, with named volumes;
+    - Portainer runs no deploy steps, so MongoDB's replica-set initiation and Garage's layout, key and bucket happen through one-shot services in the stack (or Portainer refuses them with a plain message, whichever is smaller);
     - Garage is allowed;
     - a component with `hostSettings` is refused before any change, with the setting to make by hand;
     - drift and destroy cover the components;
@@ -352,7 +362,7 @@ Effort`.
     - **`status`** lists each component and whether it runs, over SSH on servers and through Portainer's API.
     - **Design's output and the MCP tools** show components, licences, and each component's memory and price share.
     - **The plugin's deploy and adapt skills** cover workers, cron and the storage key.
-    - **The runbook** describes the components, the edge and the storage key.
+    - **The runbook** describes the components, the edge and the storage key, with the per-app data paths (`/srv/data/<app>/<name>`).
     - **Guide pages**, written for users:
       - `components.md`;
       - `workers-and-cron.md`;
