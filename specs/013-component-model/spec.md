@@ -102,8 +102,8 @@ deploy a change, and read the data back.
    survives each deploy. The deploy stops the old copy before the new one starts, so two copies never
    write to it at once.
 6. **Given** an app whose connection string points at a hosted service, **When** the interview runs,
-   **Then** it asks whether to keep that service or let OpsCrew run one on the server, and gives the
-   price difference.
+   **Then** it asks whether to keep that service or let OpsCrew run one on the server, and says what
+   running it on the server would add.
 
 ---
 
@@ -128,12 +128,14 @@ with the storage container. Upload a file through the app and read it back after
 1. **Given** an app that uses an S3 client, **When** design runs, **Then** it lists each storage
    option available for the target with its monthly price for the expected use, and marks the
    default.
-2. **Given** Cloudflare R2 or DigitalOcean Spaces is chosen, **When** the user provisions, **Then**
-   OpsCrew creates the bucket and keys limited to that bucket, after the user approves the plan, and
-   the app receives them under the names it reads.
-3. **Given** Hetzner Object Storage is chosen, **When** the user provisions, **Then** OpsCrew asks for
-   one key pair from Hetzner's console, which Hetzner offers no other way to create. It explains where
-   to create it, and creates the bucket with it.
+2. **Given** Cloudflare R2 is chosen, **When** the user provisions, **Then** OpsCrew creates the bucket
+   after the user approves the plan. It then asks for an R2 token limited to that bucket, which the
+   user creates in Cloudflare's dashboard following OpsCrew's steps. The app receives the token's keys
+   under the names it reads.
+3. **Given** Hetzner Object Storage or DigitalOcean Spaces is chosen, **When** the user provisions,
+   **Then** OpsCrew first asks for one key pair from the provider's console, with the steps to create
+   a new key for this app. With that key, it creates the bucket through the approved plan, and the app
+   receives the key. OpsCrew never creates keys itself, so no key is kept in infrastructure state.
 4. **Given** the app uploads from the browser with presigned links, **When** the bucket is created,
    **Then** it accepts uploads from the app's own domain only.
 5. **Given** the storage container on an own server, **When** the user designs, **Then** OpsCrew says
@@ -202,8 +204,9 @@ change to each under load, destroy the first, and check that the second kept ans
 5. **Given** the apps' memory limits add up to more than the server has, **When** the user provisions
    another app, **Then** OpsCrew warns, or refuses when the new app could not start, and says how much
    is in use.
-6. **Given** a host that is reached only through a Cloudflare Tunnel, **When** a second app is added,
-   **Then** both apps are served through the same tunnel, each on its own hostname.
+6. **Given** a host that is reached only through Cloudflare Tunnels, **When** a second app is added,
+   **Then** each app is served through its own tunnel on its own hostname, and the server still opens
+   no web port.
 
 ---
 
@@ -280,8 +283,9 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   OpsCrew-run MongoDB gets a container.
 - **An S3 client whose version cannot read a custom endpoint from the environment:** OpsCrew lists
   the small code change, or leaves it to the Code-change agent.
-- **Object storage on Hetzner without the key pair:** provision stops before any change, with the
-  steps to create the key.
+- **Object storage without the key pair** (Hetzner, Spaces, or R2's token after its bucket):
+  provision stops before any change, or before the app's secrets for R2, with the steps to create
+  the key. In a non-interactive run, the key comes from the environment.
 - **A broker's data filling the disk:** retention bounds keep it within the plan's disk share, and
   the guide says how to change them.
 - **Two apps on one own server using the same service kind:** each has its own instance with its
@@ -290,8 +294,12 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   hardening is undone only with the option that undoes host changes, as today.
 - **An engine too large for the server** (Kafka on 1 GB, OpenSearch on 2 GB): OpsCrew refuses or
   warns, with the smallest server that fits.
-- **Retarget to another provider:** every component moves. Where OpsCrew cannot copy a service's data
-  yet, it says so before anything changes.
+- **Retarget to another provider:** Postgres and Valkey move as today, and workers and cron move with
+  the app. When the app has another stateful service (MySQL, MongoDB, a broker, an engine, SQLite),
+  retarget refuses before anything changes, and says that copying their data comes later. The bucket
+  stays where it is and keeps working.
+- **An OpsCrew upgrade that changes the shared edge:** the next deploy on that server restarts the
+  edge once, briefly, for every app on it, and says so.
 - **Portainer target:** components run in the stack too, except what needs host settings or host
   files. OpsCrew says plainly what it cannot do there.
 
@@ -351,8 +359,9 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 - **FR-1314**: Every database MUST get generated credentials, stored like OpsCrew's other generated
   values, never printed. The app MUST receive its connection settings under the names it reads.
 - **FR-1315**: A detected hosted service MUST be asked about (keep it, or let OpsCrew run one), with
-  the price difference. A hosted service's own connection forms (such as MongoDB's SRV form) MUST be
-  kept without asking.
+  what running it on the server would add (memory, and a larger server's price if needed). OpsCrew
+  cannot see the hosted service's own bill, so it does not show a difference. A hosted service's own
+  connection forms (such as MongoDB's SRV form) MUST be kept without asking.
 
 **Object storage**
 
@@ -363,8 +372,13 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   - a single-node storage container on an own server or a Portainer target.
 - **FR-1317**: The bucket MUST be private, with keys limited to it where the service allows. It MUST
   accept browser uploads from the app's own origin only when the app uses presigned uploads.
-- **FR-1318**: Creating a bucket or keys MUST go through a plan the user approves by its hash. Hetzner
-  has no API for keys, so its key pair comes from the user, kept like other secrets.
+- **FR-1318**: Creating a bucket MUST go through a plan the user approves by its hash. OpsCrew MUST
+  NOT create storage keys:
+  - the user creates one in the provider's console, with OpsCrew's steps: before the bucket for
+    Hetzner and Spaces, and after it for R2, scoped to that bucket;
+  - OpsCrew keeps it like a provider token, gives it to the infrastructure engine only through the
+    environment, and gives it to the app as one of its secrets.
+  No storage key is ever kept in infrastructure state.
 - **FR-1319**: Destroy MUST keep buckets and their files unless the user asks to delete data. When
   they ask, destroy requires the same typed confirmation as other deletions.
 
@@ -373,7 +387,10 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 - **FR-1320**: RabbitMQ, NATS, Apache Kafka (single node, KRaft) and Redpanda MUST be offered only for
   apps that use them:
   - Kafka is the default for Kafka clients, and Redpanda is the user's choice;
-  - each runs with authentication, persistence and a memory setting that fits its limit;
+  - each runs with persistence and a memory setting that fits its limit;
+  - RabbitMQ and NATS require a generated login. Kafka and Redpanda run without one, because their
+    clients' authentication settings vary widely; they are reachable only from the app's own
+    containers on its internal network, as Valkey is today;
   - each has bounded retention where it keeps logs;
   - none has a port open outside the server.
 - **FR-1321**: When a job library keeps its jobs in Redis, Valkey MUST run without eviction and with
@@ -383,7 +400,9 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 
 - **FR-1322**: An own server MUST accept several OpsCrew apps:
   - each app has its own folder, data, processes and services;
-  - the web entry, the version switch, the tunnel and the host hardening are shared and set up once;
+  - the web entry, the version switch and the host hardening are shared and set up once;
+  - each app keeps its own Cloudflare Tunnel when it uses one;
+  - an app name used by another app on the server is refused;
   - a hostname belongs to one app.
 - **FR-1323**: Deploying, destroying or changing one app MUST NOT restart or interrupt another. The
   shared parts MUST be removed only with the last app.
@@ -417,8 +436,9 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 - **FR-1331**: `status` MUST list each component and whether it runs. `drift` MUST report a component
   that differs from the plan. Destroy MUST remove every component, and keep the data unless asked
   otherwise.
-- **FR-1332**: Retarget MUST move every component. Where OpsCrew cannot copy a service's data to the new
-  provider yet, it MUST say so before any change.
+- **FR-1332**: Retarget MUST move Postgres and Valkey as today, with the app's workers and cron. When the
+  app has another stateful service (MySQL, MongoDB, a broker, an engine, SQLite), retarget MUST refuse
+  before any change, and say that copying their data comes later. Buckets stay where they are.
 - **FR-1333**: The guide MUST describe components, each service kind (version, memory, licence,
   settings), workers and cron, object storage choices with prices, and several apps on one own
   server.
@@ -445,15 +465,16 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 
 ### Measurable Outcomes
 
-- **SC-1301**: Every new example app deploys from a fresh repository with no hand-written
-  configuration:
+- **SC-1301**: Every new example app builds and starts with its components in the local Docker
+  pass, with no hand-written configuration:
   - workers and cron, MySQL, MongoDB, SQLite, object storage, RabbitMQ, NATS and Kafka in part 1;
   - one search and one analytics engine in part 2.
-  Each passes `verify`.
+  The live set (the worker and cron example, MySQL, MongoDB, object storage, RabbitMQ, Kafka,
+  Meilisearch, ClickHouse) deploys from a fresh repository and passes `verify`.
 - **SC-1302**: In the worker example, a job queued from the web process is processed within
   30 seconds. A cron job runs within one minute of its scheduled time.
-- **SC-1303**: Data written through each database, storage and broker example survives a deploy and a
-  server reboot.
+- **SC-1303**: Data written through each database, storage and broker example survives a redeploy and
+  a restart of its containers in the local Docker pass, and a server reboot in the live set.
 - **SC-1304**: Every container on every target has a memory limit, and the limits add up to no more
   than the chosen server's memory minus the system's share.
 - **SC-1305**: Two apps on one own server each deploy a change under steady load (20 requests per
@@ -473,7 +494,7 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 - Backups stay the provider's server backups (founder, 2026-10-13). They are crash-consistent only,
   and the guide says so. No off-server or logical backups in 013.
 - Workers and cron jobs use the app's settings and secrets. They do not get their own.
-- The object storage container is for an own server or Portainer target, or on request. It keeps
+- The object storage container is offered only on an own server or a Portainer target. It keeps
   files on that one server only.
 - Public buckets, CDNs and custom domains for object storage are out of scope.
 - Managed databases on hyperscalers are 017's.

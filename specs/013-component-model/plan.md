@@ -50,9 +50,8 @@ The same layout is used on cloud servers, which keep one app each.
   - Garage's single-node init;
   - MongoDB's replica-set init with Prisma.
 - **To verify in the live tests** (T1314):
-  - R2's bucket-scoped token and S3 secret;
-  - DigitalOcean's Spaces key and bucket through Terraform;
-  - Hetzner's bucket through the `aws` provider;
+  - the R2 bucket through the Cloudflare provider, and a token the user scopes to it;
+  - the Hetzner bucket through the `aws` provider, with the user's key;
   - memory figures per service on 1, 2 and 4 GB servers.
 - **Tests:** fakes and snapshots as before, the local Docker pass over the new examples, and gated
   live tests on Hetzner, an own server and Portainer.
@@ -60,10 +59,13 @@ The same layout is used on cloud servers, which keep one app each.
 ## Constitution Check
 
 - **I (safety gate).** No new mutation path:
-  - Buckets, keys and CORS go through the IaC engine: the Cloudflare root for R2, the DigitalOcean
-    root for Spaces, the Hetzner root (with the `aws` provider) for Hetzner Object Storage. Each is
-    planned, checked and approved by its hash.
-  - The shared edge and each app's host changes on an own server go through the host plan.
+  - Buckets and their CORS go through the IaC engine, in a separate `storage` root: the Cloudflare
+    provider for R2, the `aws` provider pointed at the S3 endpoint for Spaces and Hetzner. Each is
+    planned, checked and approved by its hash. OpsCrew never creates storage keys.
+  - The host prerequisites (folders, the edge's place, the sysctl item for the search engines) and
+    each app's host changes on an own server go through the host plan.
+  - The edge's files and each app's runtime files arrive with the deploy the user merges, as the
+    runtime files do today.
   - Services, workers and cron are part of the runtime files the provision pull request carries.
   - The deploy script never restarts another app, or a service of its own app.
   - Deleting a bucket or a service's data needs `--delete-data` with the typed confirmation.
@@ -71,19 +73,23 @@ The same layout is used on cloud servers, which keep one app each.
 - **II (user owns everything).** Every component is plain YAML in `plan.yaml`, and every generated
   file (Compose, Caddy site files, supercronic's crontab, service configs) is in the repository. A
   later design keeps the user's edits (FR-1304).
-- **III (dual engine).** The new HCL (R2 bucket and token, Spaces bucket and key, the S3 bucket
-  through `aws`) is in the common dialect. Both engines validate every root.
+- **III (dual engine).** The new `storage` root (R2 bucket, or an S3 bucket through `aws`) is in the
+  common dialect. Both engines validate it.
 - **IV (secrets).**
   - Every service's password, key or token is generated and stored with OpsCrew's other generated
     values. It reaches the server only in that app's env files. It is never printed, and never in
     a plan, a pull request or the repository.
-  - The user's pasted storage key is kept like a provider token.
-  - Terraform state holding the R2 token is encrypted, as today with OpenTofu.
+  - The user's storage key is kept like a provider token. It reaches the engine only as an
+    environment variable (`TF_VAR_…`), never a committed file, so no key is in infrastructure state.
+    It reaches the app as one of its secrets.
+  - Kafka and Redpanda run without a login, reachable only from the app's own containers on its
+    internal network, as Valkey is today (FR-1320).
 - **V (deterministic first).** Detection, the component list, sizing, prices and the catalog are pure
   functions. The model writes only code changes the templates cannot make, such as an S3 client that
   needs an endpoint setting.
-- **VI (contracts first).** The new `plan.yaml` and `ProjectFacts` fields, the catalog's types and the
-  host record change in one serial task (T1301), recorded in ADR 0016.
+- **VI (contracts first).** The new `plan.yaml` and `ProjectFacts` fields and the catalog's types
+  change in one serial task (T1301a), recorded in ADR 0016. The host record is the ssh-host
+  connector's own (T1308a).
 - **VIII (typed adapters).** No new adapter. The ssh-host adapter learns several apps per host.
 - **IX (plain language).** Every component has a one-sentence reason. Each licence is named in plain
   words. Every refusal (AVX, host settings on Portainer, a server too small) says what to do.
@@ -97,20 +103,22 @@ The same layout is used on cloud servers, which keep one app each.
 
 | Package | Change |
 |---|---|
-| `packages/plan-schema` | `app.memoryMb`, `processes`, `services[]`, `storage`; `ProjectFacts` workers, cron, the new service kinds, hosted URLs; the catalog's types (T1301) |
-| `packages/iac-templates` (pins, catalog) | new images and supercronic in `pins.ts`, `scripts/update-pins.mjs`, the service catalog (T1301 types; T1304 entries) |
-| `docs/adr/0016-components.md` | the ADR (T1301, lead) |
+| `packages/plan-schema`, `packages/iac-templates/src/catalog/types.ts` | `app.memoryMb`, `processes`, `services[]`, `storage`; `ProjectFacts` workers, cron, the new service kinds, hosted URLs; the catalog's types; every reader and writer of the old booleans (T1301a) |
+| `packages/iac-templates` (pins, prices) | new images and supercronic in `pins.ts`, `scripts/update-pins.mjs`, the storage price tables in `prices.ts` (T1301b) |
+| `docs/adr/0016-components.md` | the ADR (lead, committed) |
 | — | the local spike (T1302) |
 | `packages/detect` | the new service kinds and their clients, workers (Procfile and job libraries), vercel.json crons, hosted-service URLs, MariaDB, SQLite paths (T1303) |
-| `packages/iac-templates` (runtime, portainer-target) | services from the catalog with limits, volumes, configs and healthchecks; the per-app layout (T1304) |
-| `packages/iac-templates` (docker, workflow) | workers and cron in Compose; supercronic in the Dockerfile and the seal; the deploy order and the worker check (T1305) |
-| `packages/iac-templates` (infra) | R2 bucket and token (Cloudflare root), Spaces bucket and key (DigitalOcean root), the S3 bucket through `aws` (Hetzner root); prices (T1306) |
+| `packages/iac-templates` (catalog, runtime, portainer-target, dependabot) | the catalog's part 1 entries; services, workers and cron in Compose and stacks, with limits (T1304) |
+| `packages/iac-templates` (docker, workflow) | supercronic in the Dockerfile and the seal; the deploy order and the worker check (T1305) |
+| `packages/iac-templates` (infra, generated modules) | the `storage` root: the R2 bucket, or an S3 bucket through `aws` (T1306) |
 | `packages/agents` (design, interview) | components from facts, the generic hosted-service question, worker commands, storage options with prices, sizing, licences, kept edits (T1307) |
-| `packages/connectors/ssh-host`, `packages/iac-templates` (edge), `packages/agents` (own flows) | several apps per own server and the shared edge (T1308) |
-| `packages/agents` (provision, destroy, drift, status, secure, retarget), `packages/secops` | components day 2 and the storage key prompt (T1309) |
+| `packages/connectors/ssh-host` | several apps per host, app records, CPU flags (T1308a) |
+| `packages/iac-templates` (edge, runtime, workflow paths, modules' cloud-init) | the shared edge and the per-app layout on every server (T1308b) |
+| `packages/agents` (own-server flows and every `/srv/app` path), `packages/secops` (paths) | several apps on an own server in provision, destroy and drift (T1308c) |
+| `packages/agents` (provision, destroy, drift, secure, retarget), `packages/secops` | components day 2 and the storage key prompt (T1309) |
 | `packages/agents` (Portainer flows), `packages/iac-templates` (portainer-target) | components in stacks; the host-settings refusal (T1310) |
 | `packages/iac-templates`, `packages/agents`, `packages/connectors/ssh-host` | part 2 engines and `vm.max_map_count` (T1311) |
-| `packages/cli`, `packages/mcp-server`, `plugin`, `docs/guide` | surfaces and guide pages (T1312) |
+| `packages/cli`, `packages/mcp-server`, `plugin`, `docs/guide`, `packages/iac-templates/src/runbook` | surfaces, `status`, the runbook and guide pages (T1312) |
 | `examples/`, `packages/cli/test/e2e` | the new examples and the Docker pass (T1313) |
 | `packages/cli/test/live`, `docs/e2e*.md` | live tests (T1314) |
 
@@ -203,22 +211,18 @@ Results go in research.md.
 
 ### 6. Object storage in the IaC engine (T1306)
 
-- **R2** (the Cloudflare root):
-  - `cloudflare_r2_bucket`, plus its CORS when presigned uploads are detected;
-  - a bucket-scoped account token (`cloudflare_account_token`) with R2 object read and write;
-  - the S3 key is the token's id, and the secret is the SHA-256 of the token value, as a sensitive
-    output;
-  - OpsCrew's Cloudflare token then needs the R2 and the token-creating permissions, which the guide
-    and the `init` check name.
-- **DigitalOcean Spaces** (the DigitalOcean root):
-  - the user provides one Spaces key from the console, used only for Terraform's bucket calls and
-    kept locally like a token;
-  - Terraform creates the bucket, its CORS, and a bucket-scoped `digitalocean_spaces_key` for the app.
-- **Hetzner Object Storage** (the Hetzner root, `hashicorp/aws` with Hetzner's endpoint, path-style
-  addressing and its validation checks off):
-  - the bucket and its CORS, with the user's key pair;
-  - the app uses that key, which Hetzner scopes to the project, and OpsCrew says so;
-  - the price comes from the dated table.
+- **A separate `storage` root** (`opscrew/infra/storage`), so destroy and retarget leave the
+  bucket alone unless the user asks to delete data. It holds only the bucket and its CORS.
+- **OpsCrew never creates storage keys.** The user creates one in the provider's console with
+  OpsCrew's steps, and pastes it once. It is kept like a provider token, and reaches the engine as
+  `TF_VAR_…` environment variables and the app as its secrets.
+- **R2:** `cloudflare_r2_bucket` (and its CORS) through the Cloudflare provider, with OpsCrew's
+  Cloudflare token, which then needs the R2 storage permission; the guide and `init` name it. After
+  the bucket exists, the user creates an R2 token limited to it, in Cloudflare's dashboard.
+- **DigitalOcean Spaces and Hetzner Object Storage:** `hashicorp/aws` pointed at the provider's S3
+  endpoint, with path-style addressing and its account and region checks off, using the user's key
+  (created before the bucket). The guide advises a new key per app; Hetzner's keys cover a whole
+  project.
 - **Garage** (own server and Portainer): a catalog service with its init.
 - **The app receives** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`,
   `AWS_ENDPOINT_URL_S3`, the bucket under the app's variable, and Laravel's names.
@@ -236,10 +240,11 @@ Results go in research.md.
 ### 7. Design (T1307)
 
 - **Components from facts:** services, workers, cron, storage.
-- **One generic hosted-service question** replaces the Supabase one, with the price difference.
+- **One generic hosted-service question** replaces the Supabase one, with what running it on the
+  server would add.
 - **The interview** asks a worker's command only when there is no convention.
 - **Storage options with prices.**
-- **Kafka or Redpanda**, defaulting by server size.
+- **Kafka by default**, Redpanda as the user's choice; refused below Kafka's smallest server.
 - **Licences** named in plain words.
 - **Sizing:**
   - the sum of the limits, plus the edge, plus a system reserve (research R7);
@@ -249,24 +254,37 @@ Results go in research.md.
   component turned off), and says what changed.
 - **The SQLite strategy** is `recreate`.
 
-### 8. Several apps on one own server and the edge (T1308)
+### 8. Several apps on one own server and the edge (T1308a, T1308b, T1308c)
 
 - **Layout on every server target:** `/srv/apps/<app>/` (compose.yaml, env files) and
   `/srv/data/<app>/`, with Compose project `<app>`.
 - **The edge:** `/srv/edge` with Compose project `opscrew-edge`:
-  - Caddy, kamal-proxy, and cloudflared when tunnelled;
-  - an external network `opscrew-edge` that each app's web service joins;
+  - Caddy and kamal-proxy, on an external network `opscrew-edge` that each app's web service
+    joins;
   - Caddy imports `/srv/edge/sites/*.caddy`, one file per app;
-  - kamal-proxy holds one service per app, named `<app>`, with `--host <domain>`. A `www` name is
-    redirected by Caddy (the spike checks whether one service can take two hosts).
+  - kamal-proxy holds one service per app, named `<app>`, with `--host <domain>`, targeting the
+    app's web containers by their Compose names (unique per app). A `www` name is redirected by
+    Caddy (the spike checks whether one service can take two hosts);
+  - each app keeps its own Cloudflare Tunnel: its cloudflared runs in the app's own project, joins
+    `opscrew-edge`, and sends its hostnames to Caddy. One root still owns one tunnel, as today.
+- **Who writes the edge:** every deploy uploads the edge files from its repository
+  (`opscrew/runtime/edge/`) and its own site file. A version stamp in the edge's Compose file decides
+  which copy is kept: the newest wins, so an older app never downgrades the edge. Only a changed edge
+  is restarted, which the deploy says.
+- **The host plan** (own server) sets up the prerequisites: Docker, the `deploy` user, the
+  folders, the firewall, the hardening, and the app records.
 - **The ssh-host connector:**
   - one record per app, `/etc/opscrew/apps/<app>.json`, and the host record lists the apps;
   - the second-app refusal goes;
   - a hostname used by another app is refused;
   - the host plan shows the shared parts and the app's own;
+  - an app name another app uses on the server, or the reserved `opscrew-edge`, is refused;
+  - the per-app record keeps the app's hostnames and memory limits, for the next app's checks;
+  - inspection reads the CPU flags too, for MongoDB's AVX check;
   - destroy removes only the app's parts, and the edge goes with the last app;
   - `--undo-host` stays for the hardening.
 - **Cloud servers** (Hetzner, DigitalOcean) use the same layout, with one app per server.
+  cloud-init prepares the folders, and the deploy brings up the edge.
 
 ### 9. Day 2 for components (T1309)
 
@@ -275,7 +293,6 @@ Results go in research.md.
 - **destroy:** every component; data folders and buckets stay unless `--delete-data` is given with
   the typed confirmation.
 - **drift:** components against the plan.
-- **status:** each component and whether it runs.
 - **secure:** no service port public, and each service's auth on.
 - **retarget:** keeps Postgres and Valkey as today, and buckets where they are. It refuses before any
   change when the app has another stateful service, and says when that will come.
@@ -296,12 +313,17 @@ Results go in research.md.
   - ClickHouse, with the low-memory profile and a user;
   - Neo4j Community, with auth.
 - Each with a licence, a minimum server and a warning.
-- `vm.max_map_count`: cloud-init on cloud servers, a host-plan item on an own server, refused on
-  Portainer.
+- `vm.max_map_count`:
+  - on cloud servers, a one-shot privileged init container in the app's Compose file, before the
+    engine, so an existing server gets it too;
+  - on an own server, a host-plan item (`/etc/sysctl.d`), approved by its hash;
+  - refused on Portainer.
 
 ### 12. Surfaces and guide (T1312)
 
-- **CLI and MCP:** `status` lists components. Design's output shows components, licences and prices.
+- **CLI and MCP:** `status` lists each component and whether it runs. Design's output shows
+  components, licences and each component's memory and price share.
+- **The runbook** describes the components, the edge and the storage key.
 - **Plugin skills:** updated.
 - **The guide:**
   - `components.md`;
@@ -344,26 +366,23 @@ Results go in research.md.
 
 ## Order
 
-1. T1301, serial.
-2. T1302, the spike: in parallel with T1303 and T1306, which do not depend on it.
-3. In parallel: T1303, T1304, T1305 and T1306 (disjoint folders: detect; iac-templates
-   catalog/runtime; iac-templates docker/workflow; iac-templates infra). T1304 and T1305 need
-   T1302's results.
+The exact waves are in tasks.md. In short:
+1. T1301a (contracts and call sites) and T1301b (pins and prices), in parallel.
+2. T1302 (the spike, lead), T1303, T1306 and T1308a.
+3. T1304, T1305.
 4. T1307.
-5. T1308.
+5. T1308b, then T1308c.
 6. T1309.
-7. T1310.
-8. T1311.
-9. T1312 and T1313 in parallel.
-10. T1314.
-11. T1315, live runs (lead).
+7. T1311, then T1310.
+8. T1312 and T1313.
+9. T1314, then T1315.
 
 ## Complexity Tracking
 
 | Choice | Why | Simpler alternative rejected because |
 |---|---|---|
-| One shared edge per host | Ports 80 and 443 and one tunnel can only exist once per host | One edge per app needs other ports, which Cloudflare and users do not expect |
+| One shared edge per host | Ports 80 and 443 can only be opened once per host | One edge per app needs other ports, which Cloudflare and users do not expect |
 | The same layout on cloud servers | One code path for every server target | Two layouts double the runtime and destroy code |
-| Object storage through the IaC engine, with a pasted key for Hetzner and Spaces | No new adapter, no new approval kind, least privilege for the app | A custom S3 adapter needs a constitution change and its own plan format |
+| Object storage through the IaC engine, in its own root, with keys the user creates | No new adapter, no new approval kind, no key in state, least privilege for OpsCrew's tokens, and buckets kept apart from destroy and retarget | A custom S3 adapter needs a constitution change and its own plan format |
 | supercronic built into the image | Works on every target, Portainer included, with one checksum | A host-mounted binary needs host files, which Portainer cannot provide |
 | Retarget refuses the new stateful services | An honest stop instead of an untested data copy | A generic volume copy needs its own maintenance-window design and live tests |

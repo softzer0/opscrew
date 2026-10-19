@@ -20,6 +20,8 @@ export interface ServiceSpec {
   healthcheck: string[];                // a CMD form that works with the image's own tools
   init?: (ctx: ServiceContext) => { command: string[] };          // one-shot: MongoDB's replica set, Garage's layout
   secrets: GeneratedSecret[];           // e.g. { name: "password", format: "hex32" }
+  auth: "password" | "token" | "key" | "internal-only";   // internal-only: Valkey, Kafka, Redpanda,
+                                        // OpenSearch (reachable only from the app's own containers)
   appVariables: (ctx: ServiceContext) => Record<string, string>;  // what the app receives, by its detected names
   hostSettings?: { sysctl: Record<string, string> };              // vm.max_map_count for the search engines
   targets: ("server" | "portainer")[]; // portainer omitted when a host setting is needed
@@ -50,9 +52,11 @@ the spike shows Compose honours without Swarm).
 
 **Cron:**
 - The crontab is generated in `opscrew/runtime/crontab` and mounted read-only.
-- A `route` job calls `http://app:<port><route>` with `Authorization: Bearer ${CRON_SECRET}`,
-  through the probe tool (`app.build.probe`).
-- `TZ` is the plan's time zone.
+- A `route` job sends a GET to `http://app:<port><route>` with `Authorization: Bearer
+  ${CRON_SECRET}`, through the probe tool (`app.build.probe`): node, python, ruby, php or bash
+  (`/dev/tcp`) can all send the header. With probe `none` or `wget`, design refuses route jobs and
+  asks for a command job instead.
+- Each job's time zone is a `CRON_TZ=<zone>` line before it in the crontab.
 - Overlapping runs are skipped (supercronic's default).
 
 ## The deploy (workflow switch, T1305)
@@ -70,19 +74,29 @@ the spike shows Compose honours without Swarm).
 - Another app's containers are never touched.
 - A service of the same app is restarted only when its own configuration changed.
 
-## The edge on a server (T1308)
+## The edge on a server (T1308a, T1308b, T1308c)
 
-- **`/srv/edge`:** Compose project `opscrew-edge`, with Caddy, kamal-proxy, and cloudflared when
-  tunnelled, and the external network `opscrew-edge`.
+- **`/srv/edge`:** Compose project `opscrew-edge`, with Caddy and kamal-proxy, and the external
+  network `opscrew-edge`. Its Compose file carries a version stamp (OpsCrew's pin-set date).
 - **Each app:** `/srv/apps/<app>/compose.yaml` (project `<app>`). Its web service joins
-  `opscrew-edge`, with the network alias `<app>-web`.
+  `opscrew-edge`.
 - **Caddy:** imports `/srv/edge/sites/*.caddy`. `<app>.caddy` routes the app's hostnames to
   kamal-proxy, and a `www` name redirects to the main one.
 - **kamal-proxy:** one service per app, `kamal-proxy deploy <app> --target <container>:<port>
-  --host <domain> …`.
-- **cloudflared:** one tunnel per host, with an ingress rule per hostname, all apps included.
+  --host <domain> …`. The target is the new web container's Compose name
+  (`<app>-web-<n>`), unique across apps because each app is its own project.
+- **cloudflared:** each app keeps its own tunnel, owned by its own Cloudflare root as today. Its
+  cloudflared runs in the app's project, joins `opscrew-edge`, and sends the app's hostnames to
+  `http://caddy:80`.
+- **Who writes it:**
+  - each deploy uploads `opscrew/runtime/edge/` and its site file;
+  - the edge's Compose file is replaced only when the uploaded stamp is newer than the server's;
+  - `docker compose -p opscrew-edge up -d` restarts only what changed, and Caddy reloads the sites.
 - **Ownership:**
-  - the edge belongs to the host record (`/etc/opscrew/host.json`, which lists the apps);
-  - each app's record is `/etc/opscrew/apps/<app>.json`;
+  - the host record (`/etc/opscrew/host.json`) lists the apps;
+  - each app's record is `/etc/opscrew/apps/<app>.json`, with its hostnames and its memory limits;
   - the edge goes with the last app.
-- **Conflicts:** a hostname another app holds is refused before any change.
+- **Conflicts:** refused before any change:
+  - a hostname another app holds;
+  - an app name another app uses;
+  - the reserved name `opscrew-edge`.

@@ -210,6 +210,12 @@ ARM?
 
 ## R3. Object storage
 
+**Superseded in part by plan.md "6." (2026-10-19, after the cross-artefact analysis):** buckets go
+through the IaC engine in a separate `storage` root, and OpsCrew never creates keys. The user
+creates one in each provider's console (for R2, a token limited to the bucket, after OpsCrew creates
+it), so no key is in infrastructure state and OpsCrew's tokens need no key-creating permission. The
+decision below is the original one.
+
 **Decision.**
 
 - Options, priced side by side. Design picks the cheapest by default:
@@ -475,6 +481,11 @@ engine. The OpenSearch `DISABLE_SECURITY_PLUGIN` flag in 3.x. Neo4j's current Do
 host plan can set `vm.max_map_count` persistently without clashing with other settings.
 
 ## R6. Several OpsCrew apps on one own server
+
+**Changed by plan.md "8." (2026-10-19):** each app keeps its own Cloudflare Tunnel (its root owns it,
+as today), with its cloudflared joining the shared edge network. The edge's files come with each
+deploy, and a version stamp keeps the newest. kamal-proxy targets the web containers by their Compose
+names.
 
 **Decision.**
 

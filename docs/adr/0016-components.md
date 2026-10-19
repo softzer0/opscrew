@@ -30,20 +30,28 @@ that several OpsCrew apps may share a server the user owns. No container had a m
   - A deploy replaces workers and cron after the web switch, and restores the previous version when
     a new worker does not stay up.
 - **Every container has a memory limit.** Sizing adds them up.
-- **Object storage through the IaC engine:**
-  - R2: bucket and a bucket-scoped token in the Cloudflare root;
-  - DigitalOcean Spaces: bucket and a bucket-scoped key in the DigitalOcean root, with one key from
-    the user for Terraform's bucket calls;
-  - Hetzner Object Storage: the bucket through `hashicorp/aws` pointed at Hetzner's endpoint, with
-    the user's key pair (Hetzner has no API to create one);
+- **Object storage through the IaC engine,** in a separate `storage` root that destroy and
+  retarget leave alone unless the user asks to delete data:
+  - R2: the bucket through the Cloudflare provider;
+  - DigitalOcean Spaces and Hetzner Object Storage: the bucket through `hashicorp/aws` pointed at the
+    provider's S3 endpoint;
+  - OpsCrew never creates storage keys. The user creates one in the provider's console with
+    OpsCrew's steps; for R2, a token limited to the bucket. It reaches the engine only as
+    environment variables, so no key is in infrastructure state;
   - Garage: a container on an own server or Portainer.
   - MinIO is not offered: it is archived and its images are gone.
 - **A shared edge per server.**
   - Each app is a Compose project under `/srv/apps/<app>`.
-  - A shared `opscrew-edge` project holds Caddy, kamal-proxy and cloudflared. kamal-proxy routes by
-    host, and Caddy imports one site file per app.
+  - A shared `opscrew-edge` project holds Caddy and kamal-proxy. kamal-proxy routes by host, and
+    Caddy imports one site file per app.
+  - Each app keeps its own Cloudflare Tunnel, owned by its own root as today.
+  - Each deploy brings the edge's files; a version stamp keeps the newest.
   - The host record lists the apps, and the edge goes with the last one.
   - Cloud servers use the same layout with one app each.
+- **Host kernel settings** for the search engines: a one-shot privileged init container on cloud
+  servers, a host-plan item on an own server, refused on Portainer.
+- **Kafka and Redpanda run without a login,** reachable only from the app's own containers, as
+  Valkey is today.
 - **Retarget** refuses before any change when the app has a stateful service other than Postgres and
   Valkey. Their data copy comes later.
 
