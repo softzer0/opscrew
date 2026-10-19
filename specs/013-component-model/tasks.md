@@ -135,7 +135,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1305 [P] [US1] supercronic in the image, and the deploy order with the worker check, in `packages/iac-templates/src/{docker,workflow}/**`
+- [X] T1305 [P] [US1] supercronic in the image, and the deploy order with the worker check, in `packages/iac-templates/src/{docker,workflow}/**`
   - Owns: those folders (+ tests and snapshots)
   - Reads: contracts/components.md "The deploy" and "Process start forms"; plan.md "5."; research.md R1 and "Spike results"; 012's `workflow/switch.ts`
   - Depends: T1301a, T1301b, T1302
