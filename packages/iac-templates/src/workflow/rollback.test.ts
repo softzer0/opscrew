@@ -8,6 +8,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testServices } from "../__fixtures__/plans";
+import { withServices } from "../catalog/__fixtures__/plans";
 import type { RenderContext } from "../types";
 import { jobYaml, NIGHTLY, withBuild, withPlan, withProcesses } from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
@@ -15,7 +16,8 @@ import { type ServiceInitStep, switchCommands } from "./switch";
 
 /*
  * Runs the generated "Start the new version" and "Roll back" scripts in bash against a fake server:
- * `ssh` runs the server script with `sh` locally, /srv/app mapped to a temp dir, and `docker` is a
+ * `ssh` runs the server script with `sh` locally, /srv/app mapped to a temp dir, `scp` only logs
+ * its arguments, and `docker` is a
  * fake that keeps the app's containers in a file and plays kamal-proxy, which routes to a container
  * unless its image is in UNHEALTHY.
  */
@@ -58,6 +60,7 @@ type Step = { id?: string; name?: string; run?: string };
 function scripts(p: DeployPlan) {
   const steps: Step[] = parse(renderWorkflow(p, ctx).content).jobs.deploy.steps;
   return {
+    upload: steps.find((s) => s.name?.startsWith("Upload"))?.run ?? "",
     start: steps.find((s) => s.id === "start")?.run ?? "",
     rollback: steps.find((s) => s.name?.startsWith("Roll back"))?.run ?? "",
   };
@@ -111,14 +114,15 @@ const PRELUDE = [
   '    sh -c "${*//\\/srv\\/app/$WORK/app}"',
   "  fi",
   "}",
+  'scp() { echo "scp $*" >> "$WORK/scp.log"; }',
 ].join("\n");
 
 /**
  * The fake `docker`: logs every call; `compose` and kamal-proxy act on $WORK/containers. The
- * workers and cron named in PROCESSES live in $WORK/processes, one container each
- * (`p<n> <service> <image> <status> <restarts>`), recreated only when their image changed, as
- * Compose does. Any other `compose exec` is a setup step: it fails when its words are a line of
- * $WORK/failing.
+ * workers and cron named in PROCESSES live in $WORK/processes, one container each unless REPLICAS
+ * says otherwise (`worker=2`), as `p<n> <service> <image> <status> <restarts>`; they are recreated
+ * only when their image changed, as Compose does, and `compose stop` exits them. Any other
+ * `compose exec` is a setup step: it fails when its words are a line of $WORK/failing.
  */
 const FAKE_DOCKER = [
   "#!/usr/bin/env bash",
@@ -137,8 +141,9 @@ const FAKE_DOCKER = [
   "up_process() {",
   '  local image; image="$(image_now)"',
   '  awk -v s="$1" -v i="$image" \'$2 == s && $3 == i { found = 1 } END { exit !found }\' "$processes" && return 0',
-  '  local n; n="$(next_id)"',
-  '  { grep -v "^p[0-9]* $1 " "$processes" || true; echo "p$n $1 $image running 0"; } > "$processes.tmp"',
+  '  local count; count="$(echo " ${REPLICAS:-} " | sed -n "s/.* $1=\\([0-9]*\\) .*/\\1/p")"',
+  '  { grep -v "^p[0-9]* $1 " "$processes" || true',
+  '    for _ in $(seq "${count:-1}"); do echo "p$(next_id) $1 $image running 0"; done; } > "$processes.tmp"',
   '  mv "$processes.tmp" "$processes"',
   "}",
   'case "$1 $2" in',
@@ -156,9 +161,16 @@ const FAKE_DOCKER = [
   '      : > "$state"; start_one',
   "    fi ;;",
   '  "compose ps")',
-  '    if [[ " ${PROCESSES:-} " == *" ${@: -1} "* ]]; then awk -v s="${@: -1}" \'$2 == s { print $1 }\' "$processes"',
+  '    if [[ " ${PROCESSES:-} " == *" ${@: -1} "* ]]; then',
+  '      if [[ " $* " == *" -aq "* ]]; then awk -v s="${@: -1}" \'$2 == s { print $1 }\' "$processes"',
+  '      else awk -v s="${@: -1}" \'$2 == s && $4 == "running" { print $1 }\' "$processes"; fi',
   '    elif [[ " $* " == *" -aq "* ]]; then cut -d " " -f 1 "$state"',
   '    else awk \'$4 == "running" { print $1 }\' "$state"; fi ;;',
+  '  "compose stop")',
+  '    for arg in "${@:3}"; do',
+  '      awk -v s="$arg" \'{ if ($2 == s) $4 = "exited"; print }\' "$processes" > "$processes.tmp"',
+  '      mv "$processes.tmp" "$processes"',
+  "    done ;;",
   '  "compose run") cat > /dev/null; echo "run image=${APP_IMAGE:-}" >> "$WORK/docker.log"',
   '    if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; exit 3; fi ;;',
   '  "compose exec")',
@@ -183,13 +195,17 @@ const FAKE_DOCKER = [
   "esac",
 ].join("\n");
 
-/** The fake `sleep`: returns at once; the services in CRASH restart meanwhile, those in STOP exit. */
+/**
+ * The fake `sleep`: returns at once; meanwhile the services in CRASH restart (`worker/2`: only the
+ * second container of `worker`), and those in STOP exit.
+ */
 const FAKE_SLEEP = [
   "#!/usr/bin/env bash",
   'echo "sleep $*" >> "$WORK/docker.log"',
   'touch "$WORK/processes"',
   'awk -v crash=" ${CRASH:-} " -v stop=" ${STOP:-} " \'{',
-  '  if (index(crash, " " $2 " ")) $5 = $5 + 1',
+  "  k[$2]++",
+  '  if (index(crash, " " $2 " ") || index(crash, " " $2 "/" k[$2] " ")) $5 = $5 + 1',
   '  if (index(stop, " " $2 " ")) $4 = "exited"',
   "  print",
   '}\' "$WORK/processes" > "$WORK/processes.tmp" && mv "$WORK/processes.tmp" "$WORK/processes"',
@@ -276,11 +292,19 @@ const processImages = () =>
       .filter(Boolean)
       .map((line) => line.split(" ").slice(1, 3)),
   );
-/** The workers and cron of an earlier deploy, all running `image`. */
-const runningProcesses = (image: string) =>
+/** The status of each worker and cron container, by service. */
+const processStatus = () =>
+  Object.fromEntries(
+    file("processes")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => [line.split(" ")[1], line.split(" ")[3]]),
+  );
+/** The workers and cron of an earlier deploy (`services`, default all three), running `image`. */
+const runningProcesses = (image: string, services = ["worker", "beat", "cron"]) =>
   writeFileSync(
     join(work, "processes"),
-    ["worker", "beat", "cron"].map((s, i) => `p${80 + i} ${s} ${image} running 0\n`).join(""),
+    services.map((s, i) => `p${80 + i} ${s} ${image} running 0\n`).join(""),
   );
 
 // Each test runs bash several times; on Windows (Git Bash) under a parallel `pnpm check` that
@@ -581,7 +605,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(start.status).toBe(1);
       // The fake ssh maps /srv/app to the test's folder.
       expect(start.output).toContain(
-        "::error::The worker container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version. Read its log on the server with `docker compose logs worker` in ",
+        "::error::The worker container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with `docker compose logs worker` in ",
       );
       expect(start.output).toContain(
         "(opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\n",
@@ -598,6 +622,61 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
       expect(processImages()).toEqual({ worker: OLD, beat: OLD, cron: OLD });
       expect(dockerCalls()).toContain("docker compose up -d --no-deps worker beat cron");
+      expect(dockerCalls()).not.toContain("compose stop");
+    });
+
+    it("stops the cron the previous version did not run when a deploy that adds it fails", () => {
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD, ["worker", "beat"]);
+      const start = run(withWorkers.start, { CRASH: "worker" });
+      expect(start.status).toBe(1);
+      // Recorded before the switch, from the containers that were running.
+      expect(read(".processes.previous")).toBe("worker\nbeat");
+      expect(processImages()).toEqual({ worker: NEW, beat: NEW, cron: NEW });
+
+      resetCalls();
+      const rollback = run(withWorkers.rollback);
+      expect(rollback.status).toBe(1);
+      expect(rollback.output).toContain("restored the previous version");
+      expect(routed()).toBe(OLD);
+      expect(processImages()).toEqual({ worker: OLD, beat: OLD, cron: NEW });
+      // Nothing is left crash-looping: cron is stopped, never started on the old image.
+      expect(processStatus()).toEqual({ worker: "running", beat: "running", cron: "exited" });
+      expect(dockerCalls().split("\n")).toContain("docker compose up -d --no-deps worker beat");
+      expect(dockerCalls().split("\n")).toContain("docker compose stop cron");
+      expect(read(".processes.previous")).toBeUndefined();
+    });
+
+    it("says on a first deploy that a failed worker goes back only if there is a previous version", () => {
+      const start = run(withWorkers.start, { CRASH: "beat" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain(
+        "so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with `docker compose logs beat`",
+      );
+
+      resetCalls();
+      const rollback = run(withWorkers.rollback);
+      expect(rollback.status).toBe(1);
+      expect(rollback.output).toContain("there is no earlier version to restore");
+      expect(dockerCalls()).toBe("");
+    });
+
+    it("checks every container of a worker that runs two copies", () => {
+      server({ ".env": OLD }, [OLD]);
+      const start = run(withWorkers.start, { REPLICAS: "worker=2", CRASH: "worker/2" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("::error::The worker container did not keep running");
+      const workers = file("processes")
+        .split("\n")
+        .filter((line) => line.split(" ")[1] === "worker")
+        .map((line) => line.split(" ")[0]);
+      expect(workers).toHaveLength(2);
+      for (const id of workers) {
+        expect(dockerCalls()).toContain(`docker inspect --format {{.RestartCount}} ${id}`);
+        expect(dockerCalls()).toContain(
+          `docker inspect --format {{.State.Status}}:{{.RestartCount}} ${id}`,
+        );
+      }
     });
 
     it("names a worker that exits", () => {
@@ -758,6 +837,43 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
         "docker compose exec -T garage /garage bucket allow --key ${GARAGE_KEY_ID}",
       );
       expect(result.output).not.toContain(secret);
+    });
+  });
+
+  describe("the upload", () => {
+    const services = withProcesses(
+      withServices([{ kind: "mysql", name: "main-db" }, { kind: "rabbitmq" }]),
+      { cron: [NIGHTLY] },
+    );
+
+    it("copies the services' settings files and the crontab next to compose.yaml", () => {
+      expect(run(scripts(services).upload).status).toBe(0);
+      expect(file("scp.log")).toMatch(
+        / opscrew\/runtime\/compose\.yaml opscrew\/runtime\/Caddyfile opscrew\/runtime\/services opscrew\/runtime\/crontab deploy@203\.0\.113\.10:\/srv\/app\/$/,
+      );
+      expect(file("scp.log")).toMatch(/^scp -r /);
+    });
+
+    it("copies only compose.yaml and the Caddyfile when the plan has nothing else", () => {
+      expect(run(rolling.upload).status).toBe(0);
+      expect(file("scp.log")).toMatch(
+        / opscrew\/runtime\/compose\.yaml opscrew\/runtime\/Caddyfile deploy@203\.0\.113\.10:\/srv\/app\/$/,
+      );
+    });
+
+    it("writes each service's env file from its own secret, printing none of its values", () => {
+      const mysql = `MYSQL_PASSWORD=${fakeSecret("aws-secret-access-key", "mysql")}`;
+      const rabbitmq = `RABBITMQ_DEFAULT_PASS=${fakeSecret("aws-secret-access-key", "rabbitmq")}`;
+      const result = run(scripts(services).upload, {
+        OPSCREW_APP_ENV: "LOG_LEVEL=info",
+        OPSCREW_SERVICE_MAIN_DB_ENV: mysql,
+        OPSCREW_SERVICE_RABBITMQ_ENV: rabbitmq,
+      });
+      expect(result.status, result.output).toBe(0);
+      expect(read("main-db.env")).toBe(mysql);
+      expect(read("rabbitmq.env")).toBe(rabbitmq);
+      expect(read("app.env")).toBe("LOG_LEVEL=info");
+      expect(result.output).toBe("");
     });
   });
 

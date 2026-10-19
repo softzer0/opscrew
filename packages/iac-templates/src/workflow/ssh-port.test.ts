@@ -24,7 +24,7 @@ describe("renderWorkflow honours the server's SSH port", () => {
         if (/\b(ssh|scp) /.test(line)) expect(line).toContain('"${ssh_opts[@]}"');
       }
     }
-    expect(runs[0]).toMatch(/scp "\$\{ssh_opts\[@\]\}"/);
+    expect(runs[0]).toMatch(/scp -r "\$\{ssh_opts\[@\]\}"/);
     expect(runs[2]).toMatch(/ssh "\$\{ssh_opts\[@\]\}"/);
   });
 

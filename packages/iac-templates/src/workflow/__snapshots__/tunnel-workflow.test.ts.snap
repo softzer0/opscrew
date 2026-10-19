@@ -132,14 +132,14 @@ jobs:
           HOST: ssh-shop.example.com
           TUNNEL_SERVICE_TOKEN_ID: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID }}
           TUNNEL_SERVICE_TOKEN_SECRET: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET }}
-          APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
-          DB_ENV: \${{ secrets.OPSCREW_DB_ENV }}
+          OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
+          OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          scp "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
-          printf '%s\\n' "\${APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
-          printf '%s\\n' "\${DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
+          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
       - id: start
         name: Start the new version
         env:
@@ -237,7 +237,7 @@ jobs:
               docker rm "$id" > /dev/null
             done
           } >&2
-          rm -f .env.previous
+          rm -f .env.previous .processes.previous
           echo restored
           REMOTE
           outcome=unchanged

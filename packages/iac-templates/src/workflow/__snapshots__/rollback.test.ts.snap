@@ -26,14 +26,14 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
       - name: Upload runtime files and environment
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
-          DB_ENV: \${{ secrets.OPSCREW_DB_ENV }}
+          OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
+          OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          scp "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
-          printf '%s\\n' "\${APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
-          printf '%s\\n' "\${DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
+          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
       - id: start
         name: Start the new version
         env:
@@ -111,7 +111,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
               exit 1
             fi
           } >&2
-          rm -f .env.previous
+          rm -f .env.previous .processes.previous
           echo restored
           REMOTE
           outcome=unchanged
@@ -157,14 +157,14 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
       - name: Upload runtime files and environment
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
-          DB_ENV: \${{ secrets.OPSCREW_DB_ENV }}
+          OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
+          OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          scp "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
-          printf '%s\\n' "\${APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
-          printf '%s\\n' "\${DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
+          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
       - id: start
         name: Start the new version
         env:
@@ -258,7 +258,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
               docker rm "$id" > /dev/null
             done
           } >&2
-          rm -f .env.previous
+          rm -f .env.previous .processes.previous
           echo restored
           REMOTE
           outcome=unchanged
@@ -304,14 +304,14 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
       - name: Upload runtime files and environment
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
-          DB_ENV: \${{ secrets.OPSCREW_DB_ENV }}
+          OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
+          OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          scp "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
-          printf '%s\\n' "\${APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
-          printf '%s\\n' "\${DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile opscrew/runtime/crontab "deploy@\${HOST}:/srv/app/"
+          printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
       - id: start
         name: Start the new version
         env:
@@ -343,6 +343,9 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
             exit 1
           fi
           echo 'The release command finished; its output is in /srv/app/release.log on the server.'
+          for service in worker beat cron; do
+            if [ -n "$(docker compose ps -q "$service")" ]; then echo "$service"; fi
+          done > .processes.previous
           old="$(docker compose ps -aq app | tr '\\n' ' ')"
           docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
           new=""
@@ -372,7 +375,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
             for id in $(docker compose ps -aq "$service"); do
               now="$id=$(docker inspect --format '{{.State.Status}}:{{.RestartCount}}' "$id")"
               case " $started " in *" $now "*) continue ;; esac
-              printf '::error::The %s container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version. Read its log on the server with \`docker compose logs %s\` in /srv/app (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n' "$service" "$service"
+              printf '::error::The %s container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in /srv/app (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n' "$service" "$service"
               exit 1
             done
           done
@@ -425,9 +428,15 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
               docker stop "$id" > /dev/null
               docker rm "$id" > /dev/null
             done
-            docker compose up -d --no-deps worker beat cron
+            up=""
+            stop=""
+            for service in worker beat cron; do
+              if grep -qxF "$service" .processes.previous 2> /dev/null; then up="$up $service"; else stop="$stop $service"; fi
+            done
+            if [ -n "$up" ]; then docker compose up -d --no-deps $up; fi
+            if [ -n "$stop" ]; then docker compose stop $stop; fi
           } >&2
-          rm -f .env.previous
+          rm -f .env.previous .processes.previous
           echo restored
           REMOTE
           outcome=unchanged

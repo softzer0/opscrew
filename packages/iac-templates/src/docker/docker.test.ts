@@ -608,6 +608,19 @@ describe("supercronic in the image of an app with cron jobs", () => {
     },
   );
 
+  it.each(Object.entries(ALL))(
+    "adds it to %s before the app's files, so its layer stays cached across code changes",
+    (_name, sample) => {
+      const lines = withCron(sample, "amd64").split("\n");
+      const at = lines.indexOf(add("amd64"));
+      const stage = lines.slice(
+        lines.findLastIndex((line) => line.startsWith("FROM ")),
+        at,
+      );
+      expect(stage.filter((line) => !/^(FROM|ENV|WORKDIR|#) /.test(line))).toEqual([]);
+    },
+  );
+
   it("downloads the binary for the image's architecture", () => {
     const arm = withCron(expressApp, "arm64");
     expect(arm).toContain(add("arm64"));

@@ -11,12 +11,22 @@ export const DEPLOY_SECRETS = {
   sshKey: "OPSCREW_SSH_PRIVATE_KEY",
   knownHosts: "OPSCREW_SSH_KNOWN_HOSTS",
   appEnv: "OPSCREW_APP_ENV",
-  dbEnv: "OPSCREW_DB_ENV",
+  /** `db.env`, the env file of the Postgres service `db`: {@link serviceEnvSecret}`("db")`. */
+  dbEnv: "OPSCREW_SERVICE_DB_ENV",
   /** Non-secret build values (`NAME=value` lines): build arguments, baked into the image. */
   buildEnv: "OPSCREW_BUILD_ENV",
   /** Secret build values (`NAME=value` lines): BuildKit secret mounts only, never build arguments. */
   buildSecrets: "OPSCREW_BUILD_SECRETS",
 } as const;
+
+/**
+ * The GitHub Actions secret that holds `<service>.env`, the env file a catalog service with
+ * secrets reads on a server (`OPSCREW_SERVICE_MAIN_DB_ENV` for `main-db`). `opscrew provision`
+ * sets it; the deploy writes it next to compose.yaml.
+ */
+export function serviceEnvSecret(service: string): string {
+  return `OPSCREW_SERVICE_${service.toUpperCase().replaceAll("-", "_")}_ENV`;
+}
 
 /** The CPU architecture the image is built for: the server's. */
 export function buildArch(plan: DeployPlan): PinArch {

@@ -1,8 +1,9 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 
-import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
-import { initStepsFor } from "../catalog";
+import type { DeployPlan } from "@opscrew/plan-schema";
+import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import { renderRuntimeFiles } from "../runtime";
 import { sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 import { buildJob } from "./build";
@@ -14,12 +15,13 @@ import {
   deployJob,
   healthPath,
   secret,
+  serviceEnvSecret,
   workflowStart,
 } from "./shared";
 import { rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
-export { buildRunner, DEPLOY_SECRETS, supercronicArch } from "./shared";
+export { buildRunner, DEPLOY_SECRETS, serviceEnvSecret, supercronicArch } from "./shared";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
@@ -142,6 +144,22 @@ function installCloudflaredStep(): string[] {
   ];
 }
 
+/** The plan's services that read `<name>.env` on the server: those with secrets. */
+function envFileServices(plan: DeployPlan): string[] {
+  return enabledServices(plan)
+    .filter((service) => serviceSpec(service.kind).secrets.length > 0)
+    .map((service) => service.name);
+}
+
+/**
+ * What the upload copies next to compose.yaml and the Caddyfile: the `opscrew/runtime/services`
+ * folder and the crontab, when {@link renderRuntimeFiles} renders them.
+ */
+function runtimeUploads(plan: DeployPlan): string[] {
+  const top = renderRuntimeFiles(plan).map((file) => file.path.split("/").slice(0, 3).join("/"));
+  return [...new Set(top)];
+}
+
 /** The lines of a server script for a `run: |` block, ended by the heredoc's `REMOTE`. */
 function remote(script: readonly string[]): string[] {
   return [...script.map((line) => (line.length > 0 ? `    ${line}` : "")), "    REMOTE"];
@@ -160,7 +178,6 @@ function remote(script: readonly string[]): string[] {
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
-  const hasDb = serviceOf(plan, "postgres") !== undefined;
   checkSshPort(ctx.sshPort);
 
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
@@ -179,21 +196,28 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
         ]),
   ];
 
+  // Each env file reaches the server on ssh's stdin from its secret (the step's variable of the
+  // same name), never in a command line or the log.
+  const envFiles = [
+    { file: "app.env", secret: DEPLOY_SECRETS.appEnv },
+    ...envFileServices(plan).map((name) => ({
+      file: `${name}.env`,
+      secret: serviceEnvSecret(name),
+    })),
+  ];
   const uploadEnv = [
     ...hostEnv,
-    `    APP_ENV: ${secret(DEPLOY_SECRETS.appEnv)}`,
-    ...(hasDb ? [`    DB_ENV: ${secret(DEPLOY_SECRETS.dbEnv)}`] : []),
+    ...envFiles.map((env) => `    ${env.secret}: ${secret(env.secret)}`),
   ];
+  const uploads = ["compose.yaml", "Caddyfile"].map((name) => `opscrew/runtime/${name}`);
   const uploadRun = [
     "    set -euo pipefail",
     `    ${sshOpts}`,
-    '    scp "${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@${HOST}:/srv/app/"',
-    '    printf \'%s\\n\' "${APP_ENV:-}" | ssh "${ssh_opts[@]}" "deploy@${HOST}" \'umask 077 && cat > /srv/app/app.env\'',
-    ...(hasDb
-      ? [
-          '    printf \'%s\\n\' "${DB_ENV:-}" | ssh "${ssh_opts[@]}" "deploy@${HOST}" \'umask 077 && cat > /srv/app/db.env\'',
-        ]
-      : []),
+    `    scp -r "\${ssh_opts[@]}" ${[...uploads, ...runtimeUploads(plan)].join(" ")} "deploy@\${HOST}:/srv/app/"`,
+    ...envFiles.map(
+      (env) =>
+        `    printf '%s\\n' "\${${env.secret}:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/${env.file}'`,
+    ),
   ];
 
   const deploySteps = [

@@ -159,7 +159,40 @@ function processServices(plan: DeployPlan): string[] {
 const PROCESS_CHECK_SECONDS = 30;
 
 /** printf's format for a worker that stopped: `%s` is its Compose service, twice. */
-const PROCESS_FAILED = `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version. Read its log on the server with \`docker compose logs %s\` in /srv/app (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n`;
+const PROCESS_FAILED = `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in /srv/app (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n`;
+
+/**
+ * Where the start script records, before the switch, which of the workers and cron had a running
+ * container (one service per line), so the rollback restarts only those.
+ */
+const PREVIOUS_PROCESSES = ".processes.previous";
+
+/** Writes {@link PREVIOUS_PROCESSES} for `services`; nothing without them. */
+function recordProcesses(services: readonly string[]): string[] {
+  if (services.length === 0) return [];
+  return [
+    `for service in ${services.join(" ")}; do`,
+    '  if [ -n "$(docker compose ps -q "$service")" ]; then echo "$service"; fi',
+    `done > ${PREVIOUS_PROCESSES}`,
+  ];
+}
+
+/**
+ * The rollback's workers and cron: those in {@link PREVIOUS_PROCESSES} start again on
+ * `$APP_IMAGE`, the others stop, so a service this deploy added never runs on the old image.
+ */
+function restoreProcesses(services: readonly string[]): string[] {
+  if (services.length === 0) return [];
+  return [
+    'up=""',
+    'stop=""',
+    `for service in ${services.join(" ")}; do`,
+    `  if grep -qxF "$service" ${PREVIOUS_PROCESSES} 2> /dev/null; then up="$up $service"; else stop="$stop $service"; fi`,
+    "done",
+    'if [ -n "$up" ]; then docker compose up -d --no-deps $up; fi',
+    'if [ -n "$stop" ]; then docker compose stop $stop; fi',
+  ];
+}
 
 /**
  * Starts `services` (the workers and cron) on `$APP_IMAGE`; Compose recreates only those whose
@@ -251,7 +284,8 @@ function healthFailed(plan: DeployPlan): string {
  *    (Compose recreates one only when its own configuration changed; nothing forces it);
  * 2. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep});
  * 3. the release command in a one-off container of the new image;
- * 4. the switch to the new image by `deploy.strategy` (`recreate` for SQLite apps);
+ * 4. the switch to the new image by `deploy.strategy` (`recreate` for SQLite apps), after recording
+ *    which workers and cron run ({@link PREVIOUS_PROCESSES});
  * 5. the workers and cron on the new image;
  * 6. a check that every worker and cron container keeps running for 30 seconds.
  * A failure before the switch leaves the running version untouched; after it, the workflow's
@@ -280,6 +314,8 @@ export function switchCommands(plan: DeployPlan, init: readonly ServiceInitStep[
     `docker compose up -d --no-deps --wait --remove-orphans ${steadyServices(plan).join(" ")}`,
     ...serviceInit(init),
     ...release,
+    // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
+    ...recordProcesses(processServices(plan)),
     ...switchApp(plan, healthFailed(plan)),
     ...startProcesses(processServices(plan)),
   ];
@@ -288,12 +324,11 @@ export function switchCommands(plan: DeployPlan, init: readonly ServiceInitStep[
 /**
  * The server script of the rollback (POSIX sh; the failed image is `$1`): when `.env` names it and
  * `.env.previous` holds another image, switches the web back to that one the same way as the
- * deploy, starts the workers and cron on it too, and prints `restored`; prints `unchanged` when
- * this run never switched, `no-previous` when there is nothing to go back to, and nothing when the
- * switch back failed.
+ * deploy, starts on it the workers and cron that ran before the deploy and stops the others, and
+ * prints `restored`; prints `unchanged` when this run never switched, `no-previous` when there is
+ * nothing to go back to, and nothing when the switch back failed.
  */
 export function rollbackCommands(plan: DeployPlan): string[] {
-  const processes = processServices(plan);
   return [
     "set -eu",
     "cd /srv/app",
@@ -304,10 +339,10 @@ export function rollbackCommands(plan: DeployPlan): string[] {
     "{",
     ...[
       ...switchApp(plan, "::error::The previous version did not pass its health check either."),
-      ...(processes.length === 0 ? [] : [`docker compose up -d --no-deps ${processes.join(" ")}`]),
+      ...restoreProcesses(processServices(plan)),
     ].map((line) => `  ${line}`),
     "} >&2",
-    "rm -f .env.previous",
+    `rm -f .env.previous ${PREVIOUS_PROCESSES}`,
     "echo restored",
   ];
 }

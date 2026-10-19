@@ -3,9 +3,10 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testServices } from "../__fixtures__/plans";
+import { withServices } from "../catalog/__fixtures__/plans";
 import { ACTIONS, IMAGES } from "../pins";
 import type { RenderContext } from "../types";
-import { DEPLOY_SECRETS, healthUrl, renderWorkflow } from "./index";
+import { DEPLOY_SECRETS, healthUrl, renderWorkflow, serviceEnvSecret } from "./index";
 
 function plan(
   o: {
@@ -137,6 +138,33 @@ describe("renderWorkflow", () => {
     const noDb = renderWorkflow(plan({ domain: "shop.example.com", postgres: false }), ctx).content;
     expect(noDb).not.toContain(DEPLOY_SECRETS.dbEnv);
     expect(noDb).not.toContain("db.env");
+  });
+
+  it("gives each service with secrets its env file from a GitHub secret of its own", () => {
+    expect(serviceEnvSecret("db")).toBe(DEPLOY_SECRETS.dbEnv);
+    expect(serviceEnvSecret("main-db")).toBe("OPSCREW_SERVICE_MAIN_DB_ENV");
+    const services = withServices([
+      { kind: "mysql", name: "main-db" },
+      { kind: "rabbitmq" },
+      { kind: "valkey", name: "cache" },
+      { kind: "nats", enabled: false },
+    ]);
+    const deploy = parse(renderWorkflow(services, ctx).content).jobs.deploy.steps as Step[];
+    const upload = deploy.find((s) => s.name === "Upload runtime files and environment");
+    expect(Object.keys(upload?.env ?? {})).toEqual([
+      "HOST",
+      "OPSCREW_APP_ENV",
+      "OPSCREW_SERVICE_MAIN_DB_ENV",
+      "OPSCREW_SERVICE_RABBITMQ_ENV",
+    ]);
+    expect(upload?.env?.OPSCREW_SERVICE_MAIN_DB_ENV).toBe(
+      "${{ secrets.OPSCREW_SERVICE_MAIN_DB_ENV }}",
+    );
+    expect(upload?.run).toContain(
+      `printf '%s\\n' "\${OPSCREW_SERVICE_MAIN_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/main-db.env'`,
+    );
+    // Valkey as a cache has no secret, so it has no env file.
+    expect(upload?.run).not.toContain("cache.env");
   });
 
   it("checks health over HTTPS on the domain and rolls back on failure", () => {

@@ -582,9 +582,9 @@ export function nextStandaloneDockerfile(
     "",
     `FROM ${base.ref} AS runtime`,
     "WORKDIR /app",
+    ...supercronic(cron),
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
     copyFromBuild("/out", "./"),
-    ...supercronic(cron),
     "USER node",
     `EXPOSE ${port}`,
     `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
@@ -626,11 +626,11 @@ export function nodeServerDockerfile(
     "",
     `FROM ${base.ref} AS runtime`,
     "WORKDIR /app",
+    ...supercronic(cron),
     // HOST: servers such as @astrojs/node standalone listen on localhost unless told otherwise.
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
     "COPY --from=build --chown=node:node /app ./",
     ...runtime.lines,
-    ...supercronic(cron),
     "USER node",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
@@ -671,6 +671,7 @@ export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage, cron?:
     `RUN ${values.mounts}${build}`,
     "",
     `FROM ${IMAGES.caddy.ref}`,
+    ...supercronic(cron),
     copy("COPY --from=build", [`/app/${outputDir}`], "/srv"),
     `RUN printf '%s\\n' ${caddyfile.map((line) => `'${line}'`).join(" ")} > /etc/caddy/Caddyfile \\`,
     "  && chown -R 65534:65534 /data /config \\",
@@ -678,7 +679,6 @@ export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage, cron?:
     // kernel refuses to exec under `cap_drop: ALL` + `no-new-privileges`. A plain copy drops it;
     // port 8080 needs no capability.
     "  && cp /usr/bin/caddy /usr/local/bin/caddy",
-    ...supercronic(cron),
     "USER 65534",
     "EXPOSE 8080",
     'CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]',
@@ -687,14 +687,15 @@ export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage, cron?:
 }
 
 /**
- * Base of every Python image. Only the app folder is copied into `/app`, so an app in a subfolder
- * runs exactly as it would at the root.
+ * Base of every Python image, with supercronic for `cron`. Only the app folder is copied into
+ * `/app`, so an app in a subfolder runs exactly as it would at the root.
  */
 function pythonBase(
   stack: DockerStack,
   port: number,
   facts: ProjectFacts,
   base: BaseImage,
+  cron: PinArch | undefined,
 ): string[] {
   const dir = appDirectory(facts);
   return [
@@ -706,6 +707,7 @@ function pythonBase(
     `FROM ${base.ref}`,
     `ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=${port}`,
     "WORKDIR /app",
+    ...supercronic(cron),
     "RUN useradd --create-home --uid 10001 app",
     ...pythonInstall(facts, dir),
     copy("COPY --chown=app:app", [dir], "."),
@@ -936,10 +938,9 @@ export function fastapiDockerfile(
   cron?: PinArch,
 ): string {
   return [
-    ...pythonBase("python-fastapi", port, facts, base),
+    ...pythonBase("python-fastapi", port, facts, base, cron),
     "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("uvicorn"),
-    ...supercronic(cron),
     "USER app",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
@@ -968,7 +969,7 @@ export function djangoDockerfile(
 ): string {
   const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
-    ...pythonBase("python-django", port, facts, base),
+    ...pythonBase("python-django", port, facts, base, cron),
     "# gunicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("gunicorn"),
     `ENV DJANGO_WSGI_MODULE=${module}.wsgi`,
@@ -976,7 +977,6 @@ export function djangoDockerfile(
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
     "# container runs.",
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
-    ...supercronic(cron),
     "USER app",
     `EXPOSE ${port}`,
     facts.build.releaseCommand === undefined
@@ -996,8 +996,7 @@ export function pythonGenericDockerfile(
 ): string {
   const start = pythonStart(facts) ?? "python main.py";
   return [
-    ...pythonBase("python-generic", port, facts, base),
-    ...supercronic(cron),
+    ...pythonBase("python-generic", port, facts, base, cron),
     "USER app",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(start)}]`,
