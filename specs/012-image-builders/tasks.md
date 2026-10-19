@@ -278,8 +278,87 @@ Effort`.
 
 - [X] T1211 Live runs (lead): the Hetzner pass with the three apps; the own-server and Portainer core passes, to check the new switch, pins and builds there; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
+## Phase 6: End-of-feature review fixes
+
+Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MCP, plugin, secops and docs; spec coverage) reviewed `e459f77..main` on 2026-10-19. The lead fixed the artefact drift in the spec, plan, data model, contract, quickstart and ADR. T1215–T1217 have disjoint Owns and run in parallel; T1218 follows.
+
+- [ ] T1215 [US1] Design keeps what the user chose, and the builder choice's gaps, in `packages/agents/src/**`, `packages/detect/src/**`, `packages/plan-schema/src/**`
+  - Reads: spec FR-1201, FR-1202, FR-1206, FR-1215, FR-1219, FR-1228; `design/{builder,plan,run,strategy}.ts`, `interview/questions.ts`, `shared/phase-status.ts`
+  - Depends: T1214
+  - Accept:
+    - **Only a production Dockerfile counts as the app's own.** `.devcontainer/**` and `Dockerfile.dev`, `.development`, `.test` and `.local` never become `docker.dockerfile` or `own-dockerfile`. Today an Express app whose only Dockerfile is `.devcontainer/Dockerfile` deploys the dev-container image. Fix it where it is smallest (detect or `chooseBuilder`), and make sure `app.dockerfile` never points at such a file.
+    - **A later `opscrew design` keeps the user's edits:**
+      - `app.dockerfile` when `app.build.chosen` is `user` and the builder is `own-dockerfile`;
+      - for each `app.env` variable that still exists, its `secret`, `source` and `optional` (so `secret: true` on a build value and `source: user` on a Rails or Laravel production setting survive);
+      - `deploy.strategy: rolling` that the user set on an own server. Drop `ownRolling` or record who chose the strategy, whichever is smaller.
+    - **Rerunning the interview keeps `supplyChain.sign` and `cicd.deployTags` set in `plan.yaml`.** The interview's defaults for `signImages` and `deployTags` come from `plan.yaml` when it exists.
+    - **The failure hint can name a builder for an own Dockerfile.** `app.build.automatic` is the builder OpsCrew would choose without the Dockerfile, not `own-dockerfile`.
+    - **An app in a subfolder** (not a JavaScript workspace member) built with Buildpacks or Railpack gets `app.buildContext` = its folder, so `pack build --path` and `railpack prepare` build the app, not the repository root.
+    - **The user's Buildpacks choice for PHP is refused with a reason.** The pinned Noble builder has no PHP; today design only warns.
+    - **A Procfile with process types other than `web` and `release`** gives a design warning: OpsCrew deploys the web process only, and workers come with the component model (013).
+    - **FR-1219 on the `plan.yaml` route:** the "Image signing: off" status line also carries the public-log warning (one fixed text).
+    - **`app.build.probe` is required** whenever `app.build` is present. Nothing is released, so there is no migration.
+    - **Simplify:**
+      - `OptionToPlanInput.build` is required;
+      - the branches for plans "from before the builder choice" go (`deriveCodeChanges`'s undefined builder, `PullRequestBuild.builder?` and its `?? "generated-dockerfile"`, the optional `retarget.from.deploy`/`from.build` and their restore branches);
+      - remove the root exports nobody outside the package imports (`chooseBuilder`, `BuildArch`, `BuilderChoice`, `signingPublicLog`), unless the CLI or MCP import them;
+      - inline `deploySentence(deploy, deploy)` in `retarget/start.ts`.
+    - Tests for each item: the dev-container case; the design reruns keeping each edit; the interview defaults; `automatic` for Next.js with a Dockerfile; the subfolder Go app's `buildContext`; the PHP refusal; the Procfile warning; the signing line.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/detect --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew`
+  - Effort: xhigh
+
+- [ ] T1216 [US1] Pinned build tools and the workflow's last gaps, in `packages/iac-templates/**`
+  - Reads: spec FR-1203, FR-1206, FR-1220, FR-1222, FR-1228; `src/docker/stacks.ts`, `src/pins.ts`, `src/pins-carry.ts`, `src/workflow/{build,switch}.ts`, `src/runtime/healthcheck.ts`
+  - Depends: T1214
+  - Accept:
+    - **Every build tool is pinned (FR-1203):**
+      - `poetry`, `uv`, `pipenv` and `uvicorn` are installed at versions held in `pins.ts`, following `GUNICORN_VERSION`'s pattern;
+      - when `package.json` has no `packageManager`, the Dockerfile runs `corepack prepare pnpm@<pin> --activate`, and the same for Yarn, instead of fetching the newest;
+      - `scripts/update-pins.mjs` refreshes these pins, if that is cheap (PyPI's and npm's JSON). Otherwise report it.
+    - **pack is checked against OpsCrew's own checksum.** It is installed like Railpack (download, `sha256sum -c` against `TOOLS.pack.sha256[arch]`), and `ACTIONS.setupPack` goes.
+    - **A carried-over pin never changes the major version of an image Dependabot keeps on its major** (`NO_MAJOR_UPDATES`: caddy, node, postgres, python; share the list). Example: a committed `postgres:17` stays when OpsCrew's pin moves to 18.
+    - **Yarn 2 and 3:** `yarn workspaces focus` is used only where it works (Yarn 4, or with the workspace-tools plugin). Otherwise a plain install, or a plain error that says what to do.
+    - **One probe table:** `runtime/healthcheck.ts` uses `app.build.probe` (required after T1215; write `plan.app.build?.probe ?? "none"`) and drops its own table, so a static site's Caddy image gets no `node` probe.
+    - **The failed-deploy hint** (`workflow/switch.ts`) names only `app.build.automatic` and says: set `app.build.builder` in `opscrew/plan.yaml`, then run `opscrew design`, `opscrew adapt` and `opscrew provision`. The wrong-port message names `app.port` in `opscrew/plan.yaml`.
+    - **Railpack gets the recorded runtime version** (FR-1228), if Railpack v0.42.0 has a version setting per language (check its docs or source, official sources only). If it has none, report it, and the lead narrows FR-1228.
+    - **Simplify:**
+      - delete `IMAGES.node` (move its comment to `nodeAlpine`);
+      - import `IMAGES`, `TOOLS` and `ACTIONS` directly instead of the aliases (`CHECKOUT_ACTION`, `DEFAULT_TRIVY_IMAGE`, `CLOUDFLARED_VERSION`, `CLOUDFLARED_SHA256`, `cloudflaredUrl`, `POSTGRES_IMAGE`, `VALKEY_IMAGE`, `CADDY_IMAGE`);
+      - the retention script interpolates `DIGEST_REF_PATTERN` and `MANIFEST_ACCEPT` instead of repeating them;
+      - unexport `registryOf`, `MANIFEST_ACCEPT` and `parseBearerChallenge`, unless used outside the file;
+      - drop the unused `ImageKey` and `ActionKey`, the `TODO(pins)` handling and the by-tag action branch in the pin script, and `BP_PHP_VERSION`.
+    - Rerun the Docker pass for the examples the Dockerfile changes touch: at least one each for pip/Poetry/uv/Pipenv if examples use them, one pnpm and one Yarn example. Same hygiene as T1213: remove only what the pass created, by id.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`, plus that Docker pass
+  - Effort: xhigh
+
+- [ ] T1217 [US4] Guide, plugin, secops and the test harnesses, in `docs/guide/**`, `README.md`, `plugin/**`, `packages/secops/**`, `packages/cli/test/**`
+  - Reads: the guide's `builders.md`, `zero-downtime.md`, `supply-chain.md`, `domains.md`; `plugin/skills/opscrew-adapt/SKILL.md`; `packages/secops/src/rules/config.ts`; `packages/cli/test/live/{support,builder-checks,harness,live.test}.ts`, `packages/cli/test/e2e/docker.test.ts`
+  - Depends: T1214
+  - Accept:
+    - **Guide:**
+      - a short section (in `builders.md`, or its own page) on the production values OpsCrew sets: Rails `RAILS_ENV=production` and a generated `SECRET_KEY_BASE`; Laravel `APP_ENV=production`, `APP_DEBUG=false`, `LOG_CHANNEL=stderr` and a generated `APP_KEY`. Say how to override them: a value in the non-interactive `OPSCREW_APP_ENV_FILE` wins, or set the variable's `source: user` in `plan.yaml`, which a later `design` keeps (T1215);
+      - `supply-chain.md`: `--certificate-identity` uses GitHub's own spelling of `<owner>/<repo>`, not lower case. Say that Dependabot cannot update the workflow's own pins (Paketo builder and run images, the Railpack frontend, the pack and Railpack versions, Trivy): those move with OpsCrew's releases;
+      - `builders.md`: a `go` line in `go.mod` is a minimum within its release line, as the code does it;
+      - `domains.md`: drop the duplicate "Settings only the registrar's dashboard can change" section;
+      - README step 5: adapt brings the Dockerfile or the runtime version file, as the builder needs.
+    - **Plugin:** the adapt skill no longer says "pinned major base image (`node:22-alpine`, `python:3.13-slim`)". It says what 012 does (digest pins, the app's declared version, else OpsCrew's default), and its health-route list adds Go, Java, .NET and Rust. `node plugin/validate.mjs` passes.
+    - **secops:**
+      - a secret-looking `ARG` (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*_KEY`), even without a value, is flagged with the BuildKit secret-mount fix;
+      - `isTagOnly` folds into `imageTagProblem` (a third result);
+      - the latest-tag remediation suggests the digest form.
+    - **Test harnesses:**
+      - `EXPECTED_BUILDERS` reads each example's `expected.json`;
+      - the builder checks' `knownSecrets` fails loudly when the plan has generated variables and `generated_values.json` is missing;
+      - one run-id helper for `harness.ts` and `live.test.ts`;
+      - the live builder checks also check that a merged change's deploy does not restart `db`, `cache`, `proxy` or `caddy` (each container's `StartedAt` before and after);
+      - the Docker pass searches each built image's history (`docker history --no-trunc`) and config (`docker image inspect`) for the example's known secret values. Run that pass for one example per builder, with T1213's hygiene.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops --filter=opscrew`, `node plugin/validate.mjs`, plus that Docker pass
+  - Effort: high
+
+- [ ] T1218 Live check after the fixes (lead): one Hetzner builder pass (`go-api` or `nextjs-postgres`) with the new restart check, and the Docker pass for a handful of examples; results in `docs/e2e.md` and `docs/e2e-coverage.md`
+
 ## Dependencies
 
 {T1201, T1202} → {T1212 → T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211.
 T1201 and T1202 run in parallel. T1205 needs T1202's R8; T1203 needs T1212; T1204 and T1206 need
-only T1201.
+only T1201. Then T1213 → T1214 → {T1215, T1216, T1217} → T1218.
