@@ -259,6 +259,22 @@ RustFS (young). Ceph RGW (needs a cluster). A Hetzner project per app for least-
   EUR 1.00 per TB; up to 100 buckets of up to 100 TB each. The 1 Apr 2026 change from the launch
   price of EUR 4.99 is in https://www.hetzner.com/pressroom/statement-price-adjustment/ . OpsCrew
   keeps these figures in a dated price table with this source, refreshed at release time.
+- **How the Hetzner price scales [F]** https://docs.hetzner.com/storage/object-storage/overview
+  (checked 2026-10-19):
+  - the base price is **per account**, charged hourly with a monthly cap, for every hour with at
+    least one bucket, even an empty one;
+  - the base includes a quota that builds up hourly and lapses at the month's end: 744 TB-hours of
+    storage (1 TB kept all month) and 1.116 TB of egress in a 31-day month, less in shorter months;
+  - beyond the quota, pay as you go on the whole account, in 100 MB steps: storage as net price ×
+    TB-hours (the EUR 6.26 per TB-month rate), egress at EUR 1.00 per TB;
+  - free: ingress, traffic within the network zone (e.g. `eu-central`), and S3 operations (their
+    egress is billed);
+  - objects under 64 kB are billed as 64 kB.
+  - **Monthly estimate** for steady use: `6.49 + 6.26 × max(0, storedTB − 1) + 1.00 × max(0,
+    egressTB − 1.116)` (EUR, excluding VAT; the egress quota is smaller in months under 31 days).
+  - When the user's account already pays the base for other buckets, the app's own cost is only what
+    it adds beyond the shared quota. OpsCrew cannot see that, so design shows the full base price
+    and says it is per account.
 - DigitalOcean Spaces [F] https://docs.digitalocean.com/products/spaces/details/pricing/ : USD 5
   per month, 250 GiB and 1,024 GiB outbound included, then USD 0.02/GiB and USD 0.01/GiB. Regions
   [F] https://docs.digitalocean.com/products/spaces/details/availability/ . Terraform
