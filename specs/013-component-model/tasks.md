@@ -382,6 +382,7 @@ Effort`.
     - Portainer runs no deploy steps, so MongoDB's replica-set initiation and Garage's layout, key and bucket happen through one-shot services in the stack (or Portainer refuses them with a plain message, whichever is smaller);
     - Garage is allowed;
     - a component with `hostSettings` is refused before any change, with the setting to make by hand;
+    - design treats route cron jobs the image can't call as it does on servers (T1307): it plans them turned off, with the line saying why, using the stack renderer's own check;
     - drift and destroy cover the components;
     - tests for each, including the refusal for OpenSearch.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
