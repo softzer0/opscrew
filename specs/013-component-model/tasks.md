@@ -367,6 +367,7 @@ Effort`.
       - an own server: a host-plan item in `/etc/sysctl.d`.
     - **Design** warns below each engine's smallest server, and keeps Cassandra external with a hosted option named.
     - **From T1304b:** design refuses a SQLite plan whose app folder is unknown (the user's own Dockerfile has no literal `WORKDIR`), with the same hint as the move case in `design/plan.ts`, instead of provision stopping later.
+    - **Also from T1304b's review:** when a plan with `storage.sqlite` changes `app.build.builder` (or an own Dockerfile changes its `USER`), design warns that the existing `sqlite` volume keeps the old owner (Docker sets it only when the volume is created), and gives the fix: on a server, `docker run --rm -v <app>_sqlite:/d <pinned small image> chown -R <uid>:<gid> /d`; on Portainer, the same through a one-off container.
     - **Snapshots and tests.**
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
@@ -407,7 +408,7 @@ Effort`.
     - **Guide pages**, written for users:
       - `components.md`;
       - `workers-and-cron.md`;
-      - `databases.md` (with SQLite: the volume, where the database lives in the image, and that a folder an own Dockerfile copies as root stays root-owned);
+      - `databases.md` (with SQLite: the volume, where the database lives in the image, that a folder an own Dockerfile copies as root stays root-owned, and that changing the builder later needs the volume's owner changed, with the command);
       - `object-storage.md` (options, the price formulas, each provider's key steps);
       - `brokers.md`;
       - `search-and-analytics.md`;
