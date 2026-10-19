@@ -80,7 +80,9 @@ Swarm).
 ## The edge on a server (T1308a, T1308b, T1308c)
 
 - **`/srv/edge`:** Compose project `opscrew-edge`, with Caddy and kamal-proxy, and the external
-  network `opscrew-edge`. Its Compose file carries a version stamp (OpsCrew's pin-set date).
+  network `opscrew-edge`. Its Compose file carries a version stamp (`x-opscrew-edge-version`, a
+  date plus a change number, compared as integers); Dependabot leaves the edge folder alone, since
+  its pins move only with OpsCrew's releases and the stamp. Both containers have memory limits.
 - **Each app:** `/srv/apps/<app>/compose.yaml` (project `<app>`). Its web service joins
   `opscrew-edge`.
 - **Caddy:** imports `/srv/edge/sites/*.caddy`. `<app>.caddy` routes the app's hostnames to
@@ -90,8 +92,11 @@ Swarm).
   survive a recreate. The target is the new web container's Compose name
   (`<app>-web-<n>`), unique across apps because each app is its own project.
 - **cloudflared:** each app keeps its own tunnel, owned by its own Cloudflare root as today. Its
-  cloudflared runs in the app's project, joins `opscrew-edge`, and sends the app's hostnames to
-  `http://caddy:80`.
+  connector is a host-network Compose project of its own, `<app>-tunnel`, set up by the host plan
+  (as today's `opscrew-tunnel`, one per app, each with its own token and metrics port). It sends the
+  app's hostnames to the edge's Caddy on `127.0.0.1:18080`, and its SSH and Portainer routes stay as
+  today. Not in the app's own project: the deploy reaches a tunnelled server through this tunnel, so
+  it must exist before the first deploy, and a deploy must never recreate it (T1308b's finding).
 - **Who writes it:**
   - each deploy uploads `opscrew/runtime/edge/` and its site file;
   - the edge's Compose file is replaced only when the uploaded stamp is newer than the server's;

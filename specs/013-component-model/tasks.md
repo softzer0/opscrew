@@ -276,6 +276,17 @@ Effort`.
     - every file in `packages/agents/src` and `packages/secops/src` that names `/srv/app`, for those lines only.
   - Reads: T1308a's connector API; T1308b's templates; spec FR-1322–FR-1325; 009's own-server flows
   - Depends: T1308a, T1308b, T1307
+  - Start: cherry-pick T1308b's commit (`2843637`, not yet on main because it breaks 6 agents tests that this task fixes) onto your branch first; both merge together.
+  - Also owns (from T1308b's report): `packages/connectors/ssh-host/src/**` for the tunnel connector per app and the temporary `/srv/app` compat; `packages/iac-templates/src/{edge,workflow,dependabot,tunnel}/**` for the small items below.
+  - Accept (from T1308b):
+    - **One host-network tunnel connector per app** (`<app>-tunnel`, its own token and metrics port), set up and removed by the host plan; the `tunnel-connector-in-use` refusal goes; the routes (`127.0.0.1:18080`, SSH, Portainer) stay as today;
+    - **the temporary compat goes:** `LEGACY_APP_DIR` leaves `SHARED_DIRS` and the `runtime-dirs` undo; the `// T1308c:` second-app refusal in agents goes; drift's runtime-file check is back on, with the site file in place of the Caddyfile;
+    - the 6 agents tests that read `opscrew/runtime/Caddyfile` read the site file;
+    - every `/srv/app` path in agents and secops becomes `/srv/apps/<app>` (retarget's `server-ops`, `abort`, `switch`, `window`; `secure/probes.ts`; `testing/move.ts`; `verify/checks.ts`'s hint); retarget's `docker compose stop/up caddy` and its `wget` probe through `caddy` address the edge;
+    - the edge's Caddy and kamal-proxy get memory limits (64 MB and 32 MB, the 128 MB edge figure in data-model includes cloudflared's 32 MB per tunnelled app);
+    - Dependabot's `docker-compose` entry leaves out `/opscrew/runtime/edge`;
+    - each app's deploy uses its own `DOCKER_CONFIG` (under `/srv/apps/<app>`), so one app's registry logout never breaks another's pull;
+    - a second app on a server without a domain is refused before any change (only one app can take `:80`).
   - Accept:
     - **provision** writes the app's host items through the host plan and deploys only its app.
     - **destroy** removes the app, and the edge with the last one.
