@@ -35,9 +35,10 @@ const RUNTIME_ECOSYSTEM: Partial<Record<RuntimeLanguage, string>> = {
 
 /**
  * Images whose major versions are the user's to change (FR-1228 rule 6): the runtime base images
- * of OpsCrew's Dockerfiles, and Postgres, whose data folder a new major cannot read.
+ * of OpsCrew's Dockerfiles, and Postgres, whose data folder a new major cannot read. Dependabot
+ * proposes no major update for them, and a carried-over pin keeps their committed major.
  */
-const NO_MAJOR_UPDATES = ["caddy", "node", "postgres", "python"];
+export const NO_MAJOR_UPDATES: readonly string[] = ["caddy", "node", "postgres", "python"];
 
 /**
  * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper). A

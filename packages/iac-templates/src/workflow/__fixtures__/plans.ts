@@ -4,9 +4,12 @@ import {
   type ImageBuilder,
   type RuntimeLanguage,
 } from "@opscrew/plan-schema";
-import { testPlan } from "../../__fixtures__/plans";
+import { designProbe, testPlan } from "../../__fixtures__/plans";
 
-/** `plan` with `app.build` set to `builder` for `language` (default Go 1.26, chosen by design). */
+/**
+ * `plan` with `app.build` set to `builder` for `language` (default Go 1.26, chosen by design, with
+ * the probe design records).
+ */
 export function withBuild(
   plan: DeployPlan,
   builder: ImageBuilder,
@@ -27,6 +30,7 @@ export function withBuild(
         chosen: o.chosen ?? "auto",
         reason: "The test chose it.",
         runtime: { language, ...(language === "other" ? {} : { version: o.version ?? "1.26" }) },
+        probe: designProbe(builder, language),
         ...(o.automatic === undefined ? {} : { automatic: o.automatic }),
       },
     },

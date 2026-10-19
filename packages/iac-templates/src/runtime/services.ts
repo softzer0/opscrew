@@ -1,10 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
 import { IMAGES } from "../pins";
-import { CLOUDFLARED_IMAGE, CLOUDFLARED_METRICS } from "../tunnel";
-
-export const POSTGRES_IMAGE = IMAGES.postgres.ref;
-export const VALKEY_IMAGE = IMAGES.valkey.ref;
-export const CADDY_IMAGE = IMAGES.caddy.ref;
+import { CLOUDFLARED_METRICS } from "../tunnel";
 
 /** The header line of a Compose file with a `release` service. */
 export const RELEASE_NOTE =
@@ -50,7 +46,7 @@ export function hardened(o: { noCapabilities?: boolean; internal?: boolean } = {
 /** The Postgres service: `credentials` (`env_file` or `environment`) and its data in `data`. */
 export function dbService(credentials: object, data: string): object {
   return {
-    image: POSTGRES_IMAGE,
+    image: IMAGES.postgres.ref,
     restart: "unless-stopped",
     ...credentials,
     volumes: [`${data}:/var/lib/postgresql/data`],
@@ -67,7 +63,7 @@ export function dbService(credentials: object, data: string): object {
 /** The Valkey service (the app's Redis), its data in `data`. */
 export function cacheService(data: string): object {
   return {
-    image: VALKEY_IMAGE,
+    image: IMAGES.valkey.ref,
     restart: "unless-stopped",
     command: ["valkey-server", "--appendonly", "yes"],
     volumes: [`${data}:/data`],
@@ -98,7 +94,7 @@ export function proxyService(): object {
  */
 export function cloudflaredService(fields: object, internal = false): object {
   return {
-    image: CLOUDFLARED_IMAGE,
+    image: IMAGES.cloudflared.ref,
     restart: "unless-stopped",
     command: ["tunnel", "--no-autoupdate", "--metrics", CLOUDFLARED_METRICS, "run"],
     ...fields,

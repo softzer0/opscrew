@@ -177,7 +177,7 @@ jobs:
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on the port in its PORT variable and answers /api/health. It was built from Dockerfile; run opscrew design to let OpsCrew choose a builder.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -332,10 +332,8 @@ jobs:
               console.log("::error::" + message);
               process.exitCode = 1;
             };
-            const digestOf = (ref) => {
-              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
-              return match ? match[1] : undefined;
-            };
+            const digestRef = new RegExp("^ghcr\\\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$");
+            const digestOf = (ref) => (digestRef.test(ref) ? ref.split("@")[1] : undefined);
             const running = digestOf(process.env.IMAGE || "");
             const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
             if (running === undefined || previous === undefined) {
@@ -388,12 +386,7 @@ jobs:
                   await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
                     headers: {
                       Authorization: "Bearer " + login.token,
-                      Accept: [
-                        "application/vnd.oci.image.index.v1+json",
-                        "application/vnd.docker.distribution.manifest.list.v2+json",
-                        "application/vnd.oci.image.manifest.v1+json",
-                        "application/vnd.docker.distribution.manifest.v2+json",
-                      ].join(", "),
+                      Accept: "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
                     },
                   }),
                   "GitHub Container Registry",

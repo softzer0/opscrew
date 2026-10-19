@@ -1,10 +1,11 @@
 /**
  * Every version OpsCrew pins: images by the digest of their multi-arch index, tools by version and
- * SHA-256, GitHub Actions by commit, the runtime defaults and what the pinned Buildpacks builder
+ * SHA-256, GitHub Actions by commit, the Python packages and package managers the generated
+ * Dockerfiles install by version, the runtime defaults and what the pinned Buildpacks builder
  * offers. `scripts/update-pins.mjs` refreshes the digests, checksums and commits (change a tag or
- * version here first), and with `--offers` the Buildpacks offers:
- * `pnpm --filter @opscrew/iac-templates exec tsx scripts/update-pins.mjs [--offers]`. A value
- * marked `TODO(pins)` is not pinned yet; the script fills it.
+ * version here first) and moves the packages to their newest releases; with `--offers` it
+ * refreshes the Buildpacks offers instead:
+ * `pnpm --filter @opscrew/iac-templates exec tsx scripts/update-pins.mjs [--offers]`.
  */
 import type { RuntimeLanguage } from "@opscrew/plan-schema";
 
@@ -29,9 +30,6 @@ export interface ToolPin {
 // cloudflared 2026-10-14, curl 2026-10-15), each read from the registry API.
 export const IMAGES = {
   /** Base of the generated Node Dockerfiles. */
-  node: {
-    ref: "node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5",
-  },
   nodeAlpine: {
     ref: "node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f",
   },
@@ -82,7 +80,6 @@ export const IMAGES = {
     ref: "ghcr.io/railwayapp/railpack-frontend:v0.42.0@sha256:a42a12399fa9e83a09e475f69dbf8a45a8a74ea38a4485fcb401356d84317a14",
   },
 } as const satisfies Record<string, ImagePin>;
-export type ImageKey = keyof typeof IMAGES;
 
 export const TOOLS = {
   /** The Cloud Native Buildpacks CLI. */
@@ -163,20 +160,37 @@ export function toolDownloadUrl(tool: ReleasedTool, arch: PinArch): string {
   return `https://github.com/${release.repo}/releases/download/${release.tag(version)}/${release.asset[arch](version)}`;
 }
 
-/**
- * GitHub Actions the workflows use, as `owner/name@<commit> # <tag>`. An action still pinned by
- * tag only (`owner/name@<tag>`) is filled by the script; `@TODO` needs its tag set first.
- */
+/** GitHub Actions the workflows use, as `owner/name@<commit> # <tag>`. */
 export const ACTIONS = {
   checkout: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
   setupBuildx: "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1",
   buildPush: "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0",
   cosignInstaller: "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2",
-  setupPack:
-    "buildpacks/github-actions/setup-pack@a96fc9720ee9ccf19d4c87c3de9c344a2c404c29 # v6.2.0",
   login: "docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0",
 } as const satisfies Record<string, string>;
-export type ActionKey = keyof typeof ACTIONS;
+
+/**
+ * Python packages the generated Dockerfiles install with pip, by version on PyPI: the installers
+ * Poetry, uv and Pipenv, and the servers gunicorn (Django) and uvicorn (FastAPI), which are added
+ * only when the app's dependencies do not install them.
+ */
+export const PYPI_PACKAGES = {
+  gunicorn: "26.2.0",
+  pipenv: "2026.10.1",
+  poetry: "2.5.1",
+  uv: "0.13.1",
+  uvicorn: "0.54.0",
+} as const satisfies Record<string, string>;
+
+/**
+ * The pnpm and Yarn releases on npm that corepack activates when package.json names no
+ * `packageManager` (it would fetch the newest otherwise). Yarn's is the last Yarn 1 release, the
+ * one whose lockfiles such projects have.
+ */
+export const PACKAGE_MANAGERS = {
+  pnpm: "12.14.0",
+  yarn: "1.22.22",
+} as const satisfies Record<string, string>;
 
 // FR-1228 rule 4: when the app declares no version, each language defaults to an LTS release that
 // has been out for at least 6 months, otherwise to the second-newest minor release. For a

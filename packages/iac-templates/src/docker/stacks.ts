@@ -1,5 +1,5 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
-import { IMAGES } from "../pins";
+import { IMAGES, PACKAGE_MANAGERS, PYPI_PACKAGES } from "../pins";
 import { type BaseImage, tagOnlyNote } from "./images";
 import {
   NODE_TOOL_BINS,
@@ -66,13 +66,21 @@ const header = (stack: DockerStack, base: BaseImage) =>
     ...tagOnlyNote(base),
   ].join("\n");
 
+/**
+ * Activates OpsCrew's pinned pnpm or Yarn when package.json names no `packageManager`, where
+ * corepack would fetch the newest; with one, corepack uses the project's.
+ */
+function pinnedPackageManager(pm: "pnpm" | "yarn"): string {
+  return `grep -q '"packageManager"' package.json || corepack prepare ${pm}@${PACKAGE_MANAGERS[pm]} --activate`;
+}
+
 /** Shell snippet installing JS dependencies with the detected package manager. */
 function jsInstall(facts: ProjectFacts): string {
   switch (facts.packageManager) {
     case "pnpm":
-      return "corepack enable && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi";
+      return `corepack enable && { ${pinnedPackageManager("pnpm")}; } && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi`;
     case "yarn":
-      return "corepack enable && if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install; fi";
+      return `corepack enable && { ${pinnedPackageManager("yarn")}; } && if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install; fi`;
     default:
       return "if [ -f package-lock.json ]; then npm ci; else npm install; fi";
   }
@@ -105,12 +113,22 @@ function jsProdInstall(facts: ProjectFacts, moved: boolean): string {
           : "if [ -f pnpm-lock.yaml ]; then pnpm install --prod --frozen-lockfile; else pnpm install --prod; fi"
       }`;
     case "yarn":
-      // `yarn workspaces focus` is built into Yarn 4; Yarn 2 and 3 need the workspace-tools plugin.
-      return 'if [ "$(yarn --version | cut -d. -f1)" = 1 ]; then if [ -f yarn.lock ]; then yarn install --production --frozen-lockfile; else yarn install --production; fi; else yarn workspaces focus --all --production; fi';
+      // `yarn workspaces focus` is built into Yarn 4; Yarn 2 and 3 have it only with the
+      // workspace-tools plugin, and stop with what to do otherwise.
+      return [
+        'if [ "$(yarn --version | cut -d. -f1)" = 1 ]; then',
+        "if [ -f yarn.lock ]; then yarn install --production --frozen-lockfile; else yarn install --production; fi;",
+        "elif yarn workspaces focus --help > /dev/null 2>&1; then yarn workspaces focus --all --production;",
+        `else echo '${YARN_FOCUS_MISSING}' >&2; exit 1; fi`,
+      ].join(" ");
     default:
       return "npm prune --omit=dev";
   }
 }
+
+/** Why a Yarn 2 or 3 build stops without the workspace-tools plugin (no single quotes: sh). */
+const YARN_FOCUS_MISSING =
+  'OpsCrew leaves the development dependencies out of the image with yarn workspaces focus, which Yarn 2 and 3 have only with the workspace-tools plugin: run "yarn plugin import workspace-tools" and commit .yarnrc.yml and .yarn/plugins, or move to Yarn 4 ("yarn set version stable").';
 
 /**
  * What the image must keep for a release command: the packages of the migration tool it runs, or
@@ -163,9 +181,7 @@ const TYPESCRIPT_NOTE = `# ${TYPESCRIPT_RUNNERS.join(", ")} stay too when instal
  */
 function jsProdDependencies(facts: ProjectFacts, dir: string, releaseCommand?: string): string[] {
   const needs = releaseNeeds(releaseCommand);
-  const inDir = (command: string) =>
-    dir === "." || facts.monorepo ? command : `cd ${shellQuote(dir)} && ${command}`;
-  const prune = inDir(jsProdInstall(facts, needs !== undefined));
+  const prune = atInstallRoot(facts, dir, jsProdInstall(facts, needs !== undefined));
   if (needs === undefined) {
     return [
       "# Only production dependencies go into the image: development ones (TypeScript, test tools)",
@@ -244,10 +260,6 @@ function buildValues(facts: ProjectFacts): { lines: string[]; mounts: string } {
   };
 }
 
-function needsCorepack(facts: ProjectFacts): boolean {
-  return facts.packageManager === "pnpm" || facts.packageManager === "yarn";
-}
-
 /** Normalised repo-relative directory (`.` for the repository root). */
 function normaliseDir(path: string): string {
   const dir = path
@@ -314,13 +326,11 @@ function jsScript(facts: ProjectFacts, dir: string, script: string): string {
 }
 
 /**
- * Dependency install for the app: at the root for the root app and for workspace members (the
- * root lockfile covers the whole workspace), inside the folder otherwise.
+ * `command` where the app's dependencies are installed: at the root for the root app and for
+ * workspace members (the root lockfile covers the whole workspace), inside the folder otherwise.
  */
-function jsInstallFor(facts: ProjectFacts, dir: string): string {
-  return dir === "." || facts.monorepo
-    ? jsInstall(facts)
-    : `cd ${shellQuote(dir)} && ${jsInstall(facts)}`;
+function atInstallRoot(facts: ProjectFacts, dir: string, command: string): string {
+  return dir === "." || facts.monorepo ? command : `cd ${shellQuote(dir)} && ${command}`;
 }
 
 /** The start of a JS image's build stage: the whole repository in `/app`, dependencies installed. */
@@ -329,7 +339,7 @@ function jsBuildStage(facts: ProjectFacts, dir: string, base: BaseImage): string
     `FROM ${base.ref} AS build`,
     "WORKDIR /app",
     "COPY . .",
-    `RUN ${jsInstallFor(facts, dir)}`,
+    `RUN ${atInstallRoot(facts, dir, jsInstall(facts))}`,
   ];
 }
 
@@ -481,14 +491,17 @@ export function nodeServerDockerfile(
     // HOST: servers such as @astrojs/node standalone listen on localhost unless told otherwise.
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
   );
-  if (needsCorepack(facts)) lines.push("RUN corepack enable");
-  lines.push(
-    "COPY --from=build --chown=node:node /app ./",
-    "USER node",
-    `EXPOSE ${port}`,
-    `CMD ["sh", "-c", ${JSON.stringify(start)}]`,
-    "",
-  );
+  const pm = facts.packageManager;
+  const corepack = pm === "pnpm" || pm === "yarn";
+  if (corepack) lines.push("RUN corepack enable");
+  lines.push("COPY --from=build --chown=node:node /app ./", "USER node");
+  if (corepack) {
+    lines.push(
+      `# corepack keeps OpsCrew's pinned ${pm === "pnpm" ? "pnpm" : "Yarn"} for the app's user when package.json names no packageManager.`,
+      `RUN ${atInstallRoot(facts, dir, pinnedPackageManager(pm))}`,
+    );
+  }
+  lines.push(`EXPOSE ${port}`, `CMD ["sh", "-c", ${JSON.stringify(start)}]`, "");
   return lines.join("\n");
 }
 
@@ -564,6 +577,16 @@ function pythonBase(
   ];
 }
 
+/** `pip install <name>==<version>`, at the version pins.ts holds. */
+function pipInstall(name: keyof typeof PYPI_PACKAGES): string {
+  return `pip install ${name}==${PYPI_PACKAGES[name]}`;
+}
+
+/** Installs the server `name` (pinned) only when the app's dependencies lack it (theirs stays). */
+function pythonServer(name: "gunicorn" | "uvicorn"): string {
+  return `RUN python -c "import ${name}" 2>/dev/null || ${pipInstall(name)}`;
+}
+
 function pythonInstall(facts: ProjectFacts, dir: string): string[] {
   const inApp = (...files: string[]) =>
     files.map((file) => (dir === "." ? file : `${dir}/${file}`));
@@ -571,17 +594,17 @@ function pythonInstall(facts: ProjectFacts, dir: string): string[] {
     case "poetry":
       return [
         copy("COPY", inApp("pyproject.toml", "poetry.lock*"), "./"),
-        "RUN pip install poetry && poetry config virtualenvs.create false && poetry install --only main --no-root",
+        `RUN ${pipInstall("poetry")} && poetry config virtualenvs.create false && poetry install --only main --no-root`,
       ];
     case "uv":
       return [
         copy("COPY", inApp("pyproject.toml", "uv.lock*"), "./"),
-        "RUN pip install uv && uv pip install --system -r pyproject.toml",
+        `RUN ${pipInstall("uv")} && uv pip install --system -r pyproject.toml`,
       ];
     case "pipenv":
       return [
         copy("COPY", inApp("Pipfile", "Pipfile.lock*"), "./"),
-        "RUN pip install pipenv && pipenv install --system --deploy",
+        `RUN ${pipInstall("pipenv")} && pipenv install --system --deploy`,
       ];
     default:
       return [
@@ -774,7 +797,8 @@ function uvicornTarget(facts: ProjectFacts): string {
 export function fastapiDockerfile(facts: ProjectFacts, port: number, base: BaseImage): string {
   return [
     ...pythonBase("python-fastapi", port, facts, base),
-    "RUN pip install uvicorn",
+    "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
+    pythonServer("uvicorn"),
     "USER app",
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
@@ -795,15 +819,12 @@ const DJANGO_COLLECTSTATIC =
   'if [ -n "$static_root" ]; then python manage.py collectstatic --noinput; ' +
   'else echo "collectstatic skipped: STATIC_ROOT is not set"; fi';
 
-/** gunicorn release installed for Django apps whose dependencies do not already include it. */
-const GUNICORN_VERSION = "26.2.0";
-
 export function djangoDockerfile(facts: ProjectFacts, port: number, base: BaseImage): string {
   const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
     ...pythonBase("python-django", port, facts, base),
     "# gunicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
-    `RUN python -c "import gunicorn" 2>/dev/null || pip install gunicorn==${GUNICORN_VERSION}`,
+    pythonServer("gunicorn"),
     `ENV DJANGO_WSGI_MODULE=${module}.wsgi`,
     "# Collects static files at build time when the settings set STATIC_ROOT (skipped otherwise).",
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",

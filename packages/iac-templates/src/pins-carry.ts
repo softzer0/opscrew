@@ -2,6 +2,7 @@
  * Carrying pins over from the committed copy of a file OpsCrew renders again, so a pin the user or
  * Dependabot updated is not reverted (FR-1222).
  */
+import { NO_MAJOR_UPDATES } from "./dependabot";
 
 /** `repo:tag@sha256:<hex>`, on any registry. */
 const IMAGE_PIN =
@@ -53,24 +54,32 @@ function pinsOf(text: string, pattern: RegExp, tagGroup: number): Map<string, Pi
   return pins;
 }
 
-/** The committed pin when its tag is higher, or the same tag (keeping its digest or commit). */
-function newer(committed: Pin | undefined, rendered: Pin): string {
+/**
+ * The committed pin when its tag is higher, or the same tag (keeping its digest or commit), or,
+ * with `keepMajor`, another major version.
+ */
+function newer(committed: Pin | undefined, rendered: Pin, keepMajor = false): string {
   if (committed === undefined) return rendered.text;
   if (committed.tag === rendered.tag) return committed.text;
+  if (keepMajor && version(committed.tag)?.numbers[0] !== version(rendered.tag)?.numbers[0]) {
+    return committed.text;
+  }
   return (compareTags(committed.tag, rendered.tag) ?? 0) > 0 ? committed.text : rendered.text;
 }
 
 /**
  * `rendered` with each image (`repo:tag@sha256:…`) and action (`owner/name@<commit> # <tag>`) pin
  * replaced by the committed one when that has a higher tag of the same variant, or the same tag
- * (its digest or commit wins). An older or incomparable committed pin gives way to the rendered one.
+ * (its digest or commit wins). An older or incomparable committed pin gives way to the rendered
+ * one, except for the images Dependabot keeps on their major ({@link NO_MAJOR_UPDATES}): their
+ * committed major version stays, so a new OpsCrew pin never moves Postgres from 17 to 18.
  */
 export function keepNewerPins(committed: string, rendered: string): string {
   const images = pinsOf(committed, IMAGE_PIN, 2);
   const actions = pinsOf(committed, ACTION_PIN, 3);
   return rendered
     .replace(IMAGE_PIN, (text, repo: string, tag: string) =>
-      newer(images.get(keyOf(repo, tag)), { tag, text }),
+      newer(images.get(keyOf(repo, tag)), { tag, text }, NO_MAJOR_UPDATES.includes(repo)),
     )
     .replace(ACTION_PIN, (text, action: string, _commit: string, tag: string) =>
       newer(actions.get(keyOf(action, tag)), { tag, text }),

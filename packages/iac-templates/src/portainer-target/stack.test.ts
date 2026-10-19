@@ -10,7 +10,6 @@ import { testContext, testPlan } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { renderCaddyfile } from "../runtime";
 import { serviceLogging } from "../runtime/services";
-import { CLOUDFLARED_IMAGE } from "../tunnel";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   CURL_IMAGE,
@@ -253,7 +252,7 @@ describe("renderPortainerStack", () => {
 
   it("tunnel: a cloudflared service and Caddy on plain HTTP with the Cf-Visitor redirect, no host port", () => {
     const cloudflared = fullStack.services.cloudflared;
-    expect(cloudflared?.image).toBe(CLOUDFLARED_IMAGE);
+    expect(cloudflared?.image).toBe(IMAGES.cloudflared.ref);
     expect(cloudflared?.command).toEqual([
       "tunnel",
       "--no-autoupdate",
@@ -470,7 +469,7 @@ describe("renderPortainerConnectorStack", () => {
     expect(portainerConnectorStackName(full)).toBe("opscrew-shop-portainer-tunnel");
     expect(doc.name).toBe("opscrew-shop-portainer-tunnel");
     const cloudflared = doc.services.cloudflared;
-    expect(cloudflared?.image).toBe(CLOUDFLARED_IMAGE);
+    expect(cloudflared?.image).toBe(IMAGES.cloudflared.ref);
     expect(cloudflared?.environment).toEqual({ TUNNEL_TOKEN: "${TUNNEL_TOKEN}" });
     expect(cloudflared?.extra_hosts).toEqual(["host.docker.internal:host-gateway"]);
     expect(cloudflared?.ports).toBeUndefined();

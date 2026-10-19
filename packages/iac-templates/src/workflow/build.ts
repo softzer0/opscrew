@@ -1,10 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan, RuntimeLanguage } from "@opscrew/plan-schema";
-import { ACTIONS, IMAGES, TOOLS, toolDownloadUrl } from "../pins";
+import { SECRET_FILE_PATTERNS } from "../docker";
+import { ACTIONS, IMAGES, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import {
   buildArch,
   buildRunner,
-  DEFAULT_TRIVY_IMAGE,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
   GHCR_LOGIN,
@@ -25,8 +25,36 @@ const BUILDPACKS_VERSION_SETTING: Partial<Record<RuntimeLanguage, string>> = {
   java: "BP_JVM_VERSION",
   dotnet: "BP_DOTNET_FRAMEWORK_VERSION",
   ruby: "BP_MRI_VERSION",
-  php: "BP_PHP_VERSION",
 };
+
+/**
+ * Railpack's setting for the runtime version, per language (Railpack v0.42.0's providers read
+ * `RAILPACK_<NAME>_VERSION`), so it builds with the version recorded in `app.build.runtime`. For
+ * Node, Go, .NET and Rust, Railpack lets a version file mise reads (`.nvmrc`, go.mod's `go` line,
+ * …) override it. PHP has none: Railpack reads `require.php` in composer.json, where design found
+ * the version too.
+ */
+const RAILPACK_VERSION_SETTING: Partial<Record<RuntimeLanguage, string>> = {
+  node: "RAILPACK_NODE_VERSION",
+  python: "RAILPACK_PYTHON_VERSION",
+  go: "RAILPACK_GO_VERSION",
+  java: "RAILPACK_JDK_VERSION",
+  dotnet: "RAILPACK_DOTNET_VERSION",
+  ruby: "RAILPACK_RUBY_VERSION",
+  rust: "RAILPACK_RUST_VERSION",
+};
+
+/** `NAME=<version>` of the plan's runtime for a builder's version settings, if it has one. */
+function versionSetting(
+  plan: DeployPlan,
+  settings: Partial<Record<RuntimeLanguage, string>>,
+): string | undefined {
+  const runtime = plan.app.build?.runtime;
+  const name = runtime && settings[runtime.language];
+  return name === undefined || runtime?.version === undefined
+    ? undefined
+    : `${name}=${runtime.version}`;
+}
 
 /**
  * The folders under `/app` a framework writes to, which the Railpack seal gives to the app's user
@@ -158,19 +186,59 @@ function envPairs(array: string, input: string, pair = '"$line"'): string[] {
 }
 
 /**
- * Buildpacks: pack builds `build-<commit>` with the version setting and the non-secret build values
- * (`--env`), pushes it with its cache image, and reports its digest in `report.toml`; then the seal.
- * pack has no secret mounts, so it never reads the secret build values.
+ * Installs the pinned release archive of `tool` (pack or Railpack) for `arch` after checking it
+ * against the SHA-256 in pins.ts, never against a checksum from the same release.
+ */
+function installTool(tool: "pack" | "railpack", arch: PinArch, name: string): string[] {
+  const archive = `"$RUNNER_TEMP/${tool}.tar.gz"`;
+  return [
+    `- name: Install ${name} ${TOOLS[tool].version}`,
+    ...run([
+      "set -euo pipefail",
+      `curl -fsSL --retry 3 -o ${archive} ${toolDownloadUrl(tool, arch)}`,
+      `echo "${TOOLS[tool].sha256[arch]}  $RUNNER_TEMP/${tool}.tar.gz" | sha256sum -c -`,
+      `mkdir -p "$RUNNER_TEMP/${tool}"`,
+      `tar -xzf ${archive} -C "$RUNNER_TEMP/${tool}"`,
+      `sudo install -m 0755 "$(find "$RUNNER_TEMP/${tool}" -type f -name ${tool} | head -n 1)" /usr/local/bin/${tool}`,
+    ]),
+  ];
+}
+
+/**
+ * Removes the secret files `.dockerignore` lists ({@link SECRET_FILE_PATTERNS}) from the checkout
+ * of the build `context`, outside `node_modules` and `.git`, printing each path (never its
+ * content): pack does not read `.dockerignore`, so they would end up in the image.
+ */
+function removeSecretFiles(context: string): string[] {
+  const name = (pattern: string) => pattern.replace(/^!/, "").replace(/^\*\*\//, "");
+  const unique = (patterns: string[]) => [...new Set(patterns.map(name))];
+  const secret = unique(SECRET_FILE_PATTERNS.filter((pattern) => !pattern.startsWith("!")));
+  const kept = unique(SECRET_FILE_PATTERNS.filter((pattern) => pattern.startsWith("!")));
+  const names = secret.map((pattern) => `-name '${pattern}'`).join(" -o ");
+  const keep = kept.map((pattern) => `! -name '${pattern}'`).join(" ");
+  return [
+    "- name: Keep secret files out of the Buildpacks build",
+    ...run([
+      "set -euo pipefail",
+      "while IFS= read -r -d '' file; do",
+      '  rm -f -- "$file"',
+      '  echo "removed ${file#./} from the build: Buildpacks does not read .dockerignore"',
+      `done < <(find ${context} \\( -name node_modules -o -name .git \\) -prune -o -type f \\( ${names} \\) ${keep} -print0)`,
+    ]),
+  ];
+}
+
+/**
+ * Buildpacks: the secret files leave the checkout, then pack builds `build-<commit>` with the
+ * version setting and the non-secret build values (`--env`), pushes it with its cache image, and
+ * reports its digest in `report.toml`; then the seal. pack has no secret mounts, so it never reads
+ * the secret build values.
  */
 function buildpacksSteps(plan: DeployPlan): string[] {
-  const runtime = plan.app.build?.runtime;
-  const setting =
-    runtime?.version === undefined ? undefined : BUILDPACKS_VERSION_SETTING[runtime.language];
+  const setting = versionSetting(plan, BUILDPACKS_VERSION_SETTING);
   return [
-    "- name: Set up pack",
-    uses("setupPack"),
-    "  with:",
-    `    pack-version: ${TOOLS.pack.version}`,
+    ...installTool("pack", buildArch(plan), "pack"),
+    ...removeSecretFiles(JSON.stringify(plan.app.buildContext || ".")),
     "- id: pack",
     "  name: Build the image with Buildpacks",
     "  env:",
@@ -178,7 +246,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
     `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
     ...run([
       "set -euo pipefail",
-      setting === undefined ? "settings=()" : `settings=(--env ${setting}=${runtime?.version})`,
+      setting === undefined ? "settings=()" : `settings=(--env ${setting})`,
       ...envPairs("settings", '"${BUILD_ENV:-}"'),
       // pack writes a file instead when the folder is missing.
       'report="$RUNNER_TEMP/pack-report"',
@@ -199,26 +267,18 @@ function buildpacksSteps(plan: DeployPlan): string[] {
 }
 
 /**
- * Railpack: installs the pinned CLI (checksum from pins.ts), plans the build with the non-secret
- * build values and the names of the secret ones, and builds `build-<commit>` with its frontend, all
- * values as BuildKit secrets; then the seal, which makes the image run as uid 10001.
+ * Railpack: installs the pinned CLI (checksum from pins.ts), plans the build with the runtime
+ * version, the non-secret build values and the names of the secret ones, and builds
+ * `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal, which makes
+ * the image run as uid 10001.
  */
 function railpackSteps(plan: DeployPlan): string[] {
-  const arch = buildArch(plan);
-  const { version } = TOOLS.railpack;
   const context = JSON.stringify(plan.app.buildContext || ".");
   const language = plan.app.build?.runtime.language ?? "other";
   const writable = (RAILPACK_WRITABLE[language] ?? []).map((dir) => `/app/${dir}`);
+  const setting = versionSetting(plan, RAILPACK_VERSION_SETTING);
   return [
-    `- name: Install Railpack ${version}`,
-    ...run([
-      "set -euo pipefail",
-      `curl -fsSL --retry 3 -o "$RUNNER_TEMP/railpack.tar.gz" ${toolDownloadUrl("railpack", arch)}`,
-      `echo "${TOOLS.railpack.sha256[arch]}  $RUNNER_TEMP/railpack.tar.gz" | sha256sum -c -`,
-      'mkdir -p "$RUNNER_TEMP/railpack"',
-      'tar -xzf "$RUNNER_TEMP/railpack.tar.gz" -C "$RUNNER_TEMP/railpack"',
-      'sudo install -m 0755 "$(find "$RUNNER_TEMP/railpack" -type f -name railpack | head -n 1)" /usr/local/bin/railpack',
-    ]),
+    ...installTool("railpack", buildArch(plan), "Railpack"),
     "- id: prepare",
     "  name: Plan the Railpack build",
     "  env:",
@@ -228,7 +288,7 @@ function railpackSteps(plan: DeployPlan): string[] {
       "set -euo pipefail",
       "# The plan lists the names; the build reads the values as BuildKit secrets. Railpack",
       "# never sees a secret value here, only its name.",
-      "values=()",
+      setting === undefined ? "values=()" : `values=(--env ${setting})`,
       ...envPairs("values", '"${BUILD_ENV:-}"'),
       ...envPairs("values", '"${BUILD_SECRETS:-}"', '"${line%%=*}="'),
       "for attempt in 1 2 3; do",
@@ -257,7 +317,9 @@ function railpackSteps(plan: DeployPlan): string[] {
     "    build-args: |",
     `      BUILDKIT_SYNTAX=${IMAGES.railpackFrontend.ref}`,
     "      secrets-hash=${{ steps.prepare.outputs.hash }}",
+    "    # The frontend reads every value the plan lists as a secret, the runtime version too.",
     "    secrets: |",
+    ...(setting === undefined ? [] : [`      ${setting}`]),
     `      ${secret(DEPLOY_SECRETS.buildEnv)}`,
     `      ${secret(DEPLOY_SECRETS.buildSecrets)}`,
     "    cache-from: type=gha,scope=railpack",
@@ -302,7 +364,7 @@ const SCAN = [
     "set -euo pipefail",
     'docker pull --quiet "$IMAGE"',
     "docker logout ghcr.io",
-    `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${DEFAULT_TRIVY_IMAGE} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
+    `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
   ]),
 ];
 

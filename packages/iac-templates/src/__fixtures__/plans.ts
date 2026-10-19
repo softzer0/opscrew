@@ -1,5 +1,25 @@
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type AppBuild, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
+
+/**
+ * The `app.build.probe` design records for `builder` and `language` (agents' `probeFor`, for a
+ * stack other than a static site, whose generated image gets `wget`).
+ */
+export function designProbe(
+  builder: AppBuild["builder"],
+  language: AppBuild["runtime"]["language"],
+): NonNullable<AppBuild["probe"]> {
+  switch (builder) {
+    case "own-dockerfile":
+      return "none";
+    case "generated-dockerfile":
+      return language === "python" ? "python" : "node";
+    case "buildpacks":
+      return language === "ruby" ? "ruby" : "bash";
+    case "railpack":
+      return language === "ruby" ? "ruby" : language === "php" ? "php" : "bash";
+  }
+}
 
 /** Cloudflare edge ranges used by the tests (a short, fixed subset). */
 export const CF_RANGES = {

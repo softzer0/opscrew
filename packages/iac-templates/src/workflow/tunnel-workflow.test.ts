@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { CLOUDFLARED_SHA256, CLOUDFLARED_VERSION, cloudflaredUrl } from "../tunnel";
+import { TOOLS, toolDownloadUrl } from "../pins";
 import { DEPLOY_SECRETS, renderWorkflow, TUNNEL_DEPLOY_SECRETS } from "./index";
 
 type Step = {
@@ -28,7 +28,7 @@ const sshSteps = deploySteps.filter((s) => (s.run ?? "").includes("ssh_opts"));
 
 describe("renderWorkflow for an own server in tunnel mode", () => {
   it("installs the pinned cloudflared and checks its SHA-256 before SSH is configured", () => {
-    expect(install?.name).toBe(`Install cloudflared ${CLOUDFLARED_VERSION}`);
+    expect(install?.name).toBe(`Install cloudflared ${TOOLS.cloudflared.version}`);
     const names = deploySteps.map((s) => s.name ?? s.uses);
     expect(names.indexOf(install?.name)).toBeLessThan(
       names.indexOf("Configure SSH with the pinned host key"),
@@ -37,15 +37,16 @@ describe("renderWorkflow for an own server in tunnel mode", () => {
     expect(run).toContain(
       "https://github.com/cloudflare/cloudflared/releases/download/2026.5.1/cloudflared-linux-amd64",
     );
-    expect(run).toContain(cloudflaredUrl("arm64"));
-    expect(run).toContain(CLOUDFLARED_SHA256.amd64);
-    expect(run).toContain(CLOUDFLARED_SHA256.arm64);
+    expect(run).toContain(toolDownloadUrl("cloudflared", "arm64"));
+    expect(run).toContain(TOOLS.cloudflared.sha256.amd64);
+    expect(run).toContain(TOOLS.cloudflared.sha256.arm64);
     expect(run).toMatch(/sha256sum -c -/);
     expect(run.indexOf("sha256sum -c")).toBeLessThan(run.indexOf("sudo install"));
   });
 
   it("vendors well-formed checksums", () => {
-    for (const sum of Object.values(CLOUDFLARED_SHA256)) expect(sum).toMatch(/^[0-9a-f]{64}$/);
+    for (const sum of Object.values(TOOLS.cloudflared.sha256))
+      expect(sum).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("reaches SSH on the SSH hostname through cloudflared access ssh", () => {
@@ -169,7 +170,7 @@ describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 30_000 },
   it("refuses a download whose checksum differs and installs nothing", () => {
     const result = run(script, "x86_64");
     expect(result.status).not.toBe(0);
-    expect(result.urls).toEqual([cloudflaredUrl("amd64")]);
+    expect(result.urls).toEqual([toolDownloadUrl("cloudflared", "amd64")]);
     expect(result.installed).toBe(false);
   });
 
@@ -178,9 +179,9 @@ describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 30_000 },
       ["x86_64", "amd64"],
       ["aarch64", "arm64"],
     ] as const) {
-      const result = run(script.replace(CLOUDFLARED_SHA256[arch], fakeSum), machine);
+      const result = run(script.replace(TOOLS.cloudflared.sha256[arch], fakeSum), machine);
       expect(result.status, result.output).toBe(0);
-      expect(result.urls).toEqual([cloudflaredUrl(arch)]);
+      expect(result.urls).toEqual([toolDownloadUrl("cloudflared", arch)]);
       expect(result.installed).toBe(true);
     }
   });
@@ -201,7 +202,7 @@ describe.skipIf(process.env.OPSCREW_IT !== "1")(
       let release: { assets: { name: string; digest?: string }[] };
       try {
         const response = await fetch(
-          `https://api.github.com/repos/cloudflare/cloudflared/releases/tags/${CLOUDFLARED_VERSION}`,
+          `https://api.github.com/repos/cloudflare/cloudflared/releases/tags/${TOOLS.cloudflared.version}`,
           { headers: { accept: "application/vnd.github+json" } },
         );
         if (!response.ok) test.skip(`GitHub answered ${response.status}`);
@@ -212,7 +213,7 @@ describe.skipIf(process.env.OPSCREW_IT !== "1")(
       }
       for (const arch of ["amd64", "arm64"] as const) {
         const asset = release.assets.find((a) => a.name === `cloudflared-linux-${arch}`);
-        expect(asset?.digest).toBe(`sha256:${CLOUDFLARED_SHA256[arch]}`);
+        expect(asset?.digest).toBe(`sha256:${TOOLS.cloudflared.sha256[arch]}`);
       }
     });
   },

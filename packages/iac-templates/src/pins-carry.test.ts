@@ -14,14 +14,14 @@ describe("keepNewerPins", () => {
   it("keeps a higher committed tag, and replaces an older one", () => {
     const rendered = [
       `    image: caddy:2.11.7-alpine@${digest("a")}`,
-      `    image: postgres:17-alpine@${digest("a")}`,
+      `    image: postgres:17.6-alpine@${digest("a")}`,
       `    image: basecamp/kamal-proxy:v0.10.2@${digest("a")}`,
       `    image: cloudflare/cloudflared:2026.5.1@${digest("a")}`,
       "",
     ].join("\n");
     const committed = [
       `    image: caddy:2.11.10-alpine@${digest("b")}`,
-      `    image: postgres:16-alpine@${digest("b")}`,
+      `    image: postgres:17.2-alpine@${digest("b")}`,
       `    image: basecamp/kamal-proxy:v0.10.10@${digest("b")}`,
       `    image: cloudflare/cloudflared:2026.4.0@${digest("b")}`,
       "",
@@ -29,12 +29,43 @@ describe("keepNewerPins", () => {
     expect(keepNewerPins(committed, rendered)).toBe(
       [
         `    image: caddy:2.11.10-alpine@${digest("b")}`,
-        `    image: postgres:17-alpine@${digest("a")}`,
+        `    image: postgres:17.6-alpine@${digest("a")}`,
         `    image: basecamp/kamal-proxy:v0.10.10@${digest("b")}`,
         `    image: cloudflare/cloudflared:2026.5.1@${digest("a")}`,
         "",
       ].join("\n"),
     );
+  });
+
+  it("keeps the committed major of the images Dependabot keeps on their major", () => {
+    // OpsCrew's pins moved to new majors; the committed majors stay, older or newer.
+    const rendered = [
+      `    image: postgres:18-alpine@${digest("a")}`,
+      `    image: caddy:3.0.1-alpine@${digest("a")}`,
+      `FROM node:24-alpine@${digest("a")}`,
+      `FROM python:4.0-slim@${digest("a")}`,
+      `    image: valkey/valkey:9-alpine@${digest("a")}`,
+      "",
+    ].join("\n");
+    const committed = [
+      `    image: postgres:17-alpine@${digest("b")}`,
+      `    image: caddy:2.11.10-alpine@${digest("b")}`,
+      `FROM node:26-alpine@${digest("b")}`,
+      `FROM python:3.15-slim@${digest("b")}`,
+      // Not one of them: the higher tag wins, as before.
+      `    image: valkey/valkey:8-alpine@${digest("b")}`,
+      "",
+    ].join("\n");
+    expect(keepNewerPins(committed, rendered)).toBe(
+      [...committed.split("\n").slice(0, 4), ...rendered.split("\n").slice(4)].join("\n"),
+    );
+    // Within the major the higher tag still wins (Python 3.14 to 3.15 is a minor update).
+    expect(
+      keepNewerPins(
+        `FROM python:3.14-slim@${digest("b")}\n`,
+        `FROM python:3.15-slim@${digest("a")}\n`,
+      ),
+    ).toBe(`FROM python:3.15-slim@${digest("a")}\n`);
   });
 
   it("keeps OpsCrew's image when the committed one is another variant or not comparable", () => {

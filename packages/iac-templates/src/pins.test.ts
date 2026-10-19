@@ -7,6 +7,8 @@ import {
   buildpackVersion,
   dependencyVersions,
   formatActionPin,
+  latestReleaseUrl,
+  latestReleaseVersion,
   OFFER_SOURCES,
   parseActionPin,
   parseImageRef,
@@ -14,6 +16,7 @@ import {
   readBuilderConfig,
   replaceOffers,
   replacePin,
+  setPackageVersion,
   setToolChecksum,
 } from "../scripts/update-pins-lib";
 import {
@@ -21,6 +24,8 @@ import {
   BUILDPACKS_OFFERS,
   detectStack,
   IMAGES,
+  PACKAGE_MANAGERS,
+  PYPI_PACKAGES,
   RUNTIME_DEFAULTS,
   TOOL_RELEASES,
   TOOLS,
@@ -31,14 +36,6 @@ const SOURCE = readFile(new URL("./pins.ts", import.meta.url), "utf8");
 const FIXTURES = new URL("./__fixtures__/pins/", import.meta.url);
 const HEX64 = /^[0-9a-f]{64}$/;
 
-/** The line of pins.ts holding `literal`, as written there (JSON-quoted). */
-async function lineOf(literal: string): Promise<string> {
-  const quoted = JSON.stringify(literal);
-  const lines = (await SOURCE).split("\n").filter((line) => line.includes(quoted));
-  expect(lines, literal).toHaveLength(1);
-  return lines[0] as string;
-}
-
 describe("pins.ts", () => {
   it("is exported from the package root, next to detectStack", () => {
     expect(typeof detectStack).toBe("function");
@@ -47,17 +44,14 @@ describe("pins.ts", () => {
     }
   });
 
-  it("pins every image as repo:tag@sha256, or marks it for the pin script", async () => {
+  it("pins every image as repo:tag@sha256", () => {
     for (const [key, { ref }] of Object.entries(IMAGES)) {
-      const image = parseImageRef(ref);
-      if (image.digest === undefined) expect(await lineOf(ref), key).toContain("TODO(pins)");
-      else expect(image.digest, key).toMatch(HEX64);
+      expect(parseImageRef(ref).digest, key).toMatch(HEX64);
     }
     const tags = Object.fromEntries(
       Object.entries(IMAGES).map(([key, { ref }]) => [key, parseImageRef(ref).tag]),
     );
     expect(tags).toMatchObject({
-      node: "24-slim",
       nodeAlpine: "24-alpine",
       kamalProxy: "v0.10.2",
       railpackFrontend: "v0.42.0",
@@ -71,7 +65,6 @@ describe("pins.ts", () => {
         "curl",
         "dockerfileSyntax",
         "kamalProxy",
-        "node",
         "nodeAlpine",
         "paketoBuilder",
         "paketoRun",
@@ -98,14 +91,9 @@ describe("pins.ts", () => {
     expect(lines.filter((line) => /^\s+(amd64|arm64|version): ""/.test(line))).toEqual([]);
   });
 
-  it("pins every action by commit with its tag in a comment, or marks it for the script", async () => {
-    for (const [key, value] of Object.entries(ACTIONS)) {
-      const action = parseActionPin(value);
-      if (action.sha === undefined) {
-        expect(await lineOf(value), key).toContain("TODO(pins)");
-        continue;
-      }
-      expect(formatActionPin({ ...action, sha: action.sha })).toBe(value);
+  it("pins every action by commit with its tag in a comment", () => {
+    for (const value of Object.values(ACTIONS)) {
+      expect(formatActionPin(parseActionPin(value))).toBe(value);
     }
     expect(parseActionPin(ACTIONS.checkout)).toEqual({
       action: "actions/checkout",
@@ -116,12 +104,27 @@ describe("pins.ts", () => {
     const actions = Object.values(ACTIONS).map((value) => parseActionPin(value).action);
     expect(actions.sort()).toEqual([
       "actions/checkout",
-      "buildpacks/github-actions/setup-pack",
       "docker/build-push-action",
       "docker/login-action",
       "docker/setup-buildx-action",
       "sigstore/cosign-installer",
     ]);
+  });
+
+  it("pins the Python packages and package managers the Dockerfiles install by exact version", () => {
+    expect(Object.keys(PYPI_PACKAGES).sort()).toEqual([
+      "gunicorn",
+      "pipenv",
+      "poetry",
+      "uv",
+      "uvicorn",
+    ]);
+    expect(Object.keys(PACKAGE_MANAGERS).sort()).toEqual(["pnpm", "yarn"]);
+    for (const [name, version] of Object.entries({ ...PYPI_PACKAGES, ...PACKAGE_MANAGERS })) {
+      expect(version, name).toMatch(/^\d+\.\d+\.\d+$/);
+    }
+    // Projects without packageManager have Yarn 1 lockfiles.
+    expect(PACKAGE_MANAGERS.yarn).toMatch(/^1\./);
   });
 
   it("defaults each language by FR-1228 rule 4, to a version a plan accepts", () => {
@@ -225,13 +228,7 @@ describe("the pin script's helpers", () => {
     }
   });
 
-  it("reads an action pinned by tag only, for the script to resolve", () => {
-    expect(parseActionPin("docker/build-push-action@v7")).toEqual({
-      action: "docker/build-push-action",
-      repo: "docker/build-push-action",
-      tag: "v7",
-    });
-    // An action in a subfolder: its commit comes from the repository's tag.
+  it("reads an action in a subfolder, whose commit comes from its repository's tag", () => {
     const sha = "f".repeat(40);
     const setupPack = parseActionPin(`buildpacks/github-actions/setup-pack@${sha} # v5.9.0`);
     expect(setupPack).toEqual({
@@ -240,10 +237,10 @@ describe("the pin script's helpers", () => {
       tag: "v5.9.0",
       sha,
     });
-    expect(formatActionPin(setupPack as Required<typeof setupPack>)).toBe(
-      `buildpacks/github-actions/setup-pack@${sha} # v5.9.0`,
-    );
-    expect(() => parseActionPin("checkout@v7")).toThrow(/action/);
+    expect(formatActionPin(setupPack)).toBe(`buildpacks/github-actions/setup-pack@${sha} # v5.9.0`);
+    for (const bad of ["docker/build-push-action@v7", "checkout@v7"]) {
+      expect(() => parseActionPin(bad), bad).toThrow(/action pin/);
+    }
   });
 
   it("names the release assets of each tool, and reads their SHA-256", () => {
@@ -277,7 +274,7 @@ describe("the pin script's helpers", () => {
     expect(() => assetSha256(noDigest, "pack-v0.40.9-linux.tgz")).toThrow(/SHA-256/);
   });
 
-  it("replaces one pinned value and drops its TODO marker", async () => {
+  it("replaces one pinned value", async () => {
     const source = await SOURCE;
     const { ref } = IMAGES.nodeAlpine;
     const filled = `${parseImageRef(ref).repo}:${parseImageRef(ref).tag}@sha256:${"d".repeat(64)}`;
@@ -285,9 +282,7 @@ describe("the pin script's helpers", () => {
     const changed = replacePin(source, ref, filled)
       .split("\n")
       .filter((line, i) => line !== before[i]);
-    expect(changed).toHaveLength(1);
-    expect(changed[0]).toContain(JSON.stringify(filled));
-    expect(changed[0]).not.toContain("TODO(pins)");
+    expect(changed).toEqual([before.find((line) => line.includes(ref))?.replace(ref, filled)]);
     expect(replacePin(source, IMAGES.trivy.ref, IMAGES.trivy.ref)).toBe(source);
     expect(() => replacePin(source, "node:99", "node:100")).toThrow(/once/);
     expect(() => replacePin('a: "x",\nb: "x",\n', "x", "y")).toThrow(/once/);
@@ -304,5 +299,29 @@ describe("the pin script's helpers", () => {
     const packFirst = setToolChecksum(source, "pack", "amd64", sha);
     expect(packFirst.slice(0, packFirst.indexOf("  railpack: {"))).toContain(`amd64: "${sha}",`);
     expect(() => setToolChecksum(source, "cosign", "amd64", sha)).toThrow(/cosign/);
+  });
+
+  it("reads a package's newest release from PyPI's JSON and npm's latest", () => {
+    expect(latestReleaseUrl("pypi", "poetry")).toBe("https://pypi.org/pypi/poetry/json");
+    expect(latestReleaseUrl("npm", "pnpm")).toBe("https://registry.npmjs.org/pnpm/latest");
+    expect(latestReleaseVersion("pypi", { info: { version: "2.5.1" } })).toBe("2.5.1");
+    expect(latestReleaseVersion("npm", { name: "yarn", version: "1.22.22" })).toBe("1.22.22");
+    for (const bad of [{ info: { version: "3.0.0b1" } }, { info: {} }, {}, null]) {
+      expect(() => latestReleaseVersion("pypi", bad), JSON.stringify(bad)).toThrow(/release/);
+    }
+    expect(() => latestReleaseVersion("npm", { version: "13.0.0-rc.1" })).toThrow(/release/);
+  });
+
+  it("sets one package version in its table and leaves the rest alone", async () => {
+    const source = await SOURCE;
+    const next = setPackageVersion(source, "PYPI_PACKAGES", "uv", "9.9.9");
+    const before = source.split("\n");
+    expect(next.split("\n").filter((line, i) => line !== before[i])).toEqual(['  uv: "9.9.9",']);
+    // pnpm is only in PACKAGE_MANAGERS.
+    expect(setPackageVersion(source, "PACKAGE_MANAGERS", "pnpm", "9.9.9")).toContain(
+      '  pnpm: "9.9.9",',
+    );
+    expect(() => setPackageVersion(source, "PYPI_PACKAGES", "pnpm", "1.0.0")).toThrow(/pnpm/);
+    expect(() => setPackageVersion(source, "NOPE", "uv", "1.0.0")).toThrow(/NOPE/);
   });
 });

@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { IMAGES } from "../pins";
+import { IMAGES, PACKAGE_MANAGERS, PYPI_PACKAGES } from "../pins";
 import {
   containerPort,
   detectStack,
@@ -621,7 +622,7 @@ describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
   it("builds a pnpm workspace member with --filter ./<dir>", () => {
     const lines = dockerfileOf(pnpmWorkspaceSite, 8080).split("\n");
     expect(lines).toContain(
-      "RUN corepack enable && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi",
+      `RUN corepack enable && { grep -q '"packageManager"' package.json || corepack prepare pnpm@${PACKAGE_MANAGERS.pnpm} --activate; } && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi`,
     );
     expect(lines).toContain("RUN pnpm --filter ./apps/site run build");
     expect(lines).toContain("COPY --from=build /app/apps/site/dist /srv");
@@ -713,5 +714,117 @@ describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
     expect(spaced).toContain('COPY --chown=app:app ["services/my api", "."]');
     const npm = dockerfileOf({ ...npmWorkspaceApi, appDir: "apps/my api" });
     expect(npm).toContain(`npm run start --workspace 'apps/my api'`);
+  });
+});
+
+describe("pinned build tools (FR-1203)", () => {
+  /** Every `RUN` line of the Dockerfile rendered for `sample`. */
+  const runs = (sample: ProjectFacts) =>
+    dockerfileOf(sample)
+      .split("\n")
+      .filter((line) => line.startsWith("RUN "));
+  const pipenvApp = facts({ ...fastapiApp, packageManager: "pipenv" });
+
+  it("installs Poetry, uv, Pipenv, uvicorn and gunicorn at the versions in pins.ts", () => {
+    expect(runs(djangoApp)).toContain(
+      `RUN pip install poetry==${PYPI_PACKAGES.poetry} && poetry config virtualenvs.create false && poetry install --only main --no-root`,
+    );
+    expect(runs(pythonApp)).toContain(
+      `RUN pip install uv==${PYPI_PACKAGES.uv} && uv pip install --system -r pyproject.toml`,
+    );
+    expect(runs(pipenvApp)).toContain(
+      `RUN pip install pipenv==${PYPI_PACKAGES.pipenv} && pipenv install --system --deploy`,
+    );
+    // The servers come only when the dependencies lack them, so the app's own pin stays.
+    expect(runs(fastapiApp)).toContain(
+      `RUN python -c "import uvicorn" 2>/dev/null || pip install uvicorn==${PYPI_PACKAGES.uvicorn}`,
+    );
+    expect(runs(djangoApp)).toContain(
+      `RUN python -c "import gunicorn" 2>/dev/null || pip install gunicorn==${PYPI_PACKAGES.gunicorn}`,
+    );
+    for (const sample of [djangoApp, pythonApp, pipenvApp, fastapiApp, pythonSubfolderApi]) {
+      for (const line of runs(sample)) {
+        // Only the app's own requirements file is installed without a version (uv installs the
+        // app's own dependencies).
+        for (const [, what] of line.matchAll(/(?<!uv )pip install (\S+)/g)) {
+          expect(what === "-r" || /^[a-z]+==\d/.test(what ?? ""), line).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("activates the pinned pnpm or Yarn when package.json names no packageManager", () => {
+    const prepare = (pm: "pnpm" | "yarn") =>
+      `grep -q '"packageManager"' package.json || corepack prepare ${pm}@${PACKAGE_MANAGERS[pm]} --activate`;
+    for (const [sample, pm] of [
+      [viteApp, "pnpm"],
+      [nextMonorepoApp, "pnpm"],
+      [expressApp, "yarn"],
+    ] as const) {
+      const install = runs(sample).find((line) => line.includes("corepack enable"));
+      expect(install, sample.name).toMatch(/^RUN corepack enable && \{ grep /);
+      expect(install, sample.name).toContain(`{ ${prepare(pm)}; } && if [ -f `);
+    }
+    // The Node.js server's runtime stage runs pnpm or Yarn too: the same pin, in the home of the
+    // user that starts the app.
+    const lines = dockerfileOf(expressApp).split("\n");
+    const runtime = lines.slice(lines.indexOf(`FROM ${IMAGES.nodeAlpine.ref} AS runtime`));
+    expect(runtime).toContain("RUN corepack enable");
+    expect(runtime.slice(runtime.indexOf("USER node"))).toContain(`RUN ${prepare("yarn")}`);
+    const folder = facts({
+      ...expressApp,
+      appDir: "api",
+      frameworks: [{ name: "express", path: "api" }],
+    });
+    expect(dockerfileOf(folder)).toContain(`RUN cd api && ${prepare("yarn")}`);
+  });
+});
+
+function shWorks(): boolean {
+  try {
+    return spawnSync("sh", ["-c", "echo ok"], { encoding: "utf8" }).stdout?.trim() === "ok";
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!shWorks())("Yarn's production install in sh", () => {
+  const install = (
+    dockerfileOf(expressApp)
+      .split("\n")
+      .find((line) => line.includes("--production")) ?? ""
+  ).replace(/^RUN /, "");
+
+  /** Runs the install with a fake `yarn` of `version`; `focus`: `yarn workspaces focus` exists. */
+  function run(version: string, focus: boolean) {
+    const yarn = [
+      "yarn() {",
+      `  if [ "$1" = --version ]; then echo ${version}; return 0; fi`,
+      `  if [ "$1 $2" = "workspaces focus" ] && [ ${focus ? 1 : 0} = 0 ]; then return 1; fi`,
+      '  [ "$3" = --help ] || echo "yarn $*"',
+      "}",
+    ].join("\n");
+    const result = spawnSync("sh", ["-c", `${yarn}\n${install}`], { encoding: "utf8" });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  it("installs Yarn 1's production dependencies, and focuses on Yarn 4 or with the plugin", () => {
+    expect(run("1.22.22", false)).toMatchObject({
+      status: 0,
+      stdout: "yarn install --production\n",
+    });
+    expect(run("4.10.3", true)).toMatchObject({
+      status: 0,
+      stdout: "yarn workspaces focus --all --production\n",
+    });
+    expect(run("3.8.7", true).stdout).toBe("yarn workspaces focus --all --production\n");
+  });
+
+  it("stops with what to do on Yarn 2 or 3 without the workspace-tools plugin", () => {
+    const result = run("3.8.7", false);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain('"yarn plugin import workspace-tools"');
+    expect(result.stderr).toContain("Yarn 4");
   });
 });

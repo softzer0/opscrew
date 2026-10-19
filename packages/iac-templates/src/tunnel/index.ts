@@ -1,20 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
-
-/** cloudflared release the deploy workflow installs in tunnel mode: `TOOLS.cloudflared` in pins.ts. */
-export const CLOUDFLARED_VERSION = TOOLS.cloudflared.version;
-
-/** SHA-256 of the cloudflared Linux binaries per architecture, from pins.ts. */
-export const CLOUDFLARED_SHA256 = TOOLS.cloudflared.sha256;
-
-/** Download URL of a cloudflared Linux binary of {@link CLOUDFLARED_VERSION}. */
-export function cloudflaredUrl(arch: keyof typeof CLOUDFLARED_SHA256): string {
-  return toolDownloadUrl("cloudflared", arch);
-}
-
-/** Image of the tunnel connector on the server, from `pins.ts`. */
-export const CLOUDFLARED_IMAGE = IMAGES.cloudflared.ref;
 
 /**
  * Loopback port Caddy publishes on in tunnel mode (`127.0.0.1:18080` → Caddy's port 80). The

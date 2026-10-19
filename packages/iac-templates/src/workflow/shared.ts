@@ -1,14 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { ACTIONS, IMAGES, type PinArch } from "../pins";
-
-/** actions/checkout, pinned by commit in {@link ACTIONS}. */
-export const CHECKOUT_ACTION = ACTIONS.checkout;
-/**
- * Image of the optional, report-only image scan, pinned by digest in {@link IMAGES} because it
- * runs with the Docker socket.
- */
-export const DEFAULT_TRIVY_IMAGE = IMAGES.trivy.ref;
+import { ACTIONS, type PinArch } from "../pins";
 
 /** Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
 export const DIGEST_REF_PATTERN = "^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$";

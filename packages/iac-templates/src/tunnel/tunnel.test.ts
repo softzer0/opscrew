@@ -2,19 +2,14 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { IMAGES } from "../pins";
 import {
   renderCaddyfile,
   renderCompose,
   renderTunnelConnectorCompose,
   webFilterMode,
 } from "../runtime";
-import {
-  CLOUDFLARED_IMAGE,
-  CLOUDFLARED_METRICS,
-  sshHostname,
-  TUNNEL_ORIGIN_PORT,
-  usesTunnel,
-} from "./index";
+import { CLOUDFLARED_METRICS, sshHostname, TUNNEL_ORIGIN_PORT, usesTunnel } from "./index";
 
 const PORTAINER = {
   access: "subdomain",
@@ -118,7 +113,7 @@ describe("renderTunnelConnectorCompose", () => {
     expect(file.path).toBe("opscrew/runtime/cloudflared/compose.yaml");
     expect(compose.name).toBe("opscrew-tunnel");
     const service = compose.services.cloudflared;
-    expect(service.image).toBe(CLOUDFLARED_IMAGE);
+    expect(service.image).toBe(IMAGES.cloudflared.ref);
     expect(service.image).toMatch(/^cloudflare\/cloudflared:2026\.5\.1@sha256:[0-9a-f]{64}$/);
     expect(service.command).toEqual([
       "tunnel",

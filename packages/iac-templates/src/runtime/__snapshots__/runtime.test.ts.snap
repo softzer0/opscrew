@@ -32,17 +32,6 @@ services:
       - app.env
     environment:
       PORT: "3000"
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:'+process.env.PORT+'/api/health',{signal:AbortSignal.timeout(2000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 30s
-      start_interval: 1s
     stop_grace_period: 35s
     security_opt: &a1
       - no-new-privileges:true
@@ -157,17 +146,6 @@ services:
       - app.env
     environment:
       PORT: "3000"
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:'+process.env.PORT+'/api/health',{signal:AbortSignal.timeout(2000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 30s
-      start_interval: 1s
     stop_grace_period: 35s
     security_opt: &a1
       - no-new-privileges:true

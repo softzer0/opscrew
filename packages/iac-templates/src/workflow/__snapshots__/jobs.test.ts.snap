@@ -233,7 +233,7 @@ jobs:
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on the port in its PORT variable and answers /api/health. It was built from Dockerfile; run opscrew design to let OpsCrew choose a builder.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

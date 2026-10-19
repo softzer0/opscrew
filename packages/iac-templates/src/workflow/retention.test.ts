@@ -3,6 +3,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
+import { MANIFEST_ACCEPT } from "../registry";
 import { jobYaml, serverPlan, withBuild, withPlan } from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
 import { RETENTION_SCRIPT } from "./retention";
@@ -252,6 +253,8 @@ describe("the retention step's program", () => {
       if (manifest) {
         if (o.failManifest) return { ok: false, status: 500, json: async () => ({}) };
         expect(init.headers?.Authorization).toBe("Bearer registry-placeholder");
+        // The same manifest types OpsCrew's own registry lookups ask for.
+        expect(init.headers?.Accept).toBe(MANIFEST_ACCEPT);
         const list = children[manifest[1] ?? ""];
         return ok(
           list === undefined ? { layers: [] } : { manifests: list.map((d) => ({ digest: d })) },

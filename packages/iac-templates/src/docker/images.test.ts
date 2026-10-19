@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppBuild, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { designProbe } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { type DockerAssetOptions, renderDockerAssets } from "./index";
 
@@ -84,6 +85,7 @@ function build(language: AppBuild["runtime"]["language"], version: string): AppB
     chosen: "auto",
     reason: "OpsCrew's Dockerfile builds it.",
     runtime: { language, version },
+    probe: designProbe("generated-dockerfile", language),
   };
 }
 
@@ -237,8 +239,9 @@ describe("production dependencies only", () => {
       "RUN find . -name node_modules -type d -prune -exec rm -rf {} + && if [ -f pnpm-lock.yaml ]; then pnpm install --prod --frozen-lockfile; else pnpm install --prod; fi",
     );
     const yarn = stage(dockerfile({ ...expressApi, packageManager: "yarn" }), "build");
-    expect(yarn).toContain(
-      'RUN if [ "$(yarn --version | cut -d. -f1)" = 1 ]; then if [ -f yarn.lock ]; then yarn install --production --frozen-lockfile; else yarn install --production; fi; else yarn workspaces focus --all --production; fi',
+    const yarnInstall = yarn.find((line) => line.includes("--production")) ?? "";
+    expect(yarnInstall).toMatch(
+      /^RUN if \[ "\$\(yarn --version \| cut -d\. -f1\)" = 1 \]; then if \[ -f yarn\.lock \]; then yarn install --production --frozen-lockfile; else yarn install --production; fi; elif yarn workspaces focus --help > \/dev\/null 2>&1; then yarn workspaces focus --all --production; else echo '[^']+' >&2; exit 1; fi$/,
     );
     // An app in a folder that is not a workspace prunes in that folder.
     const folder = stage(dockerfile({ ...expressApi, appDir: "api" }), "build");

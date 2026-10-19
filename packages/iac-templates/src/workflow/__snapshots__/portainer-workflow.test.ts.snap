@@ -307,10 +307,8 @@ jobs:
               console.log("::error::" + message);
               process.exitCode = 1;
             };
-            const digestOf = (ref) => {
-              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
-              return match ? match[1] : undefined;
-            };
+            const digestRef = new RegExp("^ghcr\\\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$");
+            const digestOf = (ref) => (digestRef.test(ref) ? ref.split("@")[1] : undefined);
             const running = digestOf(process.env.IMAGE || "");
             const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
             if (running === undefined || previous === undefined) {
@@ -363,12 +361,7 @@ jobs:
                   await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
                     headers: {
                       Authorization: "Bearer " + login.token,
-                      Accept: [
-                        "application/vnd.oci.image.index.v1+json",
-                        "application/vnd.docker.distribution.manifest.list.v2+json",
-                        "application/vnd.oci.image.manifest.v1+json",
-                        "application/vnd.docker.distribution.manifest.v2+json",
-                      ].join(", "),
+                      Accept: "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
                     },
                   }),
                   "GitHub Container Registry",
@@ -676,10 +669,8 @@ jobs:
               console.log("::error::" + message);
               process.exitCode = 1;
             };
-            const digestOf = (ref) => {
-              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
-              return match ? match[1] : undefined;
-            };
+            const digestRef = new RegExp("^ghcr\\\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$");
+            const digestOf = (ref) => (digestRef.test(ref) ? ref.split("@")[1] : undefined);
             const running = digestOf(process.env.IMAGE || "");
             const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
             if (running === undefined || previous === undefined) {
@@ -732,12 +723,7 @@ jobs:
                   await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
                     headers: {
                       Authorization: "Bearer " + login.token,
-                      Accept: [
-                        "application/vnd.oci.image.index.v1+json",
-                        "application/vnd.docker.distribution.manifest.list.v2+json",
-                        "application/vnd.oci.image.manifest.v1+json",
-                        "application/vnd.docker.distribution.manifest.v2+json",
-                      ].join(", "),
+                      Accept: "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
                     },
                   }),
                   "GitHub Container Registry",

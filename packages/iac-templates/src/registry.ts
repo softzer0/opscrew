@@ -5,7 +5,7 @@
 import type { FetchLike } from "@opscrew/contracts";
 
 /** The registry host and repository name of an image, with Docker Hub's defaults. */
-export function registryOf(repo: string): { host: string; name: string } {
+function registryOf(repo: string): { host: string; name: string } {
   const [first, ...rest] = repo.split("/");
   if (rest.length > 0 && first !== undefined && /[.:]/.test(first)) {
     return { host: first, name: rest.join("/") };
@@ -13,7 +13,10 @@ export function registryOf(repo: string): { host: string; name: string } {
   return { host: "registry-1.docker.io", name: rest.length > 0 ? repo : `library/${repo}` };
 }
 
-/** Manifest types to ask for, so a multi-arch image answers with its index digest. */
+/**
+ * Manifest types to ask for, so a multi-arch image answers with its index digest (the image
+ * retention program asks GHCR for the same).
+ */
 export const MANIFEST_ACCEPT = [
   "application/vnd.oci.image.index.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -22,7 +25,7 @@ export const MANIFEST_ACCEPT = [
 ].join(", ");
 
 /** The parameters of a registry's `WWW-Authenticate: Bearer …` challenge. */
-export function parseBearerChallenge(header: string): {
+function parseBearerChallenge(header: string): {
   realm: string;
   service?: string;
   scope?: string;

@@ -2,15 +2,9 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { ACTIONS } from "../pins";
+import { ACTIONS, IMAGES } from "../pins";
 import type { RenderContext } from "../types";
-import {
-  CHECKOUT_ACTION,
-  DEFAULT_TRIVY_IMAGE,
-  DEPLOY_SECRETS,
-  healthUrl,
-  renderWorkflow,
-} from "./index";
+import { DEPLOY_SECRETS, healthUrl, renderWorkflow } from "./index";
 
 function plan(
   o: {
@@ -116,8 +110,7 @@ describe("renderWorkflow", () => {
       .map((s) => s.uses)
       .filter(Boolean);
     expect(uses.every((u) => /@[0-9a-f]{40}$/.test(u ?? ""))).toBe(true);
-    expect(CHECKOUT_ACTION).toBe(ACTIONS.checkout);
-    expect(steps("deploy")[0]?.uses).toBe(CHECKOUT_ACTION.split(" #")[0]);
+    expect(steps("deploy")[0]?.uses).toBe(ACTIONS.checkout.split(" #")[0]);
   });
 
   it("never interpolates expressions inside run scripts", () => {
@@ -196,10 +189,10 @@ describe("renderWorkflow", () => {
   });
 
   it("runs Trivy pinned by digest, after logging out of the registry", () => {
-    expect(DEFAULT_TRIVY_IMAGE).toMatch(/^aquasec\/trivy:0\.75\.0@sha256:[0-9a-f]{64}$/);
+    expect(IMAGES.trivy.ref).toMatch(/^aquasec\/trivy:0\.75\.0@sha256:[0-9a-f]{64}$/);
     const scan = steps("build").find((s) => s.name?.startsWith("Scan"))?.run ?? "";
     expect(scan.indexOf("docker logout ghcr.io")).toBeGreaterThan(-1);
-    expect(scan.indexOf("docker logout ghcr.io")).toBeLessThan(scan.indexOf(DEFAULT_TRIVY_IMAGE));
+    expect(scan.indexOf("docker logout ghcr.io")).toBeLessThan(scan.indexOf(IMAGES.trivy.ref));
   });
 
   it("runs no release step without a release command", () => {

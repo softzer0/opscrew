@@ -66,7 +66,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Check that the app listens on the port in its PORT variable and answers /api/health. OpsCrew chose Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml): to build with another one, set app.build.builder to generated-dockerfile, own-dockerfile or railpack with app.build.chosen: user, and run opscrew provision.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built with Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml).'
             exit 1
           fi
           REMOTE
@@ -200,7 +200,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on the port in its PORT variable and answers /api/health. OpsCrew chose Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml): to build with another one, set app.build.builder to generated-dockerfile, own-dockerfile or railpack with app.build.chosen: user, and run opscrew provision.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built with Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml).'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

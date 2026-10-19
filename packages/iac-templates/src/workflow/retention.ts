@@ -1,3 +1,6 @@
+import { MANIFEST_ACCEPT } from "../registry";
+import { DIGEST_REF_PATTERN } from "./shared";
+
 /**
  * The image retention step's program (FR-1229), run with the runner's Node.js (`shell: node {0}`,
  * followed by `main();`). It is plain JavaScript in the committed workflow, so the user can read it
@@ -7,7 +10,9 @@
  * that ran before, empty on the first deploy), `KEEP` (absent: delete only the intermediate
  * images), `TOKEN`, `GITHUB_REPOSITORY` and `GITHUB_ACTOR`; lists the package's versions through
  * the GitHub API and the image indexes' children from GitHub Container Registry, and deletes what
- * `prunable` selects. Any error before the first deletion deletes nothing.
+ * `prunable` selects. Any error before the first deletion deletes nothing. The image reference
+ * pattern and the manifest types are OpsCrew's own ({@link DIGEST_REF_PATTERN},
+ * {@link MANIFEST_ACCEPT}), written into the program as literals.
  */
 export const RETENTION_SCRIPT = String.raw`// OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
 // this repository's image from GitHub Container Registry.
@@ -70,10 +75,8 @@ async function main() {
     console.log("::error::" + message);
     process.exitCode = 1;
   };
-  const digestOf = (ref) => {
-    const match = /^ghcr\.io\/[a-z0-9._\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
-    return match ? match[1] : undefined;
-  };
+  const digestRef = new RegExp(${JSON.stringify(DIGEST_REF_PATTERN)});
+  const digestOf = (ref) => (digestRef.test(ref) ? ref.split("@")[1] : undefined);
   const running = digestOf(process.env.IMAGE || "");
   const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
   if (running === undefined || previous === undefined) {
@@ -126,12 +129,7 @@ async function main() {
         await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
           headers: {
             Authorization: "Bearer " + login.token,
-            Accept: [
-              "application/vnd.oci.image.index.v1+json",
-              "application/vnd.docker.distribution.manifest.list.v2+json",
-              "application/vnd.oci.image.manifest.v1+json",
-              "application/vnd.docker.distribution.manifest.v2+json",
-            ].join(", "),
+            Accept: ${JSON.stringify(MANIFEST_ACCEPT)},
           },
         }),
         "GitHub Container Registry",

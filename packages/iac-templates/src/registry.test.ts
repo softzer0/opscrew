@@ -1,6 +1,6 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
-import { imageDigest, MANIFEST_ACCEPT, parseBearerChallenge, registryOf } from "./registry";
+import { imageDigest, MANIFEST_ACCEPT } from "./registry";
 
 const DIGEST = `sha256:${"ab".repeat(32)}`;
 
@@ -28,39 +28,46 @@ function fakeRegistry(answers: Response[]): { fetch: FetchLike; calls: Call[] } 
 
 const withDigest = () => new Response(null, { headers: { "docker-content-digest": DIGEST } });
 
-describe("registryOf", () => {
-  it("applies Docker Hub's defaults and reads other registries' hosts", () => {
-    expect(registryOf("node")).toEqual({ host: "registry-1.docker.io", name: "library/node" });
-    expect(registryOf("valkey/valkey")).toEqual({
-      host: "registry-1.docker.io",
-      name: "valkey/valkey",
-    });
-    expect(registryOf("ghcr.io/railwayapp/railpack-frontend")).toEqual({
-      host: "ghcr.io",
-      name: "railwayapp/railpack-frontend",
-    });
-  });
-});
-
-describe("parseBearerChallenge", () => {
-  it("reads a registry's bearer challenge", () => {
-    expect(
-      parseBearerChallenge(
-        'Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/node:pull"',
-      ),
-    ).toEqual({
-      realm: "https://auth.docker.io/token",
-      service: "registry.docker.io",
-      scope: "repository:library/node:pull",
-    });
-    expect(parseBearerChallenge('Bearer realm="https://ghcr.io/token"')).toEqual({
-      realm: "https://ghcr.io/token",
-    });
-    expect(() => parseBearerChallenge('Basic realm="x"')).toThrow(/bearer/i);
-  });
-});
+/** A 401 answer with `challenge` as its `WWW-Authenticate` header. */
+const challenged = (challenge: string) =>
+  new Response(null, { status: 401, headers: { "www-authenticate": challenge } });
 
 describe("imageDigest", () => {
+  it("applies Docker Hub's defaults and reads other registries' hosts", async () => {
+    for (const [repo, url] of [
+      ["node", "https://registry-1.docker.io/v2/library/node/manifests/1"],
+      ["valkey/valkey", "https://registry-1.docker.io/v2/valkey/valkey/manifests/1"],
+      [
+        "ghcr.io/railwayapp/railpack-frontend",
+        "https://ghcr.io/v2/railwayapp/railpack-frontend/manifests/1",
+      ],
+    ] as const) {
+      const registry = fakeRegistry([withDigest()]);
+      await imageDigest(registry.fetch, repo, "1");
+      expect(registry.calls.map((call) => call.url)).toEqual([url]);
+    }
+  });
+
+  it("asks for the scope the challenge names, and refuses a challenge that is not a bearer one", async () => {
+    const registry = fakeRegistry([
+      challenged(
+        'Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/node:pull,push"',
+      ),
+      Response.json({ access_token: "anonymous-pull-token" }),
+      withDigest(),
+    ]);
+    expect(await imageDigest(registry.fetch, "node", "1")).toBe(DIGEST);
+    expect(registry.calls[1]?.url).toBe(
+      "https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Alibrary%2Fnode%3Apull%2Cpush",
+    );
+    await expect(
+      imageDigest(fakeRegistry([challenged('Basic realm="x"')]).fetch, "node", "1"),
+    ).rejects.toThrow(/bearer/i);
+    await expect(
+      imageDigest(fakeRegistry([challenged('Bearer service="x"')]).fetch, "node", "1"),
+    ).rejects.toThrow(/no realm/);
+  });
+
   it("asks for the index with a HEAD and returns its digest", async () => {
     const registry = fakeRegistry([withDigest()]);
     expect(await imageDigest(registry.fetch, "ghcr.io/acme/tool", "v1")).toBe(DIGEST);

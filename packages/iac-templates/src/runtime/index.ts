@@ -2,13 +2,13 @@
 import type { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
+import { IMAGES } from "../pins";
 import { webOnlyFromCloudflare } from "../predicates";
 import { wrongTarget } from "../providers";
 import { TUNNEL_ORIGIN_PORT, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 import { appHealthcheck } from "./healthcheck";
 import {
-  CADDY_IMAGE,
   cacheService,
   caddyfile,
   cloudflaredService,
@@ -105,7 +105,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
 
   services.proxy = proxyService();
   services.caddy = {
-    image: CADDY_IMAGE,
+    image: IMAGES.caddy.ref,
     restart: "unless-stopped",
     // In tunnel mode only the tunnel connector (host network) reaches Caddy, on a loopback port;
     // behind OpsCrew's web filter only IPv4 is published (the filter covers IPv4 only).

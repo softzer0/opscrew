@@ -1,4 +1,4 @@
-import { type DeployPlan, type ImageBuilder, ImageBuilderSchema } from "@opscrew/plan-schema";
+import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 import { healthPath } from "./shared";
 
 /**
@@ -34,26 +34,27 @@ const BUILDER_LABEL: Record<ImageBuilder, string> = {
   railpack: "Railpack",
 };
 
+/** How a changed builder reaches the workflow: design checks it, adapt and provision follow. */
+const RERUN = "run opscrew design, opscrew adapt and opscrew provision";
+
 /**
- * The failed-deploy hint (FR-1206): which builder made the image and the `opscrew/plan.yaml` line
- * that changes it; the builder an automatic choice would pick (`app.build.automatic`) when design
- * recorded one other than the current builder.
+ * The failed-deploy hint (FR-1206): which builder made the image and its `opscrew/plan.yaml` line,
+ * and, when design recorded another automatic choice (`app.build.automatic`), that builder and the
+ * one setting that switches to it.
  */
 function builderHint(plan: DeployPlan): string {
   const build = plan.app.build;
   if (build === undefined) {
-    return `It was built from ${plan.app.dockerfile}; run opscrew design to let OpsCrew choose a builder.`;
+    return `It was built from ${plan.app.dockerfile}; to let OpsCrew choose a builder, ${RERUN}.`;
   }
-  const line = `app.build.builder: ${build.builder}`;
-  const { automatic } = build;
-  if (automatic !== undefined && automatic !== build.builder) {
-    return `It was built with ${BUILDER_LABEL[build.builder]} (${line} in opscrew/plan.yaml). OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} with app.build.chosen: user, and run opscrew provision.`;
+  const { builder, automatic } = build;
+  const line = `(app.build.builder: ${builder} in opscrew/plan.yaml)`;
+  if (automatic === builder) {
+    return `It was built with ${BUILDER_LABEL[builder]}, the builder OpsCrew chooses for this app ${line}.`;
   }
-  if (build.chosen === "user") {
-    return `It was built with ${BUILDER_LABEL[build.builder]}, which opscrew/plan.yaml sets (${line}, app.build.chosen: user): set app.build.chosen to auto and run opscrew design to build with the builder OpsCrew chooses.`;
-  }
-  const others = ImageBuilderSchema.options.filter((builder) => builder !== build.builder);
-  return `OpsCrew chose ${BUILDER_LABEL[build.builder]} (${line} in opscrew/plan.yaml): to build with another one, set app.build.builder to ${others.slice(0, -1).join(", ")} or ${others.at(-1)} with app.build.chosen: user, and run opscrew provision.`;
+  const built = `It was built with ${BUILDER_LABEL[builder]} ${line}.`;
+  if (automatic === undefined) return built;
+  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} in opscrew/plan.yaml, then ${RERUN}.`;
 }
 
 /** The services a deploy starts when they are not running, and never restarts otherwise. */
@@ -116,7 +117,7 @@ function healthFailed(plan: DeployPlan): string {
     plan.deploy.strategy === "rolling"
       ? " It received no traffic: the previous version keeps serving."
       : "";
-  return `::error::The new version did not pass its health check (GET ${path} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it.${traffic} Check that the app listens on the port in its PORT variable and answers ${path}. ${builderHint(plan)}`;
+  return `::error::The new version did not pass its health check (GET ${path} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it.${traffic} Check that the app listens on port ${plan.app.port} (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers ${path}. ${builderHint(plan)}`;
 }
 
 /**

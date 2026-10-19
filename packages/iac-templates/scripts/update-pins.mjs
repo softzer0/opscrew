@@ -4,7 +4,8 @@
 // Without flags it refreshes src/pins.ts: image digests from the registries (the multi-arch
 // index), tool checksums from the GitHub releases (each asset's SHA-256 digest) and action commits
 // from the GitHub tags. Tags and versions stay as written in pins.ts: change one there first, then
-// run this. Values marked `TODO(pins)` are filled the same way, once their tag or version is set.
+// run this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
+// their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
 //
 // With --offers it refreshes only BUILDPACKS_OFFERS: it reads the pinned Paketo builder's metadata
 // label from the registry, then each dependency buildpack's buildpack.toml at the version the
@@ -17,7 +18,14 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { ACTIONS, IMAGES, TOOL_RELEASES, TOOLS } from "../src/pins.ts";
+import {
+  ACTIONS,
+  IMAGES,
+  PACKAGE_MANAGERS,
+  PYPI_PACKAGES,
+  TOOL_RELEASES,
+  TOOLS,
+} from "../src/pins.ts";
 import { imageDigest, registryRequest } from "../src/registry.ts";
 import {
   assetSha256,
@@ -25,6 +33,8 @@ import {
   buildpackVersion,
   dependencyVersions,
   formatActionPin,
+  latestReleaseUrl,
+  latestReleaseVersion,
   OFFER_SOURCES,
   parseActionPin,
   parseImageRef,
@@ -32,8 +42,15 @@ import {
   readBuilderConfig,
   replaceOffers,
   replacePin,
+  setPackageVersion,
   setToolChecksum,
 } from "./update-pins-lib.ts";
+
+/** Each package table of pins.ts, its values and where they are published. */
+const PACKAGE_TABLES = [
+  { table: "PYPI_PACKAGES", packages: PYPI_PACKAGES, registry: "pypi" },
+  { table: "PACKAGE_MANAGERS", packages: PACKAGE_MANAGERS, registry: "npm" },
+];
 
 const pinsFile = fileURLToPath(new URL("../src/pins.ts", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -58,7 +75,7 @@ async function tagCommit(repo, tag) {
   return object.sha;
 }
 
-/** Digests, commits and checksums; returns the new source and what changed. */
+/** Digests, commits, checksums and package versions; returns the new source and what changed. */
 async function updatePins(source) {
   const changes = [];
   for (const [key, { ref }] of Object.entries(IMAGES)) {
@@ -70,7 +87,6 @@ async function updatePins(source) {
   }
   for (const [key, value] of Object.entries(ACTIONS)) {
     const action = parseActionPin(value);
-    if (action.tag === "TODO") throw new Error(`Set the tag of ACTIONS.${key} in pins.ts first.`);
     const next = formatActionPin({ ...action, sha: await tagCommit(action.repo, action.tag) });
     if (next === value) continue;
     source = replacePin(source, value, next);
@@ -84,6 +100,17 @@ async function updatePins(source) {
       if (sha256 === tool.sha256[arch]) continue;
       source = setToolChecksum(source, key, arch, sha256);
       changes.push(`TOOLS.${key}.sha256.${arch}: ${sha256}`);
+    }
+  }
+  for (const { table, packages, registry } of PACKAGE_TABLES) {
+    for (const [name, version] of Object.entries(packages)) {
+      const url = latestReleaseUrl(registry, name);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${url} answered ${response.status}.`);
+      const next = latestReleaseVersion(registry, await response.json());
+      if (next === version) continue;
+      source = setPackageVersion(source, table, name, next);
+      changes.push(`${table}.${name}: ${version} → ${next}`);
     }
   }
   return { source, changes };

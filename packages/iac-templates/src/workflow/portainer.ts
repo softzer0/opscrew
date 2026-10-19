@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { ACTIONS } from "../pins";
 import {
   PORTAINER_DEPLOY_BRANCH,
   PORTAINER_IMAGE_PLACEHOLDER,
@@ -12,15 +13,7 @@ import { portainerTarget } from "../providers";
 import type { RenderedFile } from "../types";
 import { buildJob } from "./build";
 import { afterDeployJobs } from "./jobs";
-import {
-  CHECKOUT_ACTION,
-  DIGEST_REF_PATTERN,
-  deployJob,
-  healthPath,
-  run,
-  secret,
-  workflowStart,
-} from "./shared";
+import { DIGEST_REF_PATTERN, deployJob, healthPath, run, secret, workflowStart } from "./shared";
 
 /**
  * The GitHub Actions secrets of a Portainer target's deploy workflow in redeploy mode `cloudflare`
@@ -239,7 +232,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
   const probe = target.web.mode === "proxy" && url !== undefined;
 
   const steps = [
-    `- uses: ${CHECKOUT_ACTION}`,
+    `- uses: ${ACTIONS.checkout}`,
     ...(probe
       ? [
           "- id: probe",

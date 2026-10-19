@@ -50,32 +50,19 @@ const PROBES: Record<Exclude<Probe, "none">, (app: DeployPlan["app"]) => string[
 };
 
 /**
- * `app.build.probe`, or when it is absent: `none` for an own Dockerfile (its `HEALTHCHECK`
- * applies), the runtime's probe for Node, Python, Ruby and PHP (Node without `app.build`, the
- * generated Dockerfile), else `bash`.
- */
-function probeFor(build: AppBuild | undefined): Probe {
-  if (build?.probe !== undefined) return build.probe;
-  if (build?.builder === "own-dockerfile") return "none";
-  const language = build?.runtime.language ?? "node";
-  return language === "node" || language === "python" || language === "ruby" || language === "php"
-    ? language
-    : "bash";
-}
-
-/**
  * Buildpacks images put the runtime (and bash) on the PATH only inside the launcher; without `--`
  * the launcher may exit 0 whatever the probe does (research R3).
  */
 const LAUNCHER = ["/cnb/lifecycle/launcher", "--"];
 
 /**
- * The app service's Compose healthcheck from its probe, through the launcher for Buildpacks;
- * `undefined` for the probe `none`. A new copy counts as healthy about a second after it answers.
+ * The app service's Compose healthcheck from the probe design recorded (`app.build.probe`),
+ * through the launcher for Buildpacks; `undefined` for the probe `none` or a plan without one. A
+ * new copy counts as healthy about a second after it answers.
  */
 export function appHealthcheck(plan: DeployPlan): object | undefined {
   const build = plan.app.build;
-  const probe = probeFor(build);
+  const probe = build?.probe ?? "none";
   if (probe === "none") return undefined;
   return {
     test: [

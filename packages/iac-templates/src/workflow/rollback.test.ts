@@ -262,7 +262,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
         "::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving.",
       );
       expect(start.output).toContain(
-        "OpsCrew chose Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml)",
+        "It was built with Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml)",
       );
       expect(start.output).not.toContain("203.0.113.10");
       expect(dockerCalls()).toContain("docker rm -f c1");
@@ -345,7 +345,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       const start = run(recreate.start, { EXITED: NEW });
       expect(start.status).toBe(1);
       expect(start.output).toContain("::error::The new version did not pass its health check");
-      expect(start.output).toContain("OpsCrew chose Railpack (app.build.builder: railpack");
+      expect(start.output).toContain("It was built with Railpack (app.build.builder: railpack");
       expect(containers()).toEqual([]);
     });
 
@@ -354,7 +354,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       const start = run(recreate.start, { UNHEALTHY: NEW });
       expect(start.status).toBe(1);
       expect(start.output).toContain("within 60 seconds, so OpsCrew removed it. Check that");
-      expect(start.output).toContain("OpsCrew chose Railpack (app.build.builder: railpack");
+      expect(start.output).toContain("It was built with Railpack (app.build.builder: railpack");
       expect(containers()).toEqual([]);
 
       resetCalls();
@@ -504,28 +504,44 @@ describe("the deploy job per strategy", () => {
     }
   });
 
-  it("names the builder an automatic choice would pick, and its plan.yaml line", () => {
+  /** The builder hint: what follows the port sentence of the failed health check. */
+  const hint = (p: DeployPlan) =>
+    /answers \/api\/health\. ([^']*)'/.exec(deploy(p))?.[1] ?? "no hint found";
+  const RERUN = "then run opscrew design, opscrew adapt and opscrew provision.";
+
+  it("names the builder an automatic choice would pick and the one setting that switches to it", () => {
     const user = withBuild(plan, "railpack", { chosen: "user", automatic: "buildpacks" });
-    expect(deploy(user)).toContain(
-      "It was built with Railpack (app.build.builder: railpack in opscrew/plan.yaml). OpsCrew would choose Buildpacks: set app.build.builder: buildpacks with app.build.chosen: user, and run opscrew provision.",
+    expect(hint(user)).toBe(
+      `It was built with Railpack (app.build.builder: railpack in opscrew/plan.yaml). OpsCrew would choose Buildpacks: set app.build.builder: buildpacks in opscrew/plan.yaml, ${RERUN}`,
     );
     const own = withBuild(plan, "own-dockerfile", { automatic: "buildpacks" });
-    expect(deploy(own)).toContain(
-      "It was built with your own Dockerfile (app.build.builder: own-dockerfile in opscrew/plan.yaml). OpsCrew would choose Buildpacks:",
+    expect(hint(own)).toBe(
+      `It was built with your own Dockerfile (app.build.builder: own-dockerfile in opscrew/plan.yaml). OpsCrew would choose Buildpacks: set app.build.builder: buildpacks in opscrew/plan.yaml, ${RERUN}`,
     );
-    // The same builder as now: nothing else to name.
-    const same = withBuild(plan, "buildpacks", { automatic: "buildpacks" });
-    expect(deploy(same)).toContain("OpsCrew chose Buildpacks (app.build.builder: buildpacks in");
-    expect(deploy(same)).not.toContain("OpsCrew would choose");
+    // Neither app.build.chosen nor the other builders.
+    for (const p of [user, own]) {
+      expect(hint(p)).not.toContain("chosen");
+      expect(hint(p)).not.toContain("generated-dockerfile");
+    }
   });
 
-  it("names the user's builder and the setting that hands the choice back to OpsCrew", () => {
-    const p = withBuild(plan, "railpack", { language: "go", chosen: "user" });
-    expect(deploy(p)).toContain(
-      "It was built with Railpack, which opscrew/plan.yaml sets (app.build.builder: railpack, app.build.chosen: user): set app.build.chosen to auto and run opscrew design to build with the builder OpsCrew chooses.",
+  it("names only the builder when it is the one OpsCrew chooses", () => {
+    const same = withBuild(plan, "buildpacks", { automatic: "buildpacks" });
+    expect(hint(same)).toBe(
+      "It was built with Buildpacks, the builder OpsCrew chooses for this app (app.build.builder: buildpacks in opscrew/plan.yaml).",
     );
+    const unknown = withBuild(plan, "railpack", { chosen: "user" });
+    expect(hint(unknown)).toBe(
+      "It was built with Railpack (app.build.builder: railpack in opscrew/plan.yaml).",
+    );
+    expect(hint(plan)).toBe(
+      `It was built from Dockerfile; to let OpsCrew choose a builder, ${RERUN.replace("then ", "")}`,
+    );
+  });
+
+  it("names app.port in opscrew/plan.yaml for the port the health check uses", () => {
     expect(deploy(plan)).toContain(
-      "It was built from Dockerfile; run opscrew design to let OpsCrew choose a builder.",
+      "within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health.",
     );
   });
 });

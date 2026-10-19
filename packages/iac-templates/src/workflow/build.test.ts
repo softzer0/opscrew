@@ -8,7 +8,7 @@ import type { DeployPlan, ImageBuilder, RuntimeLanguage } from "@opscrew/plan-sc
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { ACTIONS, IMAGES, TOOLS } from "../pins";
+import { ACTIONS, IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { jobYaml, serverPlan, withBuild } from "./__fixtures__/plans";
 import { DEPLOY_SECRETS, renderWorkflow } from "./index";
 
@@ -141,7 +141,7 @@ describe("the build job", () => {
     const buildpacks = rendered(planFor("buildpacks"));
     expect(buildpacks).toContain(`--builder ${IMAGES.paketoBuilder.ref}`);
     expect(buildpacks).toContain(`--run-image ${IMAGES.paketoRun.ref}`);
-    expect(buildpacks).toContain(`pack-version: ${TOOLS.pack.version}`);
+    expect(buildpacks).toContain(TOOLS.pack.sha256.amd64);
     const railpack = rendered(planFor("railpack"));
     expect(railpack).toContain(`BUILDKIT_SYNTAX=${IMAGES.railpackFrontend.ref}`);
     expect(railpack).toContain(TOOLS.railpack.sha256.amd64);
@@ -244,12 +244,19 @@ describe("build values", () => {
 describe("Buildpacks", () => {
   const job = buildJob(planFor("buildpacks"));
 
-  it("sets up the pinned pack, builds build-<sha> with --env settings and seals it", () => {
+  it("installs the pinned pack after checking OpsCrew's checksum, builds build-<sha> with --env settings and seals it", () => {
     const names = job.steps.map((s) => s.id ?? s.name ?? s.uses);
+    const install = names.indexOf(`Install pack ${TOOLS.pack.version}`);
+    expect(install).toBeGreaterThan(0);
+    expect(install).toBeLessThan(names.indexOf("pack"));
     expect(names.indexOf("pack")).toBeLessThan(names.indexOf("Write the seal Dockerfile"));
     expect(names.indexOf("Write the seal Dockerfile")).toBeLessThan(names.indexOf("push"));
-    const setup = job.steps.find((s) => s.uses === action("setupPack"));
-    expect(setup?.with).toEqual({ "pack-version": TOOLS.pack.version });
+    const download = job.steps[install]?.run ?? "";
+    expect(download).toContain(toolDownloadUrl("pack", "amd64"));
+    expect(download).toContain(`echo "${TOOLS.pack.sha256.amd64}  `);
+    expect(download.indexOf("sha256sum -c -")).toBeLessThan(download.indexOf("sudo install"));
+    // Not the setup action, which checks pack against a checksum from the same release.
+    expect(JSON.stringify(job)).not.toContain("setup-pack");
     const script = step(job, "pack")?.run ?? "";
     expect(script).toContain("settings=(--env BP_GO_VERSION=1.26)");
     expect(script).toContain('pack build "$NAME:build-$GITHUB_SHA"');
@@ -275,6 +282,28 @@ describe("Buildpacks", () => {
     const plan = withBuild(serverPlan(), "buildpacks", { language, version });
     expect(step(buildJob(plan), "pack")?.run).toContain(`settings=(--env ${setting})`);
   });
+
+  it("removes the secret files .dockerignore lists from the checkout before pack builds", () => {
+    const names = job.steps.map((s) => s.id ?? s.name ?? s.uses);
+    const remove = names.indexOf("Keep secret files out of the Buildpacks build");
+    expect(remove).toBeGreaterThan(0);
+    expect(remove).toBeLessThan(names.indexOf("pack"));
+    const script = job.steps[remove]?.run ?? "";
+    for (const name of [".env", ".env.*", "*.pem", "*.key"]) expect(script).toContain(`'${name}'`);
+    expect(script).toContain("! -name '.env.example'");
+    expect(script).toContain("-name node_modules -o -name .git");
+    // Only the Buildpacks build: BuildKit reads .dockerignore itself.
+    for (const builder of ["generated-dockerfile", "own-dockerfile", "railpack"] as const) {
+      expect(rendered(planFor(builder))).not.toContain("Buildpacks does not read .dockerignore");
+    }
+  });
+
+  it("installs the arm64 pack on the arm64 runner", () => {
+    const plan = withBuild(testPlan({ provider: "own", arch: "arm64" }), "buildpacks");
+    const install = buildJob(plan).steps.find((s) => s.name?.startsWith("Install pack"))?.run;
+    expect(install).toContain(toolDownloadUrl("pack", "arm64"));
+    expect(install).toContain(TOOLS.pack.sha256.arm64);
+  });
 });
 
 describe("Railpack", () => {
@@ -299,6 +328,29 @@ describe("Railpack", () => {
       "cache-from": "type=gha,scope=railpack",
       "cache-to": "type=gha,mode=min,scope=railpack",
     });
+  });
+
+  it.each([
+    ["node", "24", "RAILPACK_NODE_VERSION=24"],
+    ["python", "3.14", "RAILPACK_PYTHON_VERSION=3.14"],
+    ["go", "1.26", "RAILPACK_GO_VERSION=1.26"],
+    ["ruby", "4.0.7", "RAILPACK_RUBY_VERSION=4.0.7"],
+    ["java", "25", "RAILPACK_JDK_VERSION=25"],
+    ["dotnet", "10.0", "RAILPACK_DOTNET_VERSION=10.0"],
+    ["rust", "1.98", "RAILPACK_RUST_VERSION=1.98"],
+  ] as const)("hands Railpack the recorded %s version %s", (language, version, setting) => {
+    const job = buildJob(withBuild(serverPlan(), "railpack", { language, version }));
+    expect(step(job, "prepare")?.run).toContain(`values=(--env ${setting})`);
+    // Railpack's frontend reads every value of its plan as a BuildKit secret.
+    expect(String(step(job, "railpack")?.with?.secrets).split("\n")[0]).toBe(setting);
+  });
+
+  it("has no version setting to hand Railpack for PHP, which reads composer.json itself", () => {
+    for (const language of ["php", "other"] as const) {
+      const job = buildJob(withBuild(serverPlan(), "railpack", { language }));
+      expect(step(job, "prepare")?.run).toContain("values=()");
+      expect(String(step(job, "railpack")?.with?.secrets)).not.toContain("RAILPACK_");
+    }
   });
 
   it("installs the arm64 CLI on the arm64 runner", () => {
@@ -370,6 +422,66 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
       "NEXT_PUBLIC_SITE=https://shop.example.com",
       "A=b c",
     ]);
+  });
+
+  it("removes secret files from the Buildpacks build context, naming each and never its content", () => {
+    const secretValue = fakeSecret("github-token");
+    const files = {
+      ".env": `TOKEN=${secretValue}\n`,
+      ".env.production": "A=1\n",
+      "apps/api/.env.local": "A=1\n",
+      "certs/server.pem": "pem\n",
+      "id.key": "key\n",
+      ".env.example": "TOKEN=\n",
+      "apps/api/.env.example": "A=\n",
+      "node_modules/pkg/.env": "A=1\n",
+      ".git/hooks/x.key": "x\n",
+      "src/app.js": "app\n",
+      "config.keys": "not a key file\n",
+    };
+    const run = (context: string) => {
+      const repo = join(work, "repo");
+      rmSync(repo, { recursive: true, force: true });
+      for (const [path, content] of Object.entries(files)) {
+        mkdirSync(join(repo, path, ".."), { recursive: true });
+        writeFileSync(join(repo, path), content);
+      }
+      const plan = {
+        ...planFor("buildpacks"),
+        app: { ...planFor("buildpacks").app, buildContext: context },
+      };
+      const script = step(buildJob(plan), "Keep secret files out of the Buildpacks build")?.run;
+      const result = bash(`cd "${repo}"\n${script}`, {});
+      const left = Object.keys(files).filter((path) => existsSync(join(repo, path)));
+      return { ...result, left };
+    };
+
+    const root = run(".");
+    expect(root.status, root.output).toBe(0);
+    expect(root.left.sort()).toEqual(
+      [
+        ".env.example",
+        "apps/api/.env.example",
+        "node_modules/pkg/.env",
+        ".git/hooks/x.key",
+        "src/app.js",
+        "config.keys",
+      ].sort(),
+    );
+    expect(root.output.trim().split("\n").sort()).toEqual(
+      [".env", ".env.production", "apps/api/.env.local", "certs/server.pem", "id.key"]
+        .map((path) => `removed ${path} from the build: Buildpacks does not read .dockerignore`)
+        .sort(),
+    );
+    expect(root.output).not.toContain(secretValue);
+
+    // An app folder as the context: only that folder is touched.
+    const folder = run("apps/api");
+    expect(folder.status, folder.output).toBe(0);
+    expect(folder.output.trim()).toBe(
+      "removed apps/api/.env.local from the build: Buildpacks does not read .dockerignore",
+    );
+    expect(folder.left).toContain(".env");
   });
 
   it("stops when pack reports no digest", () => {

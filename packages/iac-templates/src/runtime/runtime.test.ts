@@ -9,7 +9,11 @@ import { renderCaddyfile, renderCompose, renderTunnelConnectorCompose } from "./
 /** `testPlan` (Hetzner, `shop` on port 3000) with the given fields. */
 function plan(
   o: {
-    build?: Pick<AppBuild, "builder" | "probe"> & { language: AppBuild["runtime"]["language"] };
+    build?: {
+      builder: AppBuild["builder"];
+      language: AppBuild["runtime"]["language"];
+      probe: NonNullable<AppBuild["probe"]>;
+    };
     healthPath?: string;
     drainSeconds?: number;
     domain?: string;
@@ -43,7 +47,7 @@ function plan(
                 language: o.build.language,
                 ...(o.build.language === "other" ? {} : { version: "1" }),
               },
-              ...(o.build.probe === undefined ? {} : { probe: o.build.probe }),
+              probe: o.build.probe,
             },
           }),
     },
@@ -156,7 +160,7 @@ const PYTHON_PROBE =
   "import os,urllib.request as u;u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/api/health',timeout=2)";
 
 describe("the app's healthcheck", () => {
-  it("runs node -e on the health path for the generated Dockerfile, also when app.build is absent", () => {
+  it("probes with the plan's app.build.probe, and adds none without app.build", () => {
     const expected = {
       test: ["CMD", "node", "-e", NODE_PROBE],
       interval: "5s",
@@ -165,21 +169,40 @@ describe("the app's healthcheck", () => {
       start_period: "30s",
       start_interval: "1s",
     };
-    expect(app(plan()).healthcheck).toEqual(expected);
     expect(
-      app(plan({ build: { builder: "generated-dockerfile", language: "node" } })).healthcheck,
+      app(plan({ build: { builder: "generated-dockerfile", language: "node", probe: "node" } }))
+        .healthcheck,
     ).toEqual(expected);
+    // Design records the probe; without app.build there is none to guess.
+    expect(app(plan()).healthcheck).toBeUndefined();
+    expect(
+      app(plan({ build: { builder: "railpack", language: "node", probe: "none" } })).healthcheck,
+    ).toBeUndefined();
   });
 
-  it("runs python -c for a generated Python image", () => {
+  it("probes a static site's Caddy image with wget, never with node", () => {
+    const site = app(
+      plan({ build: { builder: "generated-dockerfile", language: "node", probe: "wget" } }),
+    );
+    expect(site.healthcheck?.test).toEqual([
+      "CMD",
+      "wget",
+      "-q",
+      "-O",
+      "/dev/null",
+      "http://127.0.0.1:3000/api/health",
+    ]);
+  });
+
+  it("runs python -c for a Python image", () => {
     const { healthcheck } = app(
-      plan({ build: { builder: "generated-dockerfile", language: "python" } }),
+      plan({ build: { builder: "generated-dockerfile", language: "python", probe: "python" } }),
     );
     expect(healthcheck?.test).toEqual(["CMD", "python", "-c", PYTHON_PROBE]);
   });
 
-  it("runs the runtime through the Buildpacks launcher, with `--` so the exit code counts", () => {
-    const node = app(plan({ build: { builder: "buildpacks", language: "node" } }));
+  it("runs the probe through the Buildpacks launcher, with `--` so the exit code counts", () => {
+    const node = app(plan({ build: { builder: "buildpacks", language: "node", probe: "node" } }));
     expect(node.healthcheck?.test).toEqual([
       "CMD",
       "/cnb/lifecycle/launcher",
@@ -188,7 +211,7 @@ describe("the app's healthcheck", () => {
       "-e",
       NODE_PROBE,
     ]);
-    const ruby = app(plan({ build: { builder: "buildpacks", language: "ruby" } }));
+    const ruby = app(plan({ build: { builder: "buildpacks", language: "ruby", probe: "ruby" } }));
     expect(ruby.healthcheck?.test).toEqual([
       "CMD",
       "/cnb/lifecycle/launcher",
@@ -198,79 +221,38 @@ describe("the app's healthcheck", () => {
       "-e",
       "exit Net::HTTP.get_response(URI('http://127.0.0.1:'+ENV['PORT']+'/api/health')).is_a?(Net::HTTPSuccess)",
     ]);
+    const go = app(plan({ build: { builder: "buildpacks", language: "go", probe: "bash" } }));
+    expect(go.healthcheck?.test).toEqual([
+      "CMD",
+      "/cnb/lifecycle/launcher",
+      "--",
+      "bash",
+      "-c",
+      BASH_PROBE,
+    ]);
   });
 
-  it("runs the runtime's own form for Railpack", () => {
-    const php = app(plan({ build: { builder: "railpack", language: "php" } }));
+  it("runs the probe as it is for other builders", () => {
+    const php = app(plan({ build: { builder: "railpack", language: "php", probe: "php" } }));
     expect(php.healthcheck?.test).toEqual([
       "CMD",
       "php",
       "-r",
       "exit(@file_get_contents('http://127.0.0.1:'.getenv('PORT').'/api/health')===false?1:0);",
     ]);
-    const node = app(plan({ build: { builder: "railpack", language: "node" } }));
-    expect(node.healthcheck?.test).toEqual(["CMD", "node", "-e", NODE_PROBE]);
-  });
-
-  it("adds none for an own Dockerfile (its HEALTHCHECK applies) or the probe none", () => {
-    expect(app(plan({ build: { builder: "own-dockerfile", language: "node" } })).healthcheck).toBe(
-      undefined,
-    );
-    expect(
-      app(plan({ build: { builder: "railpack", language: "node", probe: "none" } })).healthcheck,
-    ).toBe(undefined);
-  });
-
-  it("probes with bash's /dev/tcp for a runtime without an interpreter, through the launcher for Buildpacks", () => {
-    for (const language of ["go", "java", "dotnet", "rust", "other"] as const) {
-      expect(app(plan({ build: { builder: "railpack", language } })).healthcheck?.test).toEqual([
-        "CMD",
-        "bash",
-        "-c",
-        BASH_PROBE,
-      ]);
-      expect(app(plan({ build: { builder: "buildpacks", language } })).healthcheck?.test).toEqual([
-        "CMD",
-        "/cnb/lifecycle/launcher",
-        "--",
-        "bash",
-        "-c",
-        BASH_PROBE,
-      ]);
-    }
-  });
-
-  it("uses the probe the plan names over the one the builder implies", () => {
-    const wget = app(
-      plan({ build: { builder: "generated-dockerfile", language: "node", probe: "wget" } }),
-    );
-    expect(wget.healthcheck?.test).toEqual([
-      "CMD",
-      "wget",
-      "-q",
-      "-O",
-      "/dev/null",
-      "http://127.0.0.1:3000/api/health",
-    ]);
+    const go = app(plan({ build: { builder: "railpack", language: "go", probe: "bash" } }));
+    expect(go.healthcheck?.test).toEqual(["CMD", "bash", "-c", BASH_PROBE]);
     const own = app(plan({ build: { builder: "own-dockerfile", language: "go", probe: "bash" } }));
     expect(own.healthcheck?.test).toEqual(["CMD", "bash", "-c", BASH_PROBE]);
-    const node = app(plan({ build: { builder: "buildpacks", language: "go", probe: "node" } }));
-    expect(node.healthcheck?.test).toEqual([
-      "CMD",
-      "/cnb/lifecycle/launcher",
-      "--",
-      "node",
-      "-e",
-      NODE_PROBE,
-    ]);
   });
 
   it("quotes the health path for the probe and for Compose", () => {
     // The quote and backslash are escaped for the language, `$` is doubled for Compose.
-    const test = app(plan({ healthPath: "/it's\\$up" })).healthcheck?.test;
+    const node = { builder: "generated-dockerfile", language: "node", probe: "node" } as const;
+    const test = app(plan({ healthPath: "/it's\\$up", build: node })).healthcheck?.test;
     expect(test?.[3]).toContain("+'/it\\'s\\\\$$up',");
-    const bash = app(plan({ healthPath: "/it's", build: { builder: "railpack", language: "go" } }))
-      .healthcheck?.test;
+    const go = { builder: "railpack", language: "go", probe: "bash" } as const;
+    const bash = app(plan({ healthPath: "/it's", build: go })).healthcheck?.test;
     expect(bash?.[3]).toContain(" '/it'\\''s' >&3");
   });
 

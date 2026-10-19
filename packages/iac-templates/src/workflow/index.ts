@@ -1,12 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { CLOUDFLARED_SHA256, CLOUDFLARED_VERSION, cloudflaredUrl, sshHostname } from "../tunnel";
+import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import { sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 import { buildJob } from "./build";
 import { afterDeployJobs } from "./jobs";
 import { renderPortainerWorkflow } from "./portainer";
 import {
-  CHECKOUT_ACTION,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
   deployJob,
@@ -17,7 +17,7 @@ import {
 import { rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
-export { buildRunner, CHECKOUT_ACTION, DEFAULT_TRIVY_IMAGE, DEPLOY_SECRETS } from "./shared";
+export { buildRunner, DEPLOY_SECRETS } from "./shared";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
@@ -122,10 +122,10 @@ function healthScript(tlsHint: boolean): string[] {
  * go through Cloudflare Access (`ProxyCommand cloudflared access ssh`).
  */
 function installCloudflaredStep(): string[] {
-  const arch = (machine: string, name: keyof typeof CLOUDFLARED_SHA256) =>
-    `      ${machine}) url='${cloudflaredUrl(name)}'; sum='${CLOUDFLARED_SHA256[name]}' ;;`;
+  const arch = (machine: string, name: PinArch) =>
+    `      ${machine}) url='${toolDownloadUrl("cloudflared", name)}'; sum='${TOOLS.cloudflared.sha256[name]}' ;;`;
   return [
-    `- name: Install cloudflared ${CLOUDFLARED_VERSION}`,
+    `- name: Install cloudflared ${TOOLS.cloudflared.version}`,
     "  run: |",
     "    set -euo pipefail",
     '    case "$(uname -m)" in',
@@ -195,7 +195,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
   ];
 
   const deploySteps = [
-    `- uses: ${CHECKOUT_ACTION}`,
+    `- uses: ${ACTIONS.checkout}`,
     ...(tunnelHost === undefined ? [] : installCloudflaredStep()),
     "- name: Configure SSH with the pinned host key",
     "  env:",

@@ -1,7 +1,7 @@
 import type { AppBuild, DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testPlan } from "../__fixtures__/plans";
+import { designProbe, testPlan } from "../__fixtures__/plans";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { PORTAINER_STACK_TEMPLATE_PATH } from "../portainer-target/stack";
 import { renderDependabot } from "./index";
@@ -45,6 +45,7 @@ function plan(
         chosen: "auto",
         reason: "test",
         runtime: { language, version: version ?? "1" },
+        probe: designProbe(builder, language),
       },
     },
   };

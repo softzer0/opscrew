@@ -7,7 +7,6 @@ import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { siteHosts } from "../runtime";
 import {
-  CADDY_IMAGE,
   cacheService,
   caddyfile,
   cloudflaredService,
@@ -300,7 +299,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
   }).join("\n");
   const ports = caddyPorts(web);
   services.caddy = {
-    image: CADDY_IMAGE,
+    image: IMAGES.caddy.ref,
     restart: "unless-stopped",
     ...(ports === undefined ? {} : { ports }),
     environment: { OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER },

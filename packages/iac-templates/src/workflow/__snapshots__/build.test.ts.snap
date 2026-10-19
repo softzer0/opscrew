@@ -31,10 +31,21 @@ exports[`the build job > matches the snapshot for buildpacks 1`] = `
           registry: ghcr.io
           username: \${{ github.actor }}
           password: \${{ secrets.GITHUB_TOKEN }}
-      - name: Set up pack
-        uses: buildpacks/github-actions/setup-pack@a96fc9720ee9ccf19d4c87c3de9c344a2c404c29 # v6.2.0
-        with:
-          pack-version: 0.40.9
+      - name: Install pack 0.40.9
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/pack.tar.gz" https://github.com/buildpacks/pack/releases/download/v0.40.9/pack-v0.40.9-linux.tgz
+          echo "dc0ee1e931cf8a106d7555a01a214864f9acb60b77adf15d69b74df4404758e9  $RUNNER_TEMP/pack.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/pack"
+          tar -xzf "$RUNNER_TEMP/pack.tar.gz" -C "$RUNNER_TEMP/pack"
+          sudo install -m 0755 "$(find "$RUNNER_TEMP/pack" -type f -name pack | head -n 1)" /usr/local/bin/pack
+      - name: Keep secret files out of the Buildpacks build
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            rm -f -- "$file"
+            echo "removed \${file#./} from the build: Buildpacks does not read .dockerignore"
+          done < <(find "." \\( -name node_modules -o -name .git \\) -prune -o -type f \\( -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \\) ! -name '.env.example' -print0)
       - id: pack
         name: Build the image with Buildpacks
         env:
@@ -295,7 +306,7 @@ exports[`the build job > matches the snapshot for railpack 1`] = `
           set -euo pipefail
           # The plan lists the names; the build reads the values as BuildKit secrets. Railpack
           # never sees a secret value here, only its name.
-          values=()
+          values=(--env RAILPACK_RUBY_VERSION=1.26)
           while IFS= read -r line; do
             [[ -z "$line" || "$line" == \\#* ]] && continue
             values+=(--env "$line")
@@ -328,7 +339,9 @@ exports[`the build job > matches the snapshot for railpack 1`] = `
           build-args: |
             BUILDKIT_SYNTAX=ghcr.io/railwayapp/railpack-frontend:v0.42.0@sha256:a42a12399fa9e83a09e475f69dbf8a45a8a74ea38a4485fcb401356d84317a14
             secrets-hash=\${{ steps.prepare.outputs.hash }}
+          # The frontend reads every value the plan lists as a secret, the runtime version too.
           secrets: |
+            RAILPACK_RUBY_VERSION=1.26
             \${{ secrets.OPSCREW_BUILD_ENV }}
             \${{ secrets.OPSCREW_BUILD_SECRETS }}
           cache-from: type=gha,scope=railpack
