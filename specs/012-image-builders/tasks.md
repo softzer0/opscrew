@@ -355,10 +355,23 @@ Four read-only reviewers (iac-templates; agents, plan-schema and detect; CLI, MC
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops --filter=opscrew`, `node plugin/validate.mjs`, plus that Docker pass
   - Effort: high
 
+- [ ] T1219 [US1] pnpm and Yarn without corepack, and no download when the app starts, in `packages/iac-templates/src/docker/**`
+  - Reads: spec FR-1203, FR-1204, FR-1228; T1216's report (the lead's brief); `src/docker/stacks.ts` (`pinnedPackageManager`, `jsInstall`, the node-server runtime stage), `src/pins.ts` `PACKAGE_MANAGERS`
+  - Depends: T1216
+  - Why: T1216 found that Node 25 and later ship no corepack (nodejs.org), so a pnpm or Yarn app on Node 26, which becomes LTS in late October 2026, fails at `corepack enable`. pnpm 12 also downloads a native binary on its first run, and Yarn 4 with `packageManager` downloads Yarn at every container start, so the app needs the network to start.
+  - Accept:
+    - the build stage installs the package manager without corepack: the version `packageManager` names, else the pin, installed with the image's npm (`npm install -g <pm>@<version>`), on every Node version;
+    - the runtime stage needs no download to start: it runs the app's start script without a package manager where the script is plain (`npm run <script>`, or the script's own command). Where the app does need the package manager at run time (Yarn PnP, which needs Yarn's loader), the pinned one is installed into the image at build time;
+    - corepack goes from both stages, unless something still needs it;
+    - snapshot and unit tests: Node 24 and Node 26 bases, pnpm and Yarn, with and without `packageManager`, and Yarn PnP if OpsCrew supports it today;
+    - the Docker pass for `monorepo-two-apps` (pnpm) and one npm example, plus a scratch build on Node 26 with pnpm, started with no network (`docker run --network none`) and answering on its health route. Same hygiene as T1213.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew`, plus that Docker pass
+  - Effort: high
+
 - [ ] T1218 Live check after the fixes (lead): one Hetzner builder pass (`go-api` or `nextjs-postgres`) with the new restart check, and the Docker pass for a handful of examples; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
 
 {T1201, T1202} → {T1212 → T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211.
 T1201 and T1202 run in parallel. T1205 needs T1202's R8; T1203 needs T1212; T1204 and T1206 need
-only T1201. Then T1213 → T1214 → {T1215, T1216, T1217} → T1218.
+only T1201. Then T1213 → T1214 → {T1215, T1216, T1217} → T1219 (after T1216) → T1218.

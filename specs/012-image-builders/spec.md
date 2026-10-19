@@ -289,7 +289,10 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
      message, never a silent older version.
 
   A `go` line in `go.mod` is a minimum within its release line (`go 1.21` allows 1.21.x, not
-  1.26). The defaults today are in `packages/iac-templates/src/pins.ts` (`RUNTIME_DEFAULTS`: Node
+  1.26). Railpack gets the recorded version through its `RAILPACK_<NAME>_VERSION` settings
+  (Node, Python, Go, Ruby, Rust, .NET, Java); a version file Railpack reads itself still wins,
+  which is the declared version. Railpack has no PHP setting: PHP's version comes from
+  `composer.json`'s `require.php`, else Railpack's own default. The defaults today are in `packages/iac-templates/src/pins.ts` (`RUNTIME_DEFAULTS`: Node
   24, Python 3.14, …).
 - **FR-1205**: A project's own Dockerfile MUST be used as it is, unless the user chooses another
   builder. OpsCrew MUST check it against the baseline and list each finding with its fix.
