@@ -81,7 +81,7 @@ live test records each one as an `observed:` line.
 | The updater reaches a loopback Portainer through `host.docker.internal` | full (step 10) | [x] 2026-10-16 |
 | cloudflared reaches Portainer with `no_tls_verify`; the hostname answers 404 outside `/api/stacks/webhooks/` | full (step 7) | [x] 2026-10-16 (401 without the service token) |
 | GitHub accepts the orphan-branch calls and drift's `git fetch` with the user's fine-grained token | core | [x] 2026-10-15 |
-| The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [x] 2026-10-19: steps 2–3 (and up to step 8) ran with it; it was made from [the starting list](e2e.md#your-existing-portainer). Whether a smaller list also works is not tested |
+| The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [x] 2026-10-19: steps 2–3 (and up to step 8) ran with it; its permissions were exactly [the starting list](e2e.md#your-existing-portainer), the same as the guide's for tunnel mode: Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit, Zone → Config Rules → Edit, and Account → Cloudflare Tunnel → Edit. Whether a smaller list also works is not tested |
 | The guide's `openssl` command shows the fingerprint OpsCrew pins | core | [x] 2026-10-15 |
 | Two OpsCrew apps in one environment stay apart (their own stacks, registry entries and volumes, and their ports, 80/443 among them) | core (steps 7b, 8, 9b) | [x] 2026-10-18: their own stacks, registry entries and tunnels; volumes and ports are not checked |
 | The guide's steps that need a person: the certificate fingerprint in a browser, the registry steps in Portainer's UI | not automated | [ ] |
