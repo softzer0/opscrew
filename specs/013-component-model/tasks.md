@@ -422,16 +422,15 @@ Effort`.
 
 ## Dependencies
 
-{T1301a, T1301b} → {T1302 (lead), T1303, T1306, T1308a} → {T1304, T1305} (after T1302) → T1307 →
-T1308b → T1308c → T1309 → T1311 → T1310 → {T1312, T1313} → T1314 → T1315.
+{T1301a, T1301b} → {T1302 (lead), T1303, T1306, T1308a} → {T1304, T1305} (after T1302) → T1305b → {T1307, T1308b} → T1308c → T1309 → T1311 → T1310 → {T1312, T1313} → T1314 → T1315.
 
 ## Parallel waves
 
 1. T1301a, T1301b.
 2. T1302 (lead), T1303, T1306, T1308a.
 3. T1304, T1305.
-4. T1307.
-5. T1308b.
+4. T1305b.
+5. T1307, T1308b (T1308b touches only iac-templates; if it breaks agents, it merges together with T1308c).
 6. T1308c.
 7. T1309.
 8. T1311.
