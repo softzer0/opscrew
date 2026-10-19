@@ -9,7 +9,7 @@ import { checkServiceVersion, enabledServices, renderContext, serviceSpec } from
 import type { ServiceSpec } from "../catalog/types";
 import { IMAGES } from "../pins";
 import type { RenderedFile } from "../types";
-import { hasCronJobs } from "../workflow/shared";
+import { hasCronJobs, sqliteFolder } from "../workflow/shared";
 import { composeLiteral, hardened } from "./services";
 
 /** `mem_limit` and an equal `memswap_limit`: Docker's default lets a container swap as much again. */
@@ -34,7 +34,7 @@ export interface RenderedServices {
   services: Record<string, object>;
   /** What the app, its workers and cron wait for. */
   dependsOn: Record<string, { condition: string }>;
-  /** Named volumes to declare. */
+  /** Named volumes to declare: the services', then the SQLite volume (see {@link appVolumes}). */
   volumes: string[];
   /** Portainer: the settings files, inline (`configs.<name>.content`). */
   configs: Record<string, { content: string }>;
@@ -166,7 +166,26 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
     };
     rendered.dependsOn[service.name] = { condition: "service_healthy" };
   }
+  // Named from the plan alone, so destroy can list it even when the plan cannot be rendered.
+  if (plan.storage?.sqlite !== undefined) rendered.volumes.push(SQLITE_VOLUME);
   return rendered;
+}
+
+/** The volume of the app's Compose project that keeps a SQLite database's folder. */
+const SQLITE_VOLUME = "sqlite";
+
+/**
+ * The `volumes` of a container of the app's image (the app, the release command, the workers and
+ * cron): its `own` mounts, then for an app on SQLite the volume `sqlite` on the database's folder
+ * ({@link sqliteFolder}); `{}` when there are none. Docker gives a new volume the owner of that
+ * folder in the image, which the image makes the app's user's (the generated Dockerfile, or the
+ * seal of the other builders).
+ * @throws OpsCrewError `INVALID_INPUT` for a SQLite folder OpsCrew cannot mount.
+ */
+export function appVolumes(plan: DeployPlan, own: readonly string[] = []): { volumes?: string[] } {
+  const folder = sqliteFolder(plan);
+  const all = [...own, ...(folder === undefined ? [] : [`${SQLITE_VOLUME}:${folder}`])];
+  return all.length > 0 ? { volumes: all } : {};
 }
 
 /** Where supercronic finds the crontab in the cron container. */
@@ -294,7 +313,7 @@ export interface ProcessBase {
  * The enabled workers, each its own service of the app's image, and the `cron` service when a
  * cron job is enabled: no published port, no health check (an image's own would only mark them
  * unhealthy), a memory limit (cron's is the app's: its jobs run the app's code), a stop grace
- * period, and `deploy.replicas` for a worker's count.
+ * period, `deploy.replicas` for a worker's count, and the SQLite volume ({@link appVolumes}).
  */
 export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<string, object> {
   const end = (memoryMb: number) => ({
@@ -312,6 +331,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       restart: "unless-stopped",
       ...base.environment(),
       ...workerStart(plan, worker),
+      ...appVolumes(plan),
       stop_grace_period: `${worker.stopGraceSeconds}s`,
       deploy: { replicas: worker.count },
       ...end(worker.memoryMb),
@@ -324,6 +344,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       ...base.environment(),
       ...cronStart(plan),
       ...base.crontab,
+      ...appVolumes(plan, "volumes" in base.crontab ? base.crontab.volumes : []),
       // supercronic reads its crontab once, when it starts.
       ...configLabel(crontab(plan)),
       stop_grace_period: "10s",

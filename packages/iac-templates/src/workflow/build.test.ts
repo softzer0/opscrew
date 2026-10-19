@@ -16,6 +16,7 @@ import {
   withBuild,
   withPlan,
   withProcesses,
+  withSqlite,
 } from "./__fixtures__/plans";
 import { DEPLOY_SECRETS, renderWorkflow } from "./index";
 
@@ -687,6 +688,68 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
       { cron: [NIGHTLY] },
     );
     expect(sealOf(arm)).toContain(supercronic("arm64"));
+  });
+
+  describe("on SQLite, the database's folder owned by the app's user", () => {
+    const from = `FROM ghcr.io/acme/shop:build-${"f".repeat(40)}@${DIGEST}`;
+
+    it("Railpack: with the framework's writable folders, before uid 10001", () => {
+      expect(sealOf(withSqlite(planFor("railpack", "rust"), { dir: "data" }))).toBe(
+        [
+          from,
+          "RUN mkdir -p /app/data && chown -R 10001:10001 /app/data",
+          "USER 10001:10001",
+          "",
+        ].join("\n"),
+      );
+      // Rails keeps its database in storage/, one of its writable folders already.
+      const folders = "/app/tmp /app/log /app/storage /app/db";
+      expect(sealOf(withSqlite(planFor("railpack", "ruby")))).toBe(
+        [
+          from,
+          `RUN mkdir -p ${folders} && chown -R 10001:10001 ${folders}`,
+          "USER 10001:10001",
+          "",
+        ].join("\n"),
+      );
+    });
+
+    it("Buildpacks: made by root for the run image's user, which the image keeps", () => {
+      expect(sealOf(withSqlite(planFor("buildpacks")))).toBe(
+        [
+          from,
+          "USER root",
+          "RUN mkdir -p /workspace/storage && chown -R 1002:1001 /workspace/storage",
+          "USER 1002:1001",
+          "",
+        ].join("\n"),
+      );
+    });
+
+    it("an own Dockerfile: sealed only on SQLite, WORKDIR making the folder as the image's user", () => {
+      const own = withSqlite(planFor("own-dockerfile"), { workdir: "/srv/app" });
+      expect(sealOf(own)).toBe(
+        [from, "WORKDIR /srv/app/storage", "WORKDIR /srv/app", ""].join("\n"),
+      );
+      expect(step(buildJob(own), "own")?.with?.tags).toBe(
+        "${{ steps.image.outputs.name }}:build-${{ github.sha }}",
+      );
+      const keepAll = withPlan(own, { imageRetention: { enabled: false } });
+      expect(parse(rendered(keepAll)).jobs.prune?.steps[0]?.name).toBe(
+        "Delete the intermediate build images",
+      );
+      const both = sealOf(withProcesses(own, { cron: [NIGHTLY] })).split("\n");
+      expect(both.slice(1, 4)).toEqual([
+        supercronic("amd64"),
+        "WORKDIR /srv/app/storage",
+        "WORKDIR /srv/app",
+      ]);
+    });
+
+    it("OpsCrew's own Dockerfile makes the folder itself, so it needs no seal", () => {
+      const generated = withSqlite(planFor("generated-dockerfile"));
+      expect(buildJob(generated)).toEqual(buildJob(planFor("generated-dockerfile")));
+    });
   });
 
   it("retries railpack prepare only on its temporary-failure exit code and hashes the non-secret values", () => {

@@ -12,6 +12,7 @@ import { serviceSpec } from "../catalog";
 import { IMAGES } from "../pins";
 import { renderCaddyfile } from "../runtime";
 import { serviceLogging } from "../runtime/services";
+import { withSqlite } from "../workflow/__fixtures__/plans";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
@@ -563,6 +564,45 @@ describe("the components in a stack", () => {
     };
     expect(label("0 * * * *")).toMatch(/^[0-9a-f]{64}$/);
     expect(label("*/5 * * * *")).not.toBe(label("0 * * * *"));
+  });
+
+  it("keeps a SQLite database in the volume sqlite, mounted in every container of the app's image", () => {
+    const sqlite = withSqlite(components, { dir: "data" });
+    const content = renderPortainerStack(sqlite, ctx).content;
+    expect(content).toMatchSnapshot();
+    const doc = stack(content);
+    for (const name of ["app", "release", "worker", "cron"]) {
+      expect(doc.services[name]?.volumes, name).toEqual(["sqlite:/app/data"]);
+    }
+    expect(doc.services.cron?.configs).toEqual([
+      { source: "crontab", target: "/etc/opscrew/crontab" },
+    ]);
+    expect(doc.services.kafka?.volumes).toEqual(["kafka_data:/var/lib/kafka/data"]);
+    expect(Object.keys(doc.volumes ?? {})).toEqual([
+      "mysql_data",
+      "rabbitmq_data",
+      "kafka_data",
+      "sqlite",
+    ]);
+    // Data deletion removes it with the services' volumes.
+    expect(portainerStackVolumes(sqlite)).toEqual([
+      "opscrew-shop_mysql_data",
+      "opscrew-shop_rabbitmq_data",
+      "opscrew-shop_kafka_data",
+      "opscrew-shop_sqlite",
+    ]);
+    expect(componentsStack.services.app?.volumes).toBeUndefined();
+  });
+
+  it("names the SQLite volume for destroy even when the stack cannot be rendered", () => {
+    const unknownFolder = withSqlite(
+      DeployPlanSchema.parse({
+        ...components,
+        app: { ...components.app, build: { ...components.app.build, builder: "own-dockerfile" } },
+      }),
+    );
+    expect(() => renderPortainerStack(unknownFolder, ctx)).toThrow("has no WORKDIR");
+    expect(portainerStackVolumes(unknownFolder)).toContain("opscrew-shop_sqlite");
   });
 });
 

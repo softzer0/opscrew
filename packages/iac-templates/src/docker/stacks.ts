@@ -82,6 +82,21 @@ function supercronic(arch: PinArch | undefined): string[] {
   ];
 }
 
+/**
+ * The runtime stage's `USER` line, then for an app on SQLite the database's folder (`sqlite`,
+ * absolute): `WORKDIR` makes a missing folder as that user (the app's files are already theirs),
+ * so Docker gives a new volume on it that owner; the stage then returns to `/app`.
+ */
+function runAs(user: string, sqlite: string | undefined): string[] {
+  if (sqlite === undefined) return [`USER ${user}`];
+  return [
+    `USER ${user}`,
+    "# SQLite's folder (storage.sqlite in opscrew/plan.yaml), made as the app's user: Docker gives a new volume on it the folder's owner.",
+    `WORKDIR ${sqlite}`,
+    "WORKDIR /app",
+  ];
+}
+
 /** The first lines of every Dockerfile, with the note when its base is pinned by tag only. */
 const header = (stack: DockerStack, base: BaseImage) =>
   [
@@ -522,6 +537,7 @@ export function nextStandaloneDockerfile(
   base: BaseImage,
   releaseCommand?: string,
   cron?: PinArch,
+  sqlite?: string,
 ): string {
   const dir = appDirectory(facts);
   const atRoot = dir === ".";
@@ -585,7 +601,7 @@ export function nextStandaloneDockerfile(
     ...supercronic(cron),
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
     copyFromBuild("/out", "./"),
-    "USER node",
+    ...runAs("node", sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
     "",
@@ -604,6 +620,7 @@ export function nodeServerDockerfile(
   base: BaseImage,
   releaseCommand?: string,
   cron?: PinArch,
+  sqlite?: string,
 ): string {
   const dir = appDirectory(facts);
   const runtime = runtimePackageManager(
@@ -631,7 +648,7 @@ export function nodeServerDockerfile(
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
     "COPY --from=build --chown=node:node /app ./",
     ...runtime.lines,
-    "USER node",
+    ...runAs("node", sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
     "",
@@ -936,12 +953,13 @@ export function fastapiDockerfile(
   port: number,
   base: BaseImage,
   cron?: PinArch,
+  sqlite?: string,
 ): string {
   return [
     ...pythonBase("python-fastapi", port, facts, base, cron),
     "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("uvicorn"),
-    "USER app",
+    ...runAs("app", sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
     "",
@@ -966,6 +984,7 @@ export function djangoDockerfile(
   port: number,
   base: BaseImage,
   cron?: PinArch,
+  sqlite?: string,
 ): string {
   const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
@@ -977,7 +996,7 @@ export function djangoDockerfile(
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
     "# container runs.",
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
-    "USER app",
+    ...runAs("app", sqlite),
     `EXPOSE ${port}`,
     facts.build.releaseCommand === undefined
       ? "# Run migrations as part of your release process (for example `python manage.py migrate`)."
@@ -993,11 +1012,12 @@ export function pythonGenericDockerfile(
   port: number,
   base: BaseImage,
   cron?: PinArch,
+  sqlite?: string,
 ): string {
   const start = pythonStart(facts) ?? "python main.py";
   return [
     ...pythonBase("python-generic", port, facts, base, cron),
-    "USER app",
+    ...runAs("app", sqlite),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(start)}]`,
     "",

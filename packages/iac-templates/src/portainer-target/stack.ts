@@ -10,6 +10,7 @@ import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { siteHosts } from "../runtime";
 import {
+  appVolumes,
   crontab,
   memoryLimit,
   type RenderedServices,
@@ -257,8 +258,8 @@ function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
 
 /**
  * The Docker volumes the app stack creates (`<stack>_<volume>`): each service's data
- * (`<service>_data`, for example `db_data`), and Caddy's certificates in `caddy` mode. Stack
- * deletion keeps them; they go only with data deletion.
+ * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), and Caddy's
+ * certificates in `caddy` mode. Stack deletion keeps them; they go only with data deletion.
  */
 export function portainerStackVolumes(plan: DeployPlan): string[] {
   const { web } = portainerTarget(plan.target);
@@ -294,7 +295,7 @@ const STACK_HEADER = [
  * see {@link portainerStackEnvKeys}; OpsCrew's own values are `OPSCREW_*` variables, see
  * {@link PORTAINER_STACK_VARIABLES} and {@link portainerServiceVariable}); the release command runs
  * as the one-off service `release` the app, its workers and cron wait for; the services keep their
- * data in named volumes; Caddy's configuration, the services' settings files and the crontab are
+ * data in named volumes, and the app's image its SQLite database in `sqlite`; Caddy's configuration, the services' settings files and the crontab are
  * inline (`configs.<name>.content`, Compose 2.23 or newer), so no file sits next to the stack; the
  * web mode adds a cloudflared service (`tunnel`), publishes the chosen port (`proxy`) or ports
  * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`. The
@@ -316,6 +317,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     image: PORTAINER_IMAGE_PLACEHOLDER,
     restart: "unless-stopped",
     environment: environment(),
+    ...appVolumes(plan),
     ...memoryLimit(plan.app.memoryMb),
     ...hardened({ noCapabilities: true, internal: true }),
   };
@@ -327,6 +329,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     services.release = {
       image: PORTAINER_IMAGE_PLACEHOLDER,
       environment: environment(),
+      ...appVolumes(plan),
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       command: ["sh", "-c", composeLiteral(release)],
       ...memoryLimit(plan.app.memoryMb),

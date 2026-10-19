@@ -97,3 +97,25 @@ export function jobYaml(content: string, id: string): string {
 export function serverPlan(): DeployPlan {
   return testPlan({ domain: "shop.example.com" });
 }
+
+/**
+ * `plan` on SQLite: `storage.sqlite.dir` `dir` (default `storage`), the `recreate` strategy it
+ * needs, and for the user's own Dockerfile the folder the app runs in (`workdir`).
+ */
+export function withSqlite(
+  plan: DeployPlan,
+  o: { dir?: string; workdir?: string } = {},
+): DeployPlan {
+  const build = plan.app.build;
+  return DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      ...(build === undefined || o.workdir === undefined
+        ? {}
+        : { build: { ...build, workdir: o.workdir } }),
+    },
+    storage: { ...plan.storage, sqlite: { dir: o.dir ?? "storage" } },
+    deploy: { ...plan.deploy, strategy: "recreate" },
+  });
+}

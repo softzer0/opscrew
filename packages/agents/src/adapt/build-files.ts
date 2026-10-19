@@ -5,6 +5,7 @@ import {
   imageDigest,
   type RenderedFile,
   renderDockerAssets,
+  sqliteFolder,
   supercronicArch,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, ImageBuilder, ProjectFacts, RuntimeLanguage } from "@opscrew/plan-schema";
@@ -60,6 +61,8 @@ export async function renderDockerFiles(
     dockerfile,
     // The cron service runs supercronic from the app's image.
     ...(supercronic === undefined ? {} : { supercronic }),
+    // The SQLite volume takes the owner of this folder in the image OpsCrew's Dockerfile builds.
+    ...(dockerfile ? { sqliteFolder: sqliteFolder(plan) } : {}),
   };
   // The images the templates have no pin for, found by rendering once without digests.
   const unpinned = new Set<string>();

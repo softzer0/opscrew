@@ -213,6 +213,27 @@ describe.skipIf(GIT === undefined)("runAdapt with the plan's builder", () => {
     expect(await off.read("Dockerfile")).not.toContain("supercronic");
   });
 
+  it("makes the SQLite folder as the app's user when the plan has storage.sqlite", async () => {
+    const on = await adapt((plan) => ({
+      ...withBuild(plan, node24),
+      storage: { sqlite: { dir: "data" } },
+      deploy: { ...plan.deploy, strategy: "recreate" },
+    }));
+    const lines = (await on.read("Dockerfile")).split("\n");
+    const user = lines.indexOf("USER node");
+    expect(lines.slice(user + 2, user + 4)).toEqual(["WORKDIR /app/data", "WORKDIR /app"]);
+    const off = await adapt((plan) => withBuild(plan, node24));
+    expect(await off.read("Dockerfile")).not.toContain("WORKDIR /app/data");
+    // No Dockerfile to write: the folder in another builder's image is not needed here.
+    const railpack = build("railpack", { language: "node", version: "24" });
+    const other = await adapt((plan) => ({
+      ...withBuild(plan, railpack),
+      storage: { sqlite: { dir: "." } },
+      deploy: { ...plan.deploy, strategy: "recreate" },
+    }));
+    expect(other.result.createdFiles).not.toContain("Dockerfile");
+  });
+
   it("checks the user's own Dockerfile against the baseline and lists each finding with its fix", async () => {
     const own = 'FROM node:22-alpine\nWORKDIR /app\nCOPY . .\nCMD ["node", "server.js"]\n';
     const yours = build("own-dockerfile", { language: "node", version: "22" });

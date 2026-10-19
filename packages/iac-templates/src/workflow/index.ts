@@ -22,7 +22,13 @@ import {
 import { dockerConfig, rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
-export { buildRunner, DEPLOY_SECRETS, serviceEnvSecret, supercronicArch } from "./shared";
+export {
+  buildRunner,
+  DEPLOY_SECRETS,
+  serviceEnvSecret,
+  sqliteFolder,
+  supercronicArch,
+} from "./shared";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with

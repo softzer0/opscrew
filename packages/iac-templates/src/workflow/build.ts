@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan, RuntimeLanguage } from "@opscrew/plan-schema";
+import { appRoot } from "../app-root";
 import { SECRET_FILE_PATTERNS } from "../docker";
 import { supercronicAdd } from "../docker/stacks";
 import { ACTIONS, IMAGES, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
@@ -13,6 +14,7 @@ import {
   job,
   run,
   secret,
+  sqliteFolder,
   supercronicArch,
 } from "./shared";
 
@@ -138,23 +140,52 @@ function supercronicSeal(plan: DeployPlan): string[] {
   return arch === undefined ? [] : [supercronicAdd(arch)];
 }
 
+/** The user of the pinned Paketo run image (`IMAGES.paketoRun`), which a Buildpacks image runs as. */
+const BUILDPACKS_RUN_USER = "1002:1001";
+
+/**
+ * The seal's lines that make an app's SQLite folder ({@link sqliteFolder}) the app's user's, so
+ * Docker gives a new volume on it that owner; none without SQLite. Buildpacks: the app's files
+ * belong to the build user, so root makes the folder for the run image's user, which the image
+ * runs as again. The user's own Dockerfile: `WORKDIR` makes the folder as the image's user, with
+ * or without a shell in the image, and then returns to the app's folder; a folder the Dockerfile
+ * already copies keeps its owner. (Railpack's seal adds it to its writable folders.)
+ */
+function sqliteSeal(plan: DeployPlan): string[] {
+  const folder = sqliteFolder(plan);
+  if (folder === undefined) return [];
+  switch (plan.app.build?.builder) {
+    case "buildpacks":
+      return [
+        "USER root",
+        `RUN mkdir -p ${folder} && chown -R ${BUILDPACKS_RUN_USER} ${folder}`,
+        `USER ${BUILDPACKS_RUN_USER}`,
+      ];
+    case "own-dockerfile":
+      return [`WORKDIR ${folder}`, `WORKDIR ${appRoot(plan)}`];
+    default:
+      return [];
+  }
+}
+
 /**
  * True when the build pushes a `build-<commit>` intermediate that a seal build turns into the
- * final image: Buildpacks, Railpack, and the user's own Dockerfile when the plan has cron jobs.
+ * final image: Buildpacks, Railpack, and the user's own Dockerfile when the plan has cron jobs or
+ * SQLite.
  */
 export function sealsImage(plan: DeployPlan): boolean {
   const builder = plan.app.build?.builder;
   return (
     builder === "buildpacks" ||
     builder === "railpack" ||
-    (builder === "own-dockerfile" && hasCronJobs(plan))
+    (builder === "own-dockerfile" && (hasCronJobs(plan) || plan.storage?.sqlite !== undefined))
   );
 }
 
 /**
  * `generated-dockerfile` and `own-dockerfile` (and a plan without a builder yet). OpsCrew's own
- * Dockerfile already holds supercronic when the plan has cron jobs; the user's own one builds
- * `build-<commit>` instead, and the seal adds it.
+ * Dockerfile already holds supercronic when the plan has cron jobs, and the SQLite folder; the
+ * user's own one builds `build-<commit>` instead, and the seal adds them.
  */
 function dockerfileSteps(plan: DeployPlan): string[] {
   const source = [
@@ -180,7 +211,7 @@ function dockerfileSteps(plan: DeployPlan): string[] {
     "    provenance: false",
     "    cache-from: type=gha",
     "    cache-to: type=gha,mode=max",
-    ...sealSteps("own", supercronicSeal(plan)),
+    ...sealSteps("own", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
   ];
 }
 
@@ -312,20 +343,26 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       "fi",
       'echo "digest=$digest" >> "$GITHUB_OUTPUT"',
     ]),
-    ...sealSteps("pack", supercronicSeal(plan)),
+    ...sealSteps("pack", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
   ];
 }
 
 /**
  * Railpack: installs the pinned CLI (checksum from pins.ts), plans the build with the runtime
  * version, the non-secret build values and the names of the secret ones, and builds
- * `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal, which makes
- * the image run as uid 10001.
+ * `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal, which gives
+ * uid 10001 the framework's writable folders and the SQLite folder, and makes the image run as it.
  */
 function railpackSteps(plan: DeployPlan): string[] {
   const context = JSON.stringify(plan.app.buildContext || ".");
   const language = plan.app.build?.runtime.language ?? "other";
-  const writable = (RAILPACK_WRITABLE[language] ?? []).map((dir) => `/app/${dir}`);
+  const sqlite = sqliteFolder(plan);
+  const writable = [
+    ...new Set([
+      ...(RAILPACK_WRITABLE[language] ?? []).map((dir) => `/app/${dir}`),
+      ...(sqlite === undefined ? [] : [sqlite]),
+    ]),
+  ];
   const setting = versionSetting(plan, RAILPACK_VERSION_SETTING);
   return [
     ...installTool("railpack", buildArch(plan), "Railpack"),
@@ -422,8 +459,9 @@ const SCAN = [
 /**
  * The `build` job: builds the image with the plan's builder on a runner of the server's
  * architecture and pushes it to GHCR (`app.build` absent: the Dockerfile, as before). Buildpacks,
- * Railpack and, with cron jobs, the user's own Dockerfile push `<name>:build-<commit>` first, then
- * a seal build, which adds supercronic when the plan has cron jobs. Every builder ends in one
+ * Railpack and, with cron jobs or SQLite, the user's own Dockerfile push `<name>:build-<commit>`
+ * first, then a seal build, which adds supercronic when the plan has cron jobs and makes the SQLite
+ * folder the app's user's ({@link sqliteSeal}). Every builder ends in one
  * `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
  * index digest reference, and `tag`, `<name>:<commit>`. Then the optional report-only scan.
  */

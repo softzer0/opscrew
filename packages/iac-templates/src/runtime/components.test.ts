@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import { serviceSpec } from "../catalog";
 import { GARAGE_STORAGE, type ServiceEntry, withServices } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
+import { withBuild, withSqlite } from "../workflow/__fixtures__/plans";
 import { renderCompose, renderRuntimeFiles } from "./index";
 
 type Service = Record<string, unknown> & {
@@ -434,5 +435,91 @@ describe("Postgres and Valkey", () => {
     ]);
     expect(all.queue?.volumes).toEqual(["/srv/data/shop/queue:/data"]);
     expect(all.queue?.healthcheck).toMatchObject({ test: ["CMD", "valkey-cli", "ping"] });
+  });
+});
+
+describe("SQLite", () => {
+  /** An app with a release command, a worker and a cron job, on MySQL. */
+  const base = withApp(withServices([{ kind: "mysql" }]), {
+    builder: "generated-dockerfile",
+    workers: [{ name: "worker", command: "node worker.js", source: "library" }],
+    cron: [{ name: "cleanup", schedule: "@daily", command: "node cleanup.js" }],
+  });
+  const app = DeployPlanSchema.parse({
+    ...base,
+    app: { ...base.app, releaseCommand: "npm run migrate" },
+  });
+  const mounts = (plan: DeployPlan) => services(plan).app?.volumes;
+
+  it("keeps the database's folder in the volume sqlite, mounted in every container of the app's image", () => {
+    const compose = renderCompose(withSqlite(app)).content;
+    expect(compose).toMatchSnapshot();
+    const doc = parse(compose);
+    for (const name of ["app", "release", "worker"]) {
+      expect(doc.services[name]?.volumes, name).toEqual(["sqlite:/app/storage"]);
+    }
+    expect(doc.services.cron?.volumes).toEqual([
+      "./crontab:/etc/opscrew/crontab:ro",
+      "sqlite:/app/storage",
+    ]);
+    expect(doc.services.mysql?.volumes).not.toContain("sqlite:/app/storage");
+    expect(doc.volumes).toEqual({ sqlite: {} });
+  });
+
+  it("mounts it at the folder the app runs in, for each builder", () => {
+    expect(mounts(withSqlite(withBuild(app, "buildpacks")))).toEqual(["sqlite:/workspace/storage"]);
+    expect(mounts(withSqlite(withBuild(app, "railpack"), { dir: "db/data" }))).toEqual([
+      "sqlite:/app/db/data",
+    ]);
+    const own = withSqlite(withBuild(app, "own-dockerfile"), { workdir: "/srv/app" });
+    expect(mounts(own)).toEqual(["sqlite:/srv/app/storage"]);
+    const subfolder = DeployPlanSchema.parse({
+      ...app,
+      app: { ...app.app, dockerfile: "apps/web/Dockerfile" },
+    });
+    expect(mounts(withSqlite(subfolder))).toEqual(["sqlite:/app/apps/web/storage"]);
+    // Buildpacks and Railpack build a workspace member from the repository root.
+    expect(mounts(withSqlite(withBuild(subfolder, "buildpacks")))).toEqual([
+      "sqlite:/workspace/apps/web/storage",
+    ]);
+    expect(mounts(withSqlite(withBuild(subfolder, "railpack")))).toEqual([
+      "sqlite:/app/apps/web/storage",
+    ]);
+  });
+
+  it("refuses the app's own folder: the volume would hide the app's code", () => {
+    expect(() => renderCompose(withSqlite(app, { dir: "." }))).toThrow(
+      "storage.sqlite.dir in opscrew/plan.yaml is the app's own folder (/app), so the SQLite volume would hide the app's code from its image.",
+    );
+  });
+
+  it("refuses a folder name the Compose file and the image build cannot hold", () => {
+    for (const dir of ["my data", "it's", "db:data"]) {
+      expect(() => renderCompose(withSqlite(app, { dir })), dir).toThrow(
+        `The SQLite folder /app/${dir} (storage.sqlite.dir in opscrew/plan.yaml) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.`,
+      );
+    }
+  });
+
+  it("declares it after the services' own volumes", () => {
+    const kafka = withSqlite(withBuild(withServices([{ kind: "kafka" }]), "railpack"));
+    expect(Object.keys(parse(renderCompose(kafka).content).volumes)).toEqual([
+      "kafka_data",
+      "sqlite",
+    ]);
+  });
+
+  it("refuses an own Dockerfile whose working directory OpsCrew does not know", () => {
+    expect(() => renderCompose(withSqlite(withBuild(app, "own-dockerfile")))).toThrow(
+      "The app keeps its SQLite database in storage/ on a persistent volume, but OpsCrew does not know the folder the app runs in: the last stage of your Dockerfile (Dockerfile) has no WORKDIR with an absolute path.",
+    );
+  });
+
+  it("is left out without storage.sqlite", () => {
+    const doc = parse(renderCompose(app).content);
+    expect(doc.services.app?.volumes).toBeUndefined();
+    expect(doc.services.worker?.volumes).toBeUndefined();
+    expect(doc.services.cron?.volumes).toEqual(["./crontab:/etc/opscrew/crontab:ro"]);
+    expect(doc.volumes).toBeUndefined();
   });
 });

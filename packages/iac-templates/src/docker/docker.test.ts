@@ -636,6 +636,40 @@ describe("supercronic in the image of an app with cron jobs", () => {
   });
 });
 
+describe("the SQLite folder in the image of an app on SQLite", () => {
+  const withSqlite = (sample: ProjectFacts, sqliteFolder: string | undefined) =>
+    renderDockerAssets(sample, {
+      appPort: sample.port ?? 3000,
+      healthPath: "/health",
+      sqliteFolder,
+    })[0]?.content ?? "";
+  const { viteApp: _static, ...servers } = ALL;
+
+  it("matches the snapshot of a Node.js server image", () => {
+    expect(withSqlite(expressApp, "/app/storage")).toMatchSnapshot();
+  });
+
+  it.each(Object.entries(servers))(
+    "makes it in %s after the app's user, then returns to /app",
+    (_name, sample) => {
+      const lines = withSqlite(sample, "/app/storage").split("\n");
+      const user = lines.findLastIndex((line) => line.startsWith("USER "));
+      expect(lines.slice(user + 1, user + 4)).toEqual([
+        "# SQLite's folder (storage.sqlite in opscrew/plan.yaml), made as the app's user: Docker gives a new volume on it the folder's owner.",
+        "WORKDIR /app/storage",
+        "WORKDIR /app",
+      ]);
+    },
+  );
+
+  it("leaves the image as it was without SQLite, and a static site always", () => {
+    for (const sample of Object.values(ALL)) {
+      expect(withSqlite(sample, undefined)).toBe(dockerfileOf(sample));
+    }
+    expect(withSqlite(viteApp, "/app/storage")).toBe(dockerfileOf(viteApp));
+  });
+});
+
 describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
   for (const [name, sample] of Object.entries(SUBFOLDER)) {
     it(`renders ${name} into its folder`, () => {

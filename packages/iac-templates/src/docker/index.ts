@@ -53,6 +53,11 @@ export interface DockerAssetOptions {
    * runtime stage then gets the pinned supercronic for it, which the `cron` service runs.
    */
   supercronic?: PinArch;
+  /**
+   * The SQLite database's folder in the image for an app on SQLite (`sqliteFolder(plan)`): the
+   * runtime stage of a server image makes it as the app's user, so the volume on it is theirs.
+   */
+  sqliteFolder?: string;
 }
 
 /** Port the container listens on for a stack. */
@@ -72,19 +77,20 @@ function dockerfile(
   const python = () => pythonImage(pythonMinor(facts, build), resolve);
   const release = options.app ? options.app.releaseCommand : facts.build.releaseCommand;
   const cron = options.supercronic;
+  const sqlite = options.sqliteFolder;
   switch (stack) {
     case "next-standalone":
-      return nextStandaloneDockerfile(facts, port, node(), release, cron);
+      return nextStandaloneDockerfile(facts, port, node(), release, cron, sqlite);
     case "node-server":
-      return nodeServerDockerfile(facts, port, node(), release, cron);
+      return nodeServerDockerfile(facts, port, node(), release, cron, sqlite);
     case "static-spa":
       return staticSpaDockerfile(facts, node(), cron);
     case "python-fastapi":
-      return fastapiDockerfile(facts, port, python(), cron);
+      return fastapiDockerfile(facts, port, python(), cron, sqlite);
     case "python-django":
-      return djangoDockerfile(facts, port, python(), cron);
+      return djangoDockerfile(facts, port, python(), cron, sqlite);
     case "python-generic":
-      return pythonGenericDockerfile(facts, port, python(), cron);
+      return pythonGenericDockerfile(facts, port, python(), cron, sqlite);
   }
 }
 

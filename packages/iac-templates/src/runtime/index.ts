@@ -9,6 +9,7 @@ import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 import { hasCronJobs } from "../workflow/shared";
 import {
+  appVolumes,
   crontab,
   memoryLimit,
   renderProcesses,
@@ -39,9 +40,11 @@ export function siteHosts(plan: DeployPlan): string[] {
  * shared edge's network, where kamal-proxy switches between its copies; the edge's Caddy and
  * kamal-proxy are not in this file ({@link renderEdgeCompose}). The app has no container name and
  * no host port, so a second copy can start next to it. Every container of the app's image has the
- * memory limit its plan entry gives (`app.memoryMb` for the app, the release command and cron).
+ * memory limit its plan entry gives (`app.memoryMb` for the app, the release command and cron),
+ * and on SQLite the volume `sqlite` on the database's folder ({@link appVolumes}).
  * Throws for a Portainer target, whose stack `renderPortainerStack` renders.
- * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned.
+ * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned, or a SQLite
+ * folder in an image whose app folder OpsCrew does not know.
  */
 export function renderCompose(plan: DeployPlan): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
@@ -61,6 +64,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     image,
     restart: "unless-stopped",
     ...environment(),
+    ...appVolumes(plan),
     ...(healthcheck === undefined ? {} : { healthcheck }),
     // Docker waits this long after SIGTERM: the drain, plus time to finish shutting down.
     stop_grace_period: `${plan.deploy.drainSeconds + 5}s`,
@@ -79,6 +83,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
       image,
       profiles: ["release"],
       ...environment(),
+      ...appVolumes(plan),
       command: ["sh", "-c", composeLiteral(release)],
       ...memoryLimit(plan.app.memoryMb),
       ...hardened({ noCapabilities: true, internal: true }),

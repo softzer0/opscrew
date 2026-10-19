@@ -64,6 +64,8 @@ export const IMAGES = {
   paketoBuilder: {
     ref: "paketobuildpacks/ubuntu-noble-builder:0.0.203@sha256:ba79c24b55830210fc5ee06768237ab989dbaeec36adb60a986bcb8e70e4d7cd",
   },
+  // Runs as 1002:1001, which BUILDPACKS_RUN_USER in workflow/build.ts repeats: when this pin
+  // changes, rerun OPSCREW_DOCKER_TESTS=1 pnpm --filter @opscrew/iac-templates exec vitest run src/docker/sqlite-volume.test.ts
   paketoRun: {
     ref: "paketobuildpacks/ubuntu-noble-run:0.0.145@sha256:577357bc2a59c962ce3f7d816f7ff401f408538832a1c56a9a87f6fc5829df97",
   },

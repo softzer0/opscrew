@@ -20,7 +20,14 @@ import { withServices } from "../catalog/__fixtures__/plans";
 import { EDGE_VERSION, EDGE_VERSION_KEY, renderEdgeCompose } from "../edge";
 import { renderCaddyfile, renderCompose, renderRuntimeFiles } from "../runtime";
 import type { RenderContext } from "../types";
-import { jobYaml, NIGHTLY, withBuild, withPlan, withProcesses } from "./__fixtures__/plans";
+import {
+  jobYaml,
+  NIGHTLY,
+  withBuild,
+  withPlan,
+  withProcesses,
+  withSqlite,
+} from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
 import { type ServiceInitStep, switchCommands } from "./switch";
 
@@ -795,13 +802,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
     });
 
     it("replaces a SQLite app's web container instead of running two", () => {
-      const sqlite = scripts(
-        DeployPlanSchema.parse({
-          ...plan,
-          deploy: { strategy: "recreate" },
-          storage: { sqlite: { dir: "storage" } },
-        }),
-      );
+      const sqlite = scripts(withSqlite(withBuild(plan, "generated-dockerfile")));
       expect(sqlite.start).toContain("docker compose up -d --no-deps --remove-orphans app\n");
       expect(sqlite.start).not.toContain("--scale");
     });
