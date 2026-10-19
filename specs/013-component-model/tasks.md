@@ -308,13 +308,13 @@ Effort`.
   - Reads: spec FR-1313; data-model.md `storage.sqlite`; T1307's `appRoot(plan)`; 012's seal steps
   - Depends: T1307, T1308c
   - Accept:
-    - **The volume:** `/srv/data/<app>/sqlite` (Portainer: a named volume, as its other volumes), mounted at `appRoot(plan)/<storage.sqlite.dir>` in the web, release, worker and cron containers.
-    - **Writable by the app's non-root user,** on a fresh server and after a redeploy:
-      - the generated Dockerfile creates the folder owned by that user;
+    - **The volume:** a named volume `sqlite` in the app's Compose project (on servers and in Portainer stacks, like Kafka's and Redpanda's), mounted at `appRoot(plan)/<storage.sqlite.dir>` in the web, release, worker and cron containers.
+    - **Writable by the app's non-root user,** on a fresh server and after a redeploy. Docker gives a new named volume the image folder's owner, so the folder must exist in the image, owned by that user:
+      - the generated Dockerfile creates it;
       - the Railpack and Buildpacks seals do the same;
-      - a bind folder on a server gets that user's uid at the first deploy;
-      - one local `docker run` per builder confirms a write.
-    - **Destroy** keeps the folder unless data is deleted, like the other data folders (check T1309's rules cover it).
+      - an own Dockerfile gets a seal step for it only when the plan has `storage.sqlite`;
+      - one local `docker run` per builder confirms a write into a fresh volume.
+    - **Destroy** keeps the volume unless data is deleted, as for Kafka's (T1309 removes named volumes on `--delete-data`; check it lists this one).
     - **Snapshots and tests.**
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
