@@ -336,7 +336,9 @@ Effort`.
       - stores the components' generated secrets, and writes each service's `<name>.env` from the catalog's `environment(ctx)` with the real values into the deploy secrets, as `db.env` is today;
       - removes named volumes (Kafka, Redpanda) and data folders alike on `--delete-data`;
       - fills one GitHub secret per service with secrets, `serviceEnvSecret(name)` (`OPSCREW_SERVICE_<NAME>_ENV`, T1305b), and destroy deletes those too (`Object.values(DEPLOY_SECRETS)` does not list them);
-      - rerun with nothing changed, changes no file (SC-1307).
+      - rerun with nothing changed, changes no file (SC-1307);
+      - adds every service's generated secrets (`values.services`, T1307) and the storage key to the redactor, as the app's values and Postgres's password are today;
+      - when the provider says the bucket name is taken (Spaces and Hetzner names are shared by all their customers), stops with a plain message naming `storage.objectStorage.bucket` in plan.yaml as the field to change.
     - **destroy:** removes every component, and keeps data folders and the `storage` root unless `--delete-data` is given with the typed confirmation, saying where they are. With `--delete-data`, the storage root is rendered without `prevent_destroy` (with `force_destroy` on the aws provider's bucket) and destroyed through its own approved plan. Cloudflare deletes an R2 bucket only when it is empty: OpsCrew then says how to empty it in the dashboard, and never deletes files itself.
     - **drift:** reports a component that differs from the plan.
     - **secure:** checks that no service port is public, and that each service with `auth` other than `internal-only` has its login set (a secops check per kind).
