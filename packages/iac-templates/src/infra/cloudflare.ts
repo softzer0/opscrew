@@ -4,13 +4,13 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 import { moduleBlock, sensitiveOutput, type VariableSpec } from "./hcl";
 
-/** The Cloudflare account the tunnels and Access belong to. */
+/** The Cloudflare account the tunnels, Access and R2 buckets belong to. */
 export function accountId(ctx: RenderContext): string {
   const id = ctx.cloudflare?.accountId;
   if (!id) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "A Cloudflare account id is required to render the Cloudflare Tunnel and Access for this plan.",
+      "A Cloudflare account id is required to render the Cloudflare Tunnel, Access or R2 bucket of this plan.",
       {
         hint: "Check that your Cloudflare token can read the account that owns the domain's zone, then run the command again.",
       },
