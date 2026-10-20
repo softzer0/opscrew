@@ -160,6 +160,8 @@ interface CloudflareUsage {
   domain?: string;
   /** The plan serves something through a Cloudflare Tunnel with Access (more permissions). */
   tunnel?: boolean;
+  /** The plan keeps the app's files in a bucket on Cloudflare R2 (one more permission). */
+  r2?: boolean;
 }
 
 /** The plan and the interview answers, each when there is a usable one. */
@@ -189,7 +191,12 @@ async function readUsable<K extends ArtifactKind>(
 function cloudflareUsage({ plan, requirements }: ProjectArtifacts): CloudflareUsage {
   if (plan !== undefined) {
     return plan.dns.provider === "cloudflare"
-      ? { needed: true, domain: plan.dns.domain, tunnel: usesTunnel(plan) }
+      ? {
+          needed: true,
+          domain: plan.dns.domain,
+          tunnel: usesTunnel(plan),
+          r2: plan.storage?.objectStorage?.provider === "r2",
+        }
       : { needed: false };
   }
   if (requirements === undefined) return { needed: undefined };
@@ -678,17 +685,30 @@ async function checkProviderToken(
   };
 }
 
+/** The permission OpsCrew's Cloudflare token needs to create the app's bucket on R2. */
+const R2_PERMISSION = "Account → Workers R2 Storage → Edit";
+
 function cloudflareFix(domain?: string, tunnel = false): string {
   const zone = domain ? ` for the zone that holds ${domain}` : "";
   const permissions = tunnel ? tunnelTokenPermissions() : CLOUDFLARE_TOKEN_PERMISSIONS.join(", ");
-  return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions}${zone}, then set CLOUDFLARE_API_TOKEN.`;
+  return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions}${zone}, plus ${R2_PERMISSION} only when the app's uploads use Cloudflare R2, then set CLOUDFLARE_API_TOKEN.`;
 }
 
-/** Said with a working token when the plan has a Cloudflare Tunnel: what else the token needs. */
+/**
+ * Said with a working token: what else the token needs when the plan has a Cloudflare Tunnel, or
+ * keeps the app's files on Cloudflare R2.
+ */
 function tunnelNote(usage: CloudflareUsage): string {
-  return usage.tunnel === true
-    ? ` The Cloudflare Tunnel and Access also need ${CLOUDFLARE_TUNNEL_PERMISSIONS.join(", ")}; \`opscrew provision\` stops with the missing permission if one is not granted.`
-    : "";
+  return [
+    ...(usage.tunnel === true
+      ? [
+          ` The Cloudflare Tunnel and Access also need ${CLOUDFLARE_TUNNEL_PERMISSIONS.join(", ")}; \`opscrew provision\` stops with the missing permission if one is not granted.`,
+        ]
+      : []),
+    ...(usage.r2 === true
+      ? [` The app's bucket on Cloudflare R2 also needs ${R2_PERMISSION}.`]
+      : []),
+  ].join("");
 }
 
 /**

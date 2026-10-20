@@ -15,16 +15,24 @@ import {
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "@opscrew/connector-ssh-host";
-import { listText, lowerFirst, sha256Hex, upperFirst } from "@opscrew/core";
+import {
+  errorText,
+  isUserFacingError,
+  listText,
+  lowerFirst,
+  sha256Hex,
+  upperFirst,
+} from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   keepNewerPins,
   type RenderContext,
   renderCaddyfile,
   renderCompose,
+  serviceEnvSecret,
   serviceSpec,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
@@ -32,6 +40,14 @@ import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
 import { committedText, lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
+import {
+  type AppContainer,
+  componentStatus,
+  containerService,
+  oneShotServices,
+  serviceContainers,
+} from "../status/components";
+import { type ComponentStatusOptions, readServerContainers } from "../status/run";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
@@ -51,7 +67,10 @@ export interface HostDifference {
   restoredByProvision: boolean;
 }
 
-/** Host drift of a server the user owns (FR-911): every difference found, in host-step order. */
+/**
+ * Host drift of a server the user owns (FR-911), every difference found in host-step order; or of
+ * a server OpsCrew created, its app's containers (FR-1331).
+ */
 export interface HostDrift {
   differences: HostDifference[];
 }
@@ -369,8 +388,11 @@ function ufwSinceSetup(facts: HostFacts, step: HostStep): UfwChange[] {
 export interface ExpectedRuntimeFiles {
   /** SHA-256 of each rendered file (`compose.yaml`, the `site`) as OpsCrew renders it now. */
   rendered: Readonly<Partial<Record<(typeof HASHED_RUNTIME_FILES)[number], string>>>;
-  /** The deploy workflow writes `db.env` (the plan has PostgreSQL). */
-  dbEnv: boolean;
+  /**
+   * The env files of the services the deploy workflow writes, by service name: each enabled
+   * service with secrets in the catalog reads `<name>.env` (Postgres's `db` reads `db.env`).
+   */
+  serviceEnvFiles: Readonly<Record<string, { title: string; secret: string }>>;
 }
 
 /**
@@ -398,26 +420,41 @@ export function expectedRuntimeFiles(
       "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
       site: sha256Hex(renderCaddyfile(plan, full).content),
     },
-    dbEnv: serviceOf(plan, "postgres") !== undefined,
+    serviceEnvFiles: Object.fromEntries(
+      plan.services
+        .filter((service) => service.enabled && serviceSpec(service.kind).secrets.length > 0)
+        .map((service) => [
+          `${service.name}.env`,
+          { title: serviceSpec(service.kind).title, secret: serviceEnvSecret(service.name) },
+        ]),
+    ),
   };
 }
 
 const REDEPLOY =
   "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.";
 
-/** Why each of the app's runtime files matters, said when it is missing. */
-const RUNTIME_FILE_ROLE: Readonly<Record<RuntimeFileName, string>> = {
+/** Why each of the app's fixed runtime files matters, said when it is missing. */
+const RUNTIME_FILE_ROLE: Readonly<Record<string, string>> = {
   "compose.yaml": "which defines the app's containers",
   site: "the app's site on the shared web server",
   ".env": "which names the image the app runs",
   "app.env": `the app's settings from the GitHub secret ${DEPLOY_SECRETS.appEnv}`,
-  "db.env": `the database's settings from the GitHub secret ${DEPLOY_SECRETS.dbEnv}`,
 };
+
+/** Why `name` matters, said when it is missing: a fixed runtime file, or a service's env file. */
+function runtimeFileRole(name: string, expected: ExpectedRuntimeFiles): string {
+  const service = expected.serviceEnvFiles[name];
+  return service === undefined
+    ? (RUNTIME_FILE_ROLE[name] ?? "")
+    : `the settings of ${service.title} from the GitHub secret ${service.secret}`;
+}
 
 /**
  * How OpsCrew's runtime files of the app (in its folder, and its site on the shared edge) differ
  * from what OpsCrew renders now (FR-911, US4/AC1): a rendered file edited, replaced or missing,
  * and a file with secrets missing, owned by someone else than deploy, or readable by other users.
+ * The env files of the plan's services come from the catalog ({@link expectedRuntimeFiles}).
  * Files that hold secrets are compared by presence, owner and mode only; no file content is ever
  * read. Missing files count only once the app was deployed (the deploy workflow writes them on
  * its first run). Other apps' files are never looked at.
@@ -432,14 +469,18 @@ function runtimeFileDetails(
   // No app folder at all is reported with the app's folders already.
   if (facts.dirs.find((dir) => dir.path === folder)?.kind !== "dir") return [];
   const out: string[] = [];
-  for (const file of facts.runtimeFiles.filter((item) => item.app === app)) {
+  const files = facts.runtimeFiles.filter((item) => item.app === app);
+  const unreported = Object.keys(expected.serviceEnvFiles)
+    .filter((name) => !files.some((file) => file.name === name))
+    .map((name) => ({ app, name: name as RuntimeFileName, kind: "absent" as const }));
+  for (const file of [...files, ...unreported]) {
     const path = runtimeFilePath(app, file.name);
     const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
     // The env files, each service's `<service>.env` included.
     const secret = file.name.endsWith(".env");
-    if (file.name === "db.env" && !expected.dbEnv) continue;
     if (file.kind === "absent") {
-      if (deployed) out.push(`${path} (${RUNTIME_FILE_ROLE[file.name]}) is missing. ${REDEPLOY}`);
+      const role = runtimeFileRole(file.name, expected);
+      if (deployed && role !== "") out.push(`${path} (${role}) is missing. ${REDEPLOY}`);
       continue;
     }
     if (file.kind !== "file") {
@@ -595,66 +636,57 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
 const STARTS_COMPONENTS =
   "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it starts every component.";
 
-/** A component of the plan that runs as a container: its Compose service and what it is. */
-export interface PlannedComponent {
-  /** The Compose service: `app`, a worker's name, `cron`, a service's name. */
-  service: string;
-  /** In words: `the web process`, `the worker`, `the cron jobs`, `MySQL`. */
-  what: string;
-}
-
 /**
- * The plan's components that run as containers of the app's Compose project (FR-1331): the web
- * process, every enabled worker, the cron jobs when one is enabled, and every enabled service.
+ * How the app's containers `containers` (its Compose project's) differ from the plan's components
+ * (FR-1331): no container at all, a component with no container, a container of a component the
+ * plan no longer runs (each once the app was deployed, except the last), and stopped containers
+ * (one-shot ones left out). Shared by a server the user owns and the servers OpsCrew creates.
  */
-export function plannedComponents(plan: DeployPlan): PlannedComponent[] {
-  return [
-    { service: "app", what: "the web process" },
-    ...plan.processes.workers
-      .filter((worker) => worker.enabled)
-      .map((worker) => ({ service: worker.name, what: "the worker" })),
-    ...(plan.processes.cron.some((job) => job.enabled)
-      ? [{ service: "cron", what: "the cron jobs" }]
-      : []),
-    ...plan.services
-      .filter((service) => service.enabled)
-      .map((service) => ({ service: service.name, what: serviceSpec(service.kind).title })),
-  ];
-}
-
-/**
- * How the app's containers differ from its planned components: a component with no container
- * (once the app was deployed), and a container of a component the plan no longer runs. A
- * container's Compose service is its name without the project (`<app>-`) and the copy number;
- * one-off containers (`docker compose run`, the release command) are left out.
- */
-function componentDetails(
-  app: string,
-  containers: readonly HostFacts["containers"][number][],
-  components: readonly PlannedComponent[],
+export function containerDifferences(
+  plan: DeployPlan,
+  containers: readonly AppContainer[],
   deployed: boolean,
-): string[] {
-  const running = new Set(
-    containers.flatMap((container) => {
-      const service = new RegExp(`^${app}-(.+)-\\d+$`).exec(container.name)?.[1];
-      return service === undefined || service.includes("-run-") ? [] : [service];
-    }),
-  );
-  const planned = new Set(components.map((component) => component.service));
-  const out: string[] = [];
+): HostDifference[] {
+  const app = { area: "app" as const, restoredByProvision: false };
+  const ofContainers = { ...app, title: "The app's containers" };
+  if (containers.length === 0) {
+    return deployed
+      ? [
+          {
+            ...ofContainers,
+            detail:
+              "No container of the app exists on the server; the deploy workflow starts them on its next run.",
+          },
+        ]
+      : [];
+  }
+  const out: HostDifference[] = [];
+  const status = componentStatus(plan, serviceContainers(plan.app.name, containers));
+  const ofComponents = { ...app, title: "The app's components" };
   if (deployed) {
-    for (const { service, what } of components) {
-      if (running.has(service)) continue;
-      out.push(
-        `${upperFirst(what)} (${service}) is in opscrew/plan.yaml but has no container on the server. ${STARTS_COMPONENTS}`,
-      );
+    for (const { service, what, containers: count } of status.components) {
+      if (count > 0) continue;
+      out.push({
+        ...ofComponents,
+        detail: `${upperFirst(what)} (${service}) is in opscrew/plan.yaml but has no container on the server. ${STARTS_COMPONENTS}`,
+      });
     }
   }
-  for (const service of [...running].sort()) {
-    if (planned.has(service) || service === "release") continue;
-    out.push(
-      `${service} runs on the server but is not a component in opscrew/plan.yaml any more (turned off or removed there): the next deploy removes it.`,
-    );
+  for (const service of status.others) {
+    out.push({
+      ...ofComponents,
+      detail: `${service} runs on the server but is not a component in opscrew/plan.yaml any more (turned off or removed there): the next deploy removes it.`,
+    });
+  }
+  const oneShot = oneShotServices(plan);
+  const stopped = containers
+    .filter((c) => !c.running && !oneShot.has(containerService(plan.app.name, c.name) ?? ""))
+    .map((c) => c.name);
+  if (stopped.length > 0) {
+    out.push({
+      ...ofContainers,
+      detail: `${listText(stopped)} ${stopped.length === 1 ? "is" : "are"} stopped.`,
+    });
   }
   return out;
 }
@@ -677,8 +709,8 @@ export function hostDifferences(
     deployed: boolean;
     /** What OpsCrew renders now for the app folder ({@link expectedRuntimeFiles}); unset skips. */
     runtimeFiles?: ExpectedRuntimeFiles;
-    /** The plan's components that run as containers ({@link plannedComponents}); unset skips. */
-    components?: readonly PlannedComponent[];
+    /** The plan, to compare the app's containers with its components; unset skips them. */
+    plan?: DeployPlan;
   },
   applied?: HostPlan,
 ): HostDifference[] {
@@ -732,28 +764,9 @@ export function hostDifferences(
       restoredByProvision: false,
     });
   }
-  const containers = facts.containers.filter((container) => container.project === app.name);
-  if (containers.length > 0 && app.components !== undefined) {
-    for (const detail of componentDetails(app.name, containers, app.components, app.deployed)) {
-      out.push({ area: "app", title: "The app's components", detail, restoredByProvision: false });
-    }
-  }
-  const stopped = containers.filter((container) => !container.running).map((c) => c.name);
-  if (stopped.length > 0) {
-    out.push({
-      area: "app",
-      title: "The app's containers",
-      detail: `${listText(stopped)} ${stopped.length === 1 ? "is" : "are"} stopped.`,
-      restoredByProvision: false,
-    });
-  } else if (containers.length === 0 && app.deployed) {
-    out.push({
-      area: "app",
-      title: "The app's containers",
-      detail:
-        "No container of the app exists on the server; the deploy workflow starts them on its next run.",
-      restoredByProvision: false,
-    });
+  if (app.plan !== undefined) {
+    const containers = facts.containers.filter((container) => container.project === app.name);
+    out.push(...containerDifferences(app.plan, containers, app.deployed));
   }
   return out;
 }
@@ -819,11 +832,32 @@ export async function ownHostDrift(
         name: plan.app.name,
         deployed: plan.deployment.lastDeployAt !== undefined,
         runtimeFiles,
-        components: plannedComponents(plan),
+        plan,
       },
       setup,
     ),
   };
+}
+
+/**
+ * How the app's components on a server OpsCrew created (Hetzner, DigitalOcean) differ from the
+ * plan (FR-1331), read as `opscrew status` reads them: `docker ps` as the deploy user. When the
+ * server cannot be read, a note in `notes` says why and the rest of the report stands.
+ */
+export async function serverComponentDrift(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: ComponentStatusOptions["services"],
+  notes: string[],
+): Promise<HostDrift | undefined> {
+  try {
+    const containers = await readServerContainers(deps, plan, { services });
+    return { differences: containerDifferences(plan, containers, true) };
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    notes.push(`OpsCrew could not compare the app's components on the server. ${errorText(error)}`);
+    return undefined;
+  }
 }
 
 /**

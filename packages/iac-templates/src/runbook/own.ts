@@ -3,6 +3,7 @@ import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
+import { componentsSection, dataCell, edgeSection, objectStorageSection } from "./components";
 import {
   cell,
   DATABASE_DUMP,
@@ -48,15 +49,17 @@ export function renderOwnRunbook(
   const portainerHost = portainerHostname(plan);
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const name = plan.app.name;
+  // The app's bucket at a provider, which destroy keeps unless asked (Garage's is on the server).
+  const storage = plan.storage?.objectStorage;
+  const bucket =
+    storage === undefined || storage.provider === "garage" ? undefined : storage.bucket;
 
   const addresses = tunnel
     ? "none needed: the server is reached through a Cloudflare Tunnel"
     : proxied
       ? "kept private behind Cloudflare: `opscrew status` shows them"
       : "kept out of this repository: `opscrew status` shows them";
-  const db = serviceOf(plan, "postgres")
-    ? "PostgreSQL 17 in a container on the server, data in `/srv/data/postgres`; backups are your responsibility"
-    : externalDatabaseCell(plan);
+  const db = dataCell(plan, "backups are your responsibility", externalDatabaseCell(plan));
   const dns = tunnel
     ? "Cloudflare, through a Cloudflare Tunnel (no DNS record points at the server)"
     : cloudflare
@@ -95,11 +98,14 @@ export function renderOwnRunbook(
               "   through the Cloudflare Tunnel with a Cloudflare Access service token kept in the deploy secrets.",
             ],
     }),
+    ...componentsSection(plan),
+    ...edgeSection(plan, true),
+    ...objectStorageSection(plan, projectDir),
     "## Connect to the server",
     "",
     "Your own login keeps working as before (with your key). To work as the deploy user:",
     "",
-    ...serverCommands([`ssh ${port}-i ${keyPath} deploy@${server}`]),
+    ...serverCommands(plan, [`ssh ${port}-i ${keyPath} deploy@${server}`]),
     "",
     "`<server>` is the address you gave OpsCrew; it is not written in this repository. `opscrew status` shows it on the",
     "machine that ran `opscrew provision`.",
@@ -200,8 +206,9 @@ export function renderOwnRunbook(
     `${cloudflare ? `Cloudflare ${tunnel ? "tunnel, Access applications and DNS records" : "DNS records and rules"} OpsCrew created, the ` : ""}app's containers and runtime`,
     "files on the server, and the GitHub deploy secrets. It **never** deletes, rebuilds or reinstalls your server.",
     "",
-    `- **App data:** deleting the data in \`/srv/data\` needs the destroy approval and the typed app name (\`${name}\`;`,
-    `  \`--confirm ${name}\` in scripts). There is no snapshot: back up first if you want to keep it.`,
+    `- **App data:** the data in \`/srv/data/${name}\`${bucket === undefined ? " and" : ","} the app's Docker volumes${bucket === undefined ? "" : ` and the bucket \`${bucket}\``} stay unless you add`,
+    `  \`--delete-data\`, which needs the destroy approval and the typed app name (\`${name}\`; \`--confirm ${name}\` in scripts).`,
+    "  There is no snapshot: back up first if you want to keep it. Other apps on the server keep their data.",
     "- **Undo OpsCrew's host changes:** `opscrew destroy --undo-host` also plans the reverse of what OpsCrew changed on the",
     "  server (deploy user, SSH settings, firewall, automatic updates, Docker if OpsCrew installed it), from the record in",
     "  `/etc/opscrew/host.json`. It is a separate plan that you approve on its own.",

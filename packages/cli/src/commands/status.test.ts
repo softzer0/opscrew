@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { recordServerAddress, serverAddressesFile } from "@opscrew/agents";
 import { SERVER_IPV4, SERVER_IPV6, testPlan } from "@opscrew/agents/testing";
+import type { RemoteExec } from "@opscrew/contracts";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
-import { writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import { main } from "../program";
 import { createTestContext } from "../test-context";
 
@@ -113,6 +115,90 @@ describe("opscrew status and the server's address", () => {
     expect(await main(argv("status", "--ip"), ip)).not.toBe(0);
     expect(ip.output).toBe("");
     expect(ip.errors).toContain("is damaged");
+  });
+
+  describe("the app's components (FR-1331)", () => {
+    /** A deployed plan with a worker and MySQL, after a deploy `opscrew verify` saw. */
+    async function deployedWithComponents(): Promise<void> {
+      await provisioned();
+      const paths = resolveProjectPaths(dir, { env: {} });
+      const base = testPlan({ deployed: true, userSecret: false });
+      await writeArtifact(
+        "plan",
+        paths.files.plan,
+        DeployPlanSchema.parse({
+          ...base,
+          deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+          processes: {
+            workers: [{ name: "worker", command: "node worker.js", source: "procfile" }],
+          },
+          services: [
+            ...base.services,
+            { kind: "mysql", version: "8.4", memoryMb: 512, reason: "mysql2", licence: "GPL-2.0" },
+          ],
+        }),
+      );
+    }
+    /** The deploy user's shell, answering `docker ps` (or failing with `exitCode`). */
+    function shell(stdout: string, exitCode = 0) {
+      const hosts: string[] = [];
+      const remote = (host: string): RemoteExec => {
+        hosts.push(host);
+        return { host, run: async () => ({ exitCode, stdout, stderr: "" }) };
+      };
+      return { remote, hosts };
+    }
+
+    it("lists each component and whether it runs, read over SSH as the deploy user", async () => {
+      await deployedWithComponents();
+      const ssh = shell("shop-app-1|running\nshop-worker-1|exited\nshop-db-1|running\n");
+      const ctx = withServices(createTestContext({ cwd: dir }), {
+        provision: { remote: ssh.remote },
+      });
+      expect(await main(argv("status"), ctx)).toBe(0);
+      expect(ssh.hosts).toEqual([SERVER_IPV4]);
+      expect(ctx.output).toContain(
+        [
+          "Components:",
+          "  The web process (app): running",
+          "  The worker (worker): stopped",
+          "  PostgreSQL (db): running",
+          "  MySQL (mysql): no container",
+        ].join("\n"),
+      );
+    });
+
+    it("a server it cannot read leaves a note, and the rest of status is shown", async () => {
+      await deployedWithComponents();
+      const ssh = shell("", 255);
+      const ctx = withServices(createTestContext({ cwd: dir }), {
+        provision: { remote: ssh.remote },
+      });
+      expect(await main(argv("status"), ctx)).toBe(0);
+      expect(ctx.output).toMatch(/provision\s+ok/);
+      expect(ctx.output).toContain("Components (from opscrew/plan.yaml):\n  The web process (app)");
+      expect(ctx.output).toContain(
+        "OpsCrew could not check whether they run. OpsCrew could not read the app's containers on the server over SSH (exit code 255).",
+      );
+    });
+
+    it("before a deploy was seen, lists them from the plan without connecting; --ip never connects", async () => {
+      await provisioned();
+      const ssh = shell("");
+      const ctx = withServices(createTestContext({ cwd: dir }), {
+        provision: { remote: ssh.remote },
+      });
+      expect(await main(argv("status"), ctx)).toBe(0);
+      expect(ctx.output).toContain(
+        "Components (from opscrew/plan.yaml):\n  The web process (app)\n  PostgreSQL (db)\n",
+      );
+      await deployedWithComponents();
+      const ip = withServices(createTestContext({ cwd: dir }), {
+        provision: { remote: ssh.remote },
+      });
+      expect(await main(argv("status", "--ip"), ip)).toBe(0);
+      expect(ssh.hosts).toEqual([]);
+    });
   });
 
   it("says where the address is when this computer does not know it", async () => {

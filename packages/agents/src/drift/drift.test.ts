@@ -9,13 +9,14 @@ import type {
   IacInitOptions,
   IacRunOptions,
   PlanSummary,
+  RemoteExec,
   ResourceChange,
   ResourceDrift,
 } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderDeployment } from "@opscrew/iac-templates";
-import { writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { RootEngine, withBucket } from "../provision/__fixtures__/storage";
 import { deploymentRenderContext } from "../provision/render";
@@ -32,9 +33,10 @@ import {
   plainStateResources,
   projectRunner,
   ScriptedApprovalHandler,
+  SERVER_IPV4,
   testPlan,
 } from "../testing";
-import { renderDriftReport } from "./render";
+import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
 import {
   mergeAttributes,
@@ -568,6 +570,100 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     const text = renderDriftReport(report);
     expect(text).toContain(`${SERVER} no longer exists`);
     expect(text).toMatch(/create\s+module\.server\.hcloud_server\.this/);
+  });
+
+  describe("the app's components on the server, once deployed (FR-1331)", () => {
+    /** The deployed plan with a worker and MySQL, after a deploy `opscrew verify` saw. */
+    function deployedPlan(provider: "hetzner" | "digitalocean" = "hetzner") {
+      const base = testPlan({ deployed: true, provider });
+      return DeployPlanSchema.parse({
+        ...base,
+        deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+        processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
+        services: [
+          ...base.services,
+          { kind: "mysql", version: "8.4", memoryMb: 512, reason: "mysql2", licence: "GPL-2.0" },
+        ],
+      });
+    }
+    /** The deploy user's shell, answering `docker ps` with `lines`. */
+    function server(lines: string[], exitCode = 0) {
+      const hosts: string[] = [];
+      const remote = (host: string): RemoteExec => {
+        hosts.push(host);
+        return {
+          host,
+          run: async () => ({ exitCode, stdout: lines.join("\n"), stderr: "" }),
+        };
+      };
+      return { remote, hosts };
+    }
+
+    it("a component without its container, a stray one and a stopped one are reported, with the server read through status's SSH read", async () => {
+      const ssh = server([
+        "shop-app-1|running",
+        "shop-worker-1|exited",
+        "shop-db-1|running",
+        "shop-cache-1|running",
+      ]);
+      const { deps, services } = await setup({
+        plan: deployedPlan("digitalocean"),
+        services: { remote: ssh.remote },
+      });
+      const report = await runDrift(deps, { services });
+      expect(ssh.hosts).toEqual([SERVER_IPV4]);
+      expect(report.host?.differences.map((d) => `${d.title}: ${d.detail}`)).toEqual([
+        "The app's components: MySQL (mysql) is in opscrew/plan.yaml but has no container on the server. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it starts every component.",
+        "The app's components: cache runs on the server but is not a component in opscrew/plan.yaml any more (turned off or removed there): the next deploy removes it.",
+        "The app's containers: shop-worker-1 is stopped.",
+      ]);
+      expect(report.clean).toBe(false);
+      const text = renderDriftReport(report);
+      expect(text).toContain("Your server differs from what OpsCrew set up (3).");
+      expect(text).not.toContain(SERVER_IPV4);
+      expect(driftNextSteps(report)).toContain(
+        "for the app's containers on the server, follow the step the report gives with each.",
+      );
+    });
+
+    it("every component running is clean; before a deploy was seen, the server is not read", async () => {
+      const running = server([
+        "shop-app-1|running",
+        "shop-worker-1|running",
+        "shop-db-1|running",
+        "shop-mysql-1|running",
+      ]);
+      const deployed = await setup({
+        plan: deployedPlan(),
+        services: { remote: running.remote },
+      });
+      const report = await runDrift(deployed.deps, { services: deployed.services });
+      expect(report.host).toEqual({ differences: [] });
+      expect(report.clean).toBe(true);
+
+      const unread = server([]);
+      const fresh = await setup({ services: { remote: unread.remote } });
+      expect((await runDrift(fresh.deps, { services: fresh.services })).host).toBeUndefined();
+      expect(unread.hosts).toEqual([]);
+    });
+
+    it("a server it cannot read is a note, and the rest of the report stands", async () => {
+      const ssh = server([], 255);
+      const engine = new DriftEngine({ drift: [drifted(SERVER, "delete")] });
+      const { deps, services } = await setup({
+        plan: deployedPlan(),
+        engine,
+        services: { remote: ssh.remote },
+      });
+      const report = await runDrift(deps, { services });
+      expect(report.host).toBeUndefined();
+      expect(report.drift).toEqual([drifted(SERVER, "delete")]);
+      expect(report.notes).toEqual([
+        expect.stringContaining(
+          "OpsCrew could not compare the app's components on the server. OpsCrew could not read the app's containers on the server over SSH (exit code 255).",
+        ),
+      ]);
+    });
   });
 
   it("reports pending changes in the code that were never applied", async () => {

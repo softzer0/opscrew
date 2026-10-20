@@ -3,8 +3,10 @@
 Many people already run [Portainer](https://www.portainer.io/) on a NAS (Synology, Unraid, TrueNAS)
 or on any Docker host, and manage everything there. OpsCrew can deploy your app into that Portainer
 as a stack, through Portainer's API. It needs no SSH and changes nothing on the host. You get the
-same app runtime as on the servers OpsCrew creates: the app, its release command, and the Postgres
-or Redis it needs. Every merged change deploys by itself, with a health check and a rollback when
+same app runtime as on the servers OpsCrew creates: the app, its release command, and its
+[components](components.md) (workers, cron jobs, databases, queues, brokers, Garage for object
+storage, and the search and analytics engines that need no setting on the host). Every merged
+change deploys by itself, with a health check and a rollback when
 it fails wherever GitHub can reach the site (see
 [How new versions reach Portainer](#how-new-versions-reach-portainer)), and `verify`, `secure` and
 `drift` work as for every other deployment.
@@ -146,7 +148,7 @@ Every name starts with `opscrew-` and your app's name, so it cannot be mistaken 
 
 - **`opscrew-<app>`**: the app's stack, deployed from the `opscrew-deploy` branch of your
   repository. It holds the app, its release command (which runs before a new version takes
-  traffic) and the Postgres or Redis it needs, with named volumes for their data. The app's secrets
+  traffic) and its components, with named volumes for their data. The app's secrets
   are set only as the stack's environment, through Portainer's API from your computer.
 - **`opscrew-<app>-updater`** (redeploy mode `updater`): a tiny stack that only asks Portainer to
   redeploy the app.

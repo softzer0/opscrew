@@ -116,6 +116,20 @@ describe("opscrew provision for the user's Portainer", () => {
     expect(ctx.output).toContain("opscrew provision --approve <stack plan hash>");
   });
 
+  it("says the stack plan follows the bucket in an R2-only --plan-only run", async () => {
+    const p = await portainerProject();
+    const ctx = projectContext(p);
+    const bucket = "cd".repeat(32);
+    const fake = fakePortainerProvision({ storageHash: bucket });
+    expect(await provision(ctx, { planOnly: true }, fake)).toBe(0);
+    expect(ctx.output).not.toContain("stack plan for your Portainer:");
+    expect(ctx.output).toContain(`opscrew provision --approve ${bucket}`);
+    expect(ctx.output).toContain(
+      "The stack plan for your Portainer follows once the app's bucket exists, because the app's stack gets the bucket's key. In a script that takes three runs",
+    );
+    expect(ctx.output).toContain("opscrew provision --approve <stack plan hash>");
+  });
+
   it("passes --public-image, --private-image and --replace-token to the phase and repeats them", async () => {
     const p = await portainerProject();
     const ctx = projectContext(p);

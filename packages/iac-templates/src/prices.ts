@@ -104,3 +104,11 @@ export const STORAGE_PRICES = {
     },
   },
 } as const satisfies Record<string, { monthlyPrice(use: StorageUse): StoragePrice }>;
+
+/** What each object storage provider is called in a sentence, keyed like {@link STORAGE_PRICES}. */
+export const STORAGE_NAMES: Readonly<Record<keyof typeof STORAGE_PRICES, string>> = {
+  r2: "Cloudflare R2",
+  digitalocean: "DigitalOcean Spaces",
+  hetzner: "Hetzner Object Storage",
+  garage: "Garage on your server",
+};

@@ -21,7 +21,7 @@ You approve every change before it is applied. Everything OpsCrew produces is a 
 
 Where it deploys:
 - **Hetzner Cloud or DigitalOcean (Droplets):** the interview asks which one.
-- **A server you already have:** see [Deploy to a server you already have](docs/guide/own-server.md).
+- **A server you already have, shared by several OpsCrew apps if you like:** see [Deploy to a server you already have](docs/guide/own-server.md).
 - **A Portainer you already run, for example on a NAS:** see [Deploy to a Portainer you already run](docs/guide/portainer-target.md). OpsCrew can also add [Portainer](docs/guide/portainer.md) to a server as a web UI for your containers.
 
 DNS goes through Cloudflare, optionally. AWS, Google Cloud, Azure and Contabo come next.
@@ -30,6 +30,14 @@ How your app is built and shipped:
 - [How OpsCrew builds your app's image](docs/guide/builders.md): a builder chosen per language, non-root and pinned.
 - [Deploys without downtime](docs/guide/zero-downtime.md): a broken release never gets traffic.
 - [The image supply chain](docs/guide/supply-chain.md): SBOM, provenance, optional signing, Dependabot and deploy tags.
+
+What runs next to your app:
+- [Components](docs/guide/components.md): workers, cron jobs, services and storage, each with a memory limit and its share of the price.
+- [Workers and cron jobs](docs/guide/workers-and-cron.md): background jobs and schedules from your app's own image.
+- [Databases](docs/guide/databases.md): PostgreSQL, MySQL, MariaDB, MongoDB and SQLite.
+- [Object storage](docs/guide/object-storage.md): Cloudflare R2, DigitalOcean Spaces, Hetzner Object Storage or Garage, priced side by side.
+- [Message brokers and queues](docs/guide/brokers.md): Valkey, RabbitMQ, NATS, Kafka and Redpanda.
+- [Search and analytics engines](docs/guide/search-and-analytics.md): OpenSearch, Elasticsearch, Meilisearch, Typesense, ClickHouse and Neo4j.
 
 ## Quickstart
 

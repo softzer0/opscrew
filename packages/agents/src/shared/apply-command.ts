@@ -5,6 +5,25 @@ export const REPLACEABLE_TOKENS = ["repository", "registry"] as const;
 /** One value of `--replace-token`. */
 export type ReplaceableToken = (typeof REPLACEABLE_TOKENS)[number];
 
+/**
+ * Why the stack plan of the user's Portainer comes only after a `--plan-only` run's plans are
+ * applied, as the end of "The stack plan for your Portainer follows once …", or undefined when it
+ * came with them: the app's stack gets the key of a bucket still to create, or needs the token of
+ * the Cloudflare Tunnel the saved infrastructure plan (`infrastructurePlan`) creates.
+ */
+export function stackFollowsReason(
+  result: { stackPlanHash?: string; storagePlanHash?: string },
+  infrastructurePlan: boolean,
+): string | undefined {
+  if (result.stackPlanHash !== undefined) return undefined;
+  if (result.storagePlanHash !== undefined) {
+    return "the app's bucket exists, because the app's stack gets the bucket's key";
+  }
+  return infrastructurePlan
+    ? "this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token"
+    : undefined;
+}
+
 /** The flags of a planning run that the command applying its plans must repeat. */
 export interface ApplyCommandFlags {
   engine?: "tofu" | "terraform";

@@ -10,8 +10,9 @@ import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
 import { hasDeployment, stateFile, stringOutput } from "../shared";
+import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
-import { type HostDrift, ownHostDrift } from "./host";
+import { type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
 import {
   compareInfrastructure,
   driftEngine,
@@ -139,7 +140,8 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   pending = [...pending, ...storage.pending];
   notes.push(...storage.notes);
 
-  // 5. A server the user owns: compare the server with OpsCrew's record and setup (read-only)
+  // 5. A server the user owns: compare the server with OpsCrew's record and setup (read-only);
+  // a server OpsCrew created: the app's components, once it was deployed (read-only).
   let host: HostDrift | undefined;
   if (ownServer) {
     host = await ownHostDrift(deps, plan, {
@@ -148,6 +150,8 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
       ...(tunnelId !== undefined ? { tunnelId } : {}),
       ...(services.cloudflare !== undefined ? { cloudflare: services.cloudflare } : {}),
     });
+  } else if (appDeployed(plan)) {
+    host = await serverComponentDrift(deps, plan, services, notes);
   }
 
   return finishDriftReport(deps, plan, {

@@ -5,6 +5,7 @@ import {
   IMAGES,
   portainerStackName,
   SQLITE_VOLUME,
+  STORAGE_NAMES,
   STORAGE_PRICES,
   type StoragePrice,
   sqliteVolumeOwner,
@@ -22,14 +23,6 @@ import { convertMoney } from "./cost";
 /** The object storage a plan uses: a provider's bucket, or Garage on the user's server. */
 export type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]>;
 type StorageProvider = ObjectStorage["provider"];
-
-/** What each provider is called in a sentence. */
-export const STORAGE_NAMES: Readonly<Record<StorageProvider, string>> = {
-  r2: "Cloudflare R2",
-  digitalocean: "DigitalOcean Spaces",
-  hetzner: "Hetzner Object Storage",
-  garage: "Garage on your server",
-};
 
 /**
  * When a deployed plan on SQLite changes `app.build.builder` so that its image runs as another

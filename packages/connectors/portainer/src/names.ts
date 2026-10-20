@@ -3,6 +3,10 @@ import { z } from "zod";
 
 /** The Compose label that names a container's or volume's project (Portainer's stack name). */
 export const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
+/** The Compose label that names a container's service in its project. */
+export const COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
+/** The Compose label of a one-off container (`docker compose run`): `True`. */
+export const COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff";
 
 /** The branch of the app's repository Portainer builds the app stack from (research R5). */
 export const DEPLOY_BRANCH = "opscrew-deploy";

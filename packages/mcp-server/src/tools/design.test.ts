@@ -65,6 +65,35 @@ async function optionsText(answers: Record<string, unknown>): Promise<string> {
   return textOf(result).split("\n")[0] ?? "";
 }
 
+describe("the design tools show the components", () => {
+  it("names each component with its licence, its memory and its share of the server's price", async () => {
+    const call = await connect();
+    await writeFile(
+      path.join(lastRoot, "package.json"),
+      JSON.stringify({ name: "shop", dependencies: { express: "^5.0.0", mysql2: "^3.11.0" } }),
+    );
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, budgetMonthly: "20 EUR", provider: "hetzner" },
+    });
+    expect(saved.isError).toBeFalsy();
+    const options = await call("opscrew_design_options");
+    expect(options.isError).toBeFalsy();
+    const text = textOf(options);
+    expect(text).toContain("What runs next to the app:");
+    expect(text).toMatch(/- MySQL 8\.4 \(mysql, 512 MB\): /);
+    expect(text).toContain("- MySQL is under the GPL 2.0");
+    expect(text).toMatch(/Memory limits: the app 512 MB \(€\d+\.\d\d\/month\), mysql 512 MB \(€/);
+    const id = (options.structuredContent as { recommendedId: string }).recommendedId;
+
+    const selected = await call("opscrew_select_design", { optionId: id });
+    expect(selected.isError).toBeFalsy();
+    const chosen = textOf(selected);
+    expect(chosen).toMatch(/MySQL 8\.4 \(mysql, 512 MB\): /);
+    expect(chosen).toContain("MySQL is under the GPL 2.0");
+    expect(chosen).toMatch(/Memory limits: the app 512 MB \(€\d+\.\d\d\/month\), mysql 512 MB \(€/);
+  });
+});
+
 describe("opscrew_design_options tax wording", () => {
   it("says tax, not VAT, for DigitalOcean's USD prices", async () => {
     const heading = await optionsText({

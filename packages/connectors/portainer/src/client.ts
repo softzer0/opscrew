@@ -1,6 +1,11 @@
 import { OpsCrewError, parseAnswer, Redactor } from "@opscrew/core";
 import { z } from "zod";
-import { COMPOSE_PROJECT_LABEL, VolumeNameSchema } from "./names";
+import {
+  COMPOSE_ONEOFF_LABEL,
+  COMPOSE_PROJECT_LABEL,
+  COMPOSE_SERVICE_LABEL,
+  VolumeNameSchema,
+} from "./names";
 import {
   type PinnedRequest,
   type PinnedRequestInit,
@@ -62,9 +67,11 @@ export interface DockerInfo {
   swarmActive: boolean;
 }
 
-/** A container, reduced to its Compose project and the host ports it publishes. */
+/** A container, reduced to its Compose project and service and the host ports it publishes. */
 export interface ContainerSummary {
   project?: string;
+  /** Its Compose service; absent for a one-off container (`docker compose run`). */
+  service?: string;
   running: boolean;
   publishedPorts: number[];
 }
@@ -435,12 +442,15 @@ export function portainerClient(
       );
       return list.map((container) => {
         const project = container.Labels?.[COMPOSE_PROJECT_LABEL];
+        const oneOff = container.Labels?.[COMPOSE_ONEOFF_LABEL] === "True";
+        const service = oneOff ? undefined : container.Labels?.[COMPOSE_SERVICE_LABEL];
         const ports = new Set<number>();
         for (const port of container.Ports ?? []) {
           if (port.PublicPort !== undefined && port.PublicPort > 0) ports.add(port.PublicPort);
         }
         return {
           ...(project !== undefined && { project }),
+          ...(service !== undefined && { service }),
           running: container.State === "running",
           publishedPorts: [...ports].sort((a, b) => a - b),
         };

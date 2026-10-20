@@ -16,7 +16,8 @@ change it would make, and changes nothing until you approve that exact list.
 - SSH access with a key, as `root` or as a user that can run `sudo` without a password. OpsCrew
   never asks for a password or a passphrase: give it the path to your key file, or let it use your
   SSH agent (which also covers a key with a passphrase).
-- One OpsCrew app per server. Sharing a server between several OpsCrew apps comes later.
+- Room for the app: one server can hold several OpsCrew apps, each with its own components and
+  folders (see [Several apps on one server](#several-apps-on-one-server)).
 - On your computer: Node.js 22.9 or newer, git, OpenTofu or Terraform, and a GitHub repository with
   your app, as for every OpsCrew deployment.
 - A domain for your site. Its DNS can be anywhere when your server serves the site directly with
@@ -55,7 +56,8 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
    `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Approve only if they match. OpsCrew then
    reads the server's size, memory, disk and architecture (it changes nothing) and offers it as the
    one option. There is no server price, because you already pay for it. OpsCrew warns you when the
-   server has less memory or free disk than the app needs.
+   server has less memory or free disk than the app needs, counting the memory limits of the other
+   OpsCrew apps already on it, and stops when the app's components do not fit at all.
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment. Merge its
    pull request.
 4. `npx opscrew provision` shows up to three plans and asks for each separately:
@@ -148,8 +150,16 @@ The host plan lists these steps, and only the ones that are not in place yet are
 - **The Cloudflare-only filter**, only when you chose to serve directly behind Cloudflare's proxy
   (see [How visitors reach your server](#how-visitors-reach-your-server)).
 - **fail2ban** for SSH, and **automatic security updates**.
-- `/srv/app` and `/srv/data` for the app's runtime files and data, and a marker that this server
-  runs your OpsCrew app.
+- **The shared folders** `/srv/edge` (the edge every app sits behind), `/srv/apps` and `/srv/data`,
+  and **the app's own folders**: `/srv/apps/<app>` for its Compose project and settings, and
+  `/srv/data/<app>` for its data.
+- **The app's record** in `/etc/opscrew/apps/<app>.json`: its hostnames, folders and memory limits,
+  which the next app's checks read.
+- **The kernel setting `vm.max_map_count`** in `/etc/sysctl.d/90-opscrew.conf`, only when the app
+  runs OpenSearch or Elasticsearch (see [Search and analytics engines](search-and-analytics.md)).
+
+The host plan says which steps are shared with the other apps on the server and which are this
+app's own. While other apps are there, a shared part that is in place stays as it is.
 
 SSH and firewall changes run under a safety switch: before the change, the server schedules its own
 undo; afterwards OpsCrew opens new SSH connections as `deploy` and as your own user, and only when
@@ -171,7 +181,44 @@ It names what it found and what you can do when:
 - Docker comes from Snap, from your distribution's package (`docker.io`) or is Podman;
 - the operating system is not one of the supported releases;
 - your user needs a password for `sudo`;
-- the server already runs another OpsCrew app.
+- another OpsCrew app on the server already uses the app's name or one of its hostnames, or the
+  apps would reach visitors in different ways (see
+  [Several apps on one server](#several-apps-on-one-server));
+- the app runs MongoDB and the server's x86 CPU lacks AVX, which MongoDB needs.
+
+## Several apps on one server
+
+You can deploy several OpsCrew apps, from different repositories, to the same server. Each is set
+up by its own `npx opscrew provision`, and they share only what must be shared:
+
+- **Each app has its own** Docker Compose project, named after the app, in `/srv/apps/<app>`, its
+  data in `/srv/data/<app>`, its deploy key, its record in `/etc/opscrew/apps/<app>.json`, its
+  components with their memory limits, and, with the Cloudflare Tunnel, its own tunnel and tunnel
+  connector (the Compose project `<app>-tunnel`).
+- **The edge is shared:** OpsCrew's Caddy and kamal-proxy in `/srv/edge` (the Compose project
+  `opscrew-edge`) serve every app, each on its own hostnames, with one site file per app in
+  `/srv/edge/sites/`. Each deploy brings the edge's files along and keeps the newer
+  version, so an app deployed with an older OpsCrew never downgrades it, and only a changed edge is
+  restarted.
+- **The server's setup is shared:** Docker, the `deploy` user, SSH, the firewall, fail2ban and
+  automatic updates. A later app's host plan finds them in place and changes nothing there.
+
+A deploy or a change of one app never touches another app's containers or files, and
+`npx opscrew drift` and `npx opscrew status` look only at the app of the repository you run them in.
+
+Before any change, OpsCrew refuses an app when:
+
+- another app on the server uses its name (or the name `opscrew-edge`, which the edge keeps);
+- another app already serves one of its hostnames;
+- one of them has no domain (each app needs its own hostnames on a shared edge);
+- the apps would reach visitors in different ways: all apps on a server use the same one of the
+  three ways below (the tunnel, behind Cloudflare's proxy with the filter, or DNS only).
+
+Design checks the memory: the server's memory, minus the memory limits of the apps already there
+and their tunnel connectors, OpsCrew's edge (128 MB) and the system (384 MB), must hold the new
+app's components. It warns when less than 15% stays free.
+
+When you remove an app, the others keep running. The edge goes with the last app.
 
 ## How visitors reach your server
 
@@ -255,34 +302,39 @@ confirmed.
 
 ## Day to day
 
+- `npx opscrew status` lists the app's components and whether each runs.
 - `npx opscrew drift` compares the server with what OpsCrew set up (SSH settings, firewall rules,
-  the deploy user, runtime files and containers) and Cloudflare with the plan, and reports every
-  difference without changing anything.
+  the deploy user, runtime files and the app's components) and Cloudflare with the plan, and
+  reports every difference without changing anything.
 - `npx opscrew secure` checks the server's hardening and probes it from outside.
 - `npx opscrew verify` checks the live site.
 
 ## Backups are your responsibility
 
 OpsCrew cannot turn on backups or snapshots on a server it did not create. Back up the app's data
-yourself, in particular `/srv/data` (where the database keeps its files) and the app's Docker
-volumes, for example with your provider's backup feature or a nightly copy to another machine.
+yourself, in particular `/srv/data/<app>` (where its databases and other services keep their files)
+and the app's Docker volumes, for example with your provider's backup feature or a nightly copy to
+another machine. [Databases](databases.md#backups) shows how to dump a database.
 
 ## Removing the app, and undoing OpsCrew's changes
 
 `npx opscrew destroy` removes only what OpsCrew set up for the app: its containers and runtime
-files, the deploy workflow's secrets, the DNS records or tunnel it created, and the app's hostnames
-in OpsCrew's rules in your Cloudflare zone (other OpsCrew apps there keep theirs; see
-[Removing an app](cloudflare.md#removing-an-app)). It asks you to type the app's name first, and
+files, its site on the edge, the deploy workflow's secrets, the DNS records or tunnel it created,
+and the app's hostnames in OpsCrew's rules in your Cloudflare zone (other OpsCrew apps there keep
+theirs; see [Removing an app](cloudflare.md#removing-an-app)). The other apps on the server keep
+running; the shared edge goes with the last app. It asks you to type the app's name first, and
 never deletes, rebuilds or reinstalls your server.
 
-- The app's data stays on the server unless you add `--delete-data`; deleting it needs the app's
-  name typed as well.
+- The app's data (`/srv/data/<app>`, its Docker volumes and its bucket) stays unless you add
+  `--delete-data`; deleting it needs the app's name typed as well. Its name stays reserved for the
+  same project, which can take the kept data again.
 - `npx opscrew destroy --undo-host` also reverses OpsCrew's own changes to the server (the deploy
   user, its SSH and firewall settings, automatic updates, the runtime directories), from
   the record in `/etc/opscrew/host.json`, as a separate plan you approve. It deletes the deploy
   user OpsCrew created and its home directory, so it asks you to type the app's name again (the
   name you typed for removing the app does not count for it). Docker stays installed, because
-  other software may use it. It also works after an earlier `destroy`.
+  other software may use it. It also works after an earlier `destroy`, and only once no other
+  OpsCrew app is set up on the server.
 - In scripts: `npx opscrew destroy --confirm <app name>`; the undo plan then needs
   `--confirm <app name>` together with `--approve <its hash>`, which the run prints.
 

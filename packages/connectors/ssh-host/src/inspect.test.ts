@@ -213,7 +213,6 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
         mode: "600",
         sha256: null,
       },
-      { app: "shop", name: "db.env", kind: "absent", sha256: null },
     ]);
   });
 
@@ -346,7 +345,6 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
         mode: "600",
         sha256: null,
       },
-      { app: "shop", name: "db.env", kind: "absent", sha256: null },
     ]);
     expect(RUNTIME_FILES_SNIPPET).toMatch(/if \[ -L "\$p" \]; then echo "\$app \$f link"/);
   });

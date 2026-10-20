@@ -11,6 +11,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { withBucket } from "../provision/__fixtures__/storage";
 import {
   createTestPhaseDeps,
   ScriptedApprovalHandler,
@@ -560,7 +561,21 @@ describe("runInitChecks", () => {
       expect(cf?.message).toContain("shop.example.com");
       expect(cf?.fix).toContain("https://dash.cloudflare.com/profile/api-tokens");
       expect(cf?.fix).toContain("CLOUDFLARE_API_TOKEN");
+      expect(cf?.fix).toContain(
+        "plus Account → Workers R2 Storage → Edit only when the app's uploads use Cloudflare R2",
+      );
       expect(initPassed(checks)).toBe(false);
+    });
+
+    it("names R2's permission when the plan keeps the app's files on Cloudflare R2", async () => {
+      const { deps } = await setup();
+      await writeArtifact("plan", deps.paths.files.plan, withBucket(testPlan(), "r2"));
+      const checks = await runInitChecks(deps, { services: services() });
+      const cf = checks.find((c) => c.id === "cloudflare");
+      expect(cf?.status).toBe("pass");
+      expect(cf?.message).toContain(
+        "The app's bucket on Cloudflare R2 also needs Account → Workers R2 Storage → Edit.",
+      );
     });
 
     it("names the missing permission when the token cannot see the planned zone", async () => {

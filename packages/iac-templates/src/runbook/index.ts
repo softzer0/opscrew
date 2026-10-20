@@ -4,6 +4,7 @@ import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
 import { siteHosts } from "../runtime";
 import type { RenderContext, RenderedFile } from "../types";
+import { componentsSection, dataCell, edgeSection, objectStorageSection } from "./components";
 import { renderOwnRunbook } from "./own";
 import {
   cell,
@@ -21,6 +22,7 @@ import {
   TROUBLESHOOTING,
 } from "./shared";
 
+export { componentsSection, objectStorageSection } from "./components";
 export { cell, deployRows, externalDatabaseCell, runbookHead } from "./shared";
 
 const PENDING = "_(set by `opscrew provision`)_";
@@ -51,15 +53,18 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
   const ipv6 = hidden ? undefined : ctx.serverIpv6;
   const hosts = siteHosts(plan);
   const url = hosts.length > 0 ? `https://${hosts[0]}` : ip ? `http://${ip}` : PENDING;
-  const keyPath = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}/deploy_key`;
+  const projectDir = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`;
+  const keyPath = `${projectDir}/deploy_key`;
   const ssh = `ssh -i ${keyPath} deploy@${ip ?? "$(opscrew status --ip)"}`;
   const addresses = hidden
     ? "kept private behind Cloudflare: `opscrew status` shows them"
     : `${ip ?? PENDING} / ${ipv6 ?? PENDING}`;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
-  const db = serviceOf(plan, "postgres")
-    ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${target.backups ? `; ${provider.runbook.backupsOnDatabaseCell}` : "; automated backups are off"}`
-    : externalDatabaseCell(plan);
+  const db = dataCell(
+    plan,
+    target.backups ? provider.runbook.backupsOnDatabaseCell : "automated backups are off",
+    externalDatabaseCell(plan),
+  );
   const dns = usesCloudflare(plan)
     ? `Cloudflare, ${plan.dns.proxied ? "proxied (the server IP is hidden behind Cloudflare)" : "DNS only"}`
     : "No domain yet: the app is served over plain HTTP on the server IP";
@@ -74,9 +79,12 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     `| Cost | ${cell(money(plan, provider))} |`,
     "",
     ...deploySections(plan),
+    ...componentsSection(plan),
+    ...edgeSection(plan, false),
+    ...objectStorageSection(plan, projectDir),
     "## Connect to the server",
     "",
-    ...serverCommands([
+    ...serverCommands(plan, [
       ssh,
       ...(ip === undefined
         ? [`# without a global install: ssh -i ${keyPath} deploy@$(npx opscrew status --ip)`]
@@ -273,6 +281,11 @@ function teardown(
       ? [`- **Snapshot first:** because ${reason}, ${snapshotLead}`, ...snapshotRest]
       : text.noSnapshot),
     ...text.whatRemains(repo.toLowerCase(), plan.cicd.workflowPath, backups),
+    ...(plan.storage?.objectStorage === undefined
+      ? []
+      : [
+          `- **The bucket \`${plan.storage.objectStorage.bucket}\`** stays with the app's files, and is billed, unless you add \`--delete-data\`.`,
+        ]),
     "- **What is removed besides the infrastructure:** the GitHub deploy secrets, so the workflow can no longer deploy,",
     `  and ${text.hostKey} on this machine. \`opscrew/plan.yaml\` records that the deployment was destroyed.`,
     "",

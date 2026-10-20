@@ -1,8 +1,10 @@
 import { normalizeHostName, OpsCrewError, type Redactor, replaceNames } from "@opscrew/core";
 import {
   cell,
+  componentsSection,
   deployRows,
   externalDatabaseCell,
+  objectStorageSection,
   portainerConnectorStackName,
   portainerStackName,
   portainerStackVolumes,
@@ -134,11 +136,15 @@ function redeployLines(plan: DeployPlan, target: PortainerDeployTarget): string[
  */
 export function renderPortainerRunbook(
   plan: DeployPlan,
-  ctx: { opscrewVersion: string; github: { owner: string; repo: string } },
+  ctx: { opscrewVersion: string; github: { owner: string; repo: string }; projectId?: string },
 ): RenderedFile {
   if (plan.target.provider !== "portainer") {
     throw new Error(`Expected a plan for your Portainer, got ${plan.target.provider}.`);
   }
+  // The app's bucket at a provider, which destroy keeps unless asked (Garage's is in the stack).
+  const storage = plan.storage?.objectStorage;
+  const bucket =
+    storage === undefined || storage.provider === "garage" ? undefined : storage.bucket;
   const target = plan.target;
   const app = portainerStackName(plan);
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
@@ -170,6 +176,8 @@ export function renderPortainerRunbook(
     "",
     `Re-run an earlier successful run of \`${plan.cicd.workflowPath}\` in GitHub Actions: it writes that run's image to the \`opscrew-deploy\` branch, and your Portainer deploys it.`,
     "",
+    ...componentsSection(plan),
+    ...objectStorageSection(plan, `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`),
     "## Logs and status",
     "",
     `In your Portainer: Stacks → \`${app}\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.`,
@@ -188,7 +196,7 @@ export function renderPortainerRunbook(
     "",
     "## Removing the app",
     "",
-    "`opscrew destroy` removes the app's stacks, the registry entry OpsCrew added, the deploy secrets and the app's Cloudflare resources, after approvals and a typed confirmation of the app's name. The app's volumes stay unless you add `--delete-data`.",
+    `\`opscrew destroy\` removes the app's stacks, the registry entry OpsCrew added, the deploy secrets and the app's Cloudflare resources, after approvals and a typed confirmation of the app's name. The app's volumes${bucket === undefined ? "" : ` and its bucket \`${bucket}\``} stay unless you add \`--delete-data\`.`,
     "",
   ];
   return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };

@@ -94,6 +94,9 @@ export interface FakeRegistry {
 export interface FakeContainer {
   EndpointId: number;
   project?: string;
+  /** Its Compose service, and whether it is a one-off container (`docker compose run`). */
+  service?: string;
+  oneOff?: boolean;
   running: boolean;
   ports: number[];
 }
@@ -475,7 +478,14 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     if (isReply(env)) return env;
     const fromStacks = state.stacks
       .filter((stack) => stack.EndpointId === env.Id && stack.containers !== "none")
-      .map((stack) => ({ project: stack.Name, running: stack.containers === "running", ports: stack.ports }));
+      .map(
+        (stack): FakeContainer => ({
+          EndpointId: env.Id,
+          project: stack.Name,
+          running: stack.containers === "running",
+          ports: stack.ports,
+        }),
+      );
     const outside = state.containers.filter((container) => container.EndpointId === env.Id);
     const visible = [...fromStacks, ...outside].filter((container) =>
       ownsProject(user, env.Id, container.project),
@@ -489,6 +499,10 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
         Labels: {
           ...(container.project !== undefined && {
             "com.docker.compose.project": container.project,
+          }),
+          ...(container.service !== undefined && {
+            "com.docker.compose.service": container.service,
+            "com.docker.compose.oneoff": container.oneOff === true ? "True" : "False",
           }),
           "traefik.http.middlewares.auth.basicauth.users": "user:$apr1$FAKEHASH",
         },

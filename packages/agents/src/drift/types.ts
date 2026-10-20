@@ -65,7 +65,9 @@ export interface DriftReport {
   foreignDnsRecords: { type: string; name: string; content: string }[];
   /**
    * A server the user owns: how it differs from what OpsCrew set up (SSH settings, firewall rules,
-   * deploy user, runtime directories, the add-on and app containers). Never an address or secret.
+   * deploy user, runtime directories, the add-on and app containers). A server OpsCrew created,
+   * once the app was deployed: how the app's containers differ from its components. Never an
+   * address or secret.
    */
   host?: HostDrift;
   /**

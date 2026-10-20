@@ -187,12 +187,21 @@ describe("portainerClient", () => {
     ).toThrow(/at least 16 bytes/);
   });
 
-  it("reduces containers to their project and published ports, volumes to name and project", async () => {
+  it("reduces containers to their project, service and published ports, volumes to name and project", async () => {
     const { client } = setup({
       containers: [
         { EndpointId: 3, project: "media", running: true, ports: [8096] },
         { EndpointId: 3, running: true, ports: [80, 443] },
         { EndpointId: 3, project: "old", running: false, ports: [8080] },
+        { EndpointId: 3, project: "opscrew-shop", service: "worker", running: true, ports: [] },
+        {
+          EndpointId: 3,
+          project: "opscrew-shop",
+          service: "release",
+          oneOff: true,
+          running: false,
+          ports: [],
+        },
       ],
       volumes: [
         { EndpointId: 3, Name: "opscrew-shop_db-data", project: "opscrew-shop" },
@@ -204,6 +213,9 @@ describe("portainerClient", () => {
       { project: "media", running: true, publishedPorts: [8096] },
       { running: true, publishedPorts: [80, 443] },
       { project: "old", running: false, publishedPorts: [] },
+      // The Compose service, except for a one-off container.
+      { project: "opscrew-shop", service: "worker", running: true, publishedPorts: [] },
+      { project: "opscrew-shop", running: false, publishedPorts: [] },
     ]);
     expect(JSON.stringify(containers)).not.toContain("basicauth");
     expect(await client.listVolumes(3)).toEqual([

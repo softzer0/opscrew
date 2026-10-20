@@ -1,4 +1,5 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { appDir } from "../edge";
 import type { RenderContext } from "../types";
 
 /** Text for a Markdown table cell: pipes escaped, newlines turned into spaces. */
@@ -56,8 +57,11 @@ export function deploySections(
     `1. You push to \`${branch}\` (or run the "OpsCrew deploy" workflow by hand in GitHub → Actions).`,
     "2. GitHub Actions builds the Docker image from your Dockerfile and pushes it to GitHub Container Registry.",
     ...(notes.build ?? []),
-    "3. It copies `opscrew/runtime/compose.yaml` and `opscrew/runtime/Caddyfile` to `/srv/app` on the server, writes the",
-    "   app's environment from the deploy secrets, and starts the new version with Docker Compose.",
+    `3. It copies \`opscrew/runtime/compose.yaml\` (with the services' settings) to \`${appDir(plan)}\` on the server and`,
+    `   the app's site file to the shared edge in \`/srv/edge\`, writes the app's and the services' environment from the`,
+    "   deploy secrets, starts the services, runs the release command if the app has one, switches to the new version,",
+    "   then restarts the workers and cron jobs with it. A worker that does not stay up sends the app back to the",
+    "   previous version.",
     ...(notes.start ?? []),
     `4. It checks \`${plan.app.healthPath}\`. If the app does not answer within three minutes, it restores the previous`,
     "   version automatically and the run fails.",
@@ -70,12 +74,12 @@ export function deploySections(
   ];
 }
 
-/** A shell block that logs in with `login` and shows the app's containers in `/srv/app`. */
-export function serverCommands(login: readonly string[]): string[] {
+/** A shell block that logs in with `login` and shows the app's containers in `/srv/apps/<app>`. */
+export function serverCommands(plan: DeployPlan, login: readonly string[]): string[] {
   return [
     "```bash",
     ...login,
-    "cd /srv/app",
+    `cd ${appDir(plan)}`,
     "docker compose ps                 # what is running",
     "docker compose logs -f app        # follow the app's logs",
     "docker compose restart app        # restart the app",

@@ -1,15 +1,20 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   buildStatusLines,
+  type ComponentStatusOptions,
+  componentStatusReport,
   moveInProgress,
   moveProvider,
+  type PhaseDeps,
   phaseStatusLines,
   providerProfile,
+  readOwnServer,
   supplyChainLines,
 } from "@opscrew/agents";
 import { exists, toPosixRelative } from "@opscrew/core";
-import { type Retarget, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
+import { hostKeyNeedsTerminal } from "./elicitation";
 import { projectDirInput, runTool, withHint } from "./shared";
 
 /** The next planning step for the plugin flow, given which artefacts exist. */
@@ -41,24 +46,55 @@ function billing(move: Retarget): string {
     : "Both servers are billed until the move is finished or aborted.";
 }
 
+/** Test-only collaborators for `opscrew_status` (production connects over SSH). */
+export interface StatusToolOptions {
+  /** The deploy user's shell on a server OpsCrew created, and own-server fakes. */
+  services?: ComponentStatusOptions["services"];
+}
+
+/**
+ * The plan's components, and once the app was deployed whether each runs, read over SSH on a
+ * server or through Portainer's API (FR-1331). A server the user owns is read only with its
+ * pinned host key; when the deployment cannot be read, a note says why.
+ */
+function componentsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOptions) {
+  return componentStatusReport(phase, plan, {
+    ...(options.services === undefined ? {} : { services: options.services }),
+    // The model cannot confirm a host key: an own server never confirmed is left to the terminal.
+    check: async () => {
+      if (plan.target.provider !== "own") return;
+      const recorded = await readOwnServer(phase.paths).catch(() => undefined);
+      if (recorded !== undefined && recorded.hostKey === undefined) {
+        throw hostKeyNeedsTerminal("status", "OpsCrew did not check whether the components run.");
+      }
+    },
+  });
+}
+
 /**
  * `opscrew_status`: which phases have run (from `.opscrew/state.json`), which artefacts exist, the
  * plan's image builder and deploy strategy, its supply-chain settings (signing, deploy tags,
- * image retention), and the next step. Read-only.
+ * image retention), the app's components and whether each runs, and the next step. Writes
+ * nothing. `options` is for tests only.
  */
-export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): void {
+export function registerStatusTool(
+  server: McpServer,
+  deps: ResolvedMcpDeps,
+  options: StatusToolOptions = {},
+): void {
   server.registerTool(
     "opscrew_status",
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) and, once the app was deployed, whether each runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ projectDir }) =>
       runTool(deps, "opscrew_status", projectDir, async (call) => {
-        const { paths, state } = await call.phaseDeps();
+        const phase = await call.phaseDeps();
+        const { paths, state } = phase;
         const current = await state
           .read()
           .catch((error: unknown) =>
@@ -110,6 +146,8 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           move === undefined
             ? nextStep(have)
             : `${move.message} ${move.hint} Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.`;
+        const components =
+          plan === undefined ? undefined : await componentsOf(phase, plan, options);
         const text = [
           `OpsCrew phases in ${paths.root}:`,
           ...lines,
@@ -119,6 +157,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
             (a) => `  ${a.path}: ${a.exists ? "present" : "missing"}`,
           ),
           ...(plan === undefined ? [] : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)]),
+          ...(components === undefined ? [] : ["", ...components.lines]),
           ...moveLines,
           "",
           `Next: ${step}`,
@@ -131,6 +170,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
             artifacts,
             nextStep: step,
             move: moveData,
+            ...(components?.status === undefined ? {} : { components: components.status }),
           },
         };
       }),

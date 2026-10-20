@@ -3,11 +3,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
+import { type OwnServerServices, recordOwnServer, recordServerAddress } from "@opscrew/agents";
+import {
+  forbiddenFetch,
+  OWN_IPV4,
+  ownPlan,
+  ScriptedRunner,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
+import type { RemoteExec } from "@opscrew/contracts";
+import { resolveProjectPaths } from "@opscrew/core";
 import { DeployPlanSchema, type Retarget, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveMcpDeps } from "../deps";
 import { createOpscrewMcpServer } from "../server";
+import { registerStatusTool } from "./status";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -99,6 +112,163 @@ async function status(step: Retarget["step"], abort?: AbortStep) {
   const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
   return { text, data: result.structuredContent };
 }
+
+describe("opscrew_status: the app's components (FR-1331)", () => {
+  /** A deployed Hetzner plan with a worker, after a deploy `opscrew verify` saw. */
+  function deployedPlan() {
+    const base = testPlan({ deployed: true, userSecret: false });
+    return DeployPlanSchema.parse({
+      ...base,
+      deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+      processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
+    });
+  }
+
+  async function call(plan: ReturnType<typeof deployedPlan>, stdout: string, exitCode = 0) {
+    const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), plan);
+    const env = { OPSCREW_HOME: path.join(dir, "home") };
+    await recordServerAddress(resolveProjectPaths(dir, { env }), { ipv4: SERVER_IPV4 });
+    const hosts: string[] = [];
+    const remote = (host: string): RemoteExec => {
+      hosts.push(host);
+      return { host, run: async () => ({ exitCode, stdout, stderr: "" }) };
+    };
+    const deps = resolveMcpDeps({
+      version: "0.0.0-test",
+      env,
+      fetch: forbiddenFetch,
+      runner: new ScriptedRunner(),
+      cwd: dir,
+    });
+    const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
+    registerStatusTool(server, deps, { services: { remote } });
+    const client = new Client({ name: "opscrew-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    cleanups.push(async () => {
+      await client.close();
+      await server.close();
+    });
+    const result = (await client.callTool({
+      name: "opscrew_status",
+      arguments: {},
+    })) as CallToolResult;
+    expect(result.isError).toBeFalsy();
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    return { text, data: result.structuredContent, hosts };
+  }
+
+  it("lists each component and whether it runs, read over SSH, without the server's address", async () => {
+    const { text, data, hosts } = await call(
+      deployedPlan(),
+      "shop-app-1|running\nshop-worker-1|exited\nshop-db-1|running\n",
+    );
+    expect(hosts).toEqual([SERVER_IPV4]);
+    expect(text).toContain(
+      [
+        "Components:",
+        "  The web process (app): running",
+        "  The worker (worker): stopped",
+        "  PostgreSQL (db): running",
+      ].join("\n"),
+    );
+    expect(text).not.toContain(SERVER_IPV4);
+    expect(data).toMatchObject({
+      components: {
+        components: [
+          { service: "app", running: 1 },
+          { service: "worker", containers: 1, running: 0 },
+          { service: "db", running: 1 },
+        ],
+        others: [],
+      },
+    });
+  });
+
+  it("a server it cannot read is a note; before a deploy was seen, nothing is read", async () => {
+    const failed = await call(deployedPlan(), "", 255);
+    expect(failed.text).toContain("Components (from opscrew/plan.yaml):");
+    expect(failed.text).toContain("OpsCrew could not check whether they run.");
+
+    const fresh = await call(testPlan({ deployed: true, userSecret: false }), "");
+    expect(fresh.hosts).toEqual([]);
+    expect(fresh.text).toContain(
+      "Components (from opscrew/plan.yaml):\n  The web process (app)\n  PostgreSQL (db)",
+    );
+  });
+});
+
+describe("opscrew_status on a server the user owns", () => {
+  it("never connects before the host key was confirmed, and sends the user to the terminal", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-own-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const base = ownPlan({ deployed: true });
+    await writeArtifact(
+      "plan",
+      path.join(dir, "opscrew", "plan.yaml"),
+      DeployPlanSchema.parse({
+        ...base,
+        deployment: { ...base.deployment, lastDeployAt: "2026-10-14T12:00:00.000Z" },
+      }),
+    );
+    const env = { OPSCREW_HOME: path.join(dir, "home") };
+    // The interview recorded the login, but no host key was confirmed yet.
+    await recordOwnServer(resolveProjectPaths(dir, { env }), {
+      host: OWN_IPV4,
+      port: 22,
+      user: "root",
+      agent: true,
+      reachable: true,
+    });
+    const used: string[] = [];
+    const runner = new ScriptedRunner();
+    const deps = resolveMcpDeps({
+      version: "0.0.0-test",
+      env,
+      fetch: forbiddenFetch,
+      runner,
+      cwd: dir,
+    });
+    const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
+    registerStatusTool(server, deps, {
+      services: {
+        own: {
+          remote: () => {
+            used.push("ssh");
+            throw new Error("no SSH in this test");
+          },
+          host: {
+            inspect: async () => {
+              used.push("inspect");
+              throw new Error("no inspection in this test");
+            },
+          } as unknown as NonNullable<OwnServerServices["host"]>,
+        },
+      },
+    });
+    const client = new Client({ name: "opscrew-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    cleanups.push(async () => {
+      await client.close();
+      await server.close();
+    });
+    const result = (await client.callTool({
+      name: "opscrew_status",
+      arguments: {},
+    })) as CallToolResult;
+    expect(result.isError).toBeFalsy();
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    expect(text).toContain("Components (from opscrew/plan.yaml):");
+    expect(text).toContain("OpsCrew could not check whether they run.");
+    expect(text).toContain("Ask the user to run `npx opscrew status` in a terminal");
+    expect(text).not.toContain(OWN_IPV4);
+    expect(used).toEqual([]);
+    expect(runner.calls).toEqual([]);
+  });
+});
 
 describe("opscrew_status during a move", () => {
   it.each(["started", "renamed"] as const)("bills only the current server at %s", async (step) => {

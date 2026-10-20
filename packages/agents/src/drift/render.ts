@@ -50,6 +50,9 @@ export function driftNextSteps(
       ]
     : [
         "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plan first).",
+        ...((report.host?.differences.length ?? 0) > 0
+          ? ["for the app's containers on the server, follow the step the report gives with each."]
+          : []),
         "to keep a change made in the console, update opscrew/plan.yaml to match before you provision again.",
       ];
 }

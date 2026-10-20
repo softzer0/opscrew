@@ -48,6 +48,15 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      user has a reason against it. Both Cloudflare ways need a domain on the user's Cloudflare
      account.
 
+   Two kinds of questions are about what runs next to the app:
+   - `workerCommands.<name>`: a background-job library OpsCrew found has no conventional start
+     command (BullMQ, asynq, river). Ask the user for the command that starts that worker from the
+     app's code (for example `node dist/worker.js`); never guess one.
+   - `keepExternalServices.<kind>`: the app already uses a hosted service (a hosted MongoDB,
+     PlanetScale, Upstash, Neon and the like). Ask whether to keep it or let OpsCrew run one on the
+     server, and pass on what running it there adds (its memory on the server, and its data on the
+     server's disk). Without an answer, OpsCrew keeps the hosted one.
+
    For `portainer` (a Portainer the user already runs, often on a NAS such as Synology, Unraid or
    TrueNAS), ask the returned `portainer.` questions instead: Portainer's HTTPS address, the
    environment, how new versions reach Portainer and how visitors reach the app.
@@ -70,6 +79,16 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 4. **Design.** Call `opscrew_design_options`. Present each option with its monthly cost, whether it
    fits the budget and its trade-offs; say which one OpsCrew recommends and why. When prices are
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.
+   - **Components.** Both tools list what runs next to the web process: workers (with their command
+     and number of copies), cron jobs (in UTC), the services OpsCrew runs as containers (databases,
+     Valkey, brokers, search and analytics engines, each with its version and memory limit), SQLite
+     on a persistent volume, and object storage with each option's monthly price. Each option shows
+     every component's memory limit and its share of the server's monthly price. Pass on the
+     licence sentences in plain words (MongoDB's SSPL, MySQL's GPL, Redpanda's BSL and so on): they
+     restrict offering that software as a service, not running it for the user's own app. The
+     user changes counts, memory, versions or the storage provider, or turns a component off, in
+     `opscrew/plan.yaml`; then call `opscrew_select_design` again (it keeps those edits and checks
+     that everything fits the server).
    - **Builder and deploys.** `opscrew_select_design` returns who builds the image (OpsCrew's
      Dockerfile for Node and Python, Buildpacks for Go, Java, .NET and Ruby, Railpack for Bun
      projects and the rest, or the repository's own Dockerfile), how deploys switch, and the signing, deploy tag
@@ -90,11 +109,15 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      terminal once. There is one option and no price (they already pay for the server); pass on
      every warning (too little memory or disk, a tunnel without a Cloudflare domain) and say that
      OpsCrew cannot turn on backups there, so backups are their responsibility.
-   - **Existing Portainer.** There is one option, without a price or sizes: the app (and the
-     Postgres or Redis it needs) as stacks in the chosen environment, built for its architecture.
-     Say that OpsCrew does not change the host (its firewall, SSH and Portainer's own security stay
-     theirs), that it checks nothing about the host's memory or disk, and that backups of the
-     app's data are their responsibility.
+   - **Existing Portainer.** There is one option, without a price or sizes: the app and its
+     components as stacks in the chosen environment, built for its architecture, with the data in
+     named volumes. Say that OpsCrew does not change the host (its firewall, SSH and Portainer's
+     own security stay theirs), that it checks nothing about the host's memory or disk, and that
+     backups of the app's data are their responsibility. OpenSearch and Elasticsearch need a
+     kernel setting on the Docker host (`vm.max_map_count`), which a stack cannot make, so OpsCrew
+     does not run them in Portainer: design keeps the app's own (for example a hosted one), and a
+     plan that asks for one stops before any change, saying how to make the setting and run the
+     engine by hand next to Portainer.
 5. **Prepare the code.** Read `opscrew/plan.yaml` (`codeChanges`). Apply the pending changes by
    following the `opscrew-adapt` skill. Show the user the diff and let them commit it (or commit it
    for them only after they say so). The changes must be merged into the deploy branch before the
@@ -120,6 +143,27 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    Unless `OPSCREW_APP_ENV_FILE` is set, the deploy secrets still have to be stored by running
    `npx opscrew provision` in their terminal afterwards (it resumes without changing the server).
 
+   **Workers and cron jobs** need nothing extra: the deploy starts the services first, then the
+   new web version, then the workers and the cron jobs with the same image. When a new worker does
+   not stay up, the deploy puts the app back on the previous version and names the worker and
+   `docker compose logs <worker>`.
+
+   **The storage key.** When the plan keeps the app's files in a bucket on Cloudflare R2,
+   DigitalOcean Spaces or Hetzner Object Storage, the bucket has a plan of its own:
+   `opscrew_plan` returns it as `storagePlanHash`, with its changes and monthly price. Show it to
+   the user and pass `storagePlanHash` to `opscrew_apply` with the other hashes; it is approved in
+   its own dialog, never with another plan. In the user's Portainer, the stack plan follows once
+   the bucket exists, in a dialog after that apply. The app also needs a key the user creates in
+   the provider's console: OpsCrew never creates one (Spaces' and Hetzner's before the bucket,
+   R2's after it, as a token limited to the bucket). It comes only from the user's own terminal:
+   `npx opscrew provision` shows the console steps and asks for it there once, or the user sets
+   `OPSCREW_STORAGE_ACCESS_KEY_ID` and `OPSCREW_STORAGE_SECRET_ACCESS_KEY` in the MCP server's
+   environment. When a tool stops because the key is missing, pass on its steps. OpsCrew keeps the
+   key on the user's computer like a provider token, never in the repository or in infrastructure
+   state. Never ask for the key in the chat. R2 also needs the Cloudflare token's
+   **Account → Workers R2 Storage → Edit** permission. Garage, on the user's own server or
+   Portainer, needs no key from them: OpsCrew generates it.
+
    **The Cloudflare plan comes first.** When the app's domain is on Cloudflare, `opscrew_plan` also
    returns a Cloudflare plan with its own hash (`cloudflarePlanHash`), approved on its own before
    the infrastructure plan. It lists what OpsCrew changes in its two shared rules in the zone (the
@@ -138,8 +182,12 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    its own: the Cloudflare infrastructure (DNS records, or the tunnel and Cloudflare Access in
    tunnel mode) and the host plan, which lists every change OpsCrew would make on the server (Docker 28 or newer from
    Docker's repository, a `deploy` user, SSH hardening, the ufw firewall, fail2ban, automatic
-   security updates, `/srv/app` and `/srv/data`) and marks what is already in place. Show both to
-   the user. `opscrew_plan` returns `planHash` and `hostPlanHash`; pass both to `opscrew_apply`
+   security updates, the shared folders `/srv/edge`, `/srv/apps` and `/srv/data`, the app's own
+   `/srv/apps/<app>` and `/srv/data/<app>` and its record in `/etc/opscrew/apps/<app>.json`, and
+   `vm.max_map_count` when a search engine needs it) and marks what is already in place. Several
+   OpsCrew apps can share one server: each has its own folders, and all sit behind one shared edge
+   (Caddy and kamal-proxy in `/srv/edge`), which goes with the last app; the host plan shows which
+   parts are shared and which are the app's own. Show both plans to the user. `opscrew_plan` returns `planHash` and `hostPlanHash`; pass both to `opscrew_apply`
    (only `planHash` when it returned only a host plan). In a terminal the user runs
    `npx opscrew provision`, or in scripts `npx opscrew provision --plan-only` and then
    `--approve <infrastructure hash> --approve <host plan hash>`; `--yes` never approves either.
@@ -149,8 +197,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    and `opscrew_apply` (in a terminal: `--password-logins off|keep`). The host plan then shows the
    choice in the dialog they approve.
    OpsCrew stops and changes nothing when the server already runs a web server on ports 80/443,
-   uses another firewall, has Docker from Snap, Podman or the distribution's package, or runs
-   another OpsCrew app; pass on its explanation. Tunnel mode and Portainer's subdomain need
+   uses another firewall, has Docker from Snap, Podman or the distribution's package, or when
+   another OpsCrew app on the server already uses the app's name or one of its hostnames; pass on
+   its explanation. Tunnel mode and Portainer's subdomain need
    Cloudflare Zero Trust turned on for the account (free plan, https://one.dash.cloudflare.com/).
 
    **In the user's existing Portainer** there are up to two plans besides the Cloudflare plan, each
@@ -192,9 +241,16 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `opscrew_drift`. It reports changes made outside OpsCrew (attribute names only; on their own
   server also its SSH, firewall, deploy user and runtime files; in their Portainer the app's stack
   file, environment keys, redeploy setting, registry entry and deploy branch, never a value),
-  changes not applied yet and edited generated files, and changes nothing. To undo
+  changes not applied yet and edited generated files, and changes nothing. Once the app was
+  deployed on a server it also names a component of the plan with no container there, a
+  container the plan no longer has and a stopped one. To undo
   drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
   be updated to match first.
+- **Status.** `opscrew_status` lists the app's components (web process, workers, cron jobs,
+  services) and, once the app was deployed, whether each runs: read over SSH on a server, or
+  through Portainer's API (with `PORTAINER_API_KEY`) in the user's Portainer. On the user's own
+  server it reads them only after the SSH host key was confirmed once; otherwise ask the user to
+  run `npx opscrew status` in a terminal.
 - **Getting a domain.** When the user has no domain yet, call `opscrew_domain_check` with a name
   or a domain. It checks availability live and returns the first-year and renewal prices with
   their currency, and a plain reason for names that cannot be bought through the API (taken,
@@ -232,7 +288,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
   in their own terminal: it offers a snapshot first (the database is deleted with the server), asks
-  them to type the server name and removes the deploy secrets from GitHub. On their own server it
+  them to type the server name and removes the deploy secrets from GitHub. The app's bucket stays,
+  with its files, unless they add `--delete-data`. On their own server it
   never deletes or reinstalls the server: it removes the app and its Cloudflare records after they
   type the app's name, keeps the app's data unless they add `--delete-data`, and reverses
   OpsCrew's own changes to the server only with `--undo-host` (a separate plan they approve).

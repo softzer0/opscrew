@@ -87,10 +87,11 @@ function fakeAccess(rejectToken = false) {
  * A fake `runProvision` for the user's Portainer: `planOnly` saves a stack plan and describes it;
  * otherwise it asks for that plan's `stack-apply` approval, as provision does.
  */
-function fakeProvision() {
+function fakeProvision(o: { bucket?: boolean } = {}) {
   const calls: ProvisionOptions[] = [];
   const run: typeof runProvision = async (deps, options = {}) => {
     calls.push(options);
+    if (o.bucket === true) return bucketProvision(deps, options);
     const text = `${JSON.stringify({ changes: [{ id: "app-stack", state: "change" }] })}\n`;
     const hash = createHash("sha256").update(text).digest("hex");
     await mkdir(deps.paths.files.plansDir, { recursive: true });
@@ -116,7 +117,58 @@ function fakeProvision() {
   return { run, calls };
 }
 
-async function connect(options: { elicit?: Answer; token?: string; rejectToken?: boolean } = {}) {
+/** The hash of the fake bucket plan (the `storage` root) {@link bucketProvision} saves. */
+const BUCKET_HASH = "cd".repeat(32);
+
+/**
+ * `runProvision` for an app with an R2 bucket still to create: `planOnly` saves only the bucket's
+ * plan (the stack plan follows once the bucket exists); otherwise it asks for the bucket plan's
+ * own approval, as provision does.
+ */
+async function bucketProvision(
+  deps: Parameters<typeof runProvision>[0],
+  options: ProvisionOptions,
+): Promise<ProvisionResult> {
+  const dir = deps.paths.files.plansDir;
+  await mkdir(dir, { recursive: true });
+  const sidecar = {
+    planHash: BUCKET_HASH,
+    planFile: path.join(dir, "20261015T120000-storage.tfplan"),
+    dir: "opscrew/infra/storage",
+    engine: { name: "tofu", version: "1.13.1", binary: "tofu" },
+    createdAt: "2026-10-15T12:00:00.000Z",
+    changes: [
+      {
+        address: "cloudflare_r2_bucket.this",
+        type: "cloudflare_r2_bucket",
+        name: "this",
+        provider: "registry.opentofu.org/cloudflare/cloudflare",
+        action: "create",
+      },
+    ],
+    counts: { create: 1, update: 0, delete: 0, replace: 0 },
+    hasDestroy: false,
+    policy: [],
+    planJson: {},
+  };
+  await writeFile(path.join(dir, "20261015T120000-storage.tfplan.json"), JSON.stringify(sidecar));
+  if (options.planOnly === true) {
+    return { storagePlanHash: BUCKET_HASH, applied: false, outputs: {} };
+  }
+  const decision = await deps.approvals.request({
+    kind: "iac-apply",
+    title: "Apply the plan of the app's bucket shop-uploads on Cloudflare R2",
+    details: `Plan hash: ${BUCKET_HASH}`,
+    planHash: BUCKET_HASH,
+  });
+  if (!decision.approved)
+    throw new OpsCrewError("APPROVAL_REFUSED", "The storage plan was not approved.");
+  return { storagePlanHash: BUCKET_HASH, applied: false, outputs: {} };
+}
+
+async function connect(
+  options: { elicit?: Answer; token?: string; rejectToken?: boolean; bucket?: boolean } = {},
+) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-portainer-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "repo");
@@ -142,7 +194,7 @@ async function connect(options: { elicit?: Answer; token?: string; rejectToken?:
     cwd: root,
   });
   const { access, listed } = fakeAccess(options.rejectToken);
-  const provision = fakeProvision();
+  const provision = fakeProvision({ bucket: options.bucket === true });
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerInterviewTools(server, deps, { portainerAccess: access });
   registerDesignTools(server, deps);
@@ -336,6 +388,67 @@ describe("the MCP tools for the user's existing Portainer", () => {
     expect(refused.isError).toBe(true);
     expect(textOf(refused)).toContain("declined the stack plan");
     expect(textOf(refused)).toContain("nothing in the user's Portainer was changed");
+  });
+
+  it("returns the bucket's plan with its own hash, says the stack plan follows, and applies it after its own dialog", async () => {
+    const h = await connect({ elicit: trust, bucket: true });
+    await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    const options = await h.call("opscrew_design_options");
+    const id = (options.structuredContent as { options: { id: string }[] }).options[0]?.id;
+    await h.call("opscrew_select_design", { optionId: id });
+
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(planned.structuredContent).toMatchObject({
+      storagePlanHash: BUCKET_HASH,
+      stackPlanFollows: true,
+    });
+    const text = textOf(planned);
+    expect(text).toContain(
+      `Plan of the app's bucket (object storage), with its own hash ${BUCKET_HASH}:`,
+    );
+    expect(text).toContain("cloudflare_r2_bucket.this");
+    expect(text).toContain(`call opscrew_apply with storagePlanHash ${BUCKET_HASH}`);
+    expect(text).toContain(`opscrew provision --approve ${BUCKET_HASH}`);
+    expect(text).toContain(
+      "The stack plan for the user's Portainer follows once the app's bucket exists, because the app's stack gets the bucket's key",
+    );
+
+    const before = h.elicited.length;
+    const applied = await h.call("opscrew_apply", { storagePlanHash: BUCKET_HASH });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(h.elicited.length).toBe(before + 1);
+    expect(h.elicited.at(-1)?.message).toContain("Apply the plan of the app's bucket");
+    expect(h.provision.calls[1]).toMatchObject({ approveHashes: [BUCKET_HASH] });
+    expect(textOf(applied)).toContain(`Applied the plan of the app's bucket ${BUCKET_HASH}.`);
+
+    const unknown = await h.call("opscrew_apply", { storagePlanHash: "ef".repeat(32) });
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("No saved bucket plan has the hash");
+  });
+
+  it("refuses a bucket plan the chat was not given, before any dialog and without applying it", async () => {
+    const h = await connect({ elicit: trust, bucket: true });
+    await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    const options = await h.call("opscrew_design_options");
+    const id = (options.structuredContent as { options: { id: string }[] }).options[0]?.id;
+    await h.call("opscrew_select_design", { optionId: id });
+    // A stack plan the user saw; the run then reaches the bucket's plan, whose hash was not given.
+    const paths = resolveProjectPaths(h.root, { env: h.env });
+    const text = `${JSON.stringify({ changes: [{ id: "app-stack", state: "change" }] })}\n`;
+    const stackHash = createHash("sha256").update(text).digest("hex");
+    await mkdir(paths.files.plansDir, { recursive: true });
+    await writeFile(stackPlanFile(paths, stackHash), text);
+
+    const before = h.elicited.length;
+    const refused = await h.call("opscrew_apply", { planHash: stackHash });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain(
+      "opscrew_plan did not return this plan of the app's bucket to the user",
+    );
+    expect(textOf(refused)).toContain("pass its storagePlanHash to opscrew_apply");
+    expect(h.elicited.length).toBe(before);
+    expect(textOf(refused)).not.toContain("Applied the plan of the app's bucket");
   });
 
   it("refuses a stack plan hash nothing saved", async () => {

@@ -545,9 +545,18 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         ]) {
           f.containers.push({ name, project: "shop", ports: "", running: true });
         }
+        f.runtimeFiles.push({
+          app: "shop",
+          name: "mysql.env",
+          kind: "file",
+          owner: "deploy",
+          group: "deploy",
+          mode: "600",
+          sha256: null,
+        });
       });
       const report = await runDrift(s.deps, { services: s.services });
-      expect(details(report).filter((line) => !line.includes("OpsCrew's runtime files"))).toEqual([
+      expect(details(report)).toEqual([
         "app: MySQL (mysql) is in opscrew/plan.yaml but has no container on the server. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it starts every component.",
         "app: cache runs on the server but is not a component in opscrew/plan.yaml any more (turned off or removed there): the next deploy removes it.",
       ]);
@@ -672,7 +681,60 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         { ...plan, services: selfHostedServices({ postgres: true, redis: false }) },
         { opscrewVersion: "0.0.0" },
       );
-      expect(expected.dbEnv).toBe(true);
+      expect(expected.serviceEnvFiles).toEqual({
+        "db.env": { title: "PostgreSQL", secret: "OPSCREW_SERVICE_DB_ENV" },
+      });
+      const none = expectedRuntimeFiles(
+        { ...plan, services: selfHostedServices({ postgres: false, redis: true }) },
+        { opscrewVersion: "0.0.0" },
+      );
+      expect(none.serviceEnvFiles).toEqual({});
+    });
+
+    it("reads each service's env file from the catalog: a missing one is reported once deployed", async () => {
+      const base = ownPlan({ postgres: false });
+      const plan = DeployPlanSchema.parse({
+        ...base,
+        services: [
+          { kind: "mysql", version: "8.4", memoryMb: 512, reason: "mysql2", licence: "GPL-2.0" },
+          { kind: "nats", version: "2.15", memoryMb: 64, reason: "nats", licence: "Apache-2.0" },
+          {
+            kind: "valkey",
+            version: "8",
+            memoryMb: 128,
+            options: { mode: "cache" },
+            reason: "redis",
+            licence: "BSD-3-Clause",
+          },
+        ],
+      });
+      const s = await ownProject({ plan });
+      await provisionOwn(s);
+      await deployed(s);
+      edit(s, (f) => {
+        f.containers.push(
+          ...["shop-mysql-1", "shop-nats-1", "shop-cache-1"].map((name) => ({
+            name,
+            project: "shop",
+            ports: "",
+            running: true,
+          })),
+        );
+        // The inspection reports a service's env file only when it is there: mysql.env is.
+        f.runtimeFiles.push({
+          app: "shop",
+          name: "mysql.env",
+          kind: "file",
+          owner: "deploy",
+          group: "deploy",
+          mode: "600",
+          sha256: null,
+        });
+      });
+      // Valkey has no secrets, so no env file; NATS's token is in nats.env.
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "app: /srv/apps/shop/nats.env (the settings of NATS from the GitHub secret OPSCREW_SERVICE_NATS_ENV) is missing. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.",
+      ]);
     });
   });
 

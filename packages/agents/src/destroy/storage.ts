@@ -2,11 +2,15 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ApprovalRecord, PlanSummary } from "@opscrew/contracts";
 import { exists, OpsCrewError, plural } from "@opscrew/core";
-import { type RenderContext, renderStorage, storageRootDir } from "@opscrew/iac-templates";
+import {
+  type RenderContext,
+  renderStorage,
+  STORAGE_NAMES,
+  storageRootDir,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { STORAGE_NAMES } from "../design/storage";
 import {
   type ProviderBucket,
   providerBucket,

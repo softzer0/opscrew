@@ -64,6 +64,15 @@ describe("opscrew design", () => {
     expect(ctx.fetchUrls).toEqual([]);
   });
 
+  it("shows each component with its memory and its share of the server's price", async () => {
+    project = await prepared();
+    const ctx = projectContext(project);
+    expect(await run(ctx, "design")).toBe(0);
+    const shown = `${ctx.output}\n${ctx.errors}`;
+    expect(shown).toMatch(/PostgreSQL 17 \(db, 512 MB\): /);
+    expect(shown).toMatch(/Memory limits: the app 512 MB \(€\d+\.\d\d\/month\), db 512 MB \(€/);
+  });
+
   it("takes --option <id>", async () => {
     project = await prepared();
     const first = projectContext(project);

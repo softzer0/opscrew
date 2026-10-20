@@ -117,10 +117,11 @@ export interface FakePortainerRun {
  * A fake `runProvision` for the user's Portainer: with `planOnly` it saves a stack plan (with
  * `changes` changes) and returns its hash; otherwise it asks for the `stack-apply` approval of that
  * plan (as provision does), and reports it applied when approved. `tunnelFirst` returns no stack
- * plan on a `--plan-only` run (it needs the tunnel's token).
+ * plan on a `--plan-only` run (it needs the tunnel's token), nor does `storageHash`, the plan of
+ * an R2 bucket still to create (the stack needs the bucket's key).
  */
 export function fakePortainerProvision(
-  options: { changes?: number; infraHash?: string; tunnelFirst?: boolean } = {},
+  options: { changes?: number; infraHash?: string; tunnelFirst?: boolean; storageHash?: string } = {},
 ): FakePortainerRun {
   const seen: FakePortainerRun = {
     options: [],
@@ -132,7 +133,10 @@ export function fakePortainerProvision(
         if (options.infraHash !== undefined) await saveInfraPlan(deps, options.infraHash);
         return {
           ...(options.infraHash === undefined ? {} : { planHash: options.infraHash }),
-          ...(options.tunnelFirst === true ? {} : { stackPlanHash: hash }),
+          ...(options.storageHash === undefined ? {} : { storagePlanHash: options.storageHash }),
+          ...(options.tunnelFirst === true || options.storageHash !== undefined
+            ? {}
+            : { stackPlanHash: hash }),
           applied: false,
           outputs: {},
         };

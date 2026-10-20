@@ -22,4 +22,5 @@ export * from "./shared/phase-status";
 export * from "./shared/saved-plan";
 export * from "./shared/scan-phase";
 export * from "./shared/unpriced";
+export * from "./status";
 export * from "./verify";

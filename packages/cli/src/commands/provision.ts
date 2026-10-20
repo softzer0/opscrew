@@ -14,6 +14,7 @@ import {
   readSavedPlanChanges,
   runProvision,
   type SavedPlanKind,
+  stackFollowsReason,
   stringOutput,
 } from "@opscrew/agents";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
@@ -264,7 +265,8 @@ export async function runInfraCommand(
       const portainer = plan?.target.provider === "portainer";
       const planned: PlannedHash[] = [];
       let removes = false;
-      let stackFollows = false;
+      // Why the stack plan comes in a later run, when it does.
+      let stackFollows: string | undefined;
       if (planOnly) {
         // OpsCrew's shared Cloudflare resources change first: their plan is approved by its hash too.
         if (result.cloudflarePlanHash !== undefined) {
@@ -299,8 +301,7 @@ export async function runInfraCommand(
         ) {
           planned.push({ label: "stack plan for your Portainer", hash: result.stackPlanHash });
         }
-        // The stack plan needs the Cloudflare Tunnel's token, which exists only after this apply.
-        stackFollows = portainer && saved !== undefined && result.stackPlanHash === undefined;
+        if (portainer) stackFollows = stackFollowsReason(result, saved !== undefined);
       }
       return {
         result,
@@ -352,9 +353,9 @@ export async function runInfraCommand(
             `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
           );
         }
-        if (result.stackFollows) {
+        if (result.stackFollows !== undefined) {
           ctx.stdout(
-            `The stack plan for your Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token. In a script that takes three runs: this one, the command above (it applies the infrastructure and stops at the stack plan, printing its hash), then \`opscrew ${command} --approve <stack plan hash>\`.\n`,
+            `The stack plan for your Portainer follows once ${result.stackFollows}. In a script that takes three runs: this one, the command above (it applies these plans and stops at the stack plan, printing its hash), then \`opscrew ${command} --approve <stack plan hash>\`.\n`,
           );
         }
       }

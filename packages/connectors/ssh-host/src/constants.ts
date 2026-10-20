@@ -26,20 +26,20 @@ export function appDirs(app: string): { app: string; data: string } {
 export const HASHED_RUNTIME_FILES = ["compose.yaml", "site"] as const;
 
 /**
- * Files the deploy workflow writes in the app's folder from secrets or from the deploy itself
- * (`app.env`, `db.env`: the app's and the database's secrets; `.env`: the running image).
- * Inspection reads only whether they exist, their owner and their mode: never their content and
- * never a checksum, since OpsCrew cannot render the same bytes without the secrets.
+ * Files the deploy workflow writes in every app's folder from secrets or from the deploy itself
+ * (`app.env`: the app's secrets; `.env`: the running image). Inspection reads only whether they
+ * exist, their owner and their mode: never their content and never a checksum, since OpsCrew
+ * cannot render the same bytes without the secrets.
  */
-export const SECRET_RUNTIME_FILES = [".env", "app.env", "db.env"] as const;
+export const SECRET_RUNTIME_FILES = [".env", "app.env"] as const;
 
 /** The runtime files inspection always reports for each app, `absent` when missing. */
 export const RUNTIME_FILE_NAMES = [...HASHED_RUNTIME_FILES, ...SECRET_RUNTIME_FILES] as const;
 
 /**
  * A runtime file inspection reports: one of {@link RUNTIME_FILE_NAMES}, or the env file of one of
- * the app's services with secrets (`<service>.env`, which the deploy workflow writes like
- * `db.env`), reported when it is there, by presence, owner and mode only.
+ * the app's services with secrets (`<service>.env`, which the deploy workflow writes, `db.env`
+ * for Postgres), reported when it is there, by presence, owner and mode only.
  */
 export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number] | `${string}.env`;
 

@@ -256,7 +256,11 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const sshPort = current.target.provider === "own" ? await ownSshPort(deps, current) : undefined;
   const repo = github.repo ?? { owner: "<owner>", repo: "<repo>" };
   const runbook = portainer
-    ? renderPortainerRunbook(current, { opscrewVersion: deps.version, github: repo })
+    ? renderPortainerRunbook(current, {
+        opscrewVersion: deps.version,
+        github: repo,
+        projectId: paths.projectId,
+      })
     : renderRunbook(current, {
         opscrewVersion: deps.version,
         github: repo,

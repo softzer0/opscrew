@@ -5,8 +5,14 @@ import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { withBucket } from "../provision/__fixtures__/storage";
 import { recordPortainerConnection } from "../shared";
 import {
   CLOUDFLARE_IPV4,
@@ -695,6 +701,7 @@ describe("renderPortainerRunbook", () => {
   const github = { owner: "acme", repo: "shop" };
   const cases: [string, DeployPlan][] = [
     ["tunnel, updater, PostgreSQL", portainerPlan()],
+    ["tunnel, updater, an R2 bucket", withBucket(portainerPlan(), "r2")],
     [
       "caddy, Cloudflare redeploy, no database",
       portainerPlan({ web: { mode: "caddy" }, redeploy: "cloudflare", postgres: false }),
@@ -709,7 +716,29 @@ describe("renderPortainerRunbook", () => {
   ];
 
   it.each(cases)("%s: the runbook stays as it was", (_name, plan) => {
-    const runbook = renderPortainerRunbook(plan, { opscrewVersion: "0.1.0", github });
+    const runbook = renderPortainerRunbook(plan, {
+      opscrewVersion: "0.1.0",
+      github,
+      projectId: "shop-0123456789ab",
+    });
     expect(runbook.content).toMatchSnapshot();
+  });
+
+  it("describes the components of the app's stack, with their named volumes", () => {
+    const base = portainerPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
+    });
+    const runbook = renderPortainerRunbook(plan, { opscrewVersion: "0.1.0", github }).content;
+    expect(runbook).toContain(
+      "The app runs as the stack `opscrew-shop` in your Portainer. Each component is a container",
+    );
+    expect(runbook).toContain("| `worker` | `node worker.js` | 256 MB | |");
+    expect(runbook).toContain(
+      "| `db` | PostgreSQL 17 (PostgreSQL) | 512 MB | the Docker volume `opscrew-shop_db_data` |",
+    );
+    expect(runbook).toContain("Portainer shows each container's log");
+    expect(runbook).not.toContain("/srv/");
   });
 });
