@@ -187,6 +187,22 @@ export function storageAnswerText(requirements: Requirements): string | undefine
     : `a new bucket in ${STORAGE_NAMES[storage]}`;
 }
 
+/**
+ * The requirements' answers about the app's components, one summary line each, as `opscrew
+ * interview` and the MCP server show them: the services kept where they are hosted, the ones
+ * OpsCrew runs on the server, and the new bucket ({@link storageAnswerText}).
+ */
+export function componentAnswerLines(requirements: Requirements): string[] {
+  const kept = answeredKinds(requirements, true);
+  const run = answeredKinds(requirements, false);
+  const storage = storageAnswerText(requirements);
+  return [
+    ...(kept.length > 0 ? [`Keep where hosted: ${kept.join(", ")}`] : []),
+    ...(run.length > 0 ? [`Run on the server: ${run.join(", ")}`] : []),
+    ...(storage === undefined ? [] : [`Object storage: ${storage}`]),
+  ];
+}
+
 /** The keep answers in schema order, so requirements.yaml lists them the same way each time. */
 export function inSchemaOrder(
   keep: Requirements["keepExternalServices"],

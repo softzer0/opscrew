@@ -13,6 +13,21 @@ import {
   versionsTf,
 } from "./hcl";
 
+/** The object storage OpsCrew creates a bucket for through the `storage` root. */
+export type BucketProvider = "r2" | "digitalocean" | "hetzner";
+
+/** The plan's bucket at a provider. */
+export type ProviderBucket = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]> & {
+  provider: BucketProvider;
+};
+
+/** The plan's bucket at a provider, or undefined (no object storage, or Garage next to the app). */
+export function providerBucket(plan: Pick<DeployPlan, "storage">): ProviderBucket | undefined {
+  const storage = plan.storage?.objectStorage;
+  if (storage === undefined || storage.provider === "garage") return undefined;
+  return storage as ProviderBucket;
+}
+
 const AWS_PROVIDER: ProviderRequirement = {
   name: "aws",
   source: "hashicorp/aws",
@@ -190,8 +205,8 @@ export function renderStorage(
   options: { deleteData?: boolean } = {},
 ): RenderedFile[] {
   const deleteData = options.deleteData === true;
-  const storage = plan.storage?.objectStorage;
-  if (storage === undefined || storage.provider === "garage") return [];
+  const storage = providerBucket(plan);
+  if (storage === undefined) return [];
   const variables: VariableSpec[] = [
     { name: "bucket", type: "string", description: "Name of the bucket." },
   ];

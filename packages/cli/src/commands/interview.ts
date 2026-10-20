@@ -1,11 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  answeredKinds,
+  componentAnswerLines,
   type InterviewAnswers,
   repositoryPrivate,
   runInterview,
-  storageAnswerText,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { Requirements } from "@opscrew/plan-schema";
@@ -59,15 +58,8 @@ async function readAnswersFile(file: string): Promise<InterviewAnswers> {
   return value as InterviewAnswers;
 }
 
-/** The kinds the requirements answer `keep` for, as one comma-separated entry, or none. */
-function answered(requirements: Requirements, keep: boolean): string[] {
-  const kinds = answeredKinds(requirements, keep);
-  return kinds.length > 0 ? [kinds.join(", ")] : [];
-}
-
 function describe(requirements: Requirements): string[] {
   const budget = requirements.budgetMonthly;
-  const storage = storageAnswerText(requirements);
   return [
     ...(requirements.provider === "own"
       ? ["Server: a server you already have (how to reach it is saved on this computer only)"]
@@ -83,9 +75,7 @@ function describe(requirements: Requirements): string[] {
     `Uptime: ${requirements.uptime}`,
     `Data criticality: ${requirements.dataCriticality}`,
     `Domain: ${requirements.domain ?? "none yet"}${requirements.domain === undefined ? "" : ` (DNS: ${requirements.dnsProvider})`}`,
-    ...answered(requirements, true).map((kinds) => `Keep where hosted: ${kinds}`),
-    ...answered(requirements, false).map((kinds) => `Run on the server: ${kinds}`),
-    ...(storage === undefined ? [] : [`Object storage: ${storage}`]),
+    ...componentAnswerLines(requirements),
   ];
 }
 

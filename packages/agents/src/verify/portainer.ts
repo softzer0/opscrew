@@ -9,6 +9,7 @@ import {
   portainerStackName,
   portainerStackVolumes,
   portainerUpdaterStackName,
+  providerBucket,
   type RenderedFile,
   runbookHead,
 } from "@opscrew/iac-templates";
@@ -142,9 +143,7 @@ export function renderPortainerRunbook(
     throw new Error(`Expected a plan for your Portainer, got ${plan.target.provider}.`);
   }
   // The app's bucket at a provider, which destroy keeps unless asked (Garage's is in the stack).
-  const storage = plan.storage?.objectStorage;
-  const bucket =
-    storage === undefined || storage.provider === "garage" ? undefined : storage.bucket;
+  const bucket = providerBucket(plan)?.bucket;
   const target = plan.target;
   const app = portainerStackName(plan);
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;

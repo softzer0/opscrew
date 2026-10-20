@@ -1,12 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  answeredKinds,
   buildComponentQuestions,
   buildPortainerQuestions,
   buildQuestions,
   buildServerQuestions,
   CHECK_PORTAINER_CERTIFICATE,
   type ConfirmPortainerCertificate,
+  componentAnswerLines,
   createPortainerAccess,
   hostedAdditions,
   inferredAnswers,
@@ -22,7 +22,6 @@ import {
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
-  storageAnswerText,
   withPlanSettings,
 } from "@opscrew/agents";
 import { isUserFacingError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
@@ -66,12 +65,6 @@ async function loadPrevious(paths: ProjectPaths): Promise<Requirements | undefin
   } catch {
     return undefined;
   }
-}
-
-/** The kinds the requirements answer `keep` for, as one comma-separated entry, or none. */
-function answered(requirements: Requirements, keep: boolean): string[] {
-  const kinds = answeredKinds(requirements, keep);
-  return kinds.length > 0 ? [kinds.join(", ")] : [];
 }
 
 function formatDefault(value: Question["default"]): string {
@@ -438,7 +431,6 @@ export function registerInterviewTools(
         const budget = requirements.budgetMonthly;
         const own = requirements.provider === "own";
         const inPortainer = requirements.provider === "portainer";
-        const storage = storageAnswerText(requirements);
         const text = [
           `Saved ${file}.`,
           own
@@ -454,9 +446,7 @@ export function registerInterviewTools(
           ...(requirements.domain !== undefined
             ? [`- Domain: ${requirements.domain} (DNS: ${requirements.dnsProvider})`]
             : ["- Domain: none yet"]),
-          ...answered(requirements, true).map((kinds) => `- Keep where hosted: ${kinds}`),
-          ...answered(requirements, false).map((kinds) => `- Run on the server: ${kinds}`),
-          ...(storage === undefined ? [] : [`- Object storage: ${storage}`]),
+          ...componentAnswerLines(requirements).map((line) => `- ${line}`),
           "",
           own
             ? "Next: call opscrew_design_options; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key."

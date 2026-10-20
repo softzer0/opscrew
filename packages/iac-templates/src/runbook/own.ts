@@ -1,4 +1,5 @@
 import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-schema";
+import { providerBucket } from "../infra/storage";
 import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
@@ -50,9 +51,7 @@ export function renderOwnRunbook(
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const name = plan.app.name;
   // The app's bucket at a provider, which destroy keeps unless asked (Garage's is on the server).
-  const storage = plan.storage?.objectStorage;
-  const bucket =
-    storage === undefined || storage.provider === "garage" ? undefined : storage.bucket;
+  const bucket = providerBucket(plan)?.bucket;
 
   const addresses = tunnel
     ? "none needed: the server is reached through a Cloudflare Tunnel"

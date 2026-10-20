@@ -10,7 +10,14 @@ import {
   realSleep,
   writeFileAtomic,
 } from "@opscrew/core";
-import { type RenderedFile, STORAGE_NAMES, storageRootDir } from "@opscrew/iac-templates";
+import {
+  type BucketProvider,
+  type ProviderBucket,
+  providerBucket,
+  type RenderedFile,
+  STORAGE_NAMES,
+  storageRootDir,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -20,20 +27,7 @@ import type { CloudflareSetup } from "./credentials";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { ProvisionServices } from "./types";
 
-/** The object storage OpsCrew creates a bucket for through the `storage` root. */
-export type BucketProvider = "r2" | "digitalocean" | "hetzner";
-
-/** The plan's bucket at a provider. */
-export type ProviderBucket = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]> & {
-  provider: BucketProvider;
-};
-
-/** The plan's bucket at a provider, or undefined (no object storage, or Garage on the server). */
-export function providerBucket(plan: Pick<DeployPlan, "storage">): ProviderBucket | undefined {
-  const storage = plan.storage?.objectStorage;
-  if (storage === undefined || storage.provider === "garage") return undefined;
-  return storage as ProviderBucket;
-}
+export { type BucketProvider, type ProviderBucket, providerBucket };
 
 /** The user's key for the bucket: an access key ID and its secret. Never logged. */
 export type StorageKey = Pick<StorageLogin, "accessKeyId" | "secretAccessKey">;

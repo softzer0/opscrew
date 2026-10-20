@@ -1,11 +1,10 @@
 /** Interview phase: questions that cannot be inferred, answers → `opscrew/requirements.yaml`. */
 export { parseMoney } from "./answers";
 export {
-  answeredKinds,
   buildComponentQuestions,
   type ComponentQuestion,
+  componentAnswerLines,
   hostedAdditions,
-  storageAnswerText,
 } from "./components";
 export { buildServerQuestions, recordOwnServerAnswers, SERVER_FIELDS } from "./own-server";
 export {

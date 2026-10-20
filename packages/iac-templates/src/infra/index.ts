@@ -22,7 +22,13 @@ import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
-export { renderStorage, storageRootDir } from "./storage";
+export {
+  type BucketProvider,
+  type ProviderBucket,
+  providerBucket,
+  renderStorage,
+  storageRootDir,
+} from "./storage";
 
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
 
