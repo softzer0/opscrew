@@ -1,6 +1,7 @@
 export { appRoot } from "./app-root";
 export {
   CATALOG,
+  DRAGONFLY_MIN_VCPUS,
   hostSysctl,
   initStepsFor,
   pinnedVersion,

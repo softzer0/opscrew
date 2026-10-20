@@ -2,10 +2,10 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan, PlanService, SelfHostedServiceKind } from "@opscrew/plan-schema";
 import { IMAGES } from "../pins";
 import type { ServiceInitStep } from "../workflow/switch";
-import { SERVICE_SPECS } from "./entries";
+import { DRAGONFLY_MIN_VCPUS, SERVICE_SPECS } from "./entries";
 import type { ServiceContext, ServiceSpec } from "./types";
 
-export { SERVICE_SPECS };
+export { DRAGONFLY_MIN_VCPUS, SERVICE_SPECS };
 
 /** {@link SERVICE_SPECS} by kind: one entry for every kind (a test checks each is there). */
 export const CATALOG = Object.fromEntries(
@@ -28,10 +28,16 @@ export function hostSysctl(plan: DeployPlan): Record<string, string> {
   );
 }
 
-/** The image of `spec` without its tag and digest, as Dependabot names it: `mysql`, `apache/kafka`. */
+/**
+ * The image of `spec` without its registry, tag and digest, as Dependabot names it: `mysql`,
+ * `apache/kafka`, `dragonflydb/dragonfly` (from `docker.dragonflydb.io/dragonflydb/dragonfly`;
+ * Dependabot keeps the registry apart).
+ */
 export function imageName(spec: ServiceSpec): string {
   const ref = IMAGES[spec.image].ref;
-  return ref.slice(0, ref.lastIndexOf(":", ref.indexOf("@")));
+  const name = ref.slice(0, ref.lastIndexOf(":", ref.indexOf("@")));
+  // A first part with a dot or a port is a registry's host.
+  return name.replace(/^[^/]*[.:][^/]*\//, "");
 }
 
 /** The version in the tag of the image OpsCrew pins: `8.4` for `mysql:8.4@…`, `26.2.5` for `v26.2.5`. */

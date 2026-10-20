@@ -77,6 +77,25 @@ const MARKERS: readonly (readonly [SourceMarker, RegExp])[] = [
   ["s3-client", /\.(?:client|resource)\(\s*["']s3["']/],
 ];
 
+/**
+ * Calls of Redis's own data types (Search, JSON, Time Series) through a general client, by the
+ * code's language: redis-py's `.ft(…)`, `.json().set(…)` and `.ts().…` (not `.json().get(…)`,
+ * which reads an HTTP reply's body as often), Jedis's `ftCreate(…)`, `jsonSet(…)`, `tsAdd(…)`.
+ */
+const REDIS_MODULE_CALLS = {
+  python:
+    /\.ft\(|\.json\(\)\.(?:set|mset|merge|arrappend|arrinsert|numincrby|strappend)\(|\.ts\(\)\./,
+  java: /\.(?:ft[A-Z]\w*|json(?:Set|Get|MGet|Merge|Del|ArrAppend)|ts(?:Create|Add|MAdd|Range|Get|IncrBy))\(/,
+};
+
+/** True when Python or Java code calls Redis's own data types ({@link REDIS_MODULE_CALLS}). */
+export function callsRedisModules(
+  language: keyof typeof REDIS_MODULE_CALLS,
+  text: string,
+): boolean {
+  return REDIS_MODULE_CALLS[language].test(text);
+}
+
 /** Signals found in one source file. */
 export interface SourceSignals {
   envNames: string[];

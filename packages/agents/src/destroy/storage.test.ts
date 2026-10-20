@@ -266,14 +266,32 @@ describe("serverData", () => {
           reason: "redis",
           licence: "BSD-3-Clause",
         },
+        {
+          name: "fly",
+          kind: "dragonfly",
+          version: "2",
+          memoryMb: 512,
+          options: { mode: "cache" },
+          reason: "redis",
+          licence: "BSL-1.1",
+        },
+        {
+          kind: "redis",
+          version: "8",
+          memoryMb: 128,
+          options: { mode: "queue" },
+          reason: "redis-om",
+          licence: "RSALv2",
+        },
       ],
       storage: { sqlite: { dir: "storage" } },
       deploy: { ...base.deploy, strategy: "recreate" },
     });
-    // A Valkey cache keeps nothing on disk.
+    // A cache (Valkey, Redis 8 or Dragonfly) keeps nothing on disk; a queue keeps its jobs.
     expect(serverData(plan)).toEqual([
       "the PostgreSQL database",
       "the Apache Kafka data",
+      "the Redis data",
       "the SQLite database",
     ]);
     expect(serverData(testPlan({ postgres: false }))).toEqual([]);

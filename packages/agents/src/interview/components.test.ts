@@ -299,6 +299,19 @@ describe("hostedAdditions", () => {
       "Running Valkey on your server adds a container with 128 MB of memory, which your server must have room for.",
     );
   });
+
+  it("offers Redis 8 instead of Valkey for a client that needs Redis's own data types", async () => {
+    const requirements = makeRequirements({ provider: "own" });
+    const om = makeFacts({
+      services: [{ kind: "redis", evidence: ["dependency:redis-om", "redis-modules:redis-om"] }],
+      hostedServices: [{ kind: "redis", variable: "REDIS_URL", provider: "Upstash" }],
+    });
+    const additions = await hostedAdditions(await deps(), om, requirements);
+    const [question] = buildComponentQuestions(om, requirements, additions);
+    expect(question?.prompt).toBe("Keep using Upstash for Redis?");
+    expect(question?.help).toContain("No runs Redis on your server instead");
+    expect(question?.help).toContain("Running Redis on your server adds a container with 128 MB");
+  });
 });
 
 describe("component answers", () => {

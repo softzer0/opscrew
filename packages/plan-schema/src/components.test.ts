@@ -109,6 +109,14 @@ describe("DeployPlan components", () => {
       "mysql",
       "reports",
     ]);
+    // Redis 8 and Dragonfly are named by their mode, as Valkey is.
+    const named = (kind: string, mode: "cache" | "queue") =>
+      DeployPlanSchema.parse({
+        ...plan,
+        externalServices: [],
+        services: [{ ...valkey(mode), kind }],
+      }).services[0]?.name;
+    expect([named("redis", "cache"), named("dragonfly", "queue")]).toEqual(["cache", "queue"]);
     expect(parsed.services[0]).toEqual({ name: "db", ...postgres, enabled: true, options: {} });
   });
 
@@ -133,7 +141,23 @@ describe("DeployPlan components", () => {
     expect(pathsOf(parse({ ...postgres, options: { mode: "cache" } }))).toEqual([
       "services.0.options",
     ]);
-    expect(pathsOf(parse({ ...postgres, kind: "redis" }))).toEqual(["services.0.kind"]);
+    expect(pathsOf(parse({ ...postgres, kind: "keydb" }))).toEqual(["services.0.kind"]);
+    // Redis 8 and Dragonfly take Valkey's modes; Dragonfly also the hashtag locks BullMQ needs.
+    expect(pathsOf(parse({ ...postgres, kind: "redis" }))).toEqual(["services.0.options"]);
+    expect(parse({ ...valkey("queue"), kind: "redis" }).data?.services[0]?.options).toEqual({
+      mode: "queue",
+    });
+    const dragonfly = { ...valkey("queue"), kind: "dragonfly", licence: "BSL-1.1" };
+    expect(parse(dragonfly).data?.services[0]?.options).toEqual({
+      mode: "queue",
+      lockOnHashtags: false,
+    });
+    const locked = { mode: "queue", lockOnHashtags: true, threads: 4 };
+    expect(parse({ ...dragonfly, options: locked }).data?.services[0]?.options).toEqual(locked);
+    expect(pathsOf(parse({ ...dragonfly, options: { mode: "queue", threads: 0 } }))).toEqual([
+      "services.0.options.threads",
+    ]);
+    expect(pathsOf(parse({ ...valkey("queue"), options: locked }))).toEqual(["services.0.options"]);
     for (const field of ["version", "memoryMb", "reason", "licence"] as const) {
       const { [field]: _gone, ...rest } = postgres;
       expect(pathsOf(parse(rest)), field).toEqual([`services.0.${field}`]);

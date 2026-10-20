@@ -2,7 +2,13 @@ import { serviceOf } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, nextPostgresFacts, staticSpaFacts } from "../testing";
 import { designComponents } from "./components";
-import { ownServerMemory, regionLocations, sizeFor, smallServerWarnings } from "./sizing";
+import {
+  containersText,
+  ownServerMemory,
+  regionLocations,
+  sizeFor,
+  smallServerWarnings,
+} from "./sizing";
 
 describe("smallServerWarnings", () => {
   const { services } = designComponents({
@@ -136,6 +142,19 @@ describe("sizeFor", () => {
     const sizing = sizeFor(facts, makeRequirements({ expectedMonthlyUsers: "1k-10k" }));
     expect(sizing).toMatchObject({ vcpus: 2, memoryGb: 4.5, diskGb: 40 });
     expect(sizing.services.map((s) => s.kind)).toEqual(["valkey"]);
+  });
+
+  it("adds the same for Redis 8 and Dragonfly, and gives Dragonfly 2 vCPUs and its smallest server", () => {
+    const sized = (...evidence: string[]) =>
+      sizeFor(makeFacts({ services: [{ kind: "redis", evidence }] }), makeRequirements());
+    expect(sized("dependency:redis-om", "redis-modules:redis-om")).toMatchObject({
+      vcpus: 1,
+      memoryGb: 2.5,
+    });
+    const dragonfly = sized("dependency:ioredis", "compose-image:dragonfly");
+    expect(dragonfly.services.map((s) => s.kind)).toEqual(["dragonfly"]);
+    expect(dragonfly).toMatchObject({ vcpus: 2, memoryGb: 2.5 });
+    expect(containersText(dragonfly)).toBe("the app and Dragonfly");
   });
 
   it("keeps an external database when the user asked for it", () => {

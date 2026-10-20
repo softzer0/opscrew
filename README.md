@@ -36,7 +36,7 @@ What runs next to your app:
 - [Workers and cron jobs](docs/guide/workers-and-cron.md): background jobs and schedules from your app's own image.
 - [Databases](docs/guide/databases.md): PostgreSQL, MySQL, MariaDB, MongoDB and SQLite.
 - [Object storage](docs/guide/object-storage.md): Cloudflare R2, DigitalOcean Spaces, Hetzner Object Storage or Garage, priced side by side.
-- [Message brokers and queues](docs/guide/brokers.md): Valkey, RabbitMQ, NATS, Kafka and Redpanda.
+- [Message brokers and queues](docs/guide/brokers.md): Valkey (or Redis 8 or Dragonfly), RabbitMQ, NATS, Kafka and Redpanda.
 - [Search and analytics engines](docs/guide/search-and-analytics.md): OpenSearch, Elasticsearch, Meilisearch, Typesense, ClickHouse and Neo4j.
 
 ## Quickstart

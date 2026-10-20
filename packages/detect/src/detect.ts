@@ -10,6 +10,8 @@ import {
 } from "@opscrew/plan-schema";
 import { normalizeAppDir, unknownAppDirError } from "./app-dir";
 import {
+  type ComposeRedisEngine,
+  composeRedisEngines,
   composeUsesRedis,
   type EnvUrl,
   envFileSchemes,
@@ -35,6 +37,7 @@ import {
 } from "./frameworks";
 import { readGitInfo } from "./git";
 import {
+  type DependencyEcosystem,
   findDependency,
   matchesWorkspace,
   parseJson,
@@ -61,6 +64,7 @@ import { byDepth, inFolder } from "./release/context";
 import { runtimeEvidence } from "./runtime-evidence";
 import { declaredRuntimeVersions, firstLine } from "./runtime-versions";
 import {
+  addComposeRedisEngines,
   addDependencyServices,
   addDjangoServices,
   addEnvServices,
@@ -68,12 +72,14 @@ import {
   addPrismaServices,
   LARAVEL_REDIS_SETTINGS,
   laravelConfigDefault,
+  REDIS_MODULE_CALLERS,
   ServiceCollector,
   withUrlVariables,
 } from "./services";
 import {
   BUILT_IN_HEALTH_FILES,
   builtInHealthEndpoint,
+  callsRedisModules,
   healthRouteFromPath,
   isAppCodeFile,
   isRuntimeCodeFile,
@@ -387,9 +393,13 @@ export async function detectProjectDetails(
   const { envVars, configUrlSchemes, envUrls } = collectEnvVars(signals, envFiles);
   const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
+  const composeEngines = new Set<ComposeRedisEngine>();
   for (const file of scopedFiles.filter(isComposeFile)) {
-    if (composeUsesRedis((await read(file)) ?? "")) composeRedis = true;
+    const text = (await read(file)) ?? "";
+    if (composeUsesRedis(text)) composeRedis = true;
+    for (const engine of composeRedisEngines(text)) composeEngines.add(engine);
   }
+  const redisModuleCalls = await redisModuleCallers(relevant, scopedFiles, read);
 
   // Services. Celery's broker is the `*BROKER*` variable's URL.
   const pythonUrlSchemes = new Set<string>();
@@ -416,6 +426,7 @@ export async function detectProjectDetails(
       composeRedis,
       ...(brokerScheme ? { brokerScheme } : {}),
       pythonS3,
+      redisModuleCalls,
     });
   }
   for (const file of scopedFiles.filter((f) => f.endsWith(".prisma"))) {
@@ -451,6 +462,7 @@ export async function detectProjectDetails(
     else if (fallback !== undefined) laravelSettings.push(`config:${name}=${fallback}`);
   }
   addLaravelRedis(services, laravelSettings);
+  addComposeRedisEngines(services, composeEngines);
   const serviceList = withUrlVariables(services.toList(), envNames, envUrls);
   // An app on Supabase's client already has its `supabase` service.
   const supabase = serviceList.some((service) => service.kind === "supabase");
@@ -858,6 +870,38 @@ export async function detectProject(
   options: DetectOptions = {},
 ): Promise<ProjectFacts> {
   return (await detectProjectDetails(root, options)).facts;
+}
+
+/**
+ * The ecosystems whose general Redis client (redis-py, Jedis: `REDIS_MODULE_CALLERS`) the app's
+ * runtime code uses for Redis's own data types (`callsRedisModules`). Files are read only for an
+ * ecosystem whose client is a runtime dependency.
+ */
+async function redisModuleCallers(
+  units: readonly UnitInfo[],
+  files: readonly string[],
+  read: ReadText,
+): Promise<Set<DependencyEcosystem>> {
+  const code = [
+    { ecosystem: "pypi", language: "python", path: /\.py$/ },
+    { ecosystem: "maven", language: "java", path: /\.(?:java|kt)$/ },
+  ] as const;
+  const found = new Set<DependencyEcosystem>();
+  for (const { ecosystem, language, path } of code) {
+    const client = REDIS_MODULE_CALLERS[ecosystem];
+    const used = units.some((info) =>
+      info.unit.dependencies.some((d) => !d.dev && d.ecosystem === ecosystem && d.name === client),
+    );
+    if (!used) continue;
+    for (const file of files) {
+      if (!path.test(file) || !isRuntimeCodeFile(file)) continue;
+      if (callsRedisModules(language, (await read(file)) ?? "")) {
+        found.add(ecosystem);
+        break;
+      }
+    }
+  }
+  return found;
 }
 
 /**

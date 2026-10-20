@@ -53,9 +53,15 @@ server's monthly price, the part OpsCrew's edge and the system keep, and what st
 server you already have, or in your Portainer, there is no price to share.
 
 Licences are said in plain words when a component's licence is not a permissive one. MongoDB
-(SSPL), MySQL and MariaDB (GPL 2.0), Redpanda (Business Source License), Elasticsearch (Elastic
-License 2.0), Garage (AGPL 3.0), Typesense and Neo4j Community (GPL 3.0) all allow running them for
-your own app; their conditions are about sharing or offering that software itself.
+(SSPL), MySQL and MariaDB (GPL 2.0), Redis 8 (RSALv2, SSPLv1 or AGPLv3), Redpanda and Dragonfly
+(Business Source License), Elasticsearch (Elastic License 2.0), Garage (AGPL 3.0), Typesense and
+Neo4j Community (GPL 3.0) all allow running them for your own app; their conditions are about
+sharing or offering that software itself.
+
+For Redis, OpsCrew runs Valkey unless your app shows it needs Redis 8 (Redis's own data types, or
+Redis in its Compose file) or Dragonfly (in its Compose file, or your choice in `opscrew/plan.yaml`
+on a server with 2 vCPUs or more); see
+[Redis 8 or Dragonfly instead of Valkey](brokers.md#redis-8-or-dragonfly-instead-of-valkey).
 
 ## Memory limits and the size of the server
 
@@ -112,6 +118,7 @@ broker is yours to choose, because its data may need a migration.
   and [Deploy to a Portainer you already run](portainer-target.md)).
 
 Moving an app to another provider with `npx opscrew retarget` moves Postgres and Valkey with it,
-and the workers and cron jobs. An app with another service that keeps data (MySQL, MongoDB, a
-broker, an engine, SQLite) cannot be moved yet: retarget says so before changing anything. A bucket
+and the workers and cron jobs. An app with another service that keeps data (MySQL, MongoDB, Redis
+8, Dragonfly, a broker, an engine, SQLite) cannot be moved yet: retarget says so before changing
+anything. A bucket
 stays where it is.

@@ -4,6 +4,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  composeRedisEngines,
   composeUsesRedis,
   envFileSchemes,
   isCommittedEnvFile,
@@ -80,6 +81,39 @@ describe("committed env files", () => {
     ).toBe(true);
     expect(composeUsesRedis("services:\n  db:\n    image: postgres:16\n")).toBe(false);
     expect(composeUsesRedis("services:\n  web:\n    image: myredisproxy:1\n")).toBe(false);
+    // Dragonfly and KeyDB speak Redis's protocol.
+    expect(composeUsesRedis("services:\n  kv:\n    image: eqalpha/keydb:latest\n")).toBe(true);
+    expect(
+      composeUsesRedis(
+        "services:\n  kv:\n    image: docker.dragonflydb.io/dragonflydb/dragonfly\n",
+      ),
+    ).toBe(true);
+  });
+
+  it("names the Redis-protocol engines a compose file runs, by their images", () => {
+    const engines = (image: string) =>
+      composeRedisEngines(`services:\n  kv:\n    image: ${image}\n`);
+    expect(engines("redis:8-alpine")).toEqual(["redis"]);
+    expect(engines('"docker.io/library/redis:7.2"')).toEqual(["redis"]);
+    expect(engines("redis@sha256:abc")).toEqual(["redis"]);
+    expect(engines("dragonflydb/dragonfly:v1.30")).toEqual(["dragonfly"]);
+    expect(engines("docker.dragonflydb.io/dragonflydb/dragonfly")).toEqual(["dragonfly"]);
+    expect(engines("eqalpha/keydb:x86_64_v6.3.4")).toEqual(["keydb"]);
+    // Bitnami's Redis and Redis Stack are Redis too, from any registry; Valkey and others are not.
+    expect(engines("bitnami/redis:7.2")).toEqual(["redis"]);
+    expect(engines("docker.io/bitnami/redis:7.2")).toEqual(["redis"]);
+    expect(engines("redis/redis-stack:7.4.0-v1")).toEqual(["redis"]);
+    expect(engines("redis/redis-stack-server:latest")).toEqual(["redis"]);
+    expect(engines("registry.example.com:5000/redis:7")).toEqual(["redis"]);
+    expect(engines("redis/redis-insight:2")).toEqual([]);
+    expect(engines("bitnami/redis-sentinel:7")).toEqual([]);
+    expect(engines("valkey/valkey:8")).toEqual([]);
+    expect(engines("myredisproxy:1")).toEqual([]);
+    expect(
+      composeRedisEngines(
+        "services:\n  a:\n    image: eqalpha/keydb\n  b:\n    image: redis:7\n  # image: dragonflydb/dragonfly\n",
+      ),
+    ).toEqual(["keydb", "redis"]);
   });
 
   it("keeps names with the prefix, minus Flask's own CLI settings", () => {
@@ -146,18 +180,20 @@ describe("Redis planned from the libraries that use it", () => {
   it.each([
     ["flask-redis==0.4.0", "dependency:flask-redis"],
     ["django-redis>=5", "dependency:django-redis"],
-    ["redis-om", "dependency:redis-om"],
     ["rq", "dependency:rq"],
   ])("%s", async (requirement, evidence) => {
     const root = await tree({ "requirements.txt": `flask==3.1.0\n${requirement}\n` });
     expect(await redisEvidence(root)).toEqual([evidence]);
   });
 
-  it("plans Redis for redis-om on npm", async () => {
-    const root = await tree({
+  it("plans Redis for redis-om on npm and PyPI, which needs Redis's own data types", async () => {
+    const npm = await tree({
       "package.json": JSON.stringify({ name: "x", dependencies: { "redis-om": "^0.4" } }),
     });
-    expect(await redisEvidence(root)).toEqual(["dependency:redis-om"]);
+    const evidence = ["dependency:redis-om", "redis-modules:redis-om"];
+    expect(await redisEvidence(npm)).toEqual(evidence);
+    const pypi = await tree({ "requirements.txt": "flask==3.1.0\nredis-om\n" });
+    expect(await redisEvidence(pypi)).toEqual(evidence);
   });
 
   it("plans Redis for Celery with a Redis broker in a committed env file", async () => {
@@ -174,7 +210,8 @@ describe("Redis planned from the libraries that use it", () => {
       "requirements.txt": "flask==3.1.0\ncelery==5.4.0\n",
       "docker-compose.yml": "services:\n  web:\n    build: .\n  redis:\n    image: redis:7\n",
     });
-    expect(await redisEvidence(root)).toEqual(["compose:redis"]);
+    // The image is Redis's own, so design runs Redis 8.
+    expect(await redisEvidence(root)).toEqual(["compose-image:redis", "compose:redis"]);
   });
 
   it("does not plan Redis for Celery with another broker", async () => {

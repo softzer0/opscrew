@@ -42,6 +42,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -77,6 +80,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -141,6 +147,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -176,6 +185,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -237,6 +249,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -272,6 +287,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -304,6 +322,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -339,6 +360,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -400,6 +424,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -435,6 +462,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -467,6 +497,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -502,6 +535,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -566,6 +602,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -601,6 +640,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -676,6 +718,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -711,6 +756,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -772,6 +820,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -807,6 +858,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -839,6 +893,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -874,6 +931,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -935,6 +995,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -970,6 +1033,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1002,6 +1068,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1037,6 +1106,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1112,6 +1184,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1147,6 +1222,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1208,6 +1286,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1243,6 +1324,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1275,6 +1359,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1310,6 +1397,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1363,6 +1453,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1398,6 +1491,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1459,6 +1555,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1494,6 +1593,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda
@@ -1526,6 +1628,9 @@ updates:
       - dependency-name: clickhouse
         update-types:
           - version-update:semver-major
+      - dependency-name: dragonflydb/dragonfly
+        update-types:
+          - version-update:semver-major
       - dependency-name: dxflrs/garage
         update-types:
           - version-update:semver-major
@@ -1561,6 +1666,9 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: rabbitmq
+        update-types:
+          - version-update:semver-major
+      - dependency-name: redis
         update-types:
           - version-update:semver-major
       - dependency-name: redpandadata/redpanda

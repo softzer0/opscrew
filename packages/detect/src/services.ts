@@ -5,7 +5,7 @@
  * `env:DB_CONNECTION=mariadb`.
  */
 import type { EnvUrlScheme, ServiceKind } from "@opscrew/plan-schema";
-import { type EnvUrl, serviceOfScheme } from "./connections";
+import { type ComposeRedisEngine, type EnvUrl, serviceOfScheme } from "./connections";
 import type { Dependency, DependencyEcosystem, Unit } from "./manifests";
 import { sortStrings } from "./paths";
 
@@ -31,6 +31,10 @@ const DEPENDENCY_SERVICES: Record<DependencyEcosystem, Record<string, ServiceKin
     redis: ["redis"],
     ioredis: ["redis"],
     "redis-om": ["redis"],
+    "@redis/search": ["redis"],
+    "@redis/json": ["redis"],
+    "@redis/time-series": ["redis"],
+    "@redis/bloom": ["redis"],
     amqplib: ["amqp"],
     "amqp-connection-manager": ["amqp"],
     nats: ["nats"],
@@ -235,6 +239,7 @@ const DEPENDENCY_SERVICES: Record<DependencyEcosystem, Record<string, ServiceKin
     "mongodb.driver": ["mongodb"],
     "mongodb.entityframeworkcore": ["mongodb"],
     "stackexchange.redis": ["redis"],
+    nredisstack: ["redis"],
     "microsoft.extensions.caching.stackexchangeredis": ["redis"],
     "rabbitmq.client": ["amqp"],
     "masstransit.rabbitmq": ["amqp"],
@@ -311,10 +316,36 @@ export class ServiceCollector {
   }
 }
 
+/** A dependency's name as the client tables key it: NuGet's in lower case (NuGet ignores case). */
+function tableName(dep: Dependency): string {
+  return dep.ecosystem === "nuget" ? dep.name.toLowerCase() : dep.name;
+}
+
 /** Services implied by one runtime dependency, by the client tables. */
 function clientServices(dep: Dependency): ServiceKind[] {
-  const name = dep.ecosystem === "nuget" ? dep.name.toLowerCase() : dep.name;
-  return DEPENDENCY_SERVICES[dep.ecosystem][name] ?? [];
+  return DEPENDENCY_SERVICES[dep.ecosystem][tableName(dep)] ?? [];
+}
+
+/**
+ * Clients that need Redis's own data types (Search and Query, JSON, Time Series, probabilistic
+ * structures), which only Redis 8 has together (research R9).
+ */
+const REDIS_MODULE_CLIENTS: Partial<Record<DependencyEcosystem, ReadonlySet<string>>> = {
+  npm: new Set(["redis-om", "@redis/search", "@redis/json", "@redis/time-series", "@redis/bloom"]),
+  pypi: new Set(["redis-om"]),
+  nuget: new Set(["nredisstack"]),
+};
+
+/** Clients that need them only when the code calls those commands (`redisModuleCalls`). */
+export const REDIS_MODULE_CALLERS: Readonly<Partial<Record<DependencyEcosystem, string>>> = {
+  pypi: "redis",
+  maven: "redis.clients:jedis",
+};
+
+/** True when `dep` needs Redis's own data types, given the ecosystems whose code calls them. */
+function needsRedisModules(dep: Dependency, calls: ReadonlySet<DependencyEcosystem>): boolean {
+  if (REDIS_MODULE_CLIENTS[dep.ecosystem]?.has(tableName(dep))) return true;
+  return REDIS_MODULE_CALLERS[dep.ecosystem] === dep.name && calls.has(dep.ecosystem);
 }
 
 /**
@@ -326,7 +357,10 @@ function clientServices(dep: Dependency): ServiceKind[] {
  * (`brokerScheme`, from a `*BROKER*` variable): AMQP or Redis. Without one, every AMQP and Redis
  * URL in Python code or committed env and compose files (`configUrlSchemes`) counts, and with
  * neither a Redis service in a committed compose file (`composeRedis`). `celery[redis]` and
- * Dramatiq's `redis` and `rabbitmq` extras add their broker too.
+ * Dramatiq's `redis` and `rabbitmq` extras add their broker too. A client that needs Redis's own
+ * data types adds `redis-modules:<name>` to Redis's evidence: redis-om, `@redis/search` and the
+ * like always, redis-py and Jedis when their ecosystem's code calls those commands
+ * (`redisModuleCalls`).
  */
 export function addDependencyServices(
   collector: ServiceCollector,
@@ -337,6 +371,7 @@ export function addDependencyServices(
     composeRedis?: boolean;
     brokerScheme?: EnvUrlScheme;
     pythonS3?: boolean;
+    redisModuleCalls?: ReadonlySet<DependencyEcosystem>;
   },
 ): void {
   const has = (scheme: string) =>
@@ -345,6 +380,9 @@ export function addDependencyServices(
   for (const dep of runtime) {
     const evidence = `dependency:${dep.name}`;
     for (const kind of clientServices(dep)) collector.add(kind, evidence);
+    if (needsRedisModules(dep, context.redisModuleCalls ?? new Set())) {
+      collector.add("redis", `redis-modules:${dep.name}`);
+    }
     if (dep.ecosystem !== "pypi") continue;
     if (dep.name === "celery") {
       const redisExtra = dep.extras.includes("redis");
@@ -472,6 +510,18 @@ export function addLaravelRedis(collector: ServiceCollector, settings: readonly 
     collector.add("redis", evidence);
     if (evidence.includes(":QUEUE_CONNECTION=")) collector.add("queue", evidence);
   }
+}
+
+/**
+ * Adds the Redis-protocol engines the app's own compose files run (`compose-image:dragonfly`) to
+ * Redis's evidence, for an app that already uses Redis: design runs the same engine.
+ */
+export function addComposeRedisEngines(
+  collector: ServiceCollector,
+  engines: Iterable<ComposeRedisEngine>,
+): void {
+  if (!collector.has("redis")) return;
+  for (const engine of engines) collector.add("redis", `compose-image:${engine}`);
 }
 
 /** Names apps conventionally read a service's URL or address from, the most usual first. */

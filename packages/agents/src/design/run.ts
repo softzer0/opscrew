@@ -293,7 +293,7 @@ interface Designed {
 async function priceOwnServer(
   deps: PhaseDeps,
   { facts, requirements }: DesignInputs,
-  override: ComputeCatalog | undefined,
+  catalog: ComputeCatalog,
   warnings: string[],
   input: OwnServerDesignInput | undefined,
   designed: Designed,
@@ -302,12 +302,6 @@ async function priceOwnServer(
   const warn = warner(deps, warnings);
   const serving = await ownServerAccess(deps, input, requirements);
   const access = servingAccess(serving);
-  const catalog =
-    override ??
-    vpsConnector("own", deps, {
-      now: () => deps.clock.now(),
-      ...(input?.facts !== undefined ? { ownServer: input.facts } : {}),
-    }).catalog();
   const own = await buildOwnServerOption({
     facts,
     requirements,
@@ -393,8 +387,9 @@ async function componentsFor(
   { facts, requirements }: DesignInputs,
   previous: DeployPlan | undefined,
   warn: (text: string) => void,
+  vcpus: number | undefined,
 ): Promise<Designed> {
-  const designed = designComponents({ facts, requirements, previous });
+  const designed = designComponents({ facts, requirements, previous, vcpus });
   const sqlite = designed.components.storage?.sqlite;
   if (sqlite !== undefined) await checkSqliteFolder(deps.paths.root, facts, sqlite.dir);
   for (const warning of designed.warnings) warn(warning);
@@ -410,14 +405,25 @@ async function priceOptions(
   previous: DeployPlan | undefined,
 ): Promise<DesignPreview> {
   const { facts, requirements } = inputs;
-  const designed = await componentsFor(deps, inputs, previous, warner(deps, warnings));
+  // The user's own server is the catalogue's only offer; its vCPUs decide whether Dragonfly is
+  // offered there.
+  const ownCatalog =
+    requirements.provider === "own"
+      ? (override ??
+        vpsConnector("own", deps, {
+          now: () => deps.clock.now(),
+          ...(ownServer?.facts !== undefined ? { ownServer: ownServer.facts } : {}),
+        }).catalog())
+      : undefined;
+  const vcpus = (await ownCatalog?.listOffers())?.[0]?.vcpus;
+  const designed = await componentsFor(deps, inputs, previous, warner(deps, warnings), vcpus);
   if (requirements.provider === "portainer") {
     return pricePortainer(deps, inputs, warnings, designed);
   }
-  const provider = requestedProvider(requirements);
-  if (provider === "own") {
-    return priceOwnServer(deps, inputs, override, warnings, ownServer, designed);
+  if (ownCatalog !== undefined) {
+    return priceOwnServer(deps, inputs, ownCatalog, warnings, ownServer, designed);
   }
+  const provider = requestedProvider(requirements);
   const { components } = designed;
   const { reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);

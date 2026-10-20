@@ -67,6 +67,8 @@ describe("pins.ts", () => {
       kafka: "4.3.1",
       redpanda: "v26.2.5",
       garage: "v2.4.1",
+      redis: "8.10.2-alpine",
+      dragonfly: "v2.0.2",
       opensearch: "3.9.0",
       elasticsearch: "9.5.5",
       meilisearch: "v1.55.0",
@@ -77,12 +79,18 @@ describe("pins.ts", () => {
     expect(parseImageRef(IMAGES.kafka.ref).repo).toBe("apache/kafka");
     expect(parseImageRef(IMAGES.redpanda.ref).repo).toBe("redpandadata/redpanda");
     expect(parseImageRef(IMAGES.garage.ref).repo).toBe("dxflrs/garage");
+    expect(parseImageRef(IMAGES.redis.ref).repo).toBe("redis");
+    expect(parseImageRef(IMAGES.dragonfly.ref).repo).toBe(
+      "docker.dragonflydb.io/dragonflydb/dragonfly",
+    );
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
         "caddy",
         "cloudflared",
         "curl",
         "dockerfileSyntax",
+        "dragonfly",
+        "redis",
         "garage",
         "kafka",
         "kamalProxy",

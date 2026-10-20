@@ -246,6 +246,8 @@ describe("renderDependabot", () => {
     const locked = SERVICE_SPECS.filter((spec) => spec.majorLocked).map((spec) => spec.kind);
     expect(locked).toEqual([
       "postgres",
+      "redis",
+      "dragonfly",
       "mysql",
       "mariadb",
       "mongodb",
@@ -264,6 +266,7 @@ describe("renderDependabot", () => {
       "apache/kafka",
       "caddy",
       "clickhouse",
+      "dragonflydb/dragonfly",
       "dxflrs/garage",
       "elasticsearch",
       "getmeili/meilisearch",
@@ -276,6 +279,7 @@ describe("renderDependabot", () => {
       "postgres",
       "python",
       "rabbitmq",
+      "redis",
       "redpandadata/redpanda",
       "typesense/typesense",
     ]);

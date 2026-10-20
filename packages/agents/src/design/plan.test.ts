@@ -22,7 +22,7 @@ import {
   staticSpaFacts,
 } from "../testing";
 import { deriveCodeChanges } from "./code-changes";
-import { appNameFor } from "./components";
+import { appNameFor, designComponents } from "./components";
 import { buildDesignOptions } from "./options";
 import { appPortFor, optionToPlan } from "./plan";
 import { selfHostedServices } from "./sizing";
@@ -628,6 +628,96 @@ describe("connection settings under the app's own names (FR-814)", () => {
       DATABASE_URL: `mysql://app:${password}@mysql:3306/app`,
       REDIS_URL: "redis://queue:6379",
     });
+  });
+
+  it.each([
+    ["Redis 8", "redis", "compose-image:redis"],
+    ["Dragonfly", "dragonfly", "compose-image:dragonfly"],
+  ] as const)(
+    "fills Celery's broker and result backend from %s's queue",
+    async (_, kind, compose) => {
+      const variable = (name: string) => ({
+        name,
+        files: ["proj/settings.py"],
+        clientExposed: false,
+        secretLikely: false,
+      });
+      const facts = makeFacts({
+        languages: ["python"],
+        envVars: [variable("CELERY_BROKER_URL"), variable("CELERY_RESULT_BACKEND")],
+        services: [
+          { kind: "queue", evidence: ["dependency:celery"] },
+          { kind: "redis", evidence: [compose, "dependency:celery[redis]"] },
+        ],
+      });
+      const requirements = makeRequirements();
+      const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+      if (!option) throw new Error("no option");
+      const plan = optionToPlan(option, {
+        facts,
+        requirements,
+        now: NOW,
+        codeChanges: [],
+        build: autoBuild(facts),
+      });
+      expect(plan.services).toEqual([
+        expect.objectContaining({
+          name: "queue",
+          kind,
+          options: expect.objectContaining({ mode: "queue" }),
+        }),
+      ]);
+      // Dragonfly's threads are capped at the chosen server's vCPUs.
+      expect(plan.services[0]?.options).toEqual(
+        kind === "dragonfly"
+          ? { mode: "queue", lockOnHashtags: false, threads: option.target.vcpus }
+          : { mode: "queue" },
+      );
+      // Each address carries the password, so each is a secret.
+      expect(plan.app.env).toEqual([
+        { name: "CELERY_BROKER_URL", secret: true, source: "derived" },
+        { name: "CELERY_RESULT_BACKEND", secret: true, source: "derived" },
+        { name: "REDIS_URL", secret: true, source: "derived" },
+      ]);
+      const env = await assembleAppEnv({ plan, dotenvText: "" });
+      const url = `redis://:${env.generated.services?.queue?.password}@queue:6379`;
+      expect(env.values.app).toMatchObject({
+        CELERY_BROKER_URL: url,
+        CELERY_RESULT_BACKEND: url,
+        REDIS_URL: url,
+      });
+    },
+  );
+
+  it("keeps Dragonfly's threads from plan.yaml, and sets none in a Portainer", async () => {
+    const facts = makeFacts({
+      services: [{ kind: "redis", evidence: ["compose-image:dragonfly", "dependency:ioredis"] }],
+    });
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    const { components } = designComponents({ facts, requirements });
+    const edited = {
+      ...components,
+      services: components.services.map((s) =>
+        s.kind === "dragonfly" ? { ...s, options: { ...s.options, threads: 1 } } : s,
+      ),
+    };
+    const input = { facts, requirements, now: NOW, codeChanges: [], build: autoBuild(facts) };
+    const kept = optionToPlan(option, { ...input, components: edited });
+    expect(kept.services[0]?.options).toMatchObject({ threads: 1 });
+    const portainer = { ...option, target: { ...option.target, provider: "portainer" as const } };
+    const stack = {
+      ...input,
+      components,
+      portainer: {
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: { mode: "proxy", port: 8080 },
+      } as const,
+    };
+    expect(optionToPlan(portainer, stack).services[0]?.options).not.toHaveProperty("threads");
   });
 
   it("generates CRON_SECRET for the cron jobs that call the app's routes (FR-1309)", async () => {

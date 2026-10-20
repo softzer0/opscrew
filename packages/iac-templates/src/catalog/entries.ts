@@ -2,8 +2,8 @@
 /**
  * The catalog's entries (013): the databases, queues, brokers and object storage OpsCrew runs next
  * to the app (part 1), and the search and analytics engines (part 2). Images, versions and
- * licences: research.md R2, R3, R4, R5 and R8. Part 1's tools, health checks and idle memory:
- * research.md "Spike results" 7–9 (local Docker, 2026-10-19).
+ * licences: research.md R2, R3, R4, R5, R8 and R9 (Redis 8 and Dragonfly). Part 1's tools,
+ * health checks and idle memory: research.md "Spike results" 7–9 (local Docker, 2026-10-19).
  *
  * Memory: each default and minimum leaves room above the idle memory the spike measured (the
  * comment at each entry). Design refuses a service on a server below its smallest one.
@@ -44,9 +44,36 @@ function loginUrl(ctx: ServiceContext, scheme: string, port: number, path: strin
   return `${scheme}://app:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:${port}${path}`;
 }
 
-/** True for a Valkey in queue mode. */
+/** True for a Valkey, Redis 8 or Dragonfly in queue mode. */
 function queueMode(service: PlanService): boolean {
-  return service.kind === "valkey" && service.options.mode === "queue";
+  return "mode" in service.options && service.options.mode === "queue";
+}
+
+/**
+ * What the app receives from a Valkey, Redis 8 or Dragonfly at `url`: REDIS_URL and its own
+ * variable, but a cache next to a queue instance only its own cache variable, since REDIS_URL is
+ * the queue's (job libraries read it).
+ */
+function redisVariables(ctx: ServiceContext, url: string): Record<string, string> {
+  const besideQueue =
+    !queueMode(ctx.service) && ctx.plan.services.some((other) => other.enabled && queueMode(other));
+  return withVariable(ctx, url, besideQueue ? {} : { REDIS_URL: url });
+}
+
+/** The URL of a Redis 8 or Dragonfly, which require the password of their default user. */
+function passwordRedisUrl(ctx: ServiceContext): string {
+  return `redis://:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:6379`;
+}
+
+/** A health check that logs in with the password in `variable` and reads the reply. */
+function redisCliCheck(variable: string): ServiceSpec["healthcheck"] {
+  // redis-cli answers NOAUTH with exit code 0, so the check reads the reply.
+  return { test: ["CMD-SHELL", `REDISCLI_AUTH="$${variable}" redis-cli ping | grep -q PONG`] };
+}
+
+/** Three quarters of the limit, as Valkey's own memory limit is (research R7). */
+function redisMaxmemoryMb(service: PlanService): number {
+  return Math.floor(service.memoryMb * 0.75);
 }
 
 const POSTGRES: ServiceSpec = {
@@ -83,19 +110,15 @@ const POSTGRES: ServiceSpec = {
  * and keeps nothing on disk.
  */
 function valkeyCommand(ctx: ServiceContext): string[] {
-  const maxmemory = ["--maxmemory", `${Math.floor(ctx.service.memoryMb * 0.75)}mb`];
-  return queueMode(ctx.service)
-    ? ["valkey-server", "--appendonly", "yes", ...maxmemory, "--maxmemory-policy", "noeviction"]
-    : [
-        "valkey-server",
-        "--save",
-        "",
-        "--appendonly",
-        "no",
-        ...maxmemory,
-        "--maxmemory-policy",
-        "allkeys-lru",
-      ];
+  return ["valkey-server", ...redisModeArgs(ctx.service)];
+}
+
+/** Valkey's and Redis 8's settings for the service's mode ({@link valkeyCommand}). */
+function redisModeArgs(service: PlanService): string[] {
+  const maxmemory = ["--maxmemory", `${redisMaxmemoryMb(service)}mb`];
+  return queueMode(service)
+    ? ["--appendonly", "yes", ...maxmemory, "--maxmemory-policy", "noeviction"]
+    : ["--save", "", "--appendonly", "no", ...maxmemory, "--maxmemory-policy", "allkeys-lru"];
 }
 
 const VALKEY: ServiceSpec = {
@@ -115,15 +138,115 @@ const VALKEY: ServiceSpec = {
   healthcheck: { test: ["CMD", "valkey-cli", "ping"] },
   secrets: [],
   auth: "internal-only",
-  // A cache next to a queue instance gets only the app's own cache variable: REDIS_URL is the
-  // queue's (job libraries read it).
-  appVariables: (ctx) => {
-    const url = `redis://${ctx.service.name}:6379`;
-    const besideQueue =
-      !queueMode(ctx.service) &&
-      ctx.plan.services.some((other) => other.enabled && queueMode(other));
-    return withVariable(ctx, url, besideQueue ? {} : { REDIS_URL: url });
+  appVariables: (ctx) => redisVariables(ctx, `redis://${ctx.service.name}:6379`),
+  targets: BOTH_TARGETS,
+};
+
+/** Where Redis 8's container writes its password for redis-server, readable by `redis` only. */
+const REDIS_AUTH_FILE = "/tmp/opscrew-auth.conf";
+
+/**
+ * Redis 8 with Valkey's modes ({@link redisModeArgs}) and its password. The shell writes the
+ * password from the environment into a settings file inside the container (never into a
+ * repository file, nor redis-server's command line) and owned by `redis`, the user the image's
+ * entrypoint drops to; the entrypoint loads the modules (Search, JSON, Time Series, Bloom) and
+ * drops root only when the command is `redis-server`.
+ */
+function redisCommand(ctx: ServiceContext): string[] {
+  const args = redisModeArgs(ctx.service).map((arg) => (arg === "" ? "''" : arg));
+  return [
+    "sh",
+    "-c",
+    [
+      `umask 077 && printf 'requirepass %s\\n' "$REDIS_PASSWORD" > ${REDIS_AUTH_FILE}`,
+      `chown redis:redis ${REDIS_AUTH_FILE}`,
+      ["exec docker-entrypoint.sh redis-server", REDIS_AUTH_FILE, ...args].join(" "),
+    ].join(" && "),
+  ];
+}
+
+const REDIS: ServiceSpec = {
+  kind: "redis",
+  title: "Redis",
+  image: "redis",
+  defaultVersion: "8",
+  majorLocked: true,
+  licence: {
+    id: "RSALv2 OR SSPL-1.0 OR AGPL-3.0-only",
+    permissive: false,
+    note: "Redis is under your choice of the RSALv2, the SSPLv1 or the AGPLv3: running its unmodified image for your own app puts no conditions on your app's code; they apply when you offer Redis itself as a service or change and share it.",
   },
+  // Idle 11 MiB with its modules loaded (2026-10-20); the rest is the data it keeps in memory.
+  memory: { defaultMb: 128, minimumMb: 64, smallestServerMb: 512 },
+  port: 6379,
+  dataDir: "/data",
+  command: redisCommand,
+  environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name) }),
+  healthcheck: redisCliCheck("REDIS_PASSWORD"),
+  secrets: [PASSWORD],
+  auth: "password",
+  appVariables: (ctx) => redisVariables(ctx, passwordRedisUrl(ctx)),
+  targets: BOTH_TARGETS,
+};
+
+/** The memory Dragonfly refuses to start without, per thread. */
+const DRAGONFLY_THREAD_MB = 256;
+
+/** The vCPUs Dragonfly is offered from (FR-1321a), and its threads where they are not known. */
+export const DRAGONFLY_MIN_VCPUS = 2;
+
+/**
+ * Dragonfly's flags, always with its threads and memory: three quarters of the limit, and one
+ * thread for each 256 MB of that (it refuses to start with less; research R9), at most the
+ * server's vCPUs (`options.threads`; {@link DRAGONFLY_MIN_VCPUS} when design does not know them).
+ * Its HTTP console on the same port is off. A queue never evicts and keeps a snapshot, saved
+ * every minute and when it stops; a cache evicts and keeps nothing. BullMQ's scripts need locks
+ * by hashtag (https://www.dragonflydb.io/docs/integrations/bullmq).
+ */
+function dragonflyCommand(ctx: ServiceContext): string[] {
+  const { service } = ctx;
+  const maxmemory = redisMaxmemoryMb(service);
+  const options = service.kind === "dragonfly" ? service.options : undefined;
+  const threads = Math.max(
+    1,
+    Math.min(Math.floor(maxmemory / DRAGONFLY_THREAD_MB), options?.threads ?? DRAGONFLY_MIN_VCPUS),
+  );
+  return [
+    "dragonfly",
+    "--logtostderr",
+    `--proactor_threads=${threads}`,
+    `--maxmemory=${maxmemory}mb`,
+    "--primary_port_http_enabled=false",
+    ...(queueMode(service)
+      ? ["--dbfilename=dump", "--snapshot_cron=* * * * *"]
+      : ["--cache_mode=true", "--dbfilename="]),
+    ...(options?.lockOnHashtags ? ["--cluster_mode=emulated", "--lock_on_hashtags"] : []),
+  ];
+}
+
+const DRAGONFLY: ServiceSpec = {
+  kind: "dragonfly",
+  title: "Dragonfly",
+  image: "dragonfly",
+  defaultVersion: "2",
+  majorLocked: true,
+  licence: {
+    id: "BSL-1.1",
+    permissive: false,
+    note: "Dragonfly is under the Business Source License 1.1: running it for your own app is allowed, offering it to others as an in-memory data store service is not, and it becomes Apache 2.0 on 2030-11-01.",
+  },
+  // Idle 37–47 MiB with one thread (2026-10-20); the smallest limit holds one thread's 256 MB.
+  memory: { defaultMb: 512, minimumMb: 384, smallestServerMb: 2048 },
+  port: 6379,
+  dataDir: "/data",
+  command: dragonflyCommand,
+  // Dragonfly reads each of its flags from `DFLY_<flag>` (an unknown one stops it).
+  environment: (ctx) => ({ DFLY_requirepass: ctx.secretRef(PASSWORD.name) }),
+  // Its own health check sends PING without the password and counts any reply.
+  healthcheck: redisCliCheck("DFLY_requirepass"),
+  secrets: [PASSWORD],
+  auth: "password",
+  appVariables: (ctx) => redisVariables(ctx, passwordRedisUrl(ctx)),
   targets: BOTH_TARGETS,
 };
 
@@ -995,6 +1118,8 @@ const NEO4J: ServiceSpec = {
 export const SERVICE_SPECS: readonly ServiceSpec[] = [
   POSTGRES,
   VALKEY,
+  REDIS,
+  DRAGONFLY,
   MYSQL,
   MARIADB,
   MONGODB,

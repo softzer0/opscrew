@@ -91,7 +91,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.
    - **Components.** Both tools list what runs next to the web process: workers (with their command
      and number of copies), cron jobs (in UTC), the services OpsCrew runs as containers (databases,
-     Valkey, brokers, search and analytics engines, each with its version and memory limit), SQLite
+     Valkey, or Redis 8 or Dragonfly when the app needs one, brokers, search and analytics
+     engines, each with its version and memory limit), SQLite
      on a persistent volume, and object storage with each option's monthly price. Each option shows
      every component's memory limit and its share of the server's monthly price. Pass on the
      licence sentences in plain words (MongoDB's SSPL, MySQL's GPL, Redpanda's BSL and so on): they

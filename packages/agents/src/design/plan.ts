@@ -1,12 +1,18 @@
 import { OpsCrewError } from "@opscrew/core";
-import { appRoot, containerPort, detectStack, releaseCommandInImage } from "@opscrew/iac-templates";
+import {
+  appRoot,
+  containerPort,
+  detectStack,
+  releaseCommandInImage,
+  serviceSpec,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
   type DesignOption,
+  type PlanService,
   type ProjectFacts,
   type Requirements,
-  serviceOf,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import {
@@ -17,7 +23,7 @@ import {
   serviceAppVariables,
   serviceUrlKind,
   storageVariableKind,
-  URL_SERVICE_KINDS,
+  urlService,
 } from "../shared";
 import type { BuilderChoice } from "./builder";
 import {
@@ -128,6 +134,20 @@ export function appPortFor(facts: ProjectFacts): number {
 }
 
 /**
+ * The services with each Dragonfly's most threads (`options.threads`) set to the chosen server's
+ * vCPUs, unless plan.yaml already sets them (an edit is kept). A Portainer host's are not known.
+ */
+function withServerThreads(services: readonly PlanService[], option: DesignOption): PlanService[] {
+  return services.map((service) =>
+    service.kind === "dragonfly" &&
+    service.options.threads === undefined &&
+    option.target.provider !== "portainer"
+      ? { ...service, options: { ...service.options, threads: option.target.vcpus } }
+      : service,
+  );
+}
+
+/**
  * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release
  * command, memory limit, environment variable names), target (the option's provider and its default
  * image; for the user's own server its architecture and `input.access`), the components
@@ -150,14 +170,18 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     if (variable.name === "PORT") continue;
     // The app's own names for the database and Redis URLs are filled from the services OpsCrew
     // runs (FR-814), whatever default the code has for development, unless a committed example
-    // gives the variable another kind of URL (`CELERY_BROKER_URL=amqp://…`).
+    // gives the variable another kind of URL (`CELERY_BROKER_URL=amqp://…`). It is a secret when
+    // the address carries the service's login (Postgres, Redis 8, Dragonfly).
     const service = serviceUrlKind(variable.name);
+    const running = service === undefined ? undefined : urlService(components, service);
     if (
-      service !== undefined &&
-      serviceOf(components, URL_SERVICE_KINDS[service]) &&
+      running !== undefined &&
       (variable.urlScheme === undefined || variable.urlScheme === service)
     ) {
-      env.set(variable.name, derived(variable.name, service === "postgres"));
+      env.set(
+        variable.name,
+        derived(variable.name, serviceSpec(running.kind).auth !== "internal-only"),
+      );
       continue;
     }
     env.set(variable.name, {
@@ -251,7 +275,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     target: targetFor(option, input.access, input.portainer),
     deploy: deployStrategyFor(option, components.storage?.sqlite !== undefined),
     processes: components.processes,
-    services: components.services,
+    services: withServerThreads(components.services, option),
     externalServices: [...components.externalServices],
     ...(components.storage === undefined ? {} : { storage: components.storage }),
     cost: option.cost,

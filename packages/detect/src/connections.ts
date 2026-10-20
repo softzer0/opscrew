@@ -208,15 +208,43 @@ export function hostedService(url: EnvUrl): { kind: ServiceKind; provider: strin
 }
 
 /**
- * True when a compose file runs Redis (a service named `redis`, or an image named `redis`,
- * `bitnami/redis` or `redis/redis-stack…`) or passes a `redis://` URL to a service.
+ * True when a compose file runs Redis or an engine on its protocol (a service named `redis`, or
+ * an image {@link composeRedisEngines} knows), or passes a `redis://` URL to a service.
  */
 export function composeUsesRedis(text: string): boolean {
   if (/^[ \t]+redis:[ \t]*(?:#.*)?$/m.test(text)) return true;
   if (/rediss?:\/\//.test(text)) return true;
-  return /^[ \t]*image:[ \t]*["']?(?:[\w.-]+(?::\d+)?\/)?(?:library\/|bitnami\/)?redis(?:\/redis-stack[\w-]*)?(?=[:@"'\s]|$)/m.test(
-    text,
-  );
+  return composeRedisEngines(text).length > 0;
+}
+
+/** An engine on Redis's protocol that a compose file can run, by its image. */
+export type ComposeRedisEngine = "redis" | "dragonfly" | "keydb";
+
+/**
+ * The images of each engine, without their registry: Redis (the official image, Bitnami's and
+ * Redis Stack), Dragonfly, KeyDB.
+ */
+const ENGINE_IMAGES: readonly (readonly [ComposeRedisEngine, RegExp])[] = [
+  ["redis", /^(?:(?:library\/)?redis|bitnami\/redis|redis\/redis-stack(?:-server)?)$/],
+  ["dragonfly", /^dragonflydb\/dragonfly$/],
+  ["keydb", /^eqalpha\/keydb$/],
+];
+
+/** A compose `image:` line's name, without its tag or digest; a registry may have a port. */
+const COMPOSE_IMAGE = /^[ \t]*image:[ \t]*["']?([\w.-]+(?::\d+(?=\/))?(?:\/[\w.-]+)*)/gm;
+
+/**
+ * The engines on Redis's protocol whose images a compose file runs (sorted, unique), from any
+ * registry: Redis ({@link ENGINE_IMAGES}), Dragonfly, KeyDB.
+ */
+export function composeRedisEngines(text: string): ComposeRedisEngine[] {
+  const found = new Set<ComposeRedisEngine>();
+  for (const match of text.matchAll(COMPOSE_IMAGE)) {
+    // A first part with a dot or a port is a registry's host (`docker.dragonflydb.io/…`).
+    const name = (match[1] ?? "").replace(/^[^/]*[.:][^/]*\//, "");
+    for (const [engine, image] of ENGINE_IMAGES) if (image.test(name)) found.add(engine);
+  }
+  return [...found].sort();
 }
 
 /** Flask settings read by the `flask` command itself, not by the app's config. */

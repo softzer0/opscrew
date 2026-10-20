@@ -175,6 +175,235 @@ describe("designComponents: one service per kind the app uses", () => {
   });
 });
 
+describe("designComponents: the engine on Redis's protocol (FR-1321a)", () => {
+  const ioredis = service("redis", "dependency:ioredis");
+  const bullmq = [service("queue", "dependency:bullmq"), service("redis", "dependency:bullmq")];
+  const own = (vcpus: number) =>
+    designComponents({
+      facts: makeFacts({ services: [ioredis] }),
+      requirements: makeRequirements({ provider: "own" }),
+      vcpus,
+    });
+  const DRAGONFLY_OFFER =
+    "Dragonfly is the other choice: set this service's kind to dragonfly in opscrew/plan.yaml.";
+
+  it("runs Valkey by default, naming Dragonfly where the server has 2 vCPUs or OpsCrew sizes it", () => {
+    const cloud = designed({ services: [ioredis] });
+    expect(cloud.components.services).toEqual([
+      expect.objectContaining({ kind: "valkey", version: "8", options: { mode: "cache" } }),
+    ]);
+    expect(cloud.components.services[0]?.reason).toBe(
+      `The app uses Redis through ioredis. Valkey, Redis's open-source fork, runs it. ${DRAGONFLY_OFFER}`,
+    );
+    expect(own(2).components.services[0]?.reason).toContain(DRAGONFLY_OFFER);
+    expect(own(1).components.services[0]?.reason).not.toContain("Dragonfly");
+    const portainer = designed(
+      { services: [ioredis] },
+      makeRequirements({ provider: "portainer" }),
+    );
+    expect(portainer.components.services[0]?.reason).not.toContain("Dragonfly");
+    // A queue's reason says why it keeps its jobs, then which engine runs it.
+    expect(designed({ services: bullmq }).components.services[0]?.reason).toBe(
+      `BullMQ keeps its jobs in Redis, so it runs as a queue: it never evicts a job and keeps them on disk. Valkey, Redis's open-source fork, runs it. ${DRAGONFLY_OFFER}`,
+    );
+  });
+
+  it("runs Redis 8 for a client that needs Redis's own data types, naming its licence", () => {
+    const { components, lines } = designed({
+      services: [service("redis", "dependency:redis-om", "redis-modules:redis-om")],
+    });
+    expect(components.services).toEqual([
+      expect.objectContaining({
+        name: "cache",
+        kind: "redis",
+        version: "8",
+        memoryMb: 128,
+        options: { mode: "cache" },
+        licence: "RSALv2 OR SSPL-1.0 OR AGPL-3.0-only",
+      }),
+    ]);
+    expect(components.services[0]?.reason).toBe(
+      "The app uses Redis through redis-om. redis-om needs Redis's own data types (Search, JSON, Time Series or probabilistic structures), which only Redis 8 has together, so Redis 8 runs it.",
+    );
+    expect(lines.join("\n")).toContain(
+      "Redis is under your choice of the RSALv2, the SSPLv1 or the AGPLv3",
+    );
+  });
+
+  it("runs the engine the app's Compose file runs: Redis 8 or Dragonfly", () => {
+    const redis = designed({
+      services: [service("redis", "compose-image:redis", "dependency:ioredis")],
+    });
+    expect(redis.components.services[0]).toMatchObject({
+      kind: "redis",
+      options: { mode: "cache" },
+    });
+    expect(redis.components.services[0]?.reason).toBe(
+      "The app uses Redis through ioredis. The app's Compose file runs Redis, so Redis 8 runs it here too.",
+    );
+    const dragonfly = designed({
+      services: [service("redis", "compose-image:dragonfly", "dependency:ioredis")],
+    });
+    expect(dragonfly.components.services[0]).toMatchObject({
+      name: "cache",
+      kind: "dragonfly",
+      version: "2",
+      memoryMb: 512,
+      options: { mode: "cache", lockOnHashtags: false },
+      licence: "BSL-1.1",
+    });
+    expect(dragonfly.components.services[0]?.reason).toBe(
+      "The app uses Redis through ioredis. The app's Compose file runs Dragonfly, so Dragonfly runs it here too.",
+    );
+    expect(dragonfly.lines.join("\n")).toContain(
+      "Dragonfly is under the Business Source License 1.1",
+    );
+    expect(dragonfly.warnings).toEqual([]);
+  });
+
+  it("runs Valkey for KeyDB, saying why in one line", () => {
+    const { components } = designed({
+      services: [service("redis", "compose-image:keydb", "dependency:ioredis")],
+    });
+    expect(components.services[0]?.kind).toBe("valkey");
+    expect(components.services[0]?.reason).toBe(
+      `The app uses Redis through ioredis. The app's Compose file runs KeyDB, which has had no release since 2023, so Valkey, which speaks the same protocol, runs instead. ${DRAGONFLY_OFFER}`,
+    );
+  });
+
+  it("gives Dragonfly BullMQ's hashtag locks, and warns that queue names need hashtags", () => {
+    const facts = makeFacts({
+      services: [
+        ...bullmq.slice(0, 1),
+        service("redis", "compose-image:dragonfly", "dependency:bullmq"),
+      ],
+    });
+    const { components, warnings } = designComponents({ facts, requirements: makeRequirements() });
+    // A rerun keeps them and the threads the plan got from its server, and says nothing changed.
+    const written = components.services.map((s) =>
+      s.kind === "dragonfly" ? { ...s, options: { ...s.options, threads: 2 } } : s,
+    );
+    const previous = { ...testPlan(), services: written, externalServices: [] };
+    const again = designComponents({ facts, requirements: makeRequirements(), previous });
+    expect(again.components.services).toEqual(written);
+    expect(again.lines.join("\n")).not.toContain("Kept your changes");
+    expect(components.services[0]).toMatchObject({
+      name: "queue",
+      kind: "dragonfly",
+      options: { mode: "queue", lockOnHashtags: true },
+    });
+    expect(warnings).toEqual([
+      'Dragonfly (queue) runs with --cluster_mode=emulated --lock_on_hashtags, as BullMQ needs: give each queue\'s name or prefix its own hashtag, such as {myqueue} (new Queue("{myqueue}") or prefix: "{myqueue}"), or BullMQ\'s scripts fail. See https://www.dragonflydb.io/docs/integrations/bullmq.',
+    ]);
+  });
+
+  it("keeps the user's switch to Dragonfly or Redis 8 in plan.yaml, unless the server has 1 vCPU", () => {
+    const requirements = makeRequirements({ provider: "own" });
+    const facts = makeFacts({ services: bullmq });
+    const fresh = designComponents({ facts, requirements, vcpus: 2 }).components;
+    const switched = (kind: "dragonfly" | "redis", version: string, licence: string) => ({
+      ...testPlan(),
+      updatedAt: "2026-10-12T00:00:00.000Z",
+      services: fresh.services.map((s) => ({ ...s, kind, version, licence })),
+      externalServices: [],
+    });
+    const dragonfly = switched("dragonfly", "2", "BSL-1.1") as DeployPlan;
+    const kept = designComponents({ facts, requirements, vcpus: 2, previous: dragonfly });
+    expect(kept.components.services[0]).toMatchObject({
+      kind: "dragonfly",
+      version: "2",
+      options: { mode: "queue", lockOnHashtags: true },
+      licence: "BSL-1.1",
+    });
+    expect(kept.components.services[0]?.reason).toBe(
+      "BullMQ keeps its jobs in Redis, so it runs as a queue: it never evicts a job and keeps them on disk. You chose Dragonfly in opscrew/plan.yaml.",
+    );
+    expect(kept.lines).toContain(
+      "Kept your changes in opscrew/plan.yaml: the service queue (Dragonfly and version 2).",
+    );
+    // Valkey's limit is below the least Dragonfly starts with.
+    expect(kept.components.services[0]?.memoryMb).toBe(384);
+    expect(kept.lines).toContain(
+      "Raised the service queue's memory from 128 MB to 384 MB, the least Dragonfly runs with.",
+    );
+    expect(kept.warnings[0]).toContain("{myqueue}");
+    // A rerun changes nothing.
+    const again = designComponents({
+      facts,
+      requirements,
+      vcpus: 2,
+      previous: { ...dragonfly, services: kept.components.services },
+    });
+    expect(again.components.services).toEqual(kept.components.services);
+    expect(again.lines.join("\n")).not.toContain("its options");
+    const redis = switched("redis", "8", "RSALv2 OR SSPL-1.0 OR AGPL-3.0-only") as DeployPlan;
+    expect(
+      designComponents({ facts, requirements, vcpus: 2, previous: redis }).components.services[0],
+    ).toMatchObject({ kind: "redis", options: { mode: "queue" } });
+    // A server with one vCPU: Valkey again, saying why.
+    const small = designComponents({ facts, requirements, vcpus: 1, previous: dragonfly });
+    expect(small.components.services[0]).toMatchObject({
+      kind: "valkey",
+      options: { mode: "queue" },
+    });
+    expect(small.lines).toContain(
+      "The service queue runs Valkey, not the Dragonfly opscrew/plan.yaml chose: Dragonfly runs only on a server with 2 or more vCPUs, and yours has 1.",
+    );
+  });
+
+  it("replaces a Valkey it chose once the app needs Redis 8 or its Compose file runs Dragonfly", () => {
+    const first = designed({ services: [ioredis] }).components;
+    const previous = {
+      ...testPlan(),
+      updatedAt: "2026-10-12T00:00:00.000Z",
+      services: first.services,
+      externalServices: [],
+    };
+    const redesign = (...evidence: string[]) =>
+      designComponents({
+        facts: makeFacts({ services: [service("redis", "dependency:ioredis", ...evidence)] }),
+        requirements: makeRequirements(),
+        previous,
+      });
+    const search = redesign("dependency:@redis/search", "redis-modules:@redis/search");
+    expect(search.components.services).toEqual([
+      expect.objectContaining({ name: "cache", kind: "redis" }),
+    ]);
+    const text = search.lines.join("\n");
+    expect(text).toContain("Added the service cache (Redis).");
+    expect(text).not.toContain("You chose");
+    expect(redesign("compose-image:dragonfly").components.services).toEqual([
+      expect.objectContaining({ name: "cache", kind: "dragonfly" }),
+    ]);
+  });
+
+  it("warns that a Compose Dragonfly runs one thread on a server with 1 vCPU", () => {
+    const { components, warnings } = designComponents({
+      facts: makeFacts({
+        services: [service("redis", "compose-image:dragonfly", "dependency:ioredis")],
+      }),
+      requirements: makeRequirements({ provider: "own" }),
+      vcpus: 1,
+    });
+    expect(components.services[0]?.kind).toBe("dragonfly");
+    expect(warnings).toEqual([
+      "Dragonfly (cache) runs with one thread, because your server has 1 vCPU and Dragonfly uses one thread per vCPU, so Valkey would do the same job here. It runs because the app's Compose file runs it.",
+    ]);
+  });
+
+  it("offers the hosted Redis's replacement by the same choice", () => {
+    const upstash = (...evidence: string[]) =>
+      hostedChoices(
+        makeFacts({
+          services: [service("redis", ...evidence)],
+          hostedServices: [{ kind: "redis", variable: "REDIS_URL", provider: "Upstash" }],
+        }),
+      )[0]?.runs;
+    expect(upstash("dependency:ioredis")).toBe("valkey");
+    expect(upstash("dependency:redis-om", "redis-modules:redis-om")).toBe("redis");
+  });
+});
+
 describe("designComponents: hosted services", () => {
   const neon = {
     services: [service("postgres", "dependency:pg")],

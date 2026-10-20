@@ -1,5 +1,6 @@
 /**
- * The catalog's search and analytics engines (T1311) on Docker: each is rendered into OpsCrew's
+ * The catalog's search and analytics engines (T1311), and Redis 8 and Dragonfly (T1317), on
+ * Docker: each is rendered into OpsCrew's
  * server Compose file for a Hetzner server (`renderCompose`, adapted to this computer like the
  * Docker pass's) and started alone, as the deploy starts the services (`up -d --no-deps --wait`,
  * after the one-shot `sysctl` container where the engine needs a kernel setting), one at a time
@@ -12,7 +13,12 @@
  *   DISABLE_INSTALL_DEMO_CONFIG; bash with `/dev/tcp` in the Typesense and Neo4j images; Neo4j's
  *   `/logs` among the volumes OpsCrew mounts (no anonymous volume); busybox wget in
  *   Meilisearch's; wget in ClickHouse's, and ClickHouse starting with `remove="1"` on the log
- *   tables it turns off.
+ *   tables it turns off;
+ * - for Redis 8 and Dragonfly, as queues: refuse a command without the password and answer it
+ *   with it (redis-cli of the pinned Redis image on the app's network); Redis 8's image loading
+ *   Search, JSON, Time Series and Bloom (`MODULE LIST`, `FT.CREATE`, `JSON.SET`); Dragonfly
+ *   running a BullMQ-style script under its hashtag locks, with no HTTP answer on its port; the
+ *   password in neither log nor redis-server's command line.
  *
  * Gated like the Docker pass: OPSCREW_DOCKER_TESTS=1 with a running Docker daemon.
  * OPSCREW_DOCKER_ENGINES=a,b limits the run to those kinds. Each Compose project is removed with
@@ -57,8 +63,25 @@ const ENGINES = [
   "neo4j",
   "meilisearch",
   "clickhouse",
+  "redis",
+  "dragonfly",
 ] as const;
 type Engine = (typeof ENGINES)[number];
+
+/** The engines on Redis's protocol, which the pinned Redis image's redis-cli reaches. */
+const REDIS_PROTOCOL: readonly Engine[] = ["redis", "dragonfly"];
+
+/**
+ * A BullMQ-style script: it declares the queue's list and also writes a key of the same hashtag
+ * it does not declare (BullMQ builds such keys from its prefix), which Dragonfly allows only with
+ * its hashtag locks.
+ */
+const BULLMQ_STYLE_SCRIPT = [
+  'redis.call("RPUSH", KEYS[1], ARGV[1])',
+  'local id = string.gsub(KEYS[1], ":wait$", ":id")',
+  'redis.call("INCR", id)',
+  'return redis.call("LLEN", KEYS[1])',
+].join("\n");
 
 /** OPSCREW_DOCKER_ENGINES=a,b, or every engine. */
 const REQUESTED = process.env.OPSCREW_DOCKER_ENGINES?.split(",")
@@ -96,13 +119,24 @@ const LOGINS: Partial<
   }),
 };
 
-/** A Hetzner plan whose one service is `kind`, with the catalog's version and memory. */
+/**
+ * A Hetzner plan whose one service is `kind`, named after it, with the catalog's version and
+ * memory: Redis 8 and Dragonfly as a queue, Dragonfly with BullMQ's hashtag locks.
+ */
 function enginePlan(kind: Engine): DeployPlan {
   const spec = serviceSpec(kind);
+  const options =
+    kind === "redis"
+      ? { mode: "queue" }
+      : kind === "dragonfly"
+        ? { mode: "queue", lockOnHashtags: true }
+        : undefined;
   const service = PlanServiceSchema.parse({
+    name: kind,
     kind,
     version: spec.defaultVersion,
     memoryMb: spec.memory.defaultMb,
+    ...(options === undefined ? {} : { options }),
     reason: `The engines check runs ${spec.title}.`,
     licence: spec.licence.id,
   });
@@ -161,6 +195,26 @@ describe.skipIf(SKIP !== undefined)(
           ...options,
           url,
         ]);
+        return result.stdout.trim();
+      }
+
+      /** redis-cli's reply from the engine on its network, logged in when `login` is true. */
+      async function redisCli(login: boolean, ...args: string[]): Promise<string> {
+        const result = await docker([
+          "run",
+          "--rm",
+          "--label",
+          LABEL,
+          "--network",
+          `${project.name}_internal`,
+          ...(login ? ["-e", `REDISCLI_AUTH=${secret("password")}`] : []),
+          IMAGES.redis.ref,
+          "redis-cli",
+          "-h",
+          kind,
+          ...args,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
         return result.stdout.trim();
       }
 
@@ -239,6 +293,82 @@ describe.skipIf(SKIP !== undefined)(
           const { url, request, login } = check(secret);
           expect(await status(url, ...request), "without the login").toBe("401");
           expect(await status(url, ...request, ...login), "with the login").toBe("200");
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(REDIS_PROTOCOL.includes(kind))(
+        "refuses a command without its password and answers it with the password",
+        async () => {
+          expect(await redisCli(false, "ping"), "without the password").toMatch(/^NOAUTH/);
+          expect(await redisCli(true, "ping"), "with the password").toBe("PONG");
+          // Neither its log nor (Redis 8) redis-server's command line shows the password.
+          const logs = await docker(["logs", engine().name]);
+          expect(`${logs.stdout}${logs.stderr}`.includes(secret("password")), "in its log").toBe(
+            false,
+          );
+          if (kind === "redis") {
+            const cmdline = await exec("cat", "/proc/1/cmdline");
+            expect(cmdline.exitCode, cmdline.stderr).toBe(0);
+            expect(cmdline.stdout).toContain("redis-server");
+            expect(cmdline.stdout.includes(secret("password")), "on its command line").toBe(false);
+          }
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(kind === "dragonfly")(
+        "gives no HTTP answer on its port: its HTTP console is off",
+        async () => {
+          expect(await status("http://dragonfly:6379/")).toBe("000");
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(kind === "redis")(
+        "loads Search, JSON, Time Series and Bloom in the pinned image",
+        async () => {
+          const modules = await redisCli(true, "MODULE", "LIST");
+          for (const name of ["search", "ReJSON", "timeseries", "bf"]) {
+            expect(modules.split(/\r?\n/), `the ${name} module`).toContain(name);
+          }
+          const create = ["FT.CREATE", "idx", "ON", "JSON", "PREFIX", "1", "doc:"];
+          const schema = ["SCHEMA", "$.title", "AS", "title", "TEXT"];
+          expect(await redisCli(true, ...create, ...schema), "FT.CREATE").toBe("OK");
+          const doc = JSON.stringify({ title: "hello world" });
+          expect(await redisCli(true, "JSON.SET", "doc:1", "$", doc), "JSON.SET").toBe("OK");
+          expect(await redisCli(true, "FT.SEARCH", "idx", "hello"), "FT.SEARCH").toMatch(
+            /^1\s+doc:1/,
+          );
+          // A queue keeps an append-only file.
+          expect(await redisCli(true, "CONFIG", "GET", "appendonly")).toBe("appendonly\nyes");
+          // The image's entrypoint, reached through `sh -c`, still dropped root.
+          const status = await exec("cat", "/proc/1/status");
+          const uid = /^Uid:\s+(\d+)/m.exec(status.stdout)?.[1];
+          expect(uid, "the user of redis-server").toBeDefined();
+          expect(uid, "redis-server runs as root").not.toBe("0");
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(kind === "dragonfly")(
+        "runs a BullMQ-style script under its hashtag locks, with its memory from the limit",
+        async () => {
+          const reply = await redisCli(
+            true,
+            "EVAL",
+            BULLMQ_STYLE_SCRIPT,
+            "1",
+            "{myqueue}:wait",
+            "job-1",
+          );
+          expect(reply, "the script's reply").toBe("1");
+          expect(await redisCli(true, "GET", "{myqueue}:id")).toBe("1");
+          // Three quarters of the limit.
+          const maxmemory = Math.floor(spec.memory.defaultMb * 0.75) * 1024 * 1024;
+          expect(await redisCli(true, "CONFIG", "GET", "maxmemory")).toBe(
+            `maxmemory\n${maxmemory}`,
+          );
         },
         TWO_MINUTES,
       );

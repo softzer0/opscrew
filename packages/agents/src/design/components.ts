@@ -5,6 +5,7 @@
  */
 import { canonicalJson, formatMoney, isUserFacingError, listText } from "@opscrew/core";
 import {
+  DRAGONFLY_MIN_VCPUS,
   portainerHostSettingProblem,
   renderPortainerStack,
   renderRuntimeFiles,
@@ -18,6 +19,7 @@ import {
   type PlanService,
   PlanServiceSchema,
   type ProjectFacts,
+  REDIS_PROTOCOL_KINDS,
   type Requirements,
   type SelfHostedServiceKind,
   type ServiceKind,
@@ -81,10 +83,23 @@ const RUNS: Readonly<Partial<Record<ServiceKind, SelfHostedServiceKind>>> = {
   neo4j: "neo4j",
 };
 
-/** A user's choice of another engine for the same clients (FR-1320: Redpanda for Kafka). */
-const ALTERNATIVES: Readonly<Partial<Record<SelfHostedServiceKind, SelfHostedServiceKind>>> = {
-  kafka: "redpanda",
-};
+/** Engines for the same clients (FR-1320: Kafka and Redpanda; FR-1321a: Redis's protocol). */
+const ENGINE_FAMILIES: readonly (readonly SelfHostedServiceKind[])[] = [
+  ["kafka", "redpanda"],
+  REDIS_PROTOCOL_KINDS,
+];
+
+/**
+ * True when a previous plan's service of kind `previous` is kept where design plans `fresh`: the
+ * same kind, or another engine of its family the user switched to in plan.yaml (Redpanda, Redis 8,
+ * Dragonfly). A previous Valkey never is: it is design's default, so design's engine replaces it
+ * once the app needs Redis 8 or its Compose file runs Dragonfly.
+ */
+function keptKind(previous: SelfHostedServiceKind, fresh: SelfHostedServiceKind): boolean {
+  if (previous === fresh) return true;
+  if (previous === "valkey") return false;
+  return ENGINE_FAMILIES.some((family) => family.includes(previous) && family.includes(fresh));
+}
 
 /** Kinds the app may reach where they are hosted now (`externalServices`). */
 const EXTERNAL_KINDS: ReadonlySet<ServiceKind> = new Set([
@@ -128,7 +143,7 @@ export function hostedChoices(facts: ProjectFacts): HostedChoice[] {
     });
   }
   for (const hosted of facts.hostedServices ?? []) {
-    const runs = RUNS[hosted.kind];
+    const runs = hosted.kind === "redis" ? redisEngine(facts).kind : RUNS[hosted.kind];
     if (runs === undefined || hosted.provider === ATLAS) continue;
     const choice = choices.get(hosted.kind) ?? {
       kind: hosted.kind,
@@ -274,7 +289,11 @@ function entry(
 }
 
 /** The services for what the app uses, unless it keeps them where they are hosted. */
-function freshServices(facts: ProjectFacts, kept: (kind: ServiceKind) => boolean): PlanService[] {
+function freshServices(
+  facts: ProjectFacts,
+  kept: (kind: ServiceKind) => boolean,
+  dragonflyOffered: boolean,
+): PlanService[] {
   const used = new Set(facts.services.map((service) => service.kind));
   const services: PlanService[] = [];
   for (const kind of Object.keys(RUNS) as ServiceKind[]) {
@@ -284,8 +303,8 @@ function freshServices(facts: ProjectFacts, kept: (kind: ServiceKind) => boolean
     if (kind === "mysql" && used.has("mariadb")) continue;
     const spec = serviceSpec(runs);
     const variable = detectedVariable(facts, kind);
-    if (runs === "valkey") {
-      services.push(...valkeyServices(facts, variable));
+    if (kind === "redis") {
+      services.push(...redisServices(facts, variable, dragonflyOffered));
     } else if (runs === "mongodb") {
       // Prisma needs transactions, which MongoDB has only in a replica set.
       const replicaSet = facts.services.some(
@@ -319,16 +338,78 @@ function freshServices(facts: ProjectFacts, kept: (kind: ServiceKind) => boolean
   return services;
 }
 
+/** An engine on Redis's protocol for the app, and the sentence that says why (FR-1321a). */
+interface RedisEngine {
+  kind: "valkey" | "redis" | "dragonfly";
+  why: string;
+}
+
+/** The values of Redis's evidence that start with `prefix` (`redis-modules:`), without it. */
+function redisEvidence(facts: ProjectFacts, prefix: string): string[] {
+  const evidence = facts.services.find((s) => s.kind === "redis")?.evidence ?? [];
+  return evidence.filter((e) => e.startsWith(prefix)).map((e) => e.slice(prefix.length));
+}
+
 /**
- * Valkey for an app on Redis (FR-1321): a queue that never evicts and keeps its data on disk when
- * a job library keeps its jobs there, with a separate cache only when the app reads a separate
- * cache address; else a cache.
+ * The engine an app on Redis gets (FR-1321a): Redis 8 for a client that needs Redis's own data
+ * types (`redis-modules:` evidence), else the engine its own Compose file runs (`compose-image:`):
+ * Dragonfly or Redis 8, and Valkey for KeyDB; else Valkey.
  */
-function valkeyServices(facts: ProjectFacts, variable: string | undefined): PlanService[] {
-  const instead = insteadText(facts, "redis");
+function redisEngine(facts: ProjectFacts): RedisEngine {
+  const modules = redisEvidence(facts, "redis-modules:");
+  const compose = new Set(redisEvidence(facts, "compose-image:"));
+  if (modules.length > 0) {
+    return {
+      kind: "redis",
+      why: `${listText(modules)} ${modules.length === 1 ? "needs" : "need"} Redis's own data types (Search, JSON, Time Series or probabilistic structures), which only Redis 8 has together, so Redis 8 runs it.`,
+    };
+  }
+  if (compose.has("dragonfly")) {
+    return {
+      kind: "dragonfly",
+      why: "The app's Compose file runs Dragonfly, so Dragonfly runs it here too.",
+    };
+  }
+  if (compose.has("redis")) {
+    return {
+      kind: "redis",
+      why: "The app's Compose file runs Redis, so Redis 8 runs it here too.",
+    };
+  }
+  if (compose.has("keydb")) {
+    return {
+      kind: "valkey",
+      why: "The app's Compose file runs KeyDB, which has had no release since 2023, so Valkey, which speaks the same protocol, runs instead.",
+    };
+  }
+  return { kind: "valkey", why: "Valkey, Redis's open-source fork, runs it." };
+}
+
+/** True when an app on Redis uses BullMQ, whose scripts need Dragonfly's hashtag locks. */
+function usesBullmq(facts: ProjectFacts): boolean {
+  return facts.services.some((s) => s.evidence.includes("dependency:bullmq"));
+}
+
+/**
+ * The Redis-protocol services for an app on Redis (FR-1321, FR-1321a), on {@link redisEngine}'s
+ * engine: a queue that never evicts and keeps its data on disk when a job library keeps its jobs
+ * there, with a separate cache only when the app reads a separate cache address; else a cache.
+ * Valkey's reason names Dragonfly as the other choice where it is offered.
+ */
+function redisServices(
+  facts: ProjectFacts,
+  variable: string | undefined,
+  dragonflyOffered: boolean,
+): PlanService[] {
+  const engine = redisEngine(facts);
+  const { title } = serviceSpec(engine.kind);
+  const offer =
+    engine.kind === "valkey" && dragonflyOffered
+      ? " Dragonfly is the other choice: set this service's kind to dragonfly in opscrew/plan.yaml."
+      : "";
   if (!queueOnRedis(facts)) {
     return [
-      entry("valkey", `The app uses Redis; Valkey is its open-source fork.${instead}`, {
+      entry(engine.kind, `${usesText(facts, "redis", "Redis")} ${engine.why}${offer}`, {
         options: { mode: "cache" },
         variable,
       }),
@@ -339,16 +420,16 @@ function valkeyServices(facts: ProjectFacts, variable: string | undefined): Plan
   const cache = separateCacheVariable(facts, variable);
   return [
     entry(
-      "valkey",
-      `${jobs} keeps its jobs in Redis, so Valkey, Redis's open-source fork, runs as a queue: it never evicts a job and keeps them on disk.${instead}`,
+      engine.kind,
+      `${jobs} keeps its jobs in Redis, so it runs as a queue: it never evicts a job and keeps them on disk. ${engine.why}${offer}${insteadText(facts, "redis")}`,
       { options: { mode: "queue" }, variable },
     ),
     ...(cache === undefined
       ? []
       : [
           entry(
-            "valkey",
-            `The app reads a separate cache address (${cache}), so the cache gets a Valkey of its own, which drops the least used keys when it is full.`,
+            engine.kind,
+            `The app reads a separate cache address (${cache}), so the cache gets a ${title} of its own, which drops the least used keys when it is full.`,
             { options: { mode: "cache" }, variable: cache },
           ),
         ]),
@@ -363,13 +444,38 @@ interface Notes {
   changed: string[];
 }
 
-/** `memory 768 MB, turned off` for the fields of `after` that differ from `before`. */
+/**
+ * The options of a kept service: the previous plan's, or on a switch to another engine of its
+ * family the mode alone (Redis's protocol) or none, the new engine's defaults filling the rest.
+ */
+function keptOptions(before: PlanService, fresh: PlanService): object {
+  if (before.kind === fresh.kind) return before.options;
+  return "mode" in before.options ? { mode: before.options.mode } : {};
+}
+
+/**
+ * `memory 768 MB, turned off` for the fields of `after` that differ from `before`; options only
+ * between services of one kind (a switched kind is its own edit), without Dragonfly's threads
+ * and hashtag locks, which the plan gets from its server (`optionToPlan`) and the app's libraries.
+ */
 function serviceEdits(before: PlanService, after: PlanService): string[] {
+  const settings = (service: PlanService) => {
+    const {
+      threads: _server,
+      lockOnHashtags: _libraries,
+      ...rest
+    } = service.options as {
+      threads?: number;
+      lockOnHashtags?: boolean;
+    };
+    return canonicalJson(rest);
+  };
+  const options = before.kind === after.kind && settings(before) !== settings(after);
   return [
     ...(before.version !== after.version ? [`version ${after.version}`] : []),
     ...(before.memoryMb !== after.memoryMb ? [`memory ${after.memoryMb} MB`] : []),
     ...(before.enabled !== after.enabled ? [after.enabled ? "turned on" : "turned off"] : []),
-    ...(canonicalJson(before.options) !== canonicalJson(after.options) ? ["its options"] : []),
+    ...(options ? ["its options"] : []),
     ...(before.variable !== after.variable && after.variable !== undefined
       ? [`variable ${after.variable}`]
       : []),
@@ -389,11 +495,7 @@ function keepServices(
 ): PlanService[] {
   if (previous === undefined) return fresh;
   const services = fresh.map((service) => {
-    const before = previous.find(
-      (p) =>
-        p.name === service.name &&
-        (p.kind === service.kind || ALTERNATIVES[service.kind] === p.kind),
-    );
+    const before = previous.find((p) => p.name === service.name && keptKind(p.kind, service.kind));
     if (before === undefined) {
       notes.changed.push(
         `Added the service ${service.name} (${serviceSpec(service.kind).title}). ${service.reason}`,
@@ -407,7 +509,7 @@ function keepServices(
       version: before.version,
       memoryMb: Math.max(before.memoryMb, spec.memory.minimumMb),
       enabled: before.enabled,
-      options: before.kind === service.kind ? before.options : {},
+      options: keptOptions(before, service),
       ...(before.variable === undefined ? {} : { variable: before.variable }),
       ...(before.kind === service.kind
         ? {}
@@ -437,6 +539,75 @@ function keepServices(
     services.push(before);
   }
   return services;
+}
+
+/**
+ * The previous plan's services with a Dragonfly the user chose (where design plans another engine
+ * of Redis's protocol) replaced by design's engine, on a server with fewer vCPUs than Dragonfly
+ * is offered on (FR-1321a), each with a line saying so.
+ */
+function withoutChosenDragonfly(
+  fresh: readonly PlanService[],
+  previous: readonly PlanService[] | undefined,
+  vcpus: number,
+  notes: Notes,
+): PlanService[] | undefined {
+  return previous?.map((before) => {
+    const planned = fresh.find((service) => service.name === before.name);
+    const chosen =
+      before.kind === "dragonfly" &&
+      planned !== undefined &&
+      planned.kind !== "dragonfly" &&
+      "mode" in planned.options;
+    if (!chosen) return before;
+    notes.changed.push(
+      `The service ${before.name} runs ${serviceSpec(planned.kind).title}, not the Dragonfly opscrew/plan.yaml chose: Dragonfly runs only on a server with ${DRAGONFLY_MIN_VCPUS} or more vCPUs, and yours has ${vcpus}.`,
+    );
+    return planned;
+  });
+}
+
+/**
+ * Dragonfly's hashtag locks on its queue for an app on BullMQ (FR-1321a), on a Dragonfly the user
+ * chose too.
+ */
+function withBullmqLocks(services: readonly PlanService[], bullmq: boolean): PlanService[] {
+  return services.map((service) =>
+    service.kind === "dragonfly"
+      ? {
+          ...service,
+          options: {
+            ...service.options,
+            lockOnHashtags: bullmq && service.options.mode === "queue",
+          },
+        }
+      : service,
+  );
+}
+
+/** The warning that each BullMQ queue needs a hashtag of its own, per Dragonfly that locks by them. */
+function hashtagWarnings(services: readonly PlanService[]): string[] {
+  return services.flatMap((service) =>
+    service.kind === "dragonfly" && service.enabled && service.options.lockOnHashtags
+      ? [
+          `Dragonfly (${service.name}) runs with --cluster_mode=emulated --lock_on_hashtags, as BullMQ needs: give each queue's name or prefix its own hashtag, such as {myqueue} (new Queue("{myqueue}") or prefix: "{myqueue}"), or BullMQ's scripts fail. See https://www.dragonflydb.io/docs/integrations/bullmq.`,
+        ]
+      : [],
+  );
+}
+
+/**
+ * For each Dragonfly the app's Compose file runs on the user's server with fewer vCPUs than it is
+ * offered on (FR-1321a: it still runs): it runs one thread there, as Valkey would.
+ */
+function oneThreadWarnings(services: readonly PlanService[], vcpus: number): string[] {
+  return services.flatMap((service) =>
+    service.kind === "dragonfly" && service.enabled
+      ? [
+          `Dragonfly (${service.name}) runs with one thread, because your server has ${vcpus} vCPU and Dragonfly uses one thread per vCPU, so Valkey would do the same job here. It runs because the app's Compose file runs it.`,
+        ]
+      : [],
+  );
 }
 
 /** `name`, or `name-2`, `name-3` … when `taken` has it. */
@@ -751,6 +922,7 @@ const STANDS_FOR: Readonly<Partial<Record<SelfHostedServiceKind, readonly Servic
   postgres: ["postgres", "supabase"],
   mariadb: ["mariadb", "mysql"],
   valkey: ["redis"],
+  dragonfly: ["redis"],
   rabbitmq: ["amqp"],
   redpanda: ["kafka"],
 };
@@ -774,6 +946,8 @@ export function designComponents(input: {
   requirements: Requirements;
   /** The plan being replaced, whose component edits are kept. */
   previous?: DeployPlan | undefined;
+  /** The inspected vCPUs of the user's own server, which decide whether Dragonfly is offered. */
+  vcpus?: number | undefined;
 }): DesignedComponents {
   const { facts, requirements, previous } = input;
   const lines: string[] = [];
@@ -809,10 +983,26 @@ export function designComponents(input: {
           ),
         ]
       : [];
+  // Whether the server has the vCPUs Dragonfly needs: OpsCrew sizes a server it creates for it,
+  // the user's own server has its inspected count, and a Portainer host is not known.
+  const dragonflyFits = portainer
+    ? undefined
+    : requirements.provider !== "own"
+      ? true
+      : input.vcpus === undefined
+        ? undefined
+        : input.vcpus >= DRAGONFLY_MIN_VCPUS;
+  const fresh = [...freshServices(facts, kept, dragonflyFits === true), ...garage];
+  const before =
+    dragonflyFits === false
+      ? withoutChosenDragonfly(fresh, previous?.services, input.vcpus ?? 0, notes)
+      : previous?.services;
   const services = resolveVariables(
-    keepServices([...freshServices(facts, kept), ...garage], previous?.services, notes),
+    withBullmqLocks(keepServices(fresh, before, notes), usesBullmq(facts)),
     lines,
   );
+  warnings.push(...hashtagWarnings(services));
+  if (dragonflyFits === false) warnings.push(...oneThreadWarnings(services, input.vcpus ?? 0));
   const workers = workersFor(
     {
       facts,

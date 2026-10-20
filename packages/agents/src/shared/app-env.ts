@@ -10,6 +10,7 @@ import {
 import {
   type DeployPlan,
   type PlanService,
+  REDIS_PROTOCOL_KINDS,
   type SelfHostedServiceKind,
   serviceOf,
 } from "@opscrew/plan-schema";
@@ -116,11 +117,26 @@ export function fixedProductionValue(name: string): string | undefined {
 /** A service OpsCrew runs next to the app, whose connection URL a variable can hold. */
 export type ServiceUrlKind = "postgres" | "redis";
 
-/** The service OpsCrew runs for each kind of URL: Postgres, and Valkey for Redis. */
-export const URL_SERVICE_KINDS = {
-  postgres: "postgres",
-  redis: "valkey",
-} as const satisfies Record<ServiceUrlKind, SelfHostedServiceKind>;
+/** The services OpsCrew runs for each kind of URL: Postgres, and Valkey, Redis 8 or Dragonfly. */
+const URL_SERVICE_KINDS: Readonly<Record<ServiceUrlKind, readonly SelfHostedServiceKind[]>> = {
+  postgres: ["postgres"],
+  redis: REDIS_PROTOCOL_KINDS,
+};
+
+/**
+ * The running service whose address a {@link serviceUrlKind} variable holds, in a plan or design's
+ * components: Postgres, or for Redis the queue of Valkey, Redis 8 or Dragonfly, else the first of
+ * them that runs.
+ */
+export function urlService(
+  owner: { readonly services: readonly PlanService[] },
+  kind: ServiceUrlKind,
+): PlanService | undefined {
+  const running = owner.services.filter(
+    (s) => s.enabled && URL_SERVICE_KINDS[kind].includes(s.kind),
+  );
+  return running.find((s) => "mode" in s.options && s.options.mode === "queue") ?? running[0];
+}
 
 const POSTGRES_URL_NAME =
   /^(?:DATABASE_URL|DATABASE_URI|SQLALCHEMY_DATABASE_URI|POSTGRES_UR[LI]|DB_UR[LI])$/;
@@ -228,17 +244,6 @@ function serviceAddress(
     secretRef: (name) => secret(service, name),
     variable: probe,
   })[probe] as string;
-}
-
-/** The running service a {@link serviceUrlKind} alias holds the address of: Redis's is the queue's. */
-function aliasService(plan: DeployPlan, kind: ServiceUrlKind): PlanService | undefined {
-  if (kind === "redis") {
-    const queue = plan.services.find(
-      (s) => s.enabled && s.kind === "valkey" && s.options.mode === "queue",
-    );
-    if (queue !== undefined) return queue;
-  }
-  return serviceOf(plan, URL_SERVICE_KINDS[kind]);
 }
 
 /** What an object storage variable holds, from its name. */
@@ -356,7 +361,7 @@ export function serviceFilledNames(plan: DeployPlan): Set<string> {
     if (storage && STORAGE_VARIABLES.has(name)) names.add(name);
     if (variable.source !== "derived") continue;
     const alias = serviceUrlKind(name);
-    if (alias !== undefined && aliasService(plan, alias) !== undefined) names.add(name);
+    if (alias !== undefined && urlService(plan, alias) !== undefined) names.add(name);
     if (storage && storageVariableKind(name) !== undefined) names.add(name);
     if (sqliteVariableValue(name, plan) !== undefined) names.add(name);
   }
@@ -527,7 +532,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     const derived = variable.source === "derived";
     const hostList = derived ? hostListKind(variable.name) : undefined;
     const alias = derived ? serviceUrlKind(variable.name) : undefined;
-    const aliased = alias === undefined ? undefined : aliasService(plan, alias);
+    const aliased = alias === undefined ? undefined : urlService(plan, alias);
     const serviceUrl =
       aliased === undefined
         ? derived

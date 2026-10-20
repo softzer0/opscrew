@@ -21,6 +21,8 @@ import type { ServiceContext } from "./types";
 const PART_ONE_KINDS: SelfHostedServiceKind[] = [
   "postgres",
   "valkey",
+  "redis",
+  "dragonfly",
   "mysql",
   "mariadb",
   "mongodb",
@@ -96,6 +98,8 @@ describe("the catalog", () => {
     ).toEqual({
       postgres: [512, 256, 1024],
       valkey: [128, 64, 512],
+      redis: [128, 64, 512],
+      dragonfly: [512, 384, 2048],
       mysql: [512, 384, 1024],
       mariadb: [384, 256, 1024],
       mongodb: [512, 384, 1024],
@@ -121,6 +125,8 @@ describe("the catalog", () => {
     ).toEqual({
       postgres: ["PostgreSQL", true],
       valkey: ["BSD-3-Clause", true],
+      redis: ["RSALv2 OR SSPL-1.0 OR AGPL-3.0-only", false],
+      dragonfly: ["BSL-1.1", false],
       mysql: ["GPL-2.0", false],
       mariadb: ["GPL-2.0", false],
       mongodb: ["SSPL-1.0", false],
@@ -152,6 +158,8 @@ describe("the catalog", () => {
     expect(Object.fromEntries(SERVICE_SPECS.map((spec) => [spec.kind, spec.auth]))).toEqual({
       postgres: "password",
       valkey: "internal-only",
+      redis: "password",
+      dragonfly: "password",
       mysql: "password",
       mariadb: "password",
       mongodb: "password",
@@ -181,7 +189,7 @@ describe("the catalog", () => {
       [
         ...[...PART_ONE_KINDS, ...PART_TWO_KINDS]
           .filter((kind) => kind !== "mongodb")
-          .map((kind) => ({ kind })),
+          .map((kind) => ({ kind, name: kind })),
         { kind: "mongodb", options: { replicaSet: true } },
       ],
       { storage: GARAGE_STORAGE },
@@ -226,6 +234,10 @@ describe("the app's variables", () => {
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:9092",
     });
     expect(vars("valkey")).toEqual({ REDIS_URL: "redis://cache:6379" });
+    expect(vars("redis")).toEqual({ REDIS_URL: "redis://:<password>@cache:6379" });
+    expect(vars("dragonfly", { options: { mode: "queue" } })).toEqual({
+      REDIS_URL: "redis://:<password>@queue:6379",
+    });
     expect(vars("garage")).toEqual({
       AWS_ACCESS_KEY_ID: "<key-id>",
       AWS_SECRET_ACCESS_KEY: "<secret-key>",
@@ -282,6 +294,13 @@ describe("the app's variables", () => {
     expect(valkey.appVariables(ctx(plan, "queue"))).toEqual({ REDIS_URL: "redis://queue:6379" });
     expect(valkey.appVariables(ctx(plan, "cache", "CACHE_URL"))).toEqual({
       CACHE_URL: "redis://cache:6379",
+    });
+    const dragonfly = withServices([
+      { kind: "dragonfly", options: { mode: "queue" } },
+      { kind: "dragonfly", options: { mode: "cache" } },
+    ]);
+    expect(serviceSpec("dragonfly").appVariables(ctx(dragonfly, "cache", "CACHE_URL"))).toEqual({
+      CACHE_URL: "redis://:<password>@cache:6379",
     });
   });
 });
@@ -405,6 +424,79 @@ describe("the services' settings", () => {
       "--maxmemory-policy",
       "allkeys-lru",
     ]);
+  });
+
+  it("Redis 8: Valkey's modes behind its password, through the image's own entrypoint", () => {
+    const redis = serviceSpec("redis");
+    const queue = only("redis", { options: { mode: "queue" }, memoryMb: 128 });
+    // The password goes into a file redis-server reads, never onto its command line; the
+    // entrypoint loads the modules and drops root only for a command that is redis-server.
+    const auth =
+      "umask 077 && printf 'requirepass %s\\n' \"$REDIS_PASSWORD\" > /tmp/opscrew-auth.conf && chown redis:redis /tmp/opscrew-auth.conf && exec docker-entrypoint.sh redis-server /tmp/opscrew-auth.conf";
+    expect(redis.command?.(queue)).toEqual([
+      "sh",
+      "-c",
+      `${auth} --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction`,
+    ]);
+    expect(redis.command?.(only("redis", { memoryMb: 256 }))?.[2]).toBe(
+      `${auth} --save '' --appendonly no --maxmemory 192mb --maxmemory-policy allkeys-lru`,
+    );
+    expect(redis.environment(queue)).toEqual({ REDIS_PASSWORD: "<password>" });
+    expect(redis.secrets).toEqual([{ name: "password", format: "hex32" }]);
+    // redis-cli answers NOAUTH with exit code 0, so the check reads the reply.
+    expect(redis.healthcheck.test).toEqual([
+      "CMD-SHELL",
+      'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG',
+    ]);
+    expect(redis.dataDir).toBe("/data");
+  });
+
+  it("Dragonfly: its threads and memory from its limit, snapshots in queue mode, BullMQ's locks", () => {
+    const dragonfly = serviceSpec("dragonfly");
+    const command = (memoryMb: number, options: object) =>
+      dragonfly.command?.(only("dragonfly", { memoryMb, options }));
+    // Three quarters of the limit, and a thread for each 256 MB of it (at least one); no HTTP
+    // console on its port.
+    expect(command(512, { mode: "queue" })).toEqual([
+      "dragonfly",
+      "--logtostderr",
+      "--proactor_threads=1",
+      "--maxmemory=384mb",
+      "--primary_port_http_enabled=false",
+      "--dbfilename=dump",
+      "--snapshot_cron=* * * * *",
+    ]);
+    expect(command(384, { mode: "cache" })).toEqual([
+      "dragonfly",
+      "--logtostderr",
+      "--proactor_threads=1",
+      "--maxmemory=288mb",
+      "--primary_port_http_enabled=false",
+      "--cache_mode=true",
+      "--dbfilename=",
+    ]);
+    // At most the server's vCPUs, and 2 when design does not know them.
+    const threads = (memoryMb: number, vcpus?: number) =>
+      command(memoryMb, { mode: "cache", ...(vcpus === undefined ? {} : { threads: vcpus }) })?.[2];
+    expect(command(2048, { mode: "cache", threads: 8 })?.slice(2, 4)).toEqual([
+      "--proactor_threads=6",
+      "--maxmemory=1536mb",
+    ]);
+    expect(threads(2048, 4)).toBe("--proactor_threads=4");
+    expect(threads(2048)).toBe("--proactor_threads=2");
+    expect(threads(512, 4)).toBe("--proactor_threads=1");
+    expect(command(512, { mode: "queue", lockOnHashtags: true })?.slice(-2)).toEqual([
+      "--cluster_mode=emulated",
+      "--lock_on_hashtags",
+    ]);
+    // Its smallest limit holds the 256 MB a thread needs with a quarter to spare.
+    expect(Math.floor(dragonfly.memory.minimumMb * 0.75)).toBeGreaterThanOrEqual(256);
+    expect(dragonfly.environment(only("dragonfly"))).toEqual({ DFLY_requirepass: "<password>" });
+    expect(dragonfly.healthcheck.test).toEqual([
+      "CMD-SHELL",
+      'REDISCLI_AUTH="$DFLY_requirepass" redis-cli ping | grep -q PONG',
+    ]);
+    expect(dragonfly.dataDir).toBe("/data");
   });
 
   it("Kafka: one KRaft node, with the heap and retention from the plan, in a named volume", () => {

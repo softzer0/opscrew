@@ -99,8 +99,8 @@ export type ServiceKind = z.infer<typeof ServiceKindSchema>;
 
 /**
  * Backing services OpsCrew runs as containers next to the app (`plan.services[].kind`), one entry
- * per kind in the service catalog: Valkey for an app on Redis, RabbitMQ for AMQP, Garage for
- * object storage on a server the user owns.
+ * per kind in the service catalog: Valkey for an app on Redis (or Redis 8 or Dragonfly), RabbitMQ
+ * for AMQP, Garage for object storage.
  */
 export const SelfHostedServiceKindSchema = z.enum([
   "postgres",
@@ -108,6 +108,8 @@ export const SelfHostedServiceKindSchema = z.enum([
   "mariadb",
   "mongodb",
   "valkey",
+  "redis",
+  "dragonfly",
   "rabbitmq",
   "nats",
   "kafka",

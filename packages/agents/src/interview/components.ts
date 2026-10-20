@@ -268,9 +268,10 @@ function hostedQuestion(
   addition: string | undefined,
 ): ComponentQuestion {
   const spec = serviceSpec(choice.runs);
-  // Valkey runs for an app on Redis.
+  // Valkey runs for an app on Redis, unless its client needs Redis 8 or its Compose file runs
+  // Dragonfly.
   const title = choice.kind === "redis" ? "Redis" : spec.title;
-  const instead = choice.kind === "redis" ? "Valkey, Redis's open-source fork," : spec.title;
+  const instead = choice.runs === "valkey" ? "Valkey, Redis's open-source fork," : spec.title;
   const providers = listText(choice.providers);
   const adds = `Running ${spec.title} on your server adds a container with ${spec.memory.defaultMb} MB of memory${addition ?? ""}.`;
   const after = `${adds} OpsCrew cannot see what ${providers} charges you, so it shows no difference.`;

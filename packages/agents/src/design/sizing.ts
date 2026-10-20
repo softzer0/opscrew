@@ -1,6 +1,6 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { listText, plural } from "@opscrew/core";
-import { CONNECTOR_MEMORY_MB, serviceSpec } from "@opscrew/iac-templates";
+import { CONNECTOR_MEMORY_MB, DRAGONFLY_MIN_VCPUS, serviceSpec } from "@opscrew/iac-templates";
 import type {
   PlanService,
   ProjectFacts,
@@ -231,7 +231,8 @@ export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
  * Minimum server size for the app and what runs next to it (`components`, by default designed
  * from the facts and requirements alone): the plan.md sizing table by expected users (more with
  * Postgres and Redis), and at least the containers' memory limits plus OpsCrew's edge (128 MB) and
- * the system's reserve (384 MB) (FR-1325), and at least the smallest server of each service.
+ * the system's reserve (384 MB) (FR-1325), and at least the smallest server of each service; with
+ * Dragonfly, at least 2 vCPUs.
  */
 export function sizeFor(
   facts: ProjectFacts,
@@ -240,7 +241,11 @@ export function sizeFor(
 ): Sizing {
   const { services } = components;
   const postgres = serviceOf(components, "postgres") !== undefined;
-  const redis = serviceOf(components, "valkey") !== undefined;
+  const dragonfly = serviceOf(components, "dragonfly") !== undefined;
+  const redis =
+    dragonfly ||
+    serviceOf(components, "valkey") !== undefined ||
+    serviceOf(components, "redis") !== undefined;
 
   const users = requirements.expectedMonthlyUsers;
   let [vcpus, memoryGb] = APP_SIZE[users];
@@ -253,6 +258,8 @@ export function sizeFor(
     diskGb += POSTGRES_DISK_GB;
   }
   if (redis) memoryGb += REDIS_MEMORY_GB;
+  // Dragonfly is offered on 2 vCPUs or more (FR-1321a).
+  if (dragonfly) vcpus = Math.max(vcpus, DRAGONFLY_MIN_VCPUS);
   const limitsMb = appMemoryMb(components);
   const smallestServerMb = Math.max(
     0,

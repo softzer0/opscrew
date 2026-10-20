@@ -1,6 +1,12 @@
-import { type DeployPlan, DeployPlanSchema, type SelfHostedServiceKind } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  REDIS_PROTOCOL_KINDS,
+  type SelfHostedServiceKind,
+} from "@opscrew/plan-schema";
 import { testPlan, type TestPlanOptions } from "../../__fixtures__/plans";
 import { serviceSpec } from "../index";
+
 
 /** A service entry for {@link withServices}: its kind and any plan fields to set. */
 export type ServiceEntry = { kind: SelfHostedServiceKind } & Record<string, unknown>;
@@ -24,7 +30,7 @@ export function withServices(
       return {
         version: spec.defaultVersion,
         memoryMb: spec.memory.defaultMb,
-        options: service.kind === "valkey" ? { mode: "cache" } : {},
+        options: (REDIS_PROTOCOL_KINDS as readonly string[]).includes(service.kind) ? { mode: "cache" } : {},
         reason: "The app uses it.",
         licence: spec.licence.id,
         ...service,

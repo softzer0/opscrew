@@ -115,15 +115,36 @@ function serviceEntry<K extends z.ZodType, O extends z.ZodType>(kind: K, options
   });
 }
 
+/** The engines on Redis's protocol, which take the same modes (`options.mode`). */
+export const REDIS_PROTOCOL_KINDS = ["valkey", "redis", "dragonfly"] as const;
+
 /** Kinds with options of their own; every other kind has none. */
-const KINDS_WITH_OPTIONS = ["valkey", "mongodb", "kafka"] as const;
+const KINDS_WITH_OPTIONS = [...REDIS_PROTOCOL_KINDS, "mongodb", "kafka"] as const;
+
+/**
+ * The mode of an engine on the Redis protocol. `cache`: evicts the least recently used keys and
+ * keeps nothing on disk. `queue`: never evicts, and keeps its data on disk.
+ */
+const RedisModeSchema = z.enum(["cache", "queue"]);
 
 /** A service entry as written, its name perhaps left out. */
 const ServiceEntrySchema = z.discriminatedUnion("kind", [
+  serviceEntry(z.enum(["valkey", "redis"]), z.strictObject({ mode: RedisModeSchema })),
   serviceEntry(
-    z.literal("valkey"),
-    // `cache`: evicts the least recently used keys, no persistence. `queue`: never evicts, AOF.
-    z.strictObject({ mode: z.enum(["cache", "queue"]) }),
+    z.literal("dragonfly"),
+    z.strictObject({
+      mode: RedisModeSchema,
+      /**
+       * Locks by `{hashtag}` instead of by declared key (`--cluster_mode=emulated
+       * --lock_on_hashtags`), which BullMQ's scripts need; design sets it for an app on BullMQ.
+       */
+      lockOnHashtags: z.boolean().default(false),
+      /**
+       * The most threads it runs: the server's vCPUs, which design sets when it writes the plan
+       * (none in a Portainer, whose host it does not know: then 2). Its memory caps them too.
+       */
+      threads: z.int().min(1).max(256).optional(),
+    }),
   ),
   serviceEntry(
     z.literal("mongodb"),
@@ -146,13 +167,12 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
 ]);
 
 /**
- * A service's name when the plan gives none: `db` for Postgres, `cache` or `queue` for Valkey (by
- * its mode), else its kind.
+ * A service's name when the plan gives none: `db` for Postgres, `cache` or `queue` for Valkey,
+ * Redis 8 and Dragonfly (by its mode), else its kind.
  */
 function defaultServiceName(service: z.output<typeof ServiceEntrySchema>): string {
   if (service.kind === "postgres") return "db";
-  if (service.kind === "valkey") return service.options.mode;
-  return service.kind;
+  return "mode" in service.options ? service.options.mode : service.kind;
 }
 
 /** A backing service OpsCrew runs as a container next to the app, with its name filled in. */

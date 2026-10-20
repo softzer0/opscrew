@@ -105,6 +105,8 @@ describe("types", () => {
       "mariadb",
       "mongodb",
       "valkey",
+      "redis",
+      "dragonfly",
       "rabbitmq",
       "nats",
       "kafka",

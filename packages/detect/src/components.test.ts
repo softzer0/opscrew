@@ -1028,3 +1028,72 @@ describe("review fixes", () => {
     expect(facts.sqlite).toEqual({ paths: [path], dir: "data" });
   });
 });
+
+describe("the Redis-protocol engine an app needs", () => {
+  const redis = (facts: ProjectFacts) =>
+    facts.services.find((service) => service.kind === "redis")?.evidence;
+  const ioredis = manifest("npm", "ioredis");
+
+  it.each([
+    ["redis:8-alpine", "redis"],
+    ["bitnami/redis:7.4", "redis"],
+    ["redis/redis-stack-server:7.4.0-v1", "redis"],
+    ["docker.dragonflydb.io/dragonflydb/dragonfly:v1.30.0", "dragonfly"],
+    ["dragonflydb/dragonfly", "dragonfly"],
+    ["eqalpha/keydb", "keydb"],
+  ])("names the engine the app's Compose file runs (%s)", async (image, engine) => {
+    const facts = await detect({
+      ...ioredis,
+      "docker-compose.yml": `services:\n  cache:\n    image: ${image}\n`,
+    });
+    expect(redis(facts)).toEqual([`compose-image:${engine}`, "dependency:ioredis"]);
+  });
+
+  it("names no engine for an app that does not use Redis", async () => {
+    const facts = await detect({
+      ...manifest("npm", "pg"),
+      "compose.yaml": "services:\n  kv:\n    image: dragonflydb/dragonfly\n",
+    });
+    expect(redis(facts)).toBeUndefined();
+  });
+
+  it.each([
+    ["npm", "redis-om"],
+    ["npm", "@redis/search"],
+    ["npm", "@redis/json"],
+    ["npm", "@redis/time-series"],
+    ["npm", "@redis/bloom"],
+    ["pypi", "redis-om"],
+    ["nuget", "NRedisStack"],
+  ] as const)("sees a %s client that needs Redis's own data types: %s", async (ecosystem, name) => {
+    const facts = await detect(manifest(ecosystem, name));
+    expect(redis(facts)).toEqual([`dependency:${name}`, `redis-modules:${name}`]);
+  });
+
+  it.each([
+    ['index = r.ft("idx:docs")\n', true],
+    ['r.json().set("doc:1", "$", doc)\n', true],
+    ['r.ts().add("temp", "*", 21.5)\n', true],
+    ['data = requests.get(url).json().get("items")\n', false],
+    ["r.set('a', 1)\n", false],
+  ])("counts redis-py only when the code calls its modules: %s", async (code, needs) => {
+    const facts = await detect({
+      "requirements.txt": "redis==5.0\nrequests==2.32\n",
+      "app/main.py": `import redis\nr = redis.Redis()\n${code}`,
+      "tests/test_x.py": 'r.ft("idx")\n',
+    });
+    expect(redis(facts)?.includes("redis-modules:redis")).toBe(needs);
+  });
+
+  it("counts Jedis only when the code calls its modules", async () => {
+    const jedis = manifest("maven", "redis.clients:jedis");
+    const source = (call: string) => ({
+      ...jedis,
+      "src/main/java/app/Search.java": `class Search { void run() { ${call} } }\n`,
+    });
+    const search = await detect(source('jedis.ftCreate("idx", options, schema);'));
+    expect(redis(search)).toContain("redis-modules:redis.clients:jedis");
+    const plain = await detect(source('jedis.set("a", "1");'));
+    expect(redis(plain)).toEqual(["dependency:redis.clients:jedis"]);
+  });
+});

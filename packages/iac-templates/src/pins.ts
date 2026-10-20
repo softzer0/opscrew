@@ -112,6 +112,15 @@ export const IMAGES = {
   garage: {
     ref: "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
   },
+  // Next to Valkey (2026-10-20, research.md R9). Redis 8's image loads Search, JSON, Time Series
+  // and Bloom (the engines check runs MODULE LIST); Dragonfly's releases are on its own
+  // registry only (Docker Hub has no v2 tags).
+  redis: {
+    ref: "redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0",
+  },
+  dragonfly: {
+    ref: "docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2@sha256:061f00b201b58e12f974e4e96c761a881ee1c05e9d8ee967466a604b7299753b",
+  },
   // The 013 search and analytics engines (2026-10-19, research.md R5): each one's current
   // release, or its LTS line.
   opensearch: {

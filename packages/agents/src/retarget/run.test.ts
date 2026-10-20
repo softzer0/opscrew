@@ -1150,6 +1150,39 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(await move(h)).toBeUndefined();
   });
 
+  it("refuses before any change when the app runs Redis 8 or Dragonfly (FR-1321a)", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    const redis = { version: "8", memoryMb: 128, reason: "redis-om", licence: "RSALv2" };
+    await writeArtifact(
+      "plan",
+      h.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        services: [
+          ...plan.services,
+          { ...redis, kind: "redis", options: { mode: "cache" } },
+          {
+            kind: "dragonfly",
+            version: "2",
+            memoryMb: 512,
+            options: { mode: "queue" },
+            reason: "BullMQ",
+            licence: "BSL-1.1",
+          },
+        ],
+      }),
+    );
+    const before = h.events.length;
+    const error = await caught(run(h));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "A move copies the PostgreSQL database to the new server, but not yet the data of cache (Redis) and queue (Dragonfly), so OpsCrew did not start it. Nothing was changed.",
+    );
+    expect(h.events.slice(before)).toEqual([]);
+    expect(await move(h)).toBeUndefined();
+  });
+
   it("says in its summary that jobs waiting in a Valkey queue are not moved", async () => {
     const h = await moveHarness();
     const plan = await readArtifact("plan", h.paths.files.plan);
