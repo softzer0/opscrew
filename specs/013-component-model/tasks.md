@@ -576,6 +576,15 @@ Each wave is merged, gated and pushed before the next starts.
 
 ## End-of-feature simplify pass (after T1315)
 
+- [ ] T1318 The end-of-feature simplify pass: the list below, plus duplication across 013's changes
+  - Owns: the files each item names (+ tests and snapshots), and any 013 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
+  - Accept:
+    - **The four items above**, all but the 014 one. Garage on servers uses its own `--default-bucket` / `--default-access-key`, with the setup steps it no longer needs removed. Check it locally in Docker (an own-server render: key and bucket work on the first and second `up`).
+    - **A duplication sweep over `git diff ef476e6..HEAD`** (013's whole change): repeated helpers, constants written twice, near-identical functions across agents, iac-templates, detect, CLI and MCP. Merge them where it makes the code smaller and no less clear. List what was merged, and what was left and why.
+    - **No behaviour change:** the snapshots move only where an item changes output on purpose.
+  - Verify: `pnpm check`-equivalent (`pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`), plus the Garage Docker check
+  - Effort: high
+
 - Garage on servers: replace its three init steps with the image's own `--default-bucket` / `--default-access-key` flags, as Portainer stacks already do (T1310).
 - The services' address through a fake `OPSCREW_SERVICE_ADDRESS` variable (`shared/app-env.ts` `serviceAddress`): a catalog `address(ctx)` instead (T1307's review).
 - Cron's memory limit equals the app's `memoryMb`, so sizing counts it twice: a cron with only route jobs needs a small fixed limit (supercronic and the probe), command jobs keep the app's (T1312).
