@@ -1,6 +1,6 @@
 import { formatMoney, listText } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { enabledServices, serviceSpec } from "../catalog";
+import { dataDirs, enabledServices, serviceSpec } from "../catalog";
 import { appDir } from "../edge";
 import { storageRootDir } from "../infra/storage";
 import { portainerStackName } from "../portainer-target/stack";
@@ -25,8 +25,8 @@ function projectOf(plan: DeployPlan): string {
 function dataPlace(plan: DeployPlan, service: DeployPlan["services"][number]): string {
   const spec = serviceSpec(service.kind);
   if (spec.namedVolume === true || inPortainer(plan)) {
-    const dirs = typeof spec.dataDir === "string" ? ["data"] : Object.keys(spec.dataDir);
-    return `the Docker volume${dirs.length > 1 ? "s" : ""} ${listText(dirs.map((dir) => `\`${projectOf(plan)}_${service.name}_${dir}\``))}`;
+    const dirs = dataDirs(spec);
+    return `the Docker volume${dirs.length > 1 ? "s" : ""} ${listText(dirs.map(([name]) => `\`${projectOf(plan)}_${service.name}_${name}\``))}`;
   }
   return `\`/srv/data/${plan.app.name}/${service.name}\``;
 }

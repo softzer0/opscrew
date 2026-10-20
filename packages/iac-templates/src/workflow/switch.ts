@@ -122,7 +122,7 @@ function serviceInit(steps: readonly ServiceInitStep[], log: string): string[] {
 }
 
 /** The Compose services of the enabled workers, and `cron` when a cron job is enabled. */
-function processServices(plan: DeployPlan): string[] {
+export function processServices(plan: DeployPlan): string[] {
   return [
     ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
     ...(hasCronJobs(plan) ? ["cron"] : []),

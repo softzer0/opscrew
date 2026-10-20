@@ -4,28 +4,16 @@
  */
 import { isRecord, listText } from "@opscrew/core";
 import type { ProjectFacts } from "@opscrew/plan-schema";
-import { type Dependency, type DependencyEcosystem, parseJson, type ReadText } from "./manifests";
+import { type DependencyEcosystem, parseJson } from "./manifests";
 import { basenameRel, isWithin, joinRel, relativeTo, sortStrings } from "./paths";
 import { byDepth, inFolder } from "./release/context";
-import { isAppCodeFile, pythonModule, type SourceSignals } from "./sources";
+import { type AppSources, isAppCodeFile, pythonModule } from "./sources";
 
 type Worker = NonNullable<ProjectFacts["workers"]>[number];
 type CronJob = NonNullable<ProjectFacts["cronJobs"]>[number];
 
 /** What worker detection reads about the app. */
-export interface ProcessContext {
-  /** Repo-relative folder of the app; commands run there. */
-  appDir: string;
-  /** The files in scope (repo-relative). */
-  files: readonly string[];
-  read: ReadText;
-  signals: ReadonlyMap<string, SourceSignals>;
-  /** Django settings files and their text. */
-  settingsTexts: ReadonlyMap<string, string>;
-  /** Runtime dependencies of the app's units. */
-  dependencies: readonly Dependency[];
-  /** Names of the app's frameworks (`laravel`, `django`). */
-  frameworks: ReadonlySet<string>;
+export interface ProcessContext extends AppSources {
   procfile: string | undefined;
   /** The variable the app reads Redis's URL from, when one is found. */
   redisVariable: string | undefined;

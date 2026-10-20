@@ -29,6 +29,7 @@ export {
   sqliteFolder,
   supercronicArch,
 } from "./shared";
+export { processServices } from "./switch";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with

@@ -7,6 +7,7 @@ import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
 import {
   checkServiceVersion,
+  dataDirs,
   enabledServices,
   hostSysctl,
   renderContext,
@@ -62,9 +63,7 @@ function dataMounts(
   target: ComponentTarget,
 ): { mounts: string[]; volumes: string[] } {
   const single = typeof spec.dataDir === "string";
-  const dirs = Object.entries(
-    typeof spec.dataDir === "string" ? { data: spec.dataDir } : spec.dataDir,
-  );
+  const dirs = dataDirs(spec);
   if (target.kind === "portainer" || spec.namedVolume) {
     const volumes = dirs.map(([name]) => `${service.name}_${name}`);
     return { mounts: dirs.map(([, dir], i) => `${volumes[i]}:${dir}`), volumes };

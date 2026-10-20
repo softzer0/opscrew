@@ -1,11 +1,5 @@
-import { cronMemoryMb } from "@opscrew/iac-templates";
+import { cronMemoryMb, EDGE_MEMORY_MB } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-
-/**
- * Memory OpsCrew's edge takes on a server (research R7, data-model.md "Sizing figures"): Caddy
- * 64 MB, kamal-proxy 32 MB and cloudflared 32 MB.
- */
-export const EDGE_MEMORY_MB = 128;
 
 /** Memory left to the operating system, Docker and the shell on every server. */
 export const SYSTEM_RESERVE_MB = 384;

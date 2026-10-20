@@ -5,31 +5,25 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { ENV_LINE, envFileValue } from "./connections";
 import { isClientExposed } from "./env";
-import type { Dependency, ReadText } from "./manifests";
+import type { Dependency } from "./manifests";
 import { basenameRel, dirnameRel, isWithin, joinRel, relativeTo, uniqueSorted } from "./paths";
 import { cleanPath } from "./release/context";
 import type { DetectedService } from "./services";
 import { prismaProvider } from "./services";
-import { isAppCodeFile, isRuntimeCodeFile, type SourceSignals, SQLITE_URL } from "./sources";
+import {
+  type AppSources,
+  isAppCodeFile,
+  isRuntimeCodeFile,
+  type SourceSignals,
+  SQLITE_URL,
+} from "./sources";
 
 /** What storage detection reads about the app. */
-export interface StorageContext {
-  /** Repo-relative folder of the app; database paths are relative to it. */
-  appDir: string;
-  /** The files in scope (repo-relative). */
-  files: readonly string[];
-  read: ReadText;
-  signals: ReadonlyMap<string, SourceSignals>;
-  /** Django settings files and their text. */
-  settingsTexts: ReadonlyMap<string, string>;
+export interface StorageContext extends AppSources {
   /** The texts of the committed env files. */
   envTexts: readonly string[];
   /** Laravel's `DB_CONNECTION`, from the committed env files. */
   dbConnection: string | undefined;
-  /** Names of the app's frameworks. */
-  frameworks: ReadonlySet<string>;
-  /** Runtime dependencies of the app's units. */
-  dependencies: readonly Dependency[];
   /** A dependency or config shows a server database: Postgres, MySQL or MariaDB. */
   serverDatabase: boolean;
 }

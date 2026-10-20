@@ -6,6 +6,7 @@
 import { parseAllDocuments } from "yaml";
 import { schemeKind } from "./connections";
 import { type EnvRead, extractEnvReads } from "./env";
+import type { Dependency, ReadText } from "./manifests";
 import { basenameRel } from "./paths";
 
 const SOURCE_EXTENSIONS = new Set([
@@ -132,6 +133,22 @@ export interface SourceSignals {
    * unique. A call whose prefix is not a string literal is skipped.
    */
   configPrefixes: string[];
+}
+
+/** What the detection of the app's processes and storage reads about the app's code. */
+export interface AppSources {
+  /** Repo-relative folder of the app: commands run there, and paths are relative to it. */
+  appDir: string;
+  /** The files in scope (repo-relative). */
+  files: readonly string[];
+  read: ReadText;
+  signals: ReadonlyMap<string, SourceSignals>;
+  /** Django settings files and their text. */
+  settingsTexts: ReadonlyMap<string, string>;
+  /** Runtime dependencies of the app's units. */
+  dependencies: readonly Dependency[];
+  /** Names of the app's frameworks (`laravel`, `django`). */
+  frameworks: ReadonlySet<string>;
 }
 
 const PORT_PATTERNS: RegExp[] = [

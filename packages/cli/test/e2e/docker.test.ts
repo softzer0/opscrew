@@ -104,6 +104,7 @@ import {
   PORTAINER_VERSION_PLACEHOLDER,
   portainerSecretVariables,
   portainerStackEnvKeys,
+  processServices,
   type RenderContext,
   renderCompose,
   renderPortainerStack,
@@ -826,10 +827,7 @@ describe.skipIf(SKIP !== undefined)(
           "--no-deps",
           "app",
         ]);
-        const processes = [
-          ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
-          ...(plan.processes.cron.some((job) => job.enabled) ? ["cron"] : []),
-        ];
+        const processes = processServices(plan);
         if (processes.length > 0) {
           await composeOk(at.project, `${example}: the workers and cron`, [
             "up",

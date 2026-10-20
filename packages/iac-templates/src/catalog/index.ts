@@ -65,6 +65,11 @@ export function checkServiceVersion(service: PlanService, spec: ServiceSpec): vo
   );
 }
 
+/** A service's data folders in its container by name: `data` for an entry with one folder. */
+export function dataDirs(spec: ServiceSpec): [name: string, dir: string][] {
+  return Object.entries(typeof spec.dataDir === "string" ? { data: spec.dataDir } : spec.dataDir);
+}
+
 /** The plan's services that run, in its order. */
 export function enabledServices(plan: DeployPlan): PlanService[] {
   return plan.services.filter((service) => service.enabled);

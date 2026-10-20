@@ -6,6 +6,7 @@
 import { canonicalJson, formatMoney, isUserFacingError, listText } from "@opscrew/core";
 import {
   DRAGONFLY_MIN_VCPUS,
+  EDGE_MEMORY_MB,
   portainerHostSettingProblem,
   renderPortainerStack,
   renderRuntimeFiles,
@@ -25,7 +26,7 @@ import {
   type ServiceKind,
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
-import { appMemoryLimits, appMemoryMb, EDGE_MEMORY_MB, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryLimits, appMemoryMb, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
 import {

@@ -77,6 +77,7 @@ import {
   withUrlVariables,
 } from "./services";
 import {
+  type AppSources,
   BUILT_IN_HEALTH_FILES,
   builtInHealthEndpoint,
   callsRedisModules,
@@ -632,7 +633,7 @@ export async function detectProjectDetails(
 
   const notes: string[] = [];
   // Processes besides the web one, and the app's storage.
-  const processContext = {
+  const sources: AppSources = {
     appDir,
     files: scopedFiles,
     read,
@@ -640,6 +641,9 @@ export async function detectProjectDetails(
     settingsTexts,
     dependencies: runtimeDependencies,
     frameworks: appFrameworkNames,
+  };
+  const processContext = {
+    ...sources,
     procfile,
     redisVariable: serviceList.find((service) => service.kind === "redis")?.variable,
   };
@@ -648,18 +652,7 @@ export async function detectProjectDetails(
   if (schedulerNote) notes.push(schedulerNote);
   const vercelJson = findIn("vercel.json");
   const cronJobs = vercelCronJobs(vercelJson ? await read(vercelJson) : undefined);
-  const sqlite = await detectSqlite({
-    appDir,
-    files: scopedFiles,
-    read,
-    signals,
-    settingsTexts,
-    envTexts,
-    dbConnection,
-    frameworks: appFrameworkNames,
-    dependencies: runtimeDependencies,
-    serverDatabase,
-  });
+  const sqlite = await detectSqlite({ ...sources, envTexts, dbConnection, serverDatabase });
   const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
   if (appKind !== "static-spa") {
     let start: string | undefined;

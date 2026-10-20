@@ -10,7 +10,7 @@ import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { memoryLimit } from "../runtime/components";
 import { composeLiteral, hardened } from "../runtime/services";
-import { TUNNEL_ORIGIN_PORT, tunnelMode, webFilterMode } from "../tunnel";
+import { CONNECTOR_MEMORY_MB, TUNNEL_ORIGIN_PORT, tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 
 /** The edge's Compose project, and the external network the edge and every app's web service join. */
@@ -38,13 +38,15 @@ export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
 /** Where Caddy sends every app's traffic: kamal-proxy, which routes by hostname to the app's copy. */
 export const EDGE_UPSTREAM = "kamal-proxy:80";
 
-/**
- * The memory limits of the edge's containers, in MB: with 32 MB for each tunnelled app's
- * connector, they make up the edge's 128 MB that design counts on every server (data-model.md
- * "Sizing figures").
- */
+/** The memory limits of the edge's containers, in MB. */
 export const CADDY_MEMORY_MB = 64;
 const KAMAL_PROXY_MEMORY_MB = 32;
+
+/**
+ * The edge's memory that design counts on every server, in MB: Caddy, kamal-proxy and one
+ * tunnelled app's connector, 128 MB (data-model.md "Sizing figures").
+ */
+export const EDGE_MEMORY_MB = CADDY_MEMORY_MB + KAMAL_PROXY_MEMORY_MB + CONNECTOR_MEMORY_MB;
 
 /** The folder of the apps' site files in the Caddy container (the server's `/srv/edge/sites`). */
 const CADDY_SITES = "/etc/caddy/sites";

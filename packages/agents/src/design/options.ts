@@ -6,6 +6,7 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
+import { EDGE_MEMORY_MB } from "@opscrew/iac-templates";
 import {
   type CostEstimate,
   type DesignOption,
@@ -15,7 +16,7 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import { requestedProvider, requestedRegion } from "../providers";
-import { EDGE_MEMORY_MB, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, memoryText } from "./components";
 import {
   convertMoney,

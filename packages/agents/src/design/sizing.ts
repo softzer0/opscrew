@@ -1,6 +1,11 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { listText, plural } from "@opscrew/core";
-import { CONNECTOR_MEMORY_MB, DRAGONFLY_MIN_VCPUS, serviceSpec } from "@opscrew/iac-templates";
+import {
+  CONNECTOR_MEMORY_MB,
+  DRAGONFLY_MIN_VCPUS,
+  EDGE_MEMORY_MB,
+  serviceSpec,
+} from "@opscrew/iac-templates";
 import type {
   PlanService,
   ProjectFacts,
@@ -11,7 +16,7 @@ import type {
 } from "@opscrew/plan-schema";
 import { serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { appMemoryMb, EDGE_MEMORY_MB, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryMb, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, designComponents } from "./components";
 
 /**

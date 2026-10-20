@@ -1,6 +1,6 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { durationText, errorMessage, OpsCrewError, type Redactor } from "@opscrew/core";
-import { appDir, EDGE_DIR } from "@opscrew/iac-templates";
+import { appDir, EDGE_DIR, processServices } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
 
@@ -36,11 +36,7 @@ export interface ServerOpOptions {
 
 /** {@link ServerOpOptions} for `plan`'s app, its text redacted by `redactor`. */
 export function serverOps(plan: DeployPlan, redactor: Pick<Redactor, "redact">): ServerOpOptions {
-  const processes = [
-    ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
-    ...(plan.processes.cron.some((job) => job.enabled) ? ["cron"] : []),
-  ];
-  return { redact: redactor.redact, folder: appDir(plan), processes };
+  return { redact: redactor.redact, folder: appDir(plan), processes: processServices(plan) };
 }
 
 /** Where a service's Compose project is: the app's folder, or the edge's for Caddy. */
