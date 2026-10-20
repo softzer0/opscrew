@@ -510,8 +510,9 @@ export async function componentChecks(
       `${when}: every component runs within its limit, behind the edge, with its data and settings in place`,
     );
   };
-  // The app answers already (live.test.ts checked its health route).
-  await onServer("after the first deploy", await serverNow(exec));
+  // The deploy starts cron only after the web is up, so its first run is due from its own start
+  // (0: no later readiness to wait for). After the reboot, Docker starts everything at once.
+  await onServer("after the first deploy", 0);
 
   const value = `value-${randomBytes(6).toString("hex")}`;
   await writeValue(base, value);
