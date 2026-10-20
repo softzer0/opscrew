@@ -20,7 +20,7 @@ import {
   OpsCrewError,
   systemClock,
 } from "@opscrew/core";
-import { type Money, readArtifact } from "@opscrew/plan-schema";
+import { CloudProviderSchema, type Money, readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import { askTypedName, checkConfirmName, formatRequest, hashListed } from "../approval";
 import type { CliContext } from "../context";
@@ -315,10 +315,10 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
 export function register(program: Command, ctx: CliContext): void {
   program
     .command("retarget")
-    .description("Move the live deployment to the other cloud provider, step by step")
+    .description("Move the live deployment to another cloud provider, step by step")
     .addOption(
       new Option("--to <provider>", "Provider to move to (default: the one in your answers)")
-        .choices(["hetzner", "digitalocean"])
+        .choices(CloudProviderSchema.options)
         .conflicts(["finish", "abort"]),
     )
     .option("--option <id>", "Server option to move to without asking (ids are listed by the run)")

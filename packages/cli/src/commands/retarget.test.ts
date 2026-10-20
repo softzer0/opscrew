@@ -233,7 +233,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     move = await moveProject();
     const ctx = move.context();
     expect(await run(ctx, "retarget", "--help")).toBe(0);
-    expect(ctx.output).toContain("Move the live deployment to the other cloud provider");
+    expect(ctx.output).toContain("Move the live deployment to another cloud provider");
     expect(ctx.output).toContain("opscrew retarget --finish");
     expect(ctx.output).toContain("--allow-downtime");
     expect(ctx.output).toContain("--dns-switched");

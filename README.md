@@ -64,7 +64,7 @@ node packages/cli/dist/opscrew.js --cwd /path/to/your/app init   # then analyze,
 ## After the first deploy
 
 - `npx opscrew destroy` deletes the deployment's infrastructure. It asks you to type the server name first and can take a snapshot.
-- `npx opscrew retarget --to <provider>` moves a live app between Hetzner Cloud and DigitalOcean with its data. It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`.
+- `npx opscrew retarget --to <provider>` moves a live app to another cloud provider with its data (not yet to or from your own server or a Portainer). It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`.
 - No domain yet? `npx opscrew domain buy <domain>` buys one at cost after you confirm the price, through Cloudflare, Porkbun, Namecheap or GoDaddy. Already own one? `npx opscrew domain connect <domain>` moves its DNS to Cloudflare. See [Buying or connecting a domain](docs/guide/domains.md).
 - Several apps under one domain? See [Your domain on Cloudflare, and several apps in one zone](docs/guide/cloudflare.md).
 

@@ -13,7 +13,7 @@ export function portainerTargetNoMove(): OpsCrewError {
 export function ownServerNoMove(): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    "Moving an app to or from a server you already own is not supported; OpsCrew moves apps only between Hetzner Cloud and DigitalOcean.",
+    "Moving an app to or from a server you already own is not supported; OpsCrew moves apps only between cloud providers.",
     {
       hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
     },

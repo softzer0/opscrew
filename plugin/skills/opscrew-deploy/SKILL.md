@@ -322,10 +322,11 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `opscrew_portainer_disable` removes it and always keeps its data (users and settings). Deleting
   that data stays in the terminal: the user runs `npx opscrew portainer disable --delete-data`
   and types the app's name; the tool refuses to do it.
-- **Moving to another provider.** Moving a live app between Hetzner Cloud and DigitalOcean is
-  terminal-only on purpose; there is no tool for it, and you must not try to perform its steps
-  yourself. Tell the user to run `npx opscrew retarget --to <provider>` (`hetzner` or
-  `digitalocean`) in their own terminal. It creates the new server next to the old one and
+- **Moving to another provider.** Moving a live app to another cloud provider is terminal-only
+  on purpose; there is no tool for it, and you must not try to perform its steps yourself. Tell
+  the user to run `npx opscrew retarget --to <provider>` (`npx opscrew retarget --help` lists the
+  providers) in their own terminal. Moving to or from a server they own, or a Portainer, is not
+  supported yet. It creates the new server next to the old one and
   deploys the app there, then copies the database in a short maintenance window (it shows the
   expected downtime first) and switches DNS to the new server. After checking the app, the user
   runs `npx opscrew retarget --finish` to delete the old server (it offers a snapshot and asks
