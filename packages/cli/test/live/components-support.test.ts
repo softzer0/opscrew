@@ -428,6 +428,11 @@ describe("what the server shows", () => {
     // The app answered its health route only later: the first run that can reach it is due then.
     const ready = Date.parse("2026-10-20T10:01:30Z");
     expect(firstCronRun("", started, ready)).toEqual({ due: Date.parse("2026-10-20T10:02:00Z") });
+    // Read a moment after the app answered on the minute: that minute's run counts as due.
+    const justAfter = Date.parse("2026-10-20T10:02:02Z");
+    expect(firstCronRun("", started, justAfter)).toEqual({
+      due: Date.parse("2026-10-20T10:02:00Z"),
+    });
   });
 
   it("lifts the storage root's prevent_destroy for the cleanup, and refuses a root without it", () => {

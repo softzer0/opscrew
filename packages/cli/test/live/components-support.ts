@@ -535,12 +535,18 @@ export function statusProblems(output: string, plan: DeployPlan): string[] {
  * example's job runs each minute) and when supercronic logged the first run that succeeded
  * (`undefined` before one did), in ms.
  */
+/** How late the test may read that the app answered: its health checks poll every few seconds. */
+const READY_SLACK_MS = 5_000;
+
 export function firstCronRun(
   logs: string,
   startedAt: string,
   appReadyAt: number,
 ): { due: number; ran?: number } {
-  const due = Math.ceil(Math.max(Date.parse(startedAt), appReadyAt) / 60_000) * 60_000;
+  // `appReadyAt` is read just after the health route answered, a few seconds late, so a run on the
+  // minute it answered counts as due then.
+  const ready = appReadyAt - READY_SLACK_MS;
+  const due = Math.ceil(Math.max(Date.parse(startedAt), ready) / 60_000) * 60_000;
   const line = logs.split(/\r?\n/).find((text) => text.includes('msg="job succeeded"'));
   const time = /time="([^"]+)"/.exec(line ?? "")?.[1];
   return time === undefined ? { due } : { due, ran: Date.parse(time) };
