@@ -465,7 +465,11 @@ Effort`.
     - **Part 2:** Meilisearch and ClickHouse.
     - **Leftovers:** buckets included. The cleanup removes the `storage` root, and the user's test keys stay theirs.
     - **The coverage page** gets the new rows.
-    - **What the local Docker pass couldn't show** (T1313 ran its examples with named volumes, inline configs and the app off the edge network), checked on Hetzner after the first deploy and after the reboot:      - each `/srv/data/<app>/<service>` folder is non-empty and owned by the service's user, and no service restarted;      - each mounted settings file has the mode and owner its service needs, and is honoured (e.g. MySQL's `@@innodb_buffer_pool_size` matches OpsCrew's `my.cnf`);      - the `sysctl` file is in the host's `/etc/sysctl.d`, and the setting holds after the reboot;      - Caddy reaches each app through the shared edge, also with two apps on one own server, and the app publishes no port.
+    - **What the local Docker pass couldn't show** (T1313 ran its examples with named volumes, inline configs and the app off the edge network), checked on Hetzner after the first deploy and after the reboot:
+      - each `/srv/data/<app>/<service>` folder is non-empty and owned by the service's user, and no service restarted;
+      - each mounted settings file has the mode and owner its service needs, and is honoured (e.g. MySQL's `@@innodb_buffer_pool_size` matches OpsCrew's `my.cnf`);
+      - the `sysctl` file is in the host's `/etc/sysctl.d`, and the setting holds after the reboot;
+      - Caddy reaches each app through the shared edge, also with two apps on one own server, and the app publishes no port.
     - **The layout from T1308c:**
       - the live tests' `/srv/app` paths become `/srv/apps/<app>`, in `builder-checks.ts`, `live.test.ts`, `own-server.test.ts` and `support.ts`;
       - `secondAppSkip` in `harness.ts` goes, now that two apps may share a server;
