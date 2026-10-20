@@ -519,7 +519,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/detect --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew --concurrency=2`, the gated engines check for both, and `pnpm lint`
   - Effort: high
 
-- [ ] T1315 Live runs (lead): the passes in `docs/e2e.md`; results in `docs/e2e.md` and `docs/e2e-coverage.md`
+- [X] T1315 Live runs (lead): the passes in `docs/e2e.md`; results in `docs/e2e.md` and `docs/e2e-coverage.md`
   - [X] T1315a Fixes from the live runs, in `packages/core/src/exec.ts`, `packages/iac-engine/src/engine.ts`, `packages/agents/src/drift/{schema,infra}.ts`, `packages/iac-templates/src/infra/storage.ts` (+ tests and snapshots)
     - Why: on a fresh Hetzner bucket, drift reported changes nobody made (reproduced by hand, 2026-10-20).
     - Accept:
