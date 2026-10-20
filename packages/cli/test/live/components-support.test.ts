@@ -258,6 +258,12 @@ describe("what the server shows", () => {
     expect(
       restartProblems(containers, [{ project: "shop", services: ["app", "worker", "cron"] }]),
     ).toEqual(["shop-worker-1 restarted 2 time(s)", "shop/cron has no running container"]);
+    // After a reboot the app's own processes may have restarted until their services answered.
+    expect(
+      restartProblems(containers, [
+        { project: "shop", services: ["app", "worker", "cron"], mayRestart: ["worker"] },
+      ]),
+    ).toEqual(["shop/cron has no running container"]);
   });
 
   it("lists the plan's components by their Compose services", () => {
@@ -332,24 +338,32 @@ describe("what the server shows", () => {
     );
   });
 
-  it("wants each data folder non-empty and its service's user's", () => {
+  it("wants each data folder its service's user's, and data in one of each service's folders", () => {
     const mounts = [
       { service: "mysql", path: "mysql" },
       { service: "mongodb", path: "mongodb/db" },
       { service: "mongodb", path: "mongodb/configdb" },
+      { service: "nats", path: "nats" },
       { service: "garage", path: "garage" },
     ];
     const folders = fieldsByKey(
-      ["mysql 999:999 12", "mongodb/db 0:0 3", "mongodb/configdb 999:999 0", ""].join("\r\n"),
+      [
+        "mysql 999:999 12",
+        "mongodb/db 0:0 3",
+        "mongodb/configdb 999:999 0",
+        "nats 1000:1000 0",
+        "",
+      ].join("\r\n"),
     );
     const owners = new Map([
       ["mysql", "999:999"],
       ["mongodb", "999:999"],
+      ["nats", "1000:1000"],
     ]);
     expect(dataFolderProblems(mounts, folders, owners)).toEqual([
       "/srv/data/…/mongodb/db belongs to 0:0, not to mongodb's user (999)",
-      "/srv/data/…/mongodb/configdb of mongodb is empty",
       "/srv/data/…/garage of garage is missing",
+      "the data folders of nats are empty (nats)",
     ]);
   });
 

@@ -27,6 +27,7 @@ import {
   waitFor,
 } from "./cloud";
 import {
+  appProcesses,
   type ComponentSettings,
   componentServices,
   containersOf,
@@ -51,6 +52,7 @@ import {
   statusProblems,
   storageKeyEnv,
   sysctlProblems,
+  type WantedServices,
 } from "./components-support";
 import { CHANGE_FILE, leakSourcesOf } from "./harness";
 import { leakedLabels } from "./support";
@@ -71,7 +73,7 @@ export async function serverContainers(exec: ServerExec): Promise<ServerContaine
 export function containerProblems(
   containers: readonly ServerContainer[],
   projects: readonly string[],
-  wanted: readonly { project: string; services: readonly string[] }[],
+  wanted: readonly WantedServices[],
 ): string[] {
   const ours = containersOf(containers, projects);
   return [...limitProblems(ours), ...portProblems(ours), ...restartProblems(ours, wanted)];
@@ -89,6 +91,7 @@ export async function serverProblems(
   exec: ServerExec,
   plan: DeployPlan,
   repo: string,
+  afterReboot = false,
 ): Promise<string[]> {
   const app = plan.app.name;
   const containers = await serverContainers(exec);
@@ -96,7 +99,11 @@ export async function serverProblems(
     containers,
     [app, EDGE_PROJECT],
     [
-      { project: app, services: componentServices(plan) },
+      {
+        project: app,
+        services: componentServices(plan),
+        mayRestart: afterReboot ? appProcesses(plan) : [],
+      },
       { project: EDGE_PROJECT, services: EDGE_SERVICES },
     ],
   );
@@ -498,7 +505,7 @@ export async function componentChecks(
       `the components opscrew status shows ${when}`,
     ).toEqual([]);
     expect(
-      await serverProblems(exec, plan, run.repo),
+      await serverProblems(exec, plan, run.repo, when === "after the reboot"),
       `the components on the server ${when}`,
     ).toEqual([]);
     expect(

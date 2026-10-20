@@ -260,24 +260,46 @@ export function portProblems(containers: readonly ServerContainer[]): string[] {
     .map((c) => `${c.name} publishes ${c.ports.join(", ")}`);
 }
 
+/** A project's services that must run, and those of them allowed to have restarted. */
+export interface WantedServices {
+  project: string;
+  services: readonly string[];
+  /**
+   * Services whose restarts are expected: after a reboot Docker starts every container at once,
+   * without Compose's order, so the app's own processes may exit until their services answer.
+   */
+  mayRestart?: readonly string[];
+}
+
 /**
  * The services of each project in `wanted` that do not run as one healthy container each at
- * least: none running, or one that restarted or met its memory limit.
+ * least: none running, or one that met its memory limit or restarted (unless it may).
  */
 export function restartProblems(
   containers: readonly ServerContainer[],
-  wanted: readonly { project: string; services: readonly string[] }[],
+  wanted: readonly WantedServices[],
 ): string[] {
-  return wanted.flatMap(({ project, services }) =>
+  return wanted.flatMap(({ project, services, mayRestart = [] }) =>
     services.flatMap((service) => {
       const own = containers.filter((c) => c.project === project && c.service === service);
       if (!own.some((c) => c.running)) return [`${project}/${service} has no running container`];
       return own.flatMap((c) => [
-        ...(c.restarts > 0 ? [`${c.name} restarted ${c.restarts} time(s)`] : []),
+        ...(c.restarts > 0 && !mayRestart.includes(service)
+          ? [`${c.name} restarted ${c.restarts} time(s)`]
+          : []),
         ...(c.oomKilled ? [`${c.name} was stopped at its memory limit`] : []),
       ]);
     }),
   );
+}
+
+/** The app's own processes in its Compose project: the web, its enabled workers and cron. */
+export function appProcesses(plan: DeployPlan): string[] {
+  return [
+    "app",
+    ...plan.processes.workers.filter((w) => w.enabled).map((w) => w.name),
+    ...(plan.processes.cron.some((job) => job.enabled) ? ["cron"] : []),
+  ];
 }
 
 /** The plan's components that run in the app's Compose project, by their service. */
@@ -381,28 +403,33 @@ export function fieldsByKey(output: string): Map<string, string[]> {
 }
 
 /**
- * What is wrong with the data folders (from {@link dataFoldersCommand}): each must hold something
- * and belong to the user its service runs as (`owners`: service → `<uid>:<gid>` of its main
- * process; the uids are compared).
+ * What is wrong with the data folders (from {@link dataFoldersCommand}):
+ * - each belongs to the user its service runs as (`owners`: service → `<uid>:<gid>` of its main
+ *   process; the uids are compared);
+ * - each service holds something in at least one of its folders. A second folder an image
+ *   declares may stay empty, such as MongoDB's `configdb` outside a config server.
  */
 export function dataFolderProblems(
   mounts: readonly DataMount[],
   folders: ReadonlyMap<string, string[]>,
   owners: ReadonlyMap<string, string>,
 ): string[] {
-  return mounts.flatMap(({ service, path }) => {
-    const [owner, entries] = folders.get(path) ?? [];
+  const perFolder = mounts.flatMap(({ service, path }) => {
+    const [owner] = folders.get(path) ?? [];
     if (owner === undefined) return [`/srv/data/…/${path} of ${service} is missing`];
     const uid = owners.get(service)?.split(":")[0];
-    return [
-      ...(Number(entries) > 0 ? [] : [`/srv/data/…/${path} of ${service} is empty`]),
-      ...(uid !== undefined && owner.split(":")[0] === uid
-        ? []
-        : [
-            `/srv/data/…/${path} belongs to ${owner}, not to ${service}'s user (${uid ?? "unknown"})`,
-          ]),
-    ];
+    return uid !== undefined && owner.split(":")[0] === uid
+      ? []
+      : [`/srv/data/…/${path} belongs to ${owner}, not to ${service}'s user (${uid ?? "unknown"})`];
   });
+  const empty = [...new Set(mounts.map((m) => m.service))].flatMap((service) => {
+    const own = mounts.filter((m) => m.service === service);
+    const holds = own.some(({ path }) => Number(folders.get(path)?.[1]) > 0);
+    return holds || own.every(({ path }) => !folders.has(path))
+      ? []
+      : [`the data folders of ${service} are empty (${own.map((m) => m.path).join(", ")})`];
+  });
+  return [...perFolder, ...empty];
 }
 
 /**
