@@ -555,3 +555,4 @@ Each wave is merged, gated and pushed before the next starts.
 - The services' address through a fake `OPSCREW_SERVICE_ADDRESS` variable (`shared/app-env.ts` `serviceAddress`): a catalog `address(ctx)` instead (T1307's review).
 - Cron's memory limit equals the app's `memoryMb`, so sizing counts it twice: a cron with only route jobs needs a small fixed limit (supercronic and the probe), command jobs keep the app's (T1312).
 - Text: the guide's Celery worker command (`components.md`, `workers-and-cron.md`) gains `--concurrency 2`; the runbook's volume list (`runbook/components.ts`) joins with `listText` instead of " and " (T1313).
+- For 014 (SecOps): Valkey runs `internal-only` with no password, while Redis 8 and Dragonfly have one (T1317). Consider a password for Valkey too, as defence in depth.

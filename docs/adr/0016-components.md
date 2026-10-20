@@ -38,8 +38,16 @@ that several OpsCrew apps may share a server the user owns. No container had a m
   - OpsCrew never creates storage keys. The user creates one in the provider's console with
     OpsCrew's steps; for R2, a token limited to the bucket. It reaches the engine only as
     environment variables, so no key is in infrastructure state;
-  - Garage: a container on an own server or Portainer.
+  - Garage: a container on the app's server. It can be the default on an own server or Portainer;
+    on a cloud server it runs only when the user chooses it (founder, 2026-10-20).
+  - An app's own storage is never replaced unasked. A known S3 host counts as a hosted service,
+    and with no answer OpsCrew plans no bucket.
   - MinIO is not offered: it is archived and its images are gone.
+- **Redis-protocol engines.** Valkey is the default.
+  - Redis 8 runs when the app's client needs Redis's own data types, or when the app's Compose file
+    runs Redis.
+  - Dragonfly runs when the app's Compose file runs it, or as the user's choice on 2 or more vCPUs.
+  - KeyDB is not offered: it has had no release since 2023 (founder, 2026-10-20).
 - **A shared edge per server.**
   - Each app is a Compose project under `/srv/apps/<app>`.
   - A shared `opscrew-edge` project holds Caddy and kamal-proxy. kamal-proxy routes by host, and
