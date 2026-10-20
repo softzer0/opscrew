@@ -555,7 +555,11 @@ export async function componentChecks(
   log("the value written through the app is read back after a reboot");
   await onServer("after the reboot", readyAt);
   const drift = await run.opscrew("drift");
-  expect(drift.exitCode, "opscrew drift after the reboot").toBe(0);
+  expect(
+    drift.exitCode,
+    `opscrew drift after the reboot:
+${drift.output}`,
+  ).toBe(0);
 
   const known = await knownSecrets(run, plan, secrets);
   const problems: string[] = [];
