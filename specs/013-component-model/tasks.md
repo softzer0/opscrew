@@ -591,7 +591,7 @@ Each wave is merged, gated and pushed before the next starts.
 
 ## End-of-feature simplify pass (after T1315)
 
-- [ ] T1318 The end-of-feature simplify pass: the list below, plus duplication across 013's changes
+- [X] T1318 The end-of-feature simplify pass: the list below, plus duplication across 013's changes
   - Owns: the files each item names (+ tests and snapshots), and any 013 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
   - Accept:
     - **The four items above**, all but the 014 one. Garage on servers uses its own `--default-bucket` / `--default-access-key`, with the setup steps it no longer needs removed. Check it locally in Docker (an own-server render: key and bucket work on the first and second `up`).
