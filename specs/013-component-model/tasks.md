@@ -545,6 +545,21 @@ Effort`.
         - any other apply failure is left as it is.
     - Verify: `pnpm turbo run typecheck test --filter=@opscrew/contracts --filter=@opscrew/iac-engine --filter=@opscrew/agents --concurrency=2`, plus `OPSCREW_IT=1` for the engine's untaint against real `tofu` and `terraform` on a local state, and `pnpm lint`
     - Effort: medium
+  - [ ] T1315c A late bucket that never reached the state, in `packages/contracts/src/**` (the `IacEngine` contract), `packages/iac-engine/src/**`, `packages/agents/src/provision/storage.ts`, `packages/cli/test/live/{live.test.ts,component-checks.ts}` (+ tests)
+    - Why: in the live rerun on 2026-10-20 the create failed reading the bucket back again, but the bucket was not in the state, so the untaint did nothing. The rerun then planned to create it again, Hetzner answered that the name was taken (it was ours), and the teardown had nothing in the state to delete, so the bucket was left behind (the lead deleted it).
+    - Accept:
+      - **The engine:** `IacEngine.importResource(dir, address, id, options)` runs `import -input=false -no-color <address> <id>` in the root, with the same env, state and var-file handling as `plan`. It is a state-only change. Every fake implements it, and a real-binary test (`OPSCREW_IT=1`) imports a `terraform_data` resource.
+      - **The read-back failure:**
+        - if `aws_s3_bucket.this` is in the state, untaint it (T1315b);
+        - if it is not, import the bucket (`aws_s3_bucket.this` with the bucket's name), retrying for up to about a minute, every 10 s, while the provider cannot read it yet;
+        - then stop with T1315b's "run provision again" message.
+      - **A taken name that is ours:** before the "bucket name taken" message, HEAD the bucket with the user's key through `shared/s3.ts`.
+        - 200: it is the user's own bucket, left by an earlier failed create. Import it, and stop with "OpsCrew found the bucket from an earlier run and kept it; run `opscrew provision` again".
+        - 403 or anything else: today's message.
+      - **The live test's fallback teardown** deletes this run's own Hetzner or Spaces bucket through the S3 client (exported from `@opscrew/agents`) when it is still listed, as it does through the API for R2.
+      - **Tests:** each case; never an apply without a new approved plan; the key in no output.
+    - Verify: `pnpm turbo run typecheck test --filter=@opscrew/contracts --filter=@opscrew/iac-engine --filter=@opscrew/agents --filter=opscrew --concurrency=2`, the `OPSCREW_IT=1` engine test, and `pnpm lint`
+    - Effort: high
 
 ## Dependencies
 
