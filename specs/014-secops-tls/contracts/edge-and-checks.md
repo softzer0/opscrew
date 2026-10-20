@@ -91,6 +91,19 @@ interface DeepToolResult { tool: DeepTool; version: string; results: CheckResult
   against the whole rendered edge with placeholder certificates. A failure ends the job before the
   upload, with the checker's message.
 
+## `vercel.json` translation (`@opscrew/iac-templates`, T1417b)
+
+```ts
+translateVercelRouting(routing: PlatformRouting, ctx: { proxy: "caddy" | "nginx"; hostnames: string[]; upstream: string }):
+  { text: string; skipped: { rule: string; reason: string }[] };
+```
+
+- The output is an additions file for `ctx.proxy` that passes `scanProxyAdditions` and the
+  proxy's checker.
+- The order is headers, then redirects, then rewrites. Rewrites to an internal path are fallbacks
+  that apply when the app answers 404 for the original path.
+- `rule` names the property and index (`rewrites[3]`), and `reason` is a plain sentence.
+
 ## The additions rules (`@opscrew/secops`)
 
 ```ts

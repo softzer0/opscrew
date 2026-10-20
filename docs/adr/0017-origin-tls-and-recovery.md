@@ -72,6 +72,9 @@ The founder decided (2026-10-13, amended 2026-10-21):
   - **Both proxies** share one hardened baseline and a catch-all refusal.
   - **The user's additions** (`opscrew/proxy/additions.caddy|nginx`) pass OpsCrew's rules, then
     the proxy's own checker on the runner, before anything reaches the server.
+- **`vercel.json` routing rules** (`ProjectFacts.platformRouting`) are translated once into the
+  app's additions. Rewrites become fallbacks after the app's 404, because Vercel checks the
+  filesystem first. What cannot be translated is listed, and the file is the user's afterwards.
 - **CAA** is set in the IaC engine's DNS module, at the app's DNS-only names only. **Minimum TLS
   1.2** is set only in a zone whose proxied records are all OpsCrew's and still at the default.
 - **Valkey** requires a generated password, written to its config file at start.

@@ -141,6 +141,8 @@ module. The zone's minimum TLS goes to 1.2 only when OpsCrew may, through the sh
 | `packages/agents` (provision, destroy, retarget) | the origin TLS flow, CAA facts, minimum TLS, the proxy conflict and switch, the recovery copy in the pull requests, renewal (T1409a) |
 | `packages/agents` (drift, status, secure, verify) | drift of the client-certificate requirement; expiries; the proxy; the copy's state; origin checks from the server; gaps (T1409b) |
 | `packages/iac-templates` (catalog), `packages/iac-templates/src/infra` (CAA in the DNS module) | Valkey's password; CAA records (T1410) |
+| `packages/plan-schema` (facts), `packages/detect` | `ProjectFacts.platformRouting` from `vercel.json` (T1417a) |
+| `packages/iac-templates` (edge translation), `packages/agents/src/design` | `vercel.json` rules translated into the app's additions (T1417b) |
 | `packages/cli`, `packages/mcp-server`, `plugin`, `docs/guide`, `packages/iac-templates/src/runbook` | `opscrew secrets …`, `secure --deep`, the token permissions in `init`, the runbook, the guide pages (T1411) |
 | `examples/`, `packages/cli/test/e2e` | the Docker pass (T1412) |
 | `packages/cli/test/live`, `docs/e2e*.md` | live tests (T1413), then the live runs (T1414, lead) |
@@ -501,7 +503,35 @@ new container answers.
 A Docker Swarm environment would give true start-first updates. It is on the roadmap as later
 work.
 
-### 16. Live tests and runs (T1413, T1414)
+### 16. `vercel.json` routing rules (T1417a, T1417b)
+
+The founder's choice (2026-10-21). This is for apps leaving Vercel whose routing lives in
+`vercel.json`. Rules in `next.config.js` already work, because Next.js applies them itself.
+- **Facts** (T1417a): `ProjectFacts.platformRouting`, parsed and zod-checked by detect:
+  - the `redirects`, `rewrites`, `headers`, `cleanUrls` and `trailingSlash` properties, and the
+    file's SHA-256;
+  - the `routes` property (a PCRE form), `has` and `missing`, and malformed entries go to
+    `unsupported`, with the reason.
+- **Translation** (T1417b): `translateVercelRouting(routing, { proxy, hostnames, upstream })` in
+  iac-templates returns `{ text, skipped }`.
+  - Sources (path-to-regexp) become anchored regular expressions, and destinations' parameters
+    become the proxy's capture placeholders (R7).
+  - Vercel's order is kept: headers, then redirects (with `cleanUrls` and `trailingSlash`), then
+    rewrites.
+  - An internal rewrite applies the way Vercel applies it: only when the app answers 404 for the
+    original path, because Vercel checks the filesystem first (R7). Caddy uses `handle_response`
+    on a 404, and nginx `proxy_intercept_errors` with `error_page 404` and a named location.
+  - Skipped and listed: rewrites to another site (the additions rules refuse traffic sent
+    anywhere but the app), `has` and `missing` conditions in v1, and any pattern the proxy cannot
+    express.
+- **Design** writes `opscrew/proxy/additions.<proxy>` only when the app has none, with a header
+  comment naming the source, `vercel.json`'s SHA-256, and that the file is the user's to edit. It
+  shows the skipped list. When `vercel.json` changes later, design says so and does not
+  overwrite the file.
+- **The output** passes T1408's rules and T1407's checker like any addition, which the tests
+  prove.
+
+### 17. Live tests and runs (T1413, T1414)
 
 - **Hetzner with Caddy:** a proxied app (direct origin refused, Cloudflare passing, the origin
   certificate's issuer), CAA on a DNS-only app, the minimum TLS in a zone of only OpsCrew apps,
@@ -528,7 +558,7 @@ The exact waves are in tasks.md. In short:
 7. T1413, then T1414.
 
 T1416 (Caddy holds requests on Portainer) can run any time after T1406, once the spike settles
-item 16.
+item 16. T1417a runs after T1401a, and T1417b after T1417a, T1407 and T1408.
 
 ## Complexity Tracking
 

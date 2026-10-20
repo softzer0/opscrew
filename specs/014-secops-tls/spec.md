@@ -148,6 +148,7 @@ The proxy in front of the apps on a server is Caddy by default, or nginx if the 
 5. **Given** the user's own additions for an app, **When** they provision, **Then** OpsCrew validates them with the proxy's own checker and scans them with its rules before any change. Invalid or unsafe additions are refused with the reason, and the live configuration stays as it was. Unsafe means, for example, older TLS, an exposed admin interface, traffic sent elsewhere, or another app's hostnames.
 6. **Given** several apps on one server, **When** one app asks for a different proxy than the server runs, **Then** OpsCrew refuses before any change. It says that the proxy is shared by every app on the server, and that a server's proxy can be switched while it holds only one OpsCrew app.
 7. **Given** a server with one OpsCrew app, **When** the user switches its proxy and provisions, **Then** the plan shows the switch, and the switch causes at most a short, stated interruption.
+8. **Given** an app coming from Vercel with routing rules in `vercel.json` (redirects, rewrites, headers, clean URLs, trailing slashes), **When** the user runs design, **Then** OpsCrew writes the rules the chosen proxy can express into the app's additions, in Vercel's order. It lists every rule it could not translate with the reason, and the file is the user's to edit from then on.
 
 ---
 
@@ -250,6 +251,12 @@ Valkey now requires a password, like Redis 8 and Dragonfly already do. The app r
 - **FR-1443**: The user's own additions per app MUST be validated with the proxy's own checker and scanned with OpsCrew's rules before any change. Unsafe additions are refused with the reason, and the live configuration stays as it was. Unsafe means older TLS, an exposed admin interface, traffic sent somewhere other than the app, or another app's hostnames.
 - **FR-1444**: Switching a server's proxy MUST be a planned, approved change, with at most a short interruption that the plan states. In v1 it is offered while the server holds only one OpsCrew app. With several, OpsCrew refuses and says why (switching several apps at once is later work).
 - **FR-1445**: A certificate renewal that keeps failing MUST be reported by `verify`, `status` and `secure`, with the reason, while at least 30 days remain.
+- **FR-1446**: When the app has routing rules in `vercel.json` (`redirects`, `rewrites`, `headers`, `cleanUrls`, `trailingSlash`), design MUST translate the ones the chosen proxy can express into the app's additions, keeping their meaning:
+  - redirects keep their status codes;
+  - a rewrite applies only where Vercel would apply it, which for an app that serves files means only when the app has no such file;
+  - headers apply to the matching paths.
+
+  Every rule it cannot translate MUST be listed with the reason, for example a rewrite to another site or a condition on a cookie. The file is written only when the app has no additions yet, and passes the same checks as any addition (FR-1443).
 
 **Valkey**
 
@@ -270,7 +277,7 @@ Valkey now requires a password, like Redis 8 and Dragonfly already do. The app r
 - **Age key:** held only by the user, shown once.
 - **Deeper-check result:** per tool, with its version, findings, severities and noise.
 - **Proxy choice:** per server, `caddy` or `nginx`.
-- **User additions:** a file per app in the repository, in the chosen proxy's syntax.
+- **User additions:** a file per app in the repository, in the chosen proxy's syntax. It may start as the translation of the app's `vercel.json` rules.
 - **Zone settings record:** what OpsCrew set in a zone (the minimum TLS version) and when, so it is never mistaken for someone else's setting.
 
 ## Success Criteria *(mandatory)*

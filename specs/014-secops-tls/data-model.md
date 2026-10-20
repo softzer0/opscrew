@@ -107,6 +107,22 @@ A child sops process gets it in `SOPS_AGE_KEY`, only during restore.
 | `skipped` | a `skip` result | With the reason and how to enable it. |
 | `hardeningIndex` | Lynis only | 0–100. Below 65 is a medium finding. |
 
+## Vercel routing (ProjectFacts)
+
+`ProjectFacts.platformRouting`, optional, from detect (T1417a):
+
+| Field | Type | Rule |
+|---|---|---|
+| `source` | `"vercel.json"` | The file it came from. |
+| `sha256` | hex | The file's hash, written into the additions' header comment. |
+| `redirects[]` | `{ source, destination, statusCode }` | `statusCode` is one of 301, 302, 303, 307, 308; `permanent: true` is 308 and `false` is 307 (R7). |
+| `rewrites[]` | `{ source, destination }` | |
+| `headers[]` | `{ source, headers: { key, value }[] }` | |
+| `cleanUrls`, `trailingSlash` | boolean, optional | |
+| `unsupported[]` | `{ property, index?, reason }` | `routes` (a PCRE form, not translated in v1), every `has` and `missing`, malformed entries. |
+
+Each entry keeps its index in the file, so skipped rules can be named.
+
 ## Proxy choice
 
 `target.edge` (above). On the server, the edge's Compose file carries `x-opscrew-edge-proxy:
