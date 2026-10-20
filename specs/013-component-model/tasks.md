@@ -449,7 +449,7 @@ Effort`.
     - `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: xhigh
 
-- [ ] T1314 Live tests in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1314 Live tests in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md "Live"; 012's builder checks
   - Depends: T1312, T1313
