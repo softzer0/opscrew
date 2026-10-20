@@ -5,6 +5,7 @@
  * `src/registry.ts`.
  */
 import { createHash } from "node:crypto";
+import type { LocalPlatform } from "@opscrew/core";
 import type { BUILDPACKS_OFFERS, PinArch } from "../src/pins";
 
 type OfferLanguage = keyof typeof BUILDPACKS_OFFERS;
@@ -81,15 +82,48 @@ export function releaseNotesSha1(body: string, name: string): string {
   return found[1] as string;
 }
 
-/** The SHA-256 of a downloaded asset, after checking it against the SHA-1 upstream publishes. */
-export function verifiedSha256(bytes: Uint8Array, sha1: string, name: string): string {
-  const actual = createHash("sha1").update(bytes).digest("hex");
-  if (actual !== sha1) {
+/**
+ * The SHA-256 of a downloaded asset, after checking it against the digest upstream publishes: a
+ * SHA-1 (40 hex digits) or a SHA-256 (64).
+ */
+export function verifiedSha256(bytes: Uint8Array, published: string, name: string): string {
+  const [algorithm, label] = published.length === 40 ? ["sha1", "SHA-1"] : ["sha256", "SHA-256"];
+  const actual = createHash(algorithm).update(bytes).digest("hex");
+  if (actual !== published) {
     throw new Error(
-      `${name} does not match its published SHA-1 (${sha1}); it hashes to ${actual}.`,
+      `${name} does not match its published ${label} (${published}); it hashes to ${actual}.`,
     );
   }
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * The SHA-256 GitHub records for the asset `name` of a release, once the release's checksums file
+ * (`<sha256>  <name>` lines, as sops publishes) lists the same.
+ */
+export function checkedAssetSha256(release: unknown, checksums: string, name: string): string {
+  const sha256 = assetSha256(release, name);
+  const line = new RegExp(`^([0-9a-f]{64}) [ *]?${escapeRegExp(name)}$`, "m").exec(
+    checksums.replaceAll("\r\n", "\n"),
+  );
+  if (!line) throw new Error(`The checksums file lists no ${name}.`);
+  if (line[1] !== sha256) {
+    throw new Error(
+      `GitHub's SHA-256 of ${name} (${sha256}) differs from the checksums file's (${line[1]}).`,
+    );
+  }
+  return sha256;
+}
+
+/** The version and SHA-256 CISOfy's Lynis downloads page publishes. */
+export function lynisPublished(html: string): { version: string; sha256: string } {
+  const text = html.replace(/<[^>]*>/g, " ");
+  const version = /Version:\s*(\d+(?:\.\d+)+)/.exec(text)?.[1];
+  const sha256 = /SHA256 hash:\s*([0-9a-f]{64})\b/.exec(text)?.[1];
+  if (version === undefined || sha256 === undefined) {
+    throw new Error("The Lynis downloads page names no version and SHA-256.");
+  }
+  return { version, sha256 };
 }
 
 function escapeRegExp(text: string): string {
@@ -234,16 +268,28 @@ function inTable(source: string, table: string, change: (text: string) => string
   return `${source.slice(0, start)}${change(source.slice(start, end))}${source.slice(end)}`;
 }
 
-/** Sets `TOOLS[tool].sha256[arch]` in the source of pins.ts. */
+/**
+ * Sets `TOOLS[tool].sha256[arch]` in the source of pins.ts, or with `"sha256"` the one checksum of
+ * a tool released as a single archive (Lynis).
+ */
 export function setToolChecksum(
   source: string,
   tool: string,
-  arch: PinArch,
+  field: PinArch | "sha256",
   sha256: string,
 ): string {
-  const pattern = new RegExp(`(\\b${escapeRegExp(tool)}: \\{[^}]*?\\b${arch}: )"[0-9a-f]*"`);
+  const pattern = new RegExp(`(\\b${escapeRegExp(tool)}: \\{[^}]*?\\b${field}: )"[0-9a-f]*"`);
   return inTable(source, "TOOLS", (table) => {
-    if (!pattern.test(table)) throw new Error(`pins.ts has no ${tool} ${arch} checksum in TOOLS.`);
+    if (!pattern.test(table)) throw new Error(`pins.ts has no ${tool} ${field} checksum in TOOLS.`);
+    return table.replace(pattern, `$1"${sha256}"`);
+  });
+}
+
+/** Sets the SHA-256 of `LOCAL_TOOLS.sops`'s asset for `platform` in the source of pins.ts. */
+export function setSopsChecksum(source: string, platform: LocalPlatform, sha256: string): string {
+  const pattern = new RegExp(`(sopsAsset\\(\\s*"${platform}",\\s*)"[0-9a-f]*"`);
+  return inTable(source, "LOCAL_TOOLS", (table) => {
+    if (!pattern.test(table)) throw new Error(`pins.ts has no sops ${platform} checksum.`);
     return table.replace(pattern, `$1"${sha256}"`);
   });
 }

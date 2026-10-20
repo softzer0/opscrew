@@ -21,6 +21,8 @@ export const ERROR_CODES = [
   "COMMAND_FAILED",
   "INVALID_INPUT",
   "INTERNAL",
+  "SECRETS_KEY_REJECTED",
+  "SECRETS_COPY_CHANGED_ELSEWHERE",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

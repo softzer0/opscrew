@@ -3,9 +3,11 @@
 //
 // Without flags it refreshes src/pins.ts: image digests from the registries (the multi-arch
 // index), tool checksums from the GitHub releases (each asset's SHA-256 digest; for a release whose
-// notes give only a SHA-1, the asset is downloaded, checked against it and hashed) and action commits
-// from the GitHub tags. Tags and versions stay as written in pins.ts: change one there first, then
-// run this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
+// notes give only a SHA-1, the asset is downloaded, checked against it and hashed), action commits
+// from the GitHub tags, sops's checksums from its GitHub release (each one checked against the
+// release's checksums file) and Lynis's from CISOfy's downloads page (checked against the
+// downloaded tarball; a newer release there is only reported). Tags and versions stay as written
+// in pins.ts: change one there first, then run this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
 // their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
 //
 // With --offers it refreshes only BUILDPACKS_OFFERS: it reads the pinned Paketo builder's metadata
@@ -22,8 +24,11 @@ import { fileURLToPath } from "node:url";
 import {
   ACTIONS,
   IMAGES,
+  LOCAL_TOOLS,
+  LYNIS_DOWNLOADS_PAGE,
   PACKAGE_MANAGERS,
   PYPI_PACKAGES,
+  SOPS_RELEASE,
   TOOL_RELEASES,
   TOOLS,
   toolDownloadUrl,
@@ -33,10 +38,12 @@ import {
   assetSha256,
   buildpackTomlUrl,
   buildpackVersion,
+  checkedAssetSha256,
   dependencyVersions,
   formatActionPin,
   latestReleaseUrl,
   latestReleaseVersion,
+  lynisPublished,
   OFFER_SOURCES,
   parseActionPin,
   parseImageRef,
@@ -46,6 +53,7 @@ import {
   replaceOffers,
   replacePin,
   setPackageVersion,
+  setSopsChecksum,
   setToolChecksum,
   verifiedSha256,
 } from "./update-pins-lib.ts";
@@ -79,16 +87,24 @@ async function tagCommit(repo, tag) {
   return object.sha;
 }
 
-/** Downloads a release asset and returns its SHA-256 once it matches the published SHA-1. */
-async function downloadedSha256(url, sha1) {
+/** The body of `url` as text; throws unless it answers 200. */
+async function fetchText(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url} answered ${response.status}.`);
-  return verifiedSha256(new Uint8Array(await response.arrayBuffer()), sha1, url);
+  return response.text();
+}
+
+/** Downloads an asset and returns its SHA-256 once it matches the published SHA-1 or SHA-256. */
+async function downloadedSha256(url, published) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} answered ${response.status}.`);
+  return verifiedSha256(new Uint8Array(await response.arrayBuffer()), published, url);
 }
 
 /** Digests, commits, checksums and package versions; returns the new source and what changed. */
 async function updatePins(source) {
   const changes = [];
+  const notes = [];
   for (const [key, { ref }] of Object.entries(IMAGES)) {
     const { repo, tag } = parseImageRef(ref);
     const next = `${repo}:${tag}@${await imageDigest(fetch, repo, tag)}`;
@@ -116,6 +132,31 @@ async function updatePins(source) {
       changes.push(`TOOLS.${key}.sha256.${arch}: ${sha256}`);
     }
   }
+  const sops = LOCAL_TOOLS.sops;
+  const sopsTag = SOPS_RELEASE.tag(sops.version);
+  const sopsRelease = await github(`/repos/${SOPS_RELEASE.repo}/releases/tags/${sopsTag}`);
+  const checksums = await fetchText(
+    `https://github.com/${SOPS_RELEASE.repo}/releases/download/${sopsTag}/${SOPS_RELEASE.checksums(sops.version)}`,
+  );
+  for (const [platform, asset] of Object.entries(SOPS_RELEASE.asset)) {
+    const sha256 = checkedAssetSha256(sopsRelease, checksums, asset(sops.version));
+    if (sha256 === sops.assets[platform].sha256) continue;
+    source = setSopsChecksum(source, platform, sha256);
+    changes.push(`LOCAL_TOOLS.sops.${platform}: ${sha256}`);
+  }
+  const lynis = TOOLS.lynis;
+  const published = lynisPublished(await fetchText(LYNIS_DOWNLOADS_PAGE));
+  if (published.version !== lynis.version) {
+    notes.push(
+      `Lynis ${published.version} is out; TOOLS.lynis stays at ${lynis.version} until you change its version and url.`,
+    );
+  } else {
+    const sha256 = await downloadedSha256(lynis.url, published.sha256);
+    if (sha256 !== lynis.sha256) {
+      source = setToolChecksum(source, "lynis", "sha256", sha256);
+      changes.push(`TOOLS.lynis.sha256: ${sha256}`);
+    }
+  }
   for (const { table, packages, registry } of PACKAGE_TABLES) {
     for (const [name, version] of Object.entries(packages)) {
       const url = latestReleaseUrl(registry, name);
@@ -127,7 +168,7 @@ async function updatePins(source) {
       changes.push(`${table}.${name}: ${version} → ${next}`);
     }
   }
-  return { source, changes };
+  return { source, changes, notes };
 }
 
 /** BUILDPACKS_OFFERS from the pinned builder (its amd64 image; both arches list the same). */
@@ -153,7 +194,12 @@ async function updateOffers(source) {
 
 const before = readFileSync(pinsFile, "utf8");
 const offersOnly = process.argv.includes("--offers");
-const { source, changes } = offersOnly ? await updateOffers(before) : await updatePins(before);
+const {
+  source,
+  changes,
+  notes = [],
+} = offersOnly ? await updateOffers(before) : await updatePins(before);
+for (const note of notes) console.log(note);
 
 if (source === before) {
   console.log("Every pin in pins.ts is current.");

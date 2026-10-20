@@ -5,10 +5,12 @@ import {
   assetSha256,
   buildpackTomlUrl,
   buildpackVersion,
+  checkedAssetSha256,
   dependencyVersions,
   formatActionPin,
   latestReleaseUrl,
   latestReleaseVersion,
+  lynisPublished,
   OFFER_SOURCES,
   parseActionPin,
   parseImageRef,
@@ -18,6 +20,7 @@ import {
   replaceOffers,
   replacePin,
   setPackageVersion,
+  setSopsChecksum,
   setToolChecksum,
   verifiedSha256,
 } from "../scripts/update-pins-lib";
@@ -26,9 +29,12 @@ import {
   BUILDPACKS_OFFERS,
   detectStack,
   IMAGES,
+  LOCAL_TOOLS,
+  LYNIS_DOWNLOADS_PAGE,
   PACKAGE_MANAGERS,
   PYPI_PACKAGES,
   RUNTIME_DEFAULTS,
+  SOPS_RELEASE,
   TOOL_RELEASES,
   TOOLS,
   toolDownloadUrl,
@@ -75,7 +81,17 @@ describe("pins.ts", () => {
       typesense: "30.2",
       clickhouse: "26.3",
       neo4j: "2026.09-community",
+      sshAudit: "v3.9.0",
+      testssl: "3.2",
+      nginx: "1.30.6-alpine",
+      certbot: "v5.8.0",
+      pebble: "2.10.1",
     });
+    expect(parseImageRef(IMAGES.sshAudit.ref).repo).toBe("positronsecurity/ssh-audit");
+    expect(parseImageRef(IMAGES.testssl.ref).repo).toBe("ghcr.io/testssl/testssl.sh");
+    expect(parseImageRef(IMAGES.nginx.ref).repo).toBe("nginxinc/nginx-unprivileged");
+    expect(parseImageRef(IMAGES.certbot.ref).repo).toBe("certbot/certbot");
+    expect(parseImageRef(IMAGES.pebble.ref).repo).toBe("ghcr.io/letsencrypt/pebble");
     expect(parseImageRef(IMAGES.kafka.ref).repo).toBe("apache/kafka");
     expect(parseImageRef(IMAGES.redpanda.ref).repo).toBe("redpandadata/redpanda");
     expect(parseImageRef(IMAGES.garage.ref).repo).toBe("dxflrs/garage");
@@ -86,6 +102,7 @@ describe("pins.ts", () => {
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
         "caddy",
+        "certbot",
         "cloudflared",
         "curl",
         "dockerfileSyntax",
@@ -105,14 +122,18 @@ describe("pins.ts", () => {
         "typesense",
         "clickhouse",
         "neo4j",
+        "nginx",
         "paketoBuilder",
         "paketoRun",
+        "pebble",
         "portainer",
         "postgres",
         "python",
         "railpackFrontend",
         "rabbitmq",
         "redpanda",
+        "sshAudit",
+        "testssl",
         "trivy",
         "valkey",
       ].sort(),
@@ -125,12 +146,52 @@ describe("pins.ts", () => {
     expect(TOOLS.supercronic.version).toBe("0.2.50");
     expect(TOOLS.cosign).not.toHaveProperty("sha256");
     for (const [tool, pin] of Object.entries(TOOLS)) {
-      for (const [arch, value] of Object.entries("sha256" in pin ? pin.sha256 : {})) {
+      if (!("sha256" in pin) || typeof pin.sha256 === "string") continue;
+      for (const [arch, value] of Object.entries(pin.sha256)) {
         expect(value, `${tool} ${arch}`).toMatch(HEX64);
       }
     }
     const lines = (await SOURCE).split("\n");
-    expect(lines.filter((line) => /^\s+(amd64|arm64|version): ""/.test(line))).toEqual([]);
+    expect(lines.filter((line) => /^\s+(amd64|arm64|version|sha256): ""/.test(line))).toEqual([]);
+    expect(lines.filter((line) => /^\s+"",?$|sopsAsset\("[\w-]+", ""\)/.test(line))).toEqual([]);
+  });
+
+  it("pins Lynis by its tarball and SHA-256", () => {
+    expect(TOOLS.lynis).toEqual({
+      version: "3.1.7",
+      url: "https://downloads.cisofy.com/lynis/lynis-3.1.7.tar.gz",
+      sha256: expect.stringMatching(HEX64),
+    });
+    expect(LYNIS_DOWNLOADS_PAGE).toBe("https://cisofy.com/downloads/lynis/");
+  });
+
+  it("pins sops for the user's machine: each platform's release binary and its SHA-256", () => {
+    const sops = LOCAL_TOOLS.sops;
+    expect(sops).toMatchObject({
+      name: "sops",
+      version: "3.13.3",
+      envOverride: "OPSCREW_SOPS_BIN",
+    });
+    expect(Object.keys(sops.assets).sort()).toEqual([
+      "darwin-amd64",
+      "darwin-arm64",
+      "linux-amd64",
+      "linux-arm64",
+      "windows-amd64",
+      "windows-arm64",
+    ]);
+    const base = "https://github.com/getsops/sops/releases/download/v3.13.3/";
+    expect(sops.assets["linux-amd64"].url).toBe(`${base}sops-v3.13.3.linux.amd64`);
+    expect(sops.assets["linux-arm64"].url).toBe(`${base}sops-v3.13.3.linux.arm64`);
+    expect(sops.assets["darwin-amd64"].url).toBe(`${base}sops-v3.13.3.darwin.amd64`);
+    expect(sops.assets["darwin-arm64"].url).toBe(`${base}sops-v3.13.3.darwin.arm64`);
+    expect(sops.assets["windows-amd64"].url).toBe(`${base}sops-v3.13.3.amd64.exe`);
+    expect(sops.assets["windows-arm64"].url).toBe(`${base}sops-v3.13.3.arm64.exe`);
+    for (const [platform, asset] of Object.entries(sops.assets)) {
+      expect(asset.sha256, platform).toMatch(HEX64);
+    }
+    expect(new Set(Object.values(sops.assets).map((asset) => asset.sha256)).size).toBe(6);
+    expect(SOPS_RELEASE.checksums("3.13.3")).toBe("sops-v3.13.3.checksums.txt");
   });
 
   it("pins every action by commit with its tag in a comment", () => {
@@ -410,5 +471,61 @@ describe("the pin script's helpers", () => {
     );
     const other = new TextEncoder().encode("abd");
     expect(() => verifiedSha256(other, sha1, "abc.bin")).toThrow(/abc\.bin.*SHA-1/);
+  });
+
+  it("checks a download against a published SHA-256 too", () => {
+    const abc = new TextEncoder().encode("abc");
+    const sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    expect(verifiedSha256(abc, sha256, "lynis.tar.gz")).toBe(sha256);
+    const other = new TextEncoder().encode("abd");
+    expect(() => verifiedSha256(other, sha256, "lynis.tar.gz")).toThrow(
+      /lynis\.tar\.gz does not match its published SHA-256/,
+    );
+  });
+
+  it("takes sops's SHA-256 from GitHub only when the release's checksums file agrees", () => {
+    const [a, b] = ["a".repeat(64), "b".repeat(64)];
+    const name = SOPS_RELEASE.asset["linux-arm64"]("3.13.3");
+    expect(name).toBe("sops-v3.13.3.linux.arm64");
+    const release = {
+      assets: [
+        { name, digest: `sha256:${a}` },
+        { name: "sops-v3.13.3.linux.arm64.spdx.sbom.json", digest: `sha256:${b}` },
+      ],
+    };
+    const checksums = `${b}  sops-v3.13.3.linux.arm64.spdx.sbom.json\r\n${a}  ${name}\r\n`;
+    expect(checkedAssetSha256(release, checksums, name)).toBe(a);
+    expect(() => checkedAssetSha256(release, `${b}  ${name}\n`, name)).toThrow(
+      /differs from the checksums file/,
+    );
+    expect(() => checkedAssetSha256(release, `${a}  ${name}.spdx.sbom.json\n`, name)).toThrow(
+      /lists no sops-v3\.13\.3\.linux\.arm64/,
+    );
+  });
+
+  it("reads the version and SHA-256 from Lynis's downloads page", () => {
+    const sha = "c".repeat(64);
+    const page = `<ul><li>Package: Lynis</li><li>Version: 3.1.7</li><li>SHA256 hash: ${sha}</li></ul>`;
+    expect(lynisPublished(page)).toEqual({ version: "3.1.7", sha256: sha });
+    expect(() => lynisPublished("<p>Our website is getting an overhaul.</p>")).toThrow(/Lynis/);
+  });
+
+  it("sets the Lynis checksum and one sops checksum, and leaves the rest alone", async () => {
+    const source = await SOURCE;
+    const sha = "f".repeat(64);
+    const before = source.split("\n");
+    const lynis = setToolChecksum(source, "lynis", "sha256", sha);
+    expect(lynis.split("\n").filter((line, i) => line !== before[i])).toEqual([
+      `    sha256: "${sha}",`,
+    ]);
+    expect(() => setToolChecksum(source, "pack", "sha256", sha)).toThrow(/pack sha256/);
+
+    const sops = setSopsChecksum(source, "darwin-arm64", sha);
+    const changed = sops.split("\n").filter((line, i) => line !== before[i]);
+    expect(changed).toEqual([
+      before
+        .find((line) => line.includes(LOCAL_TOOLS.sops.assets["darwin-arm64"].sha256))
+        ?.replace(LOCAL_TOOLS.sops.assets["darwin-arm64"].sha256, sha),
+    ]);
   });
 });

@@ -1,5 +1,7 @@
 export * from "./approvals";
 export * from "./audit";
+export { ageRecipientOf, generateAgeIdentity, isAgeRecipient } from "./crypto/age";
+export * from "./crypto/x509";
 export * from "./env";
 export * from "./errors";
 export * from "./exec";
@@ -10,4 +12,6 @@ export * from "./redact";
 export * from "./state";
 export * from "./text";
 export * from "./time";
+export * from "./tools/fetch";
+export * from "./tools/sops";
 export * from "./values";

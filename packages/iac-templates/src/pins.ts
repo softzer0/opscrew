@@ -1,12 +1,13 @@
 /**
  * Every version OpsCrew pins: images by the digest of their multi-arch index, tools by version and
- * SHA-256, GitHub Actions by commit, the Python packages and package managers the generated
- * Dockerfiles install by version, the runtime defaults and what the pinned Buildpacks builder
- * offers. `scripts/update-pins.mjs` refreshes the digests, checksums and commits (change a tag or
+ * SHA-256 (sops, for the user's machine, per platform), GitHub Actions by commit, the Python
+ * packages and package managers the generated Dockerfiles install by version, the runtime defaults
+ * and what the pinned Buildpacks builder offers. `scripts/update-pins.mjs` refreshes the digests, checksums and commits (change a tag or
  * version here first) and moves the packages to their newest releases; with `--offers` it
  * refreshes the Buildpacks offers instead:
  * `pnpm --filter @opscrew/iac-templates exec tsx scripts/update-pins.mjs [--offers]`.
  */
+import type { LocalPlatform, LocalToolPin } from "@opscrew/core";
 import type { RuntimeLanguage } from "@opscrew/plan-schema";
 
 /** A CPU architecture OpsCrew builds images for. */
@@ -24,6 +25,13 @@ export interface ImagePin {
 export interface ToolPin {
   version: string;
   sha256?: Record<PinArch, string>;
+}
+
+/** A tool released as one archive for every architecture (Lynis, a shell script): URL and SHA-256. */
+export interface ArchiveToolPin {
+  version: string;
+  url: string;
+  sha256: string;
 }
 
 // Sources: the 012 spikes (2026-10-18) and the pins OpsCrew used before 012 (Trivy 2026-10-11,
@@ -144,6 +152,30 @@ export const IMAGES = {
   neo4j: {
     ref: "neo4j:2026.09-community@sha256:d6269a020149934597c8c3df926d080a612796dbbb48861ca9d5b1109cabf0d8",
   },
+  // The 014 checks and edge (2026-10-21, research.md R1 and R5).
+  /** ssh-audit, run on the user's machine against the server's SSH port (`secure --deep`). */
+  sshAudit: {
+    ref: "positronsecurity/ssh-audit:v3.9.0@sha256:6d5dee75fe91b5f6279f683f0e7d4374d2ba83e2227c8d9a17097aac2775127d",
+  },
+  /**
+   * testssl.sh, run on the user's machine. The project tags its images by release line only, so
+   * this is the 3.2 line (3.2.4 and its backported fixes).
+   */
+  testssl: {
+    ref: "ghcr.io/testssl/testssl.sh:3.2@sha256:36e25ef4b7a0382f6fe302313e62c212afbef2c2baa86cbc108399170e38449a",
+  },
+  /** The non-root nginx of the nginx edge (`target.edge: nginx`), the stable 1.30 line. */
+  nginx: {
+    ref: "nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03",
+  },
+  /** Obtains and renews the nginx edge's certificates. */
+  certbot: {
+    ref: "certbot/certbot:v5.8.0@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20",
+  },
+  /** Let's Encrypt's test ACME server, for OpsCrew's Docker tests only. */
+  pebble: {
+    ref: "ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199",
+  },
 } as const satisfies Record<string, ImagePin>;
 
 export const TOOLS = {
@@ -192,11 +224,24 @@ export const TOOLS = {
   cosign: {
     version: "v3.1.3",
   },
-} as const satisfies Record<string, ToolPin>;
+  /**
+   * Lynis, streamed to the server for `secure --deep`. CISOfy publishes the tarball's SHA-256 on
+   * its downloads page ({@link LYNIS_DOWNLOADS_PAGE}), which the pin script checks the download
+   * against; change `url` with `version`.
+   */
+  lynis: {
+    version: "3.1.7",
+    url: "https://downloads.cisofy.com/lynis/lynis-3.1.7.tar.gz",
+    sha256: "b5314a07fd85fa3ffc7da57b508f0108ec3280d84e4af823f805d95cbbc2428c",
+  },
+} as const satisfies Record<string, ToolPin | ArchiveToolPin>;
 export type ToolKey = keyof typeof TOOLS;
 
-/** A tool {@link TOOL_RELEASES} lists: every tool with a checksum. */
-export type ReleasedTool = Exclude<ToolKey, "cosign">;
+/** The page where CISOfy publishes the current Lynis release and its SHA-256. */
+export const LYNIS_DOWNLOADS_PAGE = "https://cisofy.com/downloads/lynis/";
+
+/** A tool {@link TOOL_RELEASES} lists: every tool with a checksum per architecture. */
+export type ReleasedTool = Exclude<ToolKey, "cosign" | "lynis">;
 
 /**
  * Where each tool with a checksum releases: the GitHub repository, its tag and archive per
@@ -244,6 +289,76 @@ export function toolDownloadUrl(tool: ReleasedTool, arch: PinArch): string {
   const release = TOOL_RELEASES[tool];
   return `https://github.com/${release.repo}/releases/download/${release.tag(version)}/${release.asset[arch](version)}`;
 }
+
+/**
+ * Where sops releases: the raw binary per platform, and the checksums file the pin script checks
+ * GitHub's SHA-256 of each binary against.
+ */
+export const SOPS_RELEASE: {
+  repo: string;
+  tag: (version: string) => string;
+  asset: Record<LocalPlatform, (version: string) => string>;
+  checksums: (version: string) => string;
+} = {
+  repo: "getsops/sops",
+  tag: (v) => `v${v}`,
+  asset: {
+    "linux-amd64": (v) => `sops-v${v}.linux.amd64`,
+    "linux-arm64": (v) => `sops-v${v}.linux.arm64`,
+    "darwin-amd64": (v) => `sops-v${v}.darwin.amd64`,
+    "darwin-arm64": (v) => `sops-v${v}.darwin.arm64`,
+    "windows-amd64": (v) => `sops-v${v}.amd64.exe`,
+    "windows-arm64": (v) => `sops-v${v}.arm64.exe`,
+  },
+  checksums: (v) => `sops-v${v}.checksums.txt`,
+};
+
+const SOPS_VERSION = "3.13.3";
+
+/** The pinned sops release asset for `platform`, with its SHA-256. */
+function sopsAsset(platform: LocalPlatform, sha256: string): { url: string; sha256: string } {
+  const { repo, tag, asset } = SOPS_RELEASE;
+  return {
+    url: `https://github.com/${repo}/releases/download/${tag(SOPS_VERSION)}/${asset[platform](SOPS_VERSION)}`,
+    sha256,
+  };
+}
+
+/** Tools OpsCrew fetches onto the user's machine (`fetchPinnedTool` in `@opscrew/core`). */
+export const LOCAL_TOOLS = {
+  /** sops, which writes and reads the recovery copy (`opscrew/secrets.sops.json`). */
+  sops: {
+    name: "sops",
+    version: SOPS_VERSION,
+    envOverride: "OPSCREW_SOPS_BIN",
+    assets: {
+      "linux-amd64": sopsAsset(
+        "linux-amd64",
+        "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b",
+      ),
+      "linux-arm64": sopsAsset(
+        "linux-arm64",
+        "53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77",
+      ),
+      "darwin-amd64": sopsAsset(
+        "darwin-amd64",
+        "42162d5cef10b74fcf80a045a70e658d7ce6e63d6ea1be6f347e44015714468d",
+      ),
+      "darwin-arm64": sopsAsset(
+        "darwin-arm64",
+        "b97c0d434aab577dc40310e8d22ff9e45eef4c80638ab978daae9b4681c59286",
+      ),
+      "windows-amd64": sopsAsset(
+        "windows-amd64",
+        "a4a9a398858fe8b2ef72d9686d930bf7c5cece9be74ad83ac3b53cfdd70e6b1c",
+      ),
+      "windows-arm64": sopsAsset(
+        "windows-arm64",
+        "7f936a0d08edbeba3eb8f50bad1fe71eba83a140a80dfd17051f3bdb4facb08a",
+      ),
+    },
+  },
+} as const satisfies Record<string, LocalToolPin>;
 
 /** GitHub Actions the workflows use, as `owner/name@<commit> # <tag>`. */
 export const ACTIONS = {
