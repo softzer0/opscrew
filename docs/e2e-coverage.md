@@ -26,6 +26,11 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Your own server (`own-server.test.ts`), with a second app in the same zone and account, seeded rules and shared-rule checks (steps 6b, 7b; feature 011) | `OPSCREW_E2E_OWN_SERVER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (all 10 steps), again after 011's simplification | 2026-10-19 (with 012's switch, pins and builds) | — |
 | Your existing Portainer, core pass (`portainer-target.test.ts`), with a second app in the same Portainer, zone and account, seeded rules and shared-rule checks (steps 7b, 9b; feature 011) | `OPSCREW_E2E_PORTAINER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (after T1109), again after 011's simplification | 2026-10-19 (with 012, and the tunnel token) | — |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
+| Hetzner component checks (feature 013): the live set of SC-1301, one pass per example, each with its data through a deploy and a reboot, the worker and cron, limits, no public port, the server-side checks and the leak search ([details below](#components-feature-013)) | `OPSCREW_E2E_COMPONENTS=1`, `OPSCREW_E2E_APP` = one of the eight component examples | **Not run yet** | — | — |
+| The bucket on Cloudflare R2 (`s3-uploads`) | + `OPSCREW_E2E_R2=1` (default `OPSCREW_E2E_STORAGE=r2`), a Cloudflare domain | **Not run yet** | — | R2 turned on for the test account, and Account → Workers R2 Storage → Edit on the Cloudflare token |
+| The bucket on Hetzner Object Storage (`s3-uploads`) | + `OPSCREW_E2E_STORAGE=hetzner`, `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | **Not run yet** | — | S3 credentials from the Hetzner Console of the throwaway project |
+| Your own server with two apps on one server behind one edge (feature 013, steps 6b–7b): `s3-uploads` with Garage next to the first app, a change to each under 20 requests per second each, the first app's destroy under load, the edge gone with the last app | `OPSCREW_E2E_OWN_SERVER=1`, `OPSCREW_E2E_GITHUB_REPO_B` (now required) | **Not run yet** | — | — |
+| Your existing Portainer, components in stacks and the host-setting refusal (feature 013, step 7b with `node-mongo`) | `OPSCREW_E2E_PORTAINER=1`, `OPSCREW_E2E_GITHUB_REPO_B` (now required) | **Not run yet** | — | — |
 
 Run in development, not tracked by date:
 
@@ -137,3 +142,54 @@ Not covered by any live test:
 - **Dependabot's first runs after the deploy-setup pull request** (T1214): checked by the lead in
   the throwaway repository's Actions after the pass on 2026-10-19 (all four succeeded); no test
   asserts it.
+
+## Components (feature 013)
+
+The Hetzner pass checks these with `OPSCREW_E2E_COMPONENTS=1` and `OPSCREW_E2E_APP` set to each
+example below (see [e2e.md](e2e.md#the-components)); "—" where the example has nothing to check.
+Tick each one once it has passed live.
+
+| Check | `node-bullmq` | `express-mysql` | `node-mongo` | `s3-uploads` on R2 | `s3-uploads` on Hetzner | `rabbitmq-worker` | `kafka-app` | `meili-search` (+ OpenSearch) | `clickhouse-events` |
+|---|---|---|---|---|---|---|---|---|---|
+| `opscrew status` shows every component running | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Every container of the app and the edge has its memory limit, no swap beyond it | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| No port published but the edge's Caddy, the app on the edge's network, no service port answers from outside | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Nothing restarted or met its limit, after the first deploy and after the reboot | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Each `/srv/data/<app>/<service>` holds data and belongs to its service's user | [ ] | [ ] | [ ] | — | — | [ ] | — (named volume) | [ ] | [ ] |
+| Each mounted settings file readable by its service, writable only by its owner | [ ] (crontab) | [ ] | — | — | — | [ ] | — | — | [ ] |
+| The settings are honoured | — | [ ] `@@innodb_buffer_pool_size` | — | — | — | — | — | — | [ ] `max_server_memory_usage` |
+| The kernel setting in `/etc/sysctl.d/90-opscrew.conf` and in use, also after the reboot | — | — | — | — | — | — | — | [ ] `vm.max_map_count` | — |
+| A queued job is consumed within 30 seconds (SC-1302) | [ ] | — | — | — | — | [ ] | [ ] | — | — |
+| The cron job runs within a minute of its schedule (SC-1302) | [ ] | — | — | — | — | — | — | — | — |
+| A value written through the app survives a deploy and a reboot (SC-1303) | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| `opscrew drift` passes after the reboot | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| The leak search finds nothing (SC-1306) | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| The teardown deletes the bucket (`--delete-data`); the key stays the user's | — | — | — | [ ] | [ ] | — | — | — | — |
+
+Your own server with two apps (steps 6b–7b) and Portainer (step 7b):
+
+| Check | Passed live |
+|---|---|
+| Own server: a second app on the same server, Garage's bucket written and read back, both apps' components checked on the server, one Caddy serving both | [ ] |
+| Own server: a change to each app under 20 requests per second each, with no failed request (SC-1305) | [ ] |
+| Own server: the first app's destroy causes no failed request to the second; the edge and the `deploy` user stay | [ ] |
+| Own server: the second app's destroy with `--undo-host` removes the edge, `/srv/edge` and the `deploy` user | [ ] |
+| Portainer: the second app's stacks (MongoDB) within their limits, no port published, the data kept across a restart | [ ] |
+| Portainer: OpenSearch added to `plan.yaml` refused for its kernel setting before any change | [ ] |
+
+Not covered by any live test:
+
+- **NATS, SQLite, MariaDB, Redpanda, Typesense, Elasticsearch and Neo4j on a real server**, and
+  `celery-worker` and `flask-sqlite`: only the local Docker pass (and, for the engines, the engines
+  check) starts them. OpenSearch runs live only as the service added to `meili-search`.
+- **DigitalOcean Spaces**, and any component on DigitalOcean: no DigitalOcean token.
+- **Garage in a Portainer**, and MongoDB as a replica set (its one-shot `-init`): the local Docker
+  pass only.
+- **A browser upload from the app's own domain** through the bucket's CORS rule: `s3-uploads`
+  uploads its presigned URL from the server, not from a browser.
+- **`opscrew destroy` without `--delete-data` keeping the bucket** (FR-1319): unit tests only; the
+  live teardown always deletes it.
+- **The sum of the limits against the server's memory** (SC-1304): design's sizing, unit tests only;
+  the live checks look at each container's limit.
+- **Retarget's refusal for an app with MySQL, MongoDB, a broker, an engine or SQLite**: unit tests
+  only.

@@ -638,7 +638,7 @@ describe("newRunId", () => {
   it("gives each live run its own id of lower-case letters and digits", () => {
     const ids = new Set(Array.from({ length: 20 }, newRunId));
     expect(ids.size).toBe(20);
-    for (const id of ids) expect(id).toMatch(/^[0-9a-z]+[0-9a-f]{4}$/);
+    for (const id of ids) expect(id).toMatch(/^[0-9a-z]+[0-9a-f]{8}$/);
   });
 });
 
@@ -691,9 +691,10 @@ describe("the builder checks of the Hetzner pass (feature 012)", () => {
     expect(builderSettings("go-api", {})).toMatch(/^not checked: the builder checks/);
   });
 
-  it("names the services next to the app that the plan has", () => {
+  it("names the services next to the app that the plan has, and the shared edge's", () => {
     expect(
       steadyServices({
+        app: { name: "shop" },
         services: [
           {
             name: "db",
@@ -717,11 +718,18 @@ describe("the builder checks of the Hetzner pass (feature 012)", () => {
           },
         ],
       }),
-    ).toEqual(["db", "cache", "proxy", "caddy"]);
-    expect(steadyServices({ services: [] })).toEqual(["proxy", "caddy"]);
-    const command = startedAtCommand(["db", "proxy"]);
-    expect(command).toMatch(/^cd \/srv\/app && for service in db proxy; do /);
-    expect(command).toContain(`docker inspect --format '{{.State.StartedAt}}' "$id"`);
+    ).toEqual(["shop/db", "shop/cache", "opscrew-edge/kamal-proxy", "opscrew-edge/caddy"]);
+    expect(steadyServices({ app: { name: "shop" }, services: [] })).toEqual([
+      "opscrew-edge/kamal-proxy",
+      "opscrew-edge/caddy",
+    ]);
+    const command = startedAtCommand(["shop/db", "opscrew-edge/caddy"]);
+    expect(command).toBe(
+      [
+        `for id in $(docker ps -q --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.service=db); do echo "shop/db $(docker inspect --format '{{.State.StartedAt}}' "$id")"; done`,
+        `for id in $(docker ps -q --filter label=com.docker.compose.project=opscrew-edge --filter label=com.docker.compose.service=caddy); do echo "opscrew-edge/caddy $(docker inspect --format '{{.State.StartedAt}}' "$id")"; done`,
+      ].join("; "),
+    );
   });
 
   it("finds the services a deploy restarted, and those without a container", () => {

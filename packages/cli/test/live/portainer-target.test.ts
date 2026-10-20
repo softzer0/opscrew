@@ -16,6 +16,7 @@ import {
   opscrewNames,
   sameCertFingerprint,
 } from "@opscrew/connector-portainer";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import {
   type CloudflareZone,
@@ -26,7 +27,15 @@ import {
   waitFor,
   waitForAccessRefusal,
 } from "./cloud";
-import { CLI, LiveRun, secondAppSkip, serverSettings } from "./harness";
+import {
+  containerProblems,
+  readValue,
+  type ServerExec,
+  serverContainers,
+  writeValue,
+} from "./component-checks";
+import { componentServices, withSearchEngine } from "./components-support";
+import { CLI, LiveRun, serverSettings } from "./harness";
 import {
   changedRulesets,
   commitDetails,
@@ -100,8 +109,8 @@ const MISSING = [
     : []),
 ];
 const SETTINGS = serverSettings(ENV, "OPSCREW_E2E_PORTAINER_SERVER_TYPE");
-/** Why the second app's steps (7b, 9b) are skipped, if they are. */
-const SECOND_SKIP = secondAppSkip(SETTINGS);
+/** The second app (steps 7b, 9b): MongoDB in its stack, the components check of feature 013. */
+const SECOND_APP = "node-mongo";
 const E2E = {
   /** Optional: a narrower Cloudflare token OpsCrew uses for the updater + tunnel steps (2–4). */
   cloudflareTunnelToken: ENV.OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN?.trim() || undefined,
@@ -148,11 +157,10 @@ describe.skipIf(MISSING.length > 0)(
       settings: SETTINGS,
       afterCli: () => keepPlans(run, ""),
     });
-    /** The second app, B: its own stacks in the same Portainer (steps 7b and 9b), when they run. */
-    const b: LiveRun | undefined = run.second(() => keepPlans(b as LiveRun, "b/"));
-    const second = () => b as LiveRun;
+    /** The second app, B: its own stacks in the same Portainer (steps 7b and 9b). */
+    const b: LiveRun = run.second(SECOND_APP, () => keepPlans(b, "b/"));
     /** Whether the second app is set up and not destroyed. */
-    const secondUp = () => b?.appName !== undefined && !b.destroyed;
+    const secondUp = () => b.appName !== undefined && !b.destroyed;
     const { log, scrubber, appHost } = run;
     scrubber.add(E2E.cloudflareTunnelToken, "cloudflare-tunnel-token");
     scrubber.add(E2E.ghcrToken, "OPSCREW_GHCR_READ_TOKEN");
@@ -200,7 +208,6 @@ describe.skipIf(MISSING.length > 0)(
       log(
         `OPSCREW_E2E_PORTAINER_STEPS=${pass}: steps ${SELECTED.join(", ")}${estimates[pass] ?? ""}`,
       );
-      if (SECOND_SKIP !== undefined) log(`the second app's steps are skipped: ${SECOND_SKIP}`);
     }
 
     /**
@@ -618,7 +625,7 @@ describe.skipIf(MISSING.length > 0)(
      * (without the second app's own entry while it is set up), stacks.
      */
     async function portainerState(): Promise<Record<string, unknown>> {
-      const secondRegistry = secondUp() ? names(second()).registry : undefined;
+      const secondRegistry = secondUp() ? names(b).registry : undefined;
       const users = await portainer().ok<{ Id: number; Username: string; Role: number }[]>(
         "GET",
         "/api/users",
@@ -1958,7 +1965,7 @@ describe.skipIf(MISSING.length > 0)(
       "7b. a second app: its own stacks with the tunnel in the same Portainer, zone and account; both blocked on /.env, both in OpsCrew's probe block",
       minutes(60),
       async () => {
-        const app = second();
+        const app = b;
         const info = await repoInfo(app.github);
         if (info.private && E2E.repoReadToken === undefined) {
           throw new Error(
@@ -1966,7 +1973,7 @@ describe.skipIf(MISSING.length > 0)(
           );
         }
         await app.prepareRepo({
-          commit: `e2e: a second app (examples/${SETTINGS.app}) in your Portainer`,
+          commit: `e2e: a second app (examples/${SECOND_APP}) in your Portainer`,
           env: {
             CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken,
             OPSCREW_GHCR_READ_TOKEN: E2E.ghcrToken,
@@ -1988,6 +1995,7 @@ describe.skipIf(MISSING.length > 0)(
         await app.provisionUntilDone("the second app, updater + tunnel");
         await run.expectSharedCloudflare("the second app's provision");
         await rememberSecrets(["tunnel_token"], app);
+        await app.rememberGeneratedValues();
         await app.deployAny("the second app");
         await app.waitForHealth();
         await app.opscrewOk("verify");
@@ -1996,10 +2004,74 @@ describe.skipIf(MISSING.length > 0)(
         observe(
           `a second app runs in the same Portainer, zone and account; OpsCrew's probe block lists both apps${web === "tunnel" ? "" : ` (the first one is in ${web} mode, so only the second)`}`,
         );
+        await expectStackComponents(app);
+        await expectHostSettingRefused(app);
         await expectDecoysUnchanged("the second app's setup");
       },
-      { skip: SECOND_SKIP },
     );
+
+    /**
+     * Components in stacks (feature 013): every container of the app's stacks has its memory
+     * limit and publishes no port, each component runs without a restart, and a value written
+     * through the app (into MongoDB) is read back after its stack's containers restarted.
+     */
+    async function expectStackComponents(app: LiveRun): Promise<void> {
+      const exec: ServerExec = (command) => run.shell().ok(command, minutes(5));
+      const stack = names(app).app;
+      const plan = await app.readPlan();
+      expect(
+        containerProblems(
+          await serverContainers(exec),
+          [stack],
+          [{ project: stack, services: componentServices(plan) }],
+        ),
+        "the containers of the second app's stacks",
+      ).toEqual([]);
+      const site = `https://${app.appHost}`;
+      const value = `value-${randomBytes(6).toString("hex")}`;
+      await writeValue(site, value);
+      await readValue(site, value);
+      await exec(
+        `docker ps -q --filter label=${COMPOSE_PROJECT_LABEL}=${stack} | xargs -r docker restart`,
+      );
+      await app.waitForHealth();
+      await readValue(site, value);
+      observe(
+        `the second app's components (${componentServices(plan).join(", ")}) run in its stack within their limits, publish no port, and keep their data across a restart`,
+      );
+    }
+
+    /**
+     * A search engine that needs a kernel setting of the Docker host (OpenSearch's
+     * vm.max_map_count), added to plan.yaml by hand: provision refuses it before any change, and
+     * names the setting. The plan is put back afterwards.
+     */
+    async function expectHostSettingRefused(app: LiveRun): Promise<void> {
+      const exec: ServerExec = (command) => run.shell().ok(command, minutes(5));
+      // Every container on the host: the refusal comes before any change anywhere.
+      const starts = async () =>
+        (await serverContainers(exec)).map((c) => `${c.name} ${c.startedAt}`).sort();
+      const before = await starts();
+      const file = join(app.repo, "opscrew/plan.yaml");
+      const original = await readFile(file, "utf8");
+      await writeArtifact("plan", file, withSearchEngine(await app.readPlan()));
+      try {
+        const refused = await app.opscrew("provision", "--plan-only", "--yes");
+        expect(refused.exitCode, "provision refuses OpenSearch in a Portainer").not.toBe(0);
+        expect(
+          refused.output.includes("needs the Docker host's kernel setting vm.max_map_count"),
+          `the refusal names the kernel setting:\n${run.tail(refused.output)}`,
+        ).toBe(true);
+      } finally {
+        await writeFile(file, original);
+      }
+      expect(await starts(), "the refusal changed no container on the host").toEqual(before);
+      expect(
+        await app.git("status", "--porcelain"),
+        "the second app's repository is as it was once the plan is put back",
+      ).toBe("");
+      observe("OpenSearch in plan.yaml was refused for its kernel setting, before any change");
+    }
 
     step(
       "8. destroy keeps the data volumes; Portainer, its settings and the decoys stay; the second app keeps working",
@@ -2028,8 +2100,8 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the first app's destroy");
         if (secondUp()) {
           // SC-1102: the second app's tunnel and probe block still work.
-          await second().waitForHealth();
-          await run.expectProbeBlocked(second().appHost);
+          await b.waitForHealth();
+          await run.expectProbeBlocked(b.appHost);
           observe("after the first app's destroy the second app still answers and is protected");
         }
         const secrets = await secretNames(run.github);
@@ -2090,7 +2162,7 @@ describe.skipIf(MISSING.length > 0)(
       "9b. destroying the second app removes OpsCrew's shared rules; the seeded rules, the Zero Trust pieces, Portainer and the decoys stay",
       minutes(30),
       async () => {
-        const app = second();
+        const app = b;
         await keepDeployBranch("second", app);
         await app.opscrewOk("destroy", "--confirm", app.app(), "--delete-data");
         app.destroyed = true;
@@ -2103,7 +2175,6 @@ describe.skipIf(MISSING.length > 0)(
         await expectPortainerIntact("the second app's destroy");
         await expectDecoysUnchanged("the second app's destroy");
       },
-      { skip: SECOND_SKIP },
     );
 
     /**
@@ -2288,7 +2359,7 @@ describe.skipIf(MISSING.length > 0)(
         for (const { kind, where, text } of await run.leakSources()) {
           search(where, text, known, kind !== "commits" && shortHostRan);
         }
-        for (const app of [run, ...(b?.repoReady === true ? [b] : [])]) {
+        for (const app of [run, ...(b.repoReady ? [b] : [])]) {
           const which = app === run ? "" : " (B)";
           const tracked = (await app.git("ls-files", "-co", "--exclude-standard"))
             .split("\n")

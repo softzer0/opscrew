@@ -17,13 +17,14 @@ import {
   type SharedRuleRef,
 } from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
-import { TOOLS } from "@opscrew/iac-templates";
-import { type DeployPlan, type ImageBuilder, serviceOf } from "@opscrew/plan-schema";
+import { EDGE_PROJECT, serviceSpec, TOOLS } from "@opscrew/iac-templates";
+import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 
-/** The variables both server live tests need besides their gate. */
+/** The variables both server live tests need besides their gate (each deploys a second app). */
 export const SERVER_E2E_VARIABLES = [
   "OPSCREW_E2E_HCLOUD_TOKEN",
   "OPSCREW_E2E_GITHUB_REPO",
+  "OPSCREW_E2E_GITHUB_REPO_B",
   "OPSCREW_E2E_GITHUB_TOKEN",
   "OPSCREW_E2E_CLOUDFLARE_TOKEN",
   "OPSCREW_E2E_DOMAIN",
@@ -43,7 +44,7 @@ export function missingVariables(
 
 /** A new id for one live run: the time and a random part, in lower-case letters and digits. */
 export function newRunId(): string {
-  return `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+  return `${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
 }
 
 /**
@@ -653,29 +654,34 @@ export function applyEdit(text: string, edit: SourceEdit): string {
 }
 
 /**
- * The Compose services next to the app that deploying a new app version must not restart, as far
- * as the plan has them: Postgres (`db`), the cache, kamal-proxy (`proxy`) and Caddy.
+ * The containers next to the app that deploying a new app version must not restart, as
+ * `<Compose project>/<service>`: every service of the plan in the app's project, then the shared
+ * edge's kamal-proxy and Caddy.
  */
-export function steadyServices(plan: Pick<DeployPlan, "services">): string[] {
+export function steadyServices(plan: {
+  app: Pick<DeployPlan["app"], "name">;
+  services: DeployPlan["services"];
+}): string[] {
   return [
-    ...(serviceOf(plan, "postgres") ? ["db"] : []),
-    ...(serviceOf(plan, "valkey") ? ["cache"] : []),
-    "proxy",
-    "caddy",
+    ...plan.services
+      .filter((service) => service.enabled)
+      .map((service) => `${plan.app.name}/${service.name}`),
+    `${EDGE_PROJECT}/kamal-proxy`,
+    `${EDGE_PROJECT}/caddy`,
   ];
 }
 
 /**
- * The command, run on the server, that prints `<service> <StartedAt>` for each container of
- * `services` in the app's Compose project (`/srv/app`).
+ * The command, run on the server, that prints `<project>/<service> <StartedAt>` for each running
+ * container of `services` (`<Compose project>/<service>`).
  */
 export function startedAtCommand(services: readonly string[]): string {
-  return [
-    `cd /srv/app && for service in ${services.join(" ")}; do`,
-    'for id in $(docker compose ps -q "$service"); do',
-    `echo "$service $(docker inspect --format '{{.State.StartedAt}}' "$id")";`,
-    "done; done",
-  ].join(" ");
+  return services
+    .map((entry) => {
+      const [project, service] = entry.split("/");
+      return `for id in $(docker ps -q --filter label=com.docker.compose.project=${project} --filter label=com.docker.compose.service=${service}); do echo "${entry} $(docker inspect --format '{{.State.StartedAt}}' "$id")"; done`;
+    })
+    .join("; ");
 }
 
 /**
@@ -744,6 +750,15 @@ export function sbomPackages(sbom: unknown): number {
     (sum, [key, child]) =>
       sum + (key === "packages" && Array.isArray(child) ? child.length : sbomPackages(child)),
     0,
+  );
+}
+
+/** Whether OpsCrew generates values for the plan: a service's login, or an app secret. */
+export function generatesValues(plan: Pick<DeployPlan, "app" | "services">): boolean {
+  return (
+    plan.services.some(
+      (service) => service.enabled && serviceSpec(service.kind).secrets.length > 0,
+    ) || plan.app.env.some((variable) => variable.source === "generated")
   );
 }
 

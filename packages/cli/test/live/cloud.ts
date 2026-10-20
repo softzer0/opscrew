@@ -923,6 +923,11 @@ export function canConnect(host: string, port: number, timeoutMs = 5_000): Promi
   });
 }
 
+/** Whether this computer can reach the internet over IPv6 (Cloudflare's resolver on 443). */
+export function hasIpv6Route(): Promise<boolean> {
+  return canConnect("2606:4700:4700::1111", 443, 5_000);
+}
+
 const publicResolver = new Resolver();
 publicResolver.setServers(["1.1.1.1", "1.0.0.1"]);
 

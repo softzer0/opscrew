@@ -4,24 +4,28 @@
  * OPSCREW_E2E_* token is set; see docs/e2e.md. It creates a real server for a few minutes (cents)
  * and always tears it down, even when a step fails. OPSCREW_E2E_APP picks the app to deploy. With
  * a Cloudflare domain it also checks the app's hostnames in OpsCrew's shared rules (feature 011).
- * On Hetzner the builder examples also get the builder checks of feature 012 (builder-checks.ts).
+ * On Hetzner the builder examples also get the builder checks of feature 012 (builder-checks.ts),
+ * and the component examples the component checks of feature 013 (component-checks.ts), with the
+ * app's bucket removed by the teardown too.
  */
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { readServerAddresses } from "@opscrew/agents";
+import {
+  providerBucket,
+  readServerAddresses,
+  STORAGE_KEY_VARS,
+  storageEngineEnv,
+  storageStateFile,
+} from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
-import { readArtifact } from "@opscrew/plan-schema";
+import { appDir, storageRootDir } from "@opscrew/iac-templates";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import {
-  type BuilderRun,
-  builderChecks,
-  builderPreflight,
-  builderSettings,
-} from "./builder-checks";
+import { builderChecks, builderPreflight, builderSettings } from "./builder-checks";
 import {
   api,
   Cloudflare,
@@ -31,6 +35,14 @@ import {
   minutes,
   retryDelete,
 } from "./cloud";
+import { type BucketPass, bucketPass, componentChecks, type DeployedRun } from "./component-checks";
+import {
+  type ComponentSettings,
+  componentSettings,
+  unprotectStorageRoot,
+  withBucket,
+  withSearchEngine,
+} from "./components-support";
 import { CLI, EXAMPLES, isExample } from "./harness";
 import {
   type AppRules,
@@ -140,15 +152,19 @@ async function materializeApp(app: E2eApp, dest: string): Promise<void> {
     }
     return result.stdout.trim();
   };
-  await git("init", "-q");
-  const url = `https://github.com/${app.owner}/${app.repo}.git`;
-  await git("fetch", "-q", "--depth", "1", url, app.commit);
-  await git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD");
-  expect(await git("rev-parse", "HEAD"), "the fetched commit").toBe(app.commit);
-  await cp(source, dest, {
-    recursive: true,
-    filter: (path) => !relative(source, path).split(sep).includes(".git"),
-  });
+  try {
+    await git("init", "-q");
+    const url = `https://github.com/${app.owner}/${app.repo}.git`;
+    await git("fetch", "-q", "--depth", "1", url, app.commit);
+    await git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD");
+    expect(await git("rev-parse", "HEAD"), "the fetched commit").toBe(app.commit);
+    await cp(source, dest, {
+      recursive: true,
+      filter: (path) => !relative(source, path).split(sep).includes(".git"),
+    });
+  } finally {
+    await rm(source, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 const hetzner = (method: string, path: string, body?: unknown) =>
@@ -169,6 +185,11 @@ interface LiveProvider {
   apiCleanup: (appName: string) => Promise<void>;
   /** SC-301 / SC-401: nothing created for the app is left. */
   expectNothingLeft: (appName: string) => Promise<void>;
+  /**
+   * Reboots the app's server, the one at `ipv4` (OpsCrew's record of it), through the provider's
+   * API (the component checks).
+   */
+  reboot?: (appName: string, ipv4: string) => Promise<void>;
 }
 
 const HETZNER: LiveProvider = {
@@ -177,6 +198,21 @@ const HETZNER: LiveProvider = {
   token: E2E.hcloudToken,
   tokenVar: "HCLOUD_TOKEN",
   unprotect: unprotectHetznerRoot,
+  async reboot(appName, ipv4) {
+    const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
+    const listed = await hetzner("GET", `/servers?label_selector=${selector}`);
+    const servers =
+      (listed.json as { servers?: { id: number; public_net: { ipv4?: { ip: string } | null } }[] })
+        .servers ?? [];
+    const server = servers.find((item) => item.public_net.ipv4?.ip === ipv4);
+    if (server === undefined) {
+      throw new Error("Hetzner lists no server of the app at the address OpsCrew recorded.");
+    }
+    const rebooted = await hetzner("POST", `/servers/${server.id}/actions/reboot`);
+    if (rebooted.status !== 201) {
+      throw new Error(`Hetzner did not reboot the server (HTTP ${rebooted.status}).`);
+    }
+  },
   async apiCleanup(appName) {
     const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
     for (const kind of ["servers", "firewalls", "ssh_keys"] as const) {
@@ -262,22 +298,56 @@ const BUILDERS = builderSettings(
 );
 
 /**
+ * The component checks (feature 013) of the Hetzner pass with OPSCREW_E2E_COMPONENTS=1, when
+ * OPSCREW_E2E_APP is one of the component examples; the reason the pass is skipped (a bucket
+ * without its credentials); or the line the pass logs instead.
+ */
+const COMPONENTS = componentSettings(
+  APP instanceof Error || APP.kind !== "example" ? undefined : APP.name,
+  process.env,
+);
+
+/**
  * OPSCREW_E2E_SKIP_DESTROY=1: the Hetzner pass skips `opscrew destroy` and takes the fallback a
  * failed destroy takes (the IaC destroy, the provider API, the shared Cloudflare rules), whose
  * leftover checks must then find nothing.
  */
 const skipDestroy = process.env.OPSCREW_E2E_SKIP_DESTROY === "1";
 
+/** The tokens the leak searches look for, by their variables. */
+const TOKENS = [
+  { label: "OPSCREW_E2E_GITHUB_TOKEN", value: E2E.githubToken },
+  { label: "OPSCREW_E2E_HCLOUD_TOKEN", value: E2E.hcloudToken },
+  { label: "OPSCREW_E2E_CLOUDFLARE_TOKEN", value: E2E.cloudflareToken },
+];
+
 for (const provider of [HETZNER, DIGITALOCEAN]) {
   const onHetzner = provider.id === "hetzner";
   const builders = onHetzner && typeof BUILDERS !== "string" ? BUILDERS : undefined;
+  const components = onHetzner && typeof COMPONENTS !== "string" ? COMPONENTS : undefined;
   describe.skipIf(!(provider.token && withGitHub))(`live end-to-end on ${provider.name}`, () => {
     it(`deploys ${APP_LABEL} from a GitHub repository and tears everything down`, {
-      timeout: minutes(builders === undefined ? 75 : 180),
-    }, async () => {
+      timeout: minutes(builders === undefined && components === undefined ? 75 : 180),
+    }, async (context) => {
       const cleanup = { skipDestroy: onHetzner && skipDestroy };
+      if (components !== undefined) {
+        const skip = (reason: string) => {
+          console.log(`OpsCrew E2E: skipped: ${reason}`);
+          return context.skip(reason);
+        };
+        if ("skip" in components) skip(components.skip);
+        else {
+          // Before any GitHub or cloud change.
+          const bucket = await bucketPass(components, E2E.cloudflareToken ?? "", E2E.domain ?? "");
+          if (bucket !== undefined && "skip" in bucket) skip(bucket.skip);
+          else await componentPass(provider, components, bucket, cleanup);
+        }
+        return;
+      }
       if (builders === undefined) {
-        if (onHetzner && typeof BUILDERS === "string") console.log(`OpsCrew E2E: ${BUILDERS}`);
+        for (const note of [BUILDERS, COMPONENTS]) {
+          if (onHetzner && typeof note === "string") console.log(`OpsCrew E2E: ${note}`);
+        }
         await deployAndTearDown(provider, cleanup);
         return;
       }
@@ -286,14 +356,44 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
       await deployAndTearDown(provider, {
         ...cleanup,
         answers: builders.sign ? { signImages: true } : {},
-        afterDeploy: (run) =>
-          builderChecks(run, builders, [
-            { label: "OPSCREW_E2E_GITHUB_TOKEN", value: E2E.githubToken },
-            { label: "OPSCREW_E2E_HCLOUD_TOKEN", value: E2E.hcloudToken },
-            { label: "OPSCREW_E2E_CLOUDFLARE_TOKEN", value: E2E.cloudflareToken },
-          ]),
+        afterDeploy: (run) => builderChecks(run, builders, TOKENS),
       });
     });
+  });
+}
+
+/**
+ * A component pass on Hetzner (docs/e2e.md "Components"): the plan edits a user would make for
+ * it (the bucket's provider and a name of this run's own; OpenSearch for its kernel setting),
+ * then the component checks after the first deploy; the teardown deletes the bucket too.
+ */
+async function componentPass(
+  provider: LiveProvider,
+  components: ComponentSettings,
+  bucket: BucketPass | undefined,
+  cleanup: { skipDestroy: boolean },
+): Promise<void> {
+  const bucketName = `opscrew-e2e-${newRunId()}`;
+  const { storage, searchEngine } = components;
+  const edits = storage !== undefined || searchEngine;
+  await deployAndTearDown(provider, {
+    ...cleanup,
+    env: bucket?.env ?? {},
+    ...(bucket === undefined ? {} : { bucket: { pass: bucket, name: bucketName } }),
+    ...(edits
+      ? {
+          planEdit: (plan: DeployPlan) => {
+            const stored =
+              storage === undefined ? plan : withBucket(plan, storage.provider, bucketName);
+            return searchEngine ? withSearchEngine(stored) : stored;
+          },
+        }
+      : {}),
+    afterDeploy: (run) =>
+      componentChecks(run, components, [
+        ...TOKENS,
+        ...Object.entries(bucket?.env ?? {}).map(([label, value]) => ({ label, value })),
+      ]),
   });
 }
 
@@ -367,7 +467,7 @@ async function expectNoRecordsLeft(shared: SharedZone, rules: AppRules): Promise
 }
 
 /** Runs `opscrew retarget …` until it exits 0, approving each plan it stops at by its hash. */
-async function retargetUntilDone(run: LiveRun, first: string[], next: string[]): Promise<void> {
+async function retargetUntilDone(run: DeployedRun, first: string[], next: string[]): Promise<void> {
   let args = first;
   for (let attempt = 0; attempt < 12; attempt++) {
     const result = await run.opscrew("retarget", ...args);
@@ -394,8 +494,9 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub && isDefault
           const servers = () => readServerAddresses(resolveProjectPaths(run.repo));
           const oldIp = (await servers()).deployment?.ipv4 as string;
           const marker = `opscrew-e2e-${Date.now()}`;
+          const dir = appDir(await readArtifact("plan", planFile));
           const psql = (sql: string) =>
-            `cd /srv/app && docker compose exec -T db psql -U app -d app -tAc "${sql}"`;
+            `cd ${dir} && docker compose exec -T db psql -U app -d app -tAc "${sql}"`;
           await run.ssh(oldIp, psql("create table if not exists opscrew_e2e (v text)"));
           await run.ssh(oldIp, psql(`insert into opscrew_e2e values ('${marker}')`));
 
@@ -422,24 +523,24 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub && isDefault
   },
 );
 
-/**
- * A deployed example, handed to `afterDeploy` (for example to move it to the other provider, or
- * for the builder checks).
- */
-interface LiveRun extends BuilderRun {
-  appName: string;
-  opscrew: (...args: string[]) => Promise<{ exitCode: number; output: string }>;
-}
-
 interface DeployOptions {
   /** Tokens of other providers the run may use (a move needs both). */
   alsoTokens?: readonly LiveProvider[];
   /** More interview answers (for example `signImages`). */
   answers?: Record<string, unknown>;
+  /** More variables for every CLI run (the bucket's key). */
+  env?: Record<string, string>;
+  /** A change a user makes in opscrew/plan.yaml after design, before design runs again. */
+  planEdit?: (plan: DeployPlan) => DeployPlan;
   /** Runs after the deployment was verified, before the teardown. */
-  afterDeploy?: (run: LiveRun) => Promise<void>;
+  afterDeploy?: (run: DeployedRun) => Promise<void>;
   /** Skips `opscrew destroy`, so the fallback cleanup a failed destroy gets runs and is checked. */
   skipDestroy?: boolean;
+  /**
+   * The run's own bucket (`name`) at a provider: emptied before `destroy --delete-data`, checked
+   * gone after. A bucket of another name in the plan is never touched.
+   */
+  bucket?: { pass: BucketPass; name: string };
 }
 
 async function deployAndTearDown(
@@ -477,18 +578,23 @@ async function deployAndTearDown(
   env[provider.tokenVar] = provider.token;
   for (const other of options.alsoTokens ?? []) env[other.tokenVar] = other.token;
   for (const name of Object.keys(env)) if (name.startsWith("OPSCREW_E2E_")) delete env[name];
+  Object.assign(env, options.env);
   const git = async (...args: string[]) => {
     const result = await runner.run("git", ["-C", repo, ...args], { env });
     if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr}`);
     return result.stdout.trim();
   };
+  /** Every CLI output, for the component checks' leak search; never printed. */
+  const outputs: string[] = [];
   const opscrew = async (...args: string[]) => {
     const result = await runner.run(process.execPath, [CLI, ...args], {
       cwd: repo,
       env,
       timeoutMs: minutes(30),
     });
-    return { ...result, output: `${result.stdout}\n${result.stderr}` };
+    const output = `${result.stdout}\n${result.stderr}`;
+    outputs.push(output);
+    return { ...result, output };
   };
   /** Merges the open pull request from `head`, checks `main` out again and returns the merge commit. */
   const mergePullRequest = async (head: string) => {
@@ -535,6 +641,8 @@ async function deployAndTearDown(
   let sharedRules: AppRules = {};
   /** With a Cloudflare domain, from just before the provision on. */
   let shared: SharedZone | undefined;
+  /** What stopped the run before its teardown, thrown once the teardown ran. */
+  let failure: unknown;
   try {
     expect((await opscrew("analyze", ...aiFlags)).exitCode).toBe(0);
     await writeFile(
@@ -554,7 +662,14 @@ async function deployAndTearDown(
     );
     expect((await opscrew("interview", "--answers", join(work, "answers.json"))).exitCode).toBe(0);
     expect((await opscrew("design")).exitCode).toBe(0);
-    const plan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
+    const planFile = join(repo, "opscrew/plan.yaml");
+    if (options.planEdit !== undefined) {
+      // As a user does: change plan.yaml, then design again keeps the change and prices it.
+      await writeArtifact("plan", planFile, options.planEdit(await readArtifact("plan", planFile)));
+      const redesigned = await opscrew("design");
+      expect(redesigned.exitCode, redesigned.output).toBe(0);
+    }
+    const plan = await readArtifact("plan", planFile);
     appName = plan.app.name;
     expect(plan.target.provider).toBe(provider.id);
     if (withDns) sharedRules = appRules(plan);
@@ -644,72 +759,185 @@ async function deployAndTearDown(
         if (result.exitCode !== 0) throw new Error(`ssh ${host} failed: ${result.stderr}`);
         return result.stdout.trim();
       };
+      const name = appName as string;
       await options.afterDeploy({
         repo,
         env,
         github,
         deployed: { runId: deployed.id, sha: mergeSha },
-        appName: appName as string,
+        appName: name,
         ssh,
         opscrew,
         mergeFiles,
+        git,
+        outputs,
+        startedAt,
+        reboot: async () => {
+          if (provider.reboot === undefined) throw new Error(`No reboot on ${provider.name}.`);
+          const recorded = (await readServerAddresses(paths)).deployment?.ipv4;
+          if (recorded === undefined) throw new Error("OpsCrew recorded no server address.");
+          await provider.reboot(name, recorded);
+        },
       });
     }
-  } finally {
-    // The user's own teardown first (SC-301); the IaC and API fallbacks only if it fails.
-    const involved = [provider, ...(options.alsoTokens ?? [])];
-    const current = await readArtifact("plan", join(repo, "opscrew/plan.yaml"))
-      .then((plan) => ({ provider: plan.target.provider, moving: plan.retarget !== undefined }))
-      .catch(() => ({ provider: provider.id, moving: false }));
-    const live = involved.find((p) => p.id === current.provider) ?? provider;
-    let destroyed = false;
-    if (options.skipDestroy === true) {
-      console.log(
-        "OpsCrew E2E: skipping opscrew destroy (OPSCREW_E2E_SKIP_DESTROY=1): the fallback cleanup runs instead",
+  } catch (error) {
+    failure = error;
+  }
+  // Every step runs whatever an earlier one did; the problems fail the run once, at the end.
+  const problems: string[] = [];
+  const attempt = async (what: string, body: () => Promise<unknown>) => {
+    try {
+      await body();
+    } catch (error) {
+      problems.push(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  // The user's own teardown first (SC-301); the IaC and API fallbacks only if it fails.
+  const involved = [provider, ...(options.alsoTokens ?? [])];
+  const lastPlan = await readArtifact("plan", join(repo, "opscrew/plan.yaml")).catch(
+    () => undefined,
+  );
+  const current = {
+    provider: lastPlan?.target.provider ?? provider.id,
+    moving: lastPlan?.retarget !== undefined,
+  };
+  const live = involved.find((p) => p.id === current.provider) ?? provider;
+  // The app's bucket goes with `--delete-data` (FR-1319), and only this run's own bucket.
+  const planned = lastPlan === undefined ? undefined : providerBucket(lastPlan);
+  const bucket = planned?.bucket === options.bucket?.name ? planned : undefined;
+  if (planned !== undefined && bucket === undefined) {
+    console.log("OpsCrew E2E: the plan's bucket is not this run's, left alone");
+  }
+  const pass = options.bucket?.pass;
+  if (bucket !== undefined && pass !== undefined) {
+    // R2 deletes only an empty bucket.
+    await attempt(`empty the bucket ${bucket.bucket}`, () => pass.empty(bucket));
+  }
+  let destroyed = false;
+  if (options.skipDestroy === true) {
+    console.log(
+      "OpsCrew E2E: skipping opscrew destroy (OPSCREW_E2E_SKIP_DESTROY=1): the fallback cleanup runs instead",
+    );
+  } else if (appName !== undefined && !current.moving) {
+    const destroy = await opscrew(
+      "destroy",
+      "--confirm",
+      appName,
+      "--no-snapshot",
+      ...(bucket === undefined ? [] : ["--delete-data"]),
+    ).catch(() => undefined);
+    destroyed = destroy?.exitCode === 0;
+    if (!destroyed) {
+      console.error(`opscrew destroy failed; falling back:\n${destroy?.output ?? ""}`);
+    }
+  }
+  if (!destroyed && shared !== undefined) {
+    // Without the destroy the app's hostnames stay in OpsCrew's shared rules, and the next run
+    // would stop at them: remove them (rules holding only them, as `removeRulesOfRun` decides).
+    const zone = shared;
+    await attempt("remove the app's hostnames from OpsCrew's shared rules", async () => {
+      const left = await zone.cloudflare.removeRulesOfRun(zone.zone, zone.before, {
+        hostnames: [...new Set(Object.values(sharedRules).flat())],
+        log: (message) => console.log(`OpsCrew E2E: ${message}`),
+      });
+      problems.push(...left);
+    });
+  }
+  const name = appName;
+  if (destroyed && name !== undefined) {
+    for (const p of involved) {
+      await attempt(`check ${p.name} for leftovers`, () => p.expectNothingLeft(name));
+    }
+  } else if (current.moving && name !== undefined) {
+    // A move left half-way has servers on both providers: delete them through the APIs.
+    console.error("A move was still in progress; deleting through both providers' APIs.");
+    for (const p of involved) {
+      await attempt(`delete through ${p.name}'s API`, () => p.apiCleanup(name));
+    }
+    for (const p of involved) {
+      await attempt(`check ${p.name} for leftovers`, () => p.expectNothingLeft(name));
+    }
+  } else {
+    if (lastPlan !== undefined && bucket !== undefined && pass !== undefined) {
+      await attempt(`destroy the storage root of ${bucket.bucket}`, () =>
+        destroyStorageRoot(repo, env, lastPlan),
       );
-    } else if (appName !== undefined && !current.moving) {
-      const destroy = await opscrew("destroy", "--confirm", appName, "--no-snapshot").catch(
-        () => undefined,
-      );
-      destroyed = destroy?.exitCode === 0;
-      if (!destroyed) {
-        console.error(`opscrew destroy failed; falling back:\n${destroy?.output ?? ""}`);
+      const { deleteThroughApi } = pass;
+      if (deleteThroughApi !== undefined) {
+        await attempt(`delete the bucket ${bucket.bucket} through the API`, async () => {
+          if (await pass.exists(bucket)) await deleteThroughApi(bucket);
+        });
       }
     }
-    if (!destroyed && shared !== undefined) {
-      // Without the destroy the app's hostnames stay in OpsCrew's shared rules, and the next run
-      // would stop at them: remove them (rules holding only them, as `removeRulesOfRun` decides).
-      // It never throws, so the servers' teardown below always runs.
-      const problems = await shared.cloudflare
-        .removeRulesOfRun(shared.zone, shared.before, {
-          hostnames: [...new Set(Object.values(sharedRules).flat())],
-          log: (message) => console.log(`OpsCrew E2E: ${message}`),
-        })
-        .catch((error: unknown) => [String(error)]);
-      for (const problem of problems) console.error(`OpsCrew E2E: ${problem}`);
+    await attempt(`tear down on ${live.name}`, () => teardown(live, repo, env, appName));
+    for (const p of involved) {
+      if (p !== live && name !== undefined) {
+        await attempt(`delete through ${p.name}'s API`, () => p.apiCleanup(name));
+      }
     }
-    if (destroyed && appName !== undefined) {
-      for (const p of involved) await p.expectNothingLeft(appName);
-    } else if (current.moving && appName !== undefined) {
-      // A move left half-way has servers on both providers: delete them through the APIs.
-      console.error("A move was still in progress; deleting through both providers' APIs.");
-      for (const p of involved) await p.apiCleanup(appName);
-      for (const p of involved) await p.expectNothingLeft(appName);
-    } else {
-      await teardown(live, repo, env, appName);
-      for (const p of involved)
-        if (p !== live && appName !== undefined) await p.apiCleanup(appName);
-      if (shared !== undefined) await removeRecordsOfRun(shared, sharedRules);
-    }
-    // After the destroy or its fallback, no shared rule may list the app's hostnames.
-    // … and no DNS record on them is left in the zone.
     if (shared !== undefined) {
-      await expectInSharedRules(shared, sharedRules, false);
-      await expectNoRecordsLeft(shared, sharedRules);
+      const zone = shared;
+      await attempt("delete the DNS records left on the run's hostnames", () =>
+        removeRecordsOfRun(zone, sharedRules),
+      );
     }
-    // The throwaway repository keeps only `main`, as the own-server and Portainer runs leave it.
-    await github.reset();
+    // When destroy failed, the deploy secrets (a storage key among them) stay in GitHub.
+    await attempt("delete the deploy secrets", () => deleteDeploySecrets(repo, env));
   }
+  // After the destroy or its fallback, no shared rule may list the app's hostnames.
+  // … and no DNS record on them is left in the zone.
+  if (shared !== undefined) {
+    const zone = shared;
+    await attempt("check OpsCrew's shared rules", () =>
+      expectInSharedRules(zone, sharedRules, false),
+    );
+    await attempt("check the zone's DNS records", () => expectNoRecordsLeft(zone, sharedRules));
+  }
+  // … and the bucket is gone; the user's key for it stays theirs (OpsCrew never deletes one).
+  if (bucket !== undefined && pass !== undefined) {
+    await attempt(`check the bucket ${bucket.bucket}`, async () => {
+      if (await pass.exists(bucket)) {
+        throw new Error(`it is left on ${bucket.provider}: delete it in the provider's console`);
+      }
+    });
+  }
+  // The throwaway repository keeps only `main`, as the own-server and Portainer runs leave it.
+  await attempt("reset the throwaway repository", () => github.reset());
+  await rm(work, { recursive: true, force: true }).catch(() => undefined);
+  const left =
+    problems.length > 0 ? `Cleanup left something behind:\n- ${problems.join("\n- ")}` : "";
+  // A failed step's own error comes first; what the cleanup left is then only logged.
+  if (failure !== undefined) {
+    if (left !== "") console.error(`OpsCrew E2E: ${left}`);
+    throw failure;
+  }
+  if (left !== "") throw new Error(left);
+}
+
+/**
+ * Deletes the repository's Actions secrets that OpsCrew's record of the stored deploy secrets
+ * names (names only, in the project's folder under OPSCREW_HOME), as `opscrew destroy` does: they
+ * hold the deploy key, the app's secrets and a storage key. One already gone counts as deleted.
+ */
+async function deleteDeploySecrets(
+  repo: string,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  const file = resolveProjectPaths(repo, { env }).files.deploySecrets;
+  if (!existsSync(file)) return;
+  const record = JSON.parse(await readFile(file, "utf8")) as { repo?: string; names?: string[] };
+  if (record.repo !== github.name) return;
+  const kept: string[] = [];
+  for (const name of record.names ?? []) {
+    const deleted = await github.call(
+      "DELETE",
+      `/repos/${github.name}/actions/secrets/${encodeURIComponent(name)}`,
+    );
+    if (deleted.status !== 204 && deleted.status !== 404) {
+      kept.push(`${name} (HTTP ${deleted.status})`);
+    }
+  }
+  if (kept.length > 0) throw new Error(`GitHub kept the deploy secrets ${kept.join(", ")}`);
 }
 
 /**
@@ -775,44 +1003,12 @@ async function teardown(
         await writeFile(main, provider.unprotect(await readFile(main, "utf8")));
       }
       const paths = resolveProjectPaths(repo, { env });
-      const engine = await selectEngine("auto", { env, runner });
-      const engineEnv = { ...env };
-      if (engine.info.name === "tofu" && existsSync(paths.files.statePassphrase)) {
-        const passphrase = (await readFile(paths.files.statePassphrase, "utf8")).trim();
-        engineEnv.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
-      }
-      const dir = join(repo, "opscrew/infra/prod");
-      await engine.init(dir, {
-        env: engineEnv,
-        backendConfig: { path: join(paths.files.tfstateDir, "prod.tfstate") },
+      await engineDestroy(repo, join(repo, "opscrew/infra/prod"), {
+        env,
+        state: join(paths.files.tfstateDir, "prod.tfstate"),
+        label: "prod",
+        applyFirst: provider.unprotect !== undefined,
       });
-      await mkdir(paths.files.plansDir, { recursive: true });
-      if (provider.unprotect) {
-        const unprotect = await engine.plan(
-          dir,
-          join(paths.files.plansDir, "e2e-unprotect.tfplan"),
-          { env: engineEnv },
-        );
-        if (unprotect.changes.length > 0) {
-          await engine.apply(
-            dir,
-            unprotect.planFile,
-            { approvedPlanHash: unprotect.planHash },
-            { env: engineEnv },
-          );
-        }
-      }
-      const destroy = await engine.plan(dir, join(paths.files.plansDir, "e2e-destroy.tfplan"), {
-        env: engineEnv,
-        destroy: true,
-      });
-      const result = await engine.apply(
-        dir,
-        destroy.planFile,
-        { approvedPlanHash: destroy.planHash, allowDestroy: true },
-        { env: engineEnv },
-      );
-      if (!result.ok) throw new Error(result.log);
     }
   } catch (error) {
     console.error(
@@ -822,4 +1018,77 @@ async function teardown(
   if (appName === undefined) return;
   await provider.apiCleanup(appName);
   await provider.expectNothingLeft(appName);
+}
+
+/**
+ * Fallback when `opscrew destroy --delete-data` failed (the bucket already emptied): the engine
+ * destroys the `storage` root with its `prevent_destroy` lifted and the user's key in its
+ * environment. Throws when the destroy fails.
+ */
+async function destroyStorageRoot(
+  repo: string,
+  env: Record<string, string | undefined>,
+  plan: DeployPlan,
+): Promise<void> {
+  const dir = join(repo, storageRootDir(plan));
+  const main = join(dir, "main.tf");
+  if (!existsSync(main)) return;
+  await writeFile(main, unprotectStorageRoot(await readFile(main, "utf8")));
+  const key = {
+    accessKeyId: env[STORAGE_KEY_VARS.accessKeyId] ?? "",
+    secretAccessKey: env[STORAGE_KEY_VARS.secretAccessKey] ?? "",
+  };
+  await engineDestroy(repo, dir, {
+    env: storageEngineEnv(env, plan, key),
+    state: storageStateFile(resolveProjectPaths(repo, { env })),
+    label: "storage",
+    applyFirst: false,
+  });
+}
+
+/**
+ * Applies a destroy plan of the root in `dir` with the engine (its state at `state`, the state
+ * passphrase from the project), approved by its own hash; with `applyFirst`, first applies the
+ * plan of the edited root (Hetzner's lifted delete protection). Throws when the destroy fails.
+ */
+async function engineDestroy(
+  repo: string,
+  dir: string,
+  options: {
+    env: Record<string, string | undefined>;
+    state: string;
+    label: string;
+    applyFirst: boolean;
+  },
+): Promise<void> {
+  const paths = resolveProjectPaths(repo, { env: options.env });
+  const engine = await selectEngine("auto", { env: options.env, runner });
+  const engineEnv = { ...options.env };
+  if (engine.info.name === "tofu" && existsSync(paths.files.statePassphrase)) {
+    const passphrase = (await readFile(paths.files.statePassphrase, "utf8")).trim();
+    engineEnv.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
+  }
+  await engine.init(dir, { env: engineEnv, backendConfig: { path: options.state } });
+  await mkdir(paths.files.plansDir, { recursive: true });
+  const planFile = (what: string) =>
+    join(paths.files.plansDir, `e2e-${options.label}-${what}.tfplan`);
+  if (options.applyFirst) {
+    const unprotect = await engine.plan(dir, planFile("unprotect"), { env: engineEnv });
+    if (unprotect.changes.length > 0) {
+      await engine.apply(
+        dir,
+        unprotect.planFile,
+        { approvedPlanHash: unprotect.planHash },
+        { env: engineEnv },
+      );
+    }
+  }
+  const destroy = await engine.plan(dir, planFile("destroy"), { env: engineEnv, destroy: true });
+  const result = await engine.apply(
+    dir,
+    destroy.planFile,
+    { approvedPlanHash: destroy.planHash, allowDestroy: true },
+    { env: engineEnv },
+  );
+  if (!result.ok) throw new Error(result.log);
 }

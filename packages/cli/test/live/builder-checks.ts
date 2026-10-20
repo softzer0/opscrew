@@ -12,25 +12,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDotenv, readServerAddresses } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
-import { IMAGES } from "@opscrew/iac-templates";
+import { appDir, IMAGES } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   type ImageBuilder,
   ImageBuilderSchema,
   readArtifact,
-  serviceOf,
 } from "@opscrew/plan-schema";
 import { expect } from "vitest";
 import { type GitHubRepo, ghcrMissingBlobs, minutes } from "./cloud";
-import { EXAMPLES } from "./harness";
+import { CHANGE_FILE, EXAMPLES, readGeneratedValues } from "./harness";
 import { jobErrors, jobLog, runSteps } from "./portainer-cloud";
 import { deployedImage } from "./portainer-support";
 import {
   applyEdit,
   BUILD_JOB,
   deployJobFailed,
+  generatesValues,
   HEALTH_BREAKS,
-  jsonStrings,
   type LoadFailure,
   leakedLabels,
   missingBuildSteps,
@@ -50,9 +49,6 @@ const PRUNE_JOB = "Delete old images";
 
 /** Requests per second the load sends to the health route. */
 const LOAD_RPS = 20;
-
-/** The file the merged change adds, so that the deploy builds a new image. */
-const CHANGE_FILE = "opscrew-e2e-change.txt";
 
 /** What T1205 asked to confirm live that this pass cannot, logged on every run. */
 const NOT_COVERED = [
@@ -202,13 +198,13 @@ async function registryLogin(user: string, token: string) {
 }
 
 /**
- * Every secret value the attestations must not hold: `tokens`, the deploy key, the state
+ * Every secret value of a Hetzner pass that must not leak: `tokens`, the deploy key, the state
  * passphrase, the values OpsCrew generated for the app and the `OPSCREW_E2E_APP_ENV` values of 8
  * characters or more. Throws when the plan has generated values and OpsCrew's record of them is
  * missing, since the search would then miss them.
  */
-async function knownSecrets(
-  run: BuilderRun,
+export async function knownSecrets(
+  run: Pick<BuilderRun, "repo" | "env">,
   plan: DeployPlan,
   tokens: readonly { label: string; value: string | undefined }[],
 ): Promise<{ label: string; value: string }[]> {
@@ -221,14 +217,12 @@ async function knownSecrets(
   ] as const) {
     if (existsSync(file)) scrubber.add(await readFile(file, "utf8"), label);
   }
-  const generated = join(paths.projectHomeDir, "generated_values.json");
-  if (existsSync(generated)) {
-    for (const value of jsonStrings(JSON.parse(await readFile(generated, "utf8")))) {
-      scrubber.add(value, "generated-value");
-    }
-  } else if (serviceOf(plan, "postgres") || plan.app.env.some((v) => v.source === "generated")) {
+  const generated = await readGeneratedValues(paths);
+  if (generated !== undefined) {
+    for (const value of generated) scrubber.add(value, "generated-value");
+  } else if (generatesValues(plan)) {
     throw new Error(
-      `The plan has values OpsCrew generates, but ${generated}, where provision keeps them, is missing, so the leak search cannot look for them.`,
+      `The plan has values OpsCrew generates, but ${join(paths.projectHomeDir, "generated_values.json")}, where provision keeps them, is missing, so the leak search cannot look for them.`,
     );
   }
   const appEnv = run.env.OPSCREW_APP_ENV_FILE;
@@ -241,47 +235,55 @@ async function knownSecrets(
 }
 
 /**
- * Runs `body` (a deploy) under a steady load on `url`, logs every failed request with the time it
- * was sent, and fails when any request failed.
+ * Runs `body` (a deploy, or an app's destroy) under a steady load of {@link LOAD_RPS} requests per
+ * second on each of `urls` (health routes), logs every failed request with the time it was sent,
+ * and fails when any request failed. The URLs are counted by their index (`site 1`, …) in the
+ * messages, which never name a host.
  */
-async function underLoad<T>(
-  url: string,
+export async function underLoad<T>(
+  urls: readonly string[],
   what: string,
   log: (message: string) => void,
   body: () => Promise<T>,
 ): Promise<T> {
-  log(`${what}: sending ${LOAD_RPS} requests per second to the health route until its deploy ends`);
+  const sites = (index: number) => (urls.length === 1 ? "" : ` (site ${index + 1})`);
+  log(`${what}: sending ${LOAD_RPS} requests per second to each of ${urls.length} health route(s)`);
   const startedAt = Date.now();
-  const load = steadyLoad(
-    async () => {
-      const answer = await fetch(url, {
-        headers: { "User-Agent": "opscrew-e2e" },
-        signal: AbortSignal.timeout(10_000),
-      });
-      await answer.arrayBuffer();
-      return answer.status;
-    },
-    LOAD_RPS,
-    (failure) => log(`${what}: the request sent at ${failure.at} failed: ${failure.what}`),
+  const loads = urls.map((url, index) =>
+    steadyLoad(
+      async () => {
+        const answer = await fetch(url, {
+          headers: { "User-Agent": "opscrew-e2e" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        await answer.arrayBuffer();
+        return answer.status;
+      },
+      LOAD_RPS,
+      (failure) =>
+        log(`${what}: the request sent at ${failure.at}${sites(index)} failed: ${failure.what}`),
+    ),
   );
-  let summary: { sent: number; failures: LoadFailure[] } = { sent: 0, failures: [] };
+  let summaries: { sent: number; failures: LoadFailure[] }[] = [];
   let seconds = 0;
   let result: T;
   try {
     result = await body();
   } finally {
     seconds = (Date.now() - startedAt) / 1000;
-    summary = await load.stop();
+    summaries = await Promise.all(loads.map((load) => load.stop()));
   }
-  log(
-    `${what}: ${summary.sent} requests in ${Math.round(seconds)} s, ${summary.failures.length} failed`,
-  );
-  expect(summary.failures, `requests that failed during ${what}`).toEqual([]);
-  // A computer too busy to keep the rate would test less than the documented load.
-  expect(
-    summary.sent,
-    `requests sent in ${Math.round(seconds)} s (at least 90% of ${LOAD_RPS} per second)`,
-  ).toBeGreaterThanOrEqual(0.9 * LOAD_RPS * seconds);
+  for (const [index, summary] of summaries.entries()) {
+    log(
+      `${what}${sites(index)}: ${summary.sent} requests in ${Math.round(seconds)} s, ${summary.failures.length} failed`,
+    );
+    expect(summary.failures, `requests that failed during ${what}${sites(index)}`).toEqual([]);
+    // A computer too busy to keep the rate would test less than the documented load.
+    expect(
+      summary.sent,
+      `requests sent in ${Math.round(seconds)} s${sites(index)} (at least 90% of ${LOAD_RPS} per second)`,
+    ).toBeGreaterThanOrEqual(0.9 * LOAD_RPS * seconds);
+  }
   return result;
 }
 
@@ -318,9 +320,10 @@ export async function builderChecks(
 
   const paths = resolveProjectPaths(run.repo, { env: run.env });
   const ipv4 = (await readServerAddresses(paths)).deployment?.ipv4 as string;
+  const dir = appDir(plan);
   const runningImage = async () => {
-    const image = deployedImage(await run.ssh(ipv4, "cat /srv/app/.env"));
-    expect(image, "the server's /srv/app/.env names a GHCR image digest").toBeDefined();
+    const image = deployedImage(await run.ssh(ipv4, `cat ${dir}/.env`));
+    expect(image, `the server's ${dir}/.env names a GHCR image digest`).toBeDefined();
     return `${image?.repository}@sha256:${image?.digest}`;
   };
   const first = await runningImage();
@@ -329,7 +332,7 @@ export async function builderChecks(
   const uids = (
     await run.ssh(
       ipv4,
-      'cd /srv/app && for id in $(docker compose ps -q app); do docker exec "$id" id -u; done',
+      `cd ${dir} && for id in $(docker compose ps -q app); do docker exec "$id" id -u; done`,
     )
   )
     .split(/\s+/)
@@ -376,7 +379,7 @@ export async function builderChecks(
       join(run.repo, CHANGE_FILE),
       `Deployed under load (${new Date().toISOString()}).\n`,
     );
-    const changed = await underLoad(health, "a merged change", log, async () =>
+    const changed = await underLoad([health], "a merged change", log, async () =>
       run.github.waitForDeploy({
         headSha: await run.mergeFiles("e2e/change", "e2e: a change deployed under load", [
           CHANGE_FILE,
@@ -398,7 +401,7 @@ export async function builderChecks(
     const file = join(run.repo, edit.file);
     const original = await readFile(file, "utf8");
     await writeFile(file, applyEdit(original, edit));
-    const broken = await underLoad(health, "a broken release", log, async () =>
+    const broken = await underLoad([health], "a broken release", log, async () =>
       run.github.waitForDeploy({
         headSha: await run.mergeFiles("e2e/broken", "e2e: a release whose health route fails", [
           edit.file,

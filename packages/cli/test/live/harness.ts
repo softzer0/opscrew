@@ -37,7 +37,9 @@ import {
   ed25519FromKeyscan,
   expectedSharedHosts,
   fingerprintFromKeygen,
+  generatesValues,
   ipv6PrefixForms,
+  jsonStrings,
   newRunId,
   removalApproval,
   runHostname,
@@ -135,8 +137,61 @@ export interface ServerSettings {
   /** An example under examples/ (default nextjs-postgres). */
   app: string;
   appEnvFile?: string;
-  /** Optional: the second app's throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`), or "". */
+  /** The second app's throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`). */
   secondRepo: string;
+}
+
+/** The file a merged change adds or rewrites, so that its deploy builds a new image. */
+export const CHANGE_FILE = "opscrew-e2e-change.txt";
+
+/** Every string value of OpsCrew's generated values for the app (8 characters or more), if it kept any. */
+export async function readGeneratedValues(
+  paths: Pick<ReturnType<typeof resolveProjectPaths>, "projectHomeDir">,
+): Promise<string[] | undefined> {
+  const file = join(paths.projectHomeDir, "generated_values.json");
+  if (!existsSync(file)) return undefined;
+  return jsonStrings(JSON.parse(await readFile(file, "utf8")));
+}
+
+/** What the leak search reads of one app: its git history, its pull requests and its audit log. */
+export interface LeakSourceApp {
+  git: (...args: string[]) => Promise<string>;
+  github: GitHubRepo;
+  /** Pull requests opened before this are older runs', not this one's. */
+  startedAt: Date;
+  auditDir: string;
+}
+
+/**
+ * What the leak search reads in `app` (`which` names it in the labels): the commits of every
+ * branch and of `refs/e2e/*`, the pull requests since the run started, and the audit logs.
+ */
+export async function leakSourcesOf(app: LeakSourceApp, which = ""): Promise<LeakSource[]> {
+  await app.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
+  const sources: LeakSource[] = [
+    {
+      kind: "commits",
+      where: `the commits (every branch)${which}`,
+      text: await app.git("log", "--all", "-p", "--format=%B"),
+    },
+  ];
+  for (const pull of await app.github.pullRequestTexts()) {
+    if (pull.createdAt < app.startedAt) continue;
+    sources.push({
+      kind: "pull request",
+      where: `pull request #${pull.number}${which}`,
+      text: pull.text,
+    });
+  }
+  if (!existsSync(app.auditDir)) return sources;
+  for (const file of await readdir(app.auditDir)) {
+    sources.push({
+      kind: "audit log",
+      where: `the audit log ${file}${which}`,
+      text: await readFile(join(app.auditDir, file), "utf8"),
+    });
+  }
+  return sources;
 }
 
 /** The settings both server live tests share; `serverTypeVariable` names the test's own one. */
@@ -157,21 +212,6 @@ export function serverSettings(
     ...(env.OPSCREW_E2E_APP_ENV ? { appEnvFile: env.OPSCREW_E2E_APP_ENV } : {}),
     secondRepo: env.OPSCREW_E2E_GITHUB_REPO_B?.trim() ?? "",
   };
-}
-
-/**
- * Why the second app's steps are skipped, or `undefined` when they run: they need its own
- * throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`) and an example with a `package.json`, where
- * the second app gets its own name.
- */
-export function secondAppSkip(settings: ServerSettings): string | undefined {
-  if (settings.secondRepo === "") {
-    return "set OPSCREW_E2E_GITHUB_REPO_B to a second throwaway repository to deploy a second app into the same zone (docs/e2e.md)";
-  }
-  if (!existsSync(join(EXAMPLES, settings.app, "package.json"))) {
-    return `examples/${settings.app} has no package.json, where the second app gets its own name; use a Node example such as nextjs-postgres`;
-  }
-  return undefined;
 }
 
 /** One CLI run. */
@@ -277,23 +317,35 @@ export class LiveRun {
   }
 
   /**
-   * The run's second app, B, on `OPSCREW_E2E_GITHUB_REPO_B`, sharing this run's id, scrubber,
-   * outputs, findings and cleanup; `undefined` when {@link secondAppSkip} gives a reason.
+   * The run's second app, B: `examples/<example>` (another example than the first app's, so no
+   * name of one starts with the other's) on `OPSCREW_E2E_GITHUB_REPO_B`, sharing this run's id,
+   * scrubber, outputs, findings and cleanup.
    */
-  second(afterCli?: () => Promise<void>): LiveRun | undefined {
+  second(example: string, afterCli?: () => Promise<void>): LiveRun {
     const { label, name, settings } = this.options;
-    if (secondAppSkip(settings) !== undefined) return undefined;
     const second = new LiveRun(
       {
         label: `${label}, B`,
         name: `${name}-b`,
-        settings: { ...settings, githubRepo: settings.secondRepo },
+        settings: { ...settings, githubRepo: settings.secondRepo, app: example },
         afterCli,
       },
       this,
     );
     this.children.push(second);
     return second;
+  }
+
+  /**
+   * Puts this app on `other`'s server (two apps on one server the user owns): its address, root's
+   * login with the test key and the pinned host key. Call it after {@link prepareRepo}; the
+   * cleanup deletes the server once, with `other`.
+   */
+  useServerOf(other: LiveRun): void {
+    this.server = other.server;
+    this.root = other.root;
+    this.keyFile = other.keyFile;
+    this.knownHostsFile = other.knownHostsFile;
   }
 
   readonly log = (message: string) =>
@@ -466,6 +518,23 @@ export class LiveRun {
     return true;
   }
 
+  /**
+   * Adds the values OpsCrew generated for the app's services and secrets (database passwords,
+   * Garage's key) to the scrubber; none kept is a finding when the plan has a service.
+   */
+  async rememberGeneratedValues(): Promise<void> {
+    const values = await readGeneratedValues(this.paths());
+    if (values === undefined) {
+      if (generatesValues(await this.readPlan())) {
+        this.findings.push(
+          `OpsCrew kept no generated values for ${this.app()}, so the leak search misses its services' passwords`,
+        );
+      }
+      return;
+    }
+    for (const value of values) this.scrubber.add(value, "generated-value");
+  }
+
   // -------------------------------------------------------------------------------------------
   // Step 1: the throwaway repository and server.
 
@@ -475,8 +544,8 @@ export class LiveRun {
    * agent, an `OPSCREW_E2E_*` variable or a name in `drop`), the server's own SSH key (never in
    * the repository, never printed), and the throwaway repository's `main` with a fresh copy of the
    * example (`commit` as its message) and without earlier pull requests or branches. The second
-   * app's copy gets `b-` before the name in its `package.json`, the name OpsCrew gives the app, so
-   * none of its names (stacks, tunnel, Access) starts with the first app's.
+   * app must be another example than the first, so none of its names (stacks, tunnel, Access)
+   * starts with the first app's.
    */
   async prepareRepo(options: {
     commit: string;
@@ -488,6 +557,11 @@ export class LiveRun {
     if (!isExample(settings.app)) {
       throw new Error(
         `OPSCREW_E2E_APP="${settings.app}" is not an example under examples/ (this test deploys examples only).`,
+      );
+    }
+    if (this.parent !== undefined && settings.app === this.parent.options.settings.app) {
+      throw new Error(
+        `The second app is examples/${settings.app}, so OPSCREW_E2E_APP must name another example (docs/e2e.md).`,
       );
     }
     this.locations();
@@ -525,14 +599,6 @@ export class LiveRun {
 
     this.log(`pushing examples/${settings.app} to the throwaway repository`);
     await materializeFixture(join(EXAMPLES, settings.app), this.repo);
-    if (this.parent !== undefined) {
-      const file = join(this.repo, "package.json");
-      const manifest = JSON.parse(await readFile(file, "utf8")) as { name?: string };
-      await writeFile(
-        file,
-        `${JSON.stringify({ ...manifest, name: `b-${manifest.name}` }, null, 2)}\n`,
-      );
-    }
     const appEnv = settings.appEnvFile ? await readFile(settings.appEnvFile, "utf8") : "";
     await writeFile(join(this.work, "production.env"), appEnv);
     // Stand-in values, but still never to be shown or committed (8+ characters: shorter ones
@@ -935,6 +1001,28 @@ export class LiveRun {
     return (await this.deploy(what)) ?? this.deployMain(what);
   }
 
+  /**
+   * A change as a user merges one: {@link CHANGE_FILE} written on a branch of its own, a pull
+   * request `title`, its merge, and the deploy run of the merge commit, which must succeed.
+   * Returns the run's id.
+   */
+  async mergeChange(title: string): Promise<number> {
+    const branch = `e2e/change-${this.runId}-${Date.now().toString(36)}`;
+    await this.git("checkout", "-q", "-b", branch);
+    await writeFile(
+      join(this.repo, CHANGE_FILE),
+      `${title} (run ${this.runId}, ${new Date().toISOString()}).\n`,
+    );
+    await this.git("add", CHANGE_FILE);
+    await this.git("commit", "-q", "-m", title);
+    await this.git("push", "-q", "-u", "origin", branch);
+    const number = await this.github.createPullRequest(title, branch);
+    this.log(`merging the change #${number} and waiting for its deploy run (up to 30 minutes)`);
+    const sha = await this.github.merge(number);
+    await this.checkoutMain();
+    return this.expectDeployed(await this.github.waitForDeploy({ headSha: sha }), title);
+  }
+
   private expectDeployed(
     run: Awaited<ReturnType<GitHubRepo["waitForDeploy"]>>,
     what: string,
@@ -970,30 +1058,13 @@ export class LiveRun {
   async leakSources(): Promise<LeakSource[]> {
     const sources: LeakSource[] = [];
     for (const app of [this, ...this.children].filter((item) => item.repoReady)) {
-      const which = app === this ? "" : " (B)";
-      await app.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
-      sources.push({
-        kind: "commits",
-        where: `the commits (every branch)${which}`,
-        text: await app.git("log", "--all", "-p", "--format=%B"),
-      });
-      for (const pull of await app.github.pullRequestTexts()) {
-        if (pull.createdAt < app.startedAt) continue;
-        sources.push({
-          kind: "pull request",
-          where: `pull request #${pull.number}${which}`,
-          text: pull.text,
-        });
-      }
-      const auditDir = app.paths().auditDir;
-      if (!existsSync(auditDir)) continue;
-      for (const file of await readdir(auditDir)) {
-        sources.push({
-          kind: "audit log",
-          where: `the audit log ${file}${which}`,
-          text: await readFile(join(auditDir, file), "utf8"),
-        });
-      }
+      const source = {
+        git: (...args: string[]) => app.git(...args),
+        github: app.github,
+        startedAt: app.startedAt,
+        auditDir: app.paths().auditDir,
+      };
+      sources.push(...(await leakSourcesOf(source, app === this ? "" : " (B)")));
     }
     return sources;
   }

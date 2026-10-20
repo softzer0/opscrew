@@ -1,11 +1,18 @@
-/** The live test on a server the user already owns (docs/e2e.md, "Your own server"). */
+/**
+ * The live test on a server the user already owns (docs/e2e.md, "Your own server"), with a second
+ * app on the same server behind the same edge (feature 013).
+ */
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { appDir, EDGE_DIR, EDGE_PROJECT } from "@opscrew/iac-templates";
 import { describe, expect } from "vitest";
+import { underLoad } from "./builder-checks";
 import {
   type CloudflareZone,
   canConnect,
+  hasIpv6Route,
   httpRequest,
   minutes,
   resolveIpv4,
@@ -13,7 +20,14 @@ import {
   waitFor,
   waitForAccessRefusal,
 } from "./cloud";
-import { LiveRun, secondAppSkip, serverSettings } from "./harness";
+import {
+  readValue,
+  type ServerExec,
+  serverContainers,
+  serverProblems,
+  writeValue,
+} from "./component-checks";
+import { LiveRun, serverSettings } from "./harness";
 import {
   addressLinesOutsidePurpose,
   approveHashes,
@@ -30,16 +44,13 @@ import {
 
 const MISSING = missingVariables(process.env, "OPSCREW_E2E_OWN_SERVER", SERVER_E2E_VARIABLES);
 const SETTINGS = serverSettings(process.env, "OPSCREW_E2E_OWN_SERVER_TYPE");
-/** Why the second app's steps (6b, 7b) are skipped, if they are. */
-const SECOND_SKIP = secondAppSkip(SETTINGS);
+/** The second app on the same server: its files go to Garage, the bucket on the user's server. */
+const SECOND_APP = "s3-uploads";
 
 if (MISSING.length > 0 && process.env.OPSCREW_E2E_OWN_SERVER === "1") {
   console.warn(
     `OpsCrew E2E (own server): skipped, set ${MISSING.join(", ")} (see docs/e2e.md, "Your own server").`,
   );
-}
-if (MISSING.length === 0 && SECOND_SKIP !== undefined) {
-  console.warn(`OpsCrew E2E (own server): the second app's steps are skipped: ${SECOND_SKIP}.`);
 }
 
 const PORTAINER_PORTS = [9443, 9000, 8000];
@@ -62,12 +73,16 @@ describe.skipIf(MISSING.length > 0)(
     const run = new LiveRun({ label: "own server", name: "own", settings: SETTINGS });
     const { log, scrubber } = run;
     const { appHost } = run;
-    /** The second app, B, on its own server (steps 6b and 7b), when its steps run. */
-    const b = run.second();
-    const second = () => b as LiveRun;
+    /** The second app, B, on the same server behind the same edge (steps 6b, 6c, 7 and 7b). */
+    const b = run.second(SECOND_APP);
+    /** The value B wrote into its Garage bucket in step 6b. */
+    const bucketValue = `value-${randomBytes(6).toString("hex")}`;
     let fingerprint = "";
     let ipv6Route = false;
     let tunnel: ChildProcess | undefined;
+    /** Root on the server (both apps'). */
+    const exec: ServerExec = (command) => run.shell().ok(command, minutes(5));
+    const site = (app: LiveRun) => `https://${app.appHost}`;
 
     /** The server's addresses this computer can try (IPv6 only with a route). */
     const ownAddresses = () => [
@@ -137,25 +152,19 @@ describe.skipIf(MISSING.length > 0)(
     }
 
     /**
-     * `destroy --confirm <app> --undo-host`, then again with `--approve <undo host plan hash>` until
-     * it exits 0 (at most three runs, each hash approved once).
+     * `destroy --confirm <app>` with `flags` (`--undo-host` for the last app), then again with
+     * `--approve <host plan hash>` until it exits 0 (at most three runs, each hash approved once).
      */
-    async function destroyUndoHost(app: LiveRun): Promise<void> {
+    async function destroyApp(app: LiveRun, flags: readonly string[]): Promise<void> {
       let approve: string[] = [];
       const tried: string[] = [];
       for (let attempt = 1; ; attempt++) {
-        const result = await app.opscrew(
-          "destroy",
-          "--confirm",
-          app.app(),
-          "--undo-host",
-          ...approve,
-        );
+        const result = await app.opscrew("destroy", "--confirm", app.app(), ...flags, ...approve);
         if (result.exitCode === 0) break;
         const hash = printedHash(result.output, "Host plan hash");
         if (hash === undefined || tried.includes(hash) || attempt >= 3) {
           throw new Error(
-            `opscrew destroy --undo-host exited with ${result.exitCode}:\n${run.tail(result.output)}`,
+            `opscrew destroy ${flags.join(" ")} exited with ${result.exitCode}:\n${run.tail(result.output)}`,
           );
         }
         tried.push(hash);
@@ -175,7 +184,7 @@ describe.skipIf(MISSING.length > 0)(
           commit: `e2e: examples/${SETTINGS.app} on your own server`,
           env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
         });
-        ipv6Route = await canConnect("2606:4700:4700::1111", 443, 5_000);
+        ipv6Route = await hasIpv6Route();
         log(
           ipv6Route
             ? "this computer has an IPv6 route: the server's IPv6 address is probed too"
@@ -225,6 +234,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the DNS-only provision");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
         await run.rememberSecretFile(run.paths().files.statePassphrase, "state-passphrase");
+        await run.rememberGeneratedValues();
         await run.deployAny("the first deploy, DNS only");
 
         await waitForDns(true);
@@ -481,30 +491,11 @@ describe.skipIf(MISSING.length > 0)(
           workflow.includes("cloudflared access ssh"),
           "the deploy workflow connects through `cloudflared access ssh`",
         ).toBe(true);
-        const before = await run.shell().ok("stat -c %Y /srv/app/.env");
+        const envFile = `${appDir(await run.readPlan())}/.env`;
+        const before = await run.shell().ok(`stat -c %Y ${envFile}`);
         const since = await run.shell().ok("date +%s");
-        const branch = `e2e/change-${run.runId}`;
-        const title = "e2e: a change deployed through the tunnel";
-        await run.git("checkout", "-q", "-b", branch);
-        await writeFile(
-          join(run.repo, "opscrew-e2e-change.txt"),
-          `Deployed through the tunnel by run ${run.runId}.\n`,
-        );
-        await run.git("add", "opscrew-e2e-change.txt");
-        await run.git("commit", "-q", "-m", title);
-        await run.git("push", "-q", "-u", "origin", branch);
-        const number = await run.github.createPullRequest(title, branch);
-        log(
-          `merging the change #${number} and waiting for its deploy through the tunnel (up to 30 minutes)`,
-        );
-        const sha = await run.github.merge(number);
-        await run.checkoutMain();
-        const deployed = await run.github.waitForDeploy({ headSha: sha });
-        expect(
-          deployed.conclusion,
-          `the change's deploy run ${deployed.id}: ${deployed.jobs.map((j) => `${j.name}=${j.conclusion}`).join(", ")}`,
-        ).toBe("success");
-        const after = await run.shell().ok("stat -c %Y /srv/app/.env");
+        await run.mergeChange("e2e: a change deployed through the tunnel");
+        const after = await run.shell().ok(`stat -c %Y ${envFile}`);
         expect(Number(after) > Number(before), "the deploy wrote the server's .env again").toBe(
           true,
         );
@@ -533,18 +524,18 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "6b. a second app on its own throwaway server, in tunnel mode, in the same zone and account: both blocked on /.env, both in OpsCrew's probe block",
+      "6b. a second app on the same server behind the same edge, in tunnel mode, its files in Garage: both blocked on /.env, both in OpsCrew's probe block, every component in place",
       minutes(75),
       async () => {
-        const app = second();
+        const app = b;
         await app.prepareRepo({
-          commit: `e2e: a second app (examples/${SETTINGS.app}) on your own server`,
+          commit: `e2e: a second app (examples/${SECOND_APP}) on your own server`,
           env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
         });
-        const hostKey = await app.createServer();
+        app.useServerOf(run);
         await app.initFix();
         await app.opscrewOk("analyze", "--no-ai");
-        await answerAndDesign("tunnel", hostKey, app);
+        await answerAndDesign("tunnel", fingerprint, app);
         const plan = await app.readPlan();
         expect(plan.target, "the second app in tunnel mode").toMatchObject({
           provider: "own",
@@ -562,6 +553,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the second app's provision");
         await app.rememberSecretFile(app.paths().files.deployKey, "deploy-private-key");
         await app.rememberSecretFile(app.paths().files.statePassphrase, "state-passphrase");
+        await app.rememberGeneratedValues();
         await app.rememberOutputs(TUNNEL_OUTPUTS);
         await app.deployAny("the second app");
         await waitForDns(false, app);
@@ -569,58 +561,104 @@ describe.skipIf(MISSING.length > 0)(
         await app.opscrewOk("verify");
         await run.expectProbeBlocked(appHost);
         await run.expectProbeBlocked(app.appHost);
+
+        // Both apps on one server (quickstart's step 2): the edge's one Caddy reaches each app,
+        // which publishes no port; every component has its limit, its data and its settings.
+        for (const one of [run, app]) {
+          expect(
+            await serverProblems(exec, await one.readPlan(), one.repo),
+            `the components of ${one.app()} on the server`,
+          ).toEqual([]);
+        }
+        const caddies = (await serverContainers(exec)).filter(
+          (c) => c.project === EDGE_PROJECT && c.service === "caddy" && c.running,
+        );
+        expect(caddies.length, "one Caddy of the shared edge serves both apps").toBe(1);
+        await writeValue(site(app), bucketValue);
+        await readValue(site(app), bucketValue);
         log(
-          "second app: served through its own tunnel in the same zone and account; both apps' /.env blocked",
+          "second app: on the same server behind the same edge, served through its own tunnel; both apps' /.env blocked; a file written to Garage and read back",
         );
       },
-      { skip: SECOND_SKIP },
     );
 
     run.step(
-      "7. destroy --undo-host removes the app, DNS, tunnel and Access; root still logs in; the second app keeps working",
+      "6c. a change to each app under 20 requests per second to each, with no failed request (SC-1305)",
+      minutes(75),
+      async () => {
+        const urls = [await run.healthUrl(), await b.healthUrl()];
+        for (const app of [run, b]) {
+          await underLoad(urls, `a change to ${app.app()}`, log, () =>
+            app.mergeChange(`e2e: a change to ${app.app()} under load`),
+          );
+        }
+        await readValue(site(b), bucketValue);
+        log("each app deployed a change under load with no failed request; Garage kept the file");
+      },
+    );
+
+    run.step(
+      "7. destroying the first app leaves the second answering under load and the edge in place; root still logs in",
       minutes(30),
       async () => {
         const name = run.app();
-        await destroyUndoHost(run);
+        // SC-1305: the first app's destroy causes no failed request to the second.
+        await underLoad([await b.healthUrl()], "the first app's destroy", log, () =>
+          destroyApp(run, []),
+        );
         await run.expectCloudflareClean();
         await run.expectSharedCloudflare("the first app's destroy");
-        if (b?.appName !== undefined) {
-          // SC-1102: the second app's tunnel, probe block and Access login still work.
-          await b.waitForHealth(minutes(5));
-          await run.expectProbeBlocked(b.appHost);
-          const sshHost = `ssh-${b.app()}.${(run.zone as CloudflareZone).name}`;
-          const access = await waitForAccessRefusal(`https://${sshHost}/`);
-          log(
-            `the second app still answers through its tunnel, its /.env is blocked and ${sshHost} refuses a request without the service token (${access})`,
-          );
-        }
+        // SC-1102: the second app's tunnel, probe block and Access login still work.
+        await run.expectProbeBlocked(b.appHost);
+        const sshHost = `ssh-${b.app()}.${(run.zone as CloudflareZone).name}`;
+        const access = await waitForAccessRefusal(`https://${sshHost}/`);
+        await readValue(site(b), bucketValue);
+        log(
+          `the second app still answers through its tunnel with its file in Garage, its /.env is blocked and ${sshHost} refuses a request without the service token (${access})`,
+        );
 
         await run.shell().ok("true");
-        const containers = await run
-          .shell()
-          .ok(`docker ps -aq --filter label=com.docker.compose.project=${name}`);
-        expect(containers, "no container of the app is left").toBe("");
+        const containers = await serverContainers(exec);
+        expect(
+          containers.filter((c) => c.project === name).map((c) => c.name),
+          "no container of the first app is left",
+        ).toEqual([]);
+        expect(
+          containers
+            .filter((c) => c.project === EDGE_PROJECT && c.running)
+            .map((c) => c.service)
+            .sort(),
+          "the shared edge stays for the second app",
+        ).toEqual(["caddy", "kamal-proxy"]);
         const deployUser = await run.shell().run("id -u deploy");
-        expect(deployUser.exitCode, "the deploy user is removed").not.toBe(0);
-        log(
-          "destroy --undo-host: app, DNS, tunnel and Access removed; root still logs in with its key",
-        );
+        expect(deployUser.exitCode, "the deploy user stays for the second app").toBe(0);
+        log("first app destroyed: its containers, DNS, tunnel and Access removed; the edge stays");
       },
     );
 
     run.step(
-      "7b. destroying the second app removes OpsCrew's shared rules; the seeded rules and the Zero Trust pieces stay",
+      "7b. destroy --undo-host of the second app removes it, the edge and OpsCrew's shared rules; root still logs in; the seeded rules and the Zero Trust pieces stay",
       minutes(30),
       async () => {
-        const app = second();
-        await destroyUndoHost(app);
-        await app.expectCloudflareClean();
+        await destroyApp(b, ["--undo-host"]);
+        await b.expectCloudflareClean();
         await run.expectSharedCloudflare("the second app's destroy");
+        await run.shell().ok("true");
+        const containers = await serverContainers(exec);
+        expect(
+          containers
+            .filter((c) => c.project === b.app() || c.project === EDGE_PROJECT)
+            .map((c) => c.name),
+          "no container of the second app or the edge is left",
+        ).toEqual([]);
+        const edgeDir = await run.shell().run(`test -e ${EDGE_DIR}`);
+        expect(edgeDir.exitCode, "the edge's folder is removed with the last app").not.toBe(0);
+        const deployUser = await run.shell().run("id -u deploy");
+        expect(deployUser.exitCode, "the deploy user is removed").not.toBe(0);
         log(
-          "second app destroyed: OpsCrew's shared rules list nothing of this run, the zone's own rules and the Zero Trust pieces are as they were",
+          "second app destroyed with --undo-host: the edge and the deploy user removed, OpsCrew's shared rules list nothing of this run, root still logs in with its key",
         );
       },
-      { skip: SECOND_SKIP },
     );
 
     run.step(

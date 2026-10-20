@@ -64,6 +64,10 @@ The test is skipped unless its environment variables are set, so normal runs and
 | `OPSCREW_E2E_GHCR_READ_TOKEN` | Needed with `OPSCREW_E2E_BUILDS=1`: a GitHub **classic** token with only `read:packages`, for the user that owns the throwaway repository. The test reads the image's SBOM, provenance and blobs with it. |
 | `OPSCREW_E2E_SIGN` | Optional, `1` turns image signing on for the builder checks; it matters only together with `OPSCREW_E2E_BUILDS=1`. Off by default; read [Signing](#signing) first. |
 | `OPSCREW_E2E_SKIP_DESTROY` | Optional, `1` makes the Hetzner pass skip `opscrew destroy` and clean up with the fallback a failed destroy gets (see [Cost and cleanup](#cost-and-cleanup)). Off by default. |
+| `OPSCREW_E2E_COMPONENTS` | Optional, `1` runs [the component checks](#the-components) in the Hetzner pass (with one of the component examples): about 20 minutes, two deploys and a reboot per app. Off by default. |
+| `OPSCREW_E2E_STORAGE` | With `OPSCREW_E2E_COMPONENTS=1` and `OPSCREW_E2E_APP=s3-uploads`: where the bucket goes, `r2` (the default) or `hetzner`. |
+| `OPSCREW_E2E_R2` | `1` once R2 is turned on for the Cloudflare account and `OPSCREW_E2E_CLOUDFLARE_TOKEN` also has Account → Workers R2 Storage → Edit. Without it the R2 pass is skipped with a message. |
+| `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | For `OPSCREW_E2E_STORAGE=hetzner`: S3 credentials from the Hetzner Console of the throwaway project (Security → S3 credentials). Without them the Hetzner Object Storage pass is skipped with a message. The test never deletes them. |
 
 Requirements:
 
@@ -148,8 +152,8 @@ fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, i
    the pinned builder and run images as `repo:tag@sha256:…`, exactly as in OpsCrew's pin table.
 2. **Non-root.** On the server, as `deploy`, `docker exec <container> id -u` for every running
    `app` container: none may print `0`.
-3. **The attestations.** The test reads the deployed image (the digest in `/srv/app/.env` on the
-   server) with the guide's commands, `docker buildx imagetools inspect <image> --format
+3. **The attestations.** The test reads the deployed image (the digest in `/srv/apps/<app>/.env`
+   on the server) with the guide's commands, `docker buildx imagetools inspect <image> --format
    '{{json .Provenance}}'` and `--format '{{json .SBOM}}'`, logged in to `ghcr.io` with
    `OPSCREW_E2E_GHCR_READ_TOKEN`. The login is written into a Docker configuration folder of the
    test's own (`DOCKER_CONFIG`), never into your Docker configuration or the computer's credential
@@ -165,8 +169,9 @@ fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, i
    computer, without waiting for answers, each with a 10-second timeout. Meanwhile it merges a
    pull request adding `opscrew-e2e-change.txt` and waits for that deploy run. Every non-2xx answer
    and connection error is logged with the time its request was sent; there must be none, and the
-   server must run a new image afterwards. The deploy must not restart `db`, `cache`, `proxy` or
-   `caddy` (those the plan has): each container's `StartedAt` is the same before and after.
+   server must run a new image afterwards. The deploy must not restart any of the plan's services
+   (`db`, `cache`) nor the shared edge's `kamal-proxy` and `caddy` (Compose project
+   `opscrew-edge`): each container's `StartedAt` is the same before and after.
 6. **A broken release.** Under the same load, the test merges a commit that makes the health route
    answer 500 (none of the examples has a switch for that, so the copy in the throwaway repository
    is edited: Next.js's `app/api/health/route.ts` that `adapt` wrote, `main.go`, `src/main.rs`).
@@ -228,6 +233,119 @@ The test sets `CI=1`, so every command runs non-interactively:
 
 - `--yes` approves writing files, storing deploy secrets, pushing and opening pull requests.
 - `--approve <hash>` applies exactly the plan the first provision run printed.
+
+### The components
+
+With `OPSCREW_E2E_COMPONENTS=1` and `OPSCREW_E2E_APP` set to one of the component examples, the
+Hetzner pass also checks feature 013 after the first deploy and before the teardown
+(`packages/cli/test/live/component-checks.ts`). Each example is one pass on a server of its own
+(one app per server on Hetzner), so the set below is the smallest that covers the live set of
+SC-1301. With the variable but another app, the pass logs that the checks cover only these.
+
+| App | What it covers |
+|---|---|
+| `node-bullmq` | a worker (Procfile) and a cron job (`vercel.json`), with Valkey as a queue |
+| `express-mysql` | MySQL, and its `my.cnf` honoured |
+| `node-mongo` | MongoDB, with its two data folders |
+| `s3-uploads` | object storage: the bucket on Cloudflare R2 (`OPSCREW_E2E_STORAGE=r2`) or on Hetzner Object Storage (`hetzner`), one pass each |
+| `rabbitmq-worker` | RabbitMQ and a worker |
+| `kafka-app` | Kafka (a named volume) and a worker |
+| `meili-search` | part 2's search engine, Meilisearch, and OpenSearch added in `plan.yaml` (as a user adds a service there), for the kernel setting `vm.max_map_count` it needs |
+| `clickhouse-events` | part 2's analytics engine, ClickHouse, and its `server.xml` honoured |
+
+The pass makes the plan edits a user would before the first provision: for `s3-uploads` the
+bucket's provider and a name of the run's own (`opscrew-e2e-<run id>`: bucket names at Hetzner are
+shared by all its customers); for `meili-search` the OpenSearch service. Then `design` runs again.
+The checks, in order:
+
+1. **On the server**, as `deploy` (it runs Docker; it has no `sudo`):
+   - `opscrew status` shows every component of the plan running;
+   - every container of the app's Compose project and of the shared edge (`opscrew-edge`) has a
+     memory limit, and no swap beyond it;
+   - no container publishes a port but the edge's Caddy, and the app's containers are on the
+     edge's network: Caddy reaches the app through kamal-proxy;
+   - every component and the edge run, none restarted and none met its limit;
+   - each data folder `/srv/data/<app>/<service>` holds data and belongs to the user its service
+     runs as (the owner of its main process). The folder is read as root in a throwaway container
+     of the edge's pinned Caddy image, without a network and read-only, since a service's folder
+     may be its own user's only. Named volumes (Kafka, OpenSearch, SQLite) are Docker's;
+   - each settings file mounted next to `compose.yaml` (`services/<service>/…`, `crontab`) is
+     readable by its service's user and writable by nobody else, and MySQL's
+     `@@innodb_buffer_pool_size` and ClickHouse's `max_server_memory_usage` are the values in
+     OpsCrew's files;
+   - with a kernel setting (`meili-search`): `/etc/sysctl.d/90-opscrew.conf` on the host sets it,
+     and the kernel uses at least that.
+2. **From this computer:** neither the app's port nor any service's port answers on the server's
+   IPv4 address, nor on its IPv6 address when this computer has an IPv6 route (the same check as
+   for [your own server](#your-own-server)); without one the pass logs "IPv6 not probed: no route
+   from this computer".
+3. **The worker and cron** (SC-1302): a job queued through the app (`POST /jobs/<id>`) is consumed
+   within 30 seconds (`GET /jobs/<id>`). Every cron job of the examples runs each minute (the pass
+   checks that its schedule is `* * * * *`), so supercronic's first successful run since the cron
+   container started must come within a minute of the first full minute after both that start
+   and the time the app answered its health route (both in the server's time), and the app must
+   count it (`GET /cron`).
+4. **Data:** a value written through the app (`PUT /data`, into its database, bucket or broker) is
+   read back (`GET /data`), after a merged change's deploy, and after a reboot of the server
+   through Hetzner's API. After the reboot, checks 1–3 run again and `opscrew drift` passes.
+5. **The leak search:** none of the GitHub, Hetzner and Cloudflare tokens, the bucket's key, the
+   deploy key, the state passphrase, the values OpsCrew generated for the app (the services'
+   passwords) or the `OPSCREW_E2E_APP_ENV` values of 8 characters or more is in any CLI output of
+   the run up to the teardown, any commit (every branch, contents and messages), a pull request of
+   the run or the audit log, and, after the reboot, in no `docker logs` of the containers of the
+   app's Compose project and of the edge (for those, only the container's name and how many known
+   values matched are printed, never the log). Only labels are printed. The server's address is
+   searched as in every Hetzner pass (commits and pull requests).
+
+**The bucket.** OpsCrew never creates storage keys:
+- **Hetzner Object Storage:** the pass gives OpsCrew your key from
+  `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID` and `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` as
+  `OPSCREW_STORAGE_ACCESS_KEY_ID` and `OPSCREW_STORAGE_SECRET_ACCESS_KEY`, the variables of the
+  guide for scripts. The key stays yours: the test never deletes it.
+- **R2:** the guide's key, limited to the bucket, can only be made by hand once the bucket exists,
+  which an unattended run cannot do. So the pass gives OpsCrew the S3 credentials of
+  `OPSCREW_E2E_CLOUDFLARE_TOKEN` itself: the token's id, and the SHA-256 of its value, which is how
+  Cloudflare turns an API token with an R2 permission into S3 credentials. They reach every bucket
+  of the account, so use the throwaway account. Before any GitHub or cloud change the pass checks
+  that the token lists the account's R2 buckets; when it does not, the pass is skipped, saying why.
+
+The teardown runs `opscrew destroy --confirm <app> --no-snapshot --delete-data`, so the bucket goes
+too. It touches only the run's own bucket: when the plan names another bucket, the teardown logs
+"the plan's bucket is not this run's, left alone" and neither empties, deletes nor checks it.
+Before the destroy, the test deletes the one object the app wrote, because R2 deletes only an empty
+bucket and OpsCrew never deletes your files itself (Hetzner's bucket has `force_destroy`). When
+destroy fails, the fallback also destroys the `storage` root with the engine (its
+`prevent_destroy` lifted, the key in the engine's environment), and for R2 deletes a bucket still
+there through Cloudflare's API. Then the bucket must be gone: at R2 by the API, at Hetzner by an
+unsigned request (a missing bucket answers 404, a private one 403); otherwise the run fails naming
+the bucket, which you then delete in the provider's console.
+
+Run the passes one after another (each creates and destroys its own server):
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_COMPONENTS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
+for app in node-bullmq express-mysql node-mongo rabbitmq-worker kafka-app meili-search \
+  clickhouse-events; do
+  echo "=== $app"
+  OPSCREW_E2E_APP="$app" npx vitest run test/live/live.test.ts || echo "FAILED: $app"
+done
+# The bucket: on R2 (once R2 is on), then on Hetzner Object Storage.
+OPSCREW_E2E_APP=s3-uploads OPSCREW_E2E_R2=1 npx vitest run test/live/live.test.ts
+OPSCREW_E2E_APP=s3-uploads OPSCREW_E2E_STORAGE=hetzner OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID=… \
+  OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY=… npx vitest run test/live/live.test.ts
+```
+
+**Expected time and cost** (not measured yet). Each pass takes about 20 minutes: the usual flow
+(about 7), the checks, a second deploy and a reboot. The nine passes take about three hours. Each
+server is the recommended one for a budget of 20 EUR, a cx23 (4 GB, EUR 5.49 a month) unless a
+component needs more; Hetzner bills by the started hour, so a pass costs about one cent of server
+time (Hetzner's price table, 2026-10-14), plus GitHub Actions minutes for two builds (free for
+public repositories). R2 is within its free tier. Hetzner Object Storage bills its base of EUR 6.49
+a month for every hour in which a bucket exists, so its pass adds about one cent more, unless the
+account pays that base already.
 
 ## Your own server
 
@@ -299,30 +417,42 @@ The test sets `CI=1`, so every command runs non-interactively:
    deploys, and sshd's journal on the server shows every `deploy` login of that run coming from
    `127.0.0.1` or `::1` (the tunnel connector), not from GitHub's runners.
 
-   6b. **A second app** (only with `OPSCREW_E2E_GITHUB_REPO_B`; otherwise skipped with a message
-   that says so): OpsCrew keeps one app per server until feature 013, so the second app, B, goes on
-   a second throwaway server created like step 1's (its own SSH key, the run's label), with its own
-   throwaway repository and project folder. It is the same example with `b-` before the name in its
-   `package.json`, so its stacks, tunnel and Access names never start with the first app's, and it
-   is served on `e2e-<run id>-b.<zone>`, also directly below the zone. In tunnel mode: `init --fix`,
-   `analyze`, interview and `design --host-key`, `adapt`, provision, deploy, `verify`. Then both
-   apps' `https://<hostname>/.env` answer Cloudflare's block page (HTTP 403 with `cf-ray`, and
-   "you have been blocked", error 1020 or "access denied" in the page), both apps' hostnames are in
-   OpsCrew's probe block (neither in the strict-TLS rule:
-   both use the tunnel), and the two apps share the account's Zero Trust organization.
-7. `destroy --confirm <app> --undo-host`, then again with `--approve <undo host plan hash>`: no DNS
-   record, tunnel, Access application, policy or service token of the app is left in Cloudflare,
-   no container of the app and no `deploy` user are left on the server, and root still logs in
-   with its key. With the second app: it still answers through its tunnel, its `/.env` is still
-   blocked, its SSH hostname still refuses a request without the service token, and OpsCrew's probe
-   block lists only its hostnames of this run.
+   6b. **A second app on the same server** (feature 013): `examples/s3-uploads`, B, from its own
+   throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`) and project folder, on the first app's server
+   with root's same key and the same pinned host key, served on `e2e-<run id>-b.<zone>`, also
+   directly below the zone. Its files go to Garage, the bucket design offers on a server you own,
+   so this covers object storage without a key of yours. In tunnel mode: `init --fix`, `analyze`,
+   interview and `design --host-key`, `adapt`, provision, deploy, `verify`. Then both apps'
+   `https://<hostname>/.env` answer Cloudflare's block page (HTTP 403 with `cf-ray`, and "you have
+   been blocked", error 1020 or "access denied" in the page), both apps' hostnames are in OpsCrew's
+   probe block (neither in the strict-TLS rule: both use the tunnel), and the two apps share the
+   account's Zero Trust organization. On the server, as root, for each app the checks of
+   [the components](#the-components) (step 1 there, without `opscrew status`): limits, no published port but the edge's
+   Caddy, the apps on the edge's network, nothing restarted, the data folders (Postgres's and
+   Garage's) and the settings files (`garage.toml`); one Caddy of the shared edge serves both. A
+   value written through B into Garage is read back.
 
-   7b. **Destroying the second app** (`destroy --undo-host` on its server, with the same approvals):
-   nothing of it is left in Cloudflare, OpsCrew's shared rules are gone (unless they listed other
-   apps' hostnames before the run, which then stay), the seeded rules are byte-identical, and the
-   Zero Trust organization and one-time PIN login are still there.
-8. Nothing leaked: the servers' addresses (IPv4, IPv6 and their `/64` prefixes), the private keys,
-   the state passphrases, the tunnel tokens, the Access service tokens, the Portainer password and
+   6c. **A change to each app under load** (SC-1305): while the test sends 20 requests per second
+   to each app's health route (40 in all, as for [the builders](#the-builders)), it merges a change
+   to the first app and waits for its deploy, then one to the second. No request to either app may
+   fail. B's value is still in Garage afterwards.
+7. **Destroying the first app** under the same load on the second: `destroy --confirm <app>`
+   (without `--undo-host`, the second app still uses the host's setup) causes no failed request to
+   the second app. No DNS record, tunnel, Access application, policy or service token of the first
+   app is left in Cloudflare, no container of it is left on the server, the shared edge (Caddy and
+   kamal-proxy) still runs and the `deploy` user stays. The second app still answers through its
+   tunnel with its value in Garage, its `/.env` is still blocked, its SSH hostname still refuses a
+   request without the service token, and OpsCrew's probe block lists only its hostnames of this
+   run.
+
+   7b. **Destroying the second app** with `--undo-host`, then again with `--approve <undo host plan
+   hash>`: nothing of it is left in Cloudflare, no container of it or of the edge is left, `/srv/edge`
+   is gone, no `deploy` user is left and root still logs in with its key. OpsCrew's shared rules are
+   gone (unless they listed other apps' hostnames before the run, which then stay), the seeded rules
+   are byte-identical, and the Zero Trust organization and one-time PIN login are still there.
+8. Nothing leaked: the server's addresses (IPv4, IPv6 and their `/64` prefixes), the private keys,
+   the state passphrases, the values OpsCrew generated for both apps (Postgres's password, Garage's
+   key), the tunnel tokens, the Access service tokens, the Portainer password and
    the `OPSCREW_E2E_APP_ENV` values (those of 8 characters or more) are in no commit (any branch,
    messages and contents) and no pull request of the run, in both apps' repositories; no secret is
    in any CLI output (the Cloudflare plans among it) or OpsCrew's audit logs; and the CLI shows a
@@ -336,7 +466,7 @@ The test sets `CI=1`, so every command runs non-interactively:
 Each step logs what it waits for. The steps stop at the first failure (a timeout too), but the
 cleanup always runs:
 
-- It deletes the throwaway servers and their SSH keys: everything labelled with the run's id, and
+- It deletes the throwaway server and its SSH key: everything labelled with the run's id, and
   nothing else, then reports any server or key still listed under that label.
 - It removes what this run created in Cloudflare for each app, also after a finished `destroy`
   (which should have left nothing): DNS records on the app's hostname, `www.`, `ssh-<app>.` and
@@ -351,13 +481,13 @@ cleanup always runs:
 - It resets the throwaway repositories: closes every open pull request and deletes every branch
   except `main`.
 
-Everything the test prints goes through a scrubber that masks the servers' addresses and every
+Everything the test prints goes through a scrubber that masks the server's addresses and every
 secret it knows.
 
 If a run was interrupted (the process killed, so the cleanup never ran): in the Hetzner project,
-delete the servers and SSH keys labelled `managed-by=opscrew-e2e`; in Cloudflare, delete the DNS
+delete the server and SSH key labelled `managed-by=opscrew-e2e`; in Cloudflare, delete the DNS
 records on the run's hostnames `e2e-<run id>.<zone>` and `e2e-<run id>-b.<zone>` (the id is the
-servers' `run=<id>` label) and on `www.`, `portainer.` and `ssh-<app>.`, the tunnels
+server's `run=<id>` label) and on `www.`, `portainer.` and `ssh-<app>.`, the tunnels
 `opscrew-<app>`, the Access applications `OpsCrew SSH (<app>)`, the Access policies and service
 tokens `OpsCrew deploy (<app>)`, the rules described "OpsCrew E2E: a rule of the user's own, seeded
 by run <run id>" in Security → WAF → Custom rules and Rules → Configuration Rules, and the run's
@@ -368,14 +498,14 @@ else).
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_OWN_SERVER` | `1` runs this test. |
-| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test to create and delete the throwaway servers. Use a separate, empty project. |
-| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. With `OPSCREW_E2E_GITHUB_REPO_B` the token must cover that repository too, with the same permissions (a fine-grained token can list several repositories). |
-| `OPSCREW_E2E_GITHUB_REPO_B` | Optional, `owner/name` of a second **throwaway** repository, for the second app (steps 6b and 7b). The test force-pushes its `main` branch like the first one's. Without it those two steps are skipped with a message and the rest runs as before. The second app needs a Node example (it changes the name in its `package.json`). |
+| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test to create and delete the throwaway server. Use a separate, empty project. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. The token must cover `OPSCREW_E2E_GITHUB_REPO_B` too, with the same permissions (a fine-grained token can list several repositories). |
+| `OPSCREW_E2E_GITHUB_REPO_B` | `owner/name` of a second **throwaway** repository, for the second app, `examples/s3-uploads` (steps 6b to 7b). The test force-pushes its `main` branch like the first one's. |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A Cloudflare token for the zone with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit, plus the account permissions tunnel mode needs: Cloudflare Tunnel Edit, Access: Apps and Policies Edit, Access: Service Tokens Edit, Access: Organizations, Identity Providers, and Groups Edit (the test also reads the Zero Trust organization and login methods with it, and seeds and removes its own rules). Cloudflare Zero Trust must be turned on for the account. |
 | `OPSCREW_E2E_DOMAIN` | A hostname one level below that zone, for example `e2e.example.com`, or the zone itself. It names the zone only: each run uses its own hostname `e2e-<run id>.<zone>` (see step 1) and owns its records while it runs. |
 | `OPSCREW_E2E_REGION` | Optional, where the server runs, with OpsCrew's own Hetzner locations for the region: `eu-central` (default; Nuremberg, then Falkenstein), `eu-north` (Helsinki), `us-east`, `us-west` or `ap-southeast`. |
 | `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional, a Hetzner server type to use instead of the cheapest x86 one, for example `cx23`. |
-| `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above, but only examples under `examples/` (default `nextjs-postgres`). |
+| `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above, but only examples under `examples/` (default `nextjs-postgres`), and not `s3-uploads`, the second app's. |
 
 Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
 Node.js 22.9+, and outgoing SSH (port 22) from the test computer. Run only this file, never together
@@ -390,9 +520,11 @@ OPSCREW_E2E_OWN_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=yo
   npx vitest run test/live/own-server.test.ts
 ```
 
-A full run with the second app takes about 36 minutes (measured on 2026-10-18; it includes both
-apps' deploy workflow runs, Docker's installation on both servers and a reboot). The servers are
-the smallest x86 type, billed by the hour at Hetzner, so a run costs a few cents of server time,
+A full run took about 36 minutes with the second app on a server of its own (measured on
+2026-10-18); with both apps on one server (feature 013) it is expected to take about 45 minutes, not
+measured yet: one server's Docker installation instead of two, but two more deploys under load in
+step 6c. The server is the smallest x86 type (a cx23, 4 GB, EUR 5.49 a month in Hetzner's price
+table of 2026-10-14), billed by the started hour, so a run costs about one cent of server time,
 plus GitHub Actions minutes for the builds (free for public repositories). Left behind on purpose:
 the GitHub Actions secrets and the container images in the throwaway repositories (as above), the
 zone's rules that existed before the run (OpsCrew's shared rules too, when they listed other apps'
@@ -404,11 +536,11 @@ hostnames), and the Zero Trust organization and one-time PIN login if OpsCrew cr
 runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install.
 `OPSCREW_E2E_PORTAINER_STEPS` chooses the steps:
 
-- `core` (the default, about 21 minutes with the second app, measured on 2026-10-18): steps 1, 1b,
-  2a, 2, 3, 7b, 8, 9, 9b and 12. Step 8 then removes an updater + tunnel setup (one tunnel, no
-  Access application), and step 12 searches what this pass produced; the bare short host name is
-  searched only when step 11 ran and gave it to OpsCrew. Without `OPSCREW_E2E_GITHUB_REPO_B`, steps
-  7b and 9b are skipped with a message and the rest runs as before.
+- `core` (the default, about 21 minutes with the second app, measured on 2026-10-18; about 24 with
+  feature 013's checks of the second app, not measured yet): steps 1, 1b, 2a, 2, 3, 7b, 8, 9, 9b
+  and 12. Step 8 then removes an updater + tunnel setup (one tunnel, no Access application), and
+  step 12 searches what this pass produced; the bare short host name is searched only when step 11
+  ran and gave it to OpsCrew.
 - `full` (about 1 to 1½ hours): every step and check below.
 - A comma-separated list of steps, such as `11,12`: those steps and every step they need (see
   [Running chosen steps](#running-chosen-steps)).
@@ -493,9 +625,8 @@ other value skips the whole test and names the variable.
    to apply, and `provision --replace-token registry` (plus `repository` for a private repository)
    after which the registry entry must still be granted to the environment.
 
-   7b. **A second app** (only with `OPSCREW_E2E_GITHUB_REPO_B`; otherwise skipped with a message
-   that says so): a second set of stacks in the same Portainer, from its own throwaway repository
-   and project folder. It is the same example with `b-` before the name in its `package.json`, so
+   7b. **A second app**: a second set of stacks in the same Portainer, from its own throwaway
+   repository (`OPSCREW_E2E_GITHUB_REPO_B`) and project folder. It is `examples/node-mongo`, so
    its stacks, registry entry and tunnel never start with the first app's names, served on
    `e2e-<run id>-b.<zone>` with the updater and the Cloudflare Tunnel (web mode `tunnel`), with the
    administrator's token and the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: `init --fix`, `analyze`,
@@ -503,7 +634,15 @@ other value skips the whole test and names the variable.
    its site answers through its tunnel, its `/.env` answers Cloudflare's block page (as for your
    own server, step 6b), and so does the first app's when that one runs with the tunnel at that
    point (in the core pass and after step 7 it does), OpsCrew's probe block lists both apps'
-   hostnames, and the decoys are unchanged.
+   hostnames, and the decoys are unchanged. **Components in stacks** (feature 013), as root on the
+   server: every container of the second app's stacks has a memory limit and no swap beyond it, none
+   publishes a port, and the web process and MongoDB run without a restart; a value written through
+   the app into MongoDB is read back after `docker restart` of the app stack's containers. **The
+   host-setting refusal:** with OpenSearch added to its `plan.yaml` by hand (it needs the Docker
+   host's `vm.max_map_count`, which OpsCrew never changes in a Portainer), `provision --plan-only`
+   must exit with an error that names that setting, with no container on the host changed (the
+   same containers, started at the same time); the plan is put back afterwards, and `git status
+   --porcelain` in the second app's project is then empty.
 8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels; in the core pass updater +
    tunnel, one tunnel), with the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: no stack of the app, no
    registry entry of OpsCrew, no DNS record, tunnel, Access application, policy or service token of
@@ -579,8 +718,8 @@ the server's `run=<id>` label), as described for your own server.
 | `OPSCREW_E2E_PORTAINER` | `1` runs this test. |
 | `OPSCREW_E2E_PORTAINER_STEPS` | Optional, `core` (the default), `full` or a list of steps such as `11,12`: which steps run (see above and [Running chosen steps](#running-chosen-steps)). |
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test for the server, its key and firewall. Use a separate, empty project. |
-| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). With `OPSCREW_E2E_GITHUB_REPO_B` the token must cover that repository too, with the same permissions. |
-| `OPSCREW_E2E_GITHUB_REPO_B` | Optional, `owner/name` of a second **throwaway** repository of the same owner, for the second app (steps 7b and 9b). Without it those two steps are skipped with a message and the rest runs as before. The second app needs a Node example (it changes the name in its `package.json`). |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). The token must cover `OPSCREW_E2E_GITHUB_REPO_B` too, with the same permissions. |
+| `OPSCREW_E2E_GITHUB_REPO_B` | `owner/name` of a second **throwaway** repository of the same owner, for the second app, `examples/node-mongo` (steps 7b and 9b). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions; the test reads the Zero Trust pieces and seeds its own rules with it). Cloudflare Zero Trust must be turned on. |
 | `OPSCREW_E2E_DOMAIN` | As for your own server: names the zone; each run uses `e2e-<run id>.<zone>` (and `e2e-<run id>-b.<zone>` for the second app). |
 | `OPSCREW_E2E_GHCR_READ_TOKEN` | A GitHub **classic** token with only `read:packages` (<https://github.com/settings/tokens/new?scopes=read:packages>), for the user that owns the throwaway repositories. OpsCrew gets it as `OPSCREW_GHCR_READ_TOKEN` and puts it into Portainer's registry entries. |
@@ -590,7 +729,7 @@ the server's `run=<id>` label), as described for your own server.
 | `OPSCREW_E2E_PORTAINER_MANUAL_MINUTES` | Optional, for example `20`: after step 1 the test writes Portainer's address and the administrator's login to a file in its temporary folder (never printed) and waits up to that many minutes until you delete the file. Use the time to check the guide's steps the test cannot: the certificate's SHA-256 fingerprint in a browser's padlock (the file names the fingerprint OpsCrew pins), and in Portainer's UI Registries → Add registry → Custom registry and the environment's Registries → Manage access. Look only: do not save, add or change anything (the run compares Portainer and the decoys with how they were, taken again after the pause). Only the test computer can reach Portainer. |
 | `OPSCREW_E2E_REGION` | Optional, as for your own server. |
 | `OPSCREW_E2E_PORTAINER_SERVER_TYPE` | Optional, a Hetzner server type instead of the cheapest x86 one. |
-| `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as for your own server (only examples; the default `nextjs-postgres` has the Postgres volume the `--delete-data` step checks). |
+| `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as for your own server (only examples, and not `node-mongo`, the second app's; the default `nextjs-postgres` has the Postgres volume the `--delete-data` step checks). |
 
 Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
 Node.js 22.9+, outgoing SSH (22), HTTPS to the server's port 9443 and HTTP to its port 8080 from
@@ -672,8 +811,9 @@ Each pass runs the server of the recommended design (budget 20 EUR on Hetzner, 2
 
 Teardown runs in a `finally` block, so it happens even after a failure:
 
-1. It runs `opscrew destroy --confirm <name> --no-snapshot`, the same command a user runs. On
-   Hetzner it lifts delete protection first; on DigitalOcean (no delete protection) it goes
+1. It runs `opscrew destroy --confirm <name> --no-snapshot`, the same command a user runs, with
+   `--delete-data` when the app has a bucket at a provider (see [the components](#the-components)).
+   On Hetzner it lifts delete protection first; on DigitalOcean (no delete protection) it goes
    straight to the destroy plan. Each plan is approved by its hash; then the deploy secrets are
    removed.
 2. It asserts that nothing OpsCrew created for the app remains (SC-301, SC-401): on Hetzner no
@@ -683,7 +823,8 @@ Teardown runs in a `finally` block, so it happens even after a failure:
 3. If `opscrew destroy` failed, it falls back to applying a destroy plan with the engine directly
    (lifting protection first on Hetzner), then to deleting those resources through the provider
    API, and asserts again that nothing is left. The shared `managed-by:opscrew` DigitalOcean tag
-   is never deleted.
+   is never deleted. A bucket is destroyed with its own `storage` root, and through R2's API when
+   that fails; then no bucket of the app may be left.
 
 That fallback normally runs only when destroy fails. To test it on purpose, set
 `OPSCREW_E2E_SKIP_DESTROY=1` (off by default; the Hetzner pass only): the pass logs that it skips
@@ -693,8 +834,12 @@ firewall and SSH key and the DNS records; the Hetzner API then deletes anything 
 list only the app's hostnames are deleted (`removeRulesOfRun`, see below), and when the engine's
 destroy failed, the DNS records left on the run's own hostname are deleted too. The same leftover checks
 as after a destroy must then pass: no labelled server, firewall or SSH key, no shared rule
-listing the app's hostnames and no DNS record on them. The deploy secrets stay in the throwaway repository, as after any
-failed destroy.
+listing the app's hostnames, no DNS record on them and no bucket. The fallback also deletes the
+repository's deploy secrets that OpsCrew's record (`deploy_secrets.json` in the project's folder)
+names, since they hold a storage key too. Every cleanup step and check runs even when an earlier
+one fails, and the throwaway repository is reset last; the run then fails once, listing every
+problem (after the error that stopped the run, when there was one), and the run's temporary
+folder is removed.
 
 Some things are not removed:
 
@@ -705,8 +850,11 @@ Some things are not removed:
   left as it is, and that check fails: remove the app's hostnames from that rule in the Cloudflare
   dashboard (Security → WAF → Custom rules or Rules → Configuration Rules), or the next run stops
   before any change because they are already in OpsCrew's shared rule.
-- **GitHub repository state:** the pushed container image (GHCR package), the Actions secrets and
-  the pull requests stay in the throwaway repository (GitHub cannot delete pull requests; the next
+- **The bucket's key:** the S3 credentials you created for Hetzner Object Storage stay yours; the
+  test never deletes them (OpsCrew never creates or deletes storage keys). R2's are those of the
+  Cloudflare token, which stays as it is.
+- **GitHub repository state:** the pushed container image (GHCR package), the Actions secrets
+  OpsCrew's record does not name, and the pull requests stay in the throwaway repository (GitHub cannot delete pull requests; the next
   run closes open ones, deletes the branches and overwrites the rest). Delete and recreate the
   repository for a completely clean slate.
 
