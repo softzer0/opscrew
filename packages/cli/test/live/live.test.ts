@@ -693,11 +693,23 @@ async function deployAndTearDown(
     // With a Cloudflare domain the Cloudflare plan comes first; every printed plan is approved.
     const hashes = approveHashes(planned.output);
     expect(hashes.length, "the plan hashes are printed").toBeGreaterThan(0);
-    const applied = await opscrew(
+    let applied = await opscrew(
       "provision",
       ...hashes.flatMap((hash) => ["--approve", hash]),
       "--yes",
     );
+    // Hetzner Object Storage can show a new bucket late; OpsCrew then keeps it and asks for a
+    // rerun, which plans and approves what is left, as a user would.
+    if (applied.exitCode !== 0 && applied.output.includes("did not show the new bucket")) {
+      console.log(`OpsCrew E2E: ${app.label}: the new bucket showed late; running provision again`);
+      const replanned = await opscrew("provision", "--plan-only", "--yes");
+      expect(replanned.exitCode, replanned.output).toBe(0);
+      applied = await opscrew(
+        "provision",
+        ...approveHashes(replanned.output).flatMap((hash) => ["--approve", hash]),
+        "--yes",
+      );
+    }
     expect(applied.exitCode, applied.output).toBe(0);
     if (shared !== undefined) await expectInSharedRules(shared, sharedRules, true);
     // OpsCrew picks the next free name (`opscrew/deploy-setup-2`) when an earlier pass's branch is
