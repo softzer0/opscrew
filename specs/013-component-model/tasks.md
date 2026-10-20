@@ -424,7 +424,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, then `node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T1313 [P] Examples and the Docker pass in `examples/**`, `packages/cli/test/e2e/**`
+- [X] T1313 [P] Examples and the Docker pass in `examples/**`, `packages/cli/test/e2e/**`
   - Owns: those paths
   - Reads: plan.md "13."; quickstart.md "Local Docker pass"; spec FR-1334, SC-1301–SC-1303
   - Depends: T1310
@@ -508,3 +508,4 @@ Each wave is merged, gated and pushed before the next starts.
 - Garage on servers: replace its three init steps with the image's own `--default-bucket` / `--default-access-key` flags, as Portainer stacks already do (T1310).
 - The services' address through a fake `OPSCREW_SERVICE_ADDRESS` variable (`shared/app-env.ts` `serviceAddress`): a catalog `address(ctx)` instead (T1307's review).
 - Cron's memory limit equals the app's `memoryMb`, so sizing counts it twice: a cron with only route jobs needs a small fixed limit (supercronic and the probe), command jobs keep the app's (T1312).
+- Text: the guide's Celery worker command (`components.md`, `workers-and-cron.md`) gains `--concurrency 2`; the runbook's volume list (`runbook/components.ts`) joins with `listText` instead of " and " (T1313).
