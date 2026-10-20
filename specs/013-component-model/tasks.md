@@ -545,7 +545,7 @@ Effort`.
         - any other apply failure is left as it is.
     - Verify: `pnpm turbo run typecheck test --filter=@opscrew/contracts --filter=@opscrew/iac-engine --filter=@opscrew/agents --concurrency=2`, plus `OPSCREW_IT=1` for the engine's untaint against real `tofu` and `terraform` on a local state, and `pnpm lint`
     - Effort: medium
-  - [ ] T1315c A late bucket that never reached the state, in `packages/contracts/src/**` (the `IacEngine` contract), `packages/iac-engine/src/**`, `packages/agents/src/provision/storage.ts`, `packages/cli/test/live/{live.test.ts,component-checks.ts}` (+ tests)
+  - [X] T1315c A late bucket that never reached the state, in `packages/contracts/src/**` (the `IacEngine` contract), `packages/iac-engine/src/**`, `packages/agents/src/provision/storage.ts`, `packages/cli/test/live/{live.test.ts,component-checks.ts}` (+ tests)
     - Why: in the live rerun on 2026-10-20 the create failed reading the bucket back again, but the bucket was not in the state, so the untaint did nothing. The rerun then planned to create it again, Hetzner answered that the name was taken (it was ours), and the teardown had nothing in the state to delete, so the bucket was left behind (the lead deleted it).
     - Accept:
       - **The engine:** `IacEngine.importResource(dir, address, id, options)` runs `import -input=false -no-color <address> <id>` in the root, with the same env, state and var-file handling as `plan`. It is a state-only change. Every fake implements it, and a real-binary test (`OPSCREW_IT=1`) imports a `terraform_data` resource.
