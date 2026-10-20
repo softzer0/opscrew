@@ -11,7 +11,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type ProviderBucket, readServerAddresses } from "@opscrew/agents";
+import { type ProviderBucket, readServerAddresses, storageS3Client } from "@opscrew/agents";
 import { resolveProjectPaths } from "@opscrew/core";
 import { appDir, EDGE_PROJECT, hostSysctl, serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
@@ -341,7 +341,7 @@ export interface BucketPass {
   empty(bucket: ProviderBucket): Promise<void>;
   /** Throws, saying why, when it cannot tell (another provider's bucket, an unknown answer). */
   exists(bucket: ProviderBucket): Promise<boolean>;
-  /** The last resort after a failed teardown, where the provider has an API for it (R2). */
+  /** The last resort after a failed teardown: R2's API, or Hetzner's S3 with the user's key. */
   deleteThroughApi?(bucket: ProviderBucket): Promise<void>;
 }
 
@@ -397,6 +397,11 @@ export async function bucketPass(
         if ([200, 403].includes(answer.status)) return true;
         throw new Error(`Hetzner Object Storage answered HTTP ${answer.status}.`);
       }),
+      // A bucket the storage state never held (a create that failed reading it back) survives the
+      // engine's destroy: delete it with the user's key.
+      deleteThroughApi: async (bucket) => {
+        await storageS3Client(bucket, storage.key, { fetch, now: () => new Date() }).deleteBucket();
+      },
     };
   }
   const cloudflare = new Cloudflare(cloudflareToken);

@@ -394,3 +394,64 @@ describe.skipIf(!runDriftIt)("untaint on a root's state (real binaries)", () => 
     );
   }
 });
+
+/**
+ * An object that exists but never reached the state, like a bucket whose create failed reading it
+ * back. Its variable has no default: the import reads it from `terraform.tfvars.json`, as plan does.
+ */
+const IMPORT_MODULE = `terraform {
+  backend "local" {}
+}
+
+variable "name" {
+  type = string
+}
+
+resource "terraform_data" "bucket" {
+  input = var.name
+}
+`;
+
+// `importResource` on a root with a local backend; only with OPSCREW_IT=1, like `untaint`.
+describe.skipIf(!runDriftIt)("importResource into a root's state (real binaries)", () => {
+  const cases = [
+    { name: "tofu" as const, encrypted: false },
+    { name: "tofu" as const, encrypted: true },
+    { name: "terraform" as const, encrypted: false },
+  ];
+  for (const { name, encrypted } of cases) {
+    const found = detected.find((d) => d.name === name && d.supported);
+    it.skipIf(!found)(
+      `records an existing object, so the next plan no longer creates it (${name}${encrypted ? ", encrypted" : ""})`,
+      async () => {
+        const dir = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-import-`));
+        try {
+          await writeFile(path.join(dir, "main.tf"), IMPORT_MODULE);
+          await writeFile(path.join(dir, "terraform.tfvars.json"), '{ "name": "bucket" }\n');
+          const env = encrypted
+            ? { TF_ENCRYPTION: tofuEncryptionEnv(`it-${randomBytes(16).toString("hex")}`) }
+            : {};
+          const engine = await selectEngine(name);
+          const state = path.join(dir, "state", "root.tfstate");
+          await engine.init(dir, { env, backendConfig: { path: state } });
+          const before = await engine.plan(dir, "before.tfplan", { env });
+          expect(before.changes).toEqual([
+            expect.objectContaining({ address: "terraform_data.bucket", action: "create" }),
+          ]);
+
+          await engine.importResource(dir, "terraform_data.bucket", "bucket", { env });
+          expect(await engine.stateResources(state, { env })).toEqual(["terraform_data.bucket"]);
+          const after = await engine.plan(dir, "after.tfplan", { env });
+          expect(after.changes.map((c) => c.action)).not.toContain("create");
+          // The address is in the state now, so the engine refuses a second import.
+          await expect(
+            engine.importResource(dir, "terraform_data.bucket", "bucket", { env }),
+          ).rejects.toMatchObject({ code: "ENGINE_FAILED" });
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      TIMEOUT,
+    );
+  }
+});

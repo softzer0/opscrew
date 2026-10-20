@@ -1,13 +1,21 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, join } from "node:path";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import {
+  exists,
+  OpsCrewError,
+  type ProjectPaths,
+  readTextIfExists,
+  realSleep,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { type RenderedFile, STORAGE_NAMES, storageRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { StorageLogin } from "../shared";
+import { storageS3Client } from "../shared/s3";
 import type { CloudflareSetup } from "./credentials";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { ProvisionServices } from "./types";
@@ -248,31 +256,202 @@ const S3_BUCKET = "aws_s3_bucket.this";
 
 /**
  * The `aws` provider's read of the bucket right after creating it, which a Hetzner (or Spaces)
- * node can answer before it knows the new bucket. The engine then keeps the bucket tainted.
+ * node can answer before it knows the new bucket. The engine then keeps the bucket tainted, or,
+ * when the provider returned no state for it, does not record it at all.
  */
 const BUCKET_SHOWN_LATE = /Error: reading S3 Bucket \([^)]*\): couldn't find resource/;
 
-/** A stop instead of the engine's words, for what an apply of the `storage` root reports. */
-function storageFailure(
+/** The engine's words for an import of a bucket the provider cannot read (yet). */
+const NOT_READABLE = /Cannot import non-existent remote object|couldn't find resource/;
+
+/** How many times, and how far apart, a bucket the provider cannot read yet is imported: a minute. */
+const IMPORT_TRIES = 7;
+const IMPORT_INTERVAL_MS = 10_000;
+
+/**
+ * Where OpsCrew notes the bucket a `storage` apply sets out to create, beside the key, until the
+ * bucket is in the state. Only a bucket it names is ever taken into the state by an import.
+ */
+export function storageCreateFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
+  return join(paths.projectHomeDir, "storage-create.json");
+}
+
+const CreateMarkerSchema = z.object({
+  provider: z.enum(["r2", "digitalocean", "hetzner"]),
+  bucket: z.string(),
+  region: z.string(),
+  planHash: z.string(),
+  createdAt: z.string(),
+});
+
+/** True when the marker names `bucket` (provider, region and name); a missing or damaged one names none. */
+async function markerNames(deps: PhaseDeps, bucket: ProviderBucket): Promise<boolean> {
+  const text = await readTextIfExists(storageCreateFile(deps.paths));
+  if (text === undefined) return false;
+  let marker: z.infer<typeof CreateMarkerSchema>;
+  try {
+    marker = CreateMarkerSchema.parse(JSON.parse(text));
+  } catch {
+    return false;
+  }
+  return (
+    marker.provider === bucket.provider &&
+    marker.region === bucket.region &&
+    marker.bucket === bucket.bucket
+  );
+}
+
+/** Notes that the apply of `planHash` sets out to create `bucket`. */
+async function writeMarker(deps: PhaseDeps, bucket: ProviderBucket, planHash: string) {
+  const file = storageCreateFile(deps.paths);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const marker = {
+    provider: bucket.provider,
+    bucket: bucket.bucket,
+    region: bucket.region,
+    planHash,
+    createdAt: deps.clock.now().toISOString(),
+  };
+  await writeFileAtomic(file, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+}
+
+const removeMarker = (deps: PhaseDeps) => rm(storageCreateFile(deps.paths), { force: true });
+
+/** What a failed apply of the `storage` root at Hetzner or Spaces needs to keep the bucket. */
+interface FailedBucketApply {
+  engine: IacEngine;
+  dir: string;
+  env: Record<string, string | undefined>;
+  bucket: ProviderBucket;
+  command: string;
+  sleep: (ms: number) => Promise<void>;
+  /** True when an earlier run's apply set out to create this bucket (its marker was there). */
+  createdEarlier: boolean;
+}
+
+/** True when the bucket answers HEAD with the user's key (200); any other answer is not ours. */
+async function answersToKey(deps: PhaseDeps, bucket: ProviderBucket, key: StorageKey) {
+  const client = storageS3Client(bucket, key, { fetch: deps.fetch, now: () => deps.clock.now() });
+  try {
+    return await client.headBucket();
+  } catch (error) {
+    if (error instanceof OpsCrewError) return false;
+    throw error;
+  }
+}
+
+/**
+ * Records the existing bucket in the root's state (`import`, state only), trying again every 10 s
+ * for about a minute while the provider cannot read it yet. False when it never could.
+ */
+async function importBucket(deps: PhaseDeps, failed: FailedBucketApply): Promise<boolean> {
+  const { engine, dir, env, bucket } = failed;
+  deps.reporter.step(
+    `Recording the bucket ${bucket.bucket} in the bucket's state (nothing changes on ${STORAGE_NAMES[bucket.provider]})`,
+  );
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await engine.importResource(dir, S3_BUCKET, bucket.bucket, { env });
+      return true;
+    } catch (error) {
+      if (!(error instanceof OpsCrewError) || !NOT_READABLE.test(error.message)) throw error;
+      if (attempt === IMPORT_TRIES) return false;
+    }
+    await failed.sleep(IMPORT_INTERVAL_MS);
+  }
+}
+
+/**
+ * Keeps a new bucket the provider showed late: untainted when the failed create recorded it
+ * (state only), else imported ({@link importBucket}) when the marker names it. False when it could
+ * not be imported; undefined without the marker (nothing is taken into the state).
+ */
+async function keepLateBucket(
+  deps: PhaseDeps,
+  failed: FailedBucketApply,
+): Promise<boolean | undefined> {
+  const state = storageStateFile(deps.paths);
+  const recorded =
+    (await exists(state)) &&
+    (await failed.engine.stateResources(state, { env: failed.env })).includes(S3_BUCKET);
+  if (recorded) {
+    await failed.engine.untaint(failed.dir, S3_BUCKET, { env: failed.env });
+    return true;
+  }
+  if (!(await markerNames(deps, failed.bucket))) return undefined;
+  return importBucket(deps, failed);
+}
+
+/**
+ * A stop instead of the engine's words, for what an apply of the `storage` root reports. At
+ * Hetzner and Spaces (with `key`), a bucket this project set out to create (its marker,
+ * {@link storageCreateFile}) is kept: a new bucket shown late, and a taken name whose bucket
+ * answers to the user's key and that an earlier run set out to create. A bucket of the user's that
+ * OpsCrew did not create for this app is never taken over. Keeping one only changes the root's
+ * state, and removes the marker; what is left is planned and approved in the next run.
+ */
+async function storageFailure(
+  deps: PhaseDeps,
   log: string,
-  bucket: ProviderBucket,
-  command: string,
-  keyFile: string,
-): OpsCrewError | undefined {
+  failed: FailedBucketApply,
+  key: StorageKey | undefined,
+): Promise<OpsCrewError | undefined> {
+  const { bucket, command } = failed;
   const name = STORAGE_NAMES[bucket.provider];
+  const s3Key = bucket.provider === "r2" ? undefined : key;
+  const rerun = `Run \`${command}\` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.`;
+  const notShown = () =>
+    new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${name} did not show the new bucket ${bucket.bucket} within a minute, so OpsCrew could not record it in the bucket's state yet. The bucket exists; nothing else was changed.`,
+      {
+        hint: `Wait a few minutes, then run \`${command}\` again: OpsCrew then finds the bucket and keeps it.`,
+      },
+    );
+  const rename = `Change storage.objectStorage.bucket in opscrew/plan.yaml to another name (3–63 lower-case letters, digits or hyphens), then run \`${command}\` again.`;
   if (/BucketAlreadyExists|BucketAlreadyOwnedByYou/.test(log)) {
+    // This apply created nothing: only an earlier run's marker may name the bucket.
+    if (!failed.createdEarlier) await removeMarker(deps);
+    if (s3Key !== undefined && (await answersToKey(deps, bucket, s3Key))) {
+      if (!failed.createdEarlier) {
+        return new OpsCrewError(
+          "PHASE_PRECONDITION",
+          `A bucket called ${bucket.bucket} already exists in your ${name} account, but OpsCrew did not create it for this app, so it will not take it over. Nothing was changed.`,
+          { hint: rename },
+        );
+      }
+      if (!(await importBucket(deps, failed))) return notShown();
+      await removeMarker(deps);
+      return new OpsCrewError(
+        "PROVIDER_ERROR",
+        `${name} says the bucket name ${bucket.bucket} is taken, and the bucket answers to your key: OpsCrew found the bucket from an earlier run and kept it.`,
+        { hint: rerun },
+      );
+    }
     return new OpsCrewError(
       "PHASE_PRECONDITION",
       `${name} says the bucket name ${bucket.bucket} is taken: bucket names there are shared by all its customers (or another bucket of yours has it). Nothing else was changed.`,
-      {
-        hint: `Change storage.objectStorage.bucket in opscrew/plan.yaml to another name (3–63 lower-case letters, digits or hyphens), then run \`${command}\` again.`,
-      },
+      { hint: rename },
     );
   }
-  if (bucket.provider !== "r2" && /InvalidAccessKeyId|SignatureDoesNotMatch/.test(log)) {
+  if (s3Key === undefined) return undefined;
+  if (/InvalidAccessKeyId|SignatureDoesNotMatch/.test(log)) {
     return new OpsCrewError("CREDENTIALS_INVALID", `${name} refused the bucket's key.`, {
-      hint: `Create a new key (\`${command}\` shows the steps when it has none), then set ${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey} to it, or delete OpsCrew's copy of the old one (${keyFile}) and run \`${command}\` in a terminal to paste the new one.`,
+      hint: `Create a new key (\`${command}\` shows the steps when it has none), then set ${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey} to it, or delete OpsCrew's copy of the old one (${storageKeyFile(deps.paths)}) and run \`${command}\` in a terminal to paste the new one.`,
     });
+  }
+  if (BUCKET_SHOWN_LATE.test(log)) {
+    // The bucket exists: kept in the state, the next plan keeps it instead of creating or
+    // replacing it (which `prevent_destroy` refuses) and plans what is left, for a new approval.
+    const kept = await keepLateBucket(deps, failed);
+    if (kept === undefined) return undefined;
+    if (!kept) return notShown();
+    await removeMarker(deps);
+    return new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${name} did not show the new bucket ${bucket.bucket} right away, so the apply stopped. OpsCrew kept the bucket.`,
+      { hint: rerun },
+    );
   }
   return undefined;
 }
@@ -282,9 +461,13 @@ function storageFailure(
  * policies → approval bound to its hash → apply (FR-1318), with its own state
  * ({@link storageStateFile}); the key reaches the engine only as {@link storageEngineEnv} says.
  * With `approvePlanHash` it applies that saved plan of an earlier `--plan-only` run. A name taken
- * at the provider and a key it refuses stop with what to change. A new bucket Hetzner or Spaces
- * shows late is untainted (state only) and the run stops, so the next run plans what is left for
- * a new approval. A refused approval says "storage plan".
+ * at the provider and a key it refuses stop with what to change. Before the apply, a marker
+ * ({@link storageCreateFile}) notes the bucket it sets out to create, removed once the bucket is in
+ * the state. A Hetzner or Spaces bucket that exists but is not kept yet (shown late after its
+ * create, or left by an earlier run's failed create under a taken name that answers to the user's
+ * key) is put into the state only when the marker names it (untaint or import, state only; `sleep`
+ * waits between imports), and the run stops, so the next run plans what is left for a new
+ * approval. A refused approval says "storage plan".
  */
 export async function applyStorage(
   deps: PhaseDeps,
@@ -299,6 +482,7 @@ export async function applyStorage(
     planOnly?: boolean;
     command: string;
     phase: PhaseName;
+    sleep?: (ms: number) => Promise<void>;
   },
 ): Promise<PlanAndApplyResult> {
   const { plan, command } = input;
@@ -308,7 +492,8 @@ export async function applyStorage(
   const dir = join(deps.paths.root, storageRootDir(plan));
   const env = storageEngineEnv(input.env, plan, input.key);
   deps.reporter.step(`Planning the app's bucket ${bucket.bucket} on ${name}`);
-  let shownLate = false;
+  let failedLog: string | undefined;
+  let createdEarlier = false;
   const applied = planAndApply(deps, {
     engine: input.engine,
     dir,
@@ -322,27 +507,33 @@ export async function applyStorage(
     phase: input.phase,
     approvalTitle: `Apply the plan of the app's bucket ${bucket.bucket} on ${name}`,
     costDelta: { amount: bucket.price.monthly, currency: bucket.price.currency },
+    beforeApply: async (saved) => {
+      createdEarlier = await markerNames(deps, bucket);
+      await writeMarker(deps, bucket, saved.planHash);
+    },
     applyFailed: (log) => {
-      const failure = storageFailure(log, bucket, command, storageKeyFile(deps.paths));
-      if (failure !== undefined) throw failure;
-      shownLate = bucket.provider !== "r2" && BUCKET_SHOWN_LATE.test(log);
+      failedLog = log;
     },
     ...(input.approvePlanHash !== undefined ? { approvePlanHash: input.approvePlanHash } : {}),
     ...(input.planOnly ? { planOnly: true } : {}),
   });
+  let result: PlanAndApplyResult;
   try {
-    return await applied;
+    result = await applied;
   } catch (error) {
-    if (!shownLate) throw error;
-    // The bucket exists: untainted, the next plan keeps it instead of replacing it (which
-    // `prevent_destroy` refuses) and plans what is left, for a new approval.
-    await input.engine.untaint(dir, S3_BUCKET, { env });
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `${name} did not show the new bucket ${bucket.bucket} right away, so the apply stopped. OpsCrew kept the bucket.`,
-      {
-        hint: `Run \`${command}\` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.`,
-      },
-    );
+    if (failedLog === undefined) throw error;
+    const failed = {
+      engine: input.engine,
+      dir,
+      env,
+      bucket,
+      command,
+      sleep: input.sleep ?? realSleep,
+      createdEarlier,
+    };
+    throw (await storageFailure(deps, failedLog, failed, input.key)) ?? error;
   }
+  // The bucket is in the state now.
+  if (result.applied) await removeMarker(deps);
+  return result;
 }

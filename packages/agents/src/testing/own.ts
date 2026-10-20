@@ -814,6 +814,7 @@ export class OwnEngine implements IacEngine {
   readonly providerSchemas = noProviderSchemas;
   readonly stateResources = plainStateResources;
   async untaint(): Promise<void> {}
+  async importResource(): Promise<void> {}
 }
 
 /** The DNS records an own public-mode plan creates. */

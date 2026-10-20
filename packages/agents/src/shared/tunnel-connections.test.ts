@@ -313,6 +313,9 @@ describe("Cloudflare's error 1022", () => {
       untaint: async () => {
         order.push("untaint");
       },
+      importResource: async () => {
+        order.push("import");
+      },
       plan: async (_dir, planFile) => {
         order.push("plan");
         await writeFile(planFile, "plan");

@@ -2,7 +2,7 @@ import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { s3Client } from "./s3";
+import { s3Client, storageS3Client } from "./s3";
 
 const KEY = {
   accessKeyId: fakeSecret("aws-access-key-id", "s3"),
@@ -93,5 +93,22 @@ describe("s3Client", () => {
       expect(text).not.toContain(KEY.secretAccessKey);
       expect(text).not.toContain(KEY.accessKeyId);
     }
+  });
+});
+
+describe("storageS3Client", () => {
+  it("reaches a plan's bucket at its provider's endpoint, Spaces signed for us-east-1", async () => {
+    const { fetch, calls } = answering(200, 200);
+    const hetzner = { provider: "hetzner" as const, region: "fsn1", bucket: "shop" };
+    const spaces = { provider: "digitalocean" as const, region: "fra1", bucket: "shop" };
+    await storageS3Client(hetzner, KEY, { fetch, now: NOW }).headBucket();
+    await storageS3Client(spaces, KEY, { fetch, now: NOW }).headBucket();
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://fsn1.your-objectstorage.com/shop",
+      "https://fra1.digitaloceanspaces.com/shop",
+    ]);
+    const scopes = calls.map((c) => new Headers(c.init?.headers).get("authorization"));
+    expect(scopes[0]).toContain("/20261020/fsn1/s3/aws4_request");
+    expect(scopes[1]).toContain("/20261020/us-east-1/s3/aws4_request");
   });
 });

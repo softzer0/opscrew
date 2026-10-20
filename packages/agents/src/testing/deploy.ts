@@ -13,12 +13,18 @@ import type {
   IacApproval,
   IacEngine,
   IacInitOptions,
+  IacRunOptions,
   PlanSummary,
   RemoteExec,
   ResourceChange,
   ResourceMove,
 } from "@opscrew/contracts";
-import { NodeCommandRunner, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
+import {
+  NodeCommandRunner,
+  OpsCrewError,
+  type ProjectPaths,
+  resolveProjectPaths,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
 import {
@@ -423,6 +429,8 @@ export interface FakeEngineScenario {
   applyOk?: boolean;
   /** Engine log of a failed apply (default: Hetzner's unavailable server type). */
   applyLog?: string;
+  /** The engine's words for each failed import, in turn (`ENGINE_FAILED`); later imports work. */
+  importErrors?: string[];
 }
 
 /** IaC engine fake: writes real plan files, enforces the hash binding like the real engines. */
@@ -508,6 +516,24 @@ export class FakeEngine implements IacEngine {
   async untaint(_dir: string, address: string): Promise<void> {
     this.calls.push("untaint");
     this.untainted.push(address);
+  }
+
+  /** Every import tried, in order, with its environment; `scenario.importErrors` fail first. */
+  readonly imports: { address: string; id: string; env?: Record<string, string | undefined> }[] =
+    [];
+
+  async importResource(
+    _dir: string,
+    address: string,
+    id: string,
+    options?: IacRunOptions,
+  ): Promise<void> {
+    this.calls.push("import");
+    this.imports.push({ address, id, ...(options?.env ? { env: options.env } : {}) });
+    const error = this.scenario.importErrors?.shift();
+    if (error !== undefined) {
+      throw new OpsCrewError("ENGINE_FAILED", `OpenTofu import failed (exit code 1).\n${error}`);
+    }
   }
 
   readonly providerSchemas = noProviderSchemas;

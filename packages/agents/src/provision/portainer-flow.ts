@@ -411,6 +411,7 @@ export async function provisionPortainer(
             ...(options.planOnly ? { planOnly: true } : {}),
             command,
             phase,
+            ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
           }),
         );
   const storagePlanHash =

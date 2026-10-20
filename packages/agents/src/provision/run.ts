@@ -422,6 +422,7 @@ async function provisionFlow(
           ...(options.planOnly ? { planOnly: true } : {}),
           command,
           phase,
+          ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         });
   if (storage?.approval) approvals.push(approvalEntry(storage.approval));
   const storagePlanHash =

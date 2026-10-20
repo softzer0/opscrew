@@ -110,6 +110,9 @@ export class RootEngine<S extends IacEngine = FakeEngine> implements IacEngine {
   untaint(dir: string, address: string, options?: IacRunOptions) {
     return this.#pick(dir, options).untaint(dir, address, options);
   }
+  importResource(dir: string, address: string, id: string, options?: IacRunOptions) {
+    return this.#pick(dir, options).importResource(dir, address, id, options);
+  }
 }
 
 /** A fake `storage` engine whose plans create (or with `action`, change) the bucket. */

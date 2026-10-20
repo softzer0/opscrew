@@ -166,4 +166,12 @@ export interface IacEngine {
    * throws `ENGINE_FAILED`.
    */
   untaint(dir: string, address: string, options?: IacRunOptions): Promise<void>;
+  /**
+   * Runs `import -input=false -no-color <address> <id>` in `dir` after `init`, against the root's
+   * configured state, with the same `options.env` and `options.vars` as `plan` (the root's
+   * `terraform.tfvars.json` is read as usual). A state-only change: it records an object that
+   * already exists, and nothing in the cloud changes. A failure throws `ENGINE_FAILED` with the
+   * engine's redacted words.
+   */
+  importResource(dir: string, address: string, id: string, options?: IacRunOptions): Promise<void>;
 }

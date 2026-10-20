@@ -71,6 +71,9 @@ class OutputEngine implements IacEngine {
   async untaint(): Promise<never> {
     throw new Error("untaint is not expected");
   }
+  async importResource(): Promise<never> {
+    throw new Error("importResource is not expected");
+  }
   async output(dir: string, options?: IacRunOptions): Promise<Record<string, unknown>> {
     this.calls.push({ dir, env: options?.env });
     if (this.outputs === "fail") throw new Error("Backend initialization required");

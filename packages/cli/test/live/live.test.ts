@@ -34,6 +34,7 @@ import {
   HETZNER_API,
   minutes,
   retryDelete,
+  sleep,
 } from "./cloud";
 import { type BucketPass, bucketPass, componentChecks, type DeployedRun } from "./component-checks";
 import {
@@ -74,6 +75,8 @@ const withAi = process.env.OPSCREW_E2E_AI === "1";
 const aiFlags = withAi ? [] : ["--no-ai"];
 
 const DIGITALOCEAN_API = "https://api.digitalocean.com/v2";
+/** How many times provision is run again when it stops at a new bucket and asks for a rerun. */
+const BUCKET_RETRIES = 3;
 
 const runner = new NodeCommandRunner();
 const github = new GitHubRepo(E2E.githubToken ?? "", E2E.githubRepo ?? "");
@@ -698,10 +701,20 @@ async function deployAndTearDown(
       ...hashes.flatMap((hash) => ["--approve", hash]),
       "--yes",
     );
-    // Hetzner Object Storage can show a new bucket late; OpsCrew then keeps it and asks for a
-    // rerun, which plans and approves what is left, as a user would.
-    if (applied.exitCode !== 0 && applied.output.includes("did not show the new bucket")) {
-      console.log(`OpsCrew E2E: ${app.label}: the new bucket showed late; running provision again`);
+    // Hetzner Object Storage can show a new bucket late; OpsCrew then keeps it (or finds it in the
+    // next run) and asks for a rerun, which plans and approves what is left, as a user would.
+    for (
+      let retry = 1;
+      retry <= BUCKET_RETRIES &&
+      applied.exitCode !== 0 &&
+      /did not show the new bucket|found the bucket from an earlier run/.test(applied.output);
+      retry++
+    ) {
+      const waits = applied.output.includes("within a minute");
+      console.log(
+        `OpsCrew E2E: ${app.label}: provision stopped at the new bucket and asks for a rerun; running it again (retry ${retry} of ${BUCKET_RETRIES}${waits ? ", after 30 s" : ""})`,
+      );
+      if (waits) await sleep(30_000);
       const replanned = await opscrew("provision", "--plan-only", "--yes");
       expect(replanned.exitCode, replanned.output).toBe(0);
       applied = await opscrew(
@@ -905,12 +918,23 @@ async function deployAndTearDown(
     );
     await attempt("check the zone's DNS records", () => expectNoRecordsLeft(zone, sharedRules));
   }
-  // … and the bucket is gone; the user's key for it stays theirs (OpsCrew never deletes one).
+  // … and the bucket is gone; the user's key for it stays theirs (OpsCrew never deletes one). A
+  // bucket this run left is deleted by the test first, so no run leaves one behind; it still fails.
   if (bucket !== undefined && pass !== undefined) {
     await attempt(`check the bucket ${bucket.bucket}`, async () => {
-      if (await pass.exists(bucket)) {
+      if (!(await pass.exists(bucket))) return;
+      const { deleteThroughApi } = pass;
+      if (deleteThroughApi === undefined) {
         throw new Error(`it is left on ${bucket.provider}: delete it in the provider's console`);
       }
+      await deleteThroughApi(bucket).catch((error: unknown) => {
+        throw new Error(
+          `it is left on ${bucket.provider}, and the test could not delete it (${error instanceof Error ? error.message : String(error)}): delete it in the provider's console`,
+        );
+      });
+      throw new Error(
+        `it was left on ${bucket.provider} after the teardown, so the test deleted it itself`,
+      );
     });
   }
   // The throwaway repository keeps only `main`, as the own-server and Portainer runs leave it.

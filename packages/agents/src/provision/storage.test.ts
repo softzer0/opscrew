@@ -1,7 +1,8 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError, readTextIfExists } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -13,6 +14,7 @@ import {
   FakeGitHub,
   fakeCloudflare,
   fakeSharedCloudflare,
+  plainState,
   projectRunner,
   readyRemote,
   ScriptedApprovalHandler,
@@ -23,11 +25,13 @@ import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import {
+  applyStorage,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_KEY_VARS,
   STORAGE_PLAN_SUFFIX,
   type StorageKeyQuestion,
+  storageCreateFile,
   storageEngineEnv,
   storageKeyFile,
   storageLogin,
@@ -52,6 +56,56 @@ const CORS_CHANGE = {
   provider: "registry.opentofu.org/hashicorp/aws",
   action: "create" as const,
 };
+/** The `aws` provider's words when it creates the bucket but cannot read it back. */
+const LATE_LOG =
+  "aws_s3_bucket.this: Creating...\naws_s3_bucket.this: Still creating... [10s elapsed]\nError: reading S3 Bucket (shop-uploads): couldn't find resource\n\n  with aws_s3_bucket.this,\n  on main.tf line 18";
+/** Hetzner's answer to a create of a name another bucket has. */
+const TAKEN_LOG =
+  "Error: creating S3 Bucket (shop-uploads): operation error S3: CreateBucket, https response error StatusCode: 409, api error BucketAlreadyExists: The requested bucket name is not available.";
+/** The engine's words for an import of a bucket the provider cannot read (yet). */
+const NOT_READABLE =
+  'Error: Cannot import non-existent remote object\n\nWhile attempting to import an existing object to "aws_s3_bucket.this", the provider detected that no object exists with the given id.';
+const RERUN_HINT =
+  "Run `opscrew provision` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.";
+const SHOWN_LATE = {
+  code: "PROVIDER_ERROR",
+  message:
+    "Hetzner Object Storage did not show the new bucket shop-uploads right away, so the apply stopped. OpsCrew kept the bucket.",
+  hint: RERUN_HINT,
+};
+const TAKEN = {
+  code: "PHASE_PRECONDITION",
+  message:
+    "Hetzner Object Storage says the bucket name shop-uploads is taken: bucket names there are shared by all its customers (or another bucket of yours has it). Nothing else was changed.",
+  hint: expect.stringContaining(
+    "Change storage.objectStorage.bucket in opscrew/plan.yaml to another name",
+  ),
+};
+/** The bucket as a failed create leaves it in the `storage` root's state. */
+const BUCKET_IN_STATE = {
+  mode: "managed",
+  type: "aws_s3_bucket",
+  name: "this",
+  instances: [{ schema_version: 0, status: "tainted", attributes: { bucket: "shop-uploads" } }],
+};
+
+/**
+ * Hetzner's S3 endpoint: HEAD answers `status`, or fails without an answer when it is undefined.
+ * Records every request.
+ */
+function fakeS3(status: number | undefined) {
+  const requests: { method: string; url: string; authorization: string }[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    requests.push({
+      method: init?.method ?? "GET",
+      url: String(input),
+      authorization: new Headers(init?.headers).get("authorization") ?? "",
+    });
+    if (status === undefined) throw new TypeError("fetch failed");
+    return new Response(null, { status });
+  };
+  return { fetch, requests };
+}
 
 describe("requireStorageKey", () => {
   const hetzner = () => withBucket(testPlan(), "hetzner");
@@ -267,6 +321,45 @@ async function flow(o: FlowOptions) {
 
 type Flow = Awaited<ReturnType<typeof flow>>;
 
+/** The `storage` root's state as the engine left it, holding `resources`. */
+async function writeStorageState(f: Flow, resources: unknown[]): Promise<void> {
+  const file = storageStateFile(f.deps.paths);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, plainState(resources));
+}
+
+/** The marker an earlier run's apply left when it set out to create `bucket` at Hetzner. */
+async function writeEarlierMarker(f: Flow, bucket = "shop-uploads"): Promise<void> {
+  const file = storageCreateFile(f.deps.paths);
+  await mkdir(dirname(file), { recursive: true });
+  const marker = {
+    provider: "hetzner",
+    bucket,
+    region: "fsn1",
+    planHash: "0".repeat(64),
+    createdAt: "2026-10-10T12:00:00.000Z",
+  };
+  await writeFile(file, JSON.stringify(marker));
+}
+
+const markerLeft = (f: Flow) => readTextIfExists(storageCreateFile(f.deps.paths));
+
+/** The rerun after a stop: the next plan only adds the CORS rule, applied by its own approval. */
+async function expectRerunPlansOnlyCors(f: Flow, storage: FakeEngine): Promise<void> {
+  storage.scenario.changes = [CORS_CHANGE];
+  storage.scenario.applyOk = true;
+  const before = f.handler.requests.length;
+  const appliedBefore = storage.applied.length;
+  await runProvision(f.deps, { services: f.services });
+  const [rerun] = f.handler.requests.slice(before).filter((r) => r.kind === "iac-apply");
+  expect(rerun?.title).toBe(
+    "Apply the plan of the app's bucket shop-uploads on Hetzner Object Storage",
+  );
+  expect(storage.applied).toHaveLength(appliedBefore + 1);
+  expect(storage.applied.at(-1)?.approval.approvedPlanHash).toBe(rerun?.planHash);
+  expect(storage.applied.at(-1)?.approval.allowDestroy).toBe(false);
+}
+
 /** Every text the run printed, audited or wrote into the repository and the GitHub secrets but the app's. */
 async function leaks(f: Flow): Promise<string> {
   const files = await f.git(f.root, "ls-files", "-z", "--others", "--cached");
@@ -326,6 +419,27 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
     const printed = await leaks(f);
     expect(printed).not.toContain(KEY.secretAccessKey);
     expect(printed).not.toContain(KEY.accessKeyId);
+  });
+
+  it("notes the bucket it sets out to create before the apply, and removes the note once it is in the state", async () => {
+    const storage = bucketEngine("hetzner");
+    const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+    let during: string | undefined;
+    const apply = storage.apply.bind(storage);
+    storage.apply = async (...args: Parameters<FakeEngine["apply"]>) => {
+      during = await markerLeft(f);
+      return apply(...args);
+    };
+    await runProvision(f.deps, { services: f.services });
+    const [approval] = f.handler.requests.filter((r) => r.kind === "iac-apply");
+    expect(JSON.parse(during ?? "{}")).toEqual({
+      provider: "hetzner",
+      bucket: "shop-uploads",
+      region: "fsn1",
+      planHash: approval?.planHash,
+      createdAt: "2026-10-11T12:00:00.000Z",
+    });
+    expect(await markerLeft(f)).toBeUndefined();
   });
 
   it("stops before any change without the key, saying how to create it", async () => {
@@ -427,65 +541,205 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
     expect(f.engine.storage.applied).toHaveLength(1);
   });
 
-  it("names storage.objectStorage.bucket when the provider says the name is taken", async () => {
+  it.each([
+    ["HTTP 403 (another customer's bucket)", 403],
+    ["HTTP 404", 404],
+    ["no answer", undefined],
+  ])(
+    "names storage.objectStorage.bucket when the name is taken and the bucket answers the key with %s",
+    async (_, status) => {
+      const storage = bucketEngine("hetzner", { applyOk: false, applyLog: TAKEN_LOG });
+      const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+      const s3 = fakeS3(status);
+      f.deps.fetch = s3.fetch;
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject(TAKEN);
+      expect(s3.requests.map((r) => `${r.method} ${r.url}`)).toEqual([
+        "HEAD https://fsn1.your-objectstorage.com/shop-uploads",
+      ]);
+      expect(storage.imports).toEqual([]);
+      expect(storage.applied).toHaveLength(1);
+      expect(f.main.calls).toEqual([]);
+    },
+  );
+
+  it("names storage.objectStorage.bucket when R2 says the name is taken, without asking R2", async () => {
+    const storage = bucketEngine("r2", { applyOk: false, applyLog: TAKEN_LOG });
     const f = await flow({
-      plan: withBucket(testPlan(), "hetzner"),
-      storage: bucketEngine("hetzner", {
-        applyOk: false,
-        applyLog:
-          "Error: creating S3 Bucket (shop-uploads): operation error S3: CreateBucket, https response error StatusCode: 409, api error BucketAlreadyExists: The requested bucket name is not available.",
-      }),
+      plan: withBucket(testPlan({ domain: "shop.example.com" }), "r2"),
+      storage,
       env: KEY_ENV,
     });
+    const s3 = fakeS3(200);
+    f.deps.fetch = s3.fetch;
     await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
-      code: "PHASE_PRECONDITION",
-      message:
-        "Hetzner Object Storage says the bucket name shop-uploads is taken: bucket names there are shared by all its customers (or another bucket of yours has it). Nothing else was changed.",
-      hint: expect.stringContaining(
-        "Change storage.objectStorage.bucket in opscrew/plan.yaml to another name",
-      ),
+      ...TAKEN,
+      message: expect.stringContaining("Cloudflare R2 says the bucket name shop-uploads is taken"),
     });
+    expect(s3.requests).toEqual([]);
+    expect(storage.imports).toEqual([]);
+  });
+
+  it("keeps the user's own bucket an earlier run set out to create when the name is taken, and the next run plans only what is left", async () => {
+    const storage = bucketEngine("hetzner", {
+      changes: [...bucketChanges("hetzner"), CORS_CHANGE],
+      applyOk: false,
+      applyLog: TAKEN_LOG,
+    });
+    const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+    await writeEarlierMarker(f);
+    const s3 = fakeS3(200);
+    f.deps.fetch = s3.fetch;
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "Hetzner Object Storage says the bucket name shop-uploads is taken, and the bucket answers to your key: OpsCrew found the bucket from an earlier run and kept it.",
+      hint: RERUN_HINT,
+    });
+    // The bucket is checked with the user's key, then only recorded in the state.
+    expect(s3.requests).toEqual([
+      {
+        method: "HEAD",
+        url: "https://fsn1.your-objectstorage.com/shop-uploads",
+        authorization: expect.stringContaining(`Credential=${KEY.accessKeyId}/`),
+      },
+    ]);
+    expect(storage.imports).toEqual([
+      {
+        address: "aws_s3_bucket.this",
+        id: "shop-uploads",
+        env: expect.objectContaining({ AWS_SECRET_ACCESS_KEY: KEY.secretAccessKey }),
+      },
+    ]);
+    expect(storage.calls).toEqual(["init", "validate", "plan", "apply", "import"]);
     expect(f.main.calls).toEqual([]);
+    expect(await markerLeft(f)).toBeUndefined();
+
+    await expectRerunPlansOnlyCors(f, storage);
+    expect(storage.imports).toHaveLength(1);
+    const printed = await leaks(f);
+    expect(printed).not.toContain(KEY.secretAccessKey);
+    expect(printed).not.toContain(KEY.accessKeyId);
+  });
+
+  it.each([
+    ["no marker", undefined],
+    ["a marker of another bucket", "shop-files"],
+  ])(
+    "never takes over a bucket of the user's that OpsCrew did not create for this app (%s), in this run or the next",
+    async (_, other) => {
+      const storage = bucketEngine("hetzner", { applyOk: false, applyLog: TAKEN_LOG });
+      const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+      if (other !== undefined) await writeEarlierMarker(f, other);
+      f.deps.fetch = fakeS3(200).fetch;
+      const notOurs = {
+        code: "PHASE_PRECONDITION",
+        message:
+          "A bucket called shop-uploads already exists in your Hetzner Object Storage account, but OpsCrew did not create it for this app, so it will not take it over. Nothing was changed.",
+        hint: TAKEN.hint,
+      };
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject(notOurs);
+      // This apply created nothing, so no marker names the bucket for the next run either.
+      expect(await markerLeft(f)).toBeUndefined();
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject(notOurs);
+      expect(storage.imports).toEqual([]);
+      expect(storage.calls).not.toContain("untaint");
+    },
+  );
+
+  it("takes a bucket shown late into the state only when the marker names it", async () => {
+    const storage = bucketEngine("hetzner", { applyOk: false, applyLog: LATE_LOG });
+    const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+    // Something removed the marker during the apply.
+    const apply = storage.apply.bind(storage);
+    storage.apply = async (...args: Parameters<FakeEngine["apply"]>) => {
+      await rm(storageCreateFile(f.deps.paths), { force: true });
+      return apply(...args);
+    };
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+      message: expect.stringContaining("couldn't find resource"),
+    });
+    expect(storage.imports).toEqual([]);
   });
 
   it("keeps a new bucket Hetzner shows late, and the next run plans only what is left", async () => {
     const storage = bucketEngine("hetzner", {
       changes: [...bucketChanges("hetzner"), CORS_CHANGE],
       applyOk: false,
-      applyLog:
-        "aws_s3_bucket.this: Creating...\naws_s3_bucket.this: Still creating... [10s elapsed]\nError: reading S3 Bucket (shop-uploads): couldn't find resource\n\n  with aws_s3_bucket.this,\n  on main.tf line 18",
+      applyLog: LATE_LOG,
     });
     const f = await flow({
       plan: withBucket(testPlan(), "hetzner"),
       storage,
       env: KEY_ENV,
     });
-    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
-      code: "PROVIDER_ERROR",
-      message:
-        "Hetzner Object Storage did not show the new bucket shop-uploads right away, so the apply stopped. OpsCrew kept the bucket.",
-      hint: "Run `opscrew provision` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.",
-    });
+    // The failed create left the bucket in the state, tainted.
+    await writeStorageState(f, [BUCKET_IN_STATE]);
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject(SHOWN_LATE);
     expect(storage.untainted).toEqual(["aws_s3_bucket.this"]);
+    expect(storage.imports).toEqual([]);
     expect(storage.calls).toEqual(["init", "validate", "plan", "apply", "untaint"]);
     // The untaint reads the root's state with the same key as the apply.
     expect(f.engine.storageEnvs.at(-1)?.AWS_SECRET_ACCESS_KEY).toBe(KEY.secretAccessKey);
     expect(f.main.calls).toEqual([]);
+    expect(await markerLeft(f)).toBeUndefined();
 
     // The bucket is no longer tainted, so the next plan only adds its CORS rule, which is applied
     // only through its own approval.
-    storage.scenario.changes = [CORS_CHANGE];
-    storage.scenario.applyOk = true;
-    const before = f.handler.requests.length;
-    await runProvision(f.deps, { services: f.services });
-    const [rerun] = f.handler.requests.slice(before).filter((r) => r.kind === "iac-apply");
-    expect(rerun?.title).toBe(
-      "Apply the plan of the app's bucket shop-uploads on Hetzner Object Storage",
-    );
-    expect(storage.applied).toHaveLength(2);
-    expect(storage.applied[1]?.approval.approvedPlanHash).toBe(rerun?.planHash);
-    expect(storage.applied[1]?.approval.allowDestroy).toBe(false);
+    await expectRerunPlansOnlyCors(f, storage);
     expect(storage.untainted).toHaveLength(1);
+  });
+
+  it("records a new bucket Hetzner shows late that never reached the state, and the next run plans only what is left", async () => {
+    const storage = bucketEngine("hetzner", {
+      changes: [...bucketChanges("hetzner"), CORS_CHANGE],
+      applyOk: false,
+      applyLog: LATE_LOG,
+    });
+    const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+    // The failed create left a state without the bucket.
+    await writeStorageState(f, []);
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject(SHOWN_LATE);
+    expect(storage.untainted).toEqual([]);
+    expect(storage.imports).toEqual([
+      {
+        address: "aws_s3_bucket.this",
+        id: "shop-uploads",
+        env: expect.objectContaining({ AWS_SECRET_ACCESS_KEY: KEY.secretAccessKey }),
+      },
+    ]);
+    expect(storage.calls).toEqual(["init", "validate", "plan", "apply", "import"]);
+    expect(f.main.calls).toEqual([]);
+    expect(await markerLeft(f)).toBeUndefined();
+
+    await expectRerunPlansOnlyCors(f, storage);
+    expect(storage.imports).toHaveLength(1);
+    const printed = await leaks(f);
+    expect(printed).not.toContain(KEY.secretAccessKey);
+    expect(printed).not.toContain(KEY.accessKeyId);
+  });
+
+  it("waits with provision's own sleep between imports while Hetzner cannot read the bucket", async () => {
+    const storage = bucketEngine("hetzner", {
+      applyOk: false,
+      applyLog: LATE_LOG,
+      importErrors: [NOT_READABLE, NOT_READABLE],
+    });
+    const sleeps: number[] = [];
+    const f = await flow({
+      plan: withBucket(testPlan(), "hetzner"),
+      storage,
+      env: KEY_ENV,
+      services: {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    });
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject(SHOWN_LATE);
+    expect(storage.imports).toHaveLength(3);
+    expect(sleeps).toEqual([10_000, 10_000]);
+    expect(storage.applied).toHaveLength(1);
   });
 
   it("leaves any other failed apply of the bucket as it is", async () => {
@@ -500,6 +754,7 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
       message: expect.stringContaining("ServiceUnavailable"),
     });
     expect(storage.untainted).toEqual([]);
+    expect(storage.imports).toEqual([]);
     expect(storage.calls).not.toContain("untaint");
   });
 
@@ -523,5 +778,64 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
     const again = f.handler.requests.slice(before).map((r) => r.kind);
     expect(again).not.toContain("repo-write");
     expect(again).not.toContain("iac-apply");
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("the import of a late bucket the state lacks", () => {
+  /** The bucket's apply failing to read it back, with no state yet; imports fail with `importErrors`. */
+  async function lateApply(importErrors: string[]) {
+    const plan = withBucket(testPlan(), "hetzner");
+    const storage = bucketEngine("hetzner", { applyOk: false, applyLog: LATE_LOG, importErrors });
+    const f = await flow({ plan, storage, env: KEY_ENV });
+    const sleeps: number[] = [];
+    const applied = applyStorage(f.deps, {
+      engine: f.engine,
+      env: f.deps.env,
+      plan,
+      files: [],
+      key: KEY,
+      command: "opscrew provision",
+      phase: "provision",
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    return { f, storage, sleeps, applied };
+  }
+
+  it("tries again every 10 s while Hetzner cannot read the bucket yet", async () => {
+    const { storage, sleeps, applied } = await lateApply([NOT_READABLE, NOT_READABLE]);
+    await expect(applied).rejects.toMatchObject(SHOWN_LATE);
+    expect(storage.imports.map((i) => `${i.address} ${i.id}`)).toEqual([
+      "aws_s3_bucket.this shop-uploads",
+      "aws_s3_bucket.this shop-uploads",
+      "aws_s3_bucket.this shop-uploads",
+    ]);
+    expect(sleeps).toEqual([10_000, 10_000]);
+    expect(storage.applied).toHaveLength(1);
+  });
+
+  it("stops after about a minute, saying the next run finds the bucket", async () => {
+    const { f, storage, sleeps, applied } = await lateApply(Array(7).fill(NOT_READABLE));
+    await expect(applied).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "Hetzner Object Storage did not show the new bucket shop-uploads within a minute, so OpsCrew could not record it in the bucket's state yet. The bucket exists; nothing else was changed.",
+      hint: "Wait a few minutes, then run `opscrew provision` again: OpsCrew then finds the bucket and keeps it.",
+    });
+    expect(storage.imports).toHaveLength(7);
+    expect(sleeps).toEqual(Array(6).fill(10_000));
+    expect(storage.applied).toHaveLength(1);
+    expect(await leaks(f)).not.toContain(KEY.secretAccessKey);
+  });
+
+  it("stops at any other failed import with the engine's words", async () => {
+    const { storage, sleeps, applied } = await lateApply(["Error: Failed to load state"]);
+    await expect(applied).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+      message: expect.stringContaining("Failed to load state"),
+    });
+    expect(storage.imports).toHaveLength(1);
+    expect(sleeps).toEqual([]);
   });
 });

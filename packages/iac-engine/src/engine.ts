@@ -99,6 +99,8 @@ const HINTS: Record<string, string> = {
     "Run init again in the infrastructure folder so the providers are installed, then try again.",
   "state list":
     "Check that the state file exists and, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it.",
+  import:
+    "Read the error above, fix the cause, then run the command again. An import changes only the state, never the cloud.",
   untaint:
     "Run init again in the infrastructure folder and check, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it, then try again.",
 };
@@ -358,6 +360,24 @@ class Engine implements IacEngine {
       options,
     );
     this.assertOk("untaint", result, options.timeoutMs);
+  }
+
+  async importResource(
+    dir: string,
+    address: string,
+    id: string,
+    options: IacRunOptions = {},
+  ): Promise<void> {
+    const args = [
+      "import",
+      "-input=false",
+      "-no-color",
+      ...this.varArgs(options.vars),
+      address,
+      id,
+    ];
+    const result = await this.exec("import", path.resolve(dir), args, options);
+    this.assertOk("import", result, options.timeoutMs);
   }
 
   /** Runs `show -json <planFile>` and returns the parsed plan. */

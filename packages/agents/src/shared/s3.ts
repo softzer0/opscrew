@@ -1,7 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { StorageLogin } from "./app-env";
+import type { DeployPlan } from "@opscrew/plan-schema";
+import { STORAGE_ENDPOINTS, type StorageLogin } from "./app-env";
+
+/** A bucket in `plan.yaml` (`storage.objectStorage`). */
+type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]>;
 
 /** A bucket at an S3-compatible service, addressed path-style (`<endpoint>/<bucket>`). */
 export interface S3Bucket {
@@ -118,4 +122,27 @@ export function s3Client(
       throw refused(status, "delete");
     },
   };
+}
+
+/**
+ * The {@link s3Client} of a plan's bucket at Hetzner or Spaces (its `storage.objectStorage`), at
+ * the provider's endpoint for the bucket's region. Spaces signs with `us-east-1`, as the `storage`
+ * root's provider does; the endpoint picks the region.
+ */
+export function storageS3Client(
+  bucket: Pick<ObjectStorage, "provider" | "region" | "bucket">,
+  key: Pick<StorageLogin, "accessKeyId" | "secretAccessKey">,
+  io: { fetch: FetchLike; now: () => Date },
+): S3Client {
+  const endpoint = STORAGE_ENDPOINTS[bucket.provider];
+  if (endpoint === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
+  return s3Client(
+    {
+      endpoint: endpoint(bucket.region),
+      region: bucket.provider === "digitalocean" ? "us-east-1" : bucket.region,
+      bucket: bucket.bucket,
+    },
+    key,
+    io,
+  );
 }

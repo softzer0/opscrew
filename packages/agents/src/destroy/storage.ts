@@ -19,14 +19,8 @@ import {
   storageEngineEnv,
   storageStateFile,
 } from "../provision";
-import {
-  describeChanges,
-  type ProjectEngine,
-  readValidJson,
-  refusalReason,
-  STORAGE_ENDPOINTS,
-} from "../shared";
-import { s3Client } from "../shared/s3";
+import { describeChanges, type ProjectEngine, readValidJson, refusalReason } from "../shared";
+import { storageS3Client } from "../shared/s3";
 import { planHeading } from "./checks";
 import { typeNameHint } from "./common";
 import {
@@ -184,18 +178,7 @@ async function confirmBucketGone(
   key: StorageKey,
   sleep: (ms: number) => Promise<void>,
 ): Promise<BucketStillListed | undefined> {
-  const endpoint = STORAGE_ENDPOINTS[bucket.provider];
-  if (endpoint === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
-  const client = s3Client(
-    {
-      endpoint: endpoint(bucket.region),
-      // Spaces signs with us-east-1, as the storage root's provider does; the endpoint picks the region.
-      region: bucket.provider === "digitalocean" ? "us-east-1" : bucket.region,
-      bucket: bucket.bucket,
-    },
-    key,
-    { fetch: deps.fetch, now: () => deps.clock.now() },
-  );
+  const client = storageS3Client(bucket, key, { fetch: deps.fetch, now: () => deps.clock.now() });
   const gone = async () => {
     for (let check = 1; ; check++) {
       if (!(await client.headBucket())) return true;

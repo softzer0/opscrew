@@ -19,6 +19,7 @@ export * from "./shared/approval-text";
 export * from "./shared/own-server-design";
 export * from "./shared/phase-deps";
 export * from "./shared/phase-status";
+export * from "./shared/s3";
 export * from "./shared/saved-plan";
 export * from "./shared/scan-phase";
 export * from "./shared/unpriced";
