@@ -501,3 +501,8 @@ Effort`.
 - **Then:** sizing everywhere (US6), and part 2 (US7).
 
 Each wave is merged, gated and pushed before the next starts.
+
+## End-of-feature simplify pass (after T1315)
+
+- Garage on servers: replace its three init steps with the image's own `--default-bucket` / `--default-access-key` flags, as Portainer stacks already do (T1310).
+- The services' address through a fake `OPSCREW_SERVICE_ADDRESS` variable (`shared/app-env.ts` `serviceAddress`): a catalog `address(ctx)` instead (T1307's review).
