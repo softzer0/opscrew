@@ -520,7 +520,7 @@ Effort`.
   - Effort: high
 
 - [ ] T1315 Live runs (lead): the passes in `docs/e2e.md`; results in `docs/e2e.md` and `docs/e2e-coverage.md`
-  - [ ] T1315a Fixes from the live runs, in `packages/core/src/exec.ts`, `packages/iac-engine/src/engine.ts`, `packages/agents/src/drift/{schema,infra}.ts`, `packages/iac-templates/src/infra/storage.ts` (+ tests and snapshots)
+  - [X] T1315a Fixes from the live runs, in `packages/core/src/exec.ts`, `packages/iac-engine/src/engine.ts`, `packages/agents/src/drift/{schema,infra}.ts`, `packages/iac-templates/src/infra/storage.ts` (+ tests and snapshots)
     - Why: on a fresh Hetzner bucket, drift reported changes nobody made (reproduced by hand, 2026-10-20).
     - Accept:
       - `providerSchemas` lifts the output limit for its one call, because the `aws` provider's schema is 19.6 MB and the runner's default is 16 MB. Use a per-call option on the runner (for example `maxOutputBytes`), not a bigger default for every command.
