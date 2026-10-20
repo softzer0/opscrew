@@ -17,6 +17,8 @@ export interface CommandOptions {
   signal?: AbortSignal;
   /** Called for every complete stdout/stderr line as it arrives (for progress output). */
   onLine?: (line: string, stream: "stdout" | "stderr") => void;
+  /** The most output bytes this call may collect; the runner's default otherwise. */
+  maxOutputBytes?: number;
 }
 
 /**

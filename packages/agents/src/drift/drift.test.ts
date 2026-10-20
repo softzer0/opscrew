@@ -339,6 +339,31 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(await driftPlanFiles(deps.paths.files.plansDir)).toEqual([]);
   });
 
+  it("ignores the bucket's inline copy of the CORS rule its own resource manages", async () => {
+    // A fresh Hetzner bucket refreshed: the provider copies the CORS configuration into
+    // aws_s3_bucket.cors_rule ([] before). A CORS rule changed in the console still shows.
+    const bucketEngine = new DriftEngine({
+      drift: [
+        drifted("aws_s3_bucket.this", "update", ["cors_rule"]),
+        drifted("aws_s3_bucket_cors_configuration.this", "update", ["cors_rule"]),
+      ],
+    });
+    const engine = new RootEngine(new DriftEngine(), bucketEngine);
+    const { deps, services } = await setup({
+      plan: withBucket(testPlan({ deployed: true }), "hetzner"),
+      services: { engine: async () => engine },
+      env: {
+        [STORAGE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "drift"),
+        [STORAGE_KEY_VARS.secretAccessKey]: fakeSecret("aws-secret-access-key", "drift"),
+      },
+    });
+    await writeFile(storageStateFile(deps.paths), stateContent("plain") ?? "");
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([
+      drifted("aws_s3_bucket_cors_configuration.this", "update", ["cors_rule"]),
+    ]);
+  });
+
   it("reports a clean deployment without applying or leaving plan files behind", async () => {
     const { deps, engine, handler, services, statePath } = await setup();
     const report = await runDrift(deps, { services });

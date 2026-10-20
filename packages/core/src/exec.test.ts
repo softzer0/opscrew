@@ -111,6 +111,15 @@ describe("NodeCommandRunner", () => {
     expect(result.stdout.length).toBeLessThan(1100);
   });
 
+  it("lets one call raise the output limit, leaving the runner's default for the others", async () => {
+    const small = new NodeCommandRunner({ maxOutputBytes: 1024 });
+    const print = ["-e", "process.stdout.write('x'.repeat(100000))"];
+    const lifted = await small.run(node, print, { maxOutputBytes: 200_000 });
+    expect(lifted.stdout).toBe("x".repeat(100000));
+    const capped = await small.run(node, print);
+    expect(capped.stdout).toContain("[output truncated]");
+  });
+
   it("kills the process tree on timeout and reports exit code 124", async () => {
     // The child starts a grandchild that would live forever, prints its pid, then hangs.
     const script = [

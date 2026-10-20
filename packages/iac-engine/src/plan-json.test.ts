@@ -164,6 +164,32 @@ describe("parsePlanJson drift", () => {
     expect(out).not.toContain(after);
   });
 
+  it("treats null, {} and [] as the same top-level value", () => {
+    const bucket = (before: Record<string, unknown>, after: Record<string, unknown>) => ({
+      resource_drift: [
+        {
+          address: "aws_s3_bucket.this",
+          mode: "managed",
+          type: "aws_s3_bucket",
+          name: "this",
+          provider_name: "registry.opentofu.org/hashicorp/aws",
+          change: { actions: ["update"], before, after },
+        },
+      ],
+    });
+    const rule = { allowed_methods: ["GET", "PUT", "POST"], max_age_seconds: 0 };
+    // As a fresh Hetzner bucket refreshed: tags null → {}, the inline CORS copy [] → [rule].
+    expect(
+      parsePlanJson(bucket({ tags: null, cors_rule: [] }, { tags: {}, cors_rule: [rule] })).drift,
+    ).toEqual([expect.objectContaining({ attributes: ["cors_rule"] })]);
+    expect(
+      parsePlanJson(bucket({ tags: null, grants: {} }, { tags: {}, grants: [] })),
+    ).not.toHaveProperty("drift");
+    expect(parsePlanJson(bucket({ tags: {} }, { tags: { a: "b" } })).drift).toEqual([
+      expect.objectContaining({ attributes: ["tags"] }),
+    ]);
+  });
+
   it("reports no drift for clean refresh-only and normal plans", () => {
     expect(parsePlanJson(fixture("show-refresh-clean.json"))).toEqual({
       changes: [],

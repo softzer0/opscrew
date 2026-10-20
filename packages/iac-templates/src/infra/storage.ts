@@ -151,6 +151,8 @@ function s3Main(
           `    allowed_methods = ${CORS_METHODS}`,
           "    allowed_origins = var.cors_origins",
           '    expose_headers  = ["ETag"]',
+          "    # Set, because a provider that reads an unset value back as 0 would plan a change.",
+          "    max_age_seconds = 3600",
           "  }",
           "}",
         ]

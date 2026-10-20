@@ -33,6 +33,8 @@ import { managedAddresses } from "./state-resources";
 export const APPLY_TIMEOUT_MS = 30 * 60_000;
 /** Default timeout for every other command: 10 minutes. */
 export const COMMAND_TIMEOUT_MS = 10 * 60_000;
+/** Output limit for `providers schema -json`: the `aws` provider's schema alone is 19.6 MB. */
+const SCHEMA_OUTPUT_BYTES = 128 * 1024 * 1024;
 /** Number of trailing output lines included in error messages. */
 const ERROR_TAIL_LINES = 20;
 const ERROR_TAIL_CHARS = 4_000;
@@ -314,7 +316,13 @@ class Engine implements IacEngine {
     const cwd = path.resolve(dir);
     if (this.schemas.has(cwd)) return this.schemas.get(cwd);
     const step = "providers schema";
-    const result = await this.exec(step, cwd, ["providers", "schema", "-json"], options);
+    const result = await this.exec(
+      step,
+      cwd,
+      ["providers", "schema", "-json"],
+      options,
+      SCHEMA_OUTPUT_BYTES,
+    );
     this.assertOk(step, result, options.timeoutMs);
     const parsed = this.#parseJson(result.stdout, "provider schemas", HINTS[step]);
     this.schemas.set(cwd, parsed);
@@ -412,6 +420,7 @@ class Engine implements IacEngine {
     cwd: string,
     args: string[],
     options: IacRunOptions,
+    maxOutputBytes?: number,
   ): Promise<CommandResult> {
     const { onOutput } = options;
     try {
@@ -427,6 +436,7 @@ class Engine implements IacEngine {
               },
             }
           : {}),
+        ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
       });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;

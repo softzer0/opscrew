@@ -166,14 +166,9 @@ export class NodeCommandRunner implements CommandRunner {
         return;
       }
 
-      const stdout = new StreamCollector(
-        this.maxOutputBytes,
-        onLine && ((line) => onLine(line, "stdout")),
-      );
-      const stderr = new StreamCollector(
-        this.maxOutputBytes,
-        onLine && ((line) => onLine(line, "stderr")),
-      );
+      const maxBytes = options.maxOutputBytes ?? this.maxOutputBytes;
+      const stdout = new StreamCollector(maxBytes, onLine && ((line) => onLine(line, "stdout")));
+      const stderr = new StreamCollector(maxBytes, onLine && ((line) => onLine(line, "stderr")));
       child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
       child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
 

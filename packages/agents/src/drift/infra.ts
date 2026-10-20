@@ -281,7 +281,8 @@ export async function storageDrift(
     engineEnv: storageEngineEnv(input.engineEnv, plan, key),
     statePath,
     dir: join(deps.paths.root, storageRootDir(plan)),
-    mirrored: {},
+    // The aws provider copies the CORS configuration resource's rule into the bucket's own.
+    mirrored: { aws_s3_bucket: ["cors_rule"] },
     changedFiles: input.changedFiles,
   });
   return { drift, pending, notes };

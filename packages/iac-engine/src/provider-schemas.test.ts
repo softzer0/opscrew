@@ -65,6 +65,8 @@ describe("providerSchemas", () => {
       TF_ENCRYPTION: "x",
       TF_IN_AUTOMATION: "1",
     });
+    // The aws provider's schema alone is 19.6 MB, beyond the runner's default 16 MiB.
+    expect(call?.options).toMatchObject({ maxOutputBytes: 128 * 1024 * 1024 });
   });
 
   it("reads the schemas once per directory for the engine's lifetime", async () => {

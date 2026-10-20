@@ -80,12 +80,29 @@ function sameJson(a: unknown, b: unknown): boolean {
   );
 }
 
-/** Sorted top-level attribute names whose values differ. Only names are returned. */
+/** `null`, `{}` or `[]`: providers read an unset value back as any of them. */
+function isEmptyValue(value: unknown): boolean {
+  return (
+    value === null ||
+    (Array.isArray(value) && value.length === 0) ||
+    (isRecord(value) && Object.keys(value).length === 0)
+  );
+}
+
+/**
+ * Sorted top-level attribute names whose values differ, with `null`, `{}` and `[]` counted as the
+ * same value. Only names are returned.
+ */
 function changedAttributes(before: unknown, after: unknown): string[] {
   const from = isRecord(before) ? before : {};
   const to = isRecord(after) ? after : {};
   const keys = new Set([...Object.keys(from), ...Object.keys(to)]);
-  return [...keys].filter((key) => !sameJson(from[key], to[key])).sort();
+  return [...keys]
+    .filter((key) => {
+      const [a, b] = [from[key], to[key]];
+      return !sameJson(a, b) && !(isEmptyValue(a) && isEmptyValue(b));
+    })
+    .sort();
 }
 
 /** One resource entry of `resource_changes` or `resource_drift`: only the fields read here. */
@@ -124,14 +141,19 @@ function toDrift(entries: readonly { mode?: string | undefined }[]): ResourceDri
     const key = entry.change.actions.join(",");
     if (key === "no-op" || key === "read" || key === "") continue;
     const action = key === "delete" ? "delete" : "update";
+    const { before, after } = entry.change;
+    const attributes = action === "delete" ? [] : changedAttributes(before, after);
+    // An update whose only differences were empty values (`null` → `{}`) changed nothing.
+    if (action === "update" && attributes.length === 0 && isRecord(before) && isRecord(after)) {
+      continue;
+    }
     drift.push({
       address: entry.address,
       type: entry.type,
       name: entry.name,
       provider: entry.provider_name ?? "",
       action,
-      attributes:
-        action === "delete" ? [] : changedAttributes(entry.change.before, entry.change.after),
+      attributes,
     });
   }
   return drift;

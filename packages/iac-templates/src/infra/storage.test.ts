@@ -190,6 +190,13 @@ describe("renderStorage", () => {
     }
   });
 
+  it("sets the S3 CORS rule's max_age_seconds, which Hetzner reads back as 0 when unset", () => {
+    for (const provider of ["digitalocean", "hetzner"] as const) {
+      const main = content(renderStorage(storagePlan(provider), ctx()), "main.tf");
+      expect(main).toMatch(/^ {4}max_age_seconds += 3600$/m);
+    }
+  });
+
   it("refuses CORS without a domain: the app's origin is not known", () => {
     expect(() => renderStorage(storagePlan("hetzner", { domain: null }), ctx())).toThrow(
       /browser uploads need the app's domain/,
