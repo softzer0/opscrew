@@ -2054,6 +2054,8 @@ describe.skipIf(MISSING.length > 0)(
       const before = await starts();
       const file = join(app.repo, "opscrew/plan.yaml");
       const original = await readFile(file, "utf8");
+      // The deploy left its own changes (the runbook, the plan's deployment record): compare.
+      const statusBefore = await app.git("status", "--porcelain");
       await writeArtifact("plan", file, withSearchEngine(await app.readPlan()));
       try {
         const refused = await app.opscrew("provision", "--plan-only", "--yes");
@@ -2069,7 +2071,7 @@ describe.skipIf(MISSING.length > 0)(
       expect(
         await app.git("status", "--porcelain"),
         "the second app's repository is as it was once the plan is put back",
-      ).toBe("");
+      ).toBe(statusBefore);
       observe("OpenSearch in plan.yaml was refused for its kernel setting, before any change");
     }
 
