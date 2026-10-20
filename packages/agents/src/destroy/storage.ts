@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ApprovalRecord, PlanSummary } from "@opscrew/contracts";
-import { exists, OpsCrewError, plural } from "@opscrew/core";
+import { exists, OpsCrewError, plural, realSleep } from "@opscrew/core";
 import {
   type RenderContext,
   renderStorage,
@@ -15,10 +15,18 @@ import {
   type ProviderBucket,
   providerBucket,
   requireStorageKey,
+  type StorageKey,
   storageEngineEnv,
   storageStateFile,
 } from "../provision";
-import { describeChanges, type ProjectEngine, readValidJson, refusalReason } from "../shared";
+import {
+  describeChanges,
+  type ProjectEngine,
+  readValidJson,
+  refusalReason,
+  STORAGE_ENDPOINTS,
+} from "../shared";
+import { s3Client } from "../shared/s3";
 import { planHeading } from "./checks";
 import { typeNameHint } from "./common";
 import {
@@ -39,6 +47,8 @@ export interface BucketDeletion {
   session: DeletionSession;
   summary: PlanSummary;
   bucket: ProviderBucket;
+  /** The user's key of a Hetzner or Spaces bucket, to check that it is gone. Never logged. */
+  key?: StorageKey;
 }
 
 /** Where the bucket is, in words: `shop-uploads on Hetzner Object Storage (fsn1)`. */
@@ -138,10 +148,85 @@ export async function planBucketDeletion(
   deps.reporter.step(`Planning the deletion of the app's bucket ${bucketWords(bucket)}`);
   await setup.engine.init(dir, { env, backendConfig: { path: state } });
   const summary = await savePlan(session, "destroy-bucket", { destroy: true });
-  if (summary.changes.length > 0) return { session, summary, bucket };
+  if (summary.changes.length > 0) return { session, summary, bucket, ...(key ? { key } : {}) };
   await discardPlan(summary);
   await rm(dir, { recursive: true, force: true });
   return undefined;
+}
+
+/** How many times, and how far apart, a deleted bucket is checked: about 20 s. */
+const GONE_CHECKS = 5;
+const GONE_INTERVAL_MS = 5_000;
+
+/** A deleted bucket its provider still lists: said in what remains, and the run fails at its end. */
+export interface BucketStillListed {
+  /** The "What remains" item naming the bucket and where to delete it. */
+  remaining: string;
+  /** The error the teardown ends with once everything else is done. */
+  error: OpsCrewError;
+}
+
+/** What `deleteBucket` did: its approval, and the bucket when the provider still lists it. */
+export interface BucketDeleted {
+  approval: ApprovalRecord;
+  stillListed?: BucketStillListed;
+}
+
+/**
+ * Confirms that a Hetzner or Spaces bucket the engine deleted is gone: both providers can still
+ * answer for a deleted bucket for a while, and keep billing it. Checks it over about 20 s, deletes
+ * it again when it still answers and checks again. Returns what to say when it is still there;
+ * never says it is gone before it answers 404.
+ */
+async function confirmBucketGone(
+  deps: PhaseDeps,
+  bucket: ProviderBucket,
+  key: StorageKey,
+  sleep: (ms: number) => Promise<void>,
+): Promise<BucketStillListed | undefined> {
+  const endpoint = STORAGE_ENDPOINTS[bucket.provider];
+  if (endpoint === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
+  const client = s3Client(
+    {
+      endpoint: endpoint(bucket.region),
+      // Spaces signs with us-east-1, as the storage root's provider does; the endpoint picks the region.
+      region: bucket.provider === "digitalocean" ? "us-east-1" : bucket.region,
+      bucket: bucket.bucket,
+    },
+    key,
+    { fetch: deps.fetch, now: () => deps.clock.now() },
+  );
+  const gone = async () => {
+    for (let check = 1; ; check++) {
+      if (!(await client.headBucket())) return true;
+      if (check === GONE_CHECKS) return false;
+      await sleep(GONE_INTERVAL_MS);
+    }
+  };
+  const name = STORAGE_NAMES[bucket.provider];
+  if (await gone()) return undefined;
+  deps.reporter.info(`${name} still lists the bucket ${bucket.bucket}; deleting it again.`);
+  await client.deleteBucket();
+  if (await gone()) return undefined;
+  const check = `Check ${CONSOLE[bucket.provider]} in a few minutes and delete the bucket ${bucket.bucket} there if it is still listed.`;
+  return {
+    remaining: `The app's bucket ${bucketWords(bucket)}, which ${name} still listed after OpsCrew deleted it twice, so ${name} may still bill it. ${check}`,
+    error: new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${name} still lists the app's bucket ${bucket.bucket} after OpsCrew deleted it twice, so it may not be gone and ${name} may still bill it. The rest of the teardown is done.`,
+      { hint: check },
+    ),
+  };
+}
+
+/** The "What remains" item of a bucket its provider still lists, if any. */
+export function bucketStillListed(deleted: BucketDeleted | undefined): string[] {
+  return deleted?.stillListed !== undefined ? [deleted.stillListed.remaining] : [];
+}
+
+/** Ends a finished teardown with the error of a bucket its provider still lists, if any. */
+export function failIfBucketListed(deleted: BucketDeleted | undefined): void {
+  if (deleted?.stillListed !== undefined) throw deleted.stillListed.error;
 }
 
 /** R2's refusal to delete a bucket that still holds files. */
@@ -152,9 +237,15 @@ const NOT_EMPTY = /not empty|BucketNotEmpty|\b10008\b/i;
  * name): a Hetzner or Spaces bucket with its files (`force_destroy`), an R2 bucket only when it is
  * empty. Cloudflare refuses a bucket that holds files: then nothing is deleted, and OpsCrew says
  * how to empty it in the dashboard; it never deletes the files itself. The plan and the deletion
- * copy of the root are removed afterwards, whatever happened. Returns the approval.
+ * copy of the root are removed afterwards, whatever happened. A Hetzner or Spaces bucket is then
+ * checked until it is gone ({@link confirmBucketGone}; `sleep` waits between checks): when it is
+ * still listed, the result says so, and the caller finishes the teardown before failing with it
+ * ({@link bucketStillListed}, {@link failIfBucketListed}).
  */
-export async function deleteBucket(deletion: BucketDeletion): Promise<ApprovalRecord> {
+export async function deleteBucket(
+  deletion: BucketDeletion,
+  options: { sleep?: (ms: number) => Promise<void> } = {},
+): Promise<BucketDeleted> {
   const { session, summary, bucket } = deletion;
   const { deps, app } = session;
   const name = STORAGE_NAMES[bucket.provider];
@@ -213,8 +304,18 @@ export async function deleteBucket(deletion: BucketDeletion): Promise<ApprovalRe
         },
       );
     }
+    if (bucket.provider !== "r2") {
+      if (deletion.key === undefined) throw new Error("The bucket's key is needed to check it.");
+      const stillListed = await confirmBucketGone(
+        deps,
+        bucket,
+        deletion.key,
+        options.sleep ?? realSleep,
+      );
+      if (stillListed !== undefined) return { approval, stillListed };
+    }
     deps.reporter.success(`Deleted the app's bucket ${bucket.bucket} on ${name}.`);
-    return approval;
+    return { approval };
   } finally {
     await discardBucketDeletion(deletion);
   }

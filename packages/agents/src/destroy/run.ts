@@ -73,11 +73,14 @@ import {
   zeroTrustLeft,
 } from "./shared-rules";
 import {
+  type BucketDeleted,
   bucketDeletionWarning,
   bucketKept,
   bucketStays,
+  bucketStillListed,
   deleteBucket,
   discardBucketDeletion,
+  failIfBucketListed,
   planBucketDeletion,
 } from "./storage";
 import { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
@@ -585,12 +588,12 @@ export async function runDestroy(
   // 4b–7b. The app's bucket: R2's first, since Cloudflare refuses a bucket that holds files and then
   // nothing else is deleted yet; a Hetzner or Spaces bucket after the server, like its other data.
   // Its planned deletion never outlives this run.
-  let bucketApproval: ApprovalRecord | undefined;
+  let bucketDeleted: BucketDeleted | undefined;
   let deleted: Awaited<ReturnType<typeof destroyInfrastructure>>;
   let snapshotId: string | undefined;
   let protection: Awaited<ReturnType<typeof liftProtection>>;
   try {
-    if (bucket?.bucket.provider === "r2") bucketApproval = await deleteBucket(bucket);
+    if (bucket?.bucket.provider === "r2") bucketDeleted = await deleteBucket(bucket);
 
     // 5. Snapshot (inside the confirmed flow: after the typed name, before anything is deleted)
     snapshotId = await takeSnapshotBeforeDelete(session, {
@@ -618,7 +621,9 @@ export async function runDestroy(
       serverIds,
     });
     if (bucket !== undefined && bucket.bucket.provider !== "r2") {
-      bucketApproval = await deleteBucket(bucket);
+      bucketDeleted = await deleteBucket(bucket, {
+        ...(services.sleep ? { sleep: services.sleep } : {}),
+      });
     }
   } finally {
     if (bucket !== undefined) await discardBucketDeletion(bucket);
@@ -638,7 +643,7 @@ export async function runDestroy(
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
   const approvals = [
-    bucketApproval,
+    bucketDeleted?.approval,
     protection.approval,
     destroyApproval,
     tunnelApproval,
@@ -655,7 +660,7 @@ export async function runDestroy(
     action: "destroy",
     phase: "provision",
     target: name,
-    detail: `infrastructure destroyed: ${destroyed.length} resources deleted, ${secretsRemoved.length} deploy secrets removed${snapshotId !== undefined ? `, ${texts.snapshotRef(snapshotId)} kept` : ""}${bucket !== undefined ? ", the app's bucket deleted" : ""}`,
+    detail: `infrastructure destroyed: ${destroyed.length} resources deleted, ${secretsRemoved.length} deploy secrets removed${snapshotId !== undefined ? `, ${texts.snapshotRef(snapshotId)} kept` : ""}${bucket !== undefined ? (bucketDeleted?.stillListed ? ", the app's bucket still listed" : ", the app's bucket deleted") : ""}`,
   });
   deps.reporter.success(`${name} is torn down. opscrew/plan.yaml records when.`);
 
@@ -668,7 +673,9 @@ export async function runDestroy(
     secretsRemoved,
     bucketDeleted: options.deleteData === true,
   });
+  remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
+  failIfBucketListed(bucketDeleted);
   return {
     ...(snapshotId !== undefined ? { snapshotId } : {}),
     destroyed,

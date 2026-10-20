@@ -110,6 +110,7 @@ class DriftEngine implements IacEngine {
   readonly schemaCalls: { dir: string; env: IacRunOptions["env"] }[] = [];
   initOptions: IacInitOptions | undefined;
   readonly stateResources = plainStateResources;
+  async untaint(): Promise<void> {}
 
   constructor(readonly scenario: DriftScenario = {}) {
     const name = scenario.name ?? "tofu";

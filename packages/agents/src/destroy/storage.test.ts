@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ApprovalRequest } from "@opscrew/contracts";
+import type { ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, readTextIfExists } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderStorage } from "@opscrew/iac-templates";
@@ -104,6 +104,22 @@ async function setup(o: {
   return { ...project, deps, engine, main, github, handler, services };
 }
 
+/**
+ * Hetzner's S3 endpoint for the bucket: HEAD answers each status of `heads` in turn, then 404;
+ * DELETE answers 204. Records every request.
+ */
+function fakeS3(heads: number[] = []) {
+  const requests: { method: string; url: string; authorization: string }[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    const method = init?.method ?? "GET";
+    const authorization = new Headers(init?.headers).get("authorization") ?? "";
+    requests.push({ method, url: String(input), authorization });
+    if (method === "DELETE") return new Response(null, { status: 204 });
+    return new Response(null, { status: heads.shift() ?? 404 });
+  };
+  return { fetch, requests, methods: () => requests.map((r) => r.method) };
+}
+
 const deletesBucket = (request: ApprovalRequest) =>
   request.kind === "iac-apply" && request.title.startsWith("Delete the app's bucket");
 
@@ -139,6 +155,8 @@ describe.skipIf(!findExecutable("git"))("destroy and the app's bucket (FR-1319)"
       storage,
       env: KEY,
     });
+    const s3 = fakeS3();
+    s.deps.fetch = s3.fetch;
     const committed = await readFile(join(s.root, "opscrew/infra/storage/main.tf"), "utf8");
     const result = await runDestroy(s.deps, {
       services: s.services,
@@ -178,6 +196,17 @@ describe.skipIf(!findExecutable("git"))("destroy and the app's bucket (FR-1319)"
       expect(env.AWS_PROFILE).toBeUndefined();
     }
     expect(result.remaining.join("\n")).not.toContain("shop-uploads");
+    // Gone at once: one check with the user's key, path-style at the bucket's endpoint.
+    expect(s3.requests).toEqual([
+      {
+        method: "HEAD",
+        url: "https://fsn1.your-objectstorage.com/shop-uploads",
+        authorization: expect.stringContaining(
+          `Credential=${KEY[STORAGE_KEY_VARS.accessKeyId]}/20`,
+        ),
+      },
+    ]);
+    expect(s.deps.reporter.text()).toContain("Deleted the app's bucket shop-uploads");
     const recorded = (await readFile(s.deps.paths.files.plan, "utf8")).includes(
       request?.planHash as string,
     );
@@ -229,6 +258,63 @@ describe.skipIf(!findExecutable("git"))("destroy and the app's bucket (FR-1319)"
     await expect(
       readTextIfExists(join(s.deps.paths.stateDir, "storage-delete", "main.tf")),
     ).resolves.toBeUndefined();
+  });
+
+  /** `--delete-data` of the Hetzner bucket, whose checks answer `heads`; sleeps are recorded, not waited. */
+  async function deleteHetznerBucket(heads: number[]) {
+    const s = await setup({
+      plan: deployed(withBucket(testPlan(), "hetzner")),
+      storage: bucketEngine("hetzner", { changes: bucketChanges("hetzner", "delete") }),
+      env: KEY,
+    });
+    const s3 = fakeS3(heads);
+    s.deps.fetch = s3.fetch;
+    const waits: number[] = [];
+    s.services.sleep = async (ms) => {
+      waits.push(ms);
+    };
+    const result = runDestroy(s.deps, { services: s.services, snapshot: false, deleteData: true });
+    return { s, s3, waits, result };
+  }
+
+  it("deletes a Hetzner bucket again when it is still listed after the destroy, then finds it gone", async () => {
+    const { s, s3, waits, result } = await deleteHetznerBucket([200, 200, 200, 200, 200]);
+    const done = await result;
+    expect(s3.methods()).toEqual(["HEAD", "HEAD", "HEAD", "HEAD", "HEAD", "DELETE", "HEAD"]);
+    // Checked over about 20 s before deleting it again.
+    expect(waits.filter((ms) => ms === 5000)).toEqual([5000, 5000, 5000, 5000]);
+    expect(s.deps.reporter.text()).toContain(
+      "Hetzner Object Storage still lists the bucket shop-uploads; deleting it again.",
+    );
+    expect(s.deps.reporter.text()).toContain("Deleted the app's bucket shop-uploads");
+    expect(done.remaining.join("\n")).not.toContain("shop-uploads");
+  });
+
+  it("finishes the teardown, then fails with the console steps when the bucket is still listed after both deletes", async () => {
+    const { s, s3, result } = await deleteHetznerBucket(Array(10).fill(200));
+    const error = await result.catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "Hetzner Object Storage still lists the app's bucket shop-uploads after OpsCrew deleted it twice, so it may not be gone and Hetzner Object Storage may still bill it. The rest of the teardown is done.",
+      hint: "Check the Hetzner Cloud Console (Object Storage) in a few minutes and delete the bucket shop-uploads there if it is still listed.",
+    });
+    expect(s3.methods().filter((m) => m === "DELETE")).toHaveLength(1);
+    expect(s3.methods()).toHaveLength(11);
+    const printed = s.deps.reporter.text();
+    expect(printed).not.toContain("Deleted the app's bucket");
+    // The rest of the teardown went on: deploy secrets, the record, and what remains.
+    expect(s.github.deleted).toContain("OPSCREW_APP_ENV");
+    const recorded = await readFile(s.deps.paths.files.plan, "utf8");
+    expect(recorded).toContain("destroyedAt");
+    const bucketApproval = s.handler.requests.find(deletesBucket);
+    expect(recorded).toContain(bucketApproval?.planHash as string);
+    expect(printed).toContain(
+      "The app's bucket shop-uploads on Hetzner Object Storage (fsn1), which Hetzner Object Storage still listed after OpsCrew deleted it twice",
+    );
+    const secret = KEY[STORAGE_KEY_VARS.secretAccessKey] as string;
+    expect(JSON.stringify(error)).not.toContain(secret);
+    expect(printed).not.toContain(secret);
   });
 
   it("deletes every service's GitHub secret with the deploy secrets", async () => {

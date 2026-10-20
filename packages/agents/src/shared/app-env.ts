@@ -276,7 +276,7 @@ export function storageVariableKind(name: string): StorageVariableKind | undefin
 }
 
 /** The S3 endpoints of the providers whose endpoint the plan alone gives (R2's needs the account). */
-const STORAGE_ENDPOINTS: Readonly<Record<string, (region: string) => string>> = {
+export const STORAGE_ENDPOINTS: Readonly<Record<string, (region: string) => string>> = {
   hetzner: (region) => `https://${region}.your-objectstorage.com`,
   digitalocean: (region) => `https://${region}.digitaloceanspaces.com`,
 };

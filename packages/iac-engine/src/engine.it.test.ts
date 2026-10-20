@@ -328,3 +328,69 @@ describe.skipIf(!runDriftIt)("stateResources on a state file (real binaries)", (
     );
   }
 });
+
+/**
+ * A create that fails after the resource exists leaves it tainted, like the `aws` provider's read
+ * of a bucket Hetzner shows late. Built-in `terraform_data` and `local-exec` only: no provider.
+ */
+const TAINT_MODULE = `terraform {
+  backend "local" {}
+}
+
+resource "terraform_data" "bucket" {
+  input = "bucket"
+
+  provisioner "local-exec" {
+    command = "exit 1"
+  }
+}
+`;
+
+// `untaint` on a root with a local backend; only with OPSCREW_IT=1, like `stateResources`.
+describe.skipIf(!runDriftIt)("untaint on a root's state (real binaries)", () => {
+  const cases = [
+    { name: "tofu" as const, encrypted: false },
+    { name: "tofu" as const, encrypted: true },
+    { name: "terraform" as const, encrypted: false },
+  ];
+  for (const { name, encrypted } of cases) {
+    const found = detected.find((d) => d.name === name && d.supported);
+    it.skipIf(!found)(
+      `keeps a resource a failed create tainted, so the next plan does not replace it (${name}${encrypted ? ", encrypted" : ""})`,
+      async () => {
+        const dir = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-untaint-`));
+        try {
+          await writeFile(path.join(dir, "main.tf"), TAINT_MODULE);
+          const env = encrypted
+            ? { TF_ENCRYPTION: tofuEncryptionEnv(`it-${randomBytes(16).toString("hex")}`) }
+            : {};
+          const engine = await selectEngine(name);
+          const state = path.join(dir, "state", "root.tfstate");
+          await engine.init(dir, { env, backendConfig: { path: state } });
+          const created = await engine.plan(dir, "create.tfplan", { env });
+          const failed = await engine.apply(
+            dir,
+            created.planFile,
+            { approvedPlanHash: created.planHash },
+            { env },
+          );
+          expect(failed.ok).toBe(false);
+          const tainted = await engine.plan(dir, "tainted.tfplan", { env });
+          expect(tainted.changes).toEqual([
+            expect.objectContaining({ address: "terraform_data.bucket", action: "replace" }),
+          ]);
+
+          await engine.untaint(dir, "terraform_data.bucket", { env });
+          expect(await engine.stateResources(state, { env })).toEqual(["terraform_data.bucket"]);
+          const kept = await engine.plan(dir, "kept.tfplan", { env });
+          expect(kept.changes).toEqual([]);
+          // An address the state lacks is no error.
+          await engine.untaint(dir, "terraform_data.missing", { env });
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      TIMEOUT,
+    );
+  }
+});

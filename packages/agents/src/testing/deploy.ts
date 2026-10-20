@@ -502,6 +502,14 @@ export class FakeEngine implements IacEngine {
     return this.applied.length > 0 ? this.outputs : {};
   }
 
+  /** The addresses `untaint` was called with, in order. */
+  readonly untainted: string[] = [];
+
+  async untaint(_dir: string, address: string): Promise<void> {
+    this.calls.push("untaint");
+    this.untainted.push(address);
+  }
+
   readonly providerSchemas = noProviderSchemas;
   readonly stateResources = plainStateResources;
 }

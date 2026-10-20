@@ -18,7 +18,7 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
-import { bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
+import { bucketChanges, bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
@@ -45,6 +45,13 @@ const KEY_ENV = {
 };
 const HCLOUD = fakeSecret("hcloud-token", "storage");
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
+const CORS_CHANGE = {
+  address: "aws_s3_bucket_cors_configuration.this",
+  type: "aws_s3_bucket_cors_configuration",
+  name: "this",
+  provider: "registry.opentofu.org/hashicorp/aws",
+  action: "create" as const,
+};
 
 describe("requireStorageKey", () => {
   const hetzner = () => withBucket(testPlan(), "hetzner");
@@ -439,6 +446,61 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
       ),
     });
     expect(f.main.calls).toEqual([]);
+  });
+
+  it("keeps a new bucket Hetzner shows late, and the next run plans only what is left", async () => {
+    const storage = bucketEngine("hetzner", {
+      changes: [...bucketChanges("hetzner"), CORS_CHANGE],
+      applyOk: false,
+      applyLog:
+        "aws_s3_bucket.this: Creating...\naws_s3_bucket.this: Still creating... [10s elapsed]\nError: reading S3 Bucket (shop-uploads): couldn't find resource\n\n  with aws_s3_bucket.this,\n  on main.tf line 18",
+    });
+    const f = await flow({
+      plan: withBucket(testPlan(), "hetzner"),
+      storage,
+      env: KEY_ENV,
+    });
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "Hetzner Object Storage did not show the new bucket shop-uploads right away, so the apply stopped. OpsCrew kept the bucket.",
+      hint: "Run `opscrew provision` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.",
+    });
+    expect(storage.untainted).toEqual(["aws_s3_bucket.this"]);
+    expect(storage.calls).toEqual(["init", "validate", "plan", "apply", "untaint"]);
+    // The untaint reads the root's state with the same key as the apply.
+    expect(f.engine.storageEnvs.at(-1)?.AWS_SECRET_ACCESS_KEY).toBe(KEY.secretAccessKey);
+    expect(f.main.calls).toEqual([]);
+
+    // The bucket is no longer tainted, so the next plan only adds its CORS rule, which is applied
+    // only through its own approval.
+    storage.scenario.changes = [CORS_CHANGE];
+    storage.scenario.applyOk = true;
+    const before = f.handler.requests.length;
+    await runProvision(f.deps, { services: f.services });
+    const [rerun] = f.handler.requests.slice(before).filter((r) => r.kind === "iac-apply");
+    expect(rerun?.title).toBe(
+      "Apply the plan of the app's bucket shop-uploads on Hetzner Object Storage",
+    );
+    expect(storage.applied).toHaveLength(2);
+    expect(storage.applied[1]?.approval.approvedPlanHash).toBe(rerun?.planHash);
+    expect(storage.applied[1]?.approval.allowDestroy).toBe(false);
+    expect(storage.untainted).toHaveLength(1);
+  });
+
+  it("leaves any other failed apply of the bucket as it is", async () => {
+    const storage = bucketEngine("hetzner", {
+      applyOk: false,
+      applyLog:
+        "Error: creating S3 Bucket (shop-uploads): operation error S3: CreateBucket, https response error StatusCode: 503, api error ServiceUnavailable",
+    });
+    const f = await flow({ plan: withBucket(testPlan(), "hetzner"), storage, env: KEY_ENV });
+    await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+      message: expect.stringContaining("ServiceUnavailable"),
+    });
+    expect(storage.untainted).toEqual([]);
+    expect(storage.calls).not.toContain("untaint");
   });
 
   it("changes no file and asks nothing new when run again with nothing changed (SC-1307)", async () => {

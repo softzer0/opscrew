@@ -263,6 +263,7 @@ export class ScriptedDestroyEngine implements IacEngine {
 
   readonly providerSchemas = noProviderSchemas;
   readonly stateResources = plainStateResources;
+  async untaint(): Promise<void> {}
 }
 
 /** The app's server as each provider's fake reports it, and the id its snapshot gets. */

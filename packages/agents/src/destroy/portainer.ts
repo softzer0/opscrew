@@ -72,11 +72,14 @@ import {
   zeroTrustLeft,
 } from "./shared-rules";
 import {
+  type BucketDeleted,
   bucketDeletionWarning,
   bucketKept,
   bucketStays,
+  bucketStillListed,
   deleteBucket,
   discardBucketDeletion,
+  failIfBucketListed,
   planBucketDeletion,
 } from "./storage";
 import { destroyConfirmPrompt } from "./texts";
@@ -526,7 +529,7 @@ export async function destroyPortainer(
   let destroyed: ResourceChange[] = [];
   let removal: CloudflareRemoval | undefined;
   let stackApproval: ApprovalRecord | undefined;
-  let bucketApproval: ApprovalRecord | undefined;
+  let bucketDeleted: BucketDeleted | undefined;
   let stackHash: string | undefined;
   try {
     if (session !== undefined && resources.length > 0) {
@@ -563,7 +566,7 @@ export async function destroyPortainer(
         : undefined;
     // An R2 bucket first, once the rest is approved: Cloudflare refuses one that holds files, and
     // then nothing else is deleted yet.
-    if (bucket?.bucket.provider === "r2") bucketApproval = await deleteBucket(bucket);
+    if (bucket?.bucket.provider === "r2") bucketDeleted = await deleteBucket(bucket);
     if (session !== undefined && removal !== undefined && !removal.tunnel) {
       destroyed = await applyCloudflareRemoval(session, removal, services.sleep);
     }
@@ -598,7 +601,9 @@ export async function destroyPortainer(
     }
     // A Hetzner or Spaces bucket after the stacks, like the app's other data.
     if (bucket !== undefined && bucket.bucket.provider !== "r2") {
-      bucketApproval = await deleteBucket(bucket);
+      bucketDeleted = await deleteBucket(bucket, {
+        ...(services.sleep ? { sleep: services.sleep } : {}),
+      });
     }
   } finally {
     // Never left behind for a later apply (applyCloudflareRemoval and deleteBucket delete them, too).
@@ -625,7 +630,7 @@ export async function destroyPortainer(
       done: "The app is removed from your Portainer and Cloudflare.",
       reach: "your Portainer",
     });
-    const approvals = [removal?.approval, bucketApproval, stackApproval, sharedApproval];
+    const approvals = [removal?.approval, bucketDeleted?.approval, stackApproval, sharedApproval];
     await recordTeardown(deps, plan, approvals, {
       summary: "app removed from your Portainer",
       forgetAddress: false,
@@ -637,7 +642,7 @@ export async function destroyPortainer(
     action: "destroy",
     phase: "provision",
     target: name,
-    detail: `${removeApp ? "app removed" : "data removed"}: ${plural(destroyed.length, "Cloudflare resource")} deleted, ${plural(stackWork.length, "change")} in Portainer, ${plural(secretsRemoved.length, "deploy secret")} removed${deletesData ? ", app data deleted" : ", app data kept"}${bucketApproval !== undefined ? ", the app's bucket deleted" : ""}; Portainer itself stays`,
+    detail: `${removeApp ? "app removed" : "data removed"}: ${plural(destroyed.length, "Cloudflare resource")} deleted, ${plural(stackWork.length, "change")} in Portainer, ${plural(secretsRemoved.length, "deploy secret")} removed${deletesData ? ", app data deleted" : ", app data kept"}${bucketDeleted !== undefined ? (bucketDeleted.stillListed ? ", the app's bucket still listed" : ", the app's bucket deleted") : ""}; Portainer itself stays`,
   });
   deps.reporter.success(
     removeApp
@@ -656,7 +661,9 @@ export async function destroyPortainer(
     branchDeleted,
     branchUnapproved,
   });
+  remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
+  failIfBucketListed(bucketDeleted);
   return {
     destroyed,
     secretsRemoved,

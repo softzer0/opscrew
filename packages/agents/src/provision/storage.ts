@@ -243,6 +243,15 @@ export function storageEngineEnv(
   };
 }
 
+/** The bucket's resource in the `storage` root at Hetzner and Spaces. */
+const S3_BUCKET = "aws_s3_bucket.this";
+
+/**
+ * The `aws` provider's read of the bucket right after creating it, which a Hetzner (or Spaces)
+ * node can answer before it knows the new bucket. The engine then keeps the bucket tainted.
+ */
+const BUCKET_SHOWN_LATE = /Error: reading S3 Bucket \([^)]*\): couldn't find resource/;
+
 /** A stop instead of the engine's words, for what an apply of the `storage` root reports. */
 function storageFailure(
   log: string,
@@ -273,8 +282,9 @@ function storageFailure(
  * policies → approval bound to its hash → apply (FR-1318), with its own state
  * ({@link storageStateFile}); the key reaches the engine only as {@link storageEngineEnv} says.
  * With `approvePlanHash` it applies that saved plan of an earlier `--plan-only` run. A name taken
- * at the provider and a key it refuses stop with what to change. A refused approval says "storage
- * plan".
+ * at the provider and a key it refuses stop with what to change. A new bucket Hetzner or Spaces
+ * shows late is untainted (state only) and the run stops, so the next run plans what is left for
+ * a new approval. A refused approval says "storage plan".
  */
 export async function applyStorage(
   deps: PhaseDeps,
@@ -294,13 +304,15 @@ export async function applyStorage(
   const { plan, command } = input;
   const bucket = providerBucket(plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
-  deps.reporter.step(
-    `Planning the app's bucket ${bucket.bucket} on ${STORAGE_NAMES[bucket.provider]}`,
-  );
-  return planAndApply(deps, {
+  const name = STORAGE_NAMES[bucket.provider];
+  const dir = join(deps.paths.root, storageRootDir(plan));
+  const env = storageEngineEnv(input.env, plan, input.key);
+  deps.reporter.step(`Planning the app's bucket ${bucket.bucket} on ${name}`);
+  let shownLate = false;
+  const applied = planAndApply(deps, {
     engine: input.engine,
-    dir: join(deps.paths.root, storageRootDir(plan)),
-    env: storageEngineEnv(input.env, plan, input.key),
+    dir,
+    env,
     deployPlan: plan,
     files: input.files,
     statePath: storageStateFile(deps.paths),
@@ -308,13 +320,29 @@ export async function applyStorage(
     planNoun: "storage plan",
     command,
     phase: input.phase,
-    approvalTitle: `Apply the plan of the app's bucket ${bucket.bucket} on ${STORAGE_NAMES[bucket.provider]}`,
+    approvalTitle: `Apply the plan of the app's bucket ${bucket.bucket} on ${name}`,
     costDelta: { amount: bucket.price.monthly, currency: bucket.price.currency },
     applyFailed: (log) => {
       const failure = storageFailure(log, bucket, command, storageKeyFile(deps.paths));
       if (failure !== undefined) throw failure;
+      shownLate = bucket.provider !== "r2" && BUCKET_SHOWN_LATE.test(log);
     },
     ...(input.approvePlanHash !== undefined ? { approvePlanHash: input.approvePlanHash } : {}),
     ...(input.planOnly ? { planOnly: true } : {}),
   });
+  try {
+    return await applied;
+  } catch (error) {
+    if (!shownLate) throw error;
+    // The bucket exists: untainted, the next plan keeps it instead of replacing it (which
+    // `prevent_destroy` refuses) and plans what is left, for a new approval.
+    await input.engine.untaint(dir, S3_BUCKET, { env });
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${name} did not show the new bucket ${bucket.bucket} right away, so the apply stopped. OpsCrew kept the bucket.`,
+      {
+        hint: `Run \`${command}\` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.`,
+      },
+    );
+  }
 }

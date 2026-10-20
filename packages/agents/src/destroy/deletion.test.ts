@@ -112,6 +112,7 @@ class MoveEngine implements IacEngine {
   }
   readonly providerSchemas = noProviderSchemas;
   readonly stateResources = plainStateResources;
+  async untaint(): Promise<void> {}
 
   async plan(
     dir: string,

@@ -72,12 +72,15 @@ import {
   zeroTrustLeft,
 } from "./shared-rules";
 import {
+  type BucketDeleted,
   type BucketDeletion,
   bucketDeletionWarning,
   bucketKept,
   bucketStays,
+  bucketStillListed,
   deleteBucket,
   discardBucketDeletion,
+  failIfBucketListed,
   planBucketDeletion,
 } from "./storage";
 import { destroyConfirmPrompt } from "./texts";
@@ -532,8 +535,8 @@ export async function destroyOwnServer(
 
   // 4b. The app's bucket: R2's first, since Cloudflare refuses a bucket that holds files and then
   // nothing else is deleted yet; any other after the app (at the end of the block below).
-  let bucketApproval: ApprovalRecord | undefined;
-  if (bucket?.bucket.provider === "r2") bucketApproval = await deleteBucket(bucket);
+  let bucketDeleted: BucketDeleted | undefined;
+  if (bucket?.bucket.provider === "r2") bucketDeleted = await deleteBucket(bucket);
 
   // 5–6. The Cloudflare resources (DNS records, tunnel, Access) and the app on the server (teardown
   // host plan). Both are approved before anything changes. Cloudflare first, unless its plan
@@ -595,7 +598,9 @@ export async function destroyOwnServer(
       destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
     }
     if (bucket !== undefined && bucket.bucket.provider !== "r2") {
-      bucketApproval = await deleteBucket(bucket);
+      bucketDeleted = await deleteBucket(bucket, {
+        ...(services.sleep ? { sleep: services.sleep } : {}),
+      });
     }
   } finally {
     // Never left behind for a later apply (applyCloudflareRemoval deletes it, too).
@@ -617,7 +622,12 @@ export async function destroyOwnServer(
       reach: "your server",
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
-    const approvals = [bucketApproval, removal?.approval, teardownApproval, sharedApproval];
+    const approvals = [
+      bucketDeleted?.approval,
+      removal?.approval,
+      teardownApproval,
+      sharedApproval,
+    ];
     current = await recordTeardown(deps, plan, approvals, {
       summary: "app removed from your server",
       forgetAddress: true,
@@ -711,7 +721,9 @@ export async function destroyOwnServer(
     others,
     portainer: facts.portainer.installed,
   });
+  remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
+  failIfBucketListed(bucketDeleted);
   return {
     destroyed,
     secretsRemoved,

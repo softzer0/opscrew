@@ -99,6 +99,8 @@ const HINTS: Record<string, string> = {
     "Run init again in the infrastructure folder so the providers are installed, then try again.",
   "state list":
     "Check that the state file exists and, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it.",
+  untaint:
+    "Run init again in the infrastructure folder and check, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it, then try again.",
 };
 
 class Engine implements IacEngine {
@@ -346,6 +348,16 @@ class Engine implements IacEngine {
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
+  }
+
+  async untaint(dir: string, address: string, options: IacRunOptions = {}): Promise<void> {
+    const result = await this.exec(
+      "untaint",
+      path.resolve(dir),
+      ["untaint", "-allow-missing", "-no-color", address],
+      options,
+    );
+    this.assertOk("untaint", result, options.timeoutMs);
   }
 
   /** Runs `show -json <planFile>` and returns the parsed plan. */

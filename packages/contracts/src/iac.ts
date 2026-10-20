@@ -159,4 +159,11 @@ export interface IacEngine {
    * damaged), throws `ENGINE_FAILED`.
    */
   stateResources(stateFile: string, options?: IacRunOptions): Promise<string[]>;
+  /**
+   * Runs `untaint -allow-missing <address>` in `dir` after `init`, against the root's configured
+   * state, with the same `options.env` as every other command. A state-only change: nothing in the
+   * cloud changes, and an address the state lacks is no error. A failure
+   * throws `ENGINE_FAILED`.
+   */
+  untaint(dir: string, address: string, options?: IacRunOptions): Promise<void>;
 }
