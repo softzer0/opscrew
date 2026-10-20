@@ -430,6 +430,7 @@ describe("DeployPlan target provider", () => {
       serverType: "cpx22",
       image: "ubuntu-24.04",
       backups: true,
+      edge: "caddy",
     });
     for (const extra of [{ arch: "amd64" }, { access: "public" }]) {
       const target = { ...plan.target, ...extra };
@@ -494,19 +495,20 @@ describe("DeployPlan target on a server the user owns", () => {
   it("records the architecture and access mode, and nothing about the server itself", async () => {
     const plan = await validPlan();
     const parsed = DeployPlanSchema.parse({ ...plan, target: own });
-    expect(parsed.target).toEqual(own);
+    expect(parsed.target).toEqual({ ...own, edge: "caddy" });
     expect(parsed.target.provider === "own" && parsed.target.access).toBe("tunnel");
     expectTypeOf<OwnDeployTarget>().toEqualTypeOf<{
       provider: "own";
       mode: "vps-compose";
       arch: "amd64" | "arm64";
       access: "public" | "tunnel";
+      edge: "caddy" | "nginx";
     }>();
     expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();
     expect(
       DeployPlanSchema.parse({ ...plan, target: { ...own, arch: "amd64", access: "public" } })
         .target,
-    ).toEqual({ ...own, arch: "amd64", access: "public" });
+    ).toEqual({ ...own, arch: "amd64", access: "public", edge: "caddy" });
   });
 
   it("rejects cloud-only fields, a missing or unknown architecture or access mode", async () => {
@@ -981,6 +983,8 @@ describe("DeployPlan target on an existing Portainer", () => {
       { image: "ubuntu-24.04" },
       { backups: true },
       { access: "tunnel" },
+      // Portainer stacks keep Caddy: no proxy choice.
+      { edge: "caddy" },
       { url: "https://portainer.example.com:9443" },
       { token: "never" },
     ]) {
@@ -1145,16 +1149,62 @@ describe("DeployPlan target on an existing Portainer", () => {
   });
 });
 
+describe("DeployPlan reverse proxy and upload limit", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  const own = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" } as const;
+
+  it("serves with Caddy unless the plan chooses nginx, on servers OpsCrew creates and own servers", async () => {
+    const plan = await validPlan();
+    const { edge: _edge, ...hetzner } = cloud(plan.target);
+    for (const target of [hetzner, own]) {
+      const parsed = DeployPlanSchema.parse({ ...plan, target });
+      expect(parsed.target, target.provider).toEqual({ ...target, edge: "caddy" });
+      const nginx = DeployPlanSchema.parse({ ...plan, target: { ...target, edge: "nginx" } });
+      expect(nginx.target, target.provider).toEqual({ ...target, edge: "nginx" });
+      for (const edge of ["apache", "traefik", "Caddy", ""]) {
+        const result = DeployPlanSchema.safeParse({ ...plan, target: { ...target, edge } });
+        expect(pathsOf(result), `${target.provider} ${edge}`).toEqual(["target.edge"]);
+      }
+    }
+    expectTypeOf<CloudDeployTarget["edge"]>().toEqualTypeOf<"caddy" | "nginx">();
+    // A move keeps the previous server's proxy.
+    const move = {
+      from: { target: { ...hetzner, edge: "nginx" } },
+      step: "started",
+      startedAt: plan.createdAt,
+    };
+    expect(DeployPlanSchema.parse({ ...plan, retarget: move }).retarget?.from.target.edge).toBe(
+      "nginx",
+    );
+  });
+
+  it("limits a request body to 100 MB unless the plan says otherwise, from 1 to 2048 MB", async () => {
+    const plan = await validPlan();
+    expect(plan.app.maxBodyMb).toBe(100);
+    for (const maxBodyMb of [1, 512, 2048]) {
+      const app = { ...plan.app, maxBodyMb };
+      expect(DeployPlanSchema.parse({ ...plan, app }).app.maxBodyMb).toBe(maxBodyMb);
+    }
+    for (const maxBodyMb of [0, -1, 2049, 1.5, "100"]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, app: { ...plan.app, maxBodyMb } });
+      expect(pathsOf(result), String(maxBodyMb)).toEqual(["app.maxBodyMb"]);
+    }
+  });
+});
+
 describe("DeployPlan serialisation of existing targets", () => {
   // SHA-256 of `serializeArtifact("plan", …)` before feature 010: adding the Portainer target must
   // not change one byte of a Hetzner, DigitalOcean or own-server plan. Updated in 012, which adds
   // `deploy`, `supplyChain`, `cicd.deployTags` and `cicd.imageRetention` (with their defaults) to
-  // every plan, and in 013, which adds `app.memoryMb` and `processes` (with their defaults) and
-  // turns `services` into a list.
+  // every plan, in 013, which adds `app.memoryMb` and `processes` (with their defaults) and
+  // turns `services` into a list, and in 014, which adds `app.maxBodyMb` and `target.edge` (with
+  // their defaults).
   const BEFORE_010 = {
-    hetzner: "e1dcd6cddbb198cb799fd62413f281b2ae0c8e4837b01178e976462076c15d6a",
-    digitalocean: "831991400e66bd0b5b3ce628997f45a7494224c5522bc438e57739a9df0a47b3",
-    own: "836e166881ee9bf1175d3f01cb4b2cb840e1e88b5f471d03e8b8d2eee54700ef",
+    hetzner: "89bdc644d1471de6770e7cd438492716fce5e03b2fbcce211bbdc842f4119501",
+    digitalocean: "963d32d536edc54da07095315d9b31a01426d922020731a4472153af47b9730a",
+    own: "46cd6b9a0d48002e4cd1f637519b440a93f12fbeb87339a34e4336c09d78722e",
   };
 
   it("keeps Hetzner, DigitalOcean and own-server plans byte-identical", async () => {

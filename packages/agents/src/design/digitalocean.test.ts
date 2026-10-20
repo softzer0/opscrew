@@ -198,6 +198,7 @@ describe("optionToPlan on DigitalOcean", () => {
       serverType: "s-1vcpu-2gb",
       image: "ubuntu-24-04-x64",
       backups: false,
+      edge: "caddy",
     });
     expect(plan.cost.monthly).toEqual({ amount: 12, currency: "USD" });
   });

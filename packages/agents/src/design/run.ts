@@ -832,7 +832,8 @@ async function requireChosenApp(
 
 /**
  * Carries what the user and later phases put into the previous plan over to the new one:
- * `deployment`, `approvals`, `security`, `infra` and the status of code changes that are still
+ * `deployment`, `approvals`, `security`, `infra`, `app.maxBodyMb`, the server's proxy
+ * (`target.edge`, between server targets) and the status of code changes that are still
  * the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the DNS proxy
  * setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
  * `portainer` is kept exactly as it was, with the Cloudflare zone learned for it (`dns.zone`)
@@ -871,8 +872,12 @@ function keepPlanSettings(
   const filledNow = serviceFilledNames(fresh);
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
+    ...("edge" in fresh.target && "edge" in previous.target
+      ? { target: { ...fresh.target, edge: previous.target.edge } }
+      : {}),
     app: {
       ...fresh.app,
+      maxBodyMb: previous.app.maxBodyMb,
       ...(userDockerfile ? { dockerfile: previous.app.dockerfile } : {}),
       env: fresh.app.env.map((variable) => {
         const before = variables.get(variable.name);

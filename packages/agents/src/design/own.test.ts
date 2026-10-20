@@ -275,6 +275,7 @@ describe("buildOwnServerOption", () => {
       mode: "vps-compose",
       arch: "arm64",
       access: "tunnel",
+      edge: "caddy",
     });
     expect(() =>
       optionToPlan(option, {
@@ -354,6 +355,7 @@ describe("runDesign for a server the user owns", () => {
       mode: "vps-compose",
       arch: "arm64",
       access: "public",
+      edge: "caddy",
     });
     expect(result.plan.cost.monthly.amount).toBe(0);
     const text = await readFile(deps.paths.files.plan, "utf8");
@@ -384,6 +386,7 @@ describe("runDesign for a server the user owns", () => {
       mode: "vps-compose",
       arch: "amd64",
       access: "tunnel",
+      edge: "caddy",
     });
     expect(result.plan.dns).toMatchObject({ provider: "cloudflare", domain: "app.example.com" });
   });

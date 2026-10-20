@@ -96,8 +96,8 @@ async function pickOption(
   return chosen;
 }
 
-/** The new target from the chosen option, with the provider's default image. */
-function targetOf(option: DesignOption): CloudDeployTarget {
+/** The new target from the chosen option, with the provider's default image and the old proxy. */
+function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudDeployTarget {
   const { provider } = option.target;
   if (provider === "own") throw ownServerNoMove();
   if (provider === "portainer") throw portainerTargetNoMove();
@@ -108,6 +108,7 @@ function targetOf(option: DesignOption): CloudDeployTarget {
     serverType: option.target.serverType,
     image: providerProfile(provider).defaultImage,
     backups: option.backups,
+    edge,
   };
 }
 
@@ -335,7 +336,7 @@ export async function startMove(
   });
   for (const option of designOptions) deps.reporter.info(designOptionLine(option));
   const chosen = await pickOption(designOptions, options);
-  const target = targetOf(chosen);
+  const target = targetOf(chosen, from.edge);
   // The builder and the deploy strategy for the new server, before anything is created.
   const next = await newServerBuild(deps, facts, plan, chosen);
 

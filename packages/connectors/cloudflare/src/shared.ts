@@ -130,6 +130,21 @@ export interface SharedDesired {
   hostnames: Partial<Record<SharedRuleRef, string[]>>;
   /** Access wanted: ensure the organization (with this auth domain) and the one-time PIN. */
   access?: { authDomain: string; oneTimePin: boolean };
+  /** Origin TLS for the app's proxied hostnames (feature 014); absent: none is planned. */
+  tls?: {
+    /** The app's proxied hostnames (empty on destroy). */
+    proxied: string[];
+    /** Hostnames that left the proxy, kept until the server shows it. */
+    retiring: string[];
+    /** What the origin uses now, read from the server; absent when it could not be read. */
+    served?: { originSha256?: string; requiring: string[] };
+    /** Present only when a new origin certificate is wanted: its CSR (PEM). */
+    origin?: { csr: string };
+    /** The client certificate to upload, by its SHA-256 fingerprint, if not yet at Cloudflare. */
+    client?: { sha256: string };
+  };
+  /** Provision asks for the decision on raising the zone's minimum TLS version to 1.2. */
+  minTls?: boolean;
 }
 
 /** `.opscrew/cloudflare.json` (data-model.md), or undefined when the app has none yet. */
@@ -137,21 +152,81 @@ export interface SharedRecord {
   zoneId: string;
   hostnames: Partial<Record<SharedRuleRef, string[]>>;
   createdEntrypoints: string[];
+  /** The app's origin TLS; absent until it has some. */
+  tls?: {
+    /** The origin certificate: `superseded` lists replaced ones, revoked once the server moved on. */
+    origin?: {
+      id: string;
+      hostnames: string[];
+      expiresAt: string;
+      sha256: string;
+      superseded: string[];
+    };
+    /** The client certificate: the hostnames it is enabled for, and those leaving the proxy. */
+    client?: {
+      id: string;
+      expiresAt: string;
+      sha256: string;
+      enabled: string[];
+      retiring: string[];
+    };
+    /** Set while the token lacks the certificate permissions, so `secure` reports the gap. */
+    gap?: "permission";
+  };
+  /** What OpsCrew set in the zone's settings, and when. */
+  zoneSettings?: { minTlsVersion?: { setAt: string; previous: "1.0" } };
 }
 
-const Hostnames = z.array(z.string().regex(HOSTNAME)).optional();
+const HostnameList = z.array(z.string().regex(HOSTNAME));
+const Hostnames = HostnameList.optional();
+const Id = z.string().min(1);
+const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 
 /**
  * `.opscrew/cloudflare.json` as read from disk: a 32-hex zone id, OpsCrew's two rule refs with
- * lower-case hostnames, and phases. Unknown keys are refused, so a damaged file stops the command.
+ * lower-case hostnames, phases, and the app's origin certificates and zone setting when it has
+ * them. Unknown keys are refused, so a damaged file stops the command.
  */
 export const SharedRecordSchema: z.ZodType<SharedRecord> = z.strictObject({
   zoneId: z.string().regex(/^[0-9a-f]{32}$/),
   hostnames: z.strictObject({ "opscrew-block-probes": Hostnames, "opscrew-strict-tls": Hostnames }),
   createdEntrypoints: z.array(z.enum(["http_request_firewall_custom", "http_config_settings"])),
+  tls: z
+    .strictObject({
+      origin: z
+        .strictObject({
+          id: Id,
+          hostnames: HostnameList,
+          expiresAt: z.iso.datetime(),
+          sha256: Sha256,
+          superseded: z.array(Id),
+        })
+        .optional(),
+      client: z
+        .strictObject({
+          id: Id,
+          expiresAt: z.iso.datetime(),
+          sha256: Sha256,
+          enabled: HostnameList,
+          retiring: HostnameList,
+        })
+        .optional(),
+      gap: z.literal("permission").optional(),
+    })
+    .optional(),
+  zoneSettings: z
+    .strictObject({
+      minTlsVersion: z
+        .strictObject({ setAt: z.iso.datetime(), previous: z.literal("1.0") })
+        .optional(),
+    })
+    .optional(),
 });
 
-/** One change of a shared plan; rule bodies and ids are exactly what is sent. */
+/**
+ * One change of a shared plan; rule bodies and ids are exactly what is sent. The last seven are
+ * the app's origin TLS (certificates and per-hostname origin pulls) and the zone's minimum TLS.
+ */
 export type SharedChange =
   | { kind: "create-entrypoint"; phase: SharedPhase; rule: CloudflareRuleInput }
   | { kind: "add-rule"; phase: SharedPhase; rulesetId: string; rule: CloudflareRuleInput }
@@ -166,7 +241,14 @@ export type SharedChange =
   | { kind: "delete-rule"; phase: SharedPhase; rulesetId: string; ruleId: string }
   | { kind: "delete-entrypoint"; phase: SharedPhase; rulesetId: string }
   | { kind: "create-organization"; authDomain: string }
-  | { kind: "create-identity-provider"; type: "onetimepin" };
+  | { kind: "create-identity-provider"; type: "onetimepin" }
+  | { kind: "create-origin-certificate"; hostnames: string[]; csrSha256: string }
+  | { kind: "revoke-origin-certificate"; id: string }
+  | { kind: "upload-client-certificate"; sha256: string }
+  | { kind: "enable-client-certificate"; hostnames: string[]; sha256: string }
+  | { kind: "disable-client-certificate"; hostnames: string[] }
+  | { kind: "delete-client-certificate"; id: string }
+  | { kind: "set-min-tls"; from: "1.0"; to: "1.2" };
 
 type RuleChange = Extract<SharedChange, { phase: SharedPhase }>;
 
@@ -174,6 +256,7 @@ type RuleChange = Extract<SharedChange, { phase: SharedPhase }>;
 export interface SharedFinding {
   code:
     | "hostname-claimed"
+    | "hostname-tls-claimed"
     | "no-rule-slot"
     | "expression-too-long"
     | "rule-changed"
@@ -197,6 +280,13 @@ export interface SharedPlan {
    */
   previous: SharedRecord | undefined;
   record: SharedRecord;
+  /**
+   * The CSR (PEM) `create-origin-certificate` sends. Local, next to `record`: the change holds its
+   * SHA-256, which the hash covers.
+   */
+  csr?: string;
+  /** What OpsCrew advises without blocking the plan, in plain English. Local, not in the hash. */
+  advice: { code: "tls-permission-missing" | "min-tls-advised"; message: string; hint: string }[];
   /** The Zero Trust pieces that already exist (returned by the apply). */
   organization?: { authDomain: string };
   oneTimePinId?: string;
@@ -339,6 +429,7 @@ export function planShared(
       ),
       createdEntrypoints: createdAfter(record, changes),
     },
+    advice: [],
     ...(facts.organization ? { organization: facts.organization } : {}),
     ...(facts.oneTimePinId ? { oneTimePinId: facts.oneTimePinId } : {}),
   };
@@ -527,7 +618,8 @@ function ruleChanged(ref: SharedRuleRef, differences: readonly string[]): Shared
  * PHASE_PRECONDITION when the plan has findings or OpsCrew's rule changed since the plan (nothing
  * written), and SharedApplyError {applied, record} when a write fails part-way. Every phase the
  * plan changes is read again before the first write and before each write; every write is sent
- * once and checked against the ruleset Cloudflare returns.
+ * once and checked against the ruleset Cloudflare returns. Origin TLS and the zone's minimum TLS
+ * are not applied yet: such a change stops the apply with INTERNAL.
  */
 export async function applyShared(
   client: CloudflareClient,
@@ -567,7 +659,7 @@ export async function applyShared(
       } else if (change.kind === "create-identity-provider") {
         sent = change;
         oneTimePinId = await client.createOneTimePinProvider(plan.accountId);
-      } else {
+      } else if ("phase" in change) {
         const reason = staleReason(
           plan,
           change,
@@ -576,6 +668,13 @@ export async function applyShared(
         if (reason) throw staleError(change.phase, reason, "OpsCrew stopped before changing them.");
         sent = change;
         await writeRule(client, plan, change);
+      } else {
+        // Origin TLS and the zone's minimum TLS: planShared plans none of them yet.
+        throw new OpsCrewError(
+          "INTERNAL",
+          `OpsCrew cannot apply the Cloudflare change "${change.kind}" yet, so it stopped there.`,
+          { hint: "Report this to OpsCrew: no Cloudflare plan should hold this change yet." },
+        );
       }
       done.push(change);
       sent = undefined;

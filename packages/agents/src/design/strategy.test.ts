@@ -63,8 +63,15 @@ const HETZNER = {
   serverType: "cx23",
   image: "ubuntu-24.04",
   backups: false,
+  edge: "caddy",
 } as const;
-const OWN = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" } as const;
+const OWN = {
+  provider: "own",
+  mode: "vps-compose",
+  arch: "amd64",
+  access: "public",
+  edge: "caddy",
+} as const;
 
 /** A plan's target and deploy settings, with design's reason for a recreate on 512 MB. */
 function planOn(target: DeployPlan["target"], memoryGb: number, drainSeconds = 30): PlanDeploy {

@@ -760,6 +760,7 @@ describe("runDesign", () => {
         serverType: "s-1vcpu-2gb",
         image: "ubuntu-24-04-x64",
         backups: false,
+        edge: "caddy",
       });
       expect(plan.cost.monthly).toEqual({ amount: 12, currency: "USD" });
       const text = deps.reporter.text();
@@ -1025,6 +1026,7 @@ describe("runDesign", () => {
             serverType: "s-1vcpu-2gb",
             image: "ubuntu-24-04-x64",
             backups: true,
+            edge: "caddy",
           },
           deployment: { lastApplyAt: "2026-10-11T12:30:00.000Z" },
           retarget: {
@@ -1135,10 +1137,17 @@ describe("runDesign: the image builder and the deploy strategy", () => {
   it("keeps the recorded version and the user's plan.yaml settings on later designs", async () => {
     const deps = await setup();
     const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.plan.target).toMatchObject({ edge: "caddy" });
+    expect(first.plan.app.maxBodyMb).toBe(100);
     const build = first.plan.app.build as NonNullable<DeployPlan["app"]["build"]>;
     await writeArtifact("plan", deps.paths.files.plan, {
       ...first.plan,
-      app: { ...first.plan.app, build: { ...build, runtime: { language: "node", version: "22" } } },
+      app: {
+        ...first.plan.app,
+        build: { ...build, runtime: { language: "node", version: "22" } },
+        maxBodyMb: 512,
+      },
+      target: { ...cloudTarget(first.plan.target), edge: "nginx" },
       deploy: { strategy: "recreate", drainSeconds: 60 },
       supplyChain: { sign: true },
       cicd: {
@@ -1150,6 +1159,8 @@ describe("runDesign: the image builder and the deploy strategy", () => {
     const again = await later(deps);
     const { plan } = await runDesign(again, { catalog: euCatalog() });
     expect(plan.app.build?.runtime).toEqual({ language: "node", version: "22" });
+    expect(plan.app.maxBodyMb).toBe(512);
+    expect(plan.target).toMatchObject({ edge: "nginx" });
     expect(plan.deploy).toEqual({ strategy: "recreate", drainSeconds: 60 });
     expect(again.reporter.text()).toContain(
       "Deploys: recreate. You chose recreate in opscrew/plan.yaml (deploy.strategy).",

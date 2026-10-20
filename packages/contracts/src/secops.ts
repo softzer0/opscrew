@@ -84,4 +84,8 @@ export interface CheckResult {
   remediation?: string;
   /** Host, URL or resource checked. */
   target?: string;
+  /** The external tool that produced it (`lynis`, `ssh-audit`, `testssl`); absent for OpsCrew's own checks. */
+  source?: string;
+  /** Known noise: why it is set apart. Such a result is listed separately and not counted. */
+  noise?: string;
 }

@@ -198,14 +198,88 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
   }
 }
 
+/** A change to the app's origin TLS or the zone's minimum TLS in words; `undefined` for the others. */
+function tlsItem(change: SharedChange): AdapterPlanItem | undefined {
+  switch (change.kind) {
+    case "upload-client-certificate":
+      return {
+        title: `Upload this app's client certificate to Cloudflare (SHA-256 ${change.sha256})`,
+        state: "change",
+        reason:
+          "Cloudflare presents it to the server, so the server can tell this zone from every other Cloudflare customer. Its private key goes to Cloudflare in this upload only.",
+      };
+    case "enable-client-certificate":
+      return {
+        title: `Turn on this app's client certificate for ${change.hostnames.join(", ")} (SHA-256 ${change.sha256})`,
+        state: "change",
+        reason:
+          "Cloudflare then presents it to the server for these hostnames (Authenticated Origin Pulls). OpsCrew waits until Cloudflare has turned it on before the server requires it, so no request fails.",
+      };
+    case "create-origin-certificate":
+      return {
+        title: `Create a Cloudflare origin certificate for ${change.hostnames.join(", ")} (15 years)`,
+        state: "change",
+        reason:
+          "The server serves it to Cloudflare for these hostnames. Its private key was made on this computer and never goes to Cloudflare.",
+      };
+    case "disable-client-certificate":
+      return {
+        title: `Turn off this app's client certificate for ${change.hostnames.join(", ")}`,
+        state: "change",
+        reason: "The server no longer requires it for these hostnames.",
+      };
+    case "delete-client-certificate":
+      return {
+        title: "Delete this app's client certificate from Cloudflare",
+        state: "change",
+        reason: "No hostname uses it any more.",
+      };
+    case "revoke-origin-certificate":
+      return {
+        title: "Revoke an origin certificate of this app that the server no longer serves",
+        state: "change",
+        reason: "A revoked certificate is of no use to anyone holding a copy of its key.",
+      };
+    case "set-min-tls":
+      return {
+        title: `Raise the zone's minimum TLS version from ${change.from} to ${change.to}`,
+        state: "change",
+        reason:
+          "Every proxied hostname in the zone belongs to an OpsCrew app, so no other site there needs TLS 1.0 or 1.1. OpsCrew never lowers it, and destroy leaves it.",
+      };
+    // 011's rule and Zero Trust changes are described by their own items.
+    case "create-entrypoint":
+    case "add-rule":
+    case "update-hostnames":
+    case "delete-rule":
+    case "delete-entrypoint":
+    case "create-organization":
+    case "create-identity-provider":
+      return undefined;
+    default: {
+      // A new kind must be described here, or the approval text would leave it out.
+      const unknown: never = change;
+      return unknown;
+    }
+  }
+}
+
 /**
- * The plain-English Cloudflare plan shown before its `cloudflare-apply` approval: what it does
- * with this app's hostnames in each shared rule (other apps' hostnames only as a count) and with
- * the account's Zero Trust organization and one-time PIN login, the findings, then the hash.
- * Hostnames are public; no token, id or address is shown.
+ * The plain-English Cloudflare plan shown before its `cloudflare-apply` approval: its changes to
+ * the app's origin TLS and the zone's minimum TLS, what it does with this app's hostnames in each
+ * shared rule (other apps' hostnames only as a count) and with the account's Zero Trust
+ * organization and one-time PIN login, the findings, the advice (which never blocks), then the
+ * hash. Hostnames and fingerprints are public; no token, key, id or address is shown.
  */
-function describeCloudflarePlan(plan: SharedPlan, desired: SharedDesired, zone: string): string {
-  const items = REFS.flatMap((ref) => ruleItem(plan, ref) ?? []);
+export function describeCloudflarePlan(
+  plan: SharedPlan,
+  desired: SharedDesired,
+  zone: string,
+): string {
+  const items = [
+    ...plan.changes.flatMap((change) => tlsItem(change) ?? []),
+    ...REFS.flatMap((ref) => ruleItem(plan, ref) ?? []),
+  ];
   const creates = (kind: SharedChange["kind"]) => plan.changes.some((c) => c.kind === kind);
   if (desired.access !== undefined) {
     items.push(
@@ -234,11 +308,16 @@ function describeCloudflarePlan(plan: SharedPlan, desired: SharedDesired, zone: 
       );
     }
   }
+  // After the findings and before the note: advice, each with its next step.
+  const advice = plan.advice.flatMap((item) => [`  Advice: ${item.message}`, `      ${item.hint}`]);
   return describeAdapterPlan({
     heading: `Cloudflare plan for ${zone}`,
     items,
     findings: plan.findings,
-    note: "OpsCrew keeps one rule of its own per kind of rule in the zone, listing the hostnames of every OpsCrew app there, and changes only this app's hostnames in it. Rules OpsCrew did not create stay exactly as they are, in the same order.",
+    note: [
+      ...advice,
+      "OpsCrew keeps one rule of its own per kind of rule in the zone, listing the hostnames of every OpsCrew app there, and changes only this app's hostnames in it. Rules OpsCrew did not create stay exactly as they are, in the same order.",
+    ].join("\n"),
     hashLabel: "Cloudflare plan hash",
     hash: plan.hash,
   });

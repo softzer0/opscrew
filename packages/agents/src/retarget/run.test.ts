@@ -195,6 +195,18 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(variables).not.toContain('variable "previous_delete_protection"');
   });
 
+  it("gives the new server the old server's reverse proxy", async () => {
+    const h = await moveHarness();
+    const before = await readArtifact("plan", h.paths.files.plan);
+    const target = { ...before.target, edge: "nginx" };
+    await writeArtifact("plan", h.paths.files.plan, DeployPlanSchema.parse({ ...before, target }));
+    crashAfter(h, "started");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    const moving = await readArtifact("plan", h.paths.files.plan);
+    expect(moving.target).toMatchObject({ provider: "digitalocean", edge: "nginx" });
+    expect(moving.retarget?.from.target).toMatchObject({ provider: "hetzner", edge: "nginx" });
+  });
+
   it.each(["started", "renamed", "created", "deployed", "migrated", "switched"])(
     "SC-503: an interruption after %s resumes and completes the move",
     async (step) => {

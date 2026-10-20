@@ -5,6 +5,8 @@ import {
   CloudflareClient,
   inspectShared,
   planShared,
+  type SharedChange,
+  type SharedPlan,
   type SharedRecord,
 } from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
@@ -35,7 +37,7 @@ import {
 } from "../testing";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
-import { sharedDesired, zeroTrustAuthDomain } from "./shared-cloudflare";
+import { describeCloudflarePlan, sharedDesired, zeroTrustAuthDomain } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
 const WAF = "http_request_firewall_custom";
@@ -174,6 +176,102 @@ describe("sharedDesired: which shared rules get the app's hostnames, as the IaC 
     ],
   ] as const)("%s", (_, plan, desired) => {
     expect(sharedDesired(plan, "example.com")).toEqual(desired);
+  });
+});
+
+describe("the Cloudflare plan in words: origin TLS, the zone's minimum TLS and advice", () => {
+  const HOSTS = ["app.example.com", "www.app.example.com"];
+  const FINGERPRINT = "b".repeat(64);
+  const plan = (changes: SharedChange[], advice: SharedPlan["advice"] = []): SharedPlan => ({
+    zoneId: FAKE_ZONE_ID,
+    accountId: FAKE_ACCOUNT_ID,
+    changes,
+    expect: {},
+    findings: [],
+    previous: undefined,
+    record: { zoneId: FAKE_ZONE_ID, hostnames: {}, createdEntrypoints: [] },
+    advice,
+    hash: "a".repeat(64),
+  });
+  const text = (changes: SharedChange[], advice?: SharedPlan["advice"]) =>
+    describeCloudflarePlan(plan(changes, advice), { hostnames: {} }, "example.com");
+
+  /** Each change with the line that says what it does. */
+  const CHANGES: [SharedChange, string][] = [
+    [
+      { kind: "upload-client-certificate", sha256: FINGERPRINT },
+      `  ~ Upload this app's client certificate to Cloudflare (SHA-256 ${FINGERPRINT})`,
+    ],
+    [
+      { kind: "enable-client-certificate", hostnames: HOSTS, sha256: FINGERPRINT },
+      `  ~ Turn on this app's client certificate for app.example.com, www.app.example.com (SHA-256 ${FINGERPRINT})`,
+    ],
+    [
+      { kind: "create-origin-certificate", hostnames: HOSTS, csrSha256: "c".repeat(64) },
+      "  ~ Create a Cloudflare origin certificate for app.example.com, www.app.example.com (15 years)",
+    ],
+    [
+      { kind: "disable-client-certificate", hostnames: ["old.example.com"] },
+      "  ~ Turn off this app's client certificate for old.example.com",
+    ],
+    [
+      { kind: "delete-client-certificate", id: "client-1" },
+      "  ~ Delete this app's client certificate from Cloudflare",
+    ],
+    [
+      { kind: "revoke-origin-certificate", id: "origin-1" },
+      "  ~ Revoke an origin certificate of this app that the server no longer serves",
+    ],
+    [
+      { kind: "set-min-tls", from: "1.0", to: "1.2" },
+      "  ~ Raise the zone's minimum TLS version from 1.0 to 1.2",
+    ],
+  ];
+
+  it.each(CHANGES.map(([change, line]) => [change.kind, change, line] as const))(
+    "says what %s does, with its reason",
+    (_, change, line) => {
+      const lines = text([change]).split("\n");
+      expect(lines[0]).toBe("Cloudflare plan for example.com: 1 to change, 0 already in place.");
+      expect(lines[1]).toBe(line);
+      // The reason, indented under the change.
+      expect(lines[2]).toMatch(/^ {6}\S/);
+      expect(lines.at(-1)).toBe(`Cloudflare plan hash: ${"a".repeat(64)}`);
+    },
+  );
+
+  it("lists the changes in the plan's order and shows no id or CSR fingerprint", () => {
+    const shown = text(CHANGES.map(([change]) => change));
+    expect(shown).toContain("Cloudflare plan for example.com: 7 to change, 0 already in place.");
+    const titles = shown.split("\n").filter((line) => line.startsWith("  ~ "));
+    expect(titles).toEqual(CHANGES.map(([, line]) => line));
+    for (const hidden of ["client-1", "origin-1", "c".repeat(64)]) {
+      expect(shown).not.toContain(hidden);
+    }
+  });
+
+  it("shows each advice with its next step, apart from the changes, and never as a stop", () => {
+    const advice: SharedPlan["advice"] = [
+      {
+        code: "tls-permission-missing",
+        message: "The Cloudflare token may not manage origin certificates.",
+        hint: "Give the token SSL and Certificates: Edit, then run provision again.",
+      },
+      {
+        code: "min-tls-advised",
+        message: "The zone still accepts TLS 1.0 and 1.1.",
+        hint: "Raise the minimum TLS version to 1.2 in the Cloudflare dashboard.",
+      },
+    ];
+    const lines = text([], advice).split("\n");
+    expect(lines[0]).toBe("Cloudflare plan for example.com: 0 to change, 0 already in place.");
+    expect(lines.slice(1, 5)).toEqual([
+      "  Advice: The Cloudflare token may not manage origin certificates.",
+      "      Give the token SSL and Certificates: Edit, then run provision again.",
+      "  Advice: The zone still accepts TLS 1.0 and 1.1.",
+      "      Raise the minimum TLS version to 1.2 in the Cloudflare dashboard.",
+    ]);
+    expect(lines.join("\n")).not.toContain("  ! ");
   });
 });
 

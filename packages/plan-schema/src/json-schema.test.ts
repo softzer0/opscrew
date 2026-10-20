@@ -16,12 +16,16 @@ describe("JSON Schema export", () => {
         additionalProperties: false,
       });
     }
+    const edge = { enum: ["caddy", "nginx"], default: "caddy" };
     expect(schemas.plan).toMatchObject({
       properties: {
+        app: { properties: { maxBodyMb: { type: "integer", minimum: 1, maximum: 2048 } } },
         target: {
           oneOf: [
-            { properties: { serverType: { type: "string" } } },
-            { properties: { provider: { const: "own" }, arch: { enum: ["amd64", "arm64"] } } },
+            { properties: { serverType: { type: "string" }, edge } },
+            {
+              properties: { provider: { const: "own" }, arch: { enum: ["amd64", "arm64"] }, edge },
+            },
             {
               properties: {
                 provider: { const: "portainer" },
@@ -41,6 +45,9 @@ describe("JSON Schema export", () => {
         portainer: { properties: { access: { enum: ["local", "subdomain"] } } },
       },
     });
+    // Portainer stacks keep Caddy: no proxy choice there.
+    const plan = schemas.plan as { properties: { target: { oneOf: { properties: object }[] } } };
+    expect(plan.properties.target.oneOf[2]?.properties).not.toHaveProperty("edge");
   });
 
   it("renders deterministic 2-space JSON with a trailing newline", () => {

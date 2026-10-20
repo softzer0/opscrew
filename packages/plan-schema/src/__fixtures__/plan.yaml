@@ -9,6 +9,7 @@ app:
   buildContext: .
   dockerfile: Dockerfile
   memoryMb: 512
+  maxBodyMb: 100
   env:
     - name: DATABASE_URL
       secret: true
@@ -26,6 +27,7 @@ target:
   serverType: cpx22
   image: ubuntu-24.04
   backups: true
+  edge: caddy
 deploy:
   strategy: rolling
   drainSeconds: 30

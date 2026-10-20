@@ -1016,6 +1016,134 @@ describe("SharedRecordSchema", () => {
     const record = { zoneId: ZONE_ID, hostnames: both(A), createdEntrypoints: [WAF], ...damage };
     expect(SharedRecordSchema.safeParse(record).success).toBe(false);
   });
+
+  /** A record with the app's origin TLS and the zone setting OpsCrew set. */
+  const withTls = () => ({
+    zoneId: ZONE_ID,
+    hostnames: both(A),
+    createdEntrypoints: [WAF],
+    tls: {
+      origin: {
+        id: "origin-2",
+        hostnames: A,
+        expiresAt: "2041-10-17T09:00:00.000Z",
+        sha256: "a".repeat(64),
+        superseded: ["origin-1"],
+      },
+      client: {
+        id: "client-1",
+        expiresAt: "2041-10-17T09:00:00Z",
+        sha256: "b".repeat(64),
+        enabled: A,
+        retiring: ["old.example.com"],
+      },
+      gap: "permission" as const,
+    },
+    zoneSettings: {
+      minTlsVersion: { setAt: "2026-10-21T09:00:00.000Z", previous: "1.0" as const },
+    },
+  });
+
+  it("reads a record with the app's origin TLS and the zone setting OpsCrew set, or with part of them", () => {
+    const record = withTls();
+    expect(SharedRecordSchema.parse(JSON.parse(JSON.stringify(record)))).toEqual(record);
+    const { tls, zoneSettings: _zoneSettings, ...without } = record;
+    for (const part of [{}, { gap: tls.gap }, { origin: tls.origin }, { client: tls.client }]) {
+      const read = { ...without, tls: part, zoneSettings: {} };
+      expect(SharedRecordSchema.parse(read)).toEqual(read);
+    }
+    expect(SharedRecordSchema.parse(without)).toEqual(without);
+  });
+
+  type TlsRecord = ReturnType<typeof withTls>;
+  it.each<[string, (record: TlsRecord) => void]>([
+    ["an origin hostname that is not lower case", (r) => (r.tls.origin.hostnames = ["Shop.a.b"])],
+    ["an origin hostname that is a wildcard", (r) => (r.tls.origin.hostnames = ["*.example.com"])],
+    ["an enabled hostname that is not a name", (r) => (r.tls.client.enabled = ["shop"])],
+    [
+      "a retiring hostname that is not lower case",
+      (r) => (r.tls.client.retiring = ["A.example.com"]),
+    ],
+    ["an empty origin id", (r) => (r.tls.origin.id = "")],
+    ["an empty client id", (r) => (r.tls.client.id = "")],
+    ["an empty superseded id", (r) => (r.tls.origin.superseded = [""])],
+    ["an origin fingerprint in upper case", (r) => (r.tls.origin.sha256 = "A".repeat(64))],
+    ["a client fingerprint too short", (r) => (r.tls.client.sha256 = "b".repeat(63))],
+    ["an origin expiry that is not an ISO time", (r) => (r.tls.origin.expiresAt = "2041-10-17")],
+    ["a client expiry that is not an ISO time", (r) => (r.tls.client.expiresAt = "in 15 years")],
+    ["a setting time that is not an ISO time", (r) => (r.zoneSettings.minTlsVersion.setAt = "now")],
+    [
+      "a previous minimum TLS other than 1.0",
+      (r) => Object.assign(r.zoneSettings.minTlsVersion, { previous: "1.1" }),
+    ],
+    ["an unknown gap", (r) => Object.assign(r.tls, { gap: "token" })],
+    [
+      "an origin without its superseded list",
+      (r) => Reflect.deleteProperty(r.tls.origin, "superseded"),
+    ],
+    ["a client without its retiring list", (r) => Reflect.deleteProperty(r.tls.client, "retiring")],
+    ["an unknown key in tls", (r) => Object.assign(r.tls, { key: "never" })],
+    ["an unknown key in the origin", (r) => Object.assign(r.tls.origin, { privateKey: "never" })],
+    ["an unknown key in the client", (r) => Object.assign(r.tls.client, { key: "never" })],
+    ["an unknown zone setting", (r) => Object.assign(r.zoneSettings, { ssl: "strict" })],
+    [
+      "an unknown key in the setting",
+      (r) => Object.assign(r.zoneSettings.minTlsVersion, { to: 1 }),
+    ],
+  ])("refuses a damaged origin TLS or zone settings record: %s", (_, damage) => {
+    const record = withTls();
+    damage(record);
+    expect(SharedRecordSchema.safeParse(record).success).toBe(false);
+  });
+});
+
+describe("origin TLS and the zone's minimum TLS (planned and applied from feature 014 on)", () => {
+  it("plans none of them yet: the same changes and hash, no CSR and no advice", async () => {
+    const zone = new FakeZone();
+    const plain = await planFor(zone, { hostnames: both(A) });
+    const tls = await planFor(zone, {
+      hostnames: both(A),
+      tls: {
+        proxied: A,
+        retiring: [],
+        served: { requiring: [] },
+        origin: { csr: "a certificate signing request" },
+        client: { sha256: "b".repeat(64) },
+      },
+      minTls: true,
+    });
+    expect(tls).toEqual(plain);
+    expect(plain.advice).toEqual([]);
+    expect(plain).not.toHaveProperty("csr");
+  });
+
+  it("refuses to apply them until they are built, and writes nothing", async () => {
+    const zone = new FakeZone();
+    const empty = await planFor(zone, { hostnames: {} });
+    const changes: SharedChange[] = [
+      { kind: "upload-client-certificate", sha256: "b".repeat(64) },
+      { kind: "enable-client-certificate", hostnames: A, sha256: "b".repeat(64) },
+      { kind: "create-origin-certificate", hostnames: A, csrSha256: "c".repeat(64) },
+      { kind: "disable-client-certificate", hostnames: A },
+      { kind: "delete-client-certificate", id: "client-1" },
+      { kind: "revoke-origin-certificate", id: "origin-1" },
+      { kind: "set-min-tls", from: "1.0", to: "1.2" },
+    ];
+    for (const change of changes) {
+      const plan = { ...empty, changes: [change] };
+      const hash = sha256Hex(
+        canonicalJson({ zoneId: ZONE_ID, accountId: ACCOUNT_ID, changes: [change], expect: {} }),
+      );
+      const before = zone.calls.length;
+      const error = await rejection(
+        applyShared(clientFor(zone), { ...plan, hash }, { approvedHash: hash }),
+      );
+      expect(error.code, change.kind).toBe("INTERNAL");
+      expect(error.message).toContain(`"${change.kind}"`);
+      expect(error).toMatchObject({ applied: [], record: empty.record });
+      expect(writesSince(zone, before)).toEqual([]);
+    }
+  });
 });
 
 describe("inspectShared", () => {

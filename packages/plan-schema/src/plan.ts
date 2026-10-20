@@ -27,8 +27,14 @@ import { AbsolutePathSchema } from "./facts";
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
 
 /**
- * A server OpsCrew creates on Hetzner Cloud or DigitalOcean: provider, location, server size, image
- * and backups.
+ * The reverse proxy in front of every OpsCrew app on a server: Caddy (the default) or nginx with
+ * certbot. Every OpsCrew app on one server uses the same one.
+ */
+const EdgeSchema = z.enum(["caddy", "nginx"]).default("caddy");
+
+/**
+ * A server OpsCrew creates on Hetzner Cloud or DigitalOcean: provider, location, server size, image,
+ * backups and the reverse proxy.
  */
 export const CloudTargetSchema = z.strictObject({
   provider: CloudProviderSchema,
@@ -41,6 +47,7 @@ export const CloudTargetSchema = z.strictObject({
   image: z.string().min(1).optional(),
   /** The provider's automated daily backups. */
   backups: z.boolean(),
+  edge: EdgeSchema,
 });
 
 /**
@@ -58,6 +65,7 @@ export const OwnTargetSchema = z.strictObject({
    * and is served through a Cloudflare Tunnel (which needs a domain on Cloudflare).
    */
   access: z.enum(["public", "tunnel"]),
+  edge: EdgeSchema,
 });
 
 /**
@@ -501,6 +509,8 @@ const DeployPlanFieldsSchema = z.strictObject({
     releaseCommand: CommandLineSchema.optional(),
     /** The web process's memory limit. */
     memoryMb: MemoryMbSchema.default(512),
+    /** The largest request body nginx accepts, in MB (`client_max_body_size`); Caddy sets none. */
+    maxBodyMb: z.int().min(1).max(2048).default(100),
     /** Names only, never values. */
     env: z.array(
       z.strictObject({
