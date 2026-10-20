@@ -85,8 +85,36 @@ export const ExpectedSchema = z.strictObject({
       port: z.number().int().positive().optional(),
     })
     .optional(),
+  /**
+   * The components `opscrew design` plans besides the web process, exactly (013): the running
+   * services by name with their kind, the workers and cron jobs by name, SQLite's folder and
+   * whether there is a bucket. The Docker pass checks the components of the examples that have it.
+   */
+  components: z
+    .strictObject({
+      services: z.record(z.string().min(1), z.string().min(1)).default({}),
+      workers: z.array(z.string().min(1)).default([]),
+      cron: z.array(z.string().min(1)).default([]),
+      sqlite: z.string().min(1).optional(),
+      objectStorage: z.boolean().default(false),
+    })
+    .optional(),
 });
 export type Expected = z.infer<typeof ExpectedSchema>;
+
+/** The plan's components in the form of `expected.json`'s `components`. */
+export function plannedComponents(plan: DeployPlan): NonNullable<Expected["components"]> {
+  const enabled = <T extends { enabled: boolean }>(items: readonly T[]) =>
+    items.filter((item) => item.enabled);
+  const sqlite = plan.storage?.sqlite?.dir;
+  return {
+    services: Object.fromEntries(enabled(plan.services).map((s) => [s.name, s.kind])),
+    workers: enabled(plan.processes.workers).map((worker) => worker.name),
+    cron: enabled(plan.processes.cron).map((job) => job.name),
+    ...(sqlite === undefined ? {} : { sqlite }),
+    objectStorage: plan.storage?.objectStorage !== undefined,
+  };
+}
 
 /** Reads and validates `<exampleDir>/expected.json`. */
 export async function readExpected(exampleDir: string): Promise<Expected> {

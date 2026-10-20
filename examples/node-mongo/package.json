@@ -1,0 +1,13 @@
+{
+  "name": "node-mongo-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "5.3.0",
+    "mongodb": "7.7.0"
+  }
+}

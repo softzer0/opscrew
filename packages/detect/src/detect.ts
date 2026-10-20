@@ -394,11 +394,16 @@ export async function detectProjectDetails(
   // Services. Celery's broker is the `*BROKER*` variable's URL.
   const pythonUrlSchemes = new Set<string>();
   let pythonS3 = false;
+  // Python's own sqlite3 module and SQLAlchemy need no dependency for SQLite: the code shows it.
+  let sqliteConnect = false;
+  let sqliteUrl = false;
   for (const [file, found] of signals) {
     if (!file.endsWith(".py")) continue;
     for (const scheme of found.urlSchemes) pythonUrlSchemes.add(scheme);
-    const s3 = found.markers.some((m) => m === "s3-client" || m === "presigned-upload");
-    if (s3 && isRuntimeCodeFile(file)) pythonS3 = true;
+    if (!isRuntimeCodeFile(file)) continue;
+    if (found.markers.some((m) => m === "s3-client" || m === "presigned-upload")) pythonS3 = true;
+    if (found.sqliteConnects.length > 0) sqliteConnect = true;
+    if (found.sqliteUrls.length > 0) sqliteUrl = true;
   }
   const brokerScheme = envVars.find(
     (envVar) => /(?:^|_)BROKER(?:_|$)/.test(envVar.name) && envVar.urlScheme !== undefined,
@@ -427,6 +432,12 @@ export async function detectProjectDetails(
     settingsTexts.set(file, text);
     addDjangoServices(services, text);
   }
+  // A SQLite URL in code next to a server database's driver or config is a fallback, such as a
+  // local default, not the app's database.
+  const serverDatabase = (["postgres", "mysql", "mariadb"] as const).some((kind) =>
+    services.has(kind),
+  );
+  if (sqliteConnect || (sqliteUrl && !serverDatabase)) services.add("sqlite", "code:sqlite");
   const dbConnection = envTexts
     .map((text) => envFileValue(text, "DB_CONNECTION"))
     .find((value) => value !== undefined);
@@ -634,6 +645,8 @@ export async function detectProjectDetails(
     envTexts,
     dbConnection,
     frameworks: appFrameworkNames,
+    dependencies: runtimeDependencies,
+    serverDatabase,
   });
   const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
   if (appKind !== "static-spa") {

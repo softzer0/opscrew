@@ -3,14 +3,14 @@
  * the variables it reads.
  */
 import type { ProjectFacts } from "@opscrew/plan-schema";
-import { envFileValue } from "./connections";
+import { ENV_LINE, envFileValue } from "./connections";
 import { isClientExposed } from "./env";
 import type { Dependency, ReadText } from "./manifests";
 import { basenameRel, dirnameRel, isWithin, joinRel, relativeTo, uniqueSorted } from "./paths";
 import { cleanPath } from "./release/context";
 import type { DetectedService } from "./services";
 import { prismaProvider } from "./services";
-import { isAppCodeFile, isRuntimeCodeFile, type SourceSignals } from "./sources";
+import { isAppCodeFile, isRuntimeCodeFile, type SourceSignals, SQLITE_URL } from "./sources";
 
 /** What storage detection reads about the app. */
 export interface StorageContext {
@@ -28,6 +28,10 @@ export interface StorageContext {
   dbConnection: string | undefined;
   /** Names of the app's frameworks. */
   frameworks: ReadonlySet<string>;
+  /** Runtime dependencies of the app's units. */
+  dependencies: readonly Dependency[];
+  /** A dependency or config shows a server database: Postgres, MySQL or MariaDB. */
+  serverDatabase: boolean;
 }
 
 /** `path` (relative to `base`, both relative to the app) cleaned, or undefined outside the app. */
@@ -65,8 +69,12 @@ function railsProductionDatabases(text: string): string[] {
  * The SQLite database files the app writes, relative to the app, and their common folder: Rails'
  * production databases (four with Rails 8), the `.sqlite3` file Django's settings name, Laravel's
  * `database/database.sqlite` for `DB_CONNECTION=sqlite`, a Prisma `file:` URL (in the schema or
- * the committed env files, relative to the schema), and better-sqlite3 or Drizzle file names in
- * the code. Undefined when none is found.
+ * the committed env files, relative to the schema), better-sqlite3 or Drizzle file names in the
+ * code, Python's `sqlite3.connect` in the code the running app uses, and SQLAlchemy `sqlite:///`
+ * URLs in the committed env files and in that code (there only without a server database, see
+ * {@link StorageContext.serverDatabase}). Flask-SQLAlchemy 3 opens a relative SQLAlchemy path in
+ * the app's `instance/` folder (`app.instance_path`), plain SQLAlchemy in the working folder, the
+ * app's. Undefined when none is found.
  */
 export async function detectSqlite(ctx: StorageContext): Promise<ProjectFacts["sqlite"]> {
   const paths = new Set<string>();
@@ -112,11 +120,25 @@ export async function detectSqlite(ctx: StorageContext): Promise<ProjectFacts["s
     if (url) add(base, url);
   }
 
+  const flaskSqlalchemy = ctx.dependencies.some(
+    (dep) => dep.ecosystem === "pypi" && dep.name === "flask-sqlalchemy",
+  );
+  const urlBase = flaskSqlalchemy ? "instance" : ".";
   for (const [file, found] of ctx.signals) {
     if (!inApp(file)) continue;
     const rel = relativeTo(ctx.appDir, file);
-    if (!isAppCodeFile(rel) && !/^drizzle\.config\.[cm]?[jt]s$/.test(basenameRel(rel))) continue;
-    for (const path of found.sqliteFiles) add(".", path);
+    if (isAppCodeFile(rel) || /^drizzle\.config\.[cm]?[jt]s$/.test(basenameRel(rel))) {
+      for (const path of found.sqliteFiles) add(".", path);
+    }
+    // Python's: only from the code the running app uses, and a SQLAlchemy URL only without a
+    // server database (it is then a fallback, such as a local default).
+    if (!rel.endsWith(".py") || !isRuntimeCodeFile(rel)) continue;
+    for (const path of found.sqliteConnects) add(".", path);
+    if (!ctx.serverDatabase) for (const path of found.sqliteUrls) add(urlBase, path);
+  }
+  for (const line of ctx.envTexts.flatMap((text) => text.split(/\r?\n/))) {
+    const value = ENV_LINE.exec(line)?.[2] ?? "";
+    for (const match of value.matchAll(SQLITE_URL)) add(urlBase, match[1] as string);
   }
 
   if (paths.size === 0) return undefined;

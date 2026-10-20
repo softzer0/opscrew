@@ -1,0 +1,14 @@
+{
+  "name": "node-bullmq-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bullmq": "5.81.5",
+    "express": "5.3.0",
+    "ioredis": "5.11.1"
+  }
+}

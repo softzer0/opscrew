@@ -11,6 +11,7 @@ import { stringify } from "yaml";
 import { enabledServices, renderContext, serviceSpec } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
 import { isClientExposedEnvName } from "../docker";
+import { CADDY_MEMORY_MB } from "../edge";
 import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { siteHosts } from "../runtime";
@@ -30,6 +31,7 @@ import {
   hardened,
   RELEASE_NOTE,
 } from "../runtime/services";
+import { CONNECTOR_MEMORY_MB } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
@@ -258,6 +260,9 @@ function stackSetup(
 
 /** Variable the tunnel connectors read their token from. */
 const TUNNEL_TOKEN = "TUNNEL_TOKEN";
+
+/** The updater's memory limit: its shell loop and one curl call at a time. */
+const UPDATER_MEMORY_MB = 16;
 
 /**
  * Prefixes the app's variables may not use in a stack: OpsCrew's own values, and the settings
@@ -524,6 +529,8 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     configs: [{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }],
     ...(web.mode === "caddy" ? { volumes: ["caddy_data:/data", "caddy_config:/config"] } : {}),
     depends_on: ["app"],
+    // As the server edge's Caddy (FR-1325, SC-1304).
+    ...memoryLimit(CADDY_MEMORY_MB),
     ...hardened({ internal: true }),
   };
   if (web.mode === "tunnel") {
@@ -532,6 +539,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
       {
         environment: { [TUNNEL_TOKEN]: `\${${PORTAINER_STACK_VARIABLES.tunnelToken}}` },
         depends_on: ["caddy"],
+        ...memoryLimit(CONNECTOR_MEMORY_MB),
       },
       true,
     );
@@ -631,6 +639,7 @@ export function renderUpdaterStack(plan: DeployPlan): PortainerStackFile {
         extra_hosts: ["host.docker.internal:host-gateway"],
         init: true,
         read_only: true,
+        ...memoryLimit(UPDATER_MEMORY_MB),
         ...hardened({ noCapabilities: true }),
       },
     },
@@ -658,6 +667,7 @@ export function renderPortainerConnectorStack(plan: DeployPlan): PortainerStackF
       cloudflared: cloudflaredService({
         environment: { [TUNNEL_TOKEN]: `\${${TUNNEL_TOKEN}}` },
         extra_hosts: ["host.docker.internal:host-gateway"],
+        ...memoryLimit(CONNECTOR_MEMORY_MB),
       }),
     },
   };

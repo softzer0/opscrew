@@ -1,0 +1,13 @@
+{
+  "name": "rabbitmq-worker-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "amqplib": "2.2.0",
+    "express": "5.3.0"
+  }
+}

@@ -118,16 +118,23 @@ async function libraryWorkers(ctx: ProcessContext): Promise<LibraryWorker[]> {
   if (has("pypi", "celery")) {
     const app = appObject("celery", ":");
     found.push({
-      worker: worker("celery-worker", app && `celery -A ${app} worker --loglevel=info`, [
-        "dependency:celery",
-      ]),
+      // Celery starts one process per CPU unless told: two fit a worker's default 256 MB.
+      worker: worker(
+        "celery-worker",
+        app && `celery -A ${app} worker --loglevel=info --concurrency 2`,
+        ["dependency:celery"],
+      ),
       sameProcess: /\bcelery\b.*\bworker\b/,
     });
     const djangoBeat = has("pypi", "django-celery-beat");
     if (djangoBeat || marked("celery-beat").length > 0) {
+      // The default scheduler keeps each task's last run in a file, by default in the working
+      // folder, which the app's image does not let the app write; /tmp can be written. The file
+      // is gone after a restart and beat rebuilds the schedule: each task's next run then counts
+      // from the restart, so a run due while beat was down is not made up.
       const scheduler = djangoBeat
         ? " --scheduler django_celery_beat.schedulers:DatabaseScheduler"
-        : "";
+        : " --schedule /tmp/celerybeat-schedule";
       found.push({
         worker: worker(
           "celery-beat",

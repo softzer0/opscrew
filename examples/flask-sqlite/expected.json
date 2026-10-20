@@ -1,0 +1,16 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["flask"],
+    "port": 5000,
+    "services": ["sqlite"],
+    "languages": ["python"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore"],
+  "builder": "generated-dockerfile",
+  "components": {
+    "sqlite": "data"
+  }
+}

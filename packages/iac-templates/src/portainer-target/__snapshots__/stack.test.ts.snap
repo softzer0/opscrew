@@ -74,6 +74,8 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -149,6 +151,8 @@ services:
         target: /etc/caddy/Caddyfile
     depends_on:
       - app
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -327,6 +331,8 @@ services:
         target: /etc/caddy/Caddyfile
     depends_on:
       - app
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -349,6 +355,8 @@ services:
       TUNNEL_TOKEN: \${OPSCREW_TUNNEL_TOKEN}
     depends_on:
       - caddy
+    mem_limit: 32m
+    memswap_limit: 32m
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -415,6 +423,8 @@ services:
       - host.docker.internal:host-gateway
     init: true
     read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -696,6 +706,8 @@ services:
       KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
     volumes:
       - kafka_data:/var/lib/kafka/data
+      - kafka_secrets:/etc/kafka/secrets
+      - kafka_config:/mnt/shared/config
     healthcheck:
       test:
         - CMD-SHELL
@@ -727,6 +739,8 @@ services:
         target: /etc/caddy/Caddyfile
     depends_on:
       - app
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -749,6 +763,8 @@ services:
       TUNNEL_TOKEN: \${OPSCREW_TUNNEL_TOKEN}
     depends_on:
       - caddy
+    mem_limit: 32m
+    memswap_limit: 32m
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -767,6 +783,8 @@ volumes:
   mysql_data: {}
   rabbitmq_data: {}
   kafka_data: {}
+  kafka_secrets: {}
+  kafka_config: {}
   sqlite: {}
 configs:
   caddyfile:
@@ -1076,6 +1094,8 @@ services:
       KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
     volumes:
       - kafka_data:/var/lib/kafka/data
+      - kafka_secrets:/etc/kafka/secrets
+      - kafka_config:/mnt/shared/config
     healthcheck:
       test:
         - CMD-SHELL
@@ -1107,6 +1127,8 @@ services:
         target: /etc/caddy/Caddyfile
     depends_on:
       - app
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -1129,6 +1151,8 @@ services:
       TUNNEL_TOKEN: \${OPSCREW_TUNNEL_TOKEN}
     depends_on:
       - caddy
+    mem_limit: 32m
+    memswap_limit: 32m
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -1147,6 +1171,8 @@ volumes:
   mysql_data: {}
   rabbitmq_data: {}
   kafka_data: {}
+  kafka_secrets: {}
+  kafka_config: {}
 configs:
   caddyfile:
     content: |

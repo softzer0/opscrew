@@ -1,0 +1,19 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["express"],
+    "port": 3000,
+    "services": ["queue", "redis"],
+    "languages": ["javascript"],
+    "secretEnv": ["CRON_SECRET"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"],
+  "builder": "generated-dockerfile",
+  "components": {
+    "services": { "queue": "valkey" },
+    "workers": ["worker"],
+    "cron": ["tick"]
+  }
+}

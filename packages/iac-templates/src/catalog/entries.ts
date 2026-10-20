@@ -481,7 +481,14 @@ const KAFKA: ServiceSpec = {
   // Idle 381 MiB with the image's default heap; a JVM, so 1 GB servers are refused.
   memory: { defaultMb: 1024, minimumMb: 768, smallestServerMb: 2048 },
   port: 9092,
-  dataDir: "/var/lib/kafka/data",
+  // The image also declares its secrets and shared config folders as volumes, which stay empty
+  // here: each needs a mount of its own, or Docker adds an anonymous volume that `down` leaves
+  // behind.
+  dataDir: {
+    data: "/var/lib/kafka/data",
+    secrets: "/etc/kafka/secrets",
+    config: "/mnt/shared/config",
+  },
   // It runs as uid 1000.
   namedVolume: true,
   environment: kafkaEnvironment,

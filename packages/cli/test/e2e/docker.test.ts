@@ -18,9 +18,9 @@
  * health path (static apps: also `/`) must answer HTTP 200 within two minutes. When the plan
  * leaves the health route to the Code-change agent (a pending `health-endpoint` change, which
  * `--no-ai` does not write), any HTTP answer on that path passes with a note. A plan with a release
- * command (`app.releaseCommand`, database migrations) is started like the deploy workflow starts it
- * instead: OpsCrew's Compose file, the backing services, the `release` service run once, then the
- * app, which must also answer 200 on a route that writes to the database (`DATABASE_ROUTES`).
+ * command (`app.releaseCommand`, database migrations) or components (below) is started like the
+ * deploy workflow starts it instead, as OpsCrew's Compose project; with a release command the app
+ * must also answer 200 on a route that writes to the database (`DATABASE_ROUTES`).
  * Before the build the pass writes a local `.env` with a fake secret into the build context, and
  * checks that it stays out: the `.dockerignore` OpsCrew wrote lists `.env` (Dockerfile and Railpack
  * builds), or the removal before pack took it away (Buildpacks). The image's files (`docker
@@ -40,23 +40,77 @@
  *   a future npm may block install scripts that are not allow-listed (npm 11.19 warns), so this
  *   catches it when the Node pin moves.
  *
+ * The components (013): a plan with services, workers, cron jobs or storage, and every example
+ * whose `expected.json` names its components, starts as OpsCrew's Compose project in the deploy's
+ * order (`switchCommands`), without the edge and the switch: the services up and healthy (with the
+ * one-shot `sysctl` container first on a cloud server), their one-time setup (`initStepsFor`, each
+ * step only when its check fails), the release command, the app, then the workers and cron, from
+ * the Compose file adapted to this computer (`localServerCompose`). The app's environment and each
+ * service's env file hold what provision assembles (`assembleAppEnv`, `serviceEnvSecrets`), with
+ * placeholders for the user's own values. For an example whose `expected.json` names its
+ * components, the pass then checks:
+ * - every container has its memory limit (and no swap beyond it), and no service publishes a port;
+ * - a job queued through the app is consumed within 30 seconds, and every worker and cron
+ *   container keeps running;
+ * - a cron job runs within one minute of its schedule (the first run supercronic logs as
+ *   succeeded), and the app counts the run;
+ * - a value written through the app is read back after `docker compose restart` and after a
+ *   redeploy, which here recreates every container (`docker compose rm --stop --volumes`, which
+ *   keeps the named volumes, then the deploy's steps again, so the one-time setup runs a second
+ *   time).
+ * `s3-uploads` is designed for a server the user owns (a fake one), where its bucket is Garage.
+ * celery-worker's plan gets the cron job a user adds (`python heartbeat.py`: design finds no
+ * command cron job in code). `node-mongo-portainer` and `s3-uploads-portainer` are designed for a
+ * Portainer (a fake one answers the interview) and run their rendered stack with `docker compose`
+ * and the stack's variables, as Portainer does: MongoDB as a replica set (the plan's option a user
+ * sets, which Prisma would need) with its one-shot `-init`, and Garage with `--default-bucket`; a
+ * second `up`, and an `up` after the containers were removed, must keep both working.
+ *
  * It pulls base images and packages, so it runs only on request: OPSCREW_DOCKER_TESTS=1 with a
  * running Docker daemon (skipped otherwise). OPSCREW_DOCKER_EXAMPLES=a,b limits the run to those
- * examples. Containers, images and pack's cache volumes are always removed; every container this
- * file starts carries the label `opscrew.test=docker-pass`.
+ * examples. Containers, Compose projects with their volumes, images and pack's cache volumes are
+ * always removed; every container this file starts outside Compose carries the label
+ * `opscrew.test=docker-pass`. The images pulled for the services stay, as base images do.
  */
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assembleAppEnv, fixedProductionValue } from "@opscrew/agents";
-import { findExecutable, NodeCommandRunner } from "@opscrew/core";
+import {
+  type AppEnvironment,
+  assembleAppEnv,
+  dotenvLine,
+  fixedProductionValue,
+  type PortainerAccess,
+  parseDotenv,
+  serviceEnvSecrets,
+} from "@opscrew/agents";
+import {
+  ED25519_FINGERPRINT,
+  FakeHostServer,
+  OWN_IPV4,
+  PORTAINER_URL,
+} from "@opscrew/agents/testing";
 import { FakeAgentRuntime, fakeSecret, materializeFixture } from "@opscrew/core/testing";
-import { IMAGES, type PinArch, renderCompose } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, serviceOf } from "@opscrew/plan-schema";
+import {
+  hostSettingsServices,
+  IMAGES,
+  initStepsFor,
+  type PinArch,
+  PORTAINER_IMAGE_PLACEHOLDER,
+  PORTAINER_STACK_VARIABLES,
+  PORTAINER_VERSION_PLACEHOLDER,
+  portainerSecretVariables,
+  portainerStackEnvKeys,
+  type RenderContext,
+  renderCompose,
+  renderPortainerStack,
+  serviceEnvSecret,
+} from "@opscrew/iac-templates";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import {
@@ -68,24 +122,37 @@ import {
   type TempProject,
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
+import { fakeHome, OwnRunner, ownServices } from "../../src/ui/__fixtures__/own";
 import { removeSecretFiles, toolArchive, type WorkflowBuild, workflowBuild } from "./builders";
 import {
+  type ComposeProject,
+  type ComposeService,
+  compose,
+  composeOk,
+  DOCKER,
+  docker,
+  dockerSkipReason,
+  LABEL,
+  limitProblems,
+  localServerCompose,
+  projectContainers,
+  TEN_MINUTES,
+  TWO_MINUTES,
+  tail,
+} from "./docker-support";
+import {
   BASE_ANSWERS,
+  type Expected,
   exampleNames,
+  plannedComponents,
   plantedSecrets,
   readExpected,
   readPlan,
   ScriptedApprovals,
 } from "./support";
 
-const DOCKER = findExecutable("docker");
 const TWENTY_MINUTES = 1_200_000;
-const TEN_MINUTES = 600_000;
-const TWO_MINUTES = 120_000;
 const STEP_TIMEOUT = 180_000;
-
-/** On every container this file starts. */
-const LABEL = "opscrew.test=docker-pass";
 
 /**
  * Where pack and Railpack run: a pinned glibc image with CA certificates (Railpack plans Python
@@ -102,6 +169,10 @@ interface Case {
   /** A folder under `__fixtures__/` copied over the example. */
   overlay?: string;
   devDependencies?: Record<string, string>;
+  /** Where the interview puts the app: Hetzner (the default), a server the user owns, a Portainer. */
+  target?: "own" | "portainer";
+  /** A change the user makes in opscrew/plan.yaml after design, before adapt. */
+  planEdit?: (plan: DeployPlan) => DeployPlan;
 }
 
 /** nextjs-postgres with Prisma migrations, which the release command applies. */
@@ -112,8 +183,40 @@ const PRISMA: Case = {
   devDependencies: { prisma: "^7.10.1" },
 };
 
+/** The cron job a user adds to celery-worker's plan: a command, which design never finds in code. */
+function withHeartbeat(plan: DeployPlan): DeployPlan {
+  const job = { name: "heartbeat", schedule: "* * * * *", command: "python heartbeat.py" };
+  const cron = [...plan.processes.cron, { ...job, enabled: true }];
+  return { ...plan, processes: { ...plan.processes, cron } };
+}
+
+/** MongoDB as a one-node replica set, the plan's option for clients that need one (Prisma). */
+function withReplicaSet(plan: DeployPlan): DeployPlan {
+  const services = plan.services.map((service) =>
+    service.kind === "mongodb" ? { ...service, options: { replicaSet: true } } : service,
+  );
+  return { ...plan, services };
+}
+
+/** How the pass designs some examples. */
+const DESIGNED: Readonly<Record<string, Partial<Case>>> = {
+  "celery-worker": { planEdit: withHeartbeat },
+  // Locally the bucket is Garage, which design plans on a server the user owns.
+  "s3-uploads": { target: "own" },
+};
+
 /** Every example with an `expected.json`, plus the variants. */
-const ALL_CASES: Case[] = [...exampleNames().map((name) => ({ name, example: name })), PRISMA];
+const ALL_CASES: Case[] = [
+  ...exampleNames().map((name) => ({ name, example: name, ...DESIGNED[name] })),
+  PRISMA,
+  {
+    name: "node-mongo-portainer",
+    example: "node-mongo",
+    target: "portainer",
+    planEdit: withReplicaSet,
+  },
+  { name: "s3-uploads-portainer", example: "s3-uploads", target: "portainer" },
+];
 const ALL_NAMES = ALL_CASES.map((c) => c.name);
 
 /** OPSCREW_DOCKER_EXAMPLES=a,b, or undefined for every example. */
@@ -125,44 +228,78 @@ const CASES =
     ? ALL_CASES
     : ALL_CASES.filter((c) => REQUESTED.includes(c.name));
 
-function skipReason(): string | undefined {
-  if (process.env.OPSCREW_DOCKER_TESTS !== "1") return "set OPSCREW_DOCKER_TESTS=1 to run it";
-  if (GIT === undefined) return "git is not installed";
-  if (DOCKER === undefined) return "docker is not installed";
-  const info = spawnSync(DOCKER, ["info", "--format", "{{.ServerVersion}}"], {
-    timeout: 30_000,
-    stdio: "ignore",
-  });
-  return info.status === 0 ? undefined : "the Docker daemon is not running (`docker info` failed)";
-}
-
-const SKIP = skipReason();
+const SKIP = dockerSkipReason() ?? (GIT === undefined ? "git is not installed" : undefined);
 if (SKIP !== undefined) console.warn(`Skipping the local Docker pass over examples/: ${SKIP}.`);
 
-const runner = new NodeCommandRunner({ defaultTimeoutMs: TEN_MINUTES });
 /** Everything this file started or built, removed in afterAll even when a test failed. */
 const containers = new Set<string>();
 const images = new Set<string>();
-/** Compose projects (name → compose file) started by this file. */
-const composeProjects = new Map<string, string>();
+/** Compose projects started by this file, by name. */
+const composeProjects = new Map<string, ComposeProject>();
 /** Image tags pack built, whose cache volumes are removed. */
 const packTags = new Set<string>();
 
-async function docker(args: string[], timeoutMs = 60_000) {
-  return runner.run(DOCKER ?? "docker", args, { timeoutMs });
-}
-
-async function compose(name: string, file: string, args: string[], timeoutMs = TWO_MINUTES) {
-  return docker(["compose", "-p", name, "-f", file, ...args], timeoutMs);
-}
-
 /** Stops a Compose project and removes its containers, network and volumes. */
 async function composeDown(name: string): Promise<void> {
-  const file = composeProjects.get(name);
-  if (file === undefined) return;
-  await compose(name, file, ["down", "-v", "--remove-orphans"]);
+  const project = composeProjects.get(name);
+  if (project === undefined) return;
+  const down = await compose(project, ["down", "-v", "--remove-orphans"]);
+  if (down.exitCode !== 0 || down.timedOut) {
+    // Kept in the list, so the file's afterAll tries again.
+    console.warn(
+      `docker compose down of ${name} failed (${down.timedOut ? "timed out" : `exit ${down.exitCode}`}):\n${tail(down.stderr, 10)}`,
+    );
+    return;
+  }
   composeProjects.delete(name);
 }
+
+/** The interview's answers about a server the user owns (a fake one: nothing reaches it). */
+const OWN_ANSWERS = {
+  provider: "own",
+  "server.host": OWN_IPV4,
+  "server.port": 22,
+  "server.user": "root",
+  "server.key": "agent",
+  "server.reachable": true,
+};
+
+/** The interview's answers about a Portainer (a fake one lists its environment). */
+const PORTAINER_ANSWERS = {
+  provider: "portainer",
+  "portainer.url": PORTAINER_URL,
+  "portainer.environment": "local",
+  "portainer.redeploy": "updater",
+  "portainer.web": "proxy",
+  "portainer.port": 8080,
+};
+
+/** Portainer's certificate, as the fake one shows it (`--portainer-cert`). */
+const PORTAINER_CERT = `SHA256:${"AB:".repeat(31)}AB`;
+
+/** A Portainer with one Docker environment, which never sees a request beyond these two. */
+const PORTAINER_ACCESS: PortainerAccess = {
+  fetchCertificateFingerprint: async () => PORTAINER_CERT,
+  listEnvironments: async () => [{ id: 1, name: "local", kind: "docker", up: true, arch: "amd64" }],
+};
+
+/** What rendering the Portainer stack needs here; none of it reaches the file. */
+const STACK_CONTEXT: RenderContext = {
+  opscrewVersion: "test",
+  github: { owner: "acme", repo: "app" },
+  deploySshPublicKey: "",
+};
+
+/** Where and how the app runs: OpsCrew's server Compose project, or its Portainer stack. */
+interface Deployment {
+  kind: "server" | "stack";
+  project: ComposeProject;
+  /** The folder of the Compose file and the env files. */
+  dir: string;
+}
+
+/** A step of a service's one-time setup (`initStepsFor`). */
+type InitStep = ReturnType<typeof initStepsFor>[number];
 
 async function removeContainer(name: string): Promise<void> {
   await docker(["rm", "-f", name]);
@@ -181,11 +318,6 @@ async function removePackVolumes(tag: string): Promise<void> {
   const volumes = listed.stdout.split(/\s+/).filter((name) => name.startsWith(prefix));
   if (volumes.length > 0) await docker(["volume", "rm", "-f", ...volumes]);
   packTags.delete(tag);
-}
-
-/** The last `lines` lines of a log (build output, container output). */
-function tail(text: string, lines = 60): string {
-  return text.trimEnd().split(/\r?\n/).slice(-lines).join("\n");
 }
 
 /** A `--mount` for a file or folder of this computer. */
@@ -392,44 +524,56 @@ async function keptAsPeers(container: string, dir: string, names: string[]): Pro
 }
 
 /**
- * The Compose file OpsCrew deploys (`renderCompose`), adapted to this computer: the data
- * directories under /srv become named volumes, the app's port is published on 127.0.0.1 and
- * Caddy and kamal-proxy are left out (TLS and the switch are not under test). The `release`
- * service is unchanged.
+ * The app's Portainer stack (`renderPortainerStack`'s content) as `docker compose` runs it here:
+ * with `image`, the one built above (the deploy workflow writes the digest it pushed), without
+ * Caddy and the tunnel's connector (TLS and the way in are not under test), and with the app's
+ * port published on 127.0.0.1 for the checks.
  */
-function localCompose(plan: DeployPlan): string {
-  const rendered = renderCompose(plan);
-  const doc = parse(rendered.content) as {
-    services: Record<string, { volumes?: string[]; ports?: string[] }>;
-    volumes: Record<string, unknown>;
-  };
+function localStack(content: string, image: string, port: number): string {
+  const doc = parse(
+    content
+      .replaceAll(PORTAINER_IMAGE_PLACEHOLDER, image)
+      .replaceAll(PORTAINER_VERSION_PLACEHOLDER, "local"),
+  ) as { services: Record<string, ComposeService>; configs: Record<string, unknown> };
   delete doc.services.caddy;
-  delete doc.services.proxy;
-  doc.volumes = {};
-  for (const service of Object.values(doc.services)) {
-    service.volumes = service.volumes?.map((volume) => {
-      const match = /^\/srv\/data\/([\w-]+):(.+)$/.exec(volume);
-      if (!match?.[1]) return volume;
-      doc.volumes[match[1]] = {};
-      return `${match[1]}:${match[2]}`;
-    });
-    if (service.volumes === undefined) delete service.volumes;
-  }
+  delete doc.services.cloudflared;
+  delete doc.configs.caddyfile;
   const app = doc.services.app;
-  if (app) app.ports = [`127.0.0.1::${plan.app.port}`];
+  if (app !== undefined) app.ports = [`127.0.0.1::${port}`];
   return stringify(doc, { lineWidth: 0 });
+}
+
+/** The services of the Compose file OpsCrew renders for the plan's target. */
+function renderedServices(plan: DeployPlan): Record<string, ComposeService> {
+  const rendered =
+    plan.target.provider === "portainer"
+      ? renderPortainerStack(plan, STACK_CONTEXT)
+      : renderCompose(plan);
+  return (parse(rendered.content) as { services: Record<string, ComposeService> }).services;
 }
 
 /**
  * The app's Compose health check command (`renderCompose`), as `docker exec` arguments: without
- * `CMD` and with Compose's `$$` back to `$`. Undefined when the plan has none (own Dockerfiles).
+ * `CMD` and with Compose's `$$` back to `$`. Undefined when the plan has none (own Dockerfiles),
+ * and in a Portainer stack, whose app has none.
  */
 function healthCommand(plan: DeployPlan): string[] | undefined {
+  if (plan.target.provider === "portainer") return undefined;
   const doc = parse(renderCompose(plan).content) as {
     services: { app: { healthcheck?: { test: string[] } } };
   };
   const test = doc.services.app.healthcheck?.test;
   return test?.slice(1).map((arg) => arg.replaceAll("$$", "$"));
+}
+
+/** True when the plan runs more than the web process: services, workers, cron or storage. */
+function hasComponents(plan: DeployPlan): boolean {
+  return (
+    plan.services.some((service) => service.enabled) ||
+    plan.processes.workers.some((worker) => worker.enabled) ||
+    plan.processes.cron.some((job) => job.enabled) ||
+    plan.storage !== undefined
+  );
 }
 
 /** What the repository looks like after `adapt`: enough to build and start the app. */
@@ -442,6 +586,8 @@ interface Prepared {
   appDir: string;
   /** Values from the app's `.env.example`, used for the placeholders. */
   exampleValues: Map<string, string>;
+  /** The example names its components, and answers on the routes the component checks call. */
+  components: Expected["components"];
 }
 
 /** The running app, after the health test started it. */
@@ -482,8 +628,12 @@ describe.skipIf(SKIP !== undefined)(
       let prepared: Prepared | undefined;
       let built = false;
       let running: Running | undefined;
+      let deployment: Deployment | undefined;
       /** The secret values the pass knows for the app, with the labels a failure shows. */
       const known: { label: string; value: string }[] = [];
+      /** The fake server the user owns, which design inspects (`target: own`). */
+      const host = new FakeHostServer();
+      let home = "";
 
       /**
        * Runs `opscrew <args>` in the project and returns what it printed; fails with that output
@@ -491,7 +641,16 @@ describe.skipIf(SKIP !== undefined)(
        */
       async function opscrew(...args: string[]): Promise<string> {
         if (project === undefined) throw new Error("no project");
-        const ctx = projectContext(project, { services: { runtime, approvalHandler: approvals } });
+        const ctx = projectContext(project, {
+          services: {
+            runtime,
+            approvalHandler: approvals,
+            ...(testCase.target === "own"
+              ? { runner: new OwnRunner(), provision: { own: ownServices(host, home) } }
+              : {}),
+            ...(testCase.target === "portainer" ? { portainerAccess: PORTAINER_ACCESS } : {}),
+          },
+        });
         const code = await run(ctx, ...args);
         const output = ctx.output + ctx.errors;
         if (code !== 0) {
@@ -593,65 +752,197 @@ describe.skipIf(SKIP !== undefined)(
         ]);
       }
 
+      /** The current deployment, or an error pointing at the health test. */
+      function deployed(): Deployment {
+        if (deployment === undefined) {
+          throw new Error(`${example}: the app was not deployed (see the tests above).`);
+        }
+        return deployment;
+      }
+
       /**
-       * Starts the app the way the deploy workflow does when the plan has a release command:
-       * OpsCrew's Compose file with `.env` naming the image, the backing services up and healthy,
-       * the `release` service run once in a one-off container (a failure fails the test with its
-       * output), then the app. Values are placeholders except the database connection, which uses
-       * a password generated for this run. Returns the app container's name.
+       * Writes OpsCrew's server Compose project for the plan as a deploy leaves it in the app's
+       * folder (the Compose file adapted to this computer, `.env` naming the image, `app.env` and
+       * each service's env file with the values provision assembles), then deploys it
+       * ({@link serverDeploy}). Returns the app container's name.
        */
-      async function deployWithRelease(plan: DeployPlan, env: Map<string, string>) {
+      async function deployServer(plan: DeployPlan, env: Map<string, string>, all: AppEnvironment) {
         if (project === undefined) throw new Error("no project");
-        const server = path.join(project.dir, "server");
-        await mkdir(server, { recursive: true });
-        const file = path.join(server, "compose.yaml");
-        await writeFile(file, localCompose(plan));
-        await writeFile(path.join(server, ".env"), `APP_IMAGE=${tag}\n`);
+        const dir = path.join(project.dir, "server");
+        await mkdir(dir, { recursive: true });
+        const file = path.join(dir, "compose.yaml");
+        await writeFile(file, localServerCompose(plan, plan.app.port));
+        await writeFile(path.join(dir, ".env"), `APP_IMAGE=${tag}\n`);
         const appEnv = new Map(env);
         appEnv.delete("PORT");
-        if (serviceOf(plan, "postgres")) {
-          const password = randomBytes(16).toString("hex");
-          known.push({ label: "the database password", value: password });
-          await writeFile(
-            path.join(server, "db.env"),
-            `POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=${password}\n`,
-          );
-          appEnv.set("DATABASE_URL", `postgresql://app:${password}@db:5432/app`);
+        await writeFile(path.join(dir, "app.env"), envFileText(appEnv));
+        const secrets = serviceEnvSecrets(plan, all);
+        for (const service of plan.services.filter((s) => s.enabled)) {
+          const text = secrets[serviceEnvSecret(service.name)];
+          if (text !== undefined) await writeFile(path.join(dir, `${service.name}.env`), text);
         }
-        if (serviceOf(plan, "valkey")) appEnv.set("REDIS_URL", "redis://cache:6379");
-        await writeFile(
-          path.join(server, "app.env"),
-          [...appEnv].map(([name, value]) => `${name}=${value}\n`).join(""),
-        );
-        composeProjects.set(container, file);
+        deployment = { kind: "server", project: { name: container, file }, dir };
+        composeProjects.set(container, deployment.project);
+        await serverDeploy(plan, deployment);
+        return `${container}-app-1`;
+      }
 
-        const backing = [
-          ...(serviceOf(plan, "postgres") ? ["db"] : []),
-          ...(serviceOf(plan, "valkey") ? ["cache"] : []),
-        ];
-        if (backing.length > 0) {
-          const up = await compose(container, file, ["up", "-d", "--wait", ...backing]);
+      /**
+       * The deploy's steps on a server (`switchCommands`) without the edge and the switch: the
+       * services up and healthy (the one-shot `sysctl` container first, named, as `--no-deps`
+       * starts no dependency), their one-time setup, the release command in a one-off container
+       * (a failure fails the test with its output), the app, then the workers and cron.
+       */
+      async function serverDeploy(plan: DeployPlan, at: Deployment): Promise<void> {
+        const services = plan.services.filter((s) => s.enabled).map((s) => s.name);
+        const steady = [...hostSettingsServices(plan), ...services];
+        if (steady.length > 0) {
+          const up = await compose(
+            at.project,
+            ["up", "-d", "--no-deps", "--wait", ...steady],
+            TEN_MINUTES,
+          );
           if (up.exitCode !== 0) {
-            throw new Error(`${example}: the backing services did not start:\n${tail(up.stderr)}`);
+            const logs = await compose(at.project, ["logs", "--tail", "40", ...steady]);
+            throw new Error(
+              `${example}: the services did not start (exit ${up.exitCode}):\n${tail(up.stderr, 20)}\nTheir logs:\n${tail(logs.stdout, 80)}`,
+            );
           }
         }
-        const ran = await compose(
-          container,
-          file,
-          ["run", "--rm", "--no-deps", "-T", "release"],
-          TEN_MINUTES,
-        );
+        for (const step of initStepsFor(plan)) await initStep(at, step);
+        if (plan.app.releaseCommand !== undefined) {
+          const ran = await compose(
+            at.project,
+            ["run", "--rm", "--no-deps", "-T", "release"],
+            TEN_MINUTES,
+          );
+          if (ran.exitCode !== 0) {
+            throw new Error(
+              `${example}: the release command \`${plan.app.releaseCommand}\` failed (exit ${ran.exitCode}):\n${tail(`${ran.stdout}\n${ran.stderr}`)}`,
+            );
+          }
+          console.info(`${example}: release command output:\n${tail(ran.stdout, 20)}`);
+        }
+        await composeOk(at.project, `${example}: docker compose up app`, [
+          "up",
+          "-d",
+          "--no-deps",
+          "app",
+        ]);
+        const processes = [
+          ...plan.processes.workers.filter((worker) => worker.enabled).map((worker) => worker.name),
+          ...(plan.processes.cron.some((job) => job.enabled) ? ["cron"] : []),
+        ];
+        if (processes.length > 0) {
+          await composeOk(at.project, `${example}: the workers and cron`, [
+            "up",
+            "-d",
+            "--no-deps",
+            ...processes,
+          ]);
+        }
+      }
+
+      /**
+       * One step of a service's one-time setup, as the deploy runs it: `run` in the service's
+       * container only when `check` fails there, with the `${NAME}` words filled in from the
+       * service's env file.
+       */
+      async function initStep(at: Deployment, step: InitStep): Promise<void> {
+        const values =
+          step.envFile === undefined
+            ? new Map<string, string>()
+            : parseDotenv(await readFile(path.join(at.dir, step.envFile), "utf8"));
+        const exec = (words: readonly string[]) =>
+          compose(at.project, [
+            "exec",
+            "-T",
+            step.service,
+            ...words.map((word) =>
+              word.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => values.get(name) ?? ""),
+            ),
+          ]);
+        if (step.check !== undefined && (await exec(step.check)).exitCode === 0) return;
+        const ran = await exec(step.run);
         if (ran.exitCode !== 0) {
           throw new Error(
-            `${example}: the release command \`${plan.app.releaseCommand}\` failed (exit ${ran.exitCode}):\n${tail(`${ran.stdout}\n${ran.stderr}`)}`,
+            `${example}: the one-time setup of ${step.service} failed (exit ${ran.exitCode}) at \`${step.run.join(" ")}\`:\n${tail(`${ran.stdout}\n${ran.stderr}`, 20)}`,
           );
         }
-        console.info(`${example}: release command output:\n${tail(ran.stdout, 20)}`);
-        const started = await compose(container, file, ["up", "-d", "app"]);
-        if (started.exitCode !== 0) {
-          throw new Error(`${example}: docker compose up app failed:\n${tail(started.stderr)}`);
+      }
+
+      /**
+       * Runs the app's Portainer stack with `docker compose up -d`, as Portainer deploys it: the
+       * stack's variables (`portainerStackEnvKeys`) in an env file, with the app's values and the
+       * services' secrets as provision fills them in. Returns the app container's name.
+       */
+      async function deployStack(plan: DeployPlan, env: Map<string, string>, all: AppEnvironment) {
+        if (project === undefined) throw new Error("no project");
+        const dir = path.join(project.dir, "stack");
+        await mkdir(dir, { recursive: true });
+        const file = path.join(dir, "compose.yaml");
+        const stack = renderPortainerStack(plan, STACK_CONTEXT).content;
+        await writeFile(file, localStack(stack, tag, plan.app.port));
+        const keys = portainerStackEnvKeys(plan);
+        const opscrewValues: Record<string, string | undefined> = {
+          [PORTAINER_STACK_VARIABLES.dbUser]: all.values.db?.user,
+          [PORTAINER_STACK_VARIABLES.dbName]: all.values.db?.name,
+        };
+        for (const { service, secret, variable } of portainerSecretVariables(plan)) {
+          opscrewValues[variable] = all.values.services[service]?.[secret];
         }
+        // A stack cannot leave a variable unset: an unknown value is sent empty.
+        const values = new Map([
+          ...keys.app.map((key) => [key, env.get(key) ?? ""] as const),
+          ...keys.opscrew.map((key) => [key, opscrewValues[key] ?? ""] as const),
+        ]);
+        const envFile = path.join(dir, "stack.env");
+        await writeFile(envFile, envFileText(values));
+        deployment = { kind: "stack", project: { name: container, file, envFile }, dir };
+        composeProjects.set(container, deployment.project);
+        await composeOk(deployment.project, `${example}: the stack`, ["up", "-d"], TEN_MINUTES);
         return `${container}-app-1`;
+      }
+
+      /**
+       * A stack's one-time setup: every `-init` container exited 0 (so the app started), and
+       * MongoDB in a replica set has a primary that accepts writes.
+       */
+      async function checkStackSetup(plan: DeployPlan, when: string): Promise<void> {
+        if (deployment?.kind !== "stack") return;
+        const inits = (await projectContainers(container)).filter((c) =>
+          c.service.endsWith("-init"),
+        );
+        for (const init of inits) {
+          expect(
+            { running: init.running, exitCode: init.exitCode },
+            `${init.name} ${when}`,
+          ).toEqual({
+            running: false,
+            exitCode: 0,
+          });
+        }
+        for (const service of plan.services) {
+          if (service.kind !== "mongodb" || !service.enabled || !service.options.replicaSet) {
+            continue;
+          }
+          const status = await compose(deployment.project, [
+            "exec",
+            "-T",
+            service.name,
+            "bash",
+            "-c",
+            'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval \'JSON.stringify({ set: rs.status().set, primary: db.hello().isWritablePrimary })\'',
+          ]);
+          expect(
+            status.stdout.trim(),
+            `MongoDB's replica set ${when}: ${tail(status.stderr, 5)}`,
+          ).toBe(JSON.stringify({ set: "rs0", primary: true }));
+          console.info(`${example}: MongoDB's replica set rs0 has a writable primary ${when}`);
+        }
+        console.info(
+          `${example}: the stack's one-time setup ${when}: ${inits.map((c) => c.service).join(", ") || "none"} exited 0`,
+        );
       }
 
       beforeAll(async () => {
@@ -680,6 +971,11 @@ describe.skipIf(SKIP !== undefined)(
         const bare = path.join(dir, "origin.git");
         await git(env, dir, "init", "-q", "--bare", bare);
         await git(env, root, "remote", "add", "origin", bare);
+        if (testCase.target === "own") home = await fakeHome(project);
+        // The interview needs a token to list the fake Portainer's environments.
+        if (testCase.target === "portainer") {
+          env.PORTAINER_API_KEY = fakeSecret("generic-password", "docker-pass-portainer");
+        }
       }, STEP_TIMEOUT);
 
       afterAll(async () => {
@@ -702,13 +998,27 @@ describe.skipIf(SKIP !== undefined)(
           const answers = {
             ...(expected.chosenApp !== undefined ? { appDir: expected.chosenApp.appDir } : {}),
             ...BASE_ANSWERS,
+            ...(testCase.target === "own" ? OWN_ANSWERS : {}),
+            ...(testCase.target === "portainer" ? PORTAINER_ANSWERS : {}),
           };
           await writeFile(answersFile, `${JSON.stringify(answers, null, 2)}\n`);
           const exampleValues = await envExampleValues(root);
 
           await opscrew("analyze", "--no-ai");
-          await opscrew("interview", "--answers", answersFile);
-          await opscrew("design");
+          await opscrew(
+            "interview",
+            "--answers",
+            answersFile,
+            ...(testCase.target === "portainer" ? ["--portainer-cert", PORTAINER_CERT] : []),
+          );
+          await opscrew(
+            "design",
+            ...(testCase.target === "own" ? ["--host-key", ED25519_FINGERPRINT] : []),
+          );
+          if (testCase.planEdit !== undefined) {
+            const file = path.join(root, "opscrew", "plan.yaml");
+            await writeArtifact("plan", file, testCase.planEdit(await readPlan(root)));
+          }
           const adapted = await opscrew("adapt", "--no-ai", "--no-push");
 
           const plan = await readPlan(root);
@@ -729,12 +1039,16 @@ describe.skipIf(SKIP !== undefined)(
               `${example}: adapt did not write ${plan.app.dockerfile} (dockerfile change: ${change?.status ?? "not in the plan"}). The end of adapt's output:\n${tail(adapted)}`,
             );
           }
+          console.info(
+            `${example}: target ${plan.target.provider}; components ${JSON.stringify(plannedComponents(plan))}`,
+          );
           prepared = {
             plan,
             appKind: architecture.facts.appKind,
             appDir: architecture.facts.appDir ?? ".",
             buildEnv: plan.app.env.map((v) => v.name).filter((name) => clientExposed.has(name)),
             exampleValues,
+            components: expected.components,
           };
         },
         STEP_TIMEOUT,
@@ -802,27 +1116,45 @@ describe.skipIf(SKIP !== undefined)(
           const port = plan.app.port;
           // Like opscrew/runtime/compose.yaml: PORT, the derived connection URLs, the user's
           // variables, all capabilities dropped and no privilege escalation. The generated keys
-          // and fixed production settings (RAILS_ENV, APP_KEY) are the ones provision assembles.
+          // and fixed production settings (RAILS_ENV, APP_KEY) are the ones provision assembles,
+          // and so are the services' addresses and secrets when the app runs with its services.
           const assembled = await assembleAppEnv({ plan, ask: async () => ({ skip: true }) });
           for (const [name, value] of Object.entries(assembled.generated.env ?? {})) {
             known.push({ label: `the generated ${name}`, value });
           }
+          for (const [service, secrets] of Object.entries(assembled.values.services)) {
+            for (const [secret, value] of Object.entries(secrets)) {
+              known.push({ label: `the ${service} service's ${secret}`, value });
+            }
+          }
+          const release = plan.app.releaseCommand !== undefined;
+          // An example that names its components always runs as a Compose project, as deployed.
+          const withServices = release || hasComponents(plan) || prepared.components !== undefined;
+          const fromOpsCrew = (variable: DeployPlan["app"]["env"][number]) =>
+            withServices ||
+            variable.source === "generated" ||
+            fixedProductionValue(variable.name) !== undefined;
           const env = new Map<string, string>([["PORT", String(port)]]);
           for (const variable of plan.app.env) {
             if (variable.name === "PORT" || prepared.buildEnv.includes(variable.name)) continue;
-            const fromOpsCrew =
-              variable.source === "generated" || fixedProductionValue(variable.name) !== undefined;
             env.set(
               variable.name,
-              (fromOpsCrew ? assembled.values.app[variable.name] : undefined) ??
+              (fromOpsCrew(variable) ? assembled.values.app[variable.name] : undefined) ??
                 placeholder(variable.name, exampleValues.get(variable.name)),
             );
           }
-          if (serviceOf(plan, "postgres")) env.set("DATABASE_URL", placeholder("DATABASE_URL"));
-          if (serviceOf(plan, "valkey")) env.set("REDIS_URL", placeholder("REDIS_URL"));
-          const release = plan.app.releaseCommand !== undefined;
-          const name = release ? await deployWithRelease(plan, env) : container;
-          if (!release) {
+          if (withServices) {
+            for (const [name, value] of Object.entries(assembled.values.app)) {
+              if (!env.has(name) && !prepared.buildEnv.includes(name)) env.set(name, value);
+            }
+          }
+          const name =
+            plan.target.provider === "portainer"
+              ? await deployStack(plan, env, assembled)
+              : withServices
+                ? await deployServer(plan, env, assembled)
+                : container;
+          if (!withServices) {
             containers.add(container);
             const started = await docker([
               "run",
@@ -859,26 +1191,38 @@ describe.skipIf(SKIP !== undefined)(
               ...(databaseRoute !== undefined ? [databaseRoute] : []),
             ]),
           ];
-          const result = await waitForHealth(name, port, paths, {
-            anyStatus: leftToModel ? plan.app.healthPath : undefined,
-          });
-          if (result.failure !== undefined) {
-            const logs = await docker(["logs", "--tail", "80", name]);
-            const pending = leftToModel
-              ? " The plan's health-endpoint change is still pending (left to the Code-change agent by adapt --no-ai)."
-              : "";
-            throw new Error(
-              `${example}: ${result.failure}.${pending} The end of the container log:\n${tail(`${logs.stdout}\n${logs.stderr}`, 80)}`,
-            );
+          // Every path must answer 200 within two minutes; the health path left to the model any
+          // status below 500, so the server routes requests.
+          const deadline = Date.now() + TWO_MINUTES;
+          let healthRoute = true;
+          for (const urlPath of paths) {
+            const anyStatus = leftToModel && urlPath === plan.app.healthPath;
+            try {
+              const answer = await untilAnswer(
+                name,
+                port,
+                { path: urlPath },
+                Math.max(0, deadline - Date.now()),
+                (a) => a.status === 200 || (anyStatus && a.status < 500),
+              );
+              if (answer.status !== 200) {
+                healthRoute = false;
+                console.warn(
+                  `${example}: the health route is left to the Code-change agent (adapt --no-ai); the server answers HTTP ${answer.status} on ${urlPath}`,
+                );
+              }
+            } catch (error) {
+              const pending = leftToModel
+                ? " The plan's health-endpoint change is still pending (left to the Code-change agent by adapt --no-ai)."
+                : "";
+              throw new Error(
+                `${example}: ${error instanceof Error ? error.message : String(error)}${pending}`,
+              );
+            }
           }
-          for (const [urlPath, status] of result.notes) {
-            console.warn(
-              `${example}: the health route is left to the Code-change agent (adapt --no-ai); the server answers HTTP ${status} on ${urlPath}`,
-            );
-          }
-          running = { container: name, healthRoute: !result.notes.has(plan.app.healthPath) };
+          running = { container: name, healthRoute };
         },
-        TWO_MINUTES + 60_000,
+        TWENTY_MINUTES,
       );
 
       it("the app does not run as root", async () => {
@@ -1032,9 +1376,271 @@ describe.skipIf(SKIP !== undefined)(
         },
         TWO_MINUTES,
       );
+
+      // The components (013), for the examples whose `expected.json` names them: each answers
+      // `PUT` and `GET /data`, and with workers `POST` and `GET /jobs/<id>`, with cron `GET /cron`.
+
+      it("every container has its memory limit, and no service publishes a port", async (ctx) => {
+        if (prepared?.components === undefined) return ctx.skip();
+        app();
+        const services = renderedServices(prepared.plan);
+        const found = await projectContainers(container);
+        console.info(
+          `${example}: memory limits ${found.map((c) => `${c.service} ${c.memory / 1048576} MB`).join(", ")}`,
+        );
+        expect(found.length, `${example}: the project's containers`).toBeGreaterThan(0);
+        // Every service of the rendered file has its limit, Portainer's Caddy (left out here)
+        // too, and only that Caddy publishes a port: it serves the site. Here the app alone
+        // publishes its port, on 127.0.0.1, for these checks.
+        const problems = [
+          ...Object.entries(services)
+            .filter(([, service]) => service.mem_limit === undefined)
+            .map(([name]) => `the rendered ${name} has no mem_limit`),
+          ...Object.entries(services)
+            .filter(([name, service]) => service.ports !== undefined && name !== "caddy")
+            .map(([name, service]) => `the rendered ${name} publishes ${service.ports?.join(" ")}`),
+          ...limitProblems(found, services),
+          ...found
+            .filter((c) => c.ports.length > 0 && c.service !== "app")
+            .map((c) => `${c.name} publishes ${c.ports.join(" ")}`),
+        ];
+        expect(problems, `${example}: memory limits and published ports`).toEqual([]);
+      });
+
+      it(
+        "a job queued through the app is consumed within 30 seconds, and the workers keep running",
+        async (ctx) => {
+          const workers = prepared?.plan.processes.workers.filter((worker) => worker.enabled);
+          if (prepared?.components === undefined || !workers?.length) return ctx.skip();
+          const { container: name } = app();
+          const port = prepared.plan.app.port;
+          const processes = new Set([...workers.map((worker) => worker.name), "cron"]);
+          const processStates = async () =>
+            (await projectContainers(container))
+              .filter((c) => processes.has(c.service))
+              .map((c) => ({
+                name: c.name,
+                running: c.running,
+                restarts: c.restarts,
+                oomKilled: c.oomKilled,
+                seconds: Math.round((Date.now() - Date.parse(c.startedAt)) / 1000),
+              }));
+          const id = `job-${randomBytes(4).toString("hex")}`;
+          await untilAnswer(
+            name,
+            port,
+            { method: "POST", path: `/jobs/${id}` },
+            30_000,
+            (a) => a.status < 300,
+          );
+          const queued = Date.now();
+          try {
+            await untilAnswer(name, port, { path: `/jobs/${id}` }, 30_000, (a) => a.status === 200);
+          } catch (error) {
+            const names = workers.map((worker) => worker.name);
+            const logs = await compose(deployed().project, ["logs", "--tail", "30", ...names]);
+            const states = (await processStates()).map((state) => JSON.stringify(state));
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)}\nThe workers: ${states.join(", ")}. Their logs:\n${tail(logs.stdout, 60)}`,
+            );
+          }
+          const consumed = Date.now() - queued;
+          console.info(
+            `${example}: the job was consumed ${(consumed / 1000).toFixed(1)} s after it was queued`,
+          );
+          expect(consumed, "milliseconds until the job was consumed").toBeLessThanOrEqual(30_000);
+          // The deploy's own check: every worker and cron container stays up for 30 seconds,
+          // without restarts.
+          const youngest = Math.min(...(await processStates()).map(({ seconds }) => seconds));
+          if (youngest < 30)
+            await new Promise((resolve) => setTimeout(resolve, (30 - youngest) * 1000));
+          const states = await processStates();
+          expect(states, `${example}: the workers and cron`).toEqual(
+            states.map(({ name, seconds }) => ({
+              name,
+              running: true,
+              restarts: 0,
+              oomKilled: false,
+              seconds,
+            })),
+          );
+          for (const { name, seconds } of states) {
+            console.info(`${example}: ${name} has been running for ${seconds} s`);
+          }
+        },
+        TWO_MINUTES,
+      );
+
+      it(
+        "a cron job runs within one minute of its schedule",
+        async (ctx) => {
+          const jobs = prepared?.plan.processes.cron.filter((job) => job.enabled);
+          if (prepared?.components === undefined || !jobs?.length) return ctx.skip();
+          const { container: name } = app();
+          // Every example's job runs each minute: the first run is due at the first full minute
+          // after cron started.
+          expect(jobs.map((job) => job.schedule)).toEqual(jobs.map(() => "* * * * *"));
+          const cron = (await projectContainers(container)).find((c) => c.service === "cron");
+          if (cron === undefined) throw new Error(`${example}: no cron container is running.`);
+          const due = Math.ceil(Date.parse(cron.startedAt) / 60_000) * 60_000;
+          // supercronic logs each run that succeeded with its time (the engine's clock, as the
+          // container's start): the first one must be within a minute of the first due time.
+          let first: number | undefined;
+          while (first === undefined && Date.now() <= due + 70_000) {
+            const logs = await docker(["logs", cron.name]);
+            const succeeded = `${logs.stdout}\n${logs.stderr}`
+              .split(/\r?\n/)
+              .find((line) => line.includes('msg="job succeeded"'));
+            const time = /time="([^"]+)"/.exec(succeeded ?? "")?.[1];
+            if (time !== undefined) first = Date.parse(time);
+            else await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+          if (first === undefined) {
+            const logs = await docker(["logs", "--tail", "20", cron.name]);
+            throw new Error(
+              `${example}: no cron job succeeded within a minute of ${new Date(due).toISOString()}. supercronic's log:\n${tail(`${logs.stdout}\n${logs.stderr}`, 20)}`,
+            );
+          }
+          console.info(
+            `${example}: the first cron run succeeded at ${new Date(first).toISOString()}, ${((first - due) / 1000).toFixed(1)} s after it was due at ${new Date(due).toISOString()}`,
+          );
+          expect(first, "the first run, within a minute of its due time").toBeLessThanOrEqual(
+            due + 60_000,
+          );
+          // And the job did its work: the app counted the run.
+          const answer = await untilAnswer(
+            name,
+            prepared.plan.app.port,
+            { path: "/cron" },
+            10_000,
+            (a) => a.status === 200,
+          );
+          console.info(`${example}: GET /cron: ${answer.text}`);
+        },
+        3 * 60_000,
+      );
+
+      it(
+        "a value written through the app is read back after docker compose restart and after a redeploy",
+        async (ctx) => {
+          if (prepared?.components === undefined) return ctx.skip();
+          const { container: name } = app();
+          const { plan } = prepared;
+          const port = plan.app.port;
+          const at = deployed();
+          const write = async (value: string) => {
+            await untilAnswer(
+              name,
+              port,
+              { method: "PUT", path: "/data", body: value },
+              60_000,
+              (a) => a.status < 300,
+            );
+          };
+          const readBack = async (value: string, when: string) => {
+            await untilAnswer(
+              name,
+              port,
+              { path: "/data" },
+              TWO_MINUTES,
+              (a) => a.status === 200 && a.text === value,
+            );
+            console.info(`${example}: read the value back ${when}`);
+          };
+          await checkStackSetup(plan, "after the first up");
+          const value = `value-${randomBytes(6).toString("hex")}`;
+          await write(value);
+          await readBack(value, "after writing it");
+          await composeOk(
+            at.project,
+            `${example}: docker compose restart`,
+            ["restart"],
+            TEN_MINUTES,
+          );
+          await readBack(value, "after docker compose restart");
+          if (at.kind === "stack") {
+            // Portainer's redeploy of an unchanged stack.
+            await composeOk(at.project, `${example}: the second up`, ["up", "-d"], TEN_MINUTES);
+            await checkStackSetup(plan, "after the second up");
+            await readBack(value, "after the second up");
+          }
+          // Every container goes, with the anonymous volumes of images' own VOLUME lines; the
+          // named volumes stay.
+          const remove = ["rm", "--stop", "--force", "--volumes"];
+          await composeOk(at.project, `${example}: docker compose rm`, remove, TEN_MINUTES);
+          if (at.kind === "server") await serverDeploy(plan, at);
+          else await composeOk(at.project, `${example}: up after rm`, ["up", "-d"], TEN_MINUTES);
+          await checkStackSetup(plan, "after the containers were removed and up");
+          await readBack(value, "after a redeploy");
+          // And the setup still lets the app write.
+          const next = `value-${randomBytes(6).toString("hex")}`;
+          await write(next);
+          await readBack(next, "after writing a new value");
+        },
+        3 * TEN_MINUTES,
+      );
     });
   },
 );
+
+/** An env file's text: one `NAME=value` line each, quoted as Compose reads it literally. */
+function envFileText(values: ReadonlyMap<string, string>): string {
+  return [...values].map(([name, value]) => `${dotenvLine(name, value)}\n`).join("");
+}
+
+/** One answer of the app: its status and body. */
+interface Answer {
+  status: number;
+  text: string;
+}
+
+/**
+ * Asks the app `request` on its published port (looked up each time: a restarted container may
+ * get another) every two seconds until `done` accepts the answer or `ms` passed, and returns that
+ * answer; fails with the last answer or error seen. A connection error counts as no answer yet, and
+ * a redirect is an answer of its own, not followed.
+ */
+async function untilAnswer(
+  container: string,
+  port: number,
+  request: { method?: string; path: string; body?: string },
+  ms: number,
+  done: (answer: Answer) => boolean,
+): Promise<Answer> {
+  const what = `${request.method ?? "GET"} ${request.path}`;
+  const deadline = Date.now() + ms;
+  let last = "no answer yet";
+  for (;;) {
+    const published = await docker(["port", container, `${port}/tcp`]);
+    const address = /127\.0\.0\.1:(\d+)/.exec(published.stdout)?.[0];
+    if (address !== undefined) {
+      try {
+        const response = await fetch(`http://${address}${request.path}`, {
+          method: request.method ?? "GET",
+          ...(request.body === undefined
+            ? {}
+            : { body: request.body, headers: { "content-type": "text/plain" } }),
+          redirect: "manual",
+          signal: AbortSignal.timeout(10_000),
+        });
+        const answer = { status: response.status, text: await response.text() };
+        if (done(answer)) return answer;
+        last = `HTTP ${answer.status} ${answer.text.slice(0, 200)}`;
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+      }
+    } else {
+      last = "the app's port is not published (the container is not running)";
+    }
+    if (Date.now() >= deadline) {
+      const logs = await docker(["logs", "--tail", "30", container]);
+      throw new Error(
+        `${container}: ${what} did not answer as expected within ${Math.round(ms / 1000)} s (last: ${last}). The end of its log:\n${tail(`${logs.stdout}\n${logs.stderr}`, 30)}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
 
 /**
  * The labels of the `known` values found in the files of `image`: a container of the image, never
@@ -1081,69 +1687,4 @@ async function imageFileLeaks(
     await docker(["rm", "-f", "-v", id]);
     containers.delete(id);
   }
-}
-
-/** What polling the container found. */
-interface HealthResult {
-  /** What went wrong, or undefined when every path answered as required. */
-  failure?: string;
-  /** Paths accepted with an answer other than 200 (`anyStatus`), with the status seen. */
-  notes: Map<string, number>;
-}
-
-/**
- * Polls every path on the container's published port until each answers 200 (the `anyStatus`
- * path: any status below 500, so the server routes requests), for at most two minutes. Fails
- * when the time runs out or the container stops, with the last answer seen.
- */
-async function waitForHealth(
-  container: string,
-  port: number,
-  paths: readonly string[],
-  options: { anyStatus?: string | undefined } = {},
-): Promise<HealthResult> {
-  const deadline = Date.now() + TWO_MINUTES;
-  const pending = new Set(paths);
-  const notes = new Map<string, number>();
-  let last = "no answer yet";
-  let address: string | undefined;
-  while (Date.now() < deadline) {
-    const state = await docker(["inspect", "--format", "{{.State.Running}}", container]);
-    if (state.stdout.trim() !== "true") {
-      const waiting = [...pending].join(", ");
-      return { failure: `the container stopped before ${waiting} answered (last: ${last})`, notes };
-    }
-    if (address === undefined) {
-      const published = await docker(["port", container, `${port}/tcp`]);
-      address = /127\.0\.0\.1:(\d+)/.exec(published.stdout)?.[0];
-    }
-    if (address !== undefined) {
-      for (const urlPath of [...pending]) {
-        try {
-          const response = await fetch(`http://${address}${urlPath}`, {
-            redirect: "manual",
-            signal: AbortSignal.timeout(5_000),
-          });
-          await response.body?.cancel();
-          if (response.status === 200) {
-            pending.delete(urlPath);
-          } else if (urlPath === options.anyStatus && response.status < 500) {
-            pending.delete(urlPath);
-            notes.set(urlPath, response.status);
-          } else {
-            last = `${urlPath} answered HTTP ${response.status}`;
-          }
-        } catch (error) {
-          last = `${urlPath}: ${error instanceof Error ? error.message : String(error)}`;
-        }
-      }
-      if (pending.size === 0) return { notes };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  const waiting = [...pending].join(", ");
-  return {
-    failure: `no HTTP 200 from ${waiting} on port ${port} within two minutes (last: ${last})`,
-    notes,
-  };
 }

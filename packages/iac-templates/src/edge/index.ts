@@ -43,7 +43,7 @@ export const EDGE_UPSTREAM = "kamal-proxy:80";
  * connector, they make up the edge's 128 MB that design counts on every server (data-model.md
  * "Sizing figures").
  */
-const CADDY_MEMORY_MB = 64;
+export const CADDY_MEMORY_MB = 64;
 const KAMAL_PROXY_MEMORY_MB = 32;
 
 /** The folder of the apps' site files in the Caddy container (the server's `/srv/edge/sites`). */

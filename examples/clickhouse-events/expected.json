@@ -1,0 +1,16 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["express"],
+    "port": 3000,
+    "services": ["clickhouse"],
+    "languages": ["javascript"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"],
+  "builder": "generated-dockerfile",
+  "components": {
+    "services": { "clickhouse": "clickhouse" }
+  }
+}

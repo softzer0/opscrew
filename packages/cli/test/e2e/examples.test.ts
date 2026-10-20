@@ -30,6 +30,7 @@ import {
   findLeaks,
   initRepoWithBareOrigin,
   networkCalls,
+  plannedComponents,
   plantedSecrets,
   readExpected,
   readPlan,
@@ -81,6 +82,18 @@ const ANSWERS: Record<string, Record<string, unknown>> = Object.fromEntries(
     "spring-boot-api": { expectedMonthlyUsers: "1k-10k" },
     "dotnet-api": { region: "us-east" },
     "rust-api": SMALL_SITE,
+    // 013: one per component kind.
+    "celery-worker": {},
+    "node-bullmq": { expectedMonthlyUsers: "1k-10k" },
+    "express-mysql": {},
+    "node-mongo": {},
+    "flask-sqlite": {},
+    "s3-uploads": { domain: "files.example.com", dnsProvider: "cloudflare" },
+    "rabbitmq-worker": {},
+    "nats-app": {},
+    "kafka-app": { budgetMonthly: "30 EUR" },
+    "meili-search": {},
+    "clickhouse-events": {},
   }).map(([name, answers]) => [name, { ...BASE_ANSWERS, ...answers }]),
 );
 
@@ -253,6 +266,9 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       expect(plan.app.build).toMatchObject({ builder: expected.builder, chosen: "auto" });
       const kinds = plan.codeChanges.map((change) => change.kind);
       for (const kind of expected.codeChanges ?? []) expect(kinds, kind).toContain(kind);
+      if (expected.components !== undefined) {
+        expect(plannedComponents(plan), "the planned components").toEqual(expected.components);
+      }
       expect(plan.codeChanges.every((change) => change.status === "pending")).toBe(true);
       // Names only: the plan never carries an environment value (`optional` is a flag).
       for (const variable of plan.app.env) {

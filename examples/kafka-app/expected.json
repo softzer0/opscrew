@@ -1,0 +1,17 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["express"],
+    "port": 3000,
+    "services": ["kafka"],
+    "languages": ["javascript"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"],
+  "builder": "generated-dockerfile",
+  "components": {
+    "services": { "kafka": "kafka" },
+    "workers": ["worker"]
+  }
+}

@@ -413,7 +413,7 @@ export function addDjangoServices(collector: ServiceCollector, settingsText: str
 
 /**
  * Adds services the env files and variable names show: Laravel's `DB_CONNECTION`
- * (`dbConnection`), a `mariadb://` URL, `POSTGRES_*` → postgres, `REDIS_URL` → redis, and
+ * (`dbConnection`), a `mariadb://` or `sqlite://` URL, `POSTGRES_*` → postgres, `REDIS_URL` → redis, and
  * `DATABASE_URL` → postgres unless its example URL is another database's or another database
  * (MySQL, MariaDB, SQLite, MongoDB) was already detected without Postgres. MariaDB, which the app
  * must declare, then takes over MySQL's evidence: they share clients.
@@ -428,6 +428,8 @@ export function addEnvServices(
   if (connection) collector.add(connection, `env:DB_CONNECTION=${dbConnection}`);
   for (const [name, url] of urls) {
     if (serviceOfScheme(url.scheme) === "mariadb") collector.add("mariadb", `env:${name}`);
+    // A SQLAlchemy URL (`sqlite:///data/app.db`).
+    if (url.scheme.split("+")[0] === "sqlite") collector.add("sqlite", `env:${name}`);
   }
   const otherDatabase =
     !collector.has("postgres") &&

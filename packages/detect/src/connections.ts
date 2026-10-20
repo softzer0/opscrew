@@ -80,7 +80,8 @@ export interface EnvUrl {
   host: string;
 }
 
-const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
+/** One `NAME=value` line of an env file: the name, then the value as written. */
+export const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 /** A bare host name, with an optional port, alone or first in a list. */
 const BARE_HOST = /^["']?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)(?::\d+)?(?:,|["']?\s*$)/;
 

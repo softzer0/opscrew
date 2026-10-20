@@ -148,9 +148,14 @@ describe("the services on a server", () => {
       "/srv/data/shop/mongodb/configdb:/data/configdb",
     ]);
     expect(all.garage?.volumes?.[0]).toBe("/srv/data/shop/garage:/var/lib/garage");
-    expect(all.kafka?.volumes).toEqual(["kafka_data:/var/lib/kafka/data"]);
+    // With the folders its image also declares as volumes: none is left anonymous.
+    expect(all.kafka?.volumes).toEqual([
+      "kafka_data:/var/lib/kafka/data",
+      "kafka_secrets:/etc/kafka/secrets",
+      "kafka_config:/mnt/shared/config",
+    ]);
     const doc = parse(renderCompose(withServices([{ kind: "kafka" }])).content);
-    expect(Object.keys(doc.volumes)).toEqual(["kafka_data"]);
+    expect(Object.keys(doc.volumes)).toEqual(["kafka_data", "kafka_secrets", "kafka_config"]);
   });
 
   it("reads a service's secrets from its env file and has the other settings inline", () => {
@@ -630,6 +635,8 @@ describe("SQLite", () => {
     const kafka = withSqlite(withBuild(withServices([{ kind: "kafka" }]), "railpack"));
     expect(Object.keys(parse(renderCompose(kafka).content).volumes)).toEqual([
       "kafka_data",
+      "kafka_secrets",
+      "kafka_config",
       "sqlite",
     ]);
   });

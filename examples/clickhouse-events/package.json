@@ -1,0 +1,13 @@
+{
+  "name": "clickhouse-events-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@clickhouse/client": "1.24.1",
+    "express": "5.3.0"
+  }
+}

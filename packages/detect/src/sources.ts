@@ -34,15 +34,22 @@ export function isSourceFile(path: string): boolean {
 /** Test and config files do not decide the app's port or health route. */
 export function isAppCodeFile(path: string): boolean {
   const name = basenameRel(path);
-  if (/\.(?:test|spec|config|stories)\.[\w]+$/i.test(name) || /^(?:test_|conftest)/.test(name)) {
+  if (
+    /\.(?:test|spec|config|stories)\.[\w]+$/i.test(name) ||
+    /^(?:test_|conftest)/.test(name) ||
+    /(?:_test|^tests)\.py$/.test(name)
+  ) {
     return false;
   }
   return !/(?:^|\/)(?:tests?|__tests__|e2e|cypress|playwright|scripts?)\//.test(path);
 }
 
-/** Code the running app uses: {@link isAppCodeFile}, database migrations left out too. */
+/**
+ * Code the running app uses: {@link isAppCodeFile}, with database migrations and documentation
+ * left out too.
+ */
 export function isRuntimeCodeFile(path: string): boolean {
-  return isAppCodeFile(path) && !/(?:^|\/)migrations\//.test(path);
+  return isAppCodeFile(path) && !/(?:^|\/)(?:migrations|docs?)\//.test(path);
 }
 
 /** A Python app object such as `app = FastAPI()`, `app = Celery("proj")` or `huey = RedisHuey()`. */
@@ -90,6 +97,17 @@ export interface SourceSignals {
    * (better-sqlite3, sqlite3) and the `url` of a Drizzle config with the `sqlite` dialect.
    */
   sqliteFiles: string[];
+  /**
+   * For Python code, outside comment lines: the files `sqlite3.connect("data/app.db")` opens, as
+   * written.
+   */
+  sqliteConnects: string[];
+  /**
+   * For Python code, outside comment lines: the files of SQLAlchemy URLs (`sqlite:///data/app.db`
+   * → `data/app.db`), which Flask-SQLAlchemy reads relative to the app's `instance/` folder (see
+   * `detectSqlite`).
+   */
+  sqliteUrls: string[];
   /**
    * Prefixes of Flask's `app.config.from_prefixed_env()` calls (`FLASK` by default), sorted and
    * unique. A call whose prefix is not a string literal is skipped.
@@ -166,6 +184,12 @@ const APP_FRAMEWORKS: Record<string, PythonAppObject["framework"]> = {
   Celery: "celery",
 };
 const SQLITE_FILE = /\bnew\s+(?:\w+\.)?Database\(\s*["'`]([^"'`]+\.(?:db|sqlite3?))["'`]/g;
+const PYTHON_SQLITE_FILE = /\bsqlite3\.connect\(\s*["']([^"'{}]+\.(?:db|sqlite3?))["']/g;
+/**
+ * A SQLAlchemy URL's database file, `sqlite:///data/app.db` or `sqlite+pysqlite:///app.db`; four
+ * slashes give an absolute path (`sqlite:////srv/app.db`), which keeps its leading slash.
+ */
+export const SQLITE_URL = /\bsqlite(?:\+\w+)?:\/\/\/([^"'`\s{}]+\.(?:db|sqlite3?))\b/g;
 const DRIZZLE_SQLITE_URL = /\burl\s*:\s*["'`]([^"'`]+)["'`]/;
 const PREFIXED_ENV = /\.from_prefixed_env\(/g;
 const PREFIX_LITERAL = /^["']([A-Za-z_][A-Za-z0-9_]*)["']$/;
@@ -286,6 +310,9 @@ export function scanSource(text: string): SourceSignals {
   }
   const markers = MARKERS.filter(([, pattern]) => pattern.test(text)).map(([marker]) => marker);
   const sqliteFiles = [...text.matchAll(SQLITE_FILE)].map((match) => match[1] as string);
+  const code = uncommented(text);
+  const sqliteConnects = [...code.matchAll(PYTHON_SQLITE_FILE)].map((m) => m[1] as string);
+  const sqliteUrls = [...code.matchAll(SQLITE_URL)].map((match) => match[1] as string);
   if (/\bdialect\s*:\s*["'`]sqlite["'`]/.test(text)) {
     const url = DRIZZLE_SQLITE_URL.exec(text)?.[1];
     if (url) sqliteFiles.push(url);
@@ -308,6 +335,8 @@ export function scanSource(text: string): SourceSignals {
     urlSchemes: [...urlSchemes].sort(),
     markers,
     sqliteFiles,
+    sqliteConnects,
+    sqliteUrls,
     configPrefixes: [...configPrefixes].sort(),
   };
 }

@@ -375,11 +375,23 @@ describe("workers", () => {
       },
       {
         name: "celery-worker",
-        command: "celery -A proj.celery:app worker --loglevel=info",
+        command: "celery -A proj.celery:app worker --loglevel=info --concurrency 2",
         source: "library",
         single: false,
         evidence: ["dependency:celery"],
       },
+    ]);
+  });
+
+  it("run Celery in the room its containers have: two worker processes, beat's schedule in /tmp", async () => {
+    const facts = await detect({
+      "requirements.txt": "celery[redis]\n",
+      "tasks.py":
+        'from celery import Celery\napp = Celery("tasks")\napp.conf.beat_schedule = {"tick": {"task": "tasks.tick", "schedule": 30.0}}\n',
+    });
+    expect(facts.workers?.map((worker) => worker.command)).toEqual([
+      "celery -A tasks:app beat --loglevel=info --schedule /tmp/celerybeat-schedule",
+      "celery -A tasks:app worker --loglevel=info --concurrency 2",
     ]);
   });
 
@@ -649,8 +661,140 @@ production:
       },
       { paths: ["db/local.db"], dir: "db" },
     ],
+    [
+      "Python's sqlite3",
+      {
+        "requirements.txt": "flask\n",
+        "app.py": 'import sqlite3\n\ndb = sqlite3.connect("data/app.db")\n',
+      },
+      { paths: ["data/app.db"], dir: "data" },
+    ],
+    [
+      "SQLAlchemy",
+      {
+        "requirements.txt": "fastapi\nsqlmodel\n",
+        "db.py": 'engine = create_engine("sqlite+pysqlite:///data/app.sqlite3")\n',
+      },
+      { paths: ["data/app.sqlite3"], dir: "data" },
+    ],
+    [
+      "Flask-SQLAlchemy",
+      {
+        "requirements.txt": "flask\nFlask-SQLAlchemy==3.1.1\n",
+        "app.py": 'app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///project.db"\n',
+      },
+      { paths: ["instance/project.db"], dir: "instance" },
+    ],
+    [
+      "an env file's SQLAlchemy URL",
+      {
+        "requirements.txt": "flask\nflask-sqlalchemy\n",
+        ".env.example": "# DATABASE_URL=sqlite:///old.db\nDATABASE_URL=sqlite:///data/app.db\n",
+      },
+      { paths: ["instance/data/app.db"], dir: "instance/data" },
+    ],
   ] as const)("finds %s's database file", async (_name, files, sqlite) => {
     expect((await detect(files)).sqlite).toEqual(sqlite);
+  });
+
+  it("skips SQLite paths it cannot place: absolute, in memory, or built at run time", async () => {
+    const facts = await detect({
+      "requirements.txt": "sqlalchemy\n",
+      "db.py": [
+        'a = create_engine("sqlite:////srv/app.db")',
+        'b = create_engine("sqlite://")',
+        'c = create_engine("sqlite:///:memory:")',
+        'd = sqlite3.connect(f"{folder}/app.db")',
+        "",
+      ].join("\n"),
+    });
+    expect(facts.sqlite).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "a Django default next to psycopg",
+      {
+        "requirements.txt": "django\npsycopg[binary]\ndj-database-url\n",
+        "proj/settings.py":
+          'import dj_database_url\nDATABASES = {"default": dj_database_url.config(default="sqlite:///db.sqlite3")}\n',
+      },
+    ],
+    [
+      "a default for DATABASE_URL next to psycopg2",
+      {
+        "requirements.txt": "flask\npsycopg2-binary\n",
+        "app.py": 'import os\nURL = os.environ.get("DATABASE_URL", "sqlite:///app.db")\n',
+      },
+    ],
+    [
+      "a pytest file",
+      {
+        "requirements.txt": "flask\n",
+        "db_test.py": 'import sqlite3\ndb = sqlite3.connect("data/test.db")\n',
+      },
+    ],
+    [
+      "Django's tests.py",
+      {
+        "requirements.txt": "django\n",
+        "polls/tests.py": 'import sqlite3\ndb = sqlite3.connect("data/test.db")\n',
+      },
+    ],
+    [
+      "commented-out code",
+      {
+        "requirements.txt": "sqlalchemy\n",
+        "db.py":
+          '# engine = create_engine("sqlite:///data/old.db")\n# db = sqlite3.connect("data/old.db")\n',
+      },
+    ],
+    [
+      "documentation",
+      {
+        "requirements.txt": "flask\n",
+        "docs/example.py": 'import sqlite3\ndb = sqlite3.connect("data/app.db")\n',
+      },
+    ],
+    [
+      "Alembic's migrations",
+      {
+        "requirements.txt": "sqlalchemy\nalembic\n",
+        "migrations/env.py": 'config.set_main_option("sqlalchemy.url", "sqlite:///data/app.db")\n',
+      },
+    ],
+    [
+      "a JavaScript string",
+      {
+        "package.json": JSON.stringify({ name: "a", dependencies: { express: "^5" } }),
+        "src/db.js": 'export const url = "sqlite:///data/dev.db";\n',
+      },
+    ],
+  ] as const)("is not found in %s", async (_name, files) => {
+    const facts = await detect(files);
+    expect(facts.sqlite).toBeUndefined();
+    expect(kinds(facts)).not.toContain("sqlite");
+  });
+
+  it("counts an env file's SQLAlchemy URL next to a server database's driver", async () => {
+    const facts = await detect({
+      "requirements.txt": "flask\npsycopg2-binary\n",
+      ".env.example": "DATABASE_URL=sqlite:///data/app.db\n",
+    });
+    expect(facts.sqlite).toEqual({ paths: ["data/app.db"], dir: "data" });
+  });
+
+  it("is a service of a Python app, which needs no driver for it", async () => {
+    const code = await detect({
+      "requirements.txt": "flask\n",
+      "app.py": 'import sqlite3\n\ndb = sqlite3.connect("data/app.db")\n',
+    });
+    expect(code.services).toEqual([{ kind: "sqlite", evidence: ["code:sqlite"] }]);
+    const env = await detect({
+      "requirements.txt": "flask\nflask-sqlalchemy\n",
+      ".env.example": "DATABASE_URL=sqlite:///app.db\n",
+    });
+    expect(env.services).toEqual([{ kind: "sqlite", evidence: ["env:DATABASE_URL"] }]);
   });
 });
 

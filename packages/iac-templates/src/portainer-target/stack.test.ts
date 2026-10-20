@@ -458,11 +458,12 @@ describe("the components in a stack", () => {
     expect(componentsFile.content).toMatchSnapshot();
   });
 
-  it("gives every container of the app's image and every service its memory limit", () => {
+  it("gives every container its memory limit: the app's image, the services, Caddy and the tunnel's connector", () => {
     const limits = Object.fromEntries(
-      Object.entries(componentsStack.services)
-        .filter(([name]) => name !== "caddy" && name !== "cloudflared")
-        .map(([name, service]) => [name, [service.mem_limit, service.memswap_limit]]),
+      Object.entries(componentsStack.services).map(([name, service]) => [
+        name,
+        [service.mem_limit, service.memswap_limit],
+      ]),
     );
     expect(limits).toEqual({
       app: ["768m", "768m"],
@@ -472,6 +473,9 @@ describe("the components in a stack", () => {
       mysql: ["512m", "512m"],
       rabbitmq: ["384m", "384m"],
       kafka: ["1024m", "1024m"],
+      // As the server edge's Caddy and connector (SC-1304).
+      caddy: ["64m", "64m"],
+      cloudflared: ["32m", "32m"],
     });
     for (const [name, service] of Object.entries(componentsStack.services)) {
       if (name !== "caddy") expect(service.ports).toBeUndefined();
@@ -493,6 +497,8 @@ describe("the components in a stack", () => {
     expect(componentsStack.configs?.crontab?.content).toContain(
       "0 * * * * node -e \"fetch('http://app:3000/api/cron/report'",
     );
+    // A worker may write to /tmp (Celery beat keeps its schedule there): no read-only root.
+    expect([worker?.read_only, cron?.read_only]).toEqual([undefined, undefined]);
   });
 
   it("passes each service's secrets as OpsCrew's stack variables, its settings files inline and its data in named volumes", () => {
@@ -517,11 +523,15 @@ describe("the components in a stack", () => {
       "mysql_data",
       "rabbitmq_data",
       "kafka_data",
+      "kafka_secrets",
+      "kafka_config",
     ]);
     expect(portainerStackVolumes(components)).toEqual([
       "opscrew-shop_mysql_data",
       "opscrew-shop_rabbitmq_data",
       "opscrew-shop_kafka_data",
+      "opscrew-shop_kafka_secrets",
+      "opscrew-shop_kafka_config",
     ]);
   });
 
@@ -581,11 +591,17 @@ describe("the components in a stack", () => {
     expect(doc.services.cron?.configs).toEqual([
       { source: "crontab", target: "/etc/opscrew/crontab" },
     ]);
-    expect(doc.services.kafka?.volumes).toEqual(["kafka_data:/var/lib/kafka/data"]);
+    expect(doc.services.kafka?.volumes).toEqual([
+      "kafka_data:/var/lib/kafka/data",
+      "kafka_secrets:/etc/kafka/secrets",
+      "kafka_config:/mnt/shared/config",
+    ]);
     expect(Object.keys(doc.volumes ?? {})).toEqual([
       "mysql_data",
       "rabbitmq_data",
       "kafka_data",
+      "kafka_secrets",
+      "kafka_config",
       "sqlite",
     ]);
     // Data deletion removes it with the services' volumes.
@@ -593,6 +609,8 @@ describe("the components in a stack", () => {
       "opscrew-shop_mysql_data",
       "opscrew-shop_rabbitmq_data",
       "opscrew-shop_kafka_data",
+      "opscrew-shop_kafka_secrets",
+      "opscrew-shop_kafka_config",
       "opscrew-shop_sqlite",
     ]);
     expect(componentsStack.services.app?.volumes).toBeUndefined();
@@ -787,6 +805,10 @@ describe("renderUpdaterStack", () => {
     expect(IMAGES.curl.ref).toMatch(/^curlimages\/curl:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/);
   });
 
+  it("has a memory limit like every other container (SC-1304)", () => {
+    expect([service?.mem_limit, service?.memswap_limit]).toEqual(["16m", "16m"]);
+  });
+
   it("reads the webhook URL and the pinned key from the stack's environment, never from the file", () => {
     expect(service?.environment).toEqual({
       PORTAINER_WEBHOOK_URL: "${PORTAINER_WEBHOOK_URL}",
@@ -835,6 +857,11 @@ describe("renderPortainerConnectorStack", () => {
     expect(cloudflared?.read_only).toBe(true);
     expect(cloudflared?.logging).toEqual(serviceLogging());
     expect(interpolated(connector.content)).toEqual(["TUNNEL_TOKEN"]);
+  });
+
+  it("gives the connector the memory limit of the server's connectors", () => {
+    const cloudflared = doc.services.cloudflared;
+    expect([cloudflared?.mem_limit, cloudflared?.memswap_limit]).toEqual(["32m", "32m"]);
   });
 });
 
