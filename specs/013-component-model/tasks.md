@@ -530,6 +530,20 @@ Effort`.
       - Tests: each, with the attribute values from the run.
     - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/iac-engine --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2`, `pnpm lint`
     - Effort: medium
+  - [ ] T1315b A new bucket Hetzner shows late, in `packages/contracts/src/**` (the `IacEngine` contract), `packages/iac-engine/src/**`, `packages/agents/src/provision/storage.ts` (+ tests)
+    - Why: in one live run on 2026-10-20, applying the storage root failed with `Error: reading S3 Bucket (<name>): couldn't find resource`. The `aws` provider reads the new bucket's settings right after creating it, and one Hetzner node didn't know the bucket yet. Four other creates worked, each in about 18 s. OpenTofu then keeps the bucket tainted, so the next plan wants to replace it, and `prevent_destroy` blocks that: the user is stuck.
+    - Accept:
+      - **The engine:** `IacEngine.untaint(dir, address, options)` runs `untaint -allow-missing <address>` against the root's state. It is a state-only change, made with the same env and state options as the other calls. The contract gains the method, and the fakes implement it.
+      - **Provision:** when the storage root's apply fails with that error for `aws_s3_bucket.this`:
+        - untaint it through the engine;
+        - stop with a plain message: Hetzner Object Storage (or Spaces) didn't show the new bucket right away; OpsCrew kept it; run `opscrew provision` again, and it plans what is left, such as the bucket's CORS rule, for approval as usual;
+        - never apply anything without a new hash-approved plan.
+      - **Tests:**
+        - the failure is untainted and the message is shown;
+        - a rerun plans only the CORS rule;
+        - any other apply failure is left as it is.
+    - Verify: `pnpm turbo run typecheck test --filter=@opscrew/contracts --filter=@opscrew/iac-engine --filter=@opscrew/agents --concurrency=2`, plus `OPSCREW_IT=1` for the engine's untaint against real `tofu` and `terraform` on a local state, and `pnpm lint`
+    - Effort: medium
 
 ## Dependencies
 
