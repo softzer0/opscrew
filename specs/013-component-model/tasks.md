@@ -477,7 +477,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
-- [ ] T1316 [US3] Garage on every target, and the app's own storage kept (founder, 2026-10-20), in `packages/detect/src/connections.ts`, `packages/plan-schema/src/requirements.ts`, `packages/agents/src/{design,interview}/**`, `packages/mcp-server/src/tools/interview.ts`, `packages/cli/src/commands/interview.ts`, `docs/guide/object-storage.md`, `plugin/skills/**`
+- [X] T1316 [US3] Garage on every target, and the app's own storage kept (founder, 2026-10-20), in `packages/detect/src/connections.ts`, `packages/plan-schema/src/requirements.ts`, `packages/agents/src/{design,interview}/**`, `packages/mcp-server/src/tools/interview.ts`, `packages/cli/src/commands/interview.ts`, `docs/guide/object-storage.md`, `plugin/skills/**`
   - Owns: those paths (+ tests, and the regenerated JSON schemas)
   - Reads: spec FR-1315, FR-1316, FR-1316a; data-model.md (`storage.objectStorage.provider`, `keepExternalServices`, the requirements' `objectStorage`)
   - Depends: T1314 (runs during T1315; it changes no file the live passes read at run time)
