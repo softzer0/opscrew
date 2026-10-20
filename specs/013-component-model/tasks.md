@@ -506,3 +506,4 @@ Each wave is merged, gated and pushed before the next starts.
 
 - Garage on servers: replace its three init steps with the image's own `--default-bucket` / `--default-access-key` flags, as Portainer stacks already do (T1310).
 - The services' address through a fake `OPSCREW_SERVICE_ADDRESS` variable (`shared/app-env.ts` `serviceAddress`): a catalog `address(ctx)` instead (T1307's review).
+- Cron's memory limit equals the app's `memoryMb`, so sizing counts it twice: a cron with only route jobs needs a small fixed limit (supercronic and the probe), command jobs keep the app's (T1312).
