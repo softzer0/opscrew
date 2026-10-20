@@ -878,41 +878,6 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(dockerCalls()).not.toContain("compose run");
       expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
     });
-
-    it("fills a step's ${NAME} words from its env file, printing none of its values", () => {
-      const secret = fakeSecret("aws-secret-access-key");
-      server({ ".env": OLD }, [OLD]);
-      writeFileSync(appFile("garage.env"), `GARAGE_KEY_ID=GKabc123\nGARAGE_KEY_SECRET=${secret}\n`);
-      failing("/garage key info GKabc123");
-      const steps: ServiceInitStep[] = [
-        {
-          service: "garage",
-          envFile: "garage.env",
-          check: ["/garage", "key", "info", "${GARAGE_KEY_ID}"],
-          run: ["/garage", "key", "import", "--yes", "${GARAGE_KEY_ID}", "${GARAGE_KEY_SECRET}"],
-        },
-        // No check: harmless to repeat, so it runs on every deploy.
-        { service: "garage", run: ["/garage", "bucket", "allow", "--key", "${GARAGE_KEY_ID}"] },
-      ];
-      const lines = switchCommands(plan, steps);
-      expect(lines).toContain(
-        `  if ! (umask 077; (set -a; . ./garage.env; set +a; docker compose exec -T garage '/garage' 'key' 'import' '--yes' "\${GARAGE_KEY_ID}" "\${GARAGE_KEY_SECRET}" < /dev/null) > /srv/apps/shop/init.log 2>&1); then`,
-      );
-      const result = run(
-        ['ssh "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'', ...lines, "REMOTE"].join("\n"),
-      );
-      expect(result.status, result.output).toBe(0);
-      const calls = dockerCalls();
-      expect(calls).toContain("docker compose exec -T garage /garage key info GKabc123");
-      expect(calls).toContain(
-        `docker compose exec -T garage /garage key import --yes GKabc123 ${secret}`,
-      );
-      // Without an env file the word stays as written: only a step's own file fills it in.
-      expect(calls).toContain(
-        "docker compose exec -T garage /garage bucket allow --key ${GARAGE_KEY_ID}",
-      );
-      expect(result.output).not.toContain(secret);
-    });
   });
 
   describe("the upload", () => {

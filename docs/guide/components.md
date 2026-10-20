@@ -43,7 +43,7 @@ month:
 
 ```text
 MySQL 8.4 (mysql, 512 MB): The app uses mysqlclient.
-Worker worker (256 MB, 2 copies): celery -A shop worker --loglevel=info
+Worker worker (256 MB, 2 copies): celery -A shop worker --loglevel=info --concurrency 2
 Cron job cleanup (0 3 * * *, UTC): python manage.py clearsessions
 Memory limits: the app 512 MB (€1.00/month), worker 512 MB (€1.00/month), cron 512 MB (€1.00/month), mysql 512 MB (€1.00/month); OpsCrew's edge and the system 512 MB; 1.5 GB of 4.0 GB free.
 ```
@@ -69,7 +69,8 @@ Every container gets a memory limit, so one that grows cannot take the whole ser
 When it reaches its limit, only that container is restarted. Design adds up:
 
 - every component's limit (a worker's limit counts once per copy; the cron container gets the
-  app's limit, since its jobs run the app's code);
+  app's limit when a job runs a command, since it runs the app's code, and 64 MB when every job
+  calls a route);
 - 128 MB for OpsCrew's edge (Caddy, kamal-proxy, and the Cloudflare Tunnel connector when the app
   uses one);
 - 384 MB for the system.

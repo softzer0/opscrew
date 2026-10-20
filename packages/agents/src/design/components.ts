@@ -25,7 +25,7 @@ import {
   type ServiceKind,
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
-import { EDGE_MEMORY_MB, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryLimits, appMemoryMb, EDGE_MEMORY_MB, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
 import {
@@ -1195,26 +1195,6 @@ export function appNameFor(facts: ProjectFacts): string {
   return name === "" ? "app" : name;
 }
 
-/** Each running container's memory limit with its name, the web process first. */
-function memoryLimits(components: Pick<Components, "app" | "processes" | "services">): {
-  name: string;
-  memoryMb: number;
-}[] {
-  const { workers, cron } = components.processes;
-  return [
-    { name: "the app", memoryMb: components.app.memoryMb },
-    ...workers
-      .filter((worker) => worker.enabled)
-      .map((worker) => ({ name: worker.name, memoryMb: worker.memoryMb * worker.count })),
-    ...(cron.some((job) => job.enabled)
-      ? [{ name: "cron", memoryMb: components.app.memoryMb }]
-      : []),
-    ...components.services
-      .filter((service) => service.enabled)
-      .map((service) => ({ name: service.name, memoryMb: service.memoryMb })),
-  ];
-}
-
 /**
  * The containers' memory on a server of `serverMb`, each with its share of the server's monthly
  * price when there is one (SC-1308): `Memory: the app 512 MB (€1.37/month), mysql 512 MB
@@ -1225,13 +1205,13 @@ export function memoryText(
   serverMb: number,
   monthly?: Money,
 ): string {
-  const limits = memoryLimits(components);
+  const limits = appMemoryLimits(components);
   const share = (mb: number) =>
     monthly === undefined
       ? ""
       : ` (${formatMoney({ amount: (monthly.amount * mb) / serverMb, currency: monthly.currency })}/month)`;
   const shared = EDGE_MEMORY_MB + SYSTEM_RESERVE_MB;
-  const used = limits.reduce((sum, limit) => sum + limit.memoryMb, 0);
+  const used = appMemoryMb(components);
   const free = Math.max(0, serverMb - used - shared);
   const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
   return `Memory limits: ${limits.map((l) => `${l.name} ${l.memoryMb} MB${share(l.memoryMb)}`).join(", ")}; OpsCrew's edge and the system ${shared} MB; ${gb(free)} of ${gb(serverMb)} free.`;

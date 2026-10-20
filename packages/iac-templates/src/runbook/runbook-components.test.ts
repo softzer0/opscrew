@@ -111,6 +111,23 @@ describe("the runbook's components, edge and storage key", () => {
     );
   });
 
+  it("gives cron its small limit when its jobs only call routes, and lists several volumes", () => {
+    const base = testPlan({ domain: "shop.example.com" });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      processes: { cron: [{ name: "sync", schedule: "*/15 * * * *", route: "/api/cron/sync" }] },
+      services: [
+        ...base.services,
+        { kind: "kafka", version: "4.3", memoryMb: 1024, reason: "kafkajs", licence: "Apache-2.0" },
+      ],
+    });
+    const components = section(renderRunbook(plan, ctx).content, "Components");
+    expect(components).toContain("| `cron` | the cron jobs below, with supercronic | 64 MB | |");
+    expect(components).toContain(
+      "the Docker volumes `shop_kafka_data`, `shop_kafka_secrets` and `shop_kafka_config` |",
+    );
+  });
+
   it("describes the shared edge and the app's site file, and no more /srv/app or Caddyfile", () => {
     const text = renderRunbook(testPlan({ domain: "shop.example.com" }), ctx).content;
     const edge = section(text, "The edge");

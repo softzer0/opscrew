@@ -17,8 +17,8 @@ import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
 import type { RenderedFile } from "../types";
 import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
-import { hasCronJobs, sqliteFolder } from "../workflow/shared";
-import { composeLiteral, hardened } from "./services";
+import { sqliteFolder } from "../workflow/shared";
+import { composeLiteral, hardened, scriptLiteral, shellQuote } from "./services";
 
 /** `mem_limit` and an equal `memswap_limit`: Docker's default lets a container swap as much again. */
 export function memoryLimit(mb: number): { mem_limit: string; memswap_limit: string } {
@@ -292,16 +292,6 @@ function doubleQuoted(text: string): string {
   return `"${text.replace(/[\\"`$]/g, "\\$&")}"`;
 }
 
-/** A single-quoted shell word. */
-function singleQuoted(text: string): string {
-  return `'${text.replaceAll("'", "'\\''")}'`;
-}
-
-/** A string literal in single quotes, read the same by JavaScript, Python, Ruby and PHP. */
-function literal(text: string): string {
-  return `'${text.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
-}
-
 /**
  * The crontab command of a `route` job for each probe tool: a GET of `http://app:<port><route>`
  * with `Authorization: Bearer $CRON_SECRET` (as Vercel sends it), failing on a status other than
@@ -312,16 +302,16 @@ const ROUTE_CALLS: Record<
   (port: number, route: string) => string
 > = {
   node: (port, route) =>
-    `node -e ${doubleQuoted(`fetch(${literal(`http://app:${port}${route}`)},{headers:{Authorization:'Bearer '+process.env.CRON_SECRET}}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))`)}`,
+    `node -e ${doubleQuoted(`fetch(${scriptLiteral(`http://app:${port}${route}`)},{headers:{Authorization:'Bearer '+process.env.CRON_SECRET}}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))`)}`,
   python: (port, route) =>
-    `python -c ${doubleQuoted(`import os,urllib.request as u;u.urlopen(u.Request(${literal(`http://app:${port}${route}`)},headers={'Authorization':'Bearer '+os.environ['CRON_SECRET']}))`)}`,
+    `python -c ${doubleQuoted(`import os,urllib.request as u;u.urlopen(u.Request(${scriptLiteral(`http://app:${port}${route}`)},headers={'Authorization':'Bearer '+os.environ['CRON_SECRET']}))`)}`,
   ruby: (port, route) =>
-    `ruby -rnet/http -e ${doubleQuoted(`exit Net::HTTP.get_response(URI(${literal(`http://app:${port}${route}`)}),{'Authorization'=>'Bearer '+ENV['CRON_SECRET']}).is_a?(Net::HTTPSuccess)`)}`,
+    `ruby -rnet/http -e ${doubleQuoted(`exit Net::HTTP.get_response(URI(${scriptLiteral(`http://app:${port}${route}`)}),{'Authorization'=>'Bearer '+ENV['CRON_SECRET']}).is_a?(Net::HTTPSuccess)`)}`,
   php: (port, route) =>
-    `php -r ${doubleQuoted(`exit(@file_get_contents(${literal(`http://app:${port}${route}`)},false,stream_context_create(['http'=>['header'=>'Authorization: Bearer '.getenv('CRON_SECRET')]]))===false?1:0);`)}`,
+    `php -r ${doubleQuoted(`exit(@file_get_contents(${scriptLiteral(`http://app:${port}${route}`)},false,stream_context_create(['http'=>['header'=>'Authorization: Bearer '.getenv('CRON_SECRET')]]))===false?1:0);`)}`,
   bash: (port, route) =>
-    `bash -c ${singleQuoted(
-      `exec 3<>/dev/tcp/app/${port} && printf 'GET %s HTTP/1.1\\r\\nHost: app\\r\\nAuthorization: Bearer %s\\r\\nConnection: close\\r\\n\\r\\n' ${singleQuoted(route)} "$CRON_SECRET" >&3 && read -r _ code _ <&3 && [ "\${code#2}" != "$code" ]`,
+    `bash -c ${shellQuote(
+      `exec 3<>/dev/tcp/app/${port} && printf 'GET %s HTTP/1.1\\r\\nHost: app\\r\\nAuthorization: Bearer %s\\r\\nConnection: close\\r\\n\\r\\n' ${shellQuote(route)} "$CRON_SECRET" >&3 && read -r _ code _ <&3 && [ "\${code#2}" != "$code" ]`,
     )}`,
 };
 
@@ -395,6 +385,28 @@ function cronStart(plan: DeployPlan): object {
   }
 }
 
+/**
+ * Cron's memory limit when every enabled job calls one of the app's routes: supercronic and one
+ * probe at a time. Measured in Docker with supercronic 0.2.50 calling a route every 2 seconds
+ * (T1318, 2026-10-20), peaks with page cache: Node's probe 46 MiB, Python's 50 MiB, Ruby's
+ * 35 MiB (34 MiB with `RUBYOPT=-rbundler/setup` and a Rails 8 bundle), PHP's 26 MiB; at 32 MB
+ * the kernel kills Node's.
+ */
+export const CRON_ROUTE_MEMORY_MB = 64;
+
+/**
+ * The `cron` container's memory limit: the app's when an enabled job runs a command (the app's code
+ * runs there), else {@link CRON_ROUTE_MEMORY_MB}; undefined without an enabled job.
+ */
+export function cronMemoryMb(plan: {
+  app: Pick<DeployPlan["app"], "memoryMb">;
+  processes: Pick<DeployPlan["processes"], "cron">;
+}): number | undefined {
+  const jobs = plan.processes.cron.filter((job) => job.enabled);
+  if (jobs.length === 0) return undefined;
+  return jobs.some((job) => job.route === undefined) ? plan.app.memoryMb : CRON_ROUTE_MEMORY_MB;
+}
+
 /** What the workers and cron share with the app's service. */
 export interface ProcessBase {
   image: string;
@@ -408,7 +420,7 @@ export interface ProcessBase {
 /**
  * The enabled workers, each its own service of the app's image, and the `cron` service when a
  * cron job is enabled: no published port, no health check (an image's own would only mark them
- * unhealthy), a memory limit (cron's is the app's: its jobs run the app's code), a stop grace
+ * unhealthy), a memory limit (cron's from {@link cronMemoryMb}), a stop grace
  * period, `deploy.replicas` for a worker's count, and the SQLite volume ({@link appVolumes}).
  */
 export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<string, object> {
@@ -433,7 +445,8 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       ...end(worker.memoryMb),
     };
   }
-  if (hasCronJobs(plan)) {
+  const cronMb = cronMemoryMb(plan);
+  if (cronMb !== undefined) {
     services.cron = {
       image: base.image,
       restart: "unless-stopped",
@@ -444,7 +457,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       // supercronic reads its crontab once, when it starts.
       ...configLabel(crontab(plan)),
       stop_grace_period: "10s",
-      ...end(plan.app.memoryMb),
+      ...end(cronMb),
     };
   }
   return services;

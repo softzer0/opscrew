@@ -82,8 +82,19 @@ export function renderContext(
 }
 
 /**
+ * What the app receives from the service of `ctx`: its catalog entry's conventional names, and
+ * the app's own detected variable (`ctx.variable`) with the service's address.
+ */
+export function appVariables(ctx: ServiceContext): Record<string, string> {
+  const spec = serviceSpec(ctx.service.kind);
+  const address = spec.address(ctx);
+  const variables = spec.conventionalVariables(ctx, address);
+  return ctx.variable === undefined ? variables : { ...variables, [ctx.variable]: address };
+}
+
+/**
  * The one-time setup steps of the plan's services, in the plan's order, for the deploy on a
- * server (MongoDB's replica set, Garage's key and bucket).
+ * server (MongoDB's replica set).
  */
 export function initStepsFor(plan: DeployPlan): ServiceInitStep[] {
   return enabledServices(plan).flatMap(

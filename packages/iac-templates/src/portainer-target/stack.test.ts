@@ -469,7 +469,8 @@ describe("the components in a stack", () => {
       app: ["768m", "768m"],
       release: ["768m", "768m"],
       worker: ["256m", "256m"],
-      cron: ["768m", "768m"],
+      // Its one job calls a route.
+      cron: ["64m", "64m"],
       mysql: ["512m", "512m"],
       rabbitmq: ["384m", "384m"],
       kafka: ["1024m", "1024m"],

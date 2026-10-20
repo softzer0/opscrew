@@ -11,6 +11,16 @@ export function composeLiteral(text: string): string {
   return text.replaceAll("$", () => "$$");
 }
 
+/** A single-quoted POSIX shell word (embedded quotes become `'\''`). */
+export function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+/** A string literal in single quotes, read the same by JavaScript, Python, Ruby and PHP. */
+export function scriptLiteral(text: string): string {
+  return `'${text.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+}
+
 /**
  * Log rotation for one of OpsCrew's Compose services: the values of the Docker daemon settings on
  * servers OpsCrew creates (json-file, 10m, 3 files), set per service so that on a server the user

@@ -1,5 +1,6 @@
 export { appRoot } from "./app-root";
 export {
+  appVariables,
   CATALOG,
   DRAGONFLY_MIN_VCPUS,
   hostSysctl,

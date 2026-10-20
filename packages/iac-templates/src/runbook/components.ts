@@ -5,6 +5,7 @@ import { appDir } from "../edge";
 import { storageRootDir } from "../infra/storage";
 import { portainerStackName } from "../portainer-target/stack";
 import { STORAGE_NAMES } from "../prices";
+import { cronMemoryMb } from "../runtime/components";
 import { cell } from "./shared";
 
 /** True for an app in the user's Portainer, whose components are the app's stack. */
@@ -25,7 +26,7 @@ function dataPlace(plan: DeployPlan, service: DeployPlan["services"][number]): s
   const spec = serviceSpec(service.kind);
   if (spec.namedVolume === true || inPortainer(plan)) {
     const dirs = typeof spec.dataDir === "string" ? ["data"] : Object.keys(spec.dataDir);
-    return `the Docker volume${dirs.length > 1 ? "s" : ""} ${dirs.map((dir) => `\`${projectOf(plan)}_${service.name}_${dir}\``).join(" and ")}`;
+    return `the Docker volume${dirs.length > 1 ? "s" : ""} ${listText(dirs.map((dir) => `\`${projectOf(plan)}_${service.name}_${dir}\``))}`;
   }
   return `\`/srv/data/${plan.app.name}/${service.name}\``;
 }
@@ -62,6 +63,7 @@ export function componentsSection(plan: DeployPlan): string[] {
   const project = projectOf(plan);
   const { workers, cron } = plan.processes;
   const jobs = cron.filter((job) => job.enabled);
+  const cronMb = cronMemoryMb(plan);
   const rows = [
     `| \`app\` | the web process | ${plan.app.memoryMb} MB | |`,
     ...workers
@@ -70,9 +72,9 @@ export function componentsSection(plan: DeployPlan): string[] {
         (worker) =>
           `| \`${worker.name}\` | ${cell(`\`${worker.command}\``)}${worker.count > 1 ? `, ${worker.count} copies` : ""}${worker.single ? ", one copy only" : ""} | ${worker.memoryMb} MB${worker.count > 1 ? " each" : ""} | |`,
       ),
-    ...(jobs.length > 0
-      ? [`| \`cron\` | the cron jobs below, with supercronic | ${plan.app.memoryMb} MB | |`]
-      : []),
+    ...(cronMb === undefined
+      ? []
+      : [`| \`cron\` | the cron jobs below, with supercronic | ${cronMb} MB | |`]),
     ...enabledServices(plan).map((service) => {
       const spec = serviceSpec(service.kind);
       return `| \`${service.name}\` | ${spec.title} ${service.version} (${spec.licence.id}) | ${service.memoryMb} MB | ${dataPlace(plan, service)} |`;

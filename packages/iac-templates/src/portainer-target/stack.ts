@@ -8,7 +8,7 @@ import type {
   SelfHostedServiceKind,
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
-import { enabledServices, renderContext, serviceSpec } from "../catalog";
+import { appVariables, enabledServices, renderContext, serviceSpec } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
 import { isClientExposedEnvName } from "../docker";
 import { CADDY_MEMORY_MB } from "../edge";
@@ -30,6 +30,7 @@ import {
   composeLiteral,
   hardened,
   RELEASE_NOTE,
+  shellQuote,
 } from "../runtime/services";
 import { CONNECTOR_MEMORY_MB } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -115,25 +116,14 @@ export function portainerSecretVariables(
   );
 }
 
-/** Garage's bucket for the app, when the plan keeps its files there. */
-function garageBucket(plan: DeployPlan): string | undefined {
-  const storage = plan.storage?.objectStorage;
-  return storage?.provider === "garage" ? storage.bucket : undefined;
-}
-
-/**
- * A service's environment in the stack, with its secrets as stack variables. Garage's also names
- * the app's bucket, which Garage makes itself in a stack (see {@link stackSetup}).
- */
+/** A service's environment in the stack, with its secrets as stack variables. */
 function stackEnvironment(plan: DeployPlan) {
   return (service: PlanService, spec: ServiceSpec): Record<string, string> => {
     if (service.kind === "postgres") {
       return Object.fromEntries(DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]));
     }
     const ref = (secret: string) => `\${${portainerServiceVariable(service.name, secret)}}`;
-    const environment = spec.environment(renderContext(plan, service, ref));
-    const bucket = service.kind === "garage" ? garageBucket(plan) : undefined;
-    return bucket === undefined ? environment : { ...environment, GARAGE_DEFAULT_BUCKET: bucket };
+    return spec.environment(renderContext(plan, service, ref));
   };
 }
 
@@ -182,11 +172,6 @@ function checkStackServices(plan: DeployPlan): void {
   }
 }
 
-/** A single-quoted shell word. */
-function shellWord(text: string): string {
-  return `'${text.replaceAll("'", "'\\''")}'`;
-}
-
 /**
  * The one-shot service `<service>-init` that runs a service's one-time setup steps (the catalog's
  * `init`, which a server's deploy runs with `docker compose exec`): the service's image, in its
@@ -201,13 +186,11 @@ function initService(
   steps: readonly ServiceInitStep[],
   rendered: { environment?: Record<string, string>; volumes?: string[] },
 ): object {
-  const words = (list: readonly string[]) => list.map(shellWord).join(" ");
+  const words = (list: readonly string[]) => list.map(shellQuote).join(" ");
   const script = [
     "set -e",
-    ...steps.map(({ check, run }) =>
-      check === undefined
-        ? words(run)
-        : `if ! ${words(check)} > /dev/null 2>&1; then ${words(run)}; fi`,
+    ...steps.map(
+      ({ check, run }) => `if ! ${words(check)} > /dev/null 2>&1; then ${words(run)}; fi`,
     ),
   ].join("\n");
   return {
@@ -224,11 +207,9 @@ function initService(
 }
 
 /**
- * The services' one-time setup in the stack, since Portainer runs no deploy steps: Garage makes
- * the app's key (and bucket, with every permission) itself when it starts (`--default-access-key`,
- * `--default-bucket`: each only when missing, from the variables of {@link stackEnvironment});
- * every other service with setup steps (MongoDB's replica set) gets its {@link initService}.
- * Adds them to `backing`, and returns what the app's containers wait for besides the services.
+ * The services' one-time setup in the stack, since Portainer runs no deploy steps: every service
+ * with setup steps (MongoDB's replica set) gets its {@link initService}. Adds them to `backing`,
+ * and returns what the app's containers wait for besides the services.
  */
 function stackSetup(
   plan: DeployPlan,
@@ -236,21 +217,13 @@ function stackSetup(
 ): Record<string, { condition: string }> {
   const ready: Record<string, { condition: string }> = {};
   for (const service of enabledServices(plan)) {
+    const spec = serviceSpec(service.kind);
+    const steps = spec.init?.(renderContext(plan, service)) ?? [];
+    if (steps.length === 0) continue;
     const rendered = backing.services[service.name] as {
       environment?: Record<string, string>;
       volumes?: string[];
     };
-    if (service.kind === "garage") {
-      const flag = garageBucket(plan) === undefined ? "--default-access-key" : "--default-bucket";
-      backing.services[service.name] = {
-        ...rendered,
-        command: ["/garage", "server", "--single-node", flag],
-      };
-      continue;
-    }
-    const spec = serviceSpec(service.kind);
-    const steps = spec.init?.(renderContext(plan, service)) ?? [];
-    if (steps.length === 0) continue;
     const name = `${service.name}-init`;
     backing.services[name] = initService(service, spec, steps, rendered);
     ready[name] = { condition: "service_completed_successfully" };
@@ -335,9 +308,7 @@ export function fillPortainerStack(template: string, image: string): string {
 function appEnvKeys(plan: DeployPlan): string[] {
   const names = new Set<string>();
   for (const service of enabledServices(plan)) {
-    const variables = serviceSpec(service.kind).appVariables(
-      renderContext(plan, service, () => ""),
-    );
+    const variables = appVariables(renderContext(plan, service, () => ""));
     for (const name of Object.keys(variables)) names.add(name);
   }
   for (const variable of plan.app.env) {

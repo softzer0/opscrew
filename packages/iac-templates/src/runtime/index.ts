@@ -18,7 +18,13 @@ import {
 } from "./components";
 import { appHealthcheck } from "./healthcheck";
 
-export { hostSettingsServices, SQLITE_VOLUME, sqliteVolumeOwner } from "./components";
+export {
+  CRON_ROUTE_MEMORY_MB,
+  cronMemoryMb,
+  hostSettingsServices,
+  SQLITE_VOLUME,
+  sqliteVolumeOwner,
+} from "./components";
 
 import { caddySite, cloudflaredService, composeLiteral, hardened, RELEASE_NOTE } from "./services";
 
@@ -43,7 +49,8 @@ export function siteHosts(plan: DeployPlan): string[] {
  * shared edge's network, where kamal-proxy switches between its copies; the edge's Caddy and
  * kamal-proxy are not in this file ({@link renderEdgeCompose}). The app has no container name and
  * no host port, so a second copy can start next to it. Every container of the app's image has the
- * memory limit its plan entry gives (`app.memoryMb` for the app, the release command and cron),
+ * memory limit its plan entry gives (`app.memoryMb` for the app and the release command; cron's
+ * from `cronMemoryMb`),
  * and on SQLite the volume `sqlite` on the database's folder ({@link appVolumes}).
  * Throws for a Portainer target, whose stack `renderPortainerStack` renders.
  * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned, or a SQLite

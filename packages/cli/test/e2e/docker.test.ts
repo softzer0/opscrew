@@ -85,7 +85,6 @@ import {
   dotenvLine,
   fixedProductionValue,
   type PortainerAccess,
-  parseDotenv,
   serviceEnvSecrets,
 } from "@opscrew/agents";
 import {
@@ -294,8 +293,6 @@ const STACK_CONTEXT: RenderContext = {
 interface Deployment {
   kind: "server" | "stack";
   project: ComposeProject;
-  /** The folder of the Compose file and the env files. */
-  dir: string;
 }
 
 /** A step of a service's one-time setup (`initStepsFor`). */
@@ -781,7 +778,7 @@ describe.skipIf(SKIP !== undefined)(
           const text = secrets[serviceEnvSecret(service.name)];
           if (text !== undefined) await writeFile(path.join(dir, `${service.name}.env`), text);
         }
-        deployment = { kind: "server", project: { name: container, file }, dir };
+        deployment = { kind: "server", project: { name: container, file } };
         composeProjects.set(container, deployment.project);
         await serverDeploy(plan, deployment);
         return `${container}-app-1`;
@@ -845,24 +842,12 @@ describe.skipIf(SKIP !== undefined)(
 
       /**
        * One step of a service's one-time setup, as the deploy runs it: `run` in the service's
-       * container only when `check` fails there, with the `${NAME}` words filled in from the
-       * service's env file.
+       * container only when `check` fails there.
        */
       async function initStep(at: Deployment, step: InitStep): Promise<void> {
-        const values =
-          step.envFile === undefined
-            ? new Map<string, string>()
-            : parseDotenv(await readFile(path.join(at.dir, step.envFile), "utf8"));
         const exec = (words: readonly string[]) =>
-          compose(at.project, [
-            "exec",
-            "-T",
-            step.service,
-            ...words.map((word) =>
-              word.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => values.get(name) ?? ""),
-            ),
-          ]);
-        if (step.check !== undefined && (await exec(step.check)).exitCode === 0) return;
+          compose(at.project, ["exec", "-T", step.service, ...words]);
+        if ((await exec(step.check)).exitCode === 0) return;
         const ran = await exec(step.run);
         if (ran.exitCode !== 0) {
           throw new Error(
@@ -898,7 +883,7 @@ describe.skipIf(SKIP !== undefined)(
         ]);
         const envFile = path.join(dir, "stack.env");
         await writeFile(envFile, envFileText(values));
-        deployment = { kind: "stack", project: { name: container, file, envFile }, dir };
+        deployment = { kind: "stack", project: { name: container, file, envFile } };
         composeProjects.set(container, deployment.project);
         await composeOk(deployment.project, `${example}: the stack`, ["up", "-d"], TEN_MINUTES);
         return `${container}-app-1`;
@@ -994,9 +979,13 @@ describe.skipIf(SKIP !== undefined)(
           const expected = await readExpected(path.join(EXAMPLES_DIR, testCase.example));
           const answersFile = path.join(dir, "answers.yaml");
           // One small production setup for every example; a monorepo picks the app its
-          // `expected.json` names.
+          // `expected.json` names, and an app with object storage lets OpsCrew create its bucket
+          // (Garage, next to the app).
           const answers = {
             ...(expected.chosenApp !== undefined ? { appDir: expected.chosenApp.appDir } : {}),
+            ...(expected.components?.objectStorage === true
+              ? { keepExternalServices: { s3: false } }
+              : {}),
             ...BASE_ANSWERS,
             ...(testCase.target === "own" ? OWN_ANSWERS : {}),
             ...(testCase.target === "portainer" ? PORTAINER_ANSWERS : {}),

@@ -33,7 +33,7 @@ export interface ServiceContext {
   secretRef: (name: string) => string;
   /**
    * The app's own variable for the service's address, when detection found one
-   * (`facts.services[].variable`): {@link ServiceSpec.appVariables} gives it the address too.
+   * (`facts.services[].variable`): the catalog's `appVariables` gives it the address too.
    */
   variable?: string;
 }
@@ -92,7 +92,7 @@ export interface ServiceSpec {
   healthcheck: { test: string[]; timeoutSeconds?: number; startSeconds?: number };
   /**
    * The one-time setup the deploy runs in the healthy service on a server, each step only when its
-   * check fails: MongoDB's replica set, Garage's key and bucket.
+   * check fails: MongoDB's replica set.
    */
   init?: (ctx: ServiceContext) => ServiceInitStep[];
   secrets: GeneratedSecret[];
@@ -101,8 +101,16 @@ export interface ServiceSpec {
    * (Valkey, Kafka, Redpanda, OpenSearch).
    */
   auth: "password" | "token" | "key" | "internal-only";
-  /** What the app receives, by the conventional names and its own detected name. */
-  appVariables: (ctx: ServiceContext) => Record<string, string>;
+  /**
+   * Where the app reaches the service, as its own detected variable holds it (see
+   * {@link ServiceContext.variable}): a URL with the login, or Kafka's `host:port`.
+   */
+  address: (ctx: ServiceContext) => string;
+  /**
+   * What the app receives by the conventional names, given the service's {@link address}; the
+   * catalog's `appVariables` adds the app's own detected name.
+   */
+  conventionalVariables: (ctx: ServiceContext, address: string) => Record<string, string>;
   /**
    * The container's open-file limit, soft and hard alike, for an engine that needs more than
    * Docker's default (OpenSearch and Elasticsearch: 65536).

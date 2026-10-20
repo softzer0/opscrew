@@ -13,6 +13,9 @@ describe("the service catalog's types", () => {
     expectTypeOf<ServiceSpec["secrets"]>().toEqualTypeOf<GeneratedSecret[]>();
     expectTypeOf<ServiceSpec["targets"]>().toEqualTypeOf<("server" | "portainer")[]>();
     expectTypeOf<ServiceContext["service"]["name"]>().toEqualTypeOf<string>();
-    expectTypeOf<ServiceSpec["appVariables"]>().parameter(0).toEqualTypeOf<ServiceContext>();
+    expectTypeOf<ServiceSpec["address"]>().parameter(0).toEqualTypeOf<ServiceContext>();
+    expectTypeOf<ServiceSpec["conventionalVariables"]>()
+      .parameter(0)
+      .toEqualTypeOf<ServiceContext>();
   });
 });

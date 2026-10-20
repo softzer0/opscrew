@@ -30,7 +30,7 @@ Each worker is an entry under `processes.workers` in `opscrew/plan.yaml`:
 processes:
   workers:
     - name: worker
-      command: "celery -A shop worker --loglevel=info"
+      command: "celery -A shop worker --loglevel=info --concurrency 2"
       count: 2              # copies, 1 to 10
       memoryMb: 256         # each copy's memory limit
       stopGraceSeconds: 30  # time to finish the current job when it is stopped, 5 to 600
@@ -84,5 +84,6 @@ processes:
   why: give it a `command` that runs the job's code instead.
 - **A run that is still going** when the next one is due is skipped, so jobs never pile up.
 
-The cron container's memory limit is the app's (`app.memoryMb`), since its jobs run your app's
-code. Turn a job off with `enabled: false`.
+The cron container's memory limit is the app's (`app.memoryMb`) when a job runs a command, since
+it runs your app's code. When every job calls a route, the container only runs supercronic and
+the tool that calls the route, so its limit is 64 MB. Turn a job off with `enabled: false`.

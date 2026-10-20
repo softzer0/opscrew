@@ -30,15 +30,6 @@ function xmlHeader(...lines: string[]): string[] {
   return header("#", ...lines).map((line) => `<!-- ${line.slice(2)} -->`);
 }
 
-/** `vars` plus the app's own detected variable, which gets `address`. */
-function withVariable(
-  ctx: ServiceContext,
-  address: string,
-  vars: Record<string, string>,
-): Record<string, string> {
-  return ctx.variable === undefined ? vars : { ...vars, [ctx.variable]: address };
-}
-
 /** A URL the app logs in with: `<scheme>://<user>:<password>@<service>:<port><path>`. */
 function loginUrl(ctx: ServiceContext, scheme: string, port: number, path: string): string {
   return `${scheme}://app:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:${port}${path}`;
@@ -50,14 +41,14 @@ function queueMode(service: PlanService): boolean {
 }
 
 /**
- * What the app receives from a Valkey, Redis 8 or Dragonfly at `url`: REDIS_URL and its own
- * variable, but a cache next to a queue instance only its own cache variable, since REDIS_URL is
- * the queue's (job libraries read it).
+ * What the app receives from a Valkey, Redis 8 or Dragonfly at `url`: REDIS_URL, but a cache next
+ * to a queue instance only its own cache variable, since REDIS_URL is the queue's (job libraries
+ * read it).
  */
 function redisVariables(ctx: ServiceContext, url: string): Record<string, string> {
   const besideQueue =
     !queueMode(ctx.service) && ctx.plan.services.some((other) => other.enabled && queueMode(other));
-  return withVariable(ctx, url, besideQueue ? {} : { REDIS_URL: url });
+  return besideQueue ? {} : { REDIS_URL: url };
 }
 
 /** The URL of a Redis 8 or Dragonfly, which require the password of their default user. */
@@ -97,10 +88,8 @@ const POSTGRES: ServiceSpec = {
   auth: "password",
   // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
   // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
-  appVariables: (ctx) => {
-    const url = loginUrl(ctx, "postgresql", 5432, "/app");
-    return withVariable(ctx, url, { DATABASE_URL: url });
-  },
+  address: (ctx) => loginUrl(ctx, "postgresql", 5432, "/app"),
+  conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   targets: BOTH_TARGETS,
 };
 
@@ -138,7 +127,8 @@ const VALKEY: ServiceSpec = {
   healthcheck: { test: ["CMD", "valkey-cli", "ping"] },
   secrets: [],
   auth: "internal-only",
-  appVariables: (ctx) => redisVariables(ctx, `redis://${ctx.service.name}:6379`),
+  address: (ctx) => `redis://${ctx.service.name}:6379`,
+  conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
 };
 
@@ -185,7 +175,8 @@ const REDIS: ServiceSpec = {
   healthcheck: redisCliCheck("REDIS_PASSWORD"),
   secrets: [PASSWORD],
   auth: "password",
-  appVariables: (ctx) => redisVariables(ctx, passwordRedisUrl(ctx)),
+  address: passwordRedisUrl,
+  conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
 };
 
@@ -246,7 +237,8 @@ const DRAGONFLY: ServiceSpec = {
   healthcheck: redisCliCheck("DFLY_requirepass"),
   secrets: [PASSWORD],
   auth: "password",
-  appVariables: (ctx) => redisVariables(ctx, passwordRedisUrl(ctx)),
+  address: passwordRedisUrl,
+  conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
 };
 
@@ -301,10 +293,8 @@ const MYSQL: ServiceSpec = {
   healthcheck: { test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"], startSeconds: 60 },
   secrets: [PASSWORD, ROOT_PASSWORD],
   auth: "password",
-  appVariables: (ctx) => {
-    const url = loginUrl(ctx, "mysql", 3306, "/app");
-    return withVariable(ctx, url, { DATABASE_URL: url });
-  },
+  address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
+  conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   targets: BOTH_TARGETS,
 };
 
@@ -336,10 +326,8 @@ const MARIADB: ServiceSpec = {
   },
   secrets: [PASSWORD, ROOT_PASSWORD],
   auth: "password",
-  appVariables: (ctx) => {
-    const url = loginUrl(ctx, "mysql", 3306, "/app");
-    return withVariable(ctx, url, { DATABASE_URL: url });
-  },
+  address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
+  conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   targets: BOTH_TARGETS,
 };
 
@@ -434,13 +422,13 @@ const MONGODB: ServiceSpec = {
   init: mongoInit,
   secrets: [PASSWORD],
   auth: "password",
-  appVariables: (ctx) => {
+  address: (ctx) => {
     const query = replicaSet(ctx)
       ? `?authSource=admin&replicaSet=${REPLICA_SET}`
       : "?authSource=admin";
-    const url = loginUrl(ctx, "mongodb", 27017, `/app${query}`);
-    return withVariable(ctx, url, { DATABASE_URL: url, MONGODB_URI: url });
+    return loginUrl(ctx, "mongodb", 27017, `/app${query}`);
   },
+  conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url, MONGODB_URI: url }),
   targets: BOTH_TARGETS,
 };
 
@@ -491,10 +479,8 @@ const RABBITMQ: ServiceSpec = {
   secrets: [PASSWORD],
   auth: "password",
   // `%2F` is the default virtual host `/`; a URL without a path leaves it to each client.
-  appVariables: (ctx) => {
-    const url = loginUrl(ctx, "amqp", 5672, "/%2F");
-    return withVariable(ctx, url, { AMQP_URL: url, RABBITMQ_URL: url });
-  },
+  address: (ctx) => loginUrl(ctx, "amqp", 5672, "/%2F"),
+  conventionalVariables: (_ctx, url) => ({ AMQP_URL: url, RABBITMQ_URL: url }),
   targets: BOTH_TARGETS,
 };
 
@@ -542,18 +528,19 @@ const NATS: ServiceSpec = {
   healthcheck: { test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8222/healthz"] },
   secrets: [{ name: "token", format: "hex32" }],
   auth: "token",
-  appVariables: (ctx) => {
-    const url = `nats://${ctx.secretRef("token")}@${ctx.service.name}:4222`;
-    return withVariable(ctx, url, { NATS_URL: url });
-  },
+  address: (ctx) => `nats://${ctx.secretRef("token")}@${ctx.service.name}:4222`,
+  conventionalVariables: (_ctx, url) => ({ NATS_URL: url }),
   targets: BOTH_TARGETS,
 };
 
-/** Kafka and Redpanda: what the app's Kafka clients read. */
-function brokerVariables(ctx: ServiceContext): Record<string, string> {
-  const brokers = `${ctx.service.name}:9092`;
-  return withVariable(ctx, brokers, { KAFKA_BROKERS: brokers, KAFKA_BOOTSTRAP_SERVERS: brokers });
-}
+/** Kafka and Redpanda: where the app's Kafka clients connect, and the names they read it from. */
+const BROKER_VARIABLES: Pick<ServiceSpec, "address" | "conventionalVariables"> = {
+  address: (ctx) => `${ctx.service.name}:9092`,
+  conventionalVariables: (_ctx, brokers) => ({
+    KAFKA_BROKERS: brokers,
+    KAFKA_BOOTSTRAP_SERVERS: brokers,
+  }),
+};
 
 /** A KRaft cluster's ID: 16 bytes as unpadded base64url, fixed for the app and the service. */
 function kafkaClusterId(ctx: ServiceContext): string {
@@ -626,7 +613,7 @@ const KAFKA: ServiceSpec = {
   },
   secrets: [],
   auth: "internal-only",
-  appVariables: brokerVariables,
+  ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
 };
 
@@ -670,11 +657,9 @@ const REDPANDA: ServiceSpec = {
   },
   secrets: [],
   auth: "internal-only",
-  appVariables: brokerVariables,
+  ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
 };
-
-const GARAGE_KEY = { id: "GARAGE_DEFAULT_ACCESS_KEY", secret: "GARAGE_DEFAULT_SECRET_KEY" };
 
 /** Garage on one node, without replication; its RPC secret is `GARAGE_RPC_SECRET`. */
 function garageToml(ctx: ServiceContext): string {
@@ -698,60 +683,10 @@ function garageToml(ctx: ServiceContext): string {
   ].join("\n");
 }
 
-/**
- * Garage's setup (research "Spike results" 7): its image has no shell and each step but the
- * last refuses a rerun, so the deploy runs them in the service, each checked first. The app's key
- * is imported from the service's env file, and the app's bucket is made with the CLI (a bucket
- * made through the S3 API is seen only by the key that made it). The node's layout needs no step:
- * `--single-node` sets it up.
- */
-function garageSteps(ctx: ServiceContext): ServiceInitStep[] {
-  const service = ctx.service.name;
-  const envFile = `${service}.env`;
-  const key = `\${${GARAGE_KEY.id}}`;
+/** Garage's bucket for the app, when the plan keeps its files there. */
+function garageBucket(ctx: ServiceContext): string | undefined {
   const storage = ctx.plan.storage?.objectStorage;
-  const bucket = storage?.provider === "garage" ? storage.bucket : undefined;
-  return [
-    {
-      service,
-      envFile,
-      check: ["/garage", "key", "info", key],
-      run: [
-        "/garage",
-        "key",
-        "import",
-        "--yes",
-        "-n",
-        ctx.plan.app.name,
-        key,
-        `\${${GARAGE_KEY.secret}}`,
-      ],
-    },
-    ...(bucket === undefined
-      ? []
-      : [
-          {
-            service,
-            check: ["/garage", "bucket", "info", bucket],
-            run: ["/garage", "bucket", "create", bucket],
-          },
-          {
-            service,
-            envFile,
-            run: [
-              "/garage",
-              "bucket",
-              "allow",
-              "--read",
-              "--write",
-              "--owner",
-              bucket,
-              "--key",
-              key,
-            ],
-          },
-        ]),
-  ];
+  return storage?.provider === "garage" ? storage.bucket : undefined;
 }
 
 const GARAGE: ServiceSpec = {
@@ -772,31 +707,39 @@ const GARAGE: ServiceSpec = {
   configFiles: (ctx) => [
     { name: "garage.toml", target: "/etc/garage.toml", content: garageToml(ctx) },
   ],
-  // One node that sets up its own layout (Garage 2.3 and later, research R3).
-  command: () => ["/garage", "server", "--single-node"],
-  // The key's ID and secret are here for the setup steps, which read the service's env file.
-  environment: (ctx) => ({
-    GARAGE_RPC_SECRET: ctx.secretRef("rpc-secret"),
-    [GARAGE_KEY.id]: ctx.secretRef("key-id"),
-    [GARAGE_KEY.secret]: ctx.secretRef("secret-key"),
-  }),
+  // One node that sets up its own layout (Garage 2.3 and later, research R3) and makes the app's
+  // key (GARAGE_DEFAULT_ACCESS_KEY, GARAGE_DEFAULT_SECRET_KEY) itself, with a bucket in the plan
+  // also the bucket (GARAGE_DEFAULT_BUCKET, every permission for the key): each only when missing,
+  // so every start may repeat it.
+  command: (ctx) => [
+    "/garage",
+    "server",
+    "--single-node",
+    garageBucket(ctx) === undefined ? "--default-access-key" : "--default-bucket",
+  ],
+  environment: (ctx) => {
+    const bucket = garageBucket(ctx);
+    return {
+      GARAGE_RPC_SECRET: ctx.secretRef("rpc-secret"),
+      GARAGE_DEFAULT_ACCESS_KEY: ctx.secretRef("key-id"),
+      GARAGE_DEFAULT_SECRET_KEY: ctx.secretRef("secret-key"),
+      ...(bucket === undefined ? {} : { GARAGE_DEFAULT_BUCKET: bucket }),
+    };
+  },
   healthcheck: { test: ["CMD", "/garage", "status"] },
-  init: garageSteps,
   secrets: [
     { name: "rpc-secret", format: "hex32" },
     { name: "key-id", format: "garage-key-id" },
     { name: "secret-key", format: "hex32" },
   ],
   auth: "key",
-  appVariables: (ctx) => {
-    const endpoint = `http://${ctx.service.name}:3900`;
-    return withVariable(ctx, endpoint, {
-      AWS_ACCESS_KEY_ID: ctx.secretRef("key-id"),
-      AWS_SECRET_ACCESS_KEY: ctx.secretRef("secret-key"),
-      AWS_REGION: "garage",
-      AWS_ENDPOINT_URL_S3: endpoint,
-    });
-  },
+  address: (ctx) => `http://${ctx.service.name}:3900`,
+  conventionalVariables: (ctx, endpoint) => ({
+    AWS_ACCESS_KEY_ID: ctx.secretRef("key-id"),
+    AWS_SECRET_ACCESS_KEY: ctx.secretRef("secret-key"),
+    AWS_REGION: "garage",
+    AWS_ENDPOINT_URL_S3: endpoint,
+  }),
   targets: BOTH_TARGETS,
 };
 
@@ -855,10 +798,8 @@ const OPENSEARCH: ServiceSpec = {
   },
   secrets: [],
   auth: "internal-only",
-  appVariables: (ctx) => {
-    const url = `http://${ctx.service.name}:9200`;
-    return withVariable(ctx, url, { OPENSEARCH_URL: url });
-  },
+  address: (ctx) => `http://${ctx.service.name}:9200`,
+  conventionalVariables: (_ctx, url) => ({ OPENSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
   targets: ["server"],
@@ -900,10 +841,8 @@ const ELASTICSEARCH: ServiceSpec = {
   },
   secrets: [PASSWORD],
   auth: "password",
-  appVariables: (ctx) => {
-    const url = `http://elastic:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:9200`;
-    return withVariable(ctx, url, { ELASTICSEARCH_URL: url });
-  },
+  address: (ctx) => `http://elastic:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:9200`,
+  conventionalVariables: (_ctx, url) => ({ ELASTICSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
   targets: ["server"],
@@ -935,13 +874,11 @@ const MEILISEARCH: ServiceSpec = {
   secrets: [{ name: "master-key", format: "hex32" }],
   auth: "key",
   // Laravel Scout's names, which the other clients' examples use too.
-  appVariables: (ctx) => {
-    const url = `http://${ctx.service.name}:7700`;
-    return withVariable(ctx, url, {
-      MEILISEARCH_HOST: url,
-      MEILISEARCH_KEY: ctx.secretRef("master-key"),
-    });
-  },
+  address: (ctx) => `http://${ctx.service.name}:7700`,
+  conventionalVariables: (ctx, url) => ({
+    MEILISEARCH_HOST: url,
+    MEILISEARCH_KEY: ctx.secretRef("master-key"),
+  }),
   targets: BOTH_TARGETS,
 };
 
@@ -968,13 +905,13 @@ const TYPESENSE: ServiceSpec = {
   secrets: [{ name: "api-key", format: "hex32" }],
   auth: "key",
   // Its clients take the address in parts (Laravel Scout's names).
-  appVariables: (ctx) =>
-    withVariable(ctx, `http://${ctx.service.name}:8108`, {
-      TYPESENSE_HOST: ctx.service.name,
-      TYPESENSE_PORT: "8108",
-      TYPESENSE_PROTOCOL: "http",
-      TYPESENSE_API_KEY: ctx.secretRef("api-key"),
-    }),
+  address: (ctx) => `http://${ctx.service.name}:8108`,
+  conventionalVariables: (ctx) => ({
+    TYPESENSE_HOST: ctx.service.name,
+    TYPESENSE_PORT: "8108",
+    TYPESENSE_PROTOCOL: "http",
+    TYPESENSE_API_KEY: ctx.secretRef("api-key"),
+  }),
   targets: BOTH_TARGETS,
 };
 
@@ -1060,14 +997,12 @@ const CLICKHOUSE: ServiceSpec = {
   healthcheck: { test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8123/ping"] },
   secrets: [PASSWORD],
   auth: "password",
-  appVariables: (ctx) => {
-    const url = loginUrl(ctx, "http", 8123, "/app");
-    return withVariable(ctx, url, {
-      CLICKHOUSE_URL: url,
-      CLICKHOUSE_USER: "app",
-      CLICKHOUSE_PASSWORD: ctx.secretRef(PASSWORD.name),
-    });
-  },
+  address: (ctx) => loginUrl(ctx, "http", 8123, "/app"),
+  conventionalVariables: (ctx, url) => ({
+    CLICKHOUSE_URL: url,
+    CLICKHOUSE_USER: "app",
+    CLICKHOUSE_PASSWORD: ctx.secretRef(PASSWORD.name),
+  }),
   targets: BOTH_TARGETS,
 };
 
@@ -1103,14 +1038,12 @@ const NEO4J: ServiceSpec = {
   healthcheck: { test: bashHttpCheck(7474, "/"), startSeconds: 60 },
   secrets: [PASSWORD],
   auth: "password",
-  appVariables: (ctx) => {
-    const url = `bolt://${ctx.service.name}:7687`;
-    return withVariable(ctx, url, {
-      NEO4J_URI: url,
-      NEO4J_USERNAME: "neo4j",
-      NEO4J_PASSWORD: ctx.secretRef(PASSWORD.name),
-    });
-  },
+  address: (ctx) => `bolt://${ctx.service.name}:7687`,
+  conventionalVariables: (ctx, url) => ({
+    NEO4J_URI: url,
+    NEO4J_USERNAME: "neo4j",
+    NEO4J_PASSWORD: ctx.secretRef(PASSWORD.name),
+  }),
   targets: BOTH_TARGETS,
 };
 

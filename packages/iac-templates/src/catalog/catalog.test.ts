@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
 import { GARAGE_STORAGE, withServices } from "./__fixtures__/plans";
 import {
+  appVariables,
   CATALOG,
   checkServiceVersion,
   hostSysctl,
@@ -214,7 +215,7 @@ describe("the app's variables", () => {
   it("are each service's address under the conventional names, with the right scheme", () => {
     const vars = (kind: SelfHostedServiceKind, fields: Record<string, unknown> = {}) => {
       const c = only(kind, fields);
-      return serviceSpec(kind).appVariables(c);
+      return appVariables(c);
     };
     expect(vars("postgres")).toEqual({ DATABASE_URL: "postgresql://app:<password>@db:5432/app" });
     expect(vars("mysql")).toEqual({ DATABASE_URL: "mysql://app:<password>@mysql:3306/app" });
@@ -272,17 +273,19 @@ describe("the app's variables", () => {
 
   it("give a search engine's own detected variable its address", () => {
     const plan = withServices([{ kind: "typesense" }]);
-    expect(
-      serviceSpec("typesense").appVariables(ctx(plan, "typesense", "SEARCH_URL")).SEARCH_URL,
-    ).toBe("http://typesense:8108");
+    expect(appVariables(ctx(plan, "typesense", "SEARCH_URL")).SEARCH_URL).toBe(
+      "http://typesense:8108",
+    );
   });
 
   it("give the app's own detected variable the same address", () => {
     const plan = withServices([{ kind: "mysql" }]);
-    expect(serviceSpec("mysql").appVariables(ctx(plan, "mysql", "MYSQL_URL"))).toEqual({
+    const c = ctx(plan, "mysql", "MYSQL_URL");
+    expect(appVariables(c)).toEqual({
       DATABASE_URL: "mysql://app:<password>@mysql:3306/app",
       MYSQL_URL: "mysql://app:<password>@mysql:3306/app",
     });
+    expect(serviceSpec("mysql").address(c)).toBe("mysql://app:<password>@mysql:3306/app");
   });
 
   it("leave REDIS_URL to a queue instance, so a separate cache gets only its own variable", () => {
@@ -290,16 +293,15 @@ describe("the app's variables", () => {
       { kind: "valkey", options: { mode: "queue" } },
       { kind: "valkey", options: { mode: "cache" } },
     ]);
-    const valkey = serviceSpec("valkey");
-    expect(valkey.appVariables(ctx(plan, "queue"))).toEqual({ REDIS_URL: "redis://queue:6379" });
-    expect(valkey.appVariables(ctx(plan, "cache", "CACHE_URL"))).toEqual({
+    expect(appVariables(ctx(plan, "queue"))).toEqual({ REDIS_URL: "redis://queue:6379" });
+    expect(appVariables(ctx(plan, "cache", "CACHE_URL"))).toEqual({
       CACHE_URL: "redis://cache:6379",
     });
     const dragonfly = withServices([
       { kind: "dragonfly", options: { mode: "queue" } },
       { kind: "dragonfly", options: { mode: "cache" } },
     ]);
-    expect(serviceSpec("dragonfly").appVariables(ctx(dragonfly, "cache", "CACHE_URL"))).toEqual({
+    expect(appVariables(ctx(dragonfly, "cache", "CACHE_URL"))).toEqual({
       CACHE_URL: "redis://:<password>@cache:6379",
     });
   });
@@ -540,7 +542,6 @@ describe("the services' settings", () => {
     expect(toml?.content).toContain('rpc_public_addr = "garage:3901"\n');
     expect(toml?.content).toContain("replication_factor = 1\n");
     expect(toml?.content).not.toMatch(/rpc_secret\s*=/);
-    expect(garage.command?.(c)).toEqual(["/garage", "server", "--single-node"]);
     expect(garage.environment(c)).toEqual({
       GARAGE_RPC_SECRET: "<rpc-secret>",
       GARAGE_DEFAULT_ACCESS_KEY: "<key-id>",
@@ -549,47 +550,19 @@ describe("the services' settings", () => {
     expect(garage.healthcheck.test).toEqual(["CMD", "/garage", "status"]);
   });
 
-  it("Garage: imports the app's key and makes its bucket, each step checked first", () => {
-    const plan = withServices([{ kind: "garage" }], { storage: GARAGE_STORAGE });
-    expect(serviceSpec("garage").init?.(ctx(plan, "garage"))).toEqual([
-      {
-        service: "garage",
-        envFile: "garage.env",
-        check: ["/garage", "key", "info", "${GARAGE_DEFAULT_ACCESS_KEY}"],
-        run: [
-          "/garage",
-          "key",
-          "import",
-          "--yes",
-          "-n",
-          "shop",
-          "${GARAGE_DEFAULT_ACCESS_KEY}",
-          "${GARAGE_DEFAULT_SECRET_KEY}",
-        ],
-      },
-      {
-        service: "garage",
-        check: ["/garage", "bucket", "info", "shop-uploads"],
-        run: ["/garage", "bucket", "create", "shop-uploads"],
-      },
-      {
-        service: "garage",
-        envFile: "garage.env",
-        run: [
-          "/garage",
-          "bucket",
-          "allow",
-          "--read",
-          "--write",
-          "--owner",
-          "shop-uploads",
-          "--key",
-          "${GARAGE_DEFAULT_ACCESS_KEY}",
-        ],
-      },
-    ]);
+  it("Garage: makes the app's key, and its bucket when the plan has one, itself when it starts", () => {
+    const garage = serviceSpec("garage");
+    expect(garage.init).toBeUndefined();
     // Without a Garage bucket in the plan, only the key.
-    expect(serviceSpec("garage").init?.(only("garage"))).toHaveLength(1);
+    expect(garage.command?.(only("garage"))).toEqual([
+      "/garage",
+      "server",
+      "--single-node",
+      "--default-access-key",
+    ]);
+    const c = ctx(withServices([{ kind: "garage" }], { storage: GARAGE_STORAGE }), "garage");
+    expect(garage.command?.(c)).toEqual(["/garage", "server", "--single-node", "--default-bucket"]);
+    expect(garage.environment(c).GARAGE_DEFAULT_BUCKET).toBe("shop-uploads");
   });
 });
 
@@ -723,6 +696,7 @@ describe("initStepsFor", () => {
   it("gives the deploy every enabled service's steps, in the plan's order", () => {
     const plan = withServices(
       [
+        { kind: "mongodb", name: "first", options: { replicaSet: true } },
         { kind: "garage" },
         { kind: "postgres" },
         { kind: "mongodb", options: { replicaSet: true } },
@@ -731,9 +705,7 @@ describe("initStepsFor", () => {
       { storage: GARAGE_STORAGE },
     );
     expect(initStepsFor(plan).map((step) => [step.service, step.run.slice(0, 3)])).toEqual([
-      ["garage", ["/garage", "key", "import"]],
-      ["garage", ["/garage", "bucket", "create"]],
-      ["garage", ["/garage", "bucket", "allow"]],
+      ["first", ["bash", "-c", expect.stringContaining("rs.initiate")]],
       ["mongodb", ["bash", "-c", expect.stringContaining("rs.initiate")]],
     ]);
     expect(initStepsFor(withServices([{ kind: "postgres" }]))).toEqual([]);

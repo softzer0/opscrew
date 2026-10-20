@@ -589,8 +589,8 @@ services:
     stop_grace_period: 10s
     healthcheck:
       disable: true
-    mem_limit: 768m
-    memswap_limit: 768m
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -977,8 +977,8 @@ services:
     stop_grace_period: 10s
     healthcheck:
       disable: true
-    mem_limit: 768m
-    memswap_limit: 768m
+    mem_limit: 64m
+    memswap_limit: 64m
     security_opt:
       - no-new-privileges:true
     logging:

@@ -1,6 +1,7 @@
+import { CRON_ROUTE_MEMORY_MB } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { ownPlan } from "../testing";
-import { appMemoryMb, memoryHeadroom } from "./memory";
+import { appMemoryLimits, appMemoryMb, memoryHeadroom } from "./memory";
 
 describe("appMemoryMb", () => {
   it("adds the web process, enabled workers times their copies, enabled services and cron", () => {
@@ -38,10 +39,19 @@ describe("appMemoryMb", () => {
     expect(appMemoryMb({ ...plan, services: [valkey, { ...valkey, enabled: false }] })).toBe(
       web + 128,
     );
-    // The cron container runs the app's image with the web process's limit.
+    // A command job runs the app's code in the cron container, with the web process's limit.
     expect(appMemoryMb({ ...plan, processes: { workers: [], cron: [job] } })).toBe(2 * web);
     const off = { ...job, enabled: false };
     expect(appMemoryMb({ ...plan, processes: { workers: [], cron: [off] } })).toBe(web);
+    // Route jobs only: supercronic and the probe.
+    const route = { name: "report", schedule: "0 * * * *", route: "/api/report", enabled: true };
+    const routes = { ...plan, processes: { workers: [], cron: [route, off] } };
+    expect(appMemoryMb(routes)).toBe(web + CRON_ROUTE_MEMORY_MB);
+    expect(appMemoryLimits(routes)).toEqual([
+      { name: "the app", memoryMb: web },
+      { name: "cron", memoryMb: CRON_ROUTE_MEMORY_MB },
+    ]);
+    expect(appMemoryMb({ ...plan, processes: { workers: [], cron: [route, job] } })).toBe(2 * web);
   });
 });
 

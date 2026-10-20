@@ -1,3 +1,4 @@
+import { cronMemoryMb } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 
 /**
@@ -18,19 +19,27 @@ export type AppMemoryInput = {
 } & Pick<DeployPlan, "processes" | "services">;
 
 /**
- * The sum of the memory limits of the app's containers in MB: the web process, each enabled
- * worker times its copies, each enabled service, and the cron container when a cron job is enabled
- * (it runs the app's image with the web process's limit).
+ * Each running container's memory limit in MB with its name, the web process first: each enabled
+ * worker times its copies, the cron container when a cron job is enabled (its limit from
+ * `cronMemoryMb`), then each enabled service.
  */
+export function appMemoryLimits(plan: AppMemoryInput): { name: string; memoryMb: number }[] {
+  const cron = cronMemoryMb(plan);
+  return [
+    { name: "the app", memoryMb: plan.app.memoryMb },
+    ...plan.processes.workers
+      .filter((worker) => worker.enabled)
+      .map((worker) => ({ name: worker.name, memoryMb: worker.memoryMb * worker.count })),
+    ...(cron === undefined ? [] : [{ name: "cron", memoryMb: cron }]),
+    ...plan.services
+      .filter((service) => service.enabled)
+      .map((service) => ({ name: service.name, memoryMb: service.memoryMb })),
+  ];
+}
+
+/** The sum of the memory limits of the app's containers in MB ({@link appMemoryLimits}). */
 export function appMemoryMb(plan: AppMemoryInput): number {
-  const workers = plan.processes.workers
-    .filter((worker) => worker.enabled)
-    .reduce((sum, worker) => sum + worker.memoryMb * worker.count, 0);
-  const services = plan.services
-    .filter((service) => service.enabled)
-    .reduce((sum, service) => sum + service.memoryMb, 0);
-  const cron = plan.processes.cron.some((job) => job.enabled) ? plan.app.memoryMb : 0;
-  return plan.app.memoryMb + workers + services + cron;
+  return appMemoryLimits(plan).reduce((sum, limit) => sum + limit.memoryMb, 0);
 }
 
 /**

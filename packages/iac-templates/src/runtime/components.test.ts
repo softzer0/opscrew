@@ -11,6 +11,7 @@ import { GARAGE_STORAGE, type ServiceEntry, withServices } from "../catalog/__fi
 import { IMAGES } from "../pins";
 import { withBuild, withSqlite } from "../workflow/__fixtures__/plans";
 import {
+  CRON_ROUTE_MEMORY_MB,
   hostSettingsServices,
   renderCompose,
   renderRuntimeFiles,
@@ -165,6 +166,12 @@ describe("the services on a server", () => {
     expect(all.nats?.env_file).toEqual(["nats.env"]);
     expect(all.kafka?.env_file).toBeUndefined();
     expect(all.kafka?.environment?.KAFKA_ADVERTISED_LISTENERS).toBe("PLAINTEXT://kafka:9092");
+  });
+
+  it("lets Garage make the app's key and bucket itself when it starts, from its env file", () => {
+    const all = services(withServices([{ kind: "garage" }], { storage: GARAGE_STORAGE }));
+    expect(all.garage?.command).toEqual(["/garage", "server", "--single-node", "--default-bucket"]);
+    expect(all.garage?.env_file).toEqual(["garage.env"]);
   });
 
   it("mounts each settings file read-only from opscrew/runtime/services/<name>/, recreating the service when it changes", () => {
@@ -446,6 +453,20 @@ describe("cron", () => {
     // Its jobs run the app's code.
     expect(cron?.mem_limit).toBe("768m");
     expect(cron?.deploy).toBeUndefined();
+  });
+
+  it("has a small limit when its jobs only call the app's routes", () => {
+    const route = { name: "report", schedule: "@hourly", route: "/api/report" };
+    const limit = (cron: Record<string, unknown>[]) =>
+      services(withApp(withServices([]), { builder: "railpack", memoryMb: 768, cron })).cron
+        ?.mem_limit;
+    expect(limit([route])).toBe(`${CRON_ROUTE_MEMORY_MB}m`);
+    expect(limit([route, { name: "cleanup", schedule: "@daily", command: "node c.js" }])).toBe(
+      "768m",
+    );
+    // A disabled command job runs nothing.
+    const off = { name: "cleanup", schedule: "@daily", command: "node c.js", enabled: false };
+    expect(limit([route, off])).toBe(`${CRON_ROUTE_MEMORY_MB}m`);
   });
 
   it("is recreated when its crontab changes: supercronic reads it only when it starts", () => {

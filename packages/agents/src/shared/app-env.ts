@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
 import {
   appRoot,
+  appVariables,
   type GeneratedSecret,
   isClientExposedEnvName,
   serviceSpec,
@@ -216,7 +217,7 @@ export function serviceAppVariables(
   const own = new Set(running.flatMap((s) => (s.variable === undefined ? [] : [s.variable])));
   const values = new Map<string, string>();
   for (const service of running) {
-    const variables = serviceSpec(service.kind).appVariables({
+    const variables = appVariables({
       plan,
       service,
       secretRef: (name) => secret(service, name),
@@ -229,21 +230,6 @@ export function serviceAppVariables(
     }
   }
   return values;
-}
-
-/** The address of a running service, as its catalog entry gives the app's own variable. */
-function serviceAddress(
-  plan: DeployPlan,
-  service: PlanService,
-  secret: (service: PlanService, name: string) => string,
-): string {
-  const probe = "OPSCREW_SERVICE_ADDRESS";
-  return serviceSpec(service.kind).appVariables({
-    plan,
-    service,
-    secretRef: (name) => secret(service, name),
-    variable: probe,
-  })[probe] as string;
 }
 
 /** What an object storage variable holds, from its name. */
@@ -539,7 +525,11 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
           ? (storageValue(variable.name, plan, options.storage) ??
             sqliteVariableValue(variable.name, plan))
           : undefined
-        : serviceAddress(plan, aliased, secret);
+        : serviceSpec(aliased.kind).address({
+            plan,
+            service: aliased,
+            secretRef: (name) => secret(aliased, name),
+          });
     const fixed = derived ? FIXED_VALUES.get(variable.name) : undefined;
     // The file of a non-interactive run holds production values; the local `.env` of an
     // interactive run holds development ones (`APP_ENV=local`), so it never overrides a default.
