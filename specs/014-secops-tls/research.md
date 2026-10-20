@@ -38,7 +38,7 @@ runs before anything relies on them.
     - JSON output (`-jj`);
     - the built-in Ubuntu 24.04 server policy (`-P`) for a clean pass or fail;
     - 1–3 connections. `--dheat` and `-g` are never used.
-  - **testssl.sh v3.2.4** (GPL-2.0) runs **from the user's machine** in `ghcr.io/testssl/testssl.sh` pinned by digest, with `--quiet --warnings batch --connect-timeout 10 --jsonfile-pretty -p -S -h host:443`:
+  - **testssl.sh v3.2.4** (GPL-2.0) runs **from the user's machine** in `ghcr.io/testssl/testssl.sh` pinned by digest (there is no `3.2.4` tag, so the `3.2` line's build, 39 backport commits after v3.2.4), with `--quiet --warnings batch --connect-timeout 10 --jsonfile-pretty -p -S -h host:443`:
     - it takes 20–60 s;
     - its severities run OK, INFO, LOW, MEDIUM, HIGH, CRITICAL;
     - a proxied host is tested at **Cloudflare's edge**, and the report says so.

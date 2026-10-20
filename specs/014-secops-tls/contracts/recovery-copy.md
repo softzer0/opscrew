@@ -30,15 +30,17 @@ fetchPinnedTool(pin: LocalToolPin, deps: { fetch; fs; env; homeDir; platform; ar
 ## sops runner (`@opscrew/core`)
 
 ```ts
-sopsEncrypt(bin: string, input: { plaintext: string; recipients: string[]; filename: string }, exec):
+sopsEncrypt(bin: string, input: { plaintext: string; recipients: string[]; filename: string }, deps: { exec; redactor; env }):
   Promise<string>;                   // encrypted JSON; plaintext only on stdin
-sopsDecrypt(bin: string, input: { encrypted: string; identity: string; filename: string }, exec):
+sopsDecrypt(bin: string, input: { encrypted: string; identity: string; filename: string }, deps: { exec; redactor; env }):
   Promise<string>;                   // plaintext JSON on stdout, never written to disk
 ```
 
 - The arguments are `encrypt|decrypt --input-type json --output-type json --filename-override
   <filename>`, plus `--age <recipients>` for encrypt.
-- The identity reaches the child only in `SOPS_AGE_KEY`, and the plaintext only on stdin.
+- The child's environment is `deps.env` without any `SOPS_*` variable, so the user's own sops
+  settings add no recipient and open no file with another key. The identity is added only as
+  `SOPS_AGE_KEY`, and the plaintext goes only on stdin.
 - The identity and every decrypted value are registered with the redactor before any message can
   name them.
 - A wrong key is mapped from sops's exit code and message to `SECRETS_KEY_REJECTED`.

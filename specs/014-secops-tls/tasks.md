@@ -61,7 +61,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1401b [P] Pins, the pinned-tools fetcher, the sops runner, and key material, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`, `packages/core/src/{tools,crypto}/**`
+- [X] T1401b [P] Pins, the pinned-tools fetcher, the sops runner, and key material, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`, `packages/core/src/{tools,crypto}/**`
   - Owns: those paths (+ tests); `packages/core/src/index.ts` and `packages/iac-templates/src/index.ts` for their new exports only
   - Reads: research.md R1, R2, R3 ("Key material"), R5; contracts/recovery-copy.md "Fetcher", "sops runner", "age keys"; plan.md "2."
   - Depends: —
@@ -167,6 +167,7 @@ Effort`.
       - the local files encrypted again;
       - the two files returned for a pull request;
       - the old-commit sentence of FR-1414 in the result's message.
+    - **The redactor:** after a decrypt or a read, every value inside `generated_values.json` is registered with the redactor by itself, not only the whole file (T1401b's review).
     - **`recoveryStatus`** as in the contract: `lastModified` from `sops.lastmodified`, the recipient count from `sops.age`, and `behind` from the hashes.
     - **The pull requests:** provision's publish step and retarget's `--finish` include `opscrew/secrets.sops.json`, `.sops.yaml` and `.gitattributes` whenever `refreshRecoveryCopy` returns `changed: true`.
     - **Tests:** a fake sops (stdin and stdout recorded), plus a real-sops round trip when `OPSCREW_SOPS_BIN` is set; every rule above; the identity and every file's content absent from logs, the audit, results and snapshots.
@@ -916,6 +917,7 @@ Each wave is merged, gated and pushed before the next starts.
   - Owns: the files each item names (+ tests and snapshots), and any 014 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
   - Accept:
     - **The items listed below.**
+      - Refresh the older pins that moved upstream (the curl and mysql 8.4 digests, uv), found by T1401b's run of `update-pins.mjs`, then run the gate.
     - **A duplication sweep over 014's whole change:** merge repeated helpers where the code gets smaller and no less clear. List what was merged, and what was left and why.
     - **No behaviour change.**
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
