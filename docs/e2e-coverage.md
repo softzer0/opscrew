@@ -28,7 +28,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
 | Hetzner component checks (feature 013): the live set of SC-1301, one pass per example, each with its data through a deploy and a reboot, the worker and cron, limits, no public port, the server-side checks and the leak search ([details below](#components-feature-013)) | `OPSCREW_E2E_COMPONENTS=1`, `OPSCREW_E2E_APP` = one of the eight component examples | Passed: `node-bullmq`, `express-mysql`, `node-mongo`, `rabbitmq-worker`, `kafka-app`, `meili-search` (+ OpenSearch), `clickhouse-events` | 2026-10-20 | — |
 | The bucket on Cloudflare R2 (`s3-uploads`) | + `OPSCREW_E2E_R2=1` (default `OPSCREW_E2E_STORAGE=r2`), a Cloudflare domain | Passed | 2026-10-20 | — |
-| The bucket on Hetzner Object Storage (`s3-uploads`) | + `OPSCREW_E2E_STORAGE=hetzner`, `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | **Not passed yet**: two runs failed on Hetzner's side (fixed in T1315a; T1315b in progress) | — | A rerun after T1315b |
+| The bucket on Hetzner Object Storage (`s3-uploads`) | + `OPSCREW_E2E_STORAGE=hetzner`, `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | Passed (run 5, after T1315a–T1315c; Hetzner can show a new bucket late, which OpsCrew now handles) | 2026-10-20 | — |
 | Your own server with two apps on one server behind one edge (feature 013, steps 6b–7b): `s3-uploads` with Garage next to the first app, a change to each under 20 requests per second each, the first app's destroy under load, the edge gone with the last app | `OPSCREW_E2E_OWN_SERVER=1`, `OPSCREW_E2E_GITHUB_REPO_B` (now required) | Passed (11 tests) | 2026-10-20 | — |
 | Your existing Portainer, components in stacks and the host-setting refusal (feature 013, step 7b with `node-mongo`) | `OPSCREW_E2E_PORTAINER=1`, `OPSCREW_E2E_GITHUB_REPO_B` (now required) | Passed (10 tests) | 2026-10-20 | — |
 
@@ -151,20 +151,20 @@ Tick each one once it has passed live.
 
 | Check | `node-bullmq` | `express-mysql` | `node-mongo` | `s3-uploads` on R2 | `s3-uploads` on Hetzner | `rabbitmq-worker` | `kafka-app` | `meili-search` (+ OpenSearch) | `clickhouse-events` |
 |---|---|---|---|---|---|---|---|---|---|
-| `opscrew status` shows every component running | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
-| Every container of the app and the edge has its memory limit, no swap beyond it | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
-| No port published but the edge's Caddy, the app on the edge's network, no service port answers from outside | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
-| Nothing restarted or met its limit, after the first deploy and after the reboot | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
+| `opscrew status` shows every component running | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
+| Every container of the app and the edge has its memory limit, no swap beyond it | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
+| No port published but the edge's Caddy, the app on the edge's network, no service port answers from outside | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
+| Nothing restarted or met its limit, after the first deploy and after the reboot | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
 | Each `/srv/data/<app>/<service>` holds data and belongs to its service's user | [x] | [x] | [x] | — | — | [x] | — (named volume) | [x] | [x] |
 | Each mounted settings file readable by its service, writable only by its owner | [x] (crontab) | [x] | — | — | — | [x] | — | — | [x] |
 | The settings are honoured | — | [x] `@@innodb_buffer_pool_size` | — | — | — | — | — | — | [x] `max_server_memory_usage` |
 | The kernel setting in `/etc/sysctl.d/90-opscrew.conf` and in use, also after the reboot | — | — | — | — | — | — | — | [x] `vm.max_map_count` | — |
 | A queued job is consumed within 30 seconds (SC-1302) | [x] | — | — | — | — | [x] | [x] | — | — |
 | The cron job runs within a minute of its schedule (SC-1302) | [x] | — | — | — | — | — | — | — | — |
-| A value written through the app survives a deploy and a reboot (SC-1303) | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
-| `opscrew drift` passes after the reboot | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
-| The leak search finds nothing (SC-1306) | [x] | [x] | [x] | [x] | [ ] | [x] | [x] | [x] | [x] |
-| The teardown deletes the bucket (`--delete-data`); the key stays the user's | — | — | — | [x] | [ ] | — | — | — | — |
+| A value written through the app survives a deploy and a reboot (SC-1303) | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
+| `opscrew drift` passes after the reboot | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
+| The leak search finds nothing (SC-1306) | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] |
+| The teardown deletes the bucket (`--delete-data`); the key stays the user's | — | — | — | [x] | [x] | — | — | — | — |
 
 Your own server with two apps (steps 6b–7b) and Portainer (step 7b):
 
