@@ -530,7 +530,7 @@ Effort`.
       - Tests: each, with the attribute values from the run.
     - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/iac-engine --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2`, `pnpm lint`
     - Effort: medium
-  - [ ] T1315b A new bucket Hetzner shows late, in `packages/contracts/src/**` (the `IacEngine` contract), `packages/iac-engine/src/**`, `packages/agents/src/{provision,destroy}/storage.ts`, `packages/agents/src/shared/s3.ts` (+ tests)
+  - [X] T1315b A new bucket Hetzner shows late, in `packages/contracts/src/**` (the `IacEngine` contract), `packages/iac-engine/src/**`, `packages/agents/src/{provision,destroy}/storage.ts`, `packages/agents/src/shared/s3.ts` (+ tests)
     - Why: in one live run on 2026-10-20, applying the storage root failed with `Error: reading S3 Bucket (<name>): couldn't find resource`. The `aws` provider reads the new bucket's settings right after creating it, and one Hetzner node didn't know the bucket yet. Four other creates worked, each in about 18 s. OpenTofu then keeps the bucket tainted, so the next plan wants to replace it, and `prevent_destroy` blocks that: the user is stuck.
     - Accept:
       - **The engine:** `IacEngine.untaint(dir, address, options)` runs `untaint -allow-missing <address>` against the root's state. It is a state-only change, made with the same env and state options as the other calls. The contract gains the method, and the fakes implement it.
