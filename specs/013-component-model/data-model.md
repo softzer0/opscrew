@@ -88,6 +88,7 @@ storage:
 **Sizing figures** (to be settled by the live runs):
 - the system reserve is 384 MB;
 - the edge is 128 MB (Caddy 64, kamal-proxy 32, cloudflared 32 when tunnelled);
+- cron gets 64 MB when every enabled job calls a route (supercronic plus the probe peaked at 46–50 MiB in Docker), otherwise the app's own limit;
 - design refuses when the limits exceed the server's memory minus the reserve, and warns when less
   than 15% of it is left.
 

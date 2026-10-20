@@ -18,11 +18,15 @@ export interface ServiceSpec {
   command?: (ctx: ServiceContext) => string[];             // e.g. mongod --wiredTigerCacheSizeGB <n>
   environment: (ctx: ServiceContext) => Record<string, string>;   // the service's own settings, secrets by name
   healthcheck: string[];                // a CMD form that works with the image's own tools
-  init?: (ctx: ServiceContext) => { command: string[] };          // one-shot: MongoDB's replica set, Garage's layout
+  init?: (ctx: ServiceContext) => ServiceInitStep[];               // one-shot steps: MongoDB's replica set
+                                        // (Garage needs none: it starts with its own --default-bucket)
   secrets: GeneratedSecret[];           // e.g. { name: "password", format: "hex32" }
   auth: "password" | "token" | "key" | "internal-only";   // internal-only: Valkey, Kafka, Redpanda,
                                         // OpenSearch (reachable only from the app's own containers)
-  appVariables: (ctx: ServiceContext) => Record<string, string>;  // what the app receives, by its detected names
+  address: (ctx: ServiceContext) => string;                       // the service's URL or address on the app's network
+  conventionalVariables: (ctx: ServiceContext, address: string) => Record<string, string>;
+                                        // what the app receives by convention; the catalog's
+                                        // appVariables(ctx) adds the app's own detected variable
   hostSettings?: { sysctl: Record<string, string> };              // vm.max_map_count for the search engines
   ulimits?: { nofile: number };        // the open-file limit, soft and hard (OpenSearch, Elasticsearch: 65536)
   targets: ("server" | "portainer")[]; // portainer omitted when a host setting is needed
