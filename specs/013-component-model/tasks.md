@@ -491,7 +491,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew --concurrency=2`, `node plugin/validate.mjs`, `pnpm lint`
   - Effort: high
 
-- [ ] T1317 [US4] Redis 8 and Dragonfly next to Valkey (founder, 2026-10-20), in `packages/plan-schema/src/**`, `packages/detect/src/**`, `packages/iac-templates/src/{catalog,dependabot}/**`, `packages/iac-templates/src/pins.ts`, `packages/agents/src/{design,interview}/**`, `packages/cli/test/e2e/engines.test.ts`, `docs/guide/{brokers,components}.md`
+- [X] T1317 [US4] Redis 8 and Dragonfly next to Valkey (founder, 2026-10-20), in `packages/plan-schema/src/**`, `packages/detect/src/**`, `packages/iac-templates/src/{catalog,dependabot}/**`, `packages/iac-templates/src/pins.ts`, `packages/agents/src/{design,interview}/**`, `packages/cli/test/e2e/engines.test.ts`, `docs/guide/{brokers,components}.md`
   - Owns: those paths (+ tests, snapshots, regenerated JSON schemas)
   - Reads: spec FR-1321, FR-1321a; research.md R9; contracts/components.md
   - Depends: T1316 (both edit design and the interview; start after it merges)
