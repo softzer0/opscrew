@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { type ProjectFacts, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDesign } from "../design";
@@ -9,10 +10,12 @@ import {
   writeArchitecture,
 } from "../testing";
 import {
+  answeredKinds,
   applyComponentAnswers,
   buildComponentQuestions,
   hostedAdditions,
   splitComponentAnswers,
+  storageAnswerText,
 } from "./components";
 import { runInterview } from "./run";
 
@@ -92,6 +95,180 @@ describe("buildComponentQuestions", () => {
       workerCommands: { bullmq: "node dist/worker.js" },
     });
     expect(answered[0]?.default).toBe("node dist/worker.js");
+  });
+});
+
+/** An app with an S3 client, and optionally an endpoint at a known host. */
+const s3 = (hostedServices: ProjectFacts["hostedServices"] = []) =>
+  makeFacts({
+    services: [{ kind: "s3", evidence: ["dependency:@aws-sdk/client-s3"] }],
+    objectStorage: { client: "@aws-sdk/client-s3", presignedUploads: false, variables: [] },
+    ...(hostedServices.length > 0 ? { hostedServices } : {}),
+  });
+
+describe("the object storage questions (FR-1316a)", () => {
+  it("ask to keep the storage the app uses now or let OpsCrew create a bucket, kept by default", () => {
+    const [keep, where, ...rest] = buildComponentQuestions(s3(), makeRequirements());
+    expect(rest).toEqual([]);
+    expect(keep).toEqual({
+      id: "keepExternalServices.s3",
+      prompt: "Keep the storage the app uses now for its files?",
+      help: "The app stores files through S3 (@aws-sdk/client-s3). Yes keeps that storage: OpsCrew creates no bucket, and you set its address and keys in the app's production environment. No lets OpsCrew create a private bucket for the app, at the storage you choose next.",
+      kind: "confirm",
+      default: true,
+      required: false,
+    });
+    // The offers where the app runs, with their prices; Garage too, but never the default here.
+    expect(where).toEqual({
+      id: "objectStorage",
+      prompt: "If OpsCrew creates the bucket, which storage should it use?",
+      help: "Priced for 10 GB stored and 50 GB sent a month, from the number of users (storage.objectStorage.expected in opscrew/plan.yaml changes it later). Used only when you let OpsCrew create a bucket.",
+      kind: "single-select",
+      options: [
+        {
+          value: "garage",
+          label:
+            "Garage on your server $0.00/month plus 64 MB of the server's memory, with the files on that server only",
+          hint: "only if you choose it",
+        },
+        { value: "hetzner", label: "Hetzner Object Storage €6.49/month" },
+      ],
+      default: "hetzner",
+      required: false,
+    });
+    // On the user's own server Garage can be the default; an earlier answer carries over.
+    const own = buildComponentQuestions(s3(), makeRequirements({ provider: "own" }));
+    expect(own[1]).toMatchObject({ options: [{ value: "garage" }], default: "garage" });
+    const earlier = buildComponentQuestions(
+      s3(),
+      makeRequirements({ keepExternalServices: { s3: false }, objectStorage: "garage" }),
+    );
+    expect(earlier.map((q) => q.default)).toEqual([false, "garage"]);
+  });
+
+  it("name the known host the app stores its files at", () => {
+    const amazon = s3([{ kind: "s3", variable: "S3_ENDPOINT", provider: "Amazon S3" }]);
+    const [keep] = buildComponentQuestions(amazon, makeRequirements());
+    expect(keep).toMatchObject({
+      id: "keepExternalServices.s3",
+      prompt: "Keep storing the app's files at Amazon S3?",
+      default: true,
+    });
+    expect(keep?.help).toBe(
+      "The app stores files through S3 (@aws-sdk/client-s3) at Amazon S3 (S3_ENDPOINT). Yes keeps that storage: OpsCrew creates no bucket, and you set its address and keys in the app's production environment. No lets OpsCrew create a private bucket for the app, at the storage you choose next, and you move the files yourself.",
+    );
+  });
+
+  it("list every storage with where it is offered before the target is known", () => {
+    const [, where] = buildComponentQuestions(s3(), { keepExternalServices: {} });
+    expect(where?.options?.map((o) => [o.value, o.hint])).toEqual([
+      ["garage", "on the app's server: on a cloud server only if you choose it"],
+      ["hetzner", "on Hetzner Cloud in Falkenstein, Nuremberg or Helsinki"],
+      ["digitalocean", "on DigitalOcean"],
+      ["r2", "with the domain on Cloudflare"],
+    ]);
+    expect(where?.default).toBeUndefined();
+    // With an earlier choice and no target (the provider may change in the same answers).
+    const [, earlier] = buildComponentQuestions(s3(), {
+      keepExternalServices: { s3: false },
+      objectStorage: "garage",
+    });
+    expect(earlier?.options).toHaveLength(4);
+    expect(earlier?.default).toBe("garage");
+  });
+
+  it("take the storage only for a bucket OpsCrew creates, and only where it is offered", () => {
+    const apply = (answers: Record<string, unknown>, requirements = makeRequirements()) =>
+      applyComponentAnswers(requirements, splitComponentAnswers(answers, s3()));
+    const garage = apply({ "keepExternalServices.s3": false, objectStorage: "Garage" });
+    expect(garage.keepExternalServices).toEqual({ s3: false });
+    expect(garage.objectStorage).toBe("garage");
+    // Kept storage needs no choice; an empty answer removes an earlier one.
+    expect(apply({ "keepExternalServices.s3": true, objectStorage: "garage" }).objectStorage).toBe(
+      undefined,
+    );
+    const earlier = makeRequirements({
+      keepExternalServices: { s3: false },
+      objectStorage: "garage",
+    });
+    expect(apply({ objectStorage: "" }, earlier).objectStorage).toBeUndefined();
+    expect(apply({}, earlier).objectStorage).toBe("garage");
+    // An earlier choice the target no longer offers does not carry over.
+    const moved = makeRequirements({
+      provider: "digitalocean",
+      keepExternalServices: { s3: false },
+      objectStorage: "hetzner",
+    });
+    expect(apply({}, moved).objectStorage).toBeUndefined();
+    // DigitalOcean Spaces is not offered on Hetzner.
+    expect(() =>
+      apply({ "keepExternalServices.s3": false, objectStorage: "digitalocean" }),
+    ).toThrow(
+      'objectStorage: "digitalocean" is not offered where the app runs (choose one of garage, hetzner)',
+    );
+  });
+
+  it("are summed up as a new bucket, not as something run on the server", () => {
+    const bucket = makeRequirements({ keepExternalServices: { s3: false, redis: false } });
+    expect(answeredKinds(bucket, false)).toEqual(["redis"]);
+    expect(storageAnswerText(bucket)).toBe("a new bucket, at the storage design picks");
+    expect(storageAnswerText({ ...bucket, objectStorage: "garage" })).toBe(
+      "a new bucket in Garage on your server",
+    );
+    const kept = makeRequirements({ keepExternalServices: { s3: true } });
+    expect(answeredKinds(kept, true)).toEqual(["s3"]);
+    expect(storageAnswerText(kept)).toBeUndefined();
+  });
+
+  it("let the user choose Garage on Hetzner, which a rerun of design keeps", async () => {
+    const deps = await withFacts(s3());
+    let asked: string[] = [];
+    await runInterview(deps, {
+      answers: ANSWERS,
+      askComponents: async (questions) => {
+        asked = questions.map((q) => q.id);
+        return { "keepExternalServices.s3": false, objectStorage: "garage" };
+      },
+    });
+    expect(asked).toEqual(["keepExternalServices.s3", "objectStorage"]);
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.plan.storage?.objectStorage).toMatchObject({ provider: "garage" });
+    expect(first.plan.services.map((s) => s.kind)).toEqual(["garage"]);
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    await runDesign(deps, { catalog: euCatalog() });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+  });
+
+  it("default to where the plan's bucket is, so accepting the defaults never moves it", async () => {
+    const deps = await withFacts(s3());
+    await runInterview(deps, { answers: { ...ANSWERS, "keepExternalServices.s3": false } });
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.storage?.objectStorage?.provider).toBe("hetzner");
+    // The user moves the bucket to Garage in plan.yaml, then reruns the interview.
+    const storage = plan.storage?.objectStorage;
+    if (storage === undefined) throw new Error("no bucket planned");
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      storage: { objectStorage: { ...storage, provider: "garage", region: "garage" } },
+    });
+    let defaults: unknown[] = [];
+    const { requirements } = await runInterview(deps, {
+      answers: ANSWERS,
+      askComponents: async (questions) => {
+        defaults = questions.map((q) => q.default);
+        return Object.fromEntries(questions.map((q) => [q.id, q.default]));
+      },
+    });
+    expect(defaults).toEqual([false, "garage"]);
+    expect(requirements).toMatchObject({
+      keepExternalServices: { s3: false },
+      objectStorage: "garage",
+    });
+    const again = await runDesign(deps, { catalog: euCatalog() });
+    expect(again.plan.storage?.objectStorage).toMatchObject({
+      provider: "garage",
+      bucket: storage.bucket,
+    });
   });
 });
 

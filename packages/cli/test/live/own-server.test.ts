@@ -103,7 +103,7 @@ describe.skipIf(MISSING.length > 0)(
           dataCriticality: "important",
           dnsProvider: "cloudflare",
           domain: app.appHost,
-          keepExternalServices: [],
+          keepExternalServices: { s3: false },
           "server.host": app.ipv4(),
           "server.port": 22,
           "server.user": "root",

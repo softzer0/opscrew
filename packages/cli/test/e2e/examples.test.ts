@@ -88,7 +88,11 @@ const ANSWERS: Record<string, Record<string, unknown>> = Object.fromEntries(
     "express-mysql": {},
     "node-mongo": {},
     "flask-sqlite": {},
-    "s3-uploads": { domain: "files.example.com", dnsProvider: "cloudflare" },
+    "s3-uploads": {
+      domain: "files.example.com",
+      dnsProvider: "cloudflare",
+      keepExternalServices: { s3: false },
+    },
     "rabbitmq-worker": {},
     "nats-app": {},
     "kafka-app": { budgetMonthly: "30 EUR" },

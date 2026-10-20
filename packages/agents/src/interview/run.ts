@@ -164,19 +164,29 @@ async function appCandidatesFor(deps: PhaseDeps, facts: ProjectFacts): Promise<s
 }
 
 /**
- * The previous answers with signing and deploy tags as `opscrew/plan.yaml` sets them, when there is
- * a readable plan written after those answers (the user may have changed them there since). The
- * same order rule as design's: answers newer than the plan replace its settings at the next
- * design, so they win here too. The interview's defaults and unanswered values start from this.
+ * The previous answers with what a readable `opscrew/plan.yaml` sets: the plan's bucket, always,
+ * since design never moves it for an answer (`objectStorage` its provider, and
+ * `keepExternalServices.s3` `false` unless answered); and signing and deploy tags when the plan
+ * was written after those answers (the user may have changed them there since). The same order
+ * rule as design's: answers newer than the plan replace its settings at the next design, so they
+ * win here too. The interview's defaults and unanswered values start from this.
  */
 export async function withPlanSettings(
   paths: ProjectPaths,
-  previous: Requirements,
+  answers: Requirements,
 ): Promise<Requirements> {
   const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);
-  if (plan === undefined || Date.parse(previous.answeredAt) > Date.parse(plan.updatedAt)) {
-    return previous;
-  }
+  if (plan === undefined) return answers;
+  const bucket = plan.storage?.objectStorage;
+  const previous: Requirements =
+    bucket === undefined
+      ? answers
+      : {
+          ...answers,
+          keepExternalServices: { s3: false, ...answers.keepExternalServices },
+          objectStorage: bucket.provider,
+        };
+  if (Date.parse(previous.answeredAt) > Date.parse(plan.updatedAt)) return previous;
   const { enabled, release } = plan.cicd.deployTags;
   return {
     ...previous,

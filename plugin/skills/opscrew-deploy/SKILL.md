@@ -48,7 +48,7 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      user has a reason against it. Both Cloudflare ways need a domain on the user's Cloudflare
      account.
 
-   Two kinds of questions are about what runs next to the app:
+   These questions are about what runs next to the app:
    - `workerCommands.<name>`: a background-job library OpsCrew found has no conventional start
      command (BullMQ, asynq, river). Ask the user for the command that starts that worker from the
      app's code (for example `node dist/worker.js`); never guess one.
@@ -56,6 +56,16 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      PlanetScale, Upstash, Neon and the like). Ask whether to keep it or let OpsCrew run one on the
      server, and pass on what running it there adds (its memory on the server, and its data on the
      server's disk). Without an answer, OpsCrew keeps the hosted one.
+   - `keepExternalServices.s3` and `objectStorage`: the app stores files through an S3 client.
+     Ask whether to keep the storage it uses now (named when it is a known host such as Amazon S3,
+     Cloudflare R2 or Supabase Storage) or let OpsCrew create a bucket (`false`), and if so where,
+     from the `objectStorage` choices with their prices. Each choice says where it is offered:
+     offer only those that fit the provider the user picks. Garage keeps the files on the app's
+     server; on a cloud server it is offered only as the user's choice, so say that the files then
+     live only on that server. Never replace the app's storage unasked: without an answer OpsCrew
+     keeps it and plans no bucket. An answer never moves a bucket the plan already has; moving it
+     is a change of `storage.objectStorage.provider` in `opscrew/plan.yaml`, and the user moves
+     the files.
 
    For `portainer` (a Portainer the user already runs, often on a NAS such as Synology, Unraid or
    TrueNAS), ask the returned `portainer.` questions instead: Portainer's HTTPS address, the

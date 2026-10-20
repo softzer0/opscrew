@@ -67,7 +67,7 @@ export function envFileSchemes(text: string): Map<string, EnvUrlScheme> {
 }
 
 /**
- * The scheme and host of a URL an env file gives a variable, or the host of a bare address
+ * The scheme, host and path of a URL an env file gives a variable, or the host of a bare address
  * (`broker.example.com:9092`); the rest of the value is dropped.
  */
 export interface EnvUrl {
@@ -78,6 +78,11 @@ export interface EnvUrl {
   scheme: string;
   /** In lower case, without user info or port; the first one of a host list. */
   host: string;
+  /**
+   * The URL's path without query or fragment (`/storage/v1/s3`), which tells a provider's
+   * services apart; absent for a bare address or a URL without one.
+   */
+  path?: string;
 }
 
 /** One `NAME=value` line of an env file: the name, then the value as written. */
@@ -85,20 +90,21 @@ export const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/
 /** A bare host name, with an optional port, alone or first in a list. */
 const BARE_HOST = /^["']?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)(?::\d+)?(?:,|["']?\s*$)/;
 
-/** The URL or bare address each variable of an env file holds, as its scheme and host only. */
+/** The URL or bare address each variable of an env file holds, as its scheme, host and path only. */
 export function envFileUrls(text: string): Map<string, EnvUrl> {
   const urls = new Map<string, EnvUrl>();
   for (const line of text.split(/\r?\n/)) {
     const match = ENV_LINE.exec(line);
     if (!match?.[1]) continue;
     const value = match[2] ?? "";
-    const url = /^["']?([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#\s"']*)/.exec(value);
+    const url = /^["']?([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#\s"']*)(\/[^?#\s"']*)?/.exec(value);
     if (url?.[1]) {
       const authority = url[2] ?? "";
       const host = (authority.slice(authority.lastIndexOf("@") + 1).split(",")[0] ?? "")
         .replace(/:\d*$/, "")
         .toLowerCase();
-      urls.set(match[1], { scheme: url[1].toLowerCase(), host });
+      const path = url[3];
+      urls.set(match[1], { scheme: url[1].toLowerCase(), host, ...(path ? { path } : {}) });
       continue;
     }
     const bare = BARE_HOST.exec(value)?.[1];
@@ -169,14 +175,32 @@ const HOSTED_PROVIDERS: readonly (readonly [RegExp, string, ServiceKind?])[] = [
   [/(?:^|\.)ondigitalocean\.com$/, "DigitalOcean Managed Databases"],
   [/(?:^|\.)rds\.amazonaws\.com$/, "Amazon RDS"],
   [/(?:^|\.)cache\.amazonaws\.com$/, "Amazon ElastiCache", "redis"],
+  // S3's own labels only (`s3.eu-west-1`, `s3-eu-west-1`, `s3.dualstack.…`): other AWS services'
+  // names may start with `s3-` too.
+  [
+    /(?:^|\.)s3(?:[.-](?:dualstack|accelerate|accesspoint|website|external-1|[a-z]{2}(?:-[a-z]+)+-\d))*\.amazonaws\.com$/,
+    "Amazon S3",
+    "s3",
+  ],
+  [/(?:^|\.)backblazeb2\.com$/, "Backblaze B2", "s3"],
+  [/(?:^|\.)wasabisys\.com$/, "Wasabi", "s3"],
+  [/(?:^|\.)digitaloceanspaces\.com$/, "DigitalOcean Spaces", "s3"],
+  [/(?:^|\.)r2\.cloudflarestorage\.com$/, "Cloudflare R2", "s3"],
+  [/(?:^|\.)your-objectstorage\.com$/, "Hetzner Object Storage", "s3"],
 ];
+
+/** Supabase Storage's S3 endpoint: a project URL with this path. */
+const SUPABASE_STORAGE_PATH = /^\/storage\/v1\/s3\/?$/;
 
 /**
  * The hosted service a URL or bare address points at: the provider's name from the host (MongoDB
- * Atlas for the `mongodb+srv` form), and the kind from the URL's scheme, else the provider's.
- * Undefined for no known provider, or no kind.
+ * Atlas for the `mongodb+srv` form, Supabase Storage for a Supabase project's S3 path), and the
+ * kind from the URL's scheme, else the provider's. Undefined for no known provider, or no kind.
  */
 export function hostedService(url: EnvUrl): { kind: ServiceKind; provider: string } | undefined {
+  if (/(?:^|\.)supabase\.co$/.test(url.host) && SUPABASE_STORAGE_PATH.test(url.path ?? "")) {
+    return { kind: "s3", provider: "Supabase Storage" };
+  }
   const known = HOSTED_PROVIDERS.find(([host]) => host.test(url.host));
   const provider = known?.[1] ?? (url.scheme === "mongodb+srv" ? "MongoDB Atlas" : undefined);
   const kind = serviceOfScheme(url.scheme) ?? known?.[2];

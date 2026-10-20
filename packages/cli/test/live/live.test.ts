@@ -656,7 +656,7 @@ async function deployAndTearDown(
         dataCriticality: "important",
         dnsProvider: withDns ? "cloudflare" : "none",
         ...(domain ? { domain } : {}),
-        keepExternalServices: [],
+        keepExternalServices: { s3: false },
         ...options.answers,
       }),
     );

@@ -1426,7 +1426,10 @@ describe("runDesign: components", () => {
         cronJobs: [{ schedule: "0 5 * * *", route: "/api/cron/cleanup", source: "vercel.json" }],
         objectStorage: { client: "@aws-sdk/client-s3", presignedUploads: true, variables: [] },
       }),
-      makeRequirements({ workerCommands: { bullmq: "node dist/worker.js" } }),
+      makeRequirements({
+        workerCommands: { bullmq: "node dist/worker.js" },
+        keepExternalServices: { s3: false },
+      }),
     );
     await runDesign(deps, { catalog: euCatalog() });
     const files = async () =>
@@ -1526,7 +1529,10 @@ describe("runDesign: components", () => {
       clientExposed: false,
       secretLikely: false,
     };
-    const deps = await setup(makeFacts({ envVars: [endpoint] }));
+    const deps = await setup(
+      makeFacts({ envVars: [endpoint] }),
+      makeRequirements({ keepExternalServices: { s3: false } }),
+    );
     const { plan } = await runDesign(deps, { catalog: euCatalog() });
     await writeArtifact("plan", deps.paths.files.plan, {
       ...plan,

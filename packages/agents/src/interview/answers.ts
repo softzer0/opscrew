@@ -54,6 +54,7 @@ const DESCRIPTIONS: Record<QuestionId, string> = {
   domain: "domain",
   dnsProvider: "DNS provider",
   keepExternalServices: "whether to keep each hosted service",
+  objectStorage: "where OpsCrew creates the bucket",
   workerCommands: "commands of the workers",
   contactEmail: "contact email",
   notes: "notes",

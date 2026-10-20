@@ -8,6 +8,7 @@ import {
   STORAGE_NAMES,
   STORAGE_PRICES,
   type StoragePrice,
+  serviceSpec,
   sqliteVolumeOwner,
 } from "@opscrew/iac-templates";
 import type {
@@ -81,6 +82,8 @@ export interface StorageOffer {
   /** The bucket's region or location. */
   region: string;
   price: StoragePrice;
+  /** Only the user's choice, never the default: Garage on a cloud server (FR-1316). */
+  optIn?: true;
 }
 
 /** The monthly price of `provider` for `expected`, rounded to cents. */
@@ -94,19 +97,20 @@ export function storagePrice(
 
 /**
  * The object storage options for where the app runs, priced for `expected` and cheapest first
- * (FR-1316): the cloud provider's own storage where its location has it, Garage on a server the
- * user owns or a Portainer, and Cloudflare R2 when the domain is on Cloudflare (it needs OpsCrew's
- * Cloudflare token and account). Ties keep that order.
+ * (FR-1316): Garage on the app's server on every target (opt-in on a cloud server), the cloud
+ * provider's own storage where its location has it, and Cloudflare R2 when the domain is on
+ * Cloudflare (it needs OpsCrew's Cloudflare token and account). Ties keep that order.
  */
 export function storageOffers(
   requirements: Pick<Requirements, "provider" | "region" | "dnsProvider" | "domain">,
   expected: ObjectStorage["expected"],
 ): StorageOffer[] {
   const provider: DeployProvider = requirements.provider ?? "hetzner";
-  const offers: Omit<StorageOffer, "price">[] = [];
-  if (provider === "own" || provider === "portainer") {
-    offers.push({ provider: "garage", region: "garage" });
-  } else if (requirements.region !== undefined) {
+  const cloud = provider !== "own" && provider !== "portainer";
+  const offers: Omit<StorageOffer, "price">[] = [
+    { provider: "garage", region: "garage", ...(cloud ? { optIn: true as const } : {}) },
+  ];
+  if (cloud && requirements.region !== undefined) {
     const locations = providerProfile(provider).regionLocations[requirements.region];
     const location =
       provider === "hetzner"
@@ -126,9 +130,19 @@ export function storageOffers(
   return priced.sort((a, b) => inEur(a.price) - inEur(b.price));
 }
 
-/** `Cloudflare R2 $0.00/month`. */
+/** The offer design picks unless the user chooses one: the cheapest that is not opt-in. */
+export function defaultStorageOffer(offers: readonly StorageOffer[]): StorageOffer | undefined {
+  return offers.find((offer) => offer.optIn !== true);
+}
+
+/**
+ * `Cloudflare R2 $0.00/month`; for Garage also its memory on the server, and that the files live
+ * only there.
+ */
 export function storageOfferText(offer: Pick<StorageOffer, "provider" | "price">): string {
-  return `${STORAGE_NAMES[offer.provider]} ${formatMoney(offer.price)}/month`;
+  const text = `${STORAGE_NAMES[offer.provider]} ${formatMoney(offer.price)}/month`;
+  if (offer.provider !== "garage") return text;
+  return `${text} plus ${serviceSpec("garage").memory.defaultMb} MB of the server's memory, with the files on that server only`;
 }
 
 /** A SQLite database the app finds through a variable, moved into a folder of its own. */

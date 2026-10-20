@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ComponentNameSchema } from "./components";
+import { ComponentNameSchema, StorageSchema } from "./components";
 import {
   CommandLineSchema,
   CurrencySchema,
@@ -40,11 +40,18 @@ export const RequirementsSchema = z
     dnsProvider: z.enum(["cloudflare", "other", "none"]),
     /**
      * Whether the app keeps each service where it is hosted now, by kind: `true` keeps it (for
-     * example `supabase` instead of Postgres on the server, `s3` for the app's own storage),
-     * `false` lets OpsCrew run one on the server. A hosted service the app uses with no answer is
-     * kept; any other kind is kept only when its answer is `true`.
+     * example `supabase` instead of Postgres on the server), `false` lets OpsCrew run one on the
+     * server. A hosted service the app uses with no answer is kept; any other kind is kept only
+     * when its answer is `true`. For `s3`, only `false` lets OpsCrew plan a bucket: `true` and no
+     * answer keep the app's own storage (FR-1316a).
      */
     keepExternalServices: z.partialRecord(ServiceKindSchema, z.boolean()).default(() => ({})),
+    /**
+     * Where OpsCrew creates the app's bucket when `keepExternalServices.s3` is `false`: one of the
+     * providers design offers for the target (`garage` on every target). Absent: design picks the
+     * default.
+     */
+    objectStorage: StorageSchema.shape.objectStorage.unwrap().shape.provider.optional(),
     /** Commands of detected workers that no convention gives one (BullMQ, asynq, river), by worker name. */
     workerCommands: z.record(ComponentNameSchema, CommandLineSchema).optional(),
     /** Used for TLS certificate registration. */

@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
+import type { DeployPlan, ProjectFacts, Requirements } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, testPlan } from "../testing";
 import { designComponents, hostedChoices, memoryText, workerName } from "./components";
+import { sizeFor } from "./sizing";
 import { checkSqliteFolder, storageOffers } from "./storage";
 
 type Service = ProjectFacts["services"][number];
@@ -333,9 +334,29 @@ describe("designComponents: storage", () => {
     },
   };
   const onCloudflare = { dnsProvider: "cloudflare" as const, domain: "shop.example.com" };
+  /** The interview let OpsCrew create a bucket. */
+  const bucket = { keepExternalServices: { s3: false } };
+  const noBucketLine =
+    "The app keeps its files where it stores them now (S3 through @aws-sdk/client-s3), so OpsCrew plans no bucket. To let OpsCrew create one, answer keepExternalServices.s3: false in `opscrew interview`, which lists the options and their prices.";
+
+  it("plans no bucket without an answer, says so and how to ask for one (FR-1316a)", () => {
+    // No endpoint the app reads, and an endpoint at a known host: both kept.
+    const amazon = {
+      ...s3,
+      hostedServices: [{ kind: "s3" as const, variable: "S3_ENDPOINT", provider: "Amazon S3" }],
+    };
+    for (const facts of [s3, amazon]) {
+      const { components, lines, warnings } = designed(facts, makeRequirements(onCloudflare));
+      expect(components.storage).toBeUndefined();
+      expect(components.services).toEqual([]);
+      expect(components.externalServices).toEqual(["s3"]);
+      expect(lines).toContain(noBucketLine);
+      expect(warnings).toEqual([]);
+    }
+  });
 
   it("prices each option for the expected use and picks the cheapest (FR-1316)", () => {
-    const small = designed(s3, makeRequirements(onCloudflare));
+    const small = designed(s3, makeRequirements({ ...onCloudflare, ...bucket }));
     expect(small.components.storage?.objectStorage).toEqual({
       provider: "r2",
       bucket: "demo-app-uploads",
@@ -352,12 +373,18 @@ describe("designComponents: storage", () => {
     expect(small.components.externalServices).toEqual([]);
     const line = small.lines.find((l) => l.startsWith("Object storage")) ?? "";
     expect(line).toContain("Cloudflare R2 $0.00/month, the cheapest");
-    // The others are shown, with the per-account note.
+    // The others are shown, Garage too, with the per-account note.
     expect(line).toContain(
-      "Also offered here: Hetzner Object Storage €6.49/month. To use another, set storage.objectStorage.provider in opscrew/plan.yaml. Hetzner charges the base price once per account, for every hour any bucket exists.",
+      "Also offered here: Garage on your server $0.00/month plus 64 MB of the server's memory, with the files on that server only; Hetzner Object Storage €6.49/month. To use another, set storage.objectStorage.provider in opscrew/plan.yaml.",
+    );
+    expect(line).toContain(
+      "Hetzner charges the base price once per account, for every hour any bucket exists.",
     );
     // At more than 100k users Hetzner's 1 TB included storage wins.
-    const big = designed(s3, makeRequirements({ ...onCloudflare, expectedMonthlyUsers: ">100k" }));
+    const big = designed(
+      s3,
+      makeRequirements({ ...onCloudflare, ...bucket, expectedMonthlyUsers: ">100k" }),
+    );
     expect(big.components.storage?.objectStorage).toMatchObject({
       provider: "hetzner",
       region: "nbg1",
@@ -369,26 +396,160 @@ describe("designComponents: storage", () => {
   it("offers each provider only where it works", () => {
     const expected = { storageGb: 10, egressGbPerMonth: 50 };
     const providers = (requirements: Parameters<typeof storageOffers>[0]) =>
-      storageOffers(requirements, expected).map((o) => [o.provider, o.region]);
-    expect(providers(makeRequirements())).toEqual([["hetzner", "nbg1"]]);
-    expect(providers(makeRequirements({ region: "eu-north" }))).toEqual([["hetzner", "hel1"]]);
+      storageOffers(requirements, expected).map((o) => [o.provider, o.region, o.optIn ?? false]);
+    // Garage is offered on every target; on a cloud server only as the user's choice.
+    const garage = ["garage", "garage", true];
+    expect(providers(makeRequirements())).toEqual([garage, ["hetzner", "nbg1", false]]);
+    expect(providers(makeRequirements({ region: "eu-north" }))).toEqual([
+      garage,
+      ["hetzner", "hel1", false],
+    ]);
     // Hetzner Object Storage is in Germany and Finland only; R2 needs the domain on Cloudflare.
-    expect(providers(makeRequirements({ region: "us-east" }))).toEqual([]);
+    expect(providers(makeRequirements({ region: "us-east" }))).toEqual([garage]);
     expect(providers(makeRequirements({ region: "us-east", ...onCloudflare }))).toEqual([
-      ["r2", "auto"],
+      garage,
+      ["r2", "auto", false],
     ]);
     expect(providers(makeRequirements({ provider: "digitalocean", region: "us-east" }))).toEqual([
-      ["digitalocean", "nyc3"],
+      garage,
+      ["digitalocean", "nyc3", false],
     ]);
-    expect(providers(makeRequirements({ provider: "own" }))).toEqual([["garage", "garage"]]);
+    // On a server the user owns or a Portainer, Garage can be the default.
+    expect(providers(makeRequirements({ provider: "own" }))).toEqual([["garage", "garage", false]]);
     expect(providers(makeRequirements({ provider: "portainer", ...onCloudflare }))).toEqual([
-      ["garage", "garage"],
-      ["r2", "auto"],
+      ["garage", "garage", false],
+      ["r2", "auto", false],
     ]);
   });
 
+  it("never picks Garage on a cloud server by itself, and uses it when the interview chose it", () => {
+    for (const provider of ["hetzner", "digitalocean"] as const) {
+      const region = { provider, region: "eu-central" as const };
+      const picked = designed(s3, makeRequirements({ ...region, ...bucket }));
+      expect(picked.components.storage?.objectStorage?.provider).toBe(provider);
+      expect(picked.components.services).toEqual([]);
+      const chosen = designed(
+        s3,
+        makeRequirements({ ...region, ...bucket, objectStorage: "garage" }),
+      );
+      expect(chosen.components.storage?.objectStorage).toMatchObject({
+        provider: "garage",
+        region: "garage",
+        price: { monthly: 0, currency: "USD" },
+      });
+      expect(chosen.components.services).toEqual([
+        expect.objectContaining({ name: "garage", kind: "garage", memoryMb: 64 }),
+      ]);
+      expect(chosen.lines.join("\n")).toContain("on this server only, with no copy elsewhere");
+      // Its memory counts in sizing.
+      const facts = makeFacts(s3);
+      const requirements = makeRequirements({ ...region, ...bucket, objectStorage: "garage" });
+      expect(sizeFor(facts, requirements, chosen.components).limitsMb).toBe(
+        sizeFor(facts, requirements, picked.components).limitsMb + 64,
+      );
+    }
+  });
+
+  /** A plan written after the default answers' time, with `components`. */
+  const planOf = (components: ReturnType<typeof designed>["components"]): DeployPlan => ({
+    ...testPlan(),
+    updatedAt: "2026-10-12T00:00:00.000Z",
+    processes: components.processes,
+    services: components.services,
+    externalServices: components.externalServices,
+    ...(components.storage === undefined ? {} : { storage: components.storage }),
+  });
+  /** The plan with the bucket designed for `requirements`, or set to Garage by hand. */
+  const planWithBucket = (requirements: Requirements, garage = false): DeployPlan => {
+    const plan = planOf(designed(s3, requirements).components);
+    const storage = plan.storage?.objectStorage;
+    if (storage === undefined) throw new Error("no bucket planned");
+    return garage
+      ? { ...plan, storage: { objectStorage: { ...storage, provider: "garage" } } }
+      : plan;
+  };
+  /** Answers given after the plan was written. */
+  const later = (overrides: Partial<Requirements>) =>
+    makeRequirements({ answeredAt: "2026-10-13T00:00:00.000Z", ...bucket, ...overrides });
+  const stays = (provider: string) =>
+    `The bucket demo-app-uploads stays at ${provider}, where the app's files are; to move it, set storage.objectStorage.provider in opscrew/plan.yaml and move the files yourself.`;
+
+  it("never moves an existing bucket for a newer interview answer (FR-1316a)", () => {
+    const facts = makeFacts(s3);
+    // An R2 bucket, with the users changed and Hetzner answered.
+    const r2 = designComponents({
+      facts,
+      requirements: later({
+        ...onCloudflare,
+        expectedMonthlyUsers: "1k-10k",
+        objectStorage: "hetzner",
+      }),
+      previous: planWithBucket(makeRequirements({ ...onCloudflare, ...bucket })),
+    });
+    expect(r2.components.storage?.objectStorage).toMatchObject({
+      provider: "r2",
+      bucket: "demo-app-uploads",
+      expected: { storageGb: 50, egressGbPerMonth: 250 },
+    });
+    expect(r2.lines).toContain(stays("Cloudflare R2"));
+    // A Hetzner bucket, with the app moved to DigitalOcean and Spaces answered.
+    const spaces = designComponents({
+      facts,
+      requirements: later({ provider: "digitalocean", objectStorage: "digitalocean" }),
+      previous: planWithBucket(makeRequirements(bucket)),
+    });
+    expect(spaces.components.storage?.objectStorage).toMatchObject({
+      provider: "hetzner",
+      region: "nbg1",
+    });
+    expect(spaces.lines).toContain(stays("Hetzner Object Storage"));
+    // Garage set by hand, with Hetzner answered.
+    const garage = designComponents({
+      facts,
+      requirements: later({ objectStorage: "hetzner" }),
+      previous: planWithBucket(makeRequirements(bucket), true),
+    });
+    expect(garage.components.storage?.objectStorage).toMatchObject({ provider: "garage" });
+    expect(garage.components.services.map((s) => s.kind)).toEqual(["garage"]);
+    expect(garage.lines).toContain(stays("Garage on your server"));
+  });
+
+  it("keeps a planned bucket while the interview has not answered, and drops it on yes", () => {
+    const facts = makeFacts(s3);
+    const previous = planWithBucket(makeRequirements(bucket));
+    const unanswered = designComponents({ facts, requirements: makeRequirements(), previous });
+    expect(unanswered.components.storage?.objectStorage).toMatchObject({ provider: "hetzner" });
+    expect(unanswered.lines).not.toContain(noBucketLine);
+    expect(unanswered.warnings).toEqual([]);
+    const kept = designComponents({
+      facts,
+      requirements: later({ keepExternalServices: { s3: true } }),
+      previous,
+    });
+    expect(kept.components.storage).toBeUndefined();
+    expect(kept.warnings).toEqual([
+      "opscrew/plan.yaml had the bucket demo-app-uploads at Hetzner Object Storage; OpsCrew no longer plans it because the interview keeps the app's own storage. Its files stay there (destroy never deletes them). To keep using it, answer keepExternalServices.s3: false.",
+    ]);
+  });
+
+  it("keeps Garage set in plan.yaml on a cloud server, and a rerun changes nothing (SC-1307)", () => {
+    const requirements = makeRequirements({ ...bucket });
+    const edited = planWithBucket(requirements, true);
+    const facts = makeFacts(s3);
+    const kept = designComponents({ facts, requirements, previous: edited }).components;
+    expect(kept.storage?.objectStorage).toMatchObject({
+      provider: "garage",
+      region: "garage",
+      bucket: "demo-app-uploads",
+    });
+    expect(kept.services.map((s) => s.kind)).toEqual(["garage"]);
+    // Designing again with nothing changed gives the same components.
+    const again = designComponents({ facts, requirements, previous: planOf(kept) }).components;
+    expect(again).toEqual(kept);
+  });
+
   it("runs Garage on the user's own server, saying the files stay on it (AGPL named)", () => {
-    const { components, lines } = designed(s3, makeRequirements({ provider: "own" }));
+    const { components, lines } = designed(s3, makeRequirements({ provider: "own", ...bucket }));
     expect(components.storage?.objectStorage).toMatchObject({
       provider: "garage",
       region: "garage",
@@ -401,20 +562,26 @@ describe("designComponents: storage", () => {
   });
 
   it("plans no bucket when the interview keeps the app's own storage (s3: true)", () => {
-    const { components, warnings } = designed(
+    const { components, lines, warnings } = designed(
       s3,
       makeRequirements({ ...onCloudflare, keepExternalServices: { s3: true } }),
     );
     expect(components.storage).toBeUndefined();
     expect(components.externalServices).toEqual(["s3"]);
+    expect(lines).toContain(noBucketLine);
     expect(warnings).toEqual([]);
   });
 
-  it("warns when no option works where the app runs, and keeps its storage external", () => {
-    const { components, warnings } = designed(s3, makeRequirements({ region: "us-east" }));
+  it("warns when only Garage works where the app runs, and keeps its storage external", () => {
+    const { components, warnings } = designed(
+      s3,
+      makeRequirements({ region: "us-east", ...bucket }),
+    );
     expect(components.storage).toBeUndefined();
     expect(components.externalServices).toEqual(["s3"]);
-    expect(warnings).toEqual([expect.stringContaining("Put the domain on Cloudflare")]);
+    expect(warnings).toEqual([
+      "The app stores files through S3 (@aws-sdk/client-s3), but OpsCrew offers no bucket by default where it runs. Choose Garage on the server (objectStorage: garage in `opscrew interview`; the files then live on that server only), put the domain on Cloudflare to use Cloudflare R2, or keep the storage the app uses now (keepExternalServices.s3: true).",
+    ]);
   });
 });
 

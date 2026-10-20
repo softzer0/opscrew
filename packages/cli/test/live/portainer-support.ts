@@ -369,7 +369,7 @@ export function portainerAnswers(answers: PortainerAnswers): Record<string, unkn
     dataCriticality: "important",
     dnsProvider: "cloudflare",
     domain: answers.domain,
-    keepExternalServices: [],
+    keepExternalServices: { s3: false },
     "portainer.url": answers.url,
     "portainer.environment": ENVIRONMENT_NAME,
     "portainer.redeploy": answers.redeploy,

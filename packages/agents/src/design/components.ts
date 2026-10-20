@@ -8,6 +8,7 @@ import {
   portainerHostSettingProblem,
   renderPortainerStack,
   renderRuntimeFiles,
+  STORAGE_NAMES,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import {
@@ -24,7 +25,9 @@ import {
 } from "@opscrew/plan-schema";
 import { EDGE_MEMORY_MB, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
+import { convertMoney } from "./cost";
 import {
+  defaultStorageOffer,
   expectedStorageUse,
   type ObjectStorage,
   type StorageOffer,
@@ -631,25 +634,40 @@ interface StorageInput {
 }
 
 /**
- * Object storage for an app with an S3 client (FR-1316): the cheapest option for where it runs,
- * priced for the expected use, unless the plan already chose one that still works there (a bucket
- * at a provider stays where it is). Undefined with the options when nothing is offered here.
+ * Object storage for an app with an S3 client, never replacing the app's storage unasked
+ * (FR-1316a): none when the interview keeps the app's own storage, or has not answered and the
+ * plan has no bucket yet. Otherwise the plan's bucket when it still works there (a bucket at a
+ * provider stays where it is, whatever a newer interview answered: moving it is a plan.yaml edit),
+ * else the interview's choice when it is offered here, else the cheapest option that is not
+ * opt-in, priced for the expected use (FR-1316). Undefined with the options when nothing fits;
+ * with a line or a warning for a bucket that stays elsewhere than answered or is no longer planned.
  */
 function objectStorageFor(input: StorageInput): {
   storage?: ObjectStorage;
   offers: StorageOffer[];
+  line?: string;
+  warning?: string;
 } {
   const { facts, requirements } = input;
   const found = facts.objectStorage;
-  if (found === undefined || requirements.keepExternalServices.s3 === true) {
-    return { offers: [] };
-  }
   const old = input.previous?.storage?.objectStorage;
+  const s3 = requirements.keepExternalServices.s3;
+  if (found === undefined || s3 === true || (s3 === undefined && old === undefined)) {
+    return {
+      offers: [],
+      ...(found !== undefined && s3 === true && old !== undefined
+        ? {
+            warning: `opscrew/plan.yaml had the bucket ${old.bucket} at ${STORAGE_NAMES[old.provider]}; OpsCrew no longer plans it because the interview keeps the app's own storage. Its files stay there (destroy never deletes them). To keep using it, answer keepExternalServices.s3: false.`,
+          }
+        : {}),
+    };
+  }
   const expected =
     old !== undefined && !input.answeredLater
       ? old.expected
       : expectedStorageUse(requirements.expectedMonthlyUsers);
   const offers = storageOffers(requirements, expected);
+  const asked = offers.find((offer) => offer.provider === requirements.objectStorage);
   // The plan's choice stays when it is offered here, and a provider's bucket wherever the app runs
   // (after a retarget it stays where it is).
   const keepsOld =
@@ -658,12 +676,17 @@ function objectStorageFor(input: StorageInput): {
       old.provider === "hetzner" ||
       old.provider === "digitalocean");
   const chosen = keepsOld
-    ? { provider: old.provider, region: old.region }
-    : (offers[0] ?? undefined);
+    ? { provider: old.provider, region: old.provider === "garage" ? "garage" : old.region }
+    : (asked ?? defaultStorageOffer(offers));
   if (chosen === undefined) return { offers };
   const price = storagePrice(chosen.provider, expected);
   return {
     offers,
+    ...(keepsOld && asked !== undefined && asked.provider !== old.provider
+      ? {
+          line: `The bucket ${old.bucket} stays at ${STORAGE_NAMES[old.provider]}, where the app's files are; to move it, set storage.objectStorage.provider in opscrew/plan.yaml and move the files yourself.`,
+        }
+      : {}),
     storage: {
       provider: chosen.provider,
       bucket: keepsOld ? old.bucket : `${input.appName}-uploads`,
@@ -739,8 +762,9 @@ const STANDS_FOR: Readonly<Partial<Record<SelfHostedServiceKind, readonly Servic
  *   external when the interview keeps it, a hosted one unless it answered no
  *   (`keepExternalServices`), or when OpsCrew cannot run it (Cassandra);
  * - workers and cron jobs, and `storage.sqlite` for an app on SQLite;
- * - object storage for an app with an S3 client, the cheapest option for where it runs, with
- *   Garage as a service on a server the user owns or a Portainer;
+ * - object storage for an app with an S3 client only when the interview lets OpsCrew create a
+ *   bucket (FR-1316a): the interview's choice, else the cheapest option for where it runs that is
+ *   not opt-in, with Garage as a service on the server when it is the choice;
  * - the previous plan's edits kept: counts, memory, versions, options, a component turned off,
  *   the web process's memory, the object storage choice;
  * - with two databases on `DATABASE_URL`, the one the app reads it for keeps it.
@@ -838,10 +862,17 @@ export function designComponents(input: {
   lines.push(...externalLines(facts, externalServices, portainer));
   if (facts.objectStorage !== undefined) {
     const text = storageText(components, storage.offers);
+    const { client } = facts.objectStorage;
+    if (storage.line !== undefined) lines.push(storage.line);
+    if (storage.warning !== undefined) warnings.push(storage.warning);
     if (text !== undefined) lines.push(text);
-    else if (requirements.keepExternalServices.s3 !== true) {
+    else if (requirements.keepExternalServices.s3 !== false) {
+      lines.push(
+        `The app keeps its files where it stores them now (S3 through ${client}), so OpsCrew plans no bucket. To let OpsCrew create one, answer keepExternalServices.s3: false in \`opscrew interview\`, which lists the options and their prices.`,
+      );
+    } else {
       warnings.push(
-        `The app stores files through S3 (${facts.objectStorage.client}), but no object storage OpsCrew offers is available where it runs. Put the domain on Cloudflare to use Cloudflare R2, or keep the storage the app uses now (answer keepExternalServices.s3: true in \`opscrew interview\`).`,
+        `The app stores files through S3 (${client}), but OpsCrew offers no bucket by default where it runs. Choose Garage on the server (objectStorage: garage in \`opscrew interview\`; the files then live on that server only), put the domain on Cloudflare to use Cloudflare R2, or keep the storage the app uses now (keepExternalServices.s3: true).`,
       );
     }
   }
@@ -946,7 +977,9 @@ function storageText(components: Components, offers: readonly StorageOffer[]): s
     price: storagePrice(storage.provider, storage.expected),
   };
   const others = offers.filter((offer) => offer.provider !== storage.provider);
-  const cheapest = offers[0]?.provider === storage.provider;
+  // Offers are cheapest first; a tie with the first counts.
+  const inEur = (price: Money) => convertMoney(price, "EUR").amount;
+  const cheapest = offers[0] !== undefined && inEur(chosen.price) <= inEur(offers[0].price);
   // What each price leaves out, such as a base price charged once per account.
   const notes = [...new Set([chosen, ...others].flatMap((offer) => offer.price.note ?? []))];
   return [

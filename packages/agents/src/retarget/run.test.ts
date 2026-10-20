@@ -1117,6 +1117,39 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(await move(h)).toBeUndefined();
   });
 
+  it("refuses before any change when the app keeps its files in Garage on the server", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact(
+      "plan",
+      h.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        services: [
+          ...plan.services,
+          { kind: "garage", version: "2.4", memoryMb: 64, reason: "uploads", licence: "AGPL-3.0" },
+        ],
+        storage: {
+          objectStorage: {
+            provider: "garage",
+            bucket: "shop-uploads",
+            region: "garage",
+            expected: { storageGb: 10, egressGbPerMonth: 50 },
+            price: { monthly: 0, currency: "USD", source: "test", checkedOn: "2026-10-19" },
+          },
+        },
+      }),
+    );
+    const before = h.events.length;
+    const error = await caught(run(h));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "A move copies the PostgreSQL database to the new server, but not yet the data of garage (Garage), so OpsCrew did not start it. Nothing was changed.",
+    );
+    expect(h.events.slice(before)).toEqual([]);
+    expect(await move(h)).toBeUndefined();
+  });
+
   it("says in its summary that jobs waiting in a Valkey queue are not moved", async () => {
     const h = await moveHarness();
     const plan = await readArtifact("plan", h.paths.files.plan);

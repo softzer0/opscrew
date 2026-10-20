@@ -69,6 +69,28 @@ describe("opscrew interview", () => {
     expect(requirements.workerCommands).toEqual({ bullmq: "node dist/worker.js" });
   });
 
+  it("lets OpsCrew create the app's bucket in Garage when the answers say so", async () => {
+    project = await tempProject();
+    await writeFile(
+      path.join(project.root, "package.json"),
+      JSON.stringify({
+        name: "files",
+        dependencies: { express: "^5.0.0", "@aws-sdk/client-s3": "^3" },
+      }),
+    );
+    await writeFile(
+      path.join(project.dir, "answers.yaml"),
+      `${ANSWERS}keepExternalServices:\n  s3: false\nobjectStorage: garage\n`,
+    );
+    const ctx = projectContext(project);
+    expect(await run(ctx, "interview", "--answers", "../answers.yaml")).toBe(0);
+    const requirements = await requirementsOf(project.root, project.env);
+    expect(requirements.keepExternalServices).toEqual({ s3: false });
+    expect(requirements.objectStorage).toBe("garage");
+    expect(ctx.output).toContain("Object storage: a new bucket in Garage on your server");
+    expect(ctx.output).not.toContain("Run on the server");
+  });
+
   it("asks the questions in a terminal, pre-filling defaults", async () => {
     project = await tempProject("nextjs-postgres");
     const prompts = new ScriptedPrompts([

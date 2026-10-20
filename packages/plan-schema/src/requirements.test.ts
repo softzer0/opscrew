@@ -55,3 +55,17 @@ describe("RequirementsSchema workerCommands", () => {
     expect(issues({ bullmq: "node a.js\nnode b.js" })).toEqual(["workerCommands.bullmq"]);
   });
 });
+
+describe("RequirementsSchema objectStorage", () => {
+  it("takes one of the object storage providers, and is absent by default", () => {
+    expect(RequirementsSchema.parse(requirements).objectStorage).toBeUndefined();
+    for (const objectStorage of ["r2", "digitalocean", "hetzner", "garage"]) {
+      expect(RequirementsSchema.parse({ ...requirements, objectStorage }).objectStorage).toBe(
+        objectStorage,
+      );
+    }
+    for (const objectStorage of ["minio", "s3", true]) {
+      expect(RequirementsSchema.safeParse({ ...requirements, objectStorage }).success).toBe(false);
+    }
+  });
+});

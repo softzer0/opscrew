@@ -578,6 +578,45 @@ describe("hosted services", () => {
     expect(facts.hostedServices).toBeUndefined();
     expect(kinds(facts)).toEqual(["postgres", "supabase"]);
   });
+
+  it("count an S3 endpoint at a known host as hosted object storage (FR-1316a)", async () => {
+    const facts = await detect({
+      ...manifest("npm", "@aws-sdk/client-s3"),
+      ".env.example": [
+        "AWS_URL=https://s3.eu-west-1.amazonaws.com",
+        "AWS_LEGACY_URL=https://shop-uploads.s3-eu-west-1.amazonaws.com/files",
+        "B2_URL=https://s3.us-west-004.backblazeb2.com",
+        "WASABI_URL=https://s3.eu-central-1.wasabisys.com",
+        "SPACES_URL=https://fra1.digitaloceanspaces.com",
+        "R2_URL=https://0123456789abcdef.r2.cloudflarestorage.com",
+        "HETZNER_URL=https://fsn1.your-objectstorage.com",
+        "SUPABASE_S3_URL=https://abcdefgh.supabase.co/storage/v1/s3",
+        // Supabase's other URLs, and AWS's databases, are not object storage.
+        "SUPABASE_URL=https://abcdefgh.supabase.co",
+        "RDS_URL=postgresql://app@s3-archive.abc123.eu-west-1.rds.amazonaws.com/app",
+        "CACHE_URL=rediss://s3-sessions.abc123.euw1.cache.amazonaws.com:6379",
+        "DUAL_URL=https://shop.s3.dualstack.us-east-1.amazonaws.com",
+        // Other AWS services whose names start with `s3-` are not S3 either.
+        "ELB_URL=https://s3-proxy-123.eu-west-1.elb.amazonaws.com",
+        "KAFKA_BROKERS=b-1.s3-stream.abc.c3.kafka.eu-west-1.amazonaws.com:9092",
+        "DOCDB_URL=mongodb://app@s3-docs.cluster-abc.eu-west-1.docdb.amazonaws.com:27017/app",
+        "",
+      ].join("\n"),
+    });
+    expect(facts.hostedServices).toEqual([
+      { kind: "s3", variable: "AWS_LEGACY_URL", provider: "Amazon S3" },
+      { kind: "s3", variable: "AWS_URL", provider: "Amazon S3" },
+      { kind: "s3", variable: "B2_URL", provider: "Backblaze B2" },
+      { kind: "redis", variable: "CACHE_URL", provider: "Amazon ElastiCache" },
+      { kind: "s3", variable: "DUAL_URL", provider: "Amazon S3" },
+      { kind: "s3", variable: "HETZNER_URL", provider: "Hetzner Object Storage" },
+      { kind: "s3", variable: "R2_URL", provider: "Cloudflare R2" },
+      { kind: "postgres", variable: "RDS_URL", provider: "Amazon RDS" },
+      { kind: "s3", variable: "SPACES_URL", provider: "DigitalOcean Spaces" },
+      { kind: "s3", variable: "SUPABASE_S3_URL", provider: "Supabase Storage" },
+      { kind: "s3", variable: "WASABI_URL", provider: "Wasabi" },
+    ]);
+  });
 });
 
 describe("SQLite", () => {

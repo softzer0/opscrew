@@ -22,6 +22,7 @@ import {
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
+  storageAnswerText,
   withPlanSettings,
 } from "@opscrew/agents";
 import { isUserFacingError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
@@ -119,7 +120,9 @@ const ANSWER_HELP: Record<string, string> = {
   domain: "Domain name, for example app.example.com.",
   dnsProvider: "DNS provider (a choice value from the question).",
   keepExternalServices:
-    "Not answered as one value: answer each hosted service of componentQuestions as keepExternalServices.<kind>, true to keep it where it is hosted, false to let OpsCrew run one on the server. An unanswered hosted service is kept. keepExternalServices.s3: true keeps the app's own file storage instead of a new bucket.",
+    "Not answered as one value: answer each hosted service of componentQuestions as keepExternalServices.<kind>, true to keep it where it is hosted, false to let OpsCrew run one on the server. An unanswered hosted service is kept. keepExternalServices.s3: false lets OpsCrew create a bucket for the app's files; true or no answer keeps the storage the app uses now, and no bucket is planned.",
+  objectStorage:
+    'Where OpsCrew creates the bucket when keepExternalServices.s3 is false: one of the choices of the objectStorage component question ("garage", "hetzner", "digitalocean" or "r2", as offered where the app runs). Without it, design picks the cheapest offer, but never Garage on a cloud server.',
   workerCommands:
     "Not answered as one value: give each worker's command as workerCommands.<worker>, as componentQuestions lists them.",
   contactEmail: "Contact email for certificates and alerts.",
@@ -288,14 +291,22 @@ export function registerInterviewTools(
         };
         const questions = buildQuestions(facts, previous, appCandidates, context);
         const inferred = inferredAnswers(facts, context);
-        // The app's hosted services and its workers without a conventional command; what running
-        // a hosted service would add is priced for the previous answers, when there are any.
+        // The app's hosted services, its storage and its workers without a conventional command;
+        // what running a hosted service would add is priced for the previous answers, when there
+        // are any. The provider may change in the same answers, so the storage choices are every
+        // storage, with where each is offered.
         const componentQuestions = buildComponentQuestions(
           facts,
-          previous ?? {
-            keepExternalServices:
-              inferred.keepExternalServices as Requirements["keepExternalServices"],
-          },
+          previous === undefined
+            ? {
+                keepExternalServices:
+                  inferred.keepExternalServices as Requirements["keepExternalServices"],
+              }
+            : {
+                keepExternalServices: previous.keepExternalServices,
+                workerCommands: previous.workerCommands,
+                objectStorage: previous.objectStorage,
+              },
           previous === undefined ? undefined : await hostedAdditions(phase, facts, previous),
         );
         // How OpsCrew reached the user's own server or Portainer before (the defaults), if known.
@@ -332,7 +343,7 @@ export function registerInterviewTools(
           "",
           ...(componentQuestions.length > 0
             ? [
-                "Also ask these about the app's components and pass them under their answer ids (keepExternalServices.<kind>: true keeps the hosted service, false lets OpsCrew run one on the server; workerCommands.<worker>: the command that starts the worker).",
+                "Also ask these about the app's components and pass them under their answer ids (keepExternalServices.<kind>: true keeps the hosted service, false lets OpsCrew run one on the server; keepExternalServices.s3: false lets OpsCrew create a bucket for the app's files, and objectStorage says where, from the choices offered for the provider the user picks; workerCommands.<worker>: the command that starts the worker). Never replace the app's storage unasked: without an answer it is kept.",
                 "",
                 ...componentQuestions.map(renderQuestion),
                 "",
@@ -427,6 +438,7 @@ export function registerInterviewTools(
         const budget = requirements.budgetMonthly;
         const own = requirements.provider === "own";
         const inPortainer = requirements.provider === "portainer";
+        const storage = storageAnswerText(requirements);
         const text = [
           `Saved ${file}.`,
           own
@@ -444,6 +456,7 @@ export function registerInterviewTools(
             : ["- Domain: none yet"]),
           ...answered(requirements, true).map((kinds) => `- Keep where hosted: ${kinds}`),
           ...answered(requirements, false).map((kinds) => `- Run on the server: ${kinds}`),
+          ...(storage === undefined ? [] : [`- Object storage: ${storage}`]),
           "",
           own
             ? "Next: call opscrew_design_options; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key."

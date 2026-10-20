@@ -141,6 +141,50 @@ describe("the interview tools and the app's components", () => {
     const requirements = await readArtifact("requirements", files.requirements);
     expect(requirements.workerCommands).toEqual({ bullmq: "node dist/worker.js" });
   });
+
+  it("ask to keep the app's storage or create a bucket, and save Garage chosen on Hetzner", async () => {
+    const { call, root } = await connect({});
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        name: "shop",
+        dependencies: { express: "^5.0.0", "@aws-sdk/client-s3": "^3" },
+      }),
+    );
+    const listed = await call("opscrew_interview_questions");
+    const data = listed.structuredContent as { componentQuestions: { id: string }[] };
+    expect(data.componentQuestions.map((q) => q.id)).toEqual([
+      "keepExternalServices.s3",
+      "objectStorage",
+    ]);
+    const text = textOf(listed);
+    expect(text).toContain(
+      "Keep the storage the app uses now for its files? (answer id: keepExternalServices.s3)",
+    );
+    // Before the target is known, every storage with where it is offered.
+    expect(text).toContain(
+      "garage = Garage on your server $0.00/month plus 64 MB of the server's memory, with the files on that server only (on the app's server: on a cloud server only if you choose it)",
+    );
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, "keepExternalServices.s3": false, objectStorage: "garage" },
+    });
+    expect(saved.isError).toBeFalsy();
+    expect(textOf(saved)).toContain("- Object storage: a new bucket in Garage on your server");
+    const { files } = resolveProjectPaths(root, { env: {} });
+    const requirements = await readArtifact("requirements", files.requirements);
+    expect(requirements.keepExternalServices).toEqual({ s3: false });
+    expect(requirements.objectStorage).toBe("garage");
+    // Asked again, the provider may change in the same answers: still every storage, and the
+    // earlier choice as the default.
+    const again = await call("opscrew_interview_questions");
+    const where = (
+      again.structuredContent as {
+        componentQuestions: { id: string; options?: unknown[]; default?: unknown }[];
+      }
+    ).componentQuestions.find((q) => q.id === "objectStorage");
+    expect(where?.options).toHaveLength(4);
+    expect(where?.default).toBe("garage");
+  });
 });
 
 describe("opscrew_save_requirements provider summary", () => {

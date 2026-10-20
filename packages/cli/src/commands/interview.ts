@@ -5,6 +5,7 @@ import {
   type InterviewAnswers,
   repositoryPrivate,
   runInterview,
+  storageAnswerText,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { Requirements } from "@opscrew/plan-schema";
@@ -66,6 +67,7 @@ function answered(requirements: Requirements, keep: boolean): string[] {
 
 function describe(requirements: Requirements): string[] {
   const budget = requirements.budgetMonthly;
+  const storage = storageAnswerText(requirements);
   return [
     ...(requirements.provider === "own"
       ? ["Server: a server you already have (how to reach it is saved on this computer only)"]
@@ -83,6 +85,7 @@ function describe(requirements: Requirements): string[] {
     `Domain: ${requirements.domain ?? "none yet"}${requirements.domain === undefined ? "" : ` (DNS: ${requirements.dnsProvider})`}`,
     ...answered(requirements, true).map((kinds) => `Keep where hosted: ${kinds}`),
     ...answered(requirements, false).map((kinds) => `Run on the server: ${kinds}`),
+    ...(storage === undefined ? [] : [`Object storage: ${storage}`]),
   ];
 }
 

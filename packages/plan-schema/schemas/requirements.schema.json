@@ -92,6 +92,10 @@
         "type": "boolean"
       }
     },
+    "objectStorage": {
+      "type": "string",
+      "enum": ["r2", "digitalocean", "hetzner", "garage"]
+    },
     "workerCommands": {
       "type": "object",
       "propertyNames": {

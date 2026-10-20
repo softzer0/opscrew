@@ -565,6 +565,7 @@ describe("connection settings under the app's own names (FR-814)", () => {
     const requirements = makeRequirements({
       dnsProvider: "cloudflare",
       domain: "shop.example.com",
+      keepExternalServices: { s3: false },
     });
     const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
     if (!option) throw new Error("no option");

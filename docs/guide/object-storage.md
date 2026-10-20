@@ -1,10 +1,36 @@
 # Object storage
 
-When your app stores files through an S3 client (uploads, images, exports), OpsCrew gives it a
+When your app stores files through an S3 client (uploads, images, exports), OpsCrew can give it a
 private bucket of its own, on the provider that is cheapest for the use it expects, and shows the
 other options with their monthly prices. The bucket is created through OpenTofu or Terraform after
 you approve its plan, like the rest of your infrastructure. The key the app uses is one you create
 yourself: OpsCrew never creates storage keys.
+
+## Your app's own storage stays unless you choose otherwise
+
+OpsCrew never replaces the storage your app uses now without asking. `npx opscrew interview` asks:
+keep the storage the app uses now, or let OpsCrew create a bucket. The next question lists the
+storage OpsCrew offers where the app runs, with their prices, for you to choose from.
+
+- **Your app already uses hosted storage.** When an endpoint your app's env example sets is at
+  Amazon S3, Backblaze B2, Wasabi, DigitalOcean Spaces, Cloudflare R2, Hetzner Object Storage or
+  Supabase Storage, the question names it. Keeping it is the default, and an unanswered question
+  keeps it too. If you let OpsCrew create a bucket instead, move the files yourself.
+- **Your app sets no endpoint, or one OpsCrew does not know** (a local MinIO, for example). The
+  question is the same, and without an answer OpsCrew plans no bucket either. Design then says so
+  in one line, with how to ask for one.
+
+To let OpsCrew create a bucket later, run `npx opscrew interview` again and answer no to keeping
+the storage, or put this in an answers file (`npx opscrew interview --answers <file>`):
+
+```yaml
+keepExternalServices:
+  s3: false
+objectStorage: hetzner # optional: garage, hetzner, digitalocean or r2, as offered
+```
+
+Without `objectStorage`, design picks the default described below. You can also set the storage
+in `opscrew/plan.yaml`, as below.
 
 ## The options
 
@@ -13,11 +39,14 @@ yourself: OpsCrew never creates storage keys.
 | **Cloudflare R2** | your domain is on Cloudflare | per GB stored and per million requests, no charge for downloads |
 | **DigitalOcean Spaces** | the app runs on DigitalOcean | a monthly base per account, with storage and downloads included |
 | **Hetzner Object Storage** | the app runs on Hetzner Cloud in Falkenstein (fsn1), Nuremberg (nbg1) or Helsinki (hel1) | a monthly base per account, with storage and downloads included |
-| **Garage** | the app runs on a server you already have, or in your Portainer | free: it keeps the files on the server's own disk |
+| **Garage** | always; on Hetzner Cloud and DigitalOcean only when you choose it | free: it keeps the files on the server's own disk and uses 64 MB of its memory |
 
 Garage is a small S3-compatible storage server (AGPL 3.0) that OpsCrew runs as one of the app's
 components, without replication: the files are as safe as the server's disk and your backups of
-it.
+it. On a server you already have, or in your Portainer, it can be the default. On a cloud server
+OpsCrew never picks it by itself, because the files then live only on that server, but you can
+choose it in the interview (`objectStorage: garage`) or in `opscrew/plan.yaml`
+(`storage.objectStorage.provider: garage`). Its memory counts when design sizes the server.
 
 ## What it costs
 
@@ -76,8 +105,15 @@ When your account already pays the Spaces or Hetzner base for other buckets, thi
 what it uses beyond the shared quota. OpsCrew cannot see that, so it shows the full base price and
 says that it is per account.
 
-Design picks the cheapest option it offers and names the others. To use another one, set
-`storage.objectStorage.provider` in `opscrew/plan.yaml` and run `npx opscrew design` again.
+For a new bucket, design picks the storage you chose in the interview, else the cheapest option
+it offers (never Garage on a cloud server), and names the others. Once the plan has a bucket, it
+stays where it is, with your files: a later interview answer, or moving the app to another
+provider, does not move it, and design says so when an answer names other storage. To move it,
+set `storage.objectStorage.provider` in `opscrew/plan.yaml`, run `npx opscrew design` again, and
+move the files yourself. Later runs of design keep that choice.
+
+If you answer the interview later to keep your own storage instead, design stops planning the
+bucket and warns you; its files stay where they are.
 
 ## What OpsCrew creates
 
@@ -144,5 +180,6 @@ old key in the provider's console.
 `npx opscrew destroy` keeps the bucket and its files, which the provider bills until the bucket is
 deleted. To delete it too, add `--delete-data` (and type the app's name). An R2 bucket must be
 empty first: Cloudflare refuses to delete a bucket that holds files, and OpsCrew never deletes your
-files itself. Moving the app to another provider with `npx opscrew retarget` leaves the bucket
-where it is.
+files itself. Moving the app to another provider with `npx opscrew retarget` leaves a provider's
+bucket where it is. Garage keeps the files on the server, and a move does not copy them yet, so
+`npx opscrew retarget` stops before any change for an app that uses Garage.

@@ -15,7 +15,8 @@ is created.
 - **Services**: databases, caches, queues, brokers, and search and analytics engines that OpsCrew
   runs as containers on the server. See [Databases](databases.md), [Message brokers and
   queues](brokers.md) and [Search and analytics engines](search-and-analytics.md).
-- **Storage**: a persistent volume for a SQLite database, and a bucket for the app's files. See
+- **Storage**: a persistent volume for a SQLite database, and a bucket for the app's files only
+  when you ask for one in the interview: otherwise the app keeps the storage it uses now. See
   [Object storage](object-storage.md).
 
 ## How OpsCrew finds them

@@ -116,7 +116,7 @@ export async function plannedProject(env: Record<string, string | undefined>): P
       uptime: "best-effort",
       dataCriticality: "important",
       dnsProvider: "none",
-      keepExternalServices: [],
+      keepExternalServices: { s3: false },
     }),
   );
   expect((await opscrew("interview", "--answers", join(work, "answers.json"))).exitCode).toBe(0);

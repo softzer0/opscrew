@@ -5,6 +5,7 @@ export {
   buildComponentQuestions,
   type ComponentQuestion,
   hostedAdditions,
+  storageAnswerText,
 } from "./components";
 export { buildServerQuestions, recordOwnServerAnswers, SERVER_FIELDS } from "./own-server";
 export {

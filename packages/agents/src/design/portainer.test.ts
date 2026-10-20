@@ -258,7 +258,11 @@ describe("runDesign for an existing Portainer", () => {
       ],
       objectStorage: { client: "@aws-sdk/client-s3", presignedUploads: false, variables: [] },
     };
-    const deps = await setup(onCloudflare(), CONNECTION, facts);
+    const deps = await setup(
+      onCloudflare({ keepExternalServices: { s3: false } }),
+      CONNECTION,
+      facts,
+    );
     const { plan } = await runDesign(deps);
     expect(plan.storage?.objectStorage).toMatchObject({ provider: "garage", region: "garage" });
     expect(serviceOf(plan, "garage")).toBeDefined();
