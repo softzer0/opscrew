@@ -491,6 +491,34 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew --concurrency=2`, `node plugin/validate.mjs`, `pnpm lint`
   - Effort: high
 
+- [ ] T1317 [US4] Redis 8 and Dragonfly next to Valkey (founder, 2026-10-20), in `packages/plan-schema/src/**`, `packages/detect/src/**`, `packages/iac-templates/src/{catalog,dependabot}/**`, `packages/iac-templates/src/pins.ts`, `packages/agents/src/{design,interview}/**`, `packages/cli/test/e2e/engines.test.ts`, `docs/guide/{brokers,components}.md`
+  - Owns: those paths (+ tests, snapshots, regenerated JSON schemas)
+  - Reads: spec FR-1321, FR-1321a; research.md R9; contracts/components.md
+  - Depends: T1316 (both edit design and the interview; start after it merges)
+  - Accept:
+    - **Kinds:** `redis` and `dragonfly` join the service kinds, and their catalog entries are pinned by digest through `update-pins.mjs` (Redis `8.10.2-alpine`, Dragonfly `v2.0.2`). Each entry has its licence, memory and smallest server, healthcheck, `auth` and `requirepass`, persistence, and queue mode without eviction or cache mode, as Valkey's entry does. Dependabot locks their majors.
+    - **Detection:**
+      - the app's own Compose file runs `redis` (official image), `dragonflydb/dragonfly` or `docker.dragonflydb.io/dragonflydb/dragonfly`, or `eqalpha/keydb`;
+      - the clients that need Redis's own data types: `redis-om` (Node and Python), `@redis/search`, `@redis/json`, `@redis/time-series`, `@redis/bloom`, NRedisStack, and redis-py or Jedis only when the code calls `.ft()`, `.json()` or `.ts()`.
+    - **Design:**
+      - Valkey stays the default;
+      - Redis 8 for those clients, or when the Compose file runs Redis, with the licence sentence;
+      - Dragonfly when the Compose file runs it, or as the user's choice (switching the kind in plan.yaml is a kept edit, as for Kafka and Redpanda), offered only with 2 or more vCPUs, and named as an option in Valkey's reason line when the server qualifies;
+      - KeyDB in the Compose file gives Valkey, with one line saying why.
+    - **Dragonfly's settings:**
+      - `--proactor_threads` and `--maxmemory` are always set, from the limit (256 MB per thread at least, leaving headroom);
+      - its smallest limit is 256 MB;
+      - with BullMQ, `--cluster_mode=emulated --lock_on_hashtags`, and a design warning that each queue name or prefix needs its own hashtag (`{myqueue}`), naming the docs.
+    - **Retarget's existing refusal** covers both kinds (add a test).
+    - **The engines check** (gated, `engines.test.ts`) starts each alone with its limit:
+      - its login is required (refused without, works with);
+      - the healthcheck passes; build our own if Dragonfly's built-in one fails on the pin;
+      - for Redis, `MODULE LIST` and `FT.CREATE` and `JSON.SET` work in the pinned image. If they don't, stop and report;
+      - for Dragonfly, a BullMQ-style Lua script runs under the flags.
+    - **Docs:** the guide pages explain the choice for users.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/detect --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew --concurrency=2`, the gated engines check for both, and `pnpm lint`
+  - Effort: high
+
 - [ ] T1315 Live runs (lead): the passes in `docs/e2e.md`; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies

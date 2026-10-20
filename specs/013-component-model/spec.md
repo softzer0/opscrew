@@ -405,6 +405,16 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   - none has a port open outside the server.
 - **FR-1321**: When a job library keeps its jobs in Redis, Valkey MUST run without eviction and with
   its data on disk. A separate cache instance runs only when the app reads a separate cache address.
+- **FR-1321a**: For the Redis protocol, Valkey MUST stay the default (founder, 2026-10-20). Instead:
+  - **Redis 8** MUST run when the app's client shows it needs Redis's own data types: Search/Query,
+    JSON, Time Series, probabilistic structures or vector sets. Redis 8 MUST also run when the app's
+    own Compose file runs Redis. Its licence (RSALv2, SSPLv1 or AGPLv3) is named at design.
+  - **Dragonfly** MUST be offered only as the user's choice, on a server with at least 2 vCPUs and
+    room for 256 MB per thread, with its licence (BSL 1.1) named. It MUST also run when the app's
+    own Compose file runs it.
+  - A queue library that needs Dragonfly's own flags MUST get them, with a warning when the app's
+    queue names need hashtags.
+  - **KeyDB** is not offered. An app whose Compose file runs it gets Valkey, with one line saying so.
 
 **Several apps on one own server**
 

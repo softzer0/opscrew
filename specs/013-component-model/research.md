@@ -618,6 +618,37 @@ the user's own app, but the user should hear that once, in plain English, before
 Dependabot can watch Compose image tags OpsCrew writes into runtime templates, or only the pin file.
 Which images ship signatures worth verifying.
 
+## R9. Other Redis-protocol engines: Dragonfly, Redis 8, KeyDB (2026-10-20)
+
+The founder asked why only Valkey (2026-10-20). Valkey stays the default; the rest is T1317.
+
+**Dragonfly** (official docs and GitHub, checked 2026-10-20):
+- **Licence:** BSL 1.1, becoming Apache 2.0 on 2030-11-01. Its additional use grant allows use inside one's own product as long as that product is not an in-memory data store service. Self-hosting it for the user's app fits. Quote the grant from https://github.com/dragonflydb/dragonfly/blob/main/LICENSE.md, not from a summary.
+- **Release and image:** the latest is v2.0.2 (2026-10-07). The image is `docker.dragonflydb.io/dragonflydb/dragonfly`, with tags `vX.Y.Z`; `dragonflydb/dragonfly` is on Docker Hub too.
+- **Memory:**
+  - at least 256 MiB of `--maxmemory` per proactor thread, or it refuses to start (from third-party issues, consistent with each other);
+  - `--proactor_threads` defaults to one per core, so both flags are always set. In a small container that means one thread;
+  - its Docker page says "Minimum 4GB of RAM to get the benefits of Dragonfly".
+- **Persistence:** snapshots with `--dir`, `--dbfilename` and `--snapshot_cron`. AOF was not confirmed.
+- **Eviction:** none by default (`cache_mode=false`; writes fail at the limit); `--cache_mode=true` for a cache.
+- **Auth:** `--requirepass`, or `DFLY_PASSWORD`.
+- **Healthcheck:** the built-in one uses `nc`, but it has broken before (issues 3644, 2650), so test it on the pin. The default user is probably `dfly` (unconfirmed).
+- **BullMQ** (https://www.dragonflydb.io/docs/integrations/bullmq):
+  - `--cluster_mode=emulated --lock_on_hashtags`, with each queue's name or prefix in its own hashtag (`{myqueue}`);
+  - or `--default_lua_flags=allow-undeclared-keys`, which "locks the entire data store for each Lua script execution".
+  - Nothing was checked for Sidekiq, Celery or Laravel.
+
+**Redis 8** (https://redis.io/legal/licenses/, the GitHub releases, Docker Hub):
+- **Licence:** from Redis 8 on, the user's choice of RSALv2, SSPLv1 or AGPLv3. Running the unmodified image for one's own app carries no source obligation.
+- **Release and image:** the latest is 8.10.2 (2026-09-17); pin `redis:8.10.2-alpine@sha256:…`.
+- **Modules:** whether the official image includes Search/Query, JSON, Time Series, probabilistic structures and vector sets by default was NOT confirmed. Check locally with `MODULE LIST` and `COMMAND INFO FT.SEARCH` before relying on it.
+- **Signals that an app needs those features** (from knowledge, to verify): `redis-om` (Node and Python), `@redis/search`, `@redis/json`, `@redis/time-series`, `@redis/bloom`, NRedisStack. `redis-py` and Jedis count only when the code calls `.ft()`, `.json()` or `.ts()`.
+- **Valkey:** `valkey-bundle` has JSON, Bloom and Search (`FT.CREATE`, `FT.SEARCH`, `FT.AGGREGATE`, …). Command-level compatibility with Redis is not confirmed, and it has no Time Series. The plain `valkey` image has none of them.
+
+**KeyDB:**
+- **Status:** the last release was v6.3.4 (2023-10-30), with no commits after early 2024. It is BSD-3 and tracks Redis 6.
+- **Founder (2026-10-20):** dropped as obsolete. An app whose compose runs KeyDB gets Valkey, which speaks the same protocol, with one line saying so.
+
 ## Open items for the plan's spike
 
 1. Railpack: `docker inspect` a real image; check that `command: ["<one string>"]` starts a worker
