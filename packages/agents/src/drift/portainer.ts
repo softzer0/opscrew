@@ -17,6 +17,7 @@ import {
   fillPortainerStack,
   PORTAINER_STACK_TEMPLATE_PATH,
   PORTAINER_STACK_VARIABLES,
+  portainerSecretVariables,
   portainerStackEnvKeys,
   portainerTarget,
   renderPlaceholderStack,
@@ -24,7 +25,12 @@ import {
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { portainerCloudflare, setupCloudflare, setupGitHub } from "../provision/credentials";
+import {
+  type CloudflareSetup,
+  portainerCloudflare,
+  setupCloudflare,
+  setupGitHub,
+} from "../provision/credentials";
 import {
   ensurePortainerValueKey,
   portainerContainerUrl,
@@ -39,6 +45,12 @@ import {
 import { deploymentFiles, deploymentRenderContext, readRequirements } from "../provision/render";
 import { generatedValuesFile } from "../provision/secrets";
 import {
+  providerBucket,
+  requireStorageKey,
+  type StorageKey,
+  storageLogin,
+} from "../provision/storage";
+import {
   type AppEnvironment,
   adapterBlocked,
   assembleAppEnv,
@@ -48,16 +60,22 @@ import {
   gitClient,
   inspectRecordedPortainer,
   type PortainerConnection,
-  parseDotenv,
   pinnedPublicKey,
   readValidJson,
   recordedStack,
+  type StorageLogin,
   stateContents,
   stateFile,
   stringOutput,
 } from "../shared";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
-import { compareInfrastructure, driftEngine, finishDriftReport, inspectState } from "./infra";
+import {
+  compareInfrastructure,
+  driftEngine,
+  finishDriftReport,
+  inspectState,
+  storageDrift,
+} from "./infra";
 import type { DriftOptions, DriftReport, PortainerDifference } from "./types";
 
 /** Said when the plan has no Cloudflare root and the state holds nothing either. */
@@ -93,6 +111,7 @@ function asRemote(
 const GeneratedValuesSchema = z.looseObject({
   dbPassword: z.string().min(1).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  services: z.record(z.string(), z.record(z.string(), z.string().min(1))).optional(),
 });
 
 /** Stands for a value provision would generate now: this computer does not know it. */
@@ -102,8 +121,9 @@ const UNKNOWN = "__OPSCREW_DRIFT_UNKNOWN__";
  * The app stack's values as `opscrew provision` would send them, into `values` (by name; a value
  * this computer cannot know is left out, so it compares as Portainer has it): the production
  * values from the file `OPSCREW_APP_ENV_FILE` names, and the values provision generated, read from
- * its record without writing it or anything else (a damaged record adds a note to `notes`). False
- * when the production values cannot be read without asking for them.
+ * its record without writing it or anything else (a damaged record adds a note to `notes`), with
+ * `storage`, the bucket's key as {@link knownStorageLogin} has it. False when the production values
+ * cannot be read without asking for them.
  */
 async function readAppValues(
   deps: PhaseDeps,
@@ -111,6 +131,7 @@ async function readAppValues(
   appKeys: readonly string[],
   values: Record<string, string | undefined>,
   notes: string[],
+  storage: StorageLogin | undefined,
 ): Promise<boolean> {
   const envFile = deps.env.OPSCREW_APP_ENV_FILE?.trim();
   if (!envFile) return false;
@@ -129,11 +150,13 @@ async function readAppValues(
       dotenvText,
       // A value provision would generate now is unknown here: it compares as Portainer has it.
       password: () => UNKNOWN,
+      ...(storage !== undefined ? { storage } : {}),
       ...(previous !== undefined
         ? {
             previous: {
               ...(previous.dbPassword !== undefined ? { dbPassword: previous.dbPassword } : {}),
               ...(previous.env !== undefined ? { env: previous.env } : {}),
+              ...(previous.services !== undefined ? { services: previous.services } : {}),
             },
           }
         : {}),
@@ -145,14 +168,49 @@ async function readAppValues(
   const known = (value: string | undefined) =>
     value === undefined || value.includes(UNKNOWN) ? undefined : value;
   for (const name of appKeys) values[name] = known(environment.values.app[name] ?? "");
-  const db = parseDotenv(environment.dbEnv ?? "");
-  values[PORTAINER_STACK_VARIABLES.dbUser] = known(db.get("POSTGRES_USER"));
-  values[PORTAINER_STACK_VARIABLES.dbName] = known(db.get("POSTGRES_DB"));
-  values[PORTAINER_STACK_VARIABLES.dbPassword] = known(db.get("POSTGRES_PASSWORD"));
+  const { db, services } = environment.values;
+  values[PORTAINER_STACK_VARIABLES.dbUser] = known(db?.user);
+  values[PORTAINER_STACK_VARIABLES.dbName] = known(db?.name);
+  // Each service's secrets (Postgres's password among them) as the stack's variables hold them.
+  for (const { service, secret, variable } of portainerSecretVariables(plan)) {
+    values[variable] = known(services[service]?.[secret]);
+  }
   for (const value of Object.values(values)) {
     if (value !== undefined && value.length >= 8) deps.redactor.addLiteral(value, "app-env");
   }
   return true;
+}
+
+/**
+ * The key of the app's bucket at a provider this computer has (the environment's or OpsCrew's
+ * copy, never asked for), read once for the bucket's root and the app's values. An R2 bucket's
+ * root needs none, so without one its key is just unknown here; a Hetzner or Spaces bucket's root
+ * needs it, so without one drift stops with the steps, as on a server.
+ */
+async function knownStorageKey(deps: PhaseDeps, plan: DeployPlan): Promise<StorageKey | undefined> {
+  const bucket = providerBucket(plan);
+  if (bucket === undefined) return undefined;
+  return requireStorageKey(deps, plan, {}, { command: "opscrew drift", asks: false }).catch(
+    (error: unknown) => {
+      const missing = error instanceof OpsCrewError && error.code === "CREDENTIALS_MISSING";
+      if (bucket.provider === "r2" && missing) return undefined;
+      throw error;
+    },
+  );
+}
+
+/**
+ * The app's login to its bucket at a provider as provision gives it, from `key`
+ * ({@link knownStorageKey}); without one its variables compare as Portainer has them. Undefined
+ * without such a bucket.
+ */
+function knownStorageLogin(
+  plan: DeployPlan,
+  key: StorageKey | undefined,
+  account: CloudflareSetup | undefined,
+): StorageLogin | undefined {
+  if (providerBucket(plan) === undefined) return undefined;
+  return storageLogin(plan, key ?? { accessKeyId: UNKNOWN, secretAccessKey: UNKNOWN }, account);
 }
 
 /** What the value comparison needs to know, and what it could not compare. */
@@ -167,6 +225,8 @@ interface ValueInputs {
   imagePrivate: boolean;
   /** Reads the certificate Portainer presents (a TLS handshake, nothing sent). */
   inspectCertificate: typeof inspectCertificate;
+  /** The app's login to its bucket at a provider (see {@link knownStorageLogin}). */
+  storage: StorageLogin | undefined;
 }
 
 /**
@@ -191,7 +251,7 @@ async function desiredFingerprints(
   // The app stack: the production values only from OPSCREW_APP_ENV_FILE, never asked for, and the
   // values provision generated, read without writing anything.
   const values: Record<string, string | undefined> = {};
-  const appKnown = await readAppValues(deps, plan, keys.app, values, notes);
+  const appKnown = await readAppValues(deps, plan, keys.app, values, notes, input.storage);
   if (!appKnown) notes.push(APP_VALUES_NOTE);
   if (target.web.mode === "tunnel") {
     const token = stringOutput(outputs, "tunnel_token");
@@ -433,12 +493,15 @@ export async function portainerDrift(
   const target = portainerTarget(plan.target);
   const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
   const hasRoot = root.appTunnel || root.webhook;
+  const bucket = providerBucket(plan);
+  const usesCloudflare = hasRoot || bucket?.provider === "r2";
   const statePath = stateFile(deps.paths);
   const stateKind = hasRoot ? await inspectState(deps, statePath) : undefined;
 
-  // 1. Credentials: Portainer's token and connection, GitHub, Cloudflare when the plan has a tunnel.
+  // 1. Credentials: Portainer's token and connection, GitHub, Cloudflare when the plan has a
+  // tunnel or an R2 bucket.
   deps.reporter.step(
-    hasRoot
+    usesCloudflare
       ? "Checking your Portainer, Cloudflare and GitHub access"
       : "Checking your Portainer and GitHub access",
   );
@@ -448,7 +511,7 @@ export async function portainerDrift(
   const github = await setupGitHub(deps, git, services);
   const repository = await github.api.getRepo(github.owner, github.repo);
   const repo = `${github.owner}/${github.repo}`;
-  const cloudflare = hasRoot
+  const cloudflare = usesCloudflare
     ? await setupCloudflare(deps, plan, services, { foreignRecords: "report" })
     : undefined;
   const cloudflareRules = await cloudflareRulesDrift(deps, services);
@@ -512,6 +575,19 @@ export async function portainerDrift(
     notes.push(NO_CLOUDFLARE_NOTE);
   }
 
+  // 3b. The app's bucket at a provider, once created (FR-1331).
+  const storageKey = await knownStorageKey(deps, plan);
+  const storage = await storageDrift(deps, {
+    plan: current,
+    engine,
+    engineEnv: env,
+    changedFiles,
+    key: async () => storageKey,
+  });
+  drift = [...drift, ...storage.drift];
+  pending = [...pending, ...storage.pending];
+  notes.push(...storage.notes);
+
   // 4. Portainer, read-only through the pinned client.
   const valueKey = (await exists(portainerValueKeyFile(deps.paths)))
     ? await ensurePortainerValueKey(deps)
@@ -566,6 +642,7 @@ export async function portainerDrift(
         repositoryPrivate: repository.private,
         imagePrivate: !publicImage,
         inspectCertificate: services.portainer?.inspectCertificate ?? inspectCertificate,
+        storage: knownStorageLogin(plan, storageKey, cloudflare),
       },
       notes,
       differences,

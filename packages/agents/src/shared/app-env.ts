@@ -421,8 +421,6 @@ export interface GeneratedValues {
 export interface AppEnvironment {
   /** Contents of the `OPSCREW_APP_ENV` secret (Compose env_file for the app). */
   appEnv: string;
-  /** Contents of `OPSCREW_SERVICE_DB_ENV` when Postgres is self-hosted. */
-  dbEnv?: string;
   /**
    * Contents of `OPSCREW_BUILD_ENV`: the client-exposed values the plan does not mark secret,
    * passed to the build as build arguments (baked into the image).
@@ -447,8 +445,7 @@ export interface AppEnvironment {
   /**
    * The same values by name, exactly as set (no env-file quoting), for a target that takes them one
    * by one, such as a Portainer stack's environment: `app` holds what {@link appEnv} holds, `build`
-   * what {@link buildEnv} and {@link buildSecrets} hold, `db` what {@link dbEnv} holds. Never
-   * logged.
+   * what {@link buildEnv} and {@link buildSecrets} hold, `db` Postgres's login. Never logged.
    */
   values: {
     app: Record<string, string>;
@@ -601,16 +598,6 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const allBuild = [...build.entries(), ...buildSecrets.entries()];
   return {
     appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
-    ...(db !== undefined
-      ? {
-          dbEnv: [
-            `POSTGRES_USER=${db.user}`,
-            `POSTGRES_DB=${db.name}`,
-            `POSTGRES_PASSWORD=${db.password}`,
-            "",
-          ].join("\n"),
-        }
-      : {}),
     buildEnv: buildLines(build),
     buildSecrets: buildLines(buildSecrets),
     names: [...new Set([...app.keys(), ...allBuild.map(([name]) => name)])].sort(),

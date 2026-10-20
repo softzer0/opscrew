@@ -361,9 +361,11 @@ describe("production environment", () => {
       dotenvText: `DATABASE_URL=postgres://localhost/dev\nSTRIPE_SECRET_KEY=${stripe}\nVITE_PUBLIC_URL=https://shop.example.com\n`,
       password: () => "P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd",
     });
-    expect(result.dbEnv).toBe(
-      "POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd\n",
-    );
+    expect(result.values.db).toEqual({
+      user: "app",
+      name: "app",
+      password: "P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd",
+    });
     expect(result.appEnv).toContain(
       "DATABASE_URL=postgresql://app:P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd@db:5432/app",
     );
@@ -398,7 +400,7 @@ describe("production environment", () => {
       password,
       previous: first.generated,
     });
-    expect(second.dbEnv).toBe(first.dbEnv);
+    expect(second.values.db).toEqual(first.values.db);
     expect(second.appEnv).toBe(first.appEnv);
     expect(counter).toBe(2);
   });

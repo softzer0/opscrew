@@ -11,9 +11,10 @@ import {
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opscrew/iac-templates";
-import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
+import { providerBucket } from "../provision";
 import { portainerCloudflare } from "../provision/credentials";
 import {
   portainerValueKeyFile,
@@ -28,15 +29,18 @@ import {
   adapterBlocked,
   applyStackPlanAudited,
   chooseEngine,
+  existingStateEngine,
   hasDeployment,
   hasState,
   inspectRecordedPortainer,
   type PortainerConnection,
+  type ProjectEngine,
   readPortainerConnection,
   refusalReason,
   stateContents,
   stateFile,
 } from "../shared";
+import { serverData } from "./checks";
 import {
   applyCloudflareRemoval,
   approveCloudflareRemoval,
@@ -67,6 +71,14 @@ import {
   removalDetails,
   zeroTrustLeft,
 } from "./shared-rules";
+import {
+  bucketDeletionWarning,
+  bucketKept,
+  bucketStays,
+  deleteBucket,
+  discardBucketDeletion,
+  planBucketDeletion,
+} from "./storage";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -285,6 +297,11 @@ function remainingInPortainer(input: {
   github: GitHubTarget;
   secretsRemoved: readonly string[];
   keptVolumes: readonly string[];
+  /**
+   * True when this run deleted the app's bucket, or found it gone: the teardown that removes the app
+   * with `--delete-data` (a later data-only run leaves the bucket, which stays listed).
+   */
+  bucketDeleted: boolean;
   removedApp: boolean;
   branchDeleted: boolean;
   /** This run approved nothing, so OpsCrew did not delete the branch (it never does unapproved). */
@@ -300,6 +317,8 @@ function remainingInPortainer(input: {
       `The app's data in your Portainer: the volume${input.keptVolumes.length === 1 ? "" : "s"} ${listText(input.keptVolumes)}. OpsCrew took no backup. To delete ${input.keptVolumes.length === 1 ? "it" : "them"} when you no longer need ${input.keptVolumes.length === 1 ? "it" : "them"}, run \`opscrew destroy --delete-data\` (you type ${plan.app.name} to confirm), or remove ${input.keptVolumes.length === 1 ? "it" : "them"} in Portainer (Volumes).`,
     );
   }
+  const bucket = input.bucketDeleted ? undefined : bucketKept(plan);
+  if (bucket !== undefined) items.push(bucket);
   if (!input.removedApp) return items;
   items.push(...deploySecretsLeft(github, { names: SECRET_NAMES, removed: input.secretsRemoved }));
   const repo = github.owner && github.repo ? `${github.owner}/${github.repo}` : "<owner>/<repo>";
@@ -384,8 +403,15 @@ export async function destroyPortainer(
     await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");
   }
 
+  // The app's bucket at a provider goes only with --delete-data, in the teardown that removes the
+  // app (as on a server); an R2 bucket needs the Cloudflare token.
+  const bucketAt = providerBucket(plan);
+  const deletesBucket = removeApp && deleteData && bucketAt !== undefined;
+
   // 2. Credentials
-  const cloudflare = cloudflareState && plan.dns.provider === "cloudflare";
+  const cloudflare =
+    (cloudflareState && plan.dns.provider === "cloudflare") ||
+    (deletesBucket && bucketAt?.provider === "r2");
   deps.reporter.step(
     `Checking your Portainer${cloudflare ? ", Cloudflare" : ""}${removeApp ? " and GitHub" : ""} access`,
   );
@@ -412,18 +438,34 @@ export async function destroyPortainer(
   let session: DeletionSession | undefined;
   let resources: ResourceChange[] = [];
   let confirmed: ReadonlySet<string> = new Set();
+  let setup: ProjectEngine | undefined;
   if (cloudflareState) {
-    const setup = await setupEngine(deps, plan, options);
+    setup = await setupEngine(deps, plan, options);
     setPortainerOrigin(deps.redactor, setup.env, connection.url);
     session = deletionSession(scope, { ...setup, dir: join(deps.paths.root, plan.infra.dir) });
     ({ resources, confirmed } = await previewCloudflareRemoval(session, WORDS));
   }
+  // With --delete-data, the bucket's deletion through its own root and plan, made now so the
+  // confirmation lists it.
+  const bucket = deletesBucket
+    ? await planBucketDeletion(
+        scope,
+        plan,
+        setup ??
+          (await existingStateEngine(deps, plan, {
+            ...(options.engine !== undefined ? { engine: options.engine } : {}),
+            ...(options.services !== undefined ? { services: options.services } : {}),
+            command: COMMAND,
+          })),
+      )
+    : undefined;
   const volumes = teardown.changes.find((change) => change.id === "volumes");
   const deletesData = volumes?.state === "change";
   const dataNames =
     deletesData && Array.isArray(volumes?.params.names) ? [...volumes.params.names] : [];
+  const kinds = serverData(plan);
   const dataWarning = deletesData
-    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${serviceOf(plan, "postgres") ? " (with the PostgreSQL database)" : ""}. OpsCrew takes no backup of your Portainer host, so this cannot be undone unless you have your own backup.`
+    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${kinds.length > 0 ? ` (with ${listText(kinds)})` : ""}. OpsCrew takes no backup of your Portainer host, so this cannot be undone unless you have your own backup.`
     : undefined;
   if (deleteData && !deletesData) {
     deps.reporter.info(
@@ -455,6 +497,10 @@ export async function destroyPortainer(
       `The app's data in your Portainer (the volume${record.volumes.length === 1 ? "" : "s"} ${listText(record.volumes)}) is kept. To delete it as well, cancel now and run \`opscrew destroy --delete-data\`.`,
     );
   }
+  if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
+  else if (!deleteData && removeApp && bucketAt !== undefined) {
+    deps.reporter.info(bucketStays(bucketAt));
+  }
   await confirmDeletion(
     scope,
     {
@@ -462,31 +508,35 @@ export async function destroyPortainer(
       confirmPrompt: destroyConfirmPrompt(name, "portainer"),
       provider: "portainer",
       deleteProtection: false,
-      resources,
+      resources: [...resources, ...(bucket?.summary.changes ?? [])],
       snapshot: false,
       ...(dataWarning !== undefined ? { dataWarning } : {}),
       stackChanges: stackTitles,
       ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
     },
     options.confirm,
-  );
+  ).catch(async (error: unknown) => {
+    if (bucket !== undefined) await discardBucketDeletion(bucket);
+    throw error;
+  });
 
   // 5–6. The Cloudflare resources (tunnel, DNS records, Access) and the app's stacks in Portainer.
   // Both are approved before anything changes. The stacks go first when the Cloudflare plan deletes
   // a tunnel (its connector runs in Portainer); that plan follows once the tunnel has no connections.
   let destroyed: ResourceChange[] = [];
   let removal: CloudflareRemoval | undefined;
-  if (session !== undefined && resources.length > 0) {
-    removal = await approveCloudflareRemoval(session, {
-      confirmed,
-      appChanges: stackWork.length > 0,
-      words: WORDS,
-      notes: stackWork.length === 0 && branchNote !== undefined ? [branchNote] : [],
-    });
-  }
   let stackApproval: ApprovalRecord | undefined;
+  let bucketApproval: ApprovalRecord | undefined;
   let stackHash: string | undefined;
   try {
+    if (session !== undefined && resources.length > 0) {
+      removal = await approveCloudflareRemoval(session, {
+        confirmed,
+        appChanges: stackWork.length > 0,
+        words: WORDS,
+        notes: stackWork.length === 0 && branchNote !== undefined ? [branchNote] : [],
+      });
+    }
     const tunnelFirst = removal?.tunnel === true;
     // The stack teardown is approved too before anything changes, whichever goes first.
     const approved =
@@ -511,6 +561,9 @@ export async function destroyPortainer(
             refused: `The removal of ${name} from your Portainer was not approved, so nothing in your Portainer was changed and nothing in Cloudflare was deleted.`,
           })
         : undefined;
+    // An R2 bucket first, once the rest is approved: Cloudflare refuses one that holds files, and
+    // then nothing else is deleted yet.
+    if (bucket?.bucket.provider === "r2") bucketApproval = await deleteBucket(bucket);
     if (session !== undefined && removal !== undefined && !removal.tunnel) {
       destroyed = await applyCloudflareRemoval(session, removal, services.sleep);
     }
@@ -543,9 +596,14 @@ export async function destroyPortainer(
     if (session !== undefined && removal?.tunnel === true) {
       destroyed = await applyCloudflareRemoval(session, removal, services.sleep);
     }
+    // A Hetzner or Spaces bucket after the stacks, like the app's other data.
+    if (bucket !== undefined && bucket.bucket.provider !== "r2") {
+      bucketApproval = await deleteBucket(bucket);
+    }
   } finally {
-    // Never left behind for a later apply (applyCloudflareRemoval deletes it, too).
+    // Never left behind for a later apply (applyCloudflareRemoval and deleteBucket delete them, too).
     if (removal !== undefined) await discardPlan(removal.summary);
+    if (bucket !== undefined) await discardBucketDeletion(bucket);
   }
 
   // The deploy branch holds the app stack's file: once the stack is gone, the branch goes too, but
@@ -567,7 +625,8 @@ export async function destroyPortainer(
       done: "The app is removed from your Portainer and Cloudflare.",
       reach: "your Portainer",
     });
-    await recordTeardown(deps, plan, [removal?.approval, stackApproval, sharedApproval], {
+    const approvals = [removal?.approval, bucketApproval, stackApproval, sharedApproval];
+    await recordTeardown(deps, plan, approvals, {
       summary: "app removed from your Portainer",
       forgetAddress: false,
     });
@@ -578,7 +637,7 @@ export async function destroyPortainer(
     action: "destroy",
     phase: "provision",
     target: name,
-    detail: `${removeApp ? "app removed" : "data removed"}: ${plural(destroyed.length, "Cloudflare resource")} deleted, ${plural(stackWork.length, "change")} in Portainer, ${plural(secretsRemoved.length, "deploy secret")} removed${deletesData ? ", app data deleted" : ", app data kept"}; Portainer itself stays`,
+    detail: `${removeApp ? "app removed" : "data removed"}: ${plural(destroyed.length, "Cloudflare resource")} deleted, ${plural(stackWork.length, "change")} in Portainer, ${plural(secretsRemoved.length, "deploy secret")} removed${deletesData ? ", app data deleted" : ", app data kept"}${bucketApproval !== undefined ? ", the app's bucket deleted" : ""}; Portainer itself stays`,
   });
   deps.reporter.success(
     removeApp
@@ -592,6 +651,7 @@ export async function destroyPortainer(
     github,
     secretsRemoved,
     keptVolumes: connection.created.volumes,
+    bucketDeleted: deletesBucket,
     removedApp: removeApp,
     branchDeleted,
     branchUnapproved,

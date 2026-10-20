@@ -1,11 +1,18 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { OpsCrewError, readTextIfExists, toPosixRelative } from "@opscrew/core";
+import { exists, OpsCrewError, readTextIfExists, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
+import { storageRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import {
+  providerBucket,
+  type StorageKey,
+  storageEngineEnv,
+  storageStateFile,
+} from "../provision/storage";
 import { type ProjectEngine, projectEngine } from "../shared";
 import {
   type AttributesByType,
@@ -243,4 +250,39 @@ export async function finishDriftReport(
       : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${files.changed.length + files.created.length} files differ${found.host !== undefined ? `, ${hostDifferences} differences on the server` : ""}${found.portainer !== undefined ? `, ${portainerDifferences} differences in Portainer` : ""}${found.cloudflareRules !== undefined ? `, ${ruleDifferences} differences in OpsCrew's shared Cloudflare rules` : ""}`,
   });
   return report;
+}
+
+/**
+ * The app's bucket at a provider, once created: its own root (`opscrew/infra/storage`) and state,
+ * compared as {@link compareInfrastructure} does, so a bucket deleted or a CORS rule changed in the
+ * provider's console shows (FR-1331). `key` gives a Hetzner or Spaces bucket's key, asked only then
+ * (R2's root uses the Cloudflare token). Empty without such a bucket or its state.
+ */
+export async function storageDrift(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    engine: IacEngine;
+    engineEnv: Record<string, string | undefined>;
+    changedFiles: readonly string[];
+    key: () => Promise<StorageKey | undefined>;
+  },
+): Promise<Pick<InfrastructureComparison, "drift" | "pending" | "notes">> {
+  const { plan } = input;
+  const bucket = providerBucket(plan);
+  const statePath = storageStateFile(deps.paths);
+  if (bucket === undefined || !(await exists(statePath))) {
+    return { drift: [], pending: [], notes: [] };
+  }
+  const key = bucket.provider === "r2" ? undefined : await input.key();
+  const { drift, pending, notes } = await compareInfrastructure(deps, {
+    plan,
+    engine: input.engine,
+    engineEnv: storageEngineEnv(input.engineEnv, plan, key),
+    statePath,
+    dir: join(deps.paths.root, storageRootDir(plan)),
+    mirrored: {},
+    changedFiles: input.changedFiles,
+  });
+  return { drift, pending, notes };
 }

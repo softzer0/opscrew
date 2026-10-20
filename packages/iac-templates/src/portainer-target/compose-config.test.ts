@@ -184,6 +184,12 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
     );
     expect(config.configs["nats-nats.conf"].content).toContain("token: $$NATS_TOKEN");
     expect(config.services.worker.deploy.replicas).toBe(2);
+    // The services' one-time setup, in the stack.
+    expect(config.services["mongodb-init"].network_mode).toBe("service:mongodb");
+    expect(config.services.app.depends_on["mongodb-init"].condition).toBe(
+      "service_completed_successfully",
+    );
+    expect(config.services.garage.environment.GARAGE_DEFAULT_BUCKET).toBe("shop-uploads");
   }, 60_000);
 
   it("accepts the template before the image is filled in", () => {

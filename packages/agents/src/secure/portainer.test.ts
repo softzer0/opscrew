@@ -1,11 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { findExecutable } from "@opscrew/core";
+import { serviceSpec } from "@opscrew/iac-templates";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   deployImage,
   everythingShown,
   forbiddenIn,
   type PortainerProject,
+  portainerPlan,
   portainerProject,
   provisionPortainerProject,
 } from "../drift/__fixtures__/portainer-project";
@@ -89,6 +92,7 @@ describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer
       ["stack-updater-file", "pass"],
       ["stack-app-redeploy", "pass"],
       ["registry-entry", "pass"],
+      ["service-db-login", "pass"],
     ]);
     expect(result.probes).toEqual([]);
     expect(result.passed).toBe(true);
@@ -103,6 +107,61 @@ describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer
     expect(s.deps.reporter.text()).toContain("OpsCrew does not change the host");
     const text = `${await everythingShown(s)}\n${report}`;
     for (const secret of forbiddenIn(s)) expect(text).not.toContain(secret);
+  });
+
+  it("checks each service's login through the app stack's variables, by name only", async () => {
+    const base = portainerPlan();
+    const entry = (kind: "mysql" | "valkey", fields = {}) => {
+      const spec = serviceSpec(kind);
+      return {
+        kind,
+        version: spec.defaultVersion,
+        memoryMb: spec.memory.defaultMb,
+        options: {},
+        reason: "The app uses it.",
+        licence: spec.licence.id,
+        ...fields,
+      };
+    };
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: [
+        ...base.services,
+        entry("mysql"),
+        entry("valkey", { name: "cache", options: { mode: "cache" } }),
+      ],
+    });
+    const s = await portainerProject({ plan });
+    await provisionPortainerProject(s);
+    await deployImage(s);
+    let result = await secure(s);
+    const byId = () => Object.fromEntries(result.hostChecks.map((check) => [check.id, check]));
+    expect(byId()["service-mysql-login"]).toMatchObject({
+      status: "pass",
+      severity: "high",
+      message:
+        "MySQL (mysql) requires its login: OPSCREW_SVC_MYSQL_PASSWORD and OPSCREW_SVC_MYSQL_ROOT_PASSWORD are set in the app stack's environment.",
+    });
+    expect(byId()["service-db-login"]?.status).toBe("pass");
+    // Valkey has no login: only the app's containers reach it.
+    expect(byId()["service-cache-login"]).toBeUndefined();
+
+    // A login removed, and one emptied, in Portainer.
+    const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");
+    if (app === undefined) throw new Error("no app stack");
+    const password = app.Env.find((pair) => pair.name === "OPSCREW_SVC_MYSQL_PASSWORD")?.value;
+    app.Env = app.Env.filter((pair) => pair.name !== "OPSCREW_SVC_MYSQL_ROOT_PASSWORD").map(
+      (pair) => (pair.name === "OPSCREW_SVC_MYSQL_PASSWORD" ? { ...pair, value: "" } : pair),
+    );
+    result = await secure(s);
+    expect(byId()["service-mysql-login"]).toMatchObject({
+      status: "fail",
+      message:
+        "The app stack's environment has no value for OPSCREW_SVC_MYSQL_PASSWORD and OPSCREW_SVC_MYSQL_ROOT_PASSWORD, so MySQL (mysql) runs without its login.",
+    });
+    expect(result.passed).toBe(false);
+    const report = await readFile(s.deps.paths.files.securityReport, "utf8");
+    expect(`${report}\n${s.deps.reporter.text()}`).not.toContain(password);
   });
 
   it("fails on a hand-hardened-down stack, a failed deploy, a missing updater and a lost grant", async () => {

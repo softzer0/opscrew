@@ -16,9 +16,11 @@ import {
 import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import {
   PORTAINER_STACK_VARIABLES,
+  portainerSecretVariables,
   portainerStackEnvKeys,
   portainerTarget,
   portainerWebhookHostname,
+  renderStorage,
   siteHosts,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, writeArtifact } from "@opscrew/plan-schema";
@@ -100,6 +102,13 @@ import {
   type SavedInfrastructureHashes,
   withLearnedZone,
 } from "./steps";
+import {
+  applyStorage,
+  providerBucket,
+  requireR2Cloudflare,
+  requireStorageKey,
+  storageLogin,
+} from "./storage";
 import type { ProvisionOptions, ProvisionResult } from "./types";
 
 /** What {@link provisionPortainer} gets from the shared provision flow. */
@@ -158,7 +167,9 @@ function requiredOutput(
  * (a changed certificate stops plainly) → inspect read-only → stop on blocking findings (including
  * the steps for a limited token without a registry entry) → with a Cloudflare root, the
  * Cloudflare plan of OpsCrew's shared rule and Zero Trust organization, its `cloudflare-apply`
- * approval by its hash and apply → render and write the files → the infrastructure plan
+ * approval by its hash and apply → render and write the files → the app's bucket at a provider
+ * (the `storage` root: its own plan and `iac-apply` approval; R2's key comes after it) → the
+ * infrastructure plan
  * (Cloudflare only), its policies, `iac-apply` approval and apply, when the plan has a
  * Cloudflare root → the `opscrew-deploy` branch with a placeholder (`git-push`
  * approval) when the app stack is new → the stack plan, bound to the values it sends by their
@@ -186,10 +197,17 @@ export async function provisionPortainer(
   const target = portainerTarget(plan.target);
   const cloudflareRoot = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
   const hasRoot = cloudflareRoot.appTunnel || cloudflareRoot.webhook;
+  // The app's bucket at a provider: an R2 bucket needs the plan's Cloudflare account.
+  const bucket = providerBucket(plan);
+  const usesCloudflare = hasRoot || bucket?.provider === "r2";
+  // The stack's variables, before anything else: an app variable a stack cannot hold, or a
+  // service that needs a setting of the Docker host, stops here.
+  const keys = portainerStackEnvKeys(plan);
 
-  // 1. Preconditions: Portainer's token and connection, GitHub, Cloudflare when the plan has a tunnel.
+  // 1. Preconditions: Portainer's token and connection, GitHub, Cloudflare when the plan has a
+  // tunnel or an R2 bucket.
   deps.reporter.step(
-    hasRoot
+    usesCloudflare
       ? "Checking your Portainer, Cloudflare and GitHub access"
       : "Checking your Portainer and GitHub access",
   );
@@ -206,12 +224,22 @@ export async function provisionPortainer(
   }
   const token = requirePortainerToken(deps);
   const github = await setupGitHub(deps, git, services);
-  const cloudflare = hasRoot ? await setupCloudflare(deps, plan, services) : undefined;
-  if (hasRoot && cloudflare === undefined) {
+  const account = usesCloudflare ? await setupCloudflare(deps, plan, services) : undefined;
+  if (hasRoot && account === undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", "This plan needs a domain on Cloudflare.", {
       hint: "Run `opscrew interview` and `opscrew design` again.",
     });
   }
+  requireR2Cloudflare(plan, account);
+  // What the Cloudflare root and OpsCrew's shared Cloudflare rules work with: only a plan with a
+  // tunnel has them (an R2 bucket alone needs only the account).
+  const cloudflare = hasRoot ? account : undefined;
+  // A Hetzner or Spaces bucket is created with the user's key, so it is needed now (R2's comes
+  // after its bucket, as a token limited to it).
+  const storageKey =
+    bucket !== undefined && bucket.provider !== "r2"
+      ? await requireStorageKey(deps, plan, services, { command })
+      : undefined;
   // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
   // no longer uses, for example after leaving web mode tunnel), planned read-only now and applied
   // before the infrastructure plan.
@@ -289,7 +317,6 @@ export async function provisionPortainer(
   // is served another way than now: said once this run is done.
   const routeChanges = removal || switchesWebRoute(target, connection);
 
-  const keys = portainerStackEnvKeys(plan);
   const updater = target.redeploy === "updater";
   // The user's word on the image's visibility, as given now or recorded by an earlier run.
   const publicImage = options.publicImage ?? connection.publicImage ?? false;
@@ -354,28 +381,62 @@ export async function provisionPortainer(
   // only branch Dependabot reads, so its Compose entry applies here too.
   const writes = saved.apply === undefined && saved.removal === undefined;
   const dependabot = await deploySetupDependabot(deps, plan, { writes });
+  const ctx = deploymentRenderContext(deps, {
+    plan,
+    requirements: input.requirements,
+    github,
+    // A Portainer target has no SSH deploy: its files never use the deploy key.
+    deployPublicKey: "",
+    cloudflare: account,
+  });
   const files = [
-    ...deploymentFiles(
-      plan,
-      deploymentRenderContext(deps, {
-        plan,
-        requirements: input.requirements,
-        github,
-        // A Portainer target has no SSH deploy: its files never use the deploy key.
-        deployPublicKey: "",
-        cloudflare,
-      }),
-    ),
+    ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
   ];
   if (writes) await approveAndWriteRenderedFiles(deps, root, files);
 
-  // The app's values, the webhook and the certificate's key, read once and only when needed.
+  // 3c. The app's bucket (the `storage` root): its own plan, approved by its hash, before the
+  // infrastructure plan and the stacks (the app's stack gets its key).
+  const storage =
+    bucket === undefined
+      ? undefined
+      : await engineSetup().then(({ engine, env }) =>
+          applyStorage(deps, {
+            engine,
+            env,
+            plan,
+            files: renderStorage(plan, ctx),
+            key: storageKey,
+            ...(saved.storage !== undefined ? { approvePlanHash: saved.storage } : {}),
+            ...(options.planOnly ? { planOnly: true } : {}),
+            command,
+            phase,
+          }),
+        );
+  const storagePlanHash =
+    storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined;
+  const storageHash = storagePlanHash !== undefined ? { storagePlanHash } : {};
+  // In --plan-only, a bucket still to create has no key yet for the app's stack (R2's comes after it).
+  const bucketPending = storage !== undefined && !storage.applied && storagePlanHash !== undefined;
+
+  // The app's values (with the bucket's key), the webhook and the certificate's key, read once and
+  // only when needed.
   let environment: AppEnvironment | undefined;
   const appEnvironment = async () => {
-    environment ??= await buildAppEnvironment(deps, plan, services, undefined, {
-      portainer: true,
-    });
+    if (environment === undefined) {
+      const key =
+        bucket === undefined
+          ? undefined
+          : (storageKey ??
+            (await requireStorageKey(deps, plan, services, {
+              command,
+              already: `The bucket ${bucket.bucket} exists; nothing in your Portainer was changed.`,
+            })));
+      environment = await buildAppEnvironment(deps, plan, services, undefined, {
+        portainer: true,
+        ...(key === undefined ? {} : { storage: storageLogin(plan, key, account) }),
+      });
+    }
     return environment;
   };
   let pin: string | undefined;
@@ -396,10 +457,13 @@ export async function provisionPortainer(
     const opscrew: Record<string, string | undefined> = {
       [PORTAINER_STACK_VARIABLES.dbUser]: env.values.db?.user,
       [PORTAINER_STACK_VARIABLES.dbName]: env.values.db?.name,
-      [PORTAINER_STACK_VARIABLES.dbPassword]: env.values.db?.password,
       [PORTAINER_STACK_VARIABLES.tunnelToken]:
         target.web.mode === "tunnel" ? requiredOutput(deps, outputs, "tunnel_token") : undefined,
     };
+    // Each service's generated secrets (Postgres's password among them), as the stack's variables.
+    for (const { service, secret, variable } of portainerSecretVariables(plan)) {
+      opscrew[variable] = env.values.services[service]?.[secret];
+    }
     for (const key of keys.opscrew) out[key] = opscrew[key] ?? "";
     const webhookId = (await portainerWebhookId(deps, {
       create: true,
@@ -546,6 +610,7 @@ export async function provisionPortainer(
   // created in Cloudflare is removed: a removal plan (`plan -destroy`) of the configuration still
   // committed, then its files leave the repository.
   const approvals: PlanApproval[] = (sharedResult?.approvals ?? []).map(approvalEntry);
+  if (storage?.approval) approvals.push(approvalEntry(storage.approval));
   let iac: PlanAndApplyResult = { applied: false, outputs: {} };
   let early: StackStepResult | undefined;
   if (hasRoot || removal) {
@@ -626,7 +691,11 @@ export async function provisionPortainer(
         );
       }
     }
-    if (tokensKnown && !tunnelChange(changes, "create", "replace")) {
+    if (bucketPending) {
+      deps.reporter.info(
+        "The stack plan for your Portainer follows once the app's bucket exists, because the app's stack gets the bucket's key. Applying the bucket's plan shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and the hashes shown, then again with `--approve` and the stack plan's hash).",
+      );
+    } else if (tokensKnown && !tunnelChange(changes, "create", "replace")) {
       stackHash = (await stackStep(outputs, true)).hash;
     } else {
       deps.reporter.info(
@@ -650,6 +719,7 @@ export async function provisionPortainer(
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
       ...cloudflareHash,
+      ...storageHash,
       ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
       applied: false,
       outputs: {},
@@ -782,6 +852,7 @@ export async function provisionPortainer(
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),
     ...cloudflareHash,
+    ...storageHash,
     applied: iac.applied,
     stackPlanHash: stack.hash,
     stackApplied,

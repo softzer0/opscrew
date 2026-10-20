@@ -4,7 +4,12 @@
  * (FR-1302), with the user's edits to an earlier plan kept (FR-1304).
  */
 import { canonicalJson, formatMoney, isUserFacingError, listText } from "@opscrew/core";
-import { renderRuntimeFiles, serviceSpec } from "@opscrew/iac-templates";
+import {
+  portainerHostSettingProblem,
+  renderPortainerStack,
+  renderRuntimeFiles,
+  serviceSpec,
+} from "@opscrew/iac-templates";
 import {
   ComponentNameSchema,
   type DeployPlan,
@@ -561,14 +566,24 @@ function cronFor(facts: ProjectFacts, previous: DeployPlan | undefined, notes: N
   return jobs;
 }
 
+/** What rendering a Portainer stack needs here: nothing of it reaches a file. */
+const STACK_CONTEXT = {
+  opscrewVersion: "",
+  github: { owner: "", repo: "" },
+  deploySshPublicKey: "",
+};
+
 /**
- * True when the plan's image can call the app's routes with a cron job's secret, by the crontab
- * renderer's own rule (it refuses a route job otherwise): rendering one route job tells.
+ * True when the plan's image can call the app's routes with a cron job's secret, by the target's
+ * renderer's own rule (the server's runtime files or the Portainer stack; each refuses a route job
+ * otherwise): rendering one route job tells.
  */
 function callsRoutes(plan: DeployPlan): boolean {
   const job = { name: "route", schedule: "@daily", route: "/", enabled: true };
+  const probe = { ...plan, services: [], processes: { workers: [], cron: [job] } };
   try {
-    renderRuntimeFiles({ ...plan, services: [], processes: { workers: [], cron: [job] } });
+    if (plan.target.provider === "portainer") renderPortainerStack(probe, STACK_CONTEXT);
+    else renderRuntimeFiles(probe);
     return true;
   } catch (error) {
     if (isUserFacingError(error) && error.code === "INVALID_INPUT") return false;
@@ -578,9 +593,8 @@ function callsRoutes(plan: DeployPlan): boolean {
 
 /**
  * The names of the plan's new cron jobs on routes its image cannot call (FR-1309), which design
- * plans turned off: on a server, jobs the previous plan did not have. A job the user turned on
- * stays on, and the renderer refuses it at provision while it still cannot run. (A Portainer
- * stack's renderer checks its own.)
+ * plans turned off: jobs the previous plan did not have. A job the user turned on stays on, and
+ * the renderer refuses it at provision while it still cannot run.
  */
 export function uncallableRouteJobs(plan: DeployPlan, previous: DeployPlan | undefined): string[] {
   const added = plan.processes.cron.filter(
@@ -589,7 +603,7 @@ export function uncallableRouteJobs(plan: DeployPlan, previous: DeployPlan | und
       job.route !== undefined &&
       !(previous?.processes.cron ?? []).some((old) => old.route === job.route),
   );
-  if (added.length === 0 || plan.target.provider === "portainer" || callsRoutes(plan)) return [];
+  if (added.length === 0 || callsRoutes(plan)) return [];
   return added.map((job) => job.name);
 }
 
@@ -743,7 +757,14 @@ export function designComponents(input: {
   const notes: Notes = { kept: [], changed: [] };
   const answeredLater =
     previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
-  const kept = keepsExternal(facts, requirements.keepExternalServices);
+  const keeps = keepsExternal(facts, requirements.keepExternalServices);
+  // A Portainer target cannot run the engines that need a setting of the Docker host: they stay
+  // where the app reaches them, with the line that says why.
+  const portainer = requirements.provider === "portainer";
+  const kept = (kind: ServiceKind) => {
+    const runs = RUNS[kind];
+    return keeps(kind) || (portainer && runs !== undefined && hostSettingProblem(runs));
+  };
 
   const storage = objectStorageFor({
     facts,
@@ -814,7 +835,7 @@ export function designComponents(input: {
   };
 
   lines.push(...componentLines(components, facts));
-  lines.push(...externalLines(facts, externalServices));
+  lines.push(...externalLines(facts, externalServices, portainer));
   if (facts.objectStorage !== undefined) {
     const text = storageText(components, storage.offers);
     if (text !== undefined) lines.push(text);
@@ -880,16 +901,32 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
   return lines;
 }
 
-/** What the app keeps using where it is hosted, and why OpsCrew does not run it. */
-function externalLines(facts: ProjectFacts, external: readonly ServiceKind[]): string[] {
+/** True when a Portainer target cannot run `kind` ({@link portainerHostSettingProblem}). */
+function hostSettingProblem(kind: SelfHostedServiceKind): boolean {
+  return portainerHostSettingProblem(kind) !== undefined;
+}
+
+/**
+ * What the app keeps using where it is hosted, and why OpsCrew does not run it (in `portainer`,
+ * also for the engines a Portainer target cannot run).
+ */
+function externalLines(
+  facts: ProjectFacts,
+  external: readonly ServiceKind[],
+  portainer: boolean,
+): string[] {
   const lines: string[] = [];
   for (const kind of external) {
     const hosted = (facts.hostedServices ?? []).filter((h) => h.kind === kind);
+    const runs = RUNS[kind];
+    const problem = portainer && runs !== undefined ? portainerHostSettingProblem(runs) : undefined;
     if (hosted.length > 0) {
       const providers = [...new Set(hosted.map((h) => h.provider))];
       lines.push(
         `The app keeps using ${listText(providers)} for ${kind} (${listText(hosted.map((h) => h.variable))}); set its address in the app's production environment.`,
       );
+    } else if (problem !== undefined) {
+      lines.push(problem);
     } else if (kind === "cassandra") {
       lines.push(
         "Cassandra stays where the app reaches it now: OpsCrew does not run it next to the app, because it needs several nodes and more memory than a small server has. A hosted Cassandra such as DataStax Astra DB works with the app's Cassandra driver.",

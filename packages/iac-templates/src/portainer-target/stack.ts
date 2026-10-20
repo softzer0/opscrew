@@ -1,7 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose and shell syntax, not JavaScript templates.
 
-import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import type { DeployPlan, PlanService, PortainerWeb } from "@opscrew/plan-schema";
+import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import type {
+  DeployPlan,
+  PlanService,
+  PortainerWeb,
+  SelfHostedServiceKind,
+} from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { enabledServices, renderContext, serviceSpec } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
@@ -27,6 +32,7 @@ import {
 } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs } from "../workflow/shared";
+import type { ServiceInitStep } from "../workflow/switch";
 
 /** Branch of the app's repository that holds only the stack file Portainer deploys. */
 export const PORTAINER_DEPLOY_BRANCH = "opscrew-deploy";
@@ -87,26 +93,167 @@ export function portainerServiceVariable(service: string, secret: string): strin
   return `OPSCREW_SVC_${service}_${secret}`.toUpperCase().replaceAll("-", "_");
 }
 
-/** The stack variables of a service's secrets (Postgres: {@link DB_ENV}'s). */
-function serviceVariables(service: PlanService, spec: ServiceSpec): string[] {
-  if (service.kind === "postgres") return DB_ENV.map(([, variable]) => variable);
-  return spec.secrets.map((secret) => portainerServiceVariable(service.name, secret.name));
+/**
+ * The stack variables that hold the running services' secrets, in the plan's order: each with its
+ * service and the catalog's name of the secret (Postgres's password is
+ * {@link PORTAINER_STACK_VARIABLES}' `dbPassword`; its user and database are not secrets).
+ */
+export function portainerSecretVariables(
+  plan: DeployPlan,
+): { service: string; secret: string; variable: string }[] {
+  return enabledServices(plan).flatMap((service) =>
+    serviceSpec(service.kind).secrets.map((secret) => ({
+      service: service.name,
+      secret: secret.name,
+      variable:
+        service.kind === "postgres"
+          ? PORTAINER_STACK_VARIABLES.dbPassword
+          : portainerServiceVariable(service.name, secret.name),
+    })),
+  );
 }
 
-/** A service's environment in the stack, with its secrets as stack variables. */
+/** Garage's bucket for the app, when the plan keeps its files there. */
+function garageBucket(plan: DeployPlan): string | undefined {
+  const storage = plan.storage?.objectStorage;
+  return storage?.provider === "garage" ? storage.bucket : undefined;
+}
+
+/**
+ * A service's environment in the stack, with its secrets as stack variables. Garage's also names
+ * the app's bucket, which Garage makes itself in a stack (see {@link stackSetup}).
+ */
 function stackEnvironment(plan: DeployPlan) {
   return (service: PlanService, spec: ServiceSpec): Record<string, string> => {
     if (service.kind === "postgres") {
       return Object.fromEntries(DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]));
     }
     const ref = (secret: string) => `\${${portainerServiceVariable(service.name, secret)}}`;
-    return spec.environment(renderContext(plan, service, ref));
+    const environment = spec.environment(renderContext(plan, service, ref));
+    const bucket = service.kind === "garage" ? garageBucket(plan) : undefined;
+    return bucket === undefined ? environment : { ...environment, GARAGE_DEFAULT_BUCKET: bucket };
   };
 }
 
 /** The plan's services as the stack runs them. */
 function stackServices(plan: DeployPlan): RenderedServices {
   return renderServices(plan, { kind: "portainer", environment: stackEnvironment(plan) });
+}
+
+/** Hosted options for the engines a Portainer target cannot run, named in the refusal. */
+const HOSTED: Readonly<Partial<Record<SelfHostedServiceKind, string>>> = {
+  opensearch: "Amazon OpenSearch Service or Aiven for OpenSearch",
+  elasticsearch: "Elastic Cloud",
+};
+
+/**
+ * Why a Portainer target cannot run `kind`, as one sentence (design says it, provision refuses
+ * with it): it needs a kernel setting of the Docker host (the catalog leaves `portainer` out of
+ * its `targets`), which OpsCrew never changes there; names a hosted option, or a server instead.
+ * Undefined for a kind a stack runs.
+ */
+export function portainerHostSettingProblem(kind: SelfHostedServiceKind): string | undefined {
+  const spec = serviceSpec(kind);
+  if (spec.targets.includes("portainer")) return undefined;
+  const settings = Object.entries(spec.hostSettings?.sysctl ?? {});
+  const lines = listText(settings.map(([key, value]) => `${key} = ${value}`));
+  const hosted = HOSTED[kind];
+  return `${spec.title} needs the Docker host's kernel setting ${lines}, which OpsCrew cannot set on a Portainer target, so it does not run ${spec.title} in your Portainer: ${hosted === undefined ? "" : `use a hosted ${spec.title} such as ${hosted}, or `}deploy the app to a server OpsCrew sets up, where it makes the setting itself.`;
+}
+
+/**
+ * Refuses a service a Portainer stack cannot run ({@link portainerHostSettingProblem}), saying
+ * how to make its setting by hand: design keeps such engines external, so only a hand-edited plan
+ * gets here.
+ * @throws OpsCrewError `INVALID_INPUT` for the first such service.
+ */
+function checkStackServices(plan: DeployPlan): void {
+  for (const service of enabledServices(plan)) {
+    const problem = portainerHostSettingProblem(service.kind);
+    if (problem === undefined) continue;
+    const spec = serviceSpec(service.kind);
+    const settings = Object.entries(spec.hostSettings?.sysctl ?? {});
+    const commands = settings.map(([key, value]) => `sysctl -w ${key}=${value}`).join("; ");
+    throw new OpsCrewError("INVALID_INPUT", problem, {
+      hint: `To keep it next to your Portainer, make the setting by hand on its Docker host as root (\`${commands}\`, and the same ${settings.length === 1 ? "line" : "lines"} in a file in /etc/sysctl.d/ so a restart keeps ${settings.length === 1 ? "it" : "them"}), run ${spec.title} there yourself, give the app its address in app.env, and turn the service ${service.name} off in opscrew/plan.yaml (services → ${service.name} → enabled: false); then run the command again.`,
+    });
+  }
+}
+
+/** A single-quoted shell word. */
+function shellWord(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * The one-shot service `<service>-init` that runs a service's one-time setup steps (the catalog's
+ * `init`, which a server's deploy runs with `docker compose exec`): the service's image, in its
+ * network namespace (the steps reach it on localhost, as in the service's own container), with its
+ * environment (secrets as the stack's variables) and its data volumes read-only (so Docker adds no
+ * anonymous ones for the image's), each step only when its check fails. It runs whenever the
+ * stack is deployed, after the service is healthy, and exits; the app waits for it.
+ */
+function initService(
+  service: PlanService,
+  spec: ServiceSpec,
+  steps: readonly ServiceInitStep[],
+  rendered: { environment?: Record<string, string>; volumes?: string[] },
+): object {
+  const words = (list: readonly string[]) => list.map(shellWord).join(" ");
+  const script = [
+    "set -e",
+    ...steps.map(({ check, run }) =>
+      check === undefined
+        ? words(run)
+        : `if ! ${words(check)} > /dev/null 2>&1; then ${words(run)}; fi`,
+    ),
+  ].join("\n");
+  return {
+    image: IMAGES[spec.image].ref,
+    restart: "no",
+    network_mode: `service:${service.name}`,
+    ...(rendered.environment === undefined ? {} : { environment: { ...rendered.environment } }),
+    entrypoint: ["sh", "-c", composeLiteral(script)],
+    volumes: (rendered.volumes ?? []).map((volume) => `${volume}:ro`),
+    depends_on: { [service.name]: { condition: "service_healthy" } },
+    ...memoryLimit(service.memoryMb),
+    ...hardened(),
+  };
+}
+
+/**
+ * The services' one-time setup in the stack, since Portainer runs no deploy steps: Garage makes
+ * the app's key (and bucket, with every permission) itself when it starts (`--default-access-key`,
+ * `--default-bucket`: each only when missing, from the variables of {@link stackEnvironment});
+ * every other service with setup steps (MongoDB's replica set) gets its {@link initService}.
+ * Adds them to `backing`, and returns what the app's containers wait for besides the services.
+ */
+function stackSetup(
+  plan: DeployPlan,
+  backing: RenderedServices,
+): Record<string, { condition: string }> {
+  const ready: Record<string, { condition: string }> = {};
+  for (const service of enabledServices(plan)) {
+    const rendered = backing.services[service.name] as {
+      environment?: Record<string, string>;
+      volumes?: string[];
+    };
+    if (service.kind === "garage") {
+      const flag = garageBucket(plan) === undefined ? "--default-access-key" : "--default-bucket";
+      backing.services[service.name] = {
+        ...rendered,
+        command: ["/garage", "server", "--single-node", flag],
+      };
+      continue;
+    }
+    const spec = serviceSpec(service.kind);
+    const steps = spec.init?.(renderContext(plan, service)) ?? [];
+    if (steps.length === 0) continue;
+    const name = `${service.name}-init`;
+    backing.services[name] = initService(service, spec, steps, rendered);
+    ready[name] = { condition: "service_completed_successfully" };
+  }
+  return ready;
 }
 
 /** Variable the tunnel connectors read their token from. */
@@ -236,16 +383,17 @@ export interface PortainerStackEnvKeys {
  * Every variable the app stack interpolates, each list sorted: what its environment in Portainer
  * (`Env`, set through the API, values never in files) must hold. Portainer fills only the
  * `${VARS}` a stack references. The app's and OpsCrew's names never overlap.
- * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`.
+ * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, or a
+ * service that needs a setting of the Docker host (so provision stops before any change).
  */
 export function portainerStackEnvKeys(plan: DeployPlan): PortainerStackEnvKeys {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
-  const opscrew = new Set<string>();
-  for (const service of enabledServices(plan)) {
-    for (const variable of serviceVariables(service, serviceSpec(service.kind))) {
-      opscrew.add(variable);
-    }
+  checkStackServices(plan);
+  const opscrew = new Set(portainerSecretVariables(plan).map((entry) => entry.variable));
+  if (enabledServices(plan).some((service) => service.kind === "postgres")) {
+    opscrew.add(PORTAINER_STACK_VARIABLES.dbUser);
+    opscrew.add(PORTAINER_STACK_VARIABLES.dbName);
   }
   if (web.mode === "tunnel") opscrew.add(PORTAINER_STACK_VARIABLES.tunnelToken);
   return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
@@ -298,20 +446,26 @@ const STACK_HEADER = [
  * data in named volumes, and the app's image its SQLite database in `sqlite`; Caddy's configuration, the services' settings files and the crontab are
  * inline (`configs.<name>.content`, Compose 2.23 or newer), so no file sits next to the stack; the
  * web mode adds a cloudflared service (`tunnel`), publishes the chosen port (`proxy`) or ports
- * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`. The
- * services' one-time setup (MongoDB's replica set, Garage's key and bucket) runs only in a
- * server's deploy.
+ * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`. Portainer
+ * runs no deploy steps, so the services' one-time setup is in the stack: Garage makes the app's
+ * key and bucket itself, and MongoDB's replica set is initiated by a one-shot service the app
+ * waits for (see {@link stackSetup}).
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, a
- * service OpsCrew cannot run as planned, or a cron route the image cannot call.
+ * service OpsCrew cannot run as planned (in a stack: one that needs a setting of the Docker host),
+ * or a cron route the image cannot call.
  */
 export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
+  checkStackServices(plan);
   const environment = () => ({
     PORT: String(plan.app.port),
     ...Object.fromEntries(appEnvKeys(plan).map((name) => [name, `\${${name}}`])),
   });
   const backing = stackServices(plan);
+  // What the release command, the app, its workers and cron wait for: the healthy services and
+  // their finished one-time setup.
+  const ready = { ...backing.dependsOn, ...stackSetup(plan, backing) };
 
   const app: Record<string, unknown> = {
     image: PORTAINER_IMAGE_PLACEHOLDER,
@@ -323,7 +477,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
   };
   const services: Record<string, unknown> = { app };
   const release = plan.app.releaseCommand;
-  const appDependsOn: Record<string, { condition: string }> = { ...backing.dependsOn };
+  const appDependsOn: Record<string, { condition: string }> = { ...ready };
   if (release !== undefined) {
     // A one-off container of the new image: Compose starts the app only after it succeeded.
     services.release = {
@@ -333,7 +487,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       command: ["sh", "-c", composeLiteral(release)],
       ...memoryLimit(plan.app.memoryMb),
-      ...(Object.keys(backing.dependsOn).length > 0 ? { depends_on: backing.dependsOn } : {}),
+      ...(Object.keys(ready).length > 0 ? { depends_on: ready } : {}),
       ...hardened({ noCapabilities: true, internal: true }),
     };
     appDependsOn.release = { condition: "service_completed_successfully" };

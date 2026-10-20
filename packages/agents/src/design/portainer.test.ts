@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { portainerHostSettingProblem } from "@opscrew/iac-templates";
 import {
   type Architecture,
   DesignOptionSchema,
@@ -227,6 +228,70 @@ describe("runDesign for an existing Portainer", () => {
       code: "PHASE_PRECONDITION",
       message: expect.stringContaining("does not know which Portainer and environment"),
     });
+  });
+
+  it("plans cron routes the stack's image cannot call turned off, saying why, by the stack renderer's check", async () => {
+    const facts = {
+      ...staticSpaFacts(),
+      cronJobs: [
+        { schedule: "0 5 * * *", route: "/api/cron/cleanup", source: "vercel.json" as const },
+      ],
+    };
+    const deps = await setup(onCloudflare(), CONNECTION, facts);
+    const { plan } = await runDesign(deps);
+    expect(plan.target.provider).toBe("portainer");
+    expect(plan.app.build?.probe).toBe("wget");
+    expect(plan.processes.cron).toEqual([
+      { name: "cleanup", schedule: "0 5 * * *", route: "/api/cron/cleanup", enabled: false },
+    ]);
+    expect(deps.reporter.text()).toContain(
+      "The cron job cleanup calls the app's routes, but the image is a static site served by Caddy, whose busybox wget cannot send the job's secret, and a static site answers no route, so OpsCrew turned it off in opscrew/plan.yaml (processes.cron).",
+    );
+  });
+
+  it("keeps the app's files in Garage in the app's stack, its cheapest storage there", async () => {
+    const facts = {
+      ...nextPostgresFacts(),
+      services: [
+        ...nextPostgresFacts().services,
+        { kind: "s3" as const, evidence: ["dependency:@aws-sdk/client-s3"] },
+      ],
+      objectStorage: { client: "@aws-sdk/client-s3", presignedUploads: false, variables: [] },
+    };
+    const deps = await setup(onCloudflare(), CONNECTION, facts);
+    const { plan } = await runDesign(deps);
+    expect(plan.storage?.objectStorage).toMatchObject({ provider: "garage", region: "garage" });
+    expect(serviceOf(plan, "garage")).toBeDefined();
+  });
+
+  it.each([
+    ["opensearch", "@opensearch-project/opensearch"],
+    ["elasticsearch", "@elastic/elasticsearch"],
+  ] as const)("keeps %s external, saying why and what to use instead", async (kind, client) => {
+    const facts = {
+      ...nextPostgresFacts(),
+      services: [...nextPostgresFacts().services, { kind, evidence: [`dependency:${client}`] }],
+    };
+    const deps = await setup(onCloudflare(), CONNECTION, facts);
+    const { plan } = await runDesign(deps);
+    expect(plan.services.map((service) => service.kind)).not.toContain(kind);
+    expect(plan.externalServices).toContain(kind);
+    const line = portainerHostSettingProblem(kind) as string;
+    expect(line).toContain("vm.max_map_count");
+    expect(deps.reporter.text()).toContain(line);
+  });
+
+  it("keeps cron routes on in a stack whose image can call them", async () => {
+    const facts = {
+      ...nextPostgresFacts(),
+      cronJobs: [
+        { schedule: "0 5 * * *", route: "/api/cron/cleanup", source: "vercel.json" as const },
+      ],
+    };
+    const deps = await setup(onCloudflare(), CONNECTION, facts);
+    const { plan } = await runDesign(deps);
+    expect(plan.processes.cron[0]?.enabled).toBe(true);
+    expect(deps.reporter.text()).not.toContain("OpsCrew turned it off");
   });
 
   it("previews the option without writing anything", async () => {

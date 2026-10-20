@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import type { ApprovalRequest, IacEngine } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { serviceSpec } from "@opscrew/iac-templates";
+import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   deployImage,
@@ -16,6 +17,13 @@ import {
   portainerProject,
   provisionPortainerProject,
 } from "../drift/__fixtures__/portainer-project";
+import {
+  bucketChanges,
+  bucketEngine,
+  RootEngine,
+  withBucket,
+} from "../provision/__fixtures__/storage";
+import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import { readPortainerConnection } from "../shared";
 import {
   deleteTunnelIn,
@@ -24,7 +32,7 @@ import {
   tunnelDeletePlanJson,
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
-import { encryptedState, withStateList, writeFakeState } from "../testing";
+import { encryptedState, plainState, withStateList, writeFakeState } from "../testing";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 
@@ -308,6 +316,109 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     });
     expect(s.deps.reporter.text()).toContain("cannot be undone unless you have your own backup");
     expect(result.remaining.join("\n")).not.toContain("--delete-data");
+  });
+
+  it("removes every component and, only with --delete-data, their volumes, naming their data", async () => {
+    const base = portainerPlan({ web: { mode: "proxy", port: 8080 } });
+    const entry = (kind: "mysql" | "mongodb", fields = {}) => {
+      const spec = serviceSpec(kind);
+      return {
+        kind,
+        version: spec.defaultVersion,
+        memoryMb: spec.memory.defaultMb,
+        options: {},
+        reason: "The app uses it.",
+        licence: spec.licence.id,
+        ...fields,
+      };
+    };
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: [
+        ...base.services,
+        entry("mysql"),
+        entry("mongodb", { options: { replicaSet: true } }),
+      ],
+    });
+    const s = await deployed({ plan });
+    const names = ["mysql_data", "mongodb_db", "mongodb_configdb"].map((v) => `opscrew-shop_${v}`);
+    s.fake.volumes.push(
+      ...names.map((Name) => ({ Name, Labels: { "com.docker.compose.project": "opscrew-shop" } })),
+    );
+    expect((await readPortainerConnection(s.deps.paths))?.created.volumes?.sort()).toEqual(
+      ["opscrew-shop_db_data", ...names].sort(),
+    );
+    await destroy(s);
+    expect(s.fake.stacks.map((stack) => stack.Name)).toEqual(["media"]);
+    expect(s.fake.volumes.map((volume) => volume.Name)).toContain("opscrew-shop_mysql_data");
+    expect(s.deps.reporter.text()).toContain("opscrew-shop_mysql_data) is kept");
+
+    s.deps.reporter.lines.length = 0;
+    await destroy(s, { deleteData: true });
+    expect(s.fake.volumes.map((volume) => volume.Name)).toEqual(["media_data"]);
+    expect(s.deps.reporter.text()).toContain(
+      "(with the PostgreSQL database, the MySQL database and the MongoDB database)",
+    );
+  });
+
+  it("keeps the app's R2 bucket without --delete-data, and with it deletes the bucket first", async () => {
+    const key = {
+      [STORAGE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "destroy"),
+      [STORAGE_KEY_VARS.secretAccessKey]: fakeSecret("aws-secret-access-key", "destroy"),
+    };
+    const withR2 = async () => {
+      const storage = bucketEngine("r2");
+      const s = await portainerProject({
+        plan: withBucket(portainerPlan({ web: { mode: "proxy", port: 8080 } }), "r2"),
+        env: key,
+      });
+      const main = s.engine;
+      s.services.engine = async () => new RootEngine(main, storage);
+      await provisionPortainerProject(s);
+      await deployImage(s);
+      await writeFile(storageStateFile(s.deps.paths), plainState([]));
+      s.deps.env.CLOUDFLARE_API_TOKEN = fakeSecret("cloudflare-token", "destroy");
+      storage.scenario.changes = bucketChanges("r2", "delete");
+      return { s, storage };
+    };
+
+    const kept = await withR2();
+    const result = await destroy(kept.s);
+    // Only provision's apply: no plan deleted it.
+    expect(kept.storage.applied).toHaveLength(1);
+    expect(kept.s.deps.reporter.text()).toContain(
+      "The app's bucket shop-uploads on Cloudflare R2 (auto) and its files stay.",
+    );
+    expect(result.remaining.join("\n")).toContain(
+      "The app's bucket shop-uploads on Cloudflare R2 (auto) with the app's files",
+    );
+    // A later data-only run deletes the volumes; the bucket goes only with the app, so it stays.
+    const dataOnly = await destroy(kept.s, { deleteData: true });
+    expect(kept.storage.applied).toHaveLength(1);
+    expect(dataOnly.remaining.join("\n")).toContain(
+      "The app's bucket shop-uploads on Cloudflare R2 (auto) with the app's files",
+    );
+
+    const deleted = await withR2();
+    const order: string[] = [];
+    const apply = deleted.storage.apply.bind(deleted.storage);
+    deleted.storage.apply = async (...args: Parameters<typeof apply>) => {
+      order.push("bucket");
+      return apply(...args);
+    };
+    const request = deleted.s.fake.request;
+    deleted.s.fake.request = async (init) => {
+      if (init.method === "DELETE") order.push("portainer");
+      return request(init);
+    };
+    const removed = await destroy(deleted.s, { deleteData: true });
+    expect(deleted.s.handler.requests.map((r) => r.title)).toContain(
+      "Delete the app's bucket shop-uploads on Cloudflare R2 with its files (1 resource to delete)",
+    );
+    expect(order[0]).toBe("bucket");
+    expect(order).toContain("portainer");
+    expect(removed.remaining.join("\n")).not.toContain("shop-uploads");
+    expect(deleted.s.deps.audit.entries.at(-1)?.detail).toContain("the app's bucket deleted");
   });
 
   it("stops before any change when the stack teardown is refused", async () => {

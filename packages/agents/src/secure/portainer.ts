@@ -2,16 +2,20 @@ import {
   opscrewNames,
   type PortainerFacts,
   type PortainerStackFacts,
+  valueFingerprint,
 } from "@opscrew/connector-portainer";
 import type { CheckResult, Severity } from "@opscrew/contracts";
-import { portainerTarget } from "@opscrew/iac-templates";
+import { exists, listText } from "@opscrew/core";
+import { portainerSecretVariables, portainerTarget, serviceSpec } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
+  ensurePortainerValueKey,
   PortainerEnvironmentError,
+  portainerValueKeyFile,
   requirePortainerConnection,
   requirePortainerToken,
 } from "../provision/portainer";
@@ -318,6 +322,55 @@ function registryCheck(
 }
 
 /**
+ * Each running service with a login has it set in the app stack's environment (FR-1328), by the
+ * stack variables of its secrets ({@link portainerSecretVariables}): each is there, and, with the
+ * value key on this computer, not empty (by its keyed fingerprint). Names only, never a value. An
+ * `internal-only` service (Valkey, Kafka, Redpanda) has no login; only the app's containers reach
+ * it, and no service publishes a port (the stack file's check).
+ */
+function serviceLoginChecks(
+  plan: DeployPlan,
+  stack: PortainerStackFacts,
+  valueKey: Uint8Array | undefined,
+): CheckResult[] {
+  const variables = portainerSecretVariables(plan);
+  return plan.services
+    .filter((service) => service.enabled && serviceSpec(service.kind).auth !== "internal-only")
+    .map((service) => {
+      const who = `${serviceSpec(service.kind).title} (${service.name})`;
+      const id = `service-${service.name}-login`;
+      const title = `${who} requires its login`;
+      const login = variables
+        .filter((entry) => entry.service === service.name)
+        .map((entry) => entry.variable);
+      const empty = (name: string) =>
+        valueKey !== undefined &&
+        stack.envFingerprints?.[name] === valueFingerprint(valueKey, name, "");
+      const missing = login.filter((name) => !stack.envKeys.includes(name) || empty(name));
+      if (missing.length === 0) {
+        return checkResult(
+          id,
+          title,
+          "high",
+          "pass",
+          `${who} requires its login: ${listText(login)} ${login.length === 1 ? "is" : "are"} set in the app stack's environment.`,
+        );
+      }
+      return checkResult(
+        id,
+        title,
+        "high",
+        "fail",
+        `The app stack's environment has no value for ${listText(missing)}, so ${who} runs without its login.`,
+        {
+          remediation:
+            "Run `opscrew provision`: its stack plan sends the service's generated login to the app's stack again (you approve it as usual).",
+        },
+      );
+    });
+}
+
+/**
  * `opscrew secure` for the user's Portainer (FR-1015): read-only checks of how OpsCrew reaches
  * Portainer (HTTPS with the confirmed certificate), of Portainer itself as far as the app needs it,
  * and of the app and its stacks: that they run, are hardened (no-new-privileges, no privileged
@@ -353,12 +406,17 @@ export async function portainerSecurityChecks(
     if (!(error instanceof PortainerEnvironmentError)) throw error;
     return { checks: [], skipped: deps.redactor.redact(`${error.mismatch} ${error.hint}`) };
   }
+  // With the value key (never made here), an empty login shows by its fingerprint.
+  const valueKey = (await exists(portainerValueKeyFile(deps.paths)))
+    ? await ensurePortainerValueKey(deps)
+    : undefined;
   const { client, facts } = await inspectRecordedPortainer(deps, {
     plan,
     target,
     connection,
     token: requirePortainerToken(deps),
     client: services.client,
+    ...(valueKey !== undefined ? { valueKey } : {}),
     step: "Checking the app's stacks in your Portainer (read-only)",
     phase: "secure",
     detail: "secure",
@@ -402,9 +460,11 @@ export async function portainerSecurityChecks(
       );
     }
   }
-  const redeploy = redeployCheck(recordedStack(connection, facts, "app"));
+  const appStack = recordedStack(connection, facts, "app");
+  const redeploy = redeployCheck(appStack);
   if (redeploy !== undefined) checks.push(redeploy);
   const registry = registryCheck(facts, connection, target.environmentId);
   if (registry !== undefined) checks.push(registry);
+  if (appStack !== undefined) checks.push(...serviceLoginChecks(plan, appStack, valueKey));
   return { checks: checks.map(redacted) };
 }

@@ -9,8 +9,10 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
+import { GARAGE_STORAGE } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { renderCaddyfile } from "../runtime";
+import { renderServices } from "../runtime/components";
 import { serviceLogging } from "../runtime/services";
 import { withSqlite } from "../workflow/__fixtures__/plans";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
@@ -21,7 +23,9 @@ import {
   PORTAINER_STACK_VARIABLES,
   PORTAINER_VERSION_PLACEHOLDER,
   portainerConnectorStackName,
+  portainerHostSettingProblem,
   portainerImageVersion,
+  portainerSecretVariables,
   portainerServiceVariable,
   portainerStackEnvKeys,
   portainerStackName,
@@ -603,6 +607,149 @@ describe("the components in a stack", () => {
     );
     expect(() => renderPortainerStack(unknownFolder, ctx)).toThrow("has no WORKDIR");
     expect(portainerStackVolumes(unknownFolder)).toContain("opscrew-shop_sqlite");
+  });
+});
+
+describe("one-time setup and host settings in a stack", () => {
+  const withComponents = (services: Record<string, unknown>[], fields = {}) =>
+    DeployPlanSchema.parse({ ...components, services, ...fields });
+
+  it("initiates MongoDB's replica set in a one-shot service the app, release, workers and cron wait for", () => {
+    const plan = withComponents([entry("mongodb", { options: { replicaSet: true } })]);
+    const content = renderPortainerStack(plan, ctx).content;
+    const doc = stack(content);
+    const init = doc.services["mongodb-init"] as Service & {
+      network_mode?: string;
+      networks?: unknown;
+    };
+    expect(init.image).toBe(IMAGES.mongodb.ref);
+    expect(init.restart).toBe("no");
+    // In the service's own network namespace, so the catalog's steps reach mongod on localhost.
+    expect(init.network_mode).toBe("service:mongodb");
+    expect(init.networks).toBeUndefined();
+    expect(init.depends_on).toEqual({ mongodb: { condition: "service_healthy" } });
+    expect(init.environment).toEqual({
+      MONGO_INITDB_ROOT_USERNAME: "app",
+      MONGO_INITDB_ROOT_PASSWORD: "${OPSCREW_SVC_MONGODB_PASSWORD}",
+    });
+    // The image's own data volumes, read-only, so Docker adds no anonymous ones.
+    expect(init.volumes).toEqual(["mongodb_db:/data/db:ro", "mongodb_configdb:/data/configdb:ro"]);
+    expect([init.mem_limit, init.memswap_limit]).toEqual(["512m", "512m"]);
+    expect(init.security_opt).toEqual(["no-new-privileges:true"]);
+    const [shell, flag, script] = init.entrypoint ?? [];
+    expect([shell, flag]).toEqual(["sh", "-c"]);
+    // Only when rs.status() fails, and Compose leaves the container's variables to bash.
+    expect(script).toContain(
+      "if ! 'bash' '-c' 'mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\"",
+    );
+    expect(script).toContain("rs.status().ok");
+    expect(script).toContain(
+      'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongodb:27017" }] })',
+    );
+    for (const name of ["app", "release", "worker", "cron"]) {
+      expect(doc.services[name]?.depends_on, name).toMatchObject({
+        mongodb: { condition: "service_healthy" },
+        "mongodb-init": { condition: "service_completed_successfully" },
+      });
+    }
+    // No value in the file: only the stack's variables.
+    expect(interpolated(content)).toEqual(
+      [...portainerStackEnvKeys(plan).app, ...portainerStackEnvKeys(plan).opscrew].sort(),
+    );
+  });
+
+  it("runs no one-shot service for MongoDB without a replica set", () => {
+    const doc = stack(renderPortainerStack(withComponents([entry("mongodb")]), ctx).content);
+    expect(doc.services["mongodb-init"]).toBeUndefined();
+  });
+
+  it("lets Garage make the app's key and bucket itself when it starts, from the stack's variables", () => {
+    const plan = withComponents([entry("garage")], { storage: GARAGE_STORAGE });
+    const content = renderPortainerStack(plan, ctx).content;
+    const garage = stack(content).services.garage;
+    expect(garage?.command).toEqual(["/garage", "server", "--single-node", "--default-bucket"]);
+    expect(garage?.environment).toEqual({
+      GARAGE_RPC_SECRET: "${OPSCREW_SVC_GARAGE_RPC_SECRET}",
+      GARAGE_DEFAULT_ACCESS_KEY: "${OPSCREW_SVC_GARAGE_KEY_ID}",
+      GARAGE_DEFAULT_SECRET_KEY: "${OPSCREW_SVC_GARAGE_SECRET_KEY}",
+      GARAGE_DEFAULT_BUCKET: "shop-uploads",
+    });
+    expect(garage?.volumes).toEqual(["garage_data:/var/lib/garage"]);
+    expect(stack(content).services["garage-init"]).toBeUndefined();
+    expect(stack(content).services.app?.environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}",
+    });
+  });
+
+  it("makes only Garage's key when the app keeps no bucket in it", () => {
+    const garage = stack(renderPortainerStack(withComponents([entry("garage")]), ctx).content)
+      .services.garage;
+    expect(garage?.command).toEqual(["/garage", "server", "--single-node", "--default-access-key"]);
+    expect(garage?.environment?.GARAGE_DEFAULT_BUCKET).toBeUndefined();
+  });
+
+  it.each([
+    ["opensearch", "OpenSearch", "Amazon OpenSearch Service or Aiven for OpenSearch"],
+    ["elasticsearch", "Elasticsearch", "Elastic Cloud"],
+  ] as const)(
+    "refuses %s, which needs a host setting, with the setting to make by hand",
+    (kind, title, hosted) => {
+      expect(portainerHostSettingProblem(kind)).toBe(
+        `${title} needs the Docker host's kernel setting vm.max_map_count = 262144, which OpsCrew cannot set on a Portainer target, so it does not run ${title} in your Portainer: use a hosted ${title} such as ${hosted}, or deploy the app to a server OpsCrew sets up, where it makes the setting itself.`,
+      );
+      expect(portainerHostSettingProblem("mysql")).toBeUndefined();
+      const plan = withComponents([entry(kind, { name: "search" })]);
+      for (const render of [
+        () => renderPortainerStack(plan, ctx),
+        () => portainerStackEnvKeys(plan),
+      ]) {
+        let error: unknown;
+        try {
+          render();
+        } catch (caught) {
+          error = caught;
+        }
+        expect(error).toMatchObject({
+          code: "INVALID_INPUT",
+          message: portainerHostSettingProblem(kind),
+          hint: expect.stringContaining("sysctl -w vm.max_map_count=262144"),
+        });
+        expect((error as { hint: string }).hint).toContain("services → search → enabled: false");
+      }
+      // Destroy still names its volume.
+      expect(portainerStackVolumes(plan)).toContain("opscrew-shop_search_data");
+    },
+  );
+
+  it("runs a turned-off engine's stack without it, and never the server's kernel-settings container", () => {
+    const plan = withComponents([entry("opensearch", { enabled: false }), entry("mysql")]);
+    const doc = stack(renderPortainerStack(plan, ctx).content);
+    expect(Object.keys(doc.services)).not.toContain("opensearch");
+    expect(Object.keys(doc.services)).not.toContain("sysctl");
+  });
+
+  it("gives a service its open-file limit in a stack too (the shared renderer)", () => {
+    const plan = withComponents([entry("opensearch")]);
+    const rendered = renderServices(plan, {
+      kind: "portainer",
+      environment: () => ({}),
+    }).services.opensearch as { ulimits?: unknown; depends_on?: unknown };
+    expect(rendered.ulimits).toEqual({ nofile: { soft: 65536, hard: 65536 } });
+    expect(rendered.depends_on).toBeUndefined();
+  });
+
+  it("names the stack variable of every running service's secret, Postgres's password among them", () => {
+    const plan = withComponents([
+      entry("postgres", { name: "db" }),
+      entry("mysql"),
+      entry("valkey", { options: { mode: "cache" } }),
+      entry("nats", { enabled: false }),
+    ]);
+    expect(portainerSecretVariables(plan)).toEqual([
+      { service: "db", secret: "password", variable: "OPSCREW_DB_PASSWORD" },
+      { service: "mysql", secret: "password", variable: "OPSCREW_SVC_MYSQL_PASSWORD" },
+      { service: "mysql", secret: "root-password", variable: "OPSCREW_SVC_MYSQL_ROOT_PASSWORD" },
+    ]);
   });
 });
 

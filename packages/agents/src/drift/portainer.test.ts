@@ -3,9 +3,22 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { serviceSpec } from "@opscrew/iac-templates";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  type SelfHostedServiceKind,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import {
+  bucketChanges,
+  bucketEngine,
+  RootEngine,
+  withBucket,
+} from "../provision/__fixtures__/storage";
 import { portainerValueKeyFile } from "../provision/portainer";
 import { generatedValuesFile } from "../provision/secrets";
+import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import { DATA_ZONE, encryptedState, MANAGED_TUNNEL, plainState, withStateList } from "../testing";
 import {
   APP_IMAGE,
@@ -29,6 +42,25 @@ async function deployed(o: Parameters<typeof portainerProject>[0] = {}) {
 }
 
 const drift = (s: PortainerProject) => runDrift(s.deps, { services: s.services });
+
+/** `plan` with a service of `kind` at the catalog's defaults besides its own. */
+function withService(plan: DeployPlan, kind: SelfHostedServiceKind): DeployPlan {
+  const spec = serviceSpec(kind);
+  return DeployPlanSchema.parse({
+    ...plan,
+    services: [
+      ...plan.services,
+      {
+        kind,
+        version: spec.defaultVersion,
+        memoryMb: spec.memory.defaultMb,
+        options: {},
+        reason: "The app uses it.",
+        licence: spec.licence.id,
+      },
+    ],
+  });
+}
 const titles = (report: Awaited<ReturnType<typeof drift>>) =>
   (report.portainer?.differences ?? []).map((item) => item.title);
 
@@ -212,6 +244,62 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     expect(report.clean).toBe(true);
     expect(report.notes?.join("\n") ?? "").not.toContain("generated_values.json");
     await expect(stat(generated)).rejects.toThrow();
+  });
+
+  it("compares each service's secrets from provision's record, by name only", async () => {
+    const s = await deployed({ plan: withService(portainerPlan(), "mysql") });
+    expect((await drift(s)).clean).toBe(true);
+    const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");
+    if (app === undefined) throw new Error("no app stack");
+    const changed = fakeSecret("generic-password", "mysql password changed in Portainer");
+    app.Env = app.Env.map((pair) =>
+      pair.name === "OPSCREW_SVC_MYSQL_PASSWORD" ? { ...pair, value: changed } : pair,
+    );
+    const report = await drift(s);
+    expect(titles(report)[0]).toContain("the value of OPSCREW_SVC_MYSQL_PASSWORD");
+    expect(JSON.stringify(report)).not.toContain(changed);
+    await expectNothingLeaked(s, report);
+  });
+
+  it("checks the app's R2 bucket in its own root and state, and the key the app's stack holds", async () => {
+    const key = {
+      [STORAGE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "drift"),
+      [STORAGE_KEY_VARS.secretAccessKey]: fakeSecret("aws-secret-access-key", "drift"),
+    };
+    const s = await portainerProject({
+      plan: withBucket(portainerPlan({ web: { mode: "proxy", port: 8080 } }), "r2"),
+      env: key,
+    });
+    const storage = bucketEngine("r2");
+    const engine = s.engine;
+    s.services.engine = async () => new RootEngine(engine, storage);
+    await provisionPortainerProject(s);
+    await deployImage(s);
+    await writeFile(storageStateFile(s.deps.paths), plainState([]));
+    storage.scenario.changes = [];
+    const clean = await drift(s);
+    expect(clean.clean).toBe(true);
+    expect(clean.notes ?? []).toEqual([expect.stringContaining("manages no Cloudflare resources")]);
+    expect(storage.initOptions?.backendConfig?.path).toBe(storageStateFile(s.deps.paths));
+
+    // The bucket deleted in the dashboard: its root plans it again.
+    storage.scenario.changes = bucketChanges("r2");
+    const report = await drift(s);
+    expect(report.clean).toBe(false);
+    expect(report.pending.map((change) => change.address)).toContain("cloudflare_r2_bucket.this");
+    // The key in the app's stack, changed in Portainer, by name only.
+    const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");
+    if (app === undefined) throw new Error("no app stack");
+    const other = fakeSecret("aws-secret-access-key", "another");
+    app.Env = app.Env.map((pair) =>
+      pair.name === "AWS_SECRET_ACCESS_KEY" ? { ...pair, value: other } : pair,
+    );
+    storage.scenario.changes = [];
+    const changed = await drift(s);
+    expect(titles(changed)[0]).toContain("the value of AWS_SECRET_ACCESS_KEY");
+    const text = JSON.stringify(changed);
+    expect(text).not.toContain(other);
+    expect(text).not.toContain(key[STORAGE_KEY_VARS.secretAccessKey]);
   });
 
   it("compares Laravel's APP_KEY as Portainer has it when provision's record is missing", async () => {

@@ -277,9 +277,10 @@ async function zoneAccount(
  * not create are there), the edge IP ranges when proxied, and the zone's account. OpsCrew's
  * shared rules in the zone are planned afterwards (`planSharedCloudflare`).
  *
- * The user's Portainer ({@link portainerCloudflare}) needs Cloudflare only for its tunnels:
- * `undefined` without them. The app's hostnames are checked only in web mode `tunnel` (in `proxy`
- * and `caddy` mode the user's own record there is expected), the webhook's hostname
+ * The user's Portainer ({@link portainerCloudflare}) needs Cloudflare only for its tunnels and an
+ * R2 bucket (it belongs to the zone's account): `undefined` without them; the token needs the
+ * tunnel permissions only with a tunnel. The app's hostnames are checked only in web mode `tunnel`
+ * (in `proxy` and `caddy` mode the user's own record there is expected), the webhook's hostname
  * (`portainer-<app>.<zone>`) in redeploy mode `cloudflare`.
  */
 export async function setupCloudflare(
@@ -290,9 +291,14 @@ export async function setupCloudflare(
 ): Promise<CloudflareSetup | undefined> {
   if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return undefined;
   const portainer = portainerCloudflare(plan);
-  if (portainer !== undefined && !portainer.appTunnel && !portainer.webhook) return undefined;
+  // In the user's Portainer only a tunnel or an R2 bucket (it belongs to the zone's account) needs it.
+  const r2 = plan.storage?.objectStorage?.provider === "r2";
+  if (portainer !== undefined && !portainer.appTunnel && !portainer.webhook && !r2) {
+    return undefined;
+  }
   /** A Cloudflare Tunnel is part of the plan, so the token needs the tunnel permissions. */
-  const tunnels = usesTunnel(plan) || portainer !== undefined;
+  const tunnels =
+    usesTunnel(plan) || (portainer !== undefined && (portainer.appTunnel || portainer.webhook));
   const connector = cloudflareConnector(deps);
   const requirement = connector.credentials;
   const api: CloudflareApi | null =

@@ -14,12 +14,15 @@ import {
   IMAGES,
   PORTAINER_STACK_TEMPLATE_PATH,
   renderPortainerStack,
+  serviceSpec,
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  DeployPlanSchema,
   type PortainerDeployTarget,
   type PortainerWeb,
   readArtifact,
+  type SelfHostedServiceKind,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -60,6 +63,7 @@ import {
   writeArchitecture,
   writeFakeState,
 } from "../testing";
+import { bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
 import {
   portainerContainerUrl,
   portainerValueKeyFile,
@@ -70,6 +74,7 @@ import {
 } from "./portainer";
 import { runProvision } from "./run";
 import { ROUTE_CHANGE_NOTE, switchesWebRoute } from "./stack-plan";
+import { STORAGE_KEY_VARS } from "./storage";
 import type { ProvisionOptions, ProvisionServices } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
 
@@ -117,6 +122,8 @@ interface SetupOptions {
   changes?: ResourceChange[];
   /** What the public resolver answers, by host name (default: the app's domain has an A record). */
   dns?: Map<string, FakeDnsRecords>;
+  /** The `storage` root's engine, for a plan with a bucket at a provider. */
+  storage?: FakeEngine;
 }
 
 /** The address records a host name has in the fake public resolver. */
@@ -214,7 +221,12 @@ async function setup(options: SetupOptions = {}) {
   });
   const handler = new ScriptedApprovalHandler(options.answer ?? (() => true));
   const inherited = { ...process.env };
-  for (const name of ["PORTAINER_API_KEY", REPOSITORY_TOKEN_VAR, REGISTRY_TOKEN_VAR]) {
+  for (const name of [
+    "PORTAINER_API_KEY",
+    REPOSITORY_TOKEN_VAR,
+    REGISTRY_TOKEN_VAR,
+    ...Object.values(STORAGE_KEY_VARS),
+  ]) {
     delete inherited[name];
   }
   const env: Record<string, string | undefined> = {
@@ -266,7 +278,8 @@ async function setup(options: SetupOptions = {}) {
   const clients: { endpoint: PortainerEndpoint; deps: PortainerClientDeps }[] = [];
   const zone = new FakeZone();
   const services: ProvisionServices = {
-    engine: async () => engine,
+    engine: async () =>
+      options.storage === undefined ? engine : new RootEngine(engine, options.storage),
     github,
     cloudflare: { ...ownCloudflare(), listAccounts: async () => [{ id: "acc-1", name: "acc" }] },
     sleep: async () => undefined,
@@ -986,6 +999,142 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     expect(s.engine.applied).toHaveLength(1);
     expect(s.fake.mutations()).toEqual([]);
     expect(error.hint).toMatch(/--approve [0-9a-f]{64}$/);
+  });
+});
+
+/** `plan` with a service of `kind` at the catalog's defaults besides its own. */
+function withService(plan: DeployPlan, kind: SelfHostedServiceKind, fields = {}): DeployPlan {
+  const spec = serviceSpec(kind);
+  return DeployPlanSchema.parse({
+    ...plan,
+    services: [
+      ...plan.services,
+      {
+        kind,
+        version: spec.defaultVersion,
+        memoryMb: spec.memory.defaultMb,
+        options: {},
+        reason: "The app uses it.",
+        licence: spec.licence.id,
+        ...fields,
+      },
+    ],
+  });
+}
+
+const BUCKET_KEY = {
+  accessKeyId: fakeSecret("aws-access-key-id", "bucket"),
+  secretAccessKey: fakeSecret("aws-secret-access-key", "bucket"),
+};
+const BUCKET_KEY_ENV = {
+  [STORAGE_KEY_VARS.accessKeyId]: BUCKET_KEY.accessKeyId,
+  [STORAGE_KEY_VARS.secretAccessKey]: BUCKET_KEY.secretAccessKey,
+};
+
+describe.skipIf(!findExecutable("git"))("the components in the user's Portainer", () => {
+  const proxied = () => portainerPlan({ web: { mode: "proxy", port: 8080 } });
+  const env = (s: Setup) =>
+    Object.fromEntries(
+      (s.fake.stacks.find((stack) => stack.Name === "opscrew-shop")?.Env ?? []).map((pair) => [
+        pair.name,
+        pair.value,
+      ]),
+    );
+
+  it("fills each service's secrets into the stack's variables and keeps them out of everything shown", async () => {
+    const plan = withService(withService(proxied(), "mysql"), "mongodb", {
+      options: { replicaSet: true },
+    });
+    const s = await setup({ plan });
+    await s.run();
+    const values = env(s);
+    for (const name of [
+      "OPSCREW_SVC_MYSQL_PASSWORD",
+      "OPSCREW_SVC_MYSQL_ROOT_PASSWORD",
+      "OPSCREW_SVC_MONGODB_PASSWORD",
+    ]) {
+      expect(values[name], name).toMatch(/^[0-9a-f]{64}$/);
+    }
+    // The values provision keeps between runs.
+    const generated = JSON.parse(
+      await readFile(join(s.deps.paths.projectHomeDir, "generated_values.json"), "utf8"),
+    );
+    expect(generated.services.mysql.password).toBe(values.OPSCREW_SVC_MYSQL_PASSWORD);
+    expect(generated.services.mongodb.password).toBe(values.OPSCREW_SVC_MONGODB_PASSWORD);
+    expect(values.OPSCREW_DB_PASSWORD).toBe(generated.dbPassword);
+    const published = await everythingPublished(s);
+    for (const name of ["OPSCREW_SVC_MYSQL_PASSWORD", "OPSCREW_SVC_MONGODB_PASSWORD"]) {
+      expect(published).not.toContain(values[name]);
+    }
+    // The stack's template holds the replica set's one-shot setup, never a value.
+    const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+    expect(template).toContain("mongodb-init:");
+    expect(template).not.toContain(values.OPSCREW_SVC_MONGODB_PASSWORD);
+  });
+
+  it("stops before any change for a service that needs a setting of the Docker host", async () => {
+    const plan = withService(proxied(), "opensearch", { name: "search" });
+    const s = await setup({ plan });
+    await expect(s.run()).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining(
+        "OpenSearch needs the Docker host's kernel setting vm.max_map_count = 262144",
+      ),
+      hint: expect.stringContaining("sysctl -w vm.max_map_count=262144"),
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.fake.mutations()).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+    await expect(readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8")).rejects.toThrow();
+  });
+
+  it("creates an R2 bucket through its own approved plan, then gives the app its key in the stack", async () => {
+    const storage = bucketEngine("r2");
+    const s = await setup({ plan: withBucket(proxied(), "r2"), storage, env: BUCKET_KEY_ENV });
+    const result = await s.run();
+    const applies = s.handler.requests.filter((r) => r.kind === "iac-apply");
+    expect(applies.map((r) => r.title)).toEqual([
+      "Apply the plan of the app's bucket shop-uploads on Cloudflare R2",
+    ]);
+    expect(result.storagePlanHash).toBe(applies[0]?.planHash);
+    expect(storage.applied).toHaveLength(1);
+    // The bucket comes before the stack, which sends the app its key and R2's endpoint.
+    expect(kinds(s).indexOf("iac-apply")).toBeLessThan(kinds(s).indexOf("stack-apply"));
+    const values = env(s);
+    expect(values.AWS_ACCESS_KEY_ID).toBe(BUCKET_KEY.accessKeyId);
+    expect(values.AWS_SECRET_ACCESS_KEY).toBe(BUCKET_KEY.secretAccessKey);
+    expect(values.AWS_ENDPOINT_URL_S3).toMatch(/^https:\/\/[0-9a-f]+\.r2\.cloudflarestorage\.com$/);
+    // The bucket's root is committed with the deployment files.
+    await expect(
+      readFile(join(s.root, "opscrew/infra/storage/main.tf"), "utf8"),
+    ).resolves.toContain("cloudflare_r2_bucket");
+    expect(await everythingPublished(s)).not.toContain(BUCKET_KEY.secretAccessKey);
+  });
+
+  it("with R2 and nobody to give the key, stops after the bucket and before the stack", async () => {
+    const storage = bucketEngine("r2");
+    const s = await setup({ plan: withBucket(proxied(), "r2"), storage });
+    await expect(s.run()).rejects.toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      message: expect.stringContaining(
+        "The bucket shop-uploads exists; nothing in your Portainer was changed.",
+      ),
+    });
+    expect(storage.applied).toHaveLength(1);
+    expect(s.fake.mutations()).toEqual([]);
+  });
+
+  it("--plan-only shows the bucket's plan hash, and the stack plan once the bucket exists", async () => {
+    const storage = bucketEngine("r2");
+    const s = await setup({ plan: withBucket(proxied(), "r2"), storage, env: BUCKET_KEY_ENV });
+    const planned = await s.run({ planOnly: true });
+    expect(planned.storagePlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(planned.stackPlanHash).toBeUndefined();
+    expect(storage.applied).toEqual([]);
+    expect(s.fake.mutations()).toEqual([]);
+    expect(s.deps.reporter.text()).toContain(
+      "The stack plan for your Portainer follows once the app's bucket exists",
+    );
   });
 });
 

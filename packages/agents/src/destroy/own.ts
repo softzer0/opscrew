@@ -541,17 +541,16 @@ export async function destroyOwnServer(
   // then the server goes first and the Cloudflare plan follows once the tunnel has no connections.
   let destroyed: ResourceChange[] = [];
   let removal: CloudflareRemoval | undefined;
-  if (iac !== undefined && resources.length > 0) {
-    removal = await approveCloudflareRemoval(iac, {
-      confirmed,
-      appChanges: hostSteps.length > 0,
-      words,
-    });
-  }
-  const iacApproval = removal?.approval;
   const hostPlans: { teardown?: string; undo?: string } = {};
   let teardownApproval: ApprovalRecord | undefined;
   try {
+    if (iac !== undefined && resources.length > 0) {
+      removal = await approveCloudflareRemoval(iac, {
+        confirmed,
+        appChanges: hostSteps.length > 0,
+        words,
+      });
+    }
     if (iac !== undefined && removal !== undefined && !removal.tunnel) {
       destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
     }
@@ -618,7 +617,7 @@ export async function destroyOwnServer(
       reach: "your server",
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
-    const approvals = [bucketApproval, iacApproval, teardownApproval, sharedApproval];
+    const approvals = [bucketApproval, removal?.approval, teardownApproval, sharedApproval];
     current = await recordTeardown(deps, plan, approvals, {
       summary: "app removed from your server",
       forgetAddress: true,

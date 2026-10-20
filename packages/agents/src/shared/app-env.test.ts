@@ -491,7 +491,7 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
       DATABASE_URL: "mysql://app:pw@mysql:3306/app",
       POSTGRES_URL: "postgresql://app:pw@db:5432/app",
     });
-    expect(result.dbEnv).toContain("POSTGRES_PASSWORD=pw");
+    expect(result.values.db?.password).toBe("pw");
   });
 
   it("generates CRON_SECRET once for the cron jobs that call the app's routes", async () => {
