@@ -398,7 +398,7 @@ Effort`.
 
 ## Phase 7: Surfaces, examples and live tests
 
-- [ ] T1312 [P] Surfaces, `status`, the runbook and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
+- [X] T1312 [P] Surfaces, `status`, the runbook and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ tests)
   - Reads: spec FR-1331, FR-1333; plan.md "12."
   - Depends: T1310
