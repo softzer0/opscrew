@@ -351,9 +351,22 @@ export function dataFoldersCommand(app: string, paths: readonly string[]): strin
   ].join(" ");
 }
 
-/** The owner (`<uid>:<gid>`) of each host process in `pids`: `<pid> <uid>:<gid>` lines. */
+/**
+ * The effective user (`<uid>:<gid>`) of the service process in each container whose main host
+ * process is in `pids`: `<pid> <uid>:<gid>` lines, read from `/proc/<pid>/status`.
+ * - When the main process is an init the image ships (`tini`, as in Valkey's Alpine image;
+ *   `docker-init`; `dumb-init`), it runs as root, so its first child is read instead.
+ * - Not the owner of `/proc/<pid>`, which is root for a process that changed its user (an
+ *   entrypoint that drops from root to the service's user).
+ */
 export function processOwnersCommand(pids: readonly number[]): string {
-  return `for pid in ${pids.join(" ")}; do echo "$pid $(stat -c %u:%g /proc/$pid)"; done`;
+  const name = `awk '/^Name:/{print $2}' /proc/$p/status`;
+  const owner = `awk '/^Uid:/{u=$3} /^Gid:/{g=$3} END{print u":"g}' /proc/$p/status`;
+  return [
+    `for pid in ${pids.join(" ")}; do p=$pid`,
+    `case "$(${name})" in tini|docker-init|dumb-init) p=$(pgrep -P $p | head -n 1);; esac`,
+    `echo "$pid $(${owner})"; done`,
+  ].join("; ");
 }
 
 /** `<key> <a> <b> …` lines by their first field. */

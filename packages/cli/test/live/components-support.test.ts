@@ -324,7 +324,11 @@ describe("what the server shows", () => {
     expect(command).toMatch(/^docker run --rm --network none --user 0:0 --entrypoint sh /);
     expect(command.endsWith("' sh mysql mongodb/db")).toBe(true);
     expect(processOwnersCommand([12, 34])).toBe(
-      'for pid in 12 34; do echo "$pid $(stat -c %u:%g /proc/$pid)"; done',
+      [
+        "for pid in 12 34; do p=$pid",
+        `case "$(awk '/^Name:/{print $2}' /proc/$p/status)" in tini|docker-init|dumb-init) p=$(pgrep -P $p | head -n 1);; esac`,
+        `echo "$pid $(awk '/^Uid:/{u=$3} /^Gid:/{g=$3} END{print u":"g}' /proc/$p/status)"; done`,
+      ].join("; "),
     );
   });
 
