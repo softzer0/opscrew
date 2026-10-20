@@ -505,7 +505,7 @@ describe("cron", () => {
       `0 * * * * python -c "import os,urllib.request as u;u.urlopen(u.Request('http://app:3000/api/cron/report?full=1',headers={'Authorization':'Bearer '+os.environ['CRON_SECRET']}))"`,
     );
     expect(call("ruby")).toBe(
-      `0 * * * * ruby -rnet/http -e "exit Net::HTTP.get_response(URI('http://app:3000/api/cron/report?full=1'),{'Authorization'=>'Bearer '+ENV['CRON_SECRET']}).is_a?(Net::HTTPSuccess)"`,
+      `0 * * * * env RUBYOPT= ruby -rnet/http -e "exit Net::HTTP.get_response(URI('http://app:3000/api/cron/report?full=1'),{'Authorization'=>'Bearer '+ENV['CRON_SECRET']}).is_a?(Net::HTTPSuccess)"`,
     );
     expect(call("php")).toBe(
       `0 * * * * php -r "exit(@file_get_contents('http://app:3000/api/cron/report?full=1',false,stream_context_create(['http'=>['header'=>'Authorization: Bearer '.getenv('CRON_SECRET')]]))===false?1:0);"`,

@@ -230,6 +230,9 @@ describe("the app's healthcheck", () => {
       "CMD",
       "/cnb/lifecycle/launcher",
       "--",
+      // RUBYOPT cleared: `-rbundler/setup` would refuse the default gems -rnet/http loads.
+      "env",
+      "RUBYOPT=",
       "ruby",
       "-rnet/http",
       "-e",

@@ -19,6 +19,7 @@ import { IMAGES } from "../pins";
 import type { RenderedFile } from "../types";
 import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { sqliteFolder } from "../workflow/shared";
+import { RUBY_WITHOUT_RUBYOPT } from "./healthcheck";
 import { composeLiteral, hardened, scriptLiteral, shellQuote } from "./services";
 
 /** `mem_limit` and an equal `memswap_limit`: Docker's default lets a container swap as much again. */
@@ -305,7 +306,7 @@ const ROUTE_CALLS: Record<
   python: (port, route) =>
     `python -c ${doubleQuoted(`import os,urllib.request as u;u.urlopen(u.Request(${scriptLiteral(`http://app:${port}${route}`)},headers={'Authorization':'Bearer '+os.environ['CRON_SECRET']}))`)}`,
   ruby: (port, route) =>
-    `ruby -rnet/http -e ${doubleQuoted(`exit Net::HTTP.get_response(URI(${scriptLiteral(`http://app:${port}${route}`)}),{'Authorization'=>'Bearer '+ENV['CRON_SECRET']}).is_a?(Net::HTTPSuccess)`)}`,
+    `${RUBY_WITHOUT_RUBYOPT.join(" ")} ruby -rnet/http -e ${doubleQuoted(`exit Net::HTTP.get_response(URI(${scriptLiteral(`http://app:${port}${route}`)}),{'Authorization'=>'Bearer '+ENV['CRON_SECRET']}).is_a?(Net::HTTPSuccess)`)}`,
   php: (port, route) =>
     `php -r ${doubleQuoted(`exit(@file_get_contents(${scriptLiteral(`http://app:${port}${route}`)},false,stream_context_create(['http'=>['header'=>'Authorization: Bearer '.getenv('CRON_SECRET')]]))===false?1:0);`)}`,
   bash: (port, route) =>

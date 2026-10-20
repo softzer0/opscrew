@@ -4,6 +4,13 @@ import { composeLiteral, scriptLiteral, shellQuote } from "./services";
 type Probe = NonNullable<AppBuild["probe"]>;
 
 /**
+ * Ruby's probes run with `RUBYOPT` cleared: an image that sets `RUBYOPT=-rbundler/setup` would
+ * load the app's bundle after `-rnet/http` loaded Ruby's default `uri` and `net-protocol`, and
+ * Bundler refuses a bundle that locks other versions of them (Rails 8's does).
+ */
+export const RUBY_WITHOUT_RUBYOPT = ["env", "RUBYOPT="] as const;
+
+/**
  * The command of each probe for `app`: it fetches `http://127.0.0.1:<port><healthPath>` and exits
  * 0 only for a success, with a tool the image has, since images may lack curl (research R3, R8).
  */
@@ -19,6 +26,7 @@ const PROBES: Record<Exclude<Probe, "none">, (app: DeployPlan["app"]) => string[
     `import os,urllib.request as u;u.urlopen('http://127.0.0.1:'+os.environ['PORT']+${scriptLiteral(app.healthPath)},timeout=2)`,
   ],
   ruby: (app) => [
+    ...RUBY_WITHOUT_RUBYOPT,
     "ruby",
     "-rnet/http",
     "-e",
