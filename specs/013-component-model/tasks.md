@@ -373,7 +373,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1310 [US1] [US2] [US4] [US7] Components on a Portainer target
+- [X] T1310 [US1] [US2] [US4] [US7] Components on a Portainer target
   - Owns:
     - `packages/agents/src/portainer/**`;
     - `packages/agents/src/provision/{portainer*,stack-plan}.ts`;
