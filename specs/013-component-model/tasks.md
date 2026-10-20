@@ -477,6 +477,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
+- [ ] T1316 [US3] Garage on every target, and the app's own storage kept (founder, 2026-10-20), in `packages/detect/src/connections.ts`, `packages/plan-schema/src/requirements.ts`, `packages/agents/src/{design,interview}/**`, `packages/mcp-server/src/tools/interview.ts`, `packages/cli/src/commands/interview.ts`, `docs/guide/object-storage.md`, `plugin/skills/**`
+  - Owns: those paths (+ tests, and the regenerated JSON schemas)
+  - Reads: spec FR-1315, FR-1316, FR-1316a; data-model.md (`storage.objectStorage.provider`, `keepExternalServices`, the requirements' `objectStorage`)
+  - Depends: T1314 (runs during T1315; it changes no file the live passes read at run time)
+  - Accept:
+    - **Known S3 hosts are hosted services.** `HOSTED_PROVIDERS` in detect gains AWS S3 (`s3[.-]…amazonaws.com`, but not `rds.` or `cache.`), Backblaze B2 (`backblazeb2.com`), Wasabi (`wasabisys.com`), DigitalOcean Spaces (`digitaloceanspaces.com`), Cloudflare R2 (`r2.cloudflarestorage.com`), Hetzner Object Storage (`your-objectstorage.com`) and Supabase Storage (a `supabase.co` URL whose path is `/storage/v1/s3`), each with kind `s3`. The interview asks "keep it, or let OpsCrew create a bucket", and with no answer it stays.
+    - **S3 client with no endpoint.** The interview always asks: keep the storage the app uses now, or let OpsCrew create a bucket, listing the offered providers with their prices (Garage too, on cloud servers saying the files then live only on that server). The answer is `keepExternalServices.s3` plus the requirements' optional `objectStorage` provider. With no answer, design plans no bucket, says so in one line, and says how to ask for one.
+    - **Garage on cloud servers.** `storageOffers` lists Garage on Hetzner and DigitalOcean as an opt-in offer, never picked as the default there. Design uses it when the interview's `objectStorage` or plan.yaml's provider says `garage` (a kept edit). Its memory counts in sizing, and retarget's existing refusal of on-server data covers it (add a test).
+    - **Unchanged:** own servers and Portainer, where Garage can still be the default; R2 only with Cloudflare.
+    - **Surfaces:** the MCP interview's `componentQuestions` and the CLI ask the same. `docs/guide/object-storage.md` explains both rules for users. The plugin's deploy skill matches.
+    - **Tests:** each host; the no-endpoint question and its unanswered default; Garage opt-in on Hetzner, kept on rerun; the rerun rule (SC-1307).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew --concurrency=2`, `node plugin/validate.mjs`, `pnpm lint`
+  - Effort: high
+
 - [ ] T1315 Live runs (lead): the passes in `docs/e2e.md`; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies

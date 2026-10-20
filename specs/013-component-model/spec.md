@@ -366,10 +366,20 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 **Object storage**
 
 - **FR-1316**: Design MUST offer the object storage options available for the target, priced side by
-  side for the expected use, with the cheapest as the default:
+  side for the expected use:
   - Cloudflare R2;
   - the provider's own storage;
-  - a single-node storage container on an own server or a Portainer target.
+  - a single-node storage container on the app's own server, on every target. On an own server or
+    a Portainer target it can be the default; on a cloud server it is offered only as the user's
+    choice, saying that the files then live only on that server (founder, 2026-10-20).
+
+  The default is the cheapest option that is not opt-in.
+- **FR-1316a**: An app's existing object storage MUST NOT be replaced unasked (founder, 2026-10-20).
+  An S3 endpoint at a known host (AWS S3, Backblaze B2, Wasabi, DigitalOcean Spaces, Cloudflare R2,
+  Hetzner Object Storage, Supabase Storage) counts as a hosted service, asked about as in FR-1315
+  and kept without an answer. An S3 client with no endpoint setting is asked about too ("keep the
+  storage the app uses now, or let OpsCrew create a bucket"), and with no answer OpsCrew plans no
+  bucket.
 - **FR-1317**: The bucket MUST be private, with keys limited to it where the service allows. It MUST
   accept browser uploads from the app's own origin only when the app uses presigned uploads.
 - **FR-1318**: Creating a bucket MUST go through a plan the user approves by its hash. OpsCrew MUST

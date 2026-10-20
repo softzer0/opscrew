@@ -62,10 +62,14 @@ storage:
 - A service's `memoryMb` is at least its catalog minimum.
 - The sum of all limits, plus the edge and the system reserve, fits the server. Design checks this
   and the schema does not.
-- `storage.objectStorage.provider` is offered by design for the target: `digitalocean` on
-  DigitalOcean, `hetzner` on Hetzner (fsn1, nbg1, hel1), `garage` only on an own server or
-  Portainer, `r2` when the plan uses Cloudflare (it needs OpsCrew's Cloudflare token and account).
-  After a retarget, an existing provider stays valid: the bucket is kept.
+- `storage.objectStorage.provider` is offered by design for the target:
+  - `digitalocean` on DigitalOcean, and `hetzner` on Hetzner (fsn1, nbg1, hel1);
+  - `garage` on every target. It can be the default only on an own server or Portainer; on a cloud
+    server it is opt-in, chosen in the interview or set in plan.yaml, and kept as an edit;
+  - `r2` when the plan uses Cloudflare (it needs OpsCrew's Cloudflare token and account).
+
+  After a retarget, an existing provider stays valid, and the bucket is kept. Garage holds data on
+  the server, so retarget refuses it like the other on-server data.
 - `storage.sqlite.dir` is relative to the app's folder in the image, `appRoot(plan)`: Buildpacks
   `/workspace`; Railpack `/app`; the generated Dockerfile `/app`, or `/app/<appDir>` for a Node.js
   app in a subfolder; the user's own Dockerfile, the last `WORKDIR` detect read.
@@ -98,8 +102,12 @@ has no command; later designs keep the plan's command. Question ids `workerComma
 
 `keepExternalServices`: one answer per kind, `true` to keep the service the app uses now, `false` to
 let OpsCrew run one on the server. A detected hosted service with no answer is kept, so OpsCrew never
-replaces one unasked. `s3: true` keeps the app's own storage instead of a planned bucket. Question
-ids `keepExternalServices.<kind>`.
+replaces one unasked. For `s3`, `true` keeps the app's own storage, and `false` lets OpsCrew plan a
+bucket. With no answer, OpsCrew plans no bucket, whether the endpoint is a known host or there is
+none (FR-1316a). Question ids `keepExternalServices.<kind>`.
+
+`objectStorage` (optional): the user's storage choice when OpsCrew plans a bucket, one of the
+offered providers (`garage` included on cloud servers). Without it, design picks the default.
 
 ## `ProjectFacts` (opscrew/architecture.json)
 
