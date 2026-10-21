@@ -1,0 +1,74 @@
+# Every directive and matcher Caddy additions may use.
+@api {
+	path /api/*
+	method GET POST
+	header Accept application/json
+	not {
+		query debug=1
+	}
+}
+@bot header_regexp User-Agent (?i)bot
+@office remote_ip 192.0.2.0/24
+@client client_ip 192.0.2.0/24
+@secure protocol https
+@legacy path_regexp legacy ^/legacy/(.*)$
+@shop host app.example.com
+@notshop not host www.app.example.com
+handle_path /static/* {
+	header Cache-Control "public, max-age=3600"
+	reverse_proxy app-web:3000
+}
+route /v1/* {
+	request_header X-Forwarded-Prefix /v1
+	uri strip_prefix /v1
+	reverse_proxy app-web:3000 {
+		header_up X-Real-IP {remote_host}
+		header_down -Server
+		lb_try_duration 5s
+		lb_try_interval 250ms
+		flush_interval -1
+		stream_timeout 1h
+		@error status 5xx
+		handle_response @error {
+			copy_response_headers {
+				include Retry-After
+			}
+			copy_response 503
+		}
+		@gone status 410
+		handle_response @gone {
+			copy_response_headers {
+				exclude Server
+			}
+			copy_response 410
+		}
+	}
+}
+handle /docs/* {
+	encode {
+		gzip 5
+		zstd
+		minimum_length 512
+		match {
+			status 2xx
+			header Content-Type text/*
+		}
+	}
+	reverse_proxy app-web:3000
+}
+handle /old {
+	redir /new 301
+}
+handle /gone {
+	error "Gone" 410
+}
+abort @bot
+rewrite @legacy /new/{re.legacy.1}
+encode @api zstd gzip
+request_body {
+	max_size 10MB
+}
+basicauth /team/* {
+	team $2a$14$FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF
+}
+respond @office "Hello, office" 200

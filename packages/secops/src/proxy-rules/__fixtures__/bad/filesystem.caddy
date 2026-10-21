@@ -1,0 +1,12 @@
+root * /srv # refused: filesystem
+file_server browse # refused: filesystem
+handle /downloads/* {
+	root * /var/files # refused: filesystem
+	file_server # refused: filesystem
+}
+respond /notes <<TEXT
+	root * /srv
+	TEXT 200
+respond /x "two
+lines" 200
+file_server # refused: filesystem

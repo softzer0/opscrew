@@ -1,0 +1,3 @@
+respond /x "a[2Kb" 200 # refused: characters
+header X-B "" # refused: characters
+header X-C "" # refused: characters

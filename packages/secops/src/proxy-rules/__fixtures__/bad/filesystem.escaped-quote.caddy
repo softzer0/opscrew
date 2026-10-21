@@ -1,0 +1,3 @@
+respond /x "a\\"
+file_server browse # refused: filesystem
+respond /y "b"

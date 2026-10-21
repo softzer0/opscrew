@@ -1,0 +1,4 @@
+handle /x {
+	header X-A "tab	here"
+	reverse_proxy app-web:3000
+}

@@ -1,0 +1,16 @@
+# metrics /metrics
+respond /metrics "metrics are off" 404
+basic_auth /admin/* {
+	admin $2a$14$FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF
+}
+handle /admin/* {
+	reverse_proxy app-web:3000
+}
+reverse_proxy /api/* app-web:3000 {
+	@gone {
+		status 410
+	}
+	handle_response @gone {
+		respond "Gone" 410
+	}
+}

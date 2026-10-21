@@ -1,0 +1,25 @@
+templates # refused: not-allowed
+handle_errors { # refused: not-allowed
+	respond "oops"
+}
+(snippet) { # refused: not-allowed
+	respond "hi"
+}
+@expr expression {path} == '/x' # refused: not-allowed
+@short "{path} == '/x'" # refused: not-allowed
+@probe {
+	file /index.html # refused: not-allowed
+}
+reverse_proxy app-web:3000 {
+	lb_policy first # refused: not-allowed
+	@slow header_regexp X-Slow .+ # refused: not-allowed
+}
+encode {
+	brotli # refused: not-allowed
+	match {
+		path /big/* # refused: not-allowed
+	}
+}
+# The `е` below is Cyrillic, so this is not `redir`.
+rеdir /a /b # refused: not-allowed
+invoke handler # refused: not-allowed

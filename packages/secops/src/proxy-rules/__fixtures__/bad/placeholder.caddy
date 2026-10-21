@@ -1,0 +1,8 @@
+respond /k "{file./etc/caddy/tls/app/origin.key}" # refused: placeholder
+respond /e {env.OPSCREW_ORIGIN_TLS} # refused: placeholder
+header {
+	X-Key "{$OPSCREW_ORIGIN_TLS}" # refused: placeholder
+}
+respond /h <<EOF
+	{env.HOME} # refused above: placeholder
+	EOF 200

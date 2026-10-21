@@ -1,0 +1,14 @@
+reverse_proxy /other/* other-app:3000 # refused: upstream
+reverse_proxy app-web:3000 backup:3000 # refused: upstream
+reverse_proxy {
+	to attacker.example:443 # refused: upstream
+}
+reverse_proxy @api {
+	dynamic a api.example 443 # refused: upstream
+}
+php_fastcgi localhost:9000 # refused: upstream
+forward_auth auth.example:9091 { # refused: upstream
+	uri /api/verify
+}
+reverse_proxy {http.request.header.X-Target} # refused: upstream
+"reverse_proxy" http://app-web:30000 # refused: upstream

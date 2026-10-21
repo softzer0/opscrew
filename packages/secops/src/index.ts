@@ -37,6 +37,12 @@ export {
 } from "./hardening";
 export { blockingPolicyFailures, evaluatePlanPolicies } from "./policies";
 export {
+  type ProxyAdditionsContext,
+  type ProxyRefusal,
+  runGixy,
+  scanProxyAdditions,
+} from "./proxy-rules";
+export {
   findingLocation,
   formatCounts,
   formatUtc,

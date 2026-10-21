@@ -1,0 +1,4 @@
+import /etc/caddy/other.caddy # refused: includes
+handle /x {
+	import snippet # refused: includes
+}

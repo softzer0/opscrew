@@ -1,0 +1,5 @@
+admin localhost:2019 # refused: admin-endpoint
+metrics /metrics # refused: admin-endpoint
+handle /stats {
+	metrics # refused: admin-endpoint
+}

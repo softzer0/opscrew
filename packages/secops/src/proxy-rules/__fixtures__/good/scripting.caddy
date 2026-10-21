@@ -1,0 +1,2 @@
+# js_content main.hello
+respond /js "js_content main.hello" 200

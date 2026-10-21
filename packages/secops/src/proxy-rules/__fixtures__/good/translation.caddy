@@ -1,0 +1,17 @@
+# Translated from vercel.json: headers, then redirects, then rewrites.
+header /about {
+	Cache-Control "public, max-age=3600"
+}
+redir /old /new 308
+redir /blog https://www.app.example.com/blog 301
+redir /docs https://docs.external.example/ 302
+@post path_regexp post ^/posts/([^/]+)/$
+redir @post /posts/{re.post.1} 308
+@spa path /app/*
+reverse_proxy @spa app-web:3000 {
+	@missing status 404
+	handle_response @missing {
+		rewrite * /index.html
+		reverse_proxy app-web:3000
+	}
+}

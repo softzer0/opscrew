@@ -1,0 +1,2 @@
+header X Y{ # refused: characters
+reverse_proxy 203.0.113.5:80 # refused: upstream

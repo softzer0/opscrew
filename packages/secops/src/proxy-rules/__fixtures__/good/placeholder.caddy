@@ -1,0 +1,4 @@
+# {env.HOME} and {file./etc/passwd} in a comment are not read.
+respond /host "{http.request.host}" 200
+redir /old https://{host}{uri} 308
+header X-Request-Id {http.request.uuid}

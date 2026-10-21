@@ -1,0 +1,9 @@
+@www host www.app.example.com
+redir @www https://app.example.com{uri} 308
+@apex {
+	host APP.example.com
+}
+# @x host attacker.example
+# bind 0.0.0.0
+respond /h "host attacker.example"
+header X-Host host

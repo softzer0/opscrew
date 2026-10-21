@@ -1,0 +1,5 @@
+} # refused: hostname
+attacker.example { # refused: not-allowed
+	respond "taken"
+}
+:9999 { # refused: not-allowed

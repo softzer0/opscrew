@@ -1,0 +1,3 @@
+respond /x <<EOF
+hiEOF 200
+file_server browse # refused: filesystem

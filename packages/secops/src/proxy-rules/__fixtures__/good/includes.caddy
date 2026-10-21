@@ -1,0 +1,5 @@
+# import /etc/caddy/other.caddy
+respond /x "import /etc/caddy/other.caddy"
+handle /x {
+	reverse_proxy app-web:3000
+}

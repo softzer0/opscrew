@@ -1,0 +1,4 @@
+# tls internal
+respond /about "tls internal, protocols tls1.0" 200
+@secure protocol https
+redir @secure /home 302

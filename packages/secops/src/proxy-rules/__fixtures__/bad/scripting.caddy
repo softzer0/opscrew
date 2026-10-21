@@ -1,0 +1,6 @@
+handle /js {
+	js_content main.hello # refused: scripting
+}
+content_by_lua_block { # refused: scripting
+	ngx.say("hi")
+}

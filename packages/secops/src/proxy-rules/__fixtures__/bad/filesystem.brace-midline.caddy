@@ -1,0 +1,3 @@
+header /x {
+	X-A b }
+file_server browse # refused: filesystem

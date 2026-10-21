@@ -1,0 +1,10 @@
+@other host other.example # refused: hostname
+@mixed {
+	host app.example.com attacker.example # refused: hostname
+}
+@nested {
+	not {
+		host *.example.com # refused: hostname
+	}
+}
+bind 0.0.0.0 # refused: hostname

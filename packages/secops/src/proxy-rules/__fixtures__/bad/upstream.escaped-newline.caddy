@@ -1,0 +1,4 @@
+reverse_proxy app-web:3000 \
+	attacker.example:80 # refused above: upstream
+reverse_proxy app-web:3000 # refused: upstream, since a \ in a comment continues the line
+	attacker.example:80

@@ -1,0 +1,11 @@
+reverse_proxy /api/* app-web:3000
+@websocket header Connection *Upgrade*
+reverse_proxy @websocket http://app-web:3000
+reverse_proxy * app-web:3000
+reverse_proxy {
+	to app-web:3000
+	header_up X-Real-IP {remote_host}
+}
+# reverse_proxy attacker.example:80
+respond /x "reverse_proxy attacker.example:80"
+respond /y `to attacker.example:80`

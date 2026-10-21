@@ -1,0 +1,21 @@
+header {
+	Content-Security-Policy "default-src 'self'"
+	Permissions-Policy "camera=()"
+	-X-Powered-By
+}
+redir /old /new 301
+@api path /api/*
+header @api {
+	Access-Control-Allow-Origin "https://app.example.com"
+	Access-Control-Allow-Methods "GET, POST, OPTIONS"
+}
+basic_auth /admin/* {
+	alice $2a$14$FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF
+}
+rewrite /legacy /new
+@www host www.app.example.com
+redir @www https://app.example.com{uri} 308
+encode zstd gzip
+request_body {
+	max_size 10MB
+}

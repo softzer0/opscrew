@@ -1,0 +1,11 @@
+# file_server browse
+respond /robots.txt "User-agent: *
+root * /srv
+file_server" 200
+respond /notes <<TEXT
+	root * /srv
+	file_server browse
+	TEXT 200
+header /assets/* {
+	Cache-Control "public, max-age=31536000"
+}
