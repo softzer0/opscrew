@@ -564,10 +564,10 @@ export class LocalEdge {
 
   /**
    * Hands the app to the edge's kamal-proxy at `target` (`<container>:<port>`), as the deploy
-   * hands each new copy, with the plan's hostnames and health path.
+   * hands each new copy, with the plan's domain (the proxy redirects www) and health path.
    */
   async route(plan: DeployPlan, target: string): Promise<void> {
-    const [domain, ...others] = siteHosts(plan);
+    const [domain] = siteHosts(plan);
     await this.compose(
       [
         "exec",
@@ -578,11 +578,7 @@ export class LocalEdge {
         plan.app.name,
         "--target",
         target,
-        ...(domain === undefined
-          ? []
-          : others.length === 0
-            ? ["--host", domain]
-            : ["--host", [domain, ...others].join(","), "--canonical-host", domain]),
+        ...(domain === undefined ? [] : ["--host", domain]),
         "--health-check-path",
         plan.app.healthPath,
       ],

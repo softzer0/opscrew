@@ -198,11 +198,14 @@ describe("edgeMemoryMb", () => {
 });
 
 describe("the app's site file", () => {
-  it("routes the domain and www to kamal-proxy with TLS and the ACME email", () => {
+  it("routes the domain to kamal-proxy with TLS and the ACME email, and redirects www to it over HTTPS", () => {
     const site = renderCaddyfile(shop, ctx);
     expect(site.path).toBe("opscrew/runtime/edge/sites/shop.caddy");
     expect(site.kind).toBe("runtime");
-    expect(site.content).toContain("\nexample.com, www.example.com {\n\ttls ops@example.com\n");
+    expect(site.content).toContain("\nexample.com {\n\ttls ops@example.com\n");
+    expect(site.content).toContain(
+      "\nwww.example.com {\n\ttls ops@example.com\n\tredir https://example.com{uri} 308\n}\n",
+    );
     expect(site.content).toContain("\treverse_proxy kamal-proxy:80\n");
     expect(site.content).toContain("Strict-Transport-Security");
     // An imported file cannot have global options, so the email is the site's.
@@ -252,7 +255,12 @@ describe("the app's site file", () => {
       "\t}",
     ];
     for (const content of sites) {
-      const blocks = content.split(/\n(?=\S+.* \{\n)/).filter((block) => block.includes(" {\n"));
+      // Every block that serves the app; www's only redirects.
+      const blocks = content
+        .split(/\n(?=\S+.* \{\n)/)
+        .filter(
+          (block) => block.includes(" {\n") && !/\tredir https:\/\/\S+\{uri\} 308\n/.test(block),
+        );
       expect(blocks.length).toBeGreaterThan(0);
       for (const block of blocks) {
         expect(block).toContain(header.join("\n"));
@@ -324,12 +332,14 @@ describe("the app's site with origin TLS", () => {
 
   it("serves the origin certificate for exactly the proxied hostnames and requires Cloudflare's client certificate", () => {
     const content = renderCaddyfile(shop, proxied).content;
+    expect(content).toContain(`\nexample.com {\n${ORIGIN_TLS}\n\tencode zstd gzip\n`);
+    // www keeps the certificate and the client-certificate requirement, and only redirects.
     expect(content).toContain(
-      `\nexample.com, www.example.com {\n${ORIGIN_TLS}\n\tencode zstd gzip\n`,
+      `\nwww.example.com {\n${ORIGIN_TLS}\n\tredir https://example.com{uri} 308\n}\n`,
     );
     // Caddy asks no certificate authority for them: the site names its own certificate.
     expect(content).not.toContain("tls ops@example.com");
-    expect(content.match(/ \{\n\ttls /g)).toHaveLength(1);
+    expect(content.match(/ \{\n\ttls /g)).toHaveLength(2);
   });
 
   it("keeps Caddy's ACME for an app hostname the origin certificate does not cover", () => {
@@ -343,7 +353,8 @@ describe("the app's site with origin TLS", () => {
 
   it("gets Caddy's ACME for DNS-only hostnames, as before", () => {
     const content = renderCaddyfile(shop, ctx).content;
-    expect(content).toContain("\nexample.com, www.example.com {\n\ttls ops@example.com\n");
+    expect(content).toContain("\nexample.com {\n\ttls ops@example.com\n");
+    expect(content).toContain("\nwww.example.com {\n\ttls ops@example.com\n");
     expect(content).not.toContain("/etc/caddy/tls/");
   });
 
@@ -361,7 +372,8 @@ describe("the app's site with origin TLS", () => {
       `\t\trespond "{err.status_code} {err.status_text}" {err.status_code}\n\t}\n${IMPORT}`,
     );
     const split = content({ ...ctx, originTls: { hostnames: ["example.com"] }, additions: true });
-    expect(split.split(IMPORT)).toHaveLength(3);
+    // www's block only redirects, so it imports nothing.
+    expect(split.split(IMPORT)).toHaveLength(2);
     expect(renderCaddyfile(tunnelled, { ...ctx, additions: true }).content).toContain(IMPORT);
     // Without additions the site imports nothing (the edge imports only `*.caddy` files).
     expect(content(proxied)).not.toContain("import");

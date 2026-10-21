@@ -347,7 +347,9 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's origin TLS
     expect(s.zone.hostnameAop.get("www.example.com")?.enabled).toBe(true);
     expect(s.zone.clientCertificates).toHaveLength(1);
     const site = await repo(s, SITE);
-    expect(site).toContain("example.com, www.example.com {");
+    // www keeps the origin certificate and redirects to the domain.
+    expect(site).toContain("\nwww.example.com {\n\ttls /etc/caddy/tls/shop/origin.pem");
+    expect(site).toContain("\tredir https://example.com{uri} 308\n");
     expect(site).toContain("client_auth");
     // Only the hostnames changed, so merging the pull request deploys: no extra deploy.
     expect(s.github.dispatches).toEqual([]);

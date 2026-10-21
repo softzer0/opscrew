@@ -252,12 +252,12 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
           expect(names(answer.certificate)).toEqual([SHOP]);
           expect(names(www.certificate)).toEqual([WWW]);
         }
-        // kamal-proxy sends www to the domain. Its redirect names http://, whatever the visitor
-        // used (kamal-proxy v0.10.2, also with --forward-headers): reported to the lead.
-        expect(www.status).toBe(301);
-        expect(www.headers.location).toMatch(
-          new RegExp(`^https?://${SHOP.replaceAll(".", "\\.")}/$`),
-        );
+        // The proxy sends www to the domain over HTTPS, with the path and query.
+        expect(www.status).toBe(308);
+        expect(www.headers.location).toBe(`https://${SHOP}/`);
+        const deep = await get(WWW, { path: "/a/b?c=1" });
+        expect(deep.status).toBe(308);
+        expect(deep.headers.location).toBe(`https://${SHOP}/a/b?c=1`);
         if (proxy === "nginx") {
           const renewal = await edge.compose(
             [

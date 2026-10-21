@@ -222,15 +222,14 @@ function startProcesses(plan: DeployPlan, services: readonly string[]): string[]
 const EDGE_FUNCTION = `edge() { docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml "$@"; }`;
 
 /**
- * kamal-proxy's hostnames for the app's service: the domain, and `www.<domain>` redirected to it
- * (`--canonical-host`); none before the plan has a domain (the service then gets every request).
+ * kamal-proxy's hostname for the app's service: the domain only, since the edge's proxy redirects
+ * `www.<domain>` to `https://<domain>` itself (kamal-proxy's `--canonical-host` redirects to
+ * `http://` behind a proxy that terminates TLS); none before the plan has a domain (the service
+ * then gets every request).
  */
 function proxyHosts(plan: DeployPlan): string {
-  const [domain, ...others] = siteHosts(plan);
-  if (domain === undefined) return "";
-  return others.length === 0
-    ? ` --host ${domain}`
-    : ` --host ${[domain, ...others].join(",")} --canonical-host ${domain}`;
+  const [domain] = siteHosts(plan);
+  return domain === undefined ? "" : ` --host ${domain}`;
 }
 
 /**

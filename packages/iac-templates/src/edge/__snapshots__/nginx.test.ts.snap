@@ -99,7 +99,7 @@ server {
 server {
 	listen 8443 ssl;
 	listen 8443 quic;
-	server_name example.com www.example.com;
+	server_name example.com;
 	ssl_certificate /etc/nginx/tls/shop/origin.pem;
 	ssl_certificate_key /etc/nginx/tls/shop/origin.key;
 	ssl_verify_client on;
@@ -126,6 +126,17 @@ server {
 	}
 	# Your own additions (opscrew/proxy/additions.nginx).
 	include /etc/nginx/sites/shop.additions;
+}
+
+server {
+	listen 8443 ssl;
+	listen 8443 quic;
+	server_name www.example.com;
+	ssl_certificate /etc/nginx/tls/shop/origin.pem;
+	ssl_certificate_key /etc/nginx/tls/shop/origin.key;
+	ssl_verify_client on;
+	ssl_client_certificate /etc/nginx/tls/shop/pull.pem;
+	return 308 https://example.com$request_uri;
 }
 ",
 }
@@ -416,7 +427,7 @@ server {
 server {
 	listen 8443 ssl;
 	listen 8443 quic;
-	server_name example.com www.example.com;
+	server_name example.com;
 	ssl_certificate /etc/nginx/tls/shop/origin.pem;
 	ssl_certificate_key /etc/nginx/tls/shop/origin.key;
 	ssl_verify_client on;
@@ -443,6 +454,17 @@ server {
 	}
 	# Your own additions (opscrew/proxy/additions.nginx).
 	include /etc/nginx/sites/shop.additions;
+}
+
+server {
+	listen 8443 ssl;
+	listen 8443 quic;
+	server_name www.example.com;
+	ssl_certificate /etc/nginx/tls/shop/origin.pem;
+	ssl_certificate_key /etc/nginx/tls/shop/origin.key;
+	ssl_verify_client on;
+	ssl_client_certificate /etc/nginx/tls/shop/pull.pem;
+	return 308 https://example.com$request_uri;
 }
 ",
 }

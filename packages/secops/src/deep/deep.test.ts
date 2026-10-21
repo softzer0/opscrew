@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import type { CommandResult, FetchLike, RemoteExec } from "@opscrew/contracts";
 import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { LYNIS_TIMEOUT_MS, lynisResults, parseLynisReport, runLynis } from "./lynis";
+import {
+  LYNIS_TIMEOUT_MS,
+  LYNIS_VERSIONS_COMMAND,
+  lynisResults,
+  parseLynisReport,
+  runLynis,
+} from "./lynis";
 import { DEEP_NOISE, markNoise } from "./noise";
 import { localDockerProblem } from "./shared";
 import {
@@ -52,13 +58,16 @@ interface SshCall {
 }
 
 /** A fake server: `docker image inspect` says whether the image is there; Lynis's run answers `lynis`. */
-function fakeServer(o: { present?: boolean; lynis?: CommandResult; rm?: CommandResult } = {}) {
+function fakeServer(
+  o: { present?: boolean; lynis?: CommandResult; rm?: CommandResult; versions?: string } = {},
+) {
   const calls: SshCall[] = [];
   let pulled = false;
   const ssh: RemoteExec = {
     host: "192.0.2.10",
     async run(command, options) {
       calls.push({ command, ...(options !== undefined ? { options } : {}) });
+      if (command === LYNIS_VERSIONS_COMMAND) return ok(o.versions ?? "6.8.0-45-generic\n29.1.3\n");
       if (command.startsWith("docker image inspect")) return ok(o.present ? "yes\n" : "no\n");
       if (command.startsWith("docker run")) {
         pulled = true;
@@ -217,15 +226,16 @@ describe("runLynis", () => {
     const result = await runLynis(ssh, PINS, tarballFetch);
 
     expect(calls.map((c) => c.command.split(" ").slice(0, 3).join(" "))).toEqual([
+      "uname -r; docker",
       "docker image inspect",
       "docker run --rm",
       "if docker image",
     ]);
-    const run = calls[1];
+    const run = calls[2];
     const command = run?.command ?? "";
     expect(command).toMatch(/^docker run --rm -i --name opscrew-lynis-[0-9a-f]{12} --user 0 /);
     for (const part of [
-      "--mount type=bind,src=/,dst=/hostfs,readonly,bind-recursive=readonly",
+      "--mount type=bind,src=/,dst=/hostfs,readonly --tmpfs",
       "--tmpfs /hostfs/tmp:rw,exec,size=128m",
       "--pid=host --net=host --security-opt no-new-privileges",
       `--entrypoint /bin/sh ${PINS.lynisImage}`,
@@ -240,7 +250,7 @@ describe("runLynis", () => {
     expect(command.slice(command.indexOf("-c '") + 4, -1)).not.toContain("'");
     expect(run?.options?.timeoutMs).toBe(LYNIS_TIMEOUT_MS);
     expect(Buffer.from(run?.options?.input ?? "", "base64")).toEqual(Buffer.from(TARBALL));
-    expect(calls[2]?.command).toBe(
+    expect(calls[3]?.command).toBe(
       `if docker image inspect ${PINS.lynisImage} > /dev/null 2>&1; then docker image rm ${PINS.lynisImage} > /dev/null; fi`,
     );
 
@@ -251,7 +261,7 @@ describe("runLynis", () => {
   it("keeps an image that was on the server before", async () => {
     const { ssh, calls } = fakeServer({ present: true });
     await runLynis(ssh, PINS, tarballFetch);
-    expect(calls.map((c) => c.command.split(" ")[1])).toEqual(["image", "run"]);
+    expect(calls.map((c) => c.command.split(" ")[1])).toEqual(["-r;", "image", "run"]);
   });
 
   it("warns when the pulled image could not be removed", async () => {
@@ -309,8 +319,8 @@ describe("runLynis", () => {
       }),
     ]);
     // The container still running on the server is removed by its name, then the image.
-    const name = /--name (opscrew-lynis-[0-9a-f]{12})/.exec(calls[1]?.command ?? "")?.[1];
-    expect(calls.slice(2).map((c) => c.command)).toEqual([
+    const name = /--name (opscrew-lynis-[0-9a-f]{12})/.exec(calls[2]?.command ?? "")?.[1];
+    expect(calls.slice(3).map((c) => c.command)).toEqual([
       `docker rm -f ${name} > /dev/null 2>&1 || true`,
       `if docker image inspect ${PINS.lynisImage} > /dev/null 2>&1; then docker image rm ${PINS.lynisImage} > /dev/null; fi`,
     ]);
@@ -327,7 +337,7 @@ describe("runLynis", () => {
       status: "skip",
       message: expect.stringContaining("chroot: failed"),
     });
-    expect(failed.calls[2]?.command).toMatch(/^docker rm -f opscrew-lynis-[0-9a-f]{12} /);
+    expect(failed.calls[3]?.command).toMatch(/^docker rm -f opscrew-lynis-[0-9a-f]{12} /);
   });
 
   it("skips a server whose Docker or kernel cannot mount the host read-only, with the versions needed", async () => {
@@ -347,6 +357,29 @@ describe("runLynis", () => {
       ),
       remediation: expect.stringContaining("kernel 5.12 or later and Docker 25 or later"),
     });
+  });
+
+  it("checks the kernel and Docker first, and skips older or unreadable ones without running Lynis", async () => {
+    for (const [versions, shown] of [
+      ["5.10.0-28-amd64\n29.1.3\n", "kernel 5.10.0-28-amd64, Docker 29.1.3"],
+      ["6.8.0-45-generic\n24.0.7\n", "kernel 6.8.0-45-generic, Docker 24.0.7"],
+      ["6.8.0-45-generic\n\n", "kernel 6.8.0-45-generic, Docker unknown"],
+      ["", "kernel unknown, Docker unknown"],
+    ] as const) {
+      const { ssh, calls } = fakeServer({ versions });
+      const result = await runLynis(ssh, PINS, tarballFetch);
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          status: "skip",
+          message: `This server's Docker or kernel cannot mount the host read-only, so OpsCrew does not run Lynis on it (${shown}).`,
+          remediation: expect.stringContaining("kernel 5.12 or later and Docker 25 or later"),
+        }),
+      ]);
+      expect(calls.map((c) => c.command)).toEqual([LYNIS_VERSIONS_COMMAND]);
+    }
+    const { ssh, calls } = fakeServer({ versions: "5.12.0\n25.0.0\n" });
+    await runLynis(ssh, PINS, tarballFetch);
+    expect(calls.some((c) => c.command.startsWith("docker run"))).toBe(true);
   });
 
   it("downloads the tarball with a one-minute limit", async () => {

@@ -127,6 +127,26 @@ export const LYNIS_TIMEOUT_MS = 4 * 60_000;
 
 const SHA_MISMATCH_EXIT = 90;
 
+/** Prints the server's kernel release, then its Docker version (empty when it gives none). */
+export const LYNIS_VERSIONS_COMMAND =
+  "uname -r; docker version --format '{{.Server.Version}}' 2> /dev/null || true";
+
+/** Whether `version` (`5.15.0-1`, `29.1.3`) is at least `major.minor`. */
+function atLeast(version: string | undefined, major: number, minor: number): boolean {
+  const found = /^(\d+)\.(\d+)/.exec(version ?? "");
+  if (found === null) return false;
+  const [have, haveMinor] = [Number(found[1]), Number(found[2])];
+  return have > major || (have === major && haveMinor >= minor);
+}
+
+const READ_ONLY_REMEDIATION =
+  "Lynis needs Linux kernel 5.12 or later and Docker 25 or later on the server. Upgrade them, then run `opscrew secure --deep` again.";
+
+/** The skip when the server cannot mount its root read-only all the way down; `why` in brackets. */
+function readOnlyReason(why: string): string {
+  return `This server's Docker or kernel cannot mount the host read-only, so OpsCrew does not run Lynis on it (${why}).`;
+}
+
 /**
  * The script Lynis's container runs: the tarball (base64 on stdin) is written to the tmpfs and
  * checked against its SHA-256, then Lynis runs chrooted into the read-only host and its report is
@@ -146,14 +166,16 @@ function containerScript(sha256: string): string {
 
 /**
  * The `docker run` of Lynis's throwaway container `name`: the host's root read-only at `/hostfs`,
- * its submounts too (Docker refuses where it cannot), an executable tmpfs over `/hostfs/tmp`, the
+ * its submounts too (a plain `readonly` bind is read-only all the way down from Linux 5.12 and
+ * Docker 25, which {@link runLynis} checks first: Docker 29 refuses `bind-recursive=readonly` for
+ * `/`), an executable tmpfs over `/hostfs/tmp`, the
  * host's processes and network, no new privileges, and root inside (the pinned image runs as a
  * non-root user).
  */
 export function lynisDockerCommand(pins: DeepPins, name: string): string {
   return [
     `docker run --rm -i --name ${name} --user 0`,
-    "--mount type=bind,src=/,dst=/hostfs,readonly,bind-recursive=readonly",
+    "--mount type=bind,src=/,dst=/hostfs,readonly",
     "--tmpfs /hostfs/tmp:rw,exec,size=128m",
     "--pid=host --net=host --security-opt no-new-privileges",
     `--entrypoint /bin/sh ${pins.lynisImage}`,
@@ -185,6 +207,22 @@ export async function runLynis(
     return skip(
       `Lynis ${version} could not be downloaded from ${pins.lynis.url} (${errorMessage(error)}).`,
       "Check this computer's internet connection, then run `opscrew secure --deep` again.",
+    );
+  }
+
+  const versions = await ssh.run(LYNIS_VERSIONS_COMMAND);
+  if (versions.exitCode !== 0) {
+    return skip(
+      `OpsCrew could not reach the server over SSH to run Lynis (${lastLine(versions)}).`,
+      "Check that the server is up and this computer can log in as `deploy`, then run `opscrew secure --deep` again.",
+    );
+  }
+  // Fails closed: an older or unreadable version never runs Lynis with writable submounts.
+  const [kernel, dockerVersion] = versions.stdout.split("\n").map((line) => line.trim());
+  if (!atLeast(kernel, 5, 12) || !atLeast(dockerVersion, 25, 0)) {
+    return skip(
+      readOnlyReason(`kernel ${kernel || "unknown"}, Docker ${dockerVersion || "unknown"}`),
+      READ_ONLY_REMEDIATION,
     );
   }
 
@@ -252,10 +290,7 @@ export async function runLynis(
     );
   }
   if (run.exitCode === 125 && /recursive/i.test(run.stderr)) {
-    return failed(
-      `This server's Docker or kernel cannot mount the host read-only, so OpsCrew does not run Lynis on it (${lastLine(run)}).`,
-      "Lynis needs Linux kernel 5.12 or later and Docker 25 or later on the server. Upgrade them, then run `opscrew secure --deep` again.",
-    );
+    return failed(readOnlyReason(lastLine(run)), READ_ONLY_REMEDIATION);
   }
   if (run.exitCode !== 0) {
     return failed(

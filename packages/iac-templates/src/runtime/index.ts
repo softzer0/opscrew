@@ -194,6 +194,14 @@ export function renderRuntimeFiles(
 }
 
 /**
+ * The hostnames the edge's proxy redirects to the domain over HTTPS: `www.<domain>` (kamal-proxy
+ * gets only the domain).
+ */
+function redirectedHosts(plan: DeployPlan): string[] {
+  return siteHosts(plan).slice(1);
+}
+
+/**
  * `ctx.cloudflareRanges` when Cloudflare's proxy serves the app's hostnames and reaches the server
  * directly (not through a tunnel): the ranges whose `CF-Connecting-IP` the app's site trusts.
  */
@@ -231,6 +239,7 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RuntimeContext): Rendered
           : { hostnames: ctx.originTls.hostnames, dir: originTlsDir(app) },
       additions: ctx.additions ? caddyAdditionsFile(app) : undefined,
       realIp: realIpRanges(plan, ctx) !== undefined,
+      redirects: redirectedHosts(plan),
     }),
   ];
   return {
@@ -265,6 +274,7 @@ function nginxSiteFile(plan: DeployPlan, ctx: RuntimeContext, before: boolean): 
       additions: ctx.additions ? nginxAdditionsFile(app) : undefined,
       beforeCertificate: before,
       realIpFrom: realIpRanges(plan, ctx),
+      redirects: redirectedHosts(plan),
     }),
   ];
   return {

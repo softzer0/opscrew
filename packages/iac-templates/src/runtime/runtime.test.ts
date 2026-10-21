@@ -145,11 +145,14 @@ describe("renderCompose", () => {
 });
 
 describe("renderCaddyfile (the app's site on the shared edge)", () => {
-  it("serves the domain (and www) with HSTS and the ACME email", () => {
+  it("serves the domain with HSTS and the ACME email, and redirects www to it", () => {
     const file = renderCaddyfile(plan({ domain: "example.com", www: true }), ctx);
     expect(file.path).toBe("opscrew/runtime/edge/sites/shop.caddy");
     const content = file.content;
-    expect(content).toContain("example.com, www.example.com {");
+    expect(content).toContain("\nexample.com {\n");
+    expect(content).toContain(
+      "\nwww.example.com {\n\ttls ops@example.com\n\tredir https://example.com{uri} 308\n}",
+    );
     expect(content).toContain("\ttls ops@example.com\n");
     expect(content).toContain("reverse_proxy kamal-proxy:80");
     expect(content).toContain("Strict-Transport-Security");

@@ -108,6 +108,12 @@ export interface CaddySite {
   /** A file the site imports inside its block: the user's own additions. */
   additions?: string | undefined;
   /**
+   * The hostnames among `hosts` that only redirect to `https://<the first other host>` with the
+   * path and query (308): a server's `www.<domain>`. They keep their certificate, and with origin
+   * TLS the client-certificate requirement.
+   */
+  redirects?: readonly string[] | undefined;
+  /**
    * Cloudflare's proxy serves the site and the edge trusts Cloudflare's addresses: the app gets the
    * visitor's address (Caddy's `{client_ip}`, from `CF-Connecting-IP`) as `X-Forwarded-For`.
    */
@@ -230,13 +236,36 @@ export function caddySite(site: CaddySite & { mode: "tunnel" | "direct" }): stri
  * with `tls` for every hostname.
  */
 function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
+  const redirects = site.redirects ?? [];
+  const [to] = site.hosts.filter((host) => !redirects.includes(host));
+  /** The site block of `hosts` served, then the one of those that redirect, each with `first`. */
+  const blocks = (hosts: readonly string[], first: readonly string[]) => {
+    const served = hosts.filter((host) => !redirects.includes(host));
+    const moved = hosts.filter((host) => redirects.includes(host));
+    return [
+      ...(served.length > 0 || moved.length === 0 ? siteBlock(site, served, first) : []),
+      ...(to === undefined ? [] : redirectBlock(site, moved, first, to)),
+    ];
+  };
   const origin = site.mode === "direct" ? site.origin : undefined;
   const hosts = splitByOrigin(site.hosts, origin?.hostnames);
-  if (origin === undefined || hosts.origin.length === 0) return siteBlock(site, site.hosts, tls);
+  if (origin === undefined || hosts.origin.length === 0) return blocks(site.hosts, tls);
   return [
-    ...siteBlock(site, hosts.origin, originTlsLines(origin.dir)),
-    ...(hosts.others.length === 0 ? [] : siteBlock(site, hosts.others, tls)),
+    ...blocks(hosts.origin, originTlsLines(origin.dir)),
+    ...(hosts.others.length === 0 ? [] : blocks(hosts.others, tls)),
   ];
+}
+
+/** A site block for `hosts` that redirects every request to `https://<to>` with its path (308). */
+function redirectBlock(
+  site: CaddySite,
+  hosts: readonly string[],
+  first: readonly string[],
+  to: string,
+): string[] {
+  if (hosts.length === 0) return [];
+  const sites = site.mode === "tunnel" ? hosts.map((host) => `http://${host}`) : hosts;
+  return [`${sites.join(", ")} {`, ...first, `\tredir https://${to}{uri} 308`, "}", ""];
 }
 
 /**

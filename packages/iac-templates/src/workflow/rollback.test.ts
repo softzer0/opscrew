@@ -1358,13 +1358,12 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
         );
       });
 
-      it("gives kamal-proxy the domain and www, redirecting www to the domain", () => {
+      it("gives kamal-proxy only the domain: the edge's proxy redirects www itself", () => {
         expect(scripts(shop).start).toContain(
-          " kamal-proxy deploy shop --target \"${name#/}:3000\" --host example.com,www.example.com --canonical-host example.com --health-check-path '/api/health' ",
+          " kamal-proxy deploy shop --target \"${name#/}:3000\" --host example.com --health-check-path '/api/health' ",
         );
-        expect(scripts(shop).rollback).toContain(
-          " --host example.com,www.example.com --canonical-host example.com ",
-        );
+        expect(scripts(shop).rollback).toContain(" --host example.com --health-check-path ");
+        expect(scripts(shop).start).not.toContain("--canonical-host");
       });
 
       it("rolls one app back without touching the other", () => {

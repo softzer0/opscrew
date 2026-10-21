@@ -54,7 +54,11 @@ describe("runtime files in tunnel mode", () => {
       tunnelPlan({ domain: "example.com", www: true }),
       testContext({ acmeEmail: "ops@example.com" }),
     ).content;
-    expect(caddyfile).toContain("http://example.com, http://www.example.com {");
+    expect(caddyfile).toContain("\nhttp://example.com {\n");
+    // www only redirects, to HTTPS (Cloudflare serves it).
+    expect(caddyfile).toContain(
+      "\nhttp://www.example.com {\n\tredir https://example.com{uri} 308\n}",
+    );
     expect(caddyfile).not.toContain("email ops@example.com");
     expect(caddyfile).toContain("Strict-Transport-Security");
     expect(caddyfile).toMatchSnapshot();

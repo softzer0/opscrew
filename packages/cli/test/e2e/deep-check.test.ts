@@ -23,7 +23,6 @@
 import { chmod, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { generateEd25519KeyPair, SshRemoteExec } from "@opscrew/agents";
-import type { RemoteExec } from "@opscrew/contracts";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import {
@@ -217,32 +216,10 @@ describe.skipIf(SKIP !== undefined)("the deeper check against a container server
     if (work !== "") await rm(work, { recursive: true, force: true });
   }, TWO_MINUTES);
 
-  /**
-   * OpsCrew's Lynis command mounts the host with `bind-recursive=readonly`, which Docker 29.1.3
-   * (Ubuntu's docker.io, and the spike's Hetzner server) refuses: that option needs
-   * `bind-propagation=rprivate`, which the daemon refuses for a source that holds its own root.
-   * A plain `readonly` bind is already recursively read-only on kernel 5.12 or later. Reported to
-   * the lead (T1412); until `lynisDockerCommand` changes, this test runs it without the option, and
-   * the next one shows the command as it is still fails.
-   */
-  const withoutRecursiveOption: RemoteExec = {
-    host: "server",
-    run: (command, options) => remote.run(command.replace(",bind-recursive=readonly", ""), options),
-  };
-
-  it.fails(
-    "runs Lynis with OpsCrew's command as it is (Docker 29 refuses bind-recursive=readonly)",
-    async () => {
-      const lynis = await runLynis(remote, PINS, fetch);
-      expect(lynis.results.filter((result) => result.status === "skip")).toEqual([]);
-    },
-    TEN_MINUTES,
-  );
-
   it(
     "runs Lynis over SSH through the server's Docker, read-only, and gives a report",
     async () => {
-      const lynis = await runLynis(withoutRecursiveOption, PINS, fetch);
+      const lynis = await runLynis(remote, PINS, fetch);
       const skipped = lynis.results.filter((result) => result.status === "skip");
       expect(skipped, JSON.stringify(skipped)).toEqual([]);
       expect(lynis.version).toBe(TOOLS.lynis.version);

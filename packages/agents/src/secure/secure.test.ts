@@ -186,6 +186,7 @@ function serverScript(o: ServerOptions = {}) {
         return ok("0");
       default:
         // `--deep`: Lynis's image is not on the server, its container prints the report.
+        if (remote?.startsWith("uname -r")) return ok("6.8.0-45-generic\n29.1.3\n");
         if (remote?.startsWith("docker image inspect")) return ok("no");
         if (remote?.startsWith("docker run")) return ok(LYNIS_REPORT);
         if (remote?.startsWith("if docker image inspect")) return ok("");

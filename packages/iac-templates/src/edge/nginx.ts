@@ -236,6 +236,22 @@ export interface NginxSite {
   beforeCertificate?: boolean;
   /** Cloudflare's IP ranges, for an app its proxy serves: the visitor's address comes from them. */
   realIpFrom?: readonly string[] | undefined;
+  /**
+   * The hostnames among `hosts` that only redirect to `https://<the first other host>` with the
+   * path and query (308): `www.<domain>`. They keep their certificate, and with origin TLS the
+   * client-certificate requirement.
+   */
+  redirects?: readonly string[] | undefined;
+}
+
+/** `hosts` split into those the site serves and those that redirect, and where they redirect. */
+function byRedirect(site: NginxSite, hosts: readonly string[]) {
+  const redirects = site.redirects ?? [];
+  return {
+    served: hosts.filter((host) => !redirects.includes(host)),
+    moved: hosts.filter((host) => redirects.includes(host)),
+    to: site.hosts.find((host) => !redirects.includes(host)),
+  };
 }
 
 /**
@@ -288,6 +304,26 @@ const ACME_LOCATION = [
   "\t}",
 ];
 
+/**
+ * The HTTP server of the hostnames among `hosts` that redirect: `before`, then a 308 to
+ * `<scheme>://<domain>` with the path and query.
+ */
+function redirectedOverHttp(
+  site: NginxSite,
+  hosts: readonly string[],
+  scheme: "http" | "https",
+  before: readonly string[],
+): string[] {
+  const { moved, to } = byRedirect(site, hosts);
+  if (moved.length === 0 || to === undefined) return [];
+  return httpServer(moved.join(" "), [
+    ...before,
+    "\tlocation / {",
+    `\t\treturn 308 ${scheme}://${to}$request_uri;`,
+    "\t}",
+  ]);
+}
+
 /** A `server` block on the HTTP port for `names`, with `body`. */
 function httpServer(names: string, body: readonly string[]): string[] {
   return ["server {", `\tlisten ${NGINX_PORTS.http};`, `\tserver_name ${names};`, ...body, "}", ""];
@@ -305,15 +341,22 @@ function redirectServer(hosts: readonly string[], acme: boolean): string[] {
 
 /** The HTTPS server of `hosts` with the certificate lines `tls`, over TCP and QUIC (HTTP/3). */
 function tlsServer(site: NginxSite, hosts: readonly string[], tls: readonly string[]): string[] {
-  return [
+  const { served, moved, to } = byRedirect(site, hosts);
+  const server = (names: readonly string[], body: readonly string[]) => [
     "server {",
     `\tlisten ${NGINX_PORTS.https} ssl;`,
     `\tlisten ${NGINX_PORTS.https} quic;`,
-    `\tserver_name ${hosts.join(" ")};`,
+    `\tserver_name ${names.join(" ")};`,
     ...tls,
-    ...serve(site, { hsts: true, tls: true }),
+    ...body,
     "}",
     "",
+  ];
+  return [
+    ...(served.length > 0 ? server(served, serve(site, { hsts: true, tls: true })) : []),
+    ...(moved.length > 0 && to !== undefined
+      ? server(moved, [`\treturn 308 https://${to}$request_uri;`])
+      : []),
   ];
 }
 
@@ -338,12 +381,13 @@ export function nginxSite(site: NginxSite): string[] {
     return [
       ...lines,
       "# Served through a Cloudflare Tunnel: Cloudflare terminates TLS, nginx serves plain HTTP.",
-      ...httpServer(site.hosts.join(" "), [
+      ...httpServer(byRedirect(site, site.hosts).served.join(" "), [
         "\tif ($http_cf_visitor ~ '\"http\"') {",
         "\t\treturn 308 https://$host$request_uri;",
         "\t}",
         ...serve(site, { hsts: true, tls: false }),
       ]),
+      ...redirectedOverHttp(site, site.hosts, "https", []),
     ];
   }
   if (site.hosts.length === 0) {
@@ -369,13 +413,17 @@ export function nginxSite(site: NginxSite): string[] {
   }
   if (certbot.length === 0) return lines;
   if (site.beforeCertificate) {
+    const { served } = byRedirect(site, certbot);
     return [
       ...lines,
       "# HTTP only until certbot has the first certificate; the deploy then installs the HTTPS site.",
-      ...httpServer(certbot.join(" "), [
-        ...ACME_LOCATION,
-        ...serve(site, { hsts: false, tls: false }),
-      ]),
+      ...(served.length === 0
+        ? []
+        : httpServer(served.join(" "), [
+            ...ACME_LOCATION,
+            ...serve(site, { hsts: false, tls: false }),
+          ])),
+      ...redirectedOverHttp(site, certbot, "http", ACME_LOCATION),
     ];
   }
   return [

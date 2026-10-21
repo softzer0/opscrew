@@ -67,6 +67,11 @@ const sites = (plan: DeployPlan, c: RuntimeContext) =>
   );
 
 /** The `server` blocks of a site file. */
+/** An HTTPS server that serves the app (not www's redirect to the domain). */
+function serving(block: string): boolean {
+  return block.includes("listen 8443 ssl;") && !/\treturn 308 https:\/\/[a-z]/.test(block);
+}
+
 const servers = (content: string) =>
   content
     .split(/\n(?=server \{\n)/)
@@ -269,14 +274,31 @@ describe("the app's site on nginx", () => {
 
   it("serves proxied hostnames with the origin certificate and requires Cloudflare's client certificate", () => {
     const content = sites(shop, proxied)["shop.conf"] ?? "";
-    expect(servers(content)).toHaveLength(2);
+    expect(servers(content)).toHaveLength(3);
     expect(content).toContain(
-      `server {\n\tlisten 8443 ssl;\n\tlisten 8443 quic;\n\tserver_name example.com www.example.com;\n${ORIGIN_TLS}\n${HEADERS}\n`,
+      `server {\n\tlisten 8443 ssl;\n\tlisten 8443 quic;\n\tserver_name example.com;\n${ORIGIN_TLS}\n${HEADERS}\n`,
+    );
+    // www keeps the certificate and the client-certificate requirement, and only redirects.
+    expect(content).toContain(
+      `server {\n\tlisten 8443 ssl;\n\tlisten 8443 quic;\n\tserver_name www.example.com;\n${ORIGIN_TLS}\n\treturn 308 https://example.com$request_uri;\n}\n`,
     );
     expect(content).not.toContain("letsencrypt");
     expect(content).not.toContain("acme-challenge");
     // No certbot hostnames, so no site for before their certificate.
     expect(Object.keys(sites(shop, proxied))).toEqual(["shop.conf"]);
+  });
+
+  it("redirects www on certbot's certificate when only the domain has the origin certificate, also before the first one", () => {
+    const files = sites(shop, { ...ctx, originTls: { hostnames: ["example.com"] } });
+    for (const content of [files["shop.conf"] ?? "", files["shop.http.conf"] ?? ""]) {
+      expect(content).not.toMatch(/server_name ;/);
+    }
+    expect(files["shop.conf"]).toContain(
+      "\tserver_name www.example.com;\n\tssl_certificate /etc/letsencrypt/live/shop/fullchain.pem;\n\tssl_certificate_key /etc/letsencrypt/live/shop/privkey.pem;\n\treturn 308 https://example.com$request_uri;\n}\n",
+    );
+    expect(files["shop.http.conf"]).toContain(
+      "\tserver_name www.example.com;\n\tlocation /.well-known/acme-challenge/ {\n\t\troot /var/www/acme;\n\t}\n\tlocation / {\n\t\treturn 308 http://example.com$request_uri;\n\t}\n}\n",
+    );
   });
 
   it("serves DNS-only hostnames with certbot's certificate for the app, with its challenges on HTTP", () => {
@@ -328,7 +350,7 @@ describe("the app's site on nginx", () => {
       sites(shop, { ...ctx, originTls: { hostnames: ["example.com"] } })["shop.conf"],
       sites(blog, ctx)["blog.conf"],
     ]) {
-      const tls = servers(content ?? "").filter((block) => block.includes("listen 8443 ssl;"));
+      const tls = servers(content ?? "").filter(serving);
       expect(tls.length).toBeGreaterThan(0);
       for (const block of tls) {
         expect(block).toContain(
@@ -440,7 +462,7 @@ describe("the visitor's address behind Cloudflare's proxy, on nginx", () => {
 
   it("takes it from CF-Connecting-IP on requests from Cloudflare, in every server that serves a proxied app", () => {
     const content = sites(shop, { ...proxied, cloudflareRanges: ranges })["shop.conf"] ?? "";
-    const tls = servers(content).filter((block) => block.includes("listen 8443 ssl;"));
+    const tls = servers(content).filter(serving);
     expect(tls.length).toBeGreaterThan(0);
     for (const block of tls) expect(block).toContain(REAL_IP);
     // Before its first certificate, a proxied app without the origin certificate is served on HTTP.
