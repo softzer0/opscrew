@@ -141,7 +141,7 @@ runs before anything relies on them.
 - **nginx:**
   - **Image:** `nginxinc/nginx-unprivileged` (Apache-2.0, non-root, listens on 8080 and 8443 internally, rebuilt weekly), stable 1.30.x, pinned by digest.
   - **Reload:** `nginx -s reload` keeps connections, and a bad config keeps the old one.
-  - **HTTP/3** is not offered on nginx in v1 *(verify the module in the image)*.
+  - **HTTP/3** is offered on nginx too, since the image has the module ("Spike results" 5).
 - **Certbot** (`certbot/certbot`, pinned) runs as an edge service:
   - webroot HTTP-01, with `/.well-known/acme-challenge` served by nginx from a shared volume;
   - `certbot renew` twice a day with a random delay, with `renew_before_expiry = 45 days`, so a renewal that keeps failing is visible to `verify`, `status` and `secure` (which warn below 30 days) for more than two weeks first. Certbot's default is a third of the lifetime, 30 days for today's 90-day certificates. Let's Encrypt's planned shorter lifetimes will need these numbers revisited;
@@ -411,6 +411,45 @@ runs before anything relies on them.
   A rewrite inside the named location is *(verify in the spike)*.
 - **Not translated:** rewrites to another site, `has` and `missing`, `routes`, and Vercel's own
   firewall, bulk redirects and dashboard rules (outside the file).
+
+## Spike results (T1402, 2026-10-21)
+
+Each line gives what was run, and what was seen.
+
+- **1. Origin CA with a token only:** `POST /certificates` on the Free e2e zone, with the API token (SSL and Certificates: Edit) and a P-256 CSR, `request_type: origin-ecc`, `requested_validity: 5475`. It gave 200. The response has `certificate`, `csr`, `expires_on`, `hostnames`, `id`, `request_type` and `requested_validity`. The certificate expires 15 years on, and the issuer is "CloudFlare Origin SSL ECC Certificate Authority", with exactly the requested SAN. `GET /certificates?zone_id=` lists it. `DELETE /certificates/{id}` revokes it with 200 (`{ id, revoked_at }`), and a later GET shows `revoked_at`. No Origin CA Key is needed.
+- **2 and 11. Per-hostname AOP on Free:**
+  - The upload (`POST …/hostnames/certificates`) of a 15-year self-signed P-256 client certificate gives 201 `pending_deployment`, and it is `active` within a second. The response has `certificate`, `expires_on`, `id`, `issuer`, `serial_number`, `signature`, `status`, `updated_at` and `uploaded_on`.
+  - Enabling (`PUT …/hostnames` with `{ hostname, cert_id, enabled: true }`) gives 202, `pending_deployment`, then `active` after about 6 s. `GET …/hostnames/{hostname}` shows it, with `cert_status` and `enabled`.
+  - Disabling with `enabled: null` gives 202 `pending_deployment`.
+  - Deleting the certificate right after works at once (200, `pending_deletion`).
+  - That Cloudflare really presents the certificate to an origin is checked in the live run (T1413).
+- **3. Minimum TLS:** the zone setting reads `1.0` with `editable: true`, and a same-value `PATCH` gives 200, which proves Zone Settings: Edit. Per-hostname minimum TLS (`PUT /zones/{z}/hostnames/settings/min_tls_version/{host}`) gives 401, code 1450, "available with the Advanced Certificate Manager". So OpsCrew uses only the zone setting under R4's rule.
+- **4. Configuration-rule count:** 014 adds no rule, so 011's count stands.
+- **15. 15-year certificates:** both kinds are accepted, origin CA and client certificate, expiring in 2041.
+- **Expiry formats:** Origin CA gives `expires_on` as `2041-10-16 23:53:00 +0000 UTC`, and AOP as `2041-10-16T23:58:23Z`. Both are turned into ISO `Z` times before they go into the record.
+- **5. nginx and kamal-proxy** (local Docker, the pinned images):
+  - nginx-unprivileged 1.30.6 is built with OpenSSL 3.5.8, with `http_v2_module` and `http_v3_module`, so the nginx edge serves HTTP/3 like Caddy: `listen … quic`, 443/udp, and `Alt-Svc`.
+  - kamal-proxy v0.10.2 routes by `Host` and keeps the front proxy's `X-Forwarded-Proto` and `X-Forwarded-Host`, with or without `--forward-headers`. It appends to `X-Forwarded-For`. nginx sets `X-Forwarded-Proto $scheme`, and Caddy already sends its own.
+  - WebSockets through both are checked in the Docker pass (T1412).
+- **6. Mozilla's intermediate profile** (`ssl-config.mozilla.org/guidelines/latest.json`, version 6.0):
+  - TLS 1.2 and 1.3;
+  - TLS 1.2 ciphers in order: `ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305`;
+  - curves `X25519MLKEM768:X25519:prime256v1:secp384r1`, which nginx's OpenSSL 3.5.8 loads;
+  - `ssl_prefer_server_ciphers off`.
+
+  OpsCrew keeps HSTS at one year (Mozilla's minimum is two), as Caddy has today.
+- **8. sops through pipes:** encrypt and decrypt with `--filename-override`, a round trip to two recipients, and a wrong key (exit 128) all pass with sops 3.13.3 on Windows (T1401b's real-sops test, run by the implementer and the reviewer). Post-quantum recipients are not used in v1.
+- **9. ZeroSSL's CAA name:** ZeroSSL's help page refuses the fetch (403), and its ACME page does not mention CAA. ZeroSSL issues under Sectigo, whose CAA identifier is `sectigo.com`, so Caddy's CAA lists `letsencrypt.org` and `sectigo.com`. If the name were wrong, only Caddy's ZeroSSL fallback would fail, as if it were not there.
+- **12. nginx as the deploy user's uid:** `--user 1000:1000 --init` runs nginx and `docker-init` as uid 1000. It serves TLS from a 0600 key and certificate owned by uid 1000 in a 0700 folder.
+- **13. Pebble:**
+  - `ghcr.io/letsencrypt/pebble:2.10.1` with `PEBBLE_VA_ALWAYS_VALID=1`;
+  - certbot 5.8.0 gets a certificate (`--server https://pebble:14000/dir --no-verify-ssl --webroot`), and `certbot renew --force-renewal` runs the deploy hook (the flag file appears);
+  - certbot 5.8's renewal file has no `renew_before_expiry` line and there is no flag for it, so the deploy writes `renew_before_expiry = 45 days` at the top of `/etc/letsencrypt/renewal/<app>.conf`;
+  - Caddy 2.11.7 gets a certificate with `acme_ca https://pebble:14000/dir` and `acme_ca_root` set to `/test/certs/pebble.minica.pem`, copied out of the image (`docker cp`; the image has no shell).
+- **17. The 404 fallback**, against an app serving `/index.html` and `/assets/app.js` and answering 404 otherwise:
+  - Caddy 2.11.7: `reverse_proxy up:80 { @nf status 404; handle_response @nf { rewrite * /index.html; reverse_proxy up:80 } }`. The `status` matcher must be declared inside `reverse_proxy`, because at site level Caddy refuses it with "module not registered: http.matchers.status".
+  - nginx 1.30.6: `proxy_intercept_errors on; error_page 404 = @fallback;` and `location @fallback { rewrite ^ /index.html break; proxy_pass http://up:80; }`.
+  - Both serve `/assets/app.js` as it is, and `/unknown/route` gets `/index.html` with 200.
 
 ## Open items for the spike (T1402) and the live runs
 

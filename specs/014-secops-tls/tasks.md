@@ -28,7 +28,7 @@ Effort`.
 
 ## Phase 1: Foundation
 
-- [ ] T1401a Contracts: `target.edge`, `app.maxBodyMb`, `CheckResult.source` and `.noise`, the record's `tls` and `zoneSettings`, and the new shared-plan kinds, in `packages/plan-schema/**`, `packages/contracts/src/secops.ts`, `packages/connectors/cloudflare/src/shared.ts` (types and schema only), and every reader and writer of the changed types
+- [X] T1401a Contracts: `target.edge`, `app.maxBodyMb`, `CheckResult.source` and `.noise`, the record's `tls` and `zoneSettings`, and the new shared-plan kinds, in `packages/plan-schema/**`, `packages/contracts/src/secops.ts`, `packages/connectors/cloudflare/src/shared.ts` (types and schema only), and every reader and writer of the changed types
   - Owns:
     - `packages/plan-schema/**` (+ tests, fixtures, the generated JSON schemas);
     - `packages/contracts/src/secops.ts`;
@@ -134,6 +134,10 @@ Effort`.
       - it waits for `active` with an injected clock, at most 5 minutes, then gives the plain "still deploying, run provision again" error;
       - the record is updated after each change, so a failure after the upload leaves a record whose next plan continues without uploading again;
       - the keys and the CSR come from the call's arguments.
+    - **The record carries over:** `planShared` copies the earlier record's `tls` and `zoneSettings` into the new record, then applies the changes to them.
+    - **No typed confirmation for cleanup** (lead decision, 2026-10-21): revoking a `superseded` origin certificate and deleting a client certificate no hostname uses happen only after the server shows it has moved on, so nothing live loses anything; `applyZonePlan` asks for the typed name only for 011's rule deletions, as today. Destroy keeps its own typed confirmation.
+    - **Expiry times:** Cloudflare's two formats (`2041-10-16 23:53:00 +0000 UTC` from Origin CA, ISO `Z` from AOP) become ISO `Z` times before they go into the record ("Spike results").
+    - **The stub goes:** the `INTERNAL` refusal T1401a added for the new kinds is replaced by their implementation.
     - **`CLOUDFLARE_TOKEN_PERMISSIONS`** gains "SSL and Certificates: Edit" and "Zone Settings: Edit".
     - **Tests:** every kind; the order; the wait and its timeout; a partial failure continued; a zone with a non-OpsCrew proxied record (advice only); a `1.2` zone (nothing); a hostname another app's certificate holds; a missing permission (advice, the plan still applies 011's rules); no key in any plan JSON or error.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare` and `pnpm lint`
@@ -264,7 +268,8 @@ Effort`.
       - the stamp `x-opscrew-edge-proxy: nginx`;
       - the volumes `letsencrypt`, `acme-webroot` and `reload`.
     - **The template:**
-      - Mozilla intermediate (the block read in the spike), TLS 1.2 and 1.3;
+      - Mozilla intermediate 6.0 ("Spike results" 6): TLS 1.2 and 1.3, its cipher and curve lists, `ssl_prefer_server_ciphers off`;
+      - HTTP/3 (`listen 8443 quic reuseport`, 443/udp published, `Alt-Svc`), as Caddy serves it;
       - HSTS and the baseline headers repeated in every `server`;
       - `server_tokens off`;
       - WebSockets, `proxy_read_timeout 300s`, and `client_max_body_size <app.maxBodyMb>m`;
@@ -277,7 +282,7 @@ Effort`.
       - proxied hostnames use `/srv/edge/tls/<app>/` with `ssl_verify_client on`.
     - **certbot:**
       - webroot `/var/www/acme`, `--cert-name <app>`;
-      - `renew` every 12 hours with a random delay, and `renew_before_expiry = 45 days`;
+      - `renew` every 12 hours with a random delay, and `renew_before_expiry = 45 days` written at the top of `/etc/letsencrypt/renewal/<app>.conf`, since certbot has no flag for it ("Spike results" 13);
       - the deploy hook touches `/var/www/reload/flag`;
       - the nginx container's loop reloads when the flag appears, after `nginx -t`;
       - no Docker socket anywhere.
