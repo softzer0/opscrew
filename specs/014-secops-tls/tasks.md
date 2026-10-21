@@ -379,6 +379,7 @@ Effort`.
       - the deeper check against a container server, with the files unchanged;
       - Valkey's password.
     - **Cleanup:** each test removes its own containers, networks, volumes and images, by id or label.
+    - **gixy-ng once:** install it in a throwaway Python container (`pip install gixy-ng`) and run T1408's `runGixy` against a generated nginx additions file. Confirm the binary name, `-f json`, the report's fields and its exit code, and fix `runGixy` if they differ (T1408 took them from the original gixy).
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new files>` and `pnpm lint`
   - Effort: high
 
@@ -406,7 +407,7 @@ Effort`.
 
 ## `vercel.json` routing (founder, 2026-10-21)
 
-- [ ] T1417a [P] [US5] `ProjectFacts.platformRouting` from `vercel.json`, in `packages/plan-schema/src/facts.ts` (+ the generated JSON schema), `packages/detect/src/**`
+- [X] T1417a [P] [US5] `ProjectFacts.platformRouting` from `vercel.json`, in `packages/plan-schema/src/facts.ts` (+ the generated JSON schema), `packages/detect/src/**`
   - Owns: those paths (+ tests, fixtures)
   - Reads: data-model.md "Vercel routing (ProjectFacts)"; research.md R7; plan.md "16."; spec FR-1446
   - Depends: T1401a (it owns plan-schema until merged)
@@ -431,6 +432,7 @@ Effort`.
       - the order is headers, then redirects (including `cleanUrls` and `trailingSlash`), then rewrites;
       - an internal rewrite is a fallback that applies when the app answers 404 for the original path (Caddy `handle_response`, nginx `proxy_intercept_errors` with `error_page 404` and a named location, in the forms R7 settled);
       - on nginx, every `location` it writes repeats OpsCrew's baseline headers (the `add_header` inheritance);
+      - `proxy_pass` and `reverse_proxy` name exactly the app's upstream with no variable after it (T1408's rules refuse `http://app:3000$request_uri`), and sources are checked with plan-schema's `VercelSourceSchema`;
       - skipped, each with its reason: rewrites to another site, `has` and `missing`, patterns the proxy cannot express, and everything in `unsupported`.
     - **Design:**
       - when the facts carry routing rules and `opscrew/proxy/additions.<proxy>` does not exist, it writes the file with the header comment of plan.md "16." and shows the skipped list;
