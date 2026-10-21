@@ -235,9 +235,19 @@ export async function knownSecrets(
 }
 
 /**
+ * True for undici's "other side closed" before any answer: the server closed the connection the
+ * request was sent on, as nginx does with its idle kept-alive ones when it reloads. A reset
+ * (`ECONNRESET`) or a refused connection is not, and counts as failed.
+ */
+function closedBeforeAnswer(error: unknown): boolean {
+  return (error as { cause?: { code?: unknown } } | undefined)?.cause?.code === "UND_ERR_SOCKET";
+}
+
+/**
  * Runs `body` (a deploy, or an app's destroy) under a steady load of {@link LOAD_RPS} requests per
  * second on each of `urls` (health routes), logs every failed request with the time it was sent,
- * and fails when any request failed. The URLs are counted by their index (`site 1`, …) in the
+ * and fails when any request failed. A request whose kept-alive connection closed before any
+ * answer is sent again once, as browsers do, and counted. The URLs are counted by their index (`site 1`, …) in the
  * messages, which never name a host.
  */
 export async function underLoad<T>(
@@ -249,13 +259,29 @@ export async function underLoad<T>(
   const sites = (index: number) => (urls.length === 1 ? "" : ` (site ${index + 1})`);
   log(`${what}: sending ${LOAD_RPS} requests per second to each of ${urls.length} health route(s)`);
   const startedAt = Date.now();
+  const retried = urls.map(() => 0);
   const loads = urls.map((url, index) =>
     steadyLoad(
       async () => {
-        const answer = await fetch(url, {
-          headers: { "User-Agent": "opscrew-e2e" },
-          signal: AbortSignal.timeout(10_000),
-        });
+        const request = () =>
+          fetch(url, {
+            headers: { "User-Agent": "opscrew-e2e" },
+            signal: AbortSignal.timeout(10_000),
+          });
+        let answer: Response;
+        try {
+          answer = await request();
+        } catch (error) {
+          // A kept-alive connection the server closed as the request reused it (nginx's reload
+          // closes its idle ones) fails before any answer; browsers send such a GET again (RFC 9112,
+          // 9.3.1), so the load does too, once, and counts it. A second failure counts as failed.
+          if (!closedBeforeAnswer(error)) throw error;
+          retried[index] = (retried[index] ?? 0) + 1;
+          log(
+            `${what}${sites(index)}: a request was sent again: its connection closed before any answer`,
+          );
+          answer = await request();
+        }
         await answer.arrayBuffer();
         return answer.status;
       },
@@ -274,8 +300,9 @@ export async function underLoad<T>(
     summaries = await Promise.all(loads.map((load) => load.stop()));
   }
   for (const [index, summary] of summaries.entries()) {
+    const again = retried[index] ?? 0;
     log(
-      `${what}${sites(index)}: ${summary.sent} requests in ${Math.round(seconds)} s, ${summary.failures.length} failed`,
+      `${what}${sites(index)}: ${summary.sent} requests in ${Math.round(seconds)} s, ${summary.failures.length} failed${again > 0 ? `, ${again} sent again after their connection closed` : ""}`,
     );
     expect(summary.failures, `requests that failed during ${what}${sites(index)}`).toEqual([]);
     // A computer too busy to keep the rate would test less than the documented load.

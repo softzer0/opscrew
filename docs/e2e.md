@@ -171,7 +171,10 @@ fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, i
    computer, without waiting for answers, each with a 10-second timeout. Meanwhile it merges a
    pull request adding `opscrew-e2e-change.txt` and waits for that deploy run. Every non-2xx answer
    and connection error is logged with the time its request was sent; there must be none, and the
-   server must run a new image afterwards. The deploy must not restart any of the plan's services
+   server must run a new image afterwards. One exception, as in a browser: a request whose
+   kept-alive connection the server closed before any answer ("other side closed", as nginx does
+   with its idle connections when it reloads) is sent again once, logged and counted; it fails only
+   if that fails too. Every load check in these tests works this way. The deploy must not restart any of the plan's services
    (`db`, `cache`) nor the shared edge's `kamal-proxy` and `caddy` (Compose project
    `opscrew-edge`): each container's `StartedAt` is the same before and after.
 6. **A broken release.** Under the same load, the test merges a commit that makes the health route
