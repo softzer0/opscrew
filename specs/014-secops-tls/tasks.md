@@ -406,7 +406,7 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new files>` and `pnpm lint`
   - Effort: high
 
-- [ ] T1413 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1413 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md "Live"; `docs/e2e.md`
   - Depends: T1411, T1412
