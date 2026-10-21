@@ -861,7 +861,12 @@ Effort`.
   - Depends: T1402, T1407 (the same workflow files)
   - Accept:
     - **Caddy's service in the stack** no longer changes from one deploy to the next, so Portainer's redeploy recreates only the app and its workers. The image version leaves Caddy's environment.
-    - **The deploy's version check** still proves the new image is live, through the mechanism the spike chose (item 16). Under `redeploy: updater` and `redeploy: cloudflare`, it works without reaching Portainer from GitHub's runner unless that is how it works today.
+    - **The deploy's version check** still proves the new image is live, through the mechanism the spike chose ("Spike results" 16):
+      - a one-shot `stamp` service (the pinned curl image, `restart: "no"`) carries the version, writes it to a small named volume, and exits;
+      - Caddy serves it at `/.well-known/opscrew-version`;
+      - the workflow polls that path instead of the `X-OpsCrew-Image` header, which goes.
+
+      It works for `redeploy: updater` and `redeploy: cloudflare`, and in every web mode.
     - **Caddy's `reverse_proxy`** to the app gets `lb_try_duration 30s` and `lb_try_interval 250ms`, so requests during the app's restart wait and pass, instead of failing. This applies in every web mode where the stack runs Caddy (`caddy`, `tunnel`, `proxy`).
     - **If the spike found that Portainer recreates unchanged services anyway,** this task stops at the finding and reports it, and the guide keeps today's sentence.
     - **The guide:** "In your Portainer" says visitors see a short pause instead of an error, and that a Docker Swarm environment (later work) would give true rolling updates.

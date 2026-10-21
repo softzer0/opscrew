@@ -446,6 +446,34 @@ Each line gives what was run, and what was seen.
   - certbot 5.8.0 gets a certificate (`--server https://pebble:14000/dir --no-verify-ssl --webroot`), and `certbot renew --force-renewal` runs the deploy hook (the flag file appears);
   - certbot 5.8's renewal file has no `renew_before_expiry` line and there is no flag for it, so the deploy writes `renew_before_expiry = 45 days` at the top of `/etc/letsencrypt/renewal/<app>.conf`;
   - Caddy 2.11.7 gets a certificate with `acme_ca https://pebble:14000/dir` and `acme_ca_root` set to `/test/certs/pebble.minica.pem`, copied out of the image (`docker cp`; the image has no shell).
+- **7 and 10. Lynis, ssh-audit and testssl.sh on a real host:** a throwaway Hetzner cx23 (2 vCPU, 3.8 GB, Ubuntu 24.04.4, Docker 29.1.3), deleted afterwards. The sanitised outputs are the parsers' fixtures in `packages/secops/src/deep/__fixtures__/`.
+  - **Lynis through Docker works:**
+    - command: `docker run --rm -i --user 0 -v /:/hostfs:ro --tmpfs /hostfs/tmp:rw,exec,size=128m --pid=host --net=host --security-opt no-new-privileges` of the pinned curl image, with the tarball on stdin, `sha256sum -c`, and `chroot /hostfs /bin/sh -c 'cd /tmp/lynis && sh ./lynis audit system --quick --no-colors --report-file /tmp/report.dat --log-file /tmp/lynis.log'`;
+    - the tmpfs needs `exec`;
+    - Lynis 3.1.7 took 66 s and exited 0. The report has 565 lines and 147 keys (`lynis_version`, `os_name`, `hardening_index`, `warning[]=ID|text|details|solution|`, `suggestion[]=…`, and `hostid`, which the fixture blanks);
+    - stock Ubuntu with Docker scored 62, with 3 warnings and 40 suggestions;
+    - the pulled image was removed afterwards, because it had been absent before.
+  - **Lynis warnings worth handling:**
+    - `PKGS-7388` ("can't find any security repository") is noise: Lynis 3.1.7 does not read Ubuntu 24.04's deb822 `ubuntu.sources`;
+    - `PKGS-7392` (vulnerable packages) and `FIRE-4512` (iptables without rules, absent on OpsCrew servers with ufw) are real.
+  - **"Files unchanged" checks** must leave out the host's own background writes during the run: the SSH login's `/var/lib/landscape`, apt's `/var/lib/ubuntu-advantage` lists, `/var/tmp`, `/run`, `/tmp`, and Docker's `/var/lib/docker` and `/var/lib/containerd`. Lynis itself cannot write, because the mount is read-only.
+  - **ssh-audit v3.9.0:**
+    - `-jj` gives JSON with `additional_notes`, `banner`, `compression`, `cves`, `enc`, `fingerprints`, `kex`, `key`, `mac`, `recommendations` and `target`, each algorithm with `notes.fail`, `notes.warn` and `notes.info`;
+    - stock OpenSSH 9.6 fails the NIST curves, `ecdsa-sha2-nistp256`, `hmac-sha1` and `hmac-sha1-etm`, and warns on the non-post-quantum key exchanges and the 64-bit and non-ETM MACs;
+    - the built-in policy is `"Hardened Ubuntu Server 24.04 LTS (version 2)"`. With `-jj -P` it gives `{ errors, host, passed, policy, port, warnings }`, and `errors[]` holds `{ actual, expected_required, expected_optional, mismatched_field }`;
+    - **the exit code is 3 in both modes, even with complete JSON.** The parser reads the JSON and never relies on the exit code.
+  - **testssl.sh 3.2.4** (the `3.2` image, which reports `version 3.2.4`):
+    - against the server's IP it said "doesn't seem to be a TLS/SSL enabled server", because Caddy had not finished its internal certificate. It also warns that an IP target gives wrong trust results, so OpsCrew always tests hostnames;
+    - a local run against Caddy with an internal certificate took 21 s and exited 0. Its JSON has `scanResult[0]` with `targetHost`, `ip`, `port`, `rDNS`, `service`, `pretest`, `protocols`, `grease`, `ciphers`, `serverPreferences`, `fs`, `serverDefaults`, `headerResponse`, `vulnerabilities`, `cipherTests`, `browserSimulations` and `rating`, each an array of `{ id, severity, finding, cve?, cwe? }`;
+    - severities are OK, INFO, LOW, MEDIUM, HIGH, CRITICAL and WARN. WARN marks a problem with the scan itself, which becomes a `skip` with the reason;
+    - the fixture is that local run. Its CRITICAL and HIGH findings come from the test CA (an incomplete chain, no revocation URL, a short-lived intermediate).
+- **14. The origin check from the server** needs OpsCrew's web filter, so it is checked in the live run (T1413). The fallback, if 127.0.0.1 does not work, is `openssl s_client` from a container on the edge's network.
+- **16. Portainer's redeploy:** Portainer CE's source (`develop`: `api/stacks/deployments/deploy.go`, `deployer.go`, `api/exec/compose_stack.go`, `pkg/libstack/compose/composeplugin.go`) shows that a GitOps webhook redeploy calls `DeployComposeStack(…, prune=true, forcePullImage=true, forceRecreate=false)`.
+  - The redeploy pulls, then runs Compose's `up` with `RemoveOrphans` and no forced recreate. So Compose's default applies: only services whose definition changed are recreated.
+  - Any new commit on the ref triggers it, compared by commit id.
+  - **The lead's choice for T1416:** a one-shot `stamp` service from the pinned curl image (`restart: "no"`). It carries the image version in its own environment, so only it changes with each deploy. It writes the version to a small named volume and exits.
+  - Caddy, which no longer carries the version, serves the file at `/.well-known/opscrew-version` (`handle`, `rewrite`, `root`, `file_server`), and the deploy's check polls that path instead of the `X-OpsCrew-Image` header.
+  - T1416's Docker check confirms all of this end to end.
 - **17. The 404 fallback**, against an app serving `/index.html` and `/assets/app.js` and answering 404 otherwise:
   - Caddy 2.11.7: `reverse_proxy up:80 { @nf status 404; handle_response @nf { rewrite * /index.html; reverse_proxy up:80 } }`. The `status` matcher must be declared inside `reverse_proxy`, because at site level Caddy refuses it with "module not registered: http.matchers.status".
   - nginx 1.30.6: `proxy_intercept_errors on; error_page 404 = @fallback;` and `location @fallback { rewrite ^ /index.html break; proxy_pass http://up:80; }`.
