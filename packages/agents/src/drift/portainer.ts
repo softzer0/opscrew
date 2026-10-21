@@ -42,7 +42,12 @@ import {
   requirePortainerToken,
   setPortainerOrigin,
 } from "../provision/portainer";
-import { deploymentFiles, deploymentRenderContext, readRequirements } from "../provision/render";
+import {
+  deploymentFiles,
+  deploymentRenderContext,
+  readRequirements,
+  withCloudflareZone,
+} from "../provision/render";
 import { generatedValuesFile } from "../provision/secrets";
 import {
   providerBucket,
@@ -515,10 +520,7 @@ export async function portainerDrift(
     ? await setupCloudflare(deps, plan, services, { foreignRecords: "report" })
     : undefined;
   const cloudflareRules = await cloudflareRulesDrift(deps, services);
-  const current =
-    cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName
-      ? { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } }
-      : plan;
+  const current = withCloudflareZone(plan, cloudflare);
 
   // 2. The generated files against what OpsCrew renders (no deploy key on this target).
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");

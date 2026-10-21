@@ -34,6 +34,7 @@ import {
   deploymentRenderContext,
   type OwnRenderInput,
   readRequirements,
+  withCloudflareZone,
 } from "../provision/render";
 import { applySharedCloudflare, planSharedCloudflare } from "../provision/shared-cloudflare";
 import { currentOutputs } from "../provision/steps";
@@ -187,8 +188,7 @@ async function renderChange(
   const git = await requireGitRepo(deps);
   const github = await githubCoordinates(git);
   const { cloudflare } = input;
-  let plan = change.after;
-  if (cloudflare) plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
+  const plan = withCloudflareZone(change.after, cloudflare);
   const own: OwnRenderInput = {
     ...(input.ownRun ? { sshPort: input.ownRun.sshPort } : {}),
     ...(input.oneTimePinId !== undefined

@@ -15,6 +15,7 @@ import {
   type PublishResult,
   publishDeploySetup,
 } from "./publish";
+import { withCloudflareZone } from "./render";
 import { deploySecretsStoredFor } from "./secrets";
 import type { ProvisionOptions } from "./types";
 
@@ -67,7 +68,7 @@ export function withLearnedZone(
   if (cloudflare === undefined || plan.dns.zone === cloudflare.zoneName) {
     return { plan, zoneLearned: false };
   }
-  const learned = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
+  const learned = withCloudflareZone(plan, cloudflare);
   const parsed = DeployPlanSchema.safeParse(learned);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];

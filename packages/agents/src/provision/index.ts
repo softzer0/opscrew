@@ -69,6 +69,7 @@ export {
   ownRenderFromTfvars,
   previewDeploymentFiles,
   readRequirements,
+  withCloudflareZone,
 } from "./render";
 export { type PhaseFlowExtras, runPhaseFlow, runProvision } from "./run";
 export {
