@@ -2,11 +2,11 @@
 
 ## Environment (in each `plan.yaml`)
 
-`plan.environment`, absent for prod (the default):
+`plan.environment`. When absent, or present without a `name`, the plan is prod's: prod can carry its own `deploySource`, `runner` and `secrets`, but its name is never written (T1501a):
 
 | Field | Type | Rule |
 |---|---|---|
-| `name` | `^[a-z][a-z0-9-]{0,15}$` | Not `prod` when written; prod is the absence. Unique per app (the folder name). |
+| `name` | `^[a-z][a-z0-9-]{0,15}$`, optional | Never `prod`; absent for prod. Unique per app (the folder name). A named environment's `app.name` ends with `-<name>`. |
 | `deploySource` | `{ from: "main" }` or `{ from: "promote", source: <env> }` | `source` names an existing environment of the app, never the environment itself, and the sources form no cycle. Prod's own default is `{ from: "main" }` while it is the only environment. |
 | `runner` | `github`, `server` or `local` | `server` only for cloud and own-server targets, `local` only for localhost. Default `github`. |
 | `secrets` | `environment` or `prefixed` | Written by provision after the capability check (R1). Prod's names stay unprefixed in both cases. |
