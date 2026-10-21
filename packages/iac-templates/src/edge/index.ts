@@ -9,14 +9,17 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { memoryLimit } from "../runtime/components";
-import { composeLiteral, hardened } from "../runtime/services";
+import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
 import { CONNECTOR_MEMORY_MB, TUNNEL_ORIGIN_PORT, tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 
 /** The edge's Compose project, and the external network the edge and every app's web service join. */
 export const EDGE_PROJECT = "opscrew-edge";
 
-/** Where the edge lives on the server: its `compose.yaml` and `sites/<app>.caddy`. */
+/**
+ * Where the edge lives on the server: its `compose.yaml`, `sites/<app>.caddy` (with the app's
+ * `sites/<app>.additions`) and the origin certificates in `tls/<app>/`.
+ */
 export const EDGE_DIR = "/srv/edge";
 
 /** The app's folder on the server (its Compose project, env files and logs): `/srv/apps/<app>`. */
@@ -30,7 +33,7 @@ export function appDir(plan: DeployPlan): string {
  * A deploy replaces the server's edge only with a larger one. Change it with every change of the
  * edge's Compose file; a test fails until it is changed.
  */
-export const EDGE_VERSION = 2026101902;
+export const EDGE_VERSION = 2026102101;
 
 /** The key of {@link EDGE_VERSION} in the edge's Compose file (a Compose extension field). */
 export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
@@ -51,11 +54,29 @@ export const EDGE_MEMORY_MB = CADDY_MEMORY_MB + KAMAL_PROXY_MEMORY_MB + CONNECTO
 /** The folder of the apps' site files in the Caddy container (the server's `/srv/edge/sites`). */
 const CADDY_SITES = "/etc/caddy/sites";
 
-/** Caddy's main configuration: only the apps' site files. */
+/**
+ * The user's own additions to the app's site, in the repository (`import`ed inside the site's
+ * block); on the server `/srv/edge/sites/<app>.additions`.
+ */
+export const CADDY_ADDITIONS = "opscrew/proxy/additions.caddy";
+
+/** The app's additions in the Caddy container: `/etc/caddy/sites/<app>.additions`. */
+export function caddyAdditionsFile(app: string): string {
+  return `${CADDY_SITES}/${app}.additions`;
+}
+
+/**
+ * The client certificate Cloudflare presents to the app's origin (public), committed with the
+ * runtime files; the deploy puts it in `/srv/edge/tls/<app>/pull.pem`, the site's trust pool.
+ */
+export const ORIGIN_PULL_PEM = "opscrew/runtime/edge/tls/pull.pem";
+
+/** Caddy's main configuration: the apps' site files, then {@link CATCH_ALL_SITES}. */
 const CADDYFILE = [
   "# OpsCrew's shared edge: each OpsCrew app on this server has its site in /srv/edge/sites/<app>.caddy.",
   `import ${CADDY_SITES}/*.caddy`,
   "",
+  ...CATCH_ALL_SITES,
 ].join("\n");
 
 /**
@@ -79,7 +100,8 @@ const HEADER = [
  * `opscrew/runtime/edge/compose.yaml`: Caddy and kamal-proxy on the external network
  * `opscrew-edge`, stamped with {@link EDGE_VERSION}. kamal-proxy keeps the apps' routes on a named
  * volume, so they survive a recreate; Caddy reads each app's site file from `/srv/edge/sites` and
- * publishes the ports the server's access mode needs (the same for every app on the server).
+ * its origin certificate from `/srv/edge/tls/<app>`, and publishes the ports the server's access
+ * mode needs (the same for every app on the server).
  */
 export function renderEdgeCompose(plan: DeployPlan): RenderedFile {
   const document = {
@@ -100,7 +122,12 @@ export function renderEdgeCompose(plan: DeployPlan): RenderedFile {
         ...memoryLimit(CADDY_MEMORY_MB),
         ports: caddyPorts(plan),
         configs: [{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }],
-        volumes: [`./sites:${CADDY_SITES}:ro`, "caddy_data:/data", "caddy_config:/config"],
+        volumes: [
+          `./sites:${CADDY_SITES}:ro`,
+          "./tls:/etc/caddy/tls:ro",
+          "caddy_data:/data",
+          "caddy_config:/config",
+        ],
         // A changed main configuration changes this label, so Compose recreates Caddy with it.
         labels: { "dev.opscrew.caddyfile-sha256": sha256Hex(CADDYFILE) },
         depends_on: ["kamal-proxy"],

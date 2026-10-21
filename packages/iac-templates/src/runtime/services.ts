@@ -72,6 +72,15 @@ export function cloudflaredService(fields: object, internal = false): object {
 const TUNNEL_NOTE =
   "# Served through a Cloudflare Tunnel: Cloudflare terminates TLS, Caddy serves plain HTTP.";
 
+/**
+ * Where Caddy reads the app's Cloudflare origin certificate (`origin.pem`), its key (`origin.key`)
+ * and the client certificate Cloudflare presents for the app (`pull.pem`): the server's
+ * `/srv/edge/tls/<app>`, or the stack Caddy's tmpfs.
+ */
+export function originTlsDir(app: string): string {
+  return `/etc/caddy/tls/${app}`;
+}
+
 /** How visitors reach Caddy, for {@link caddyfile}. */
 export interface CaddySite {
   /**
@@ -85,7 +94,48 @@ export interface CaddySite {
   acmeEmail?: string | undefined;
   /** Extra response header lines, before `-Server`. */
   headers?: readonly string[];
+  /**
+   * `direct` mode only: the `hostnames` among `hosts` served with the app's Cloudflare origin
+   * certificate from `dir` ({@link originTlsDir}), which accept only TLS connections that present
+   * the client certificate Cloudflare sends for the app.
+   */
+  origin?: { hostnames: readonly string[]; dir: string } | undefined;
+  /** A file the site imports inside its block: the user's own additions. */
+  additions?: string | undefined;
 }
+
+/**
+ * The `tls` directive for the hostnames with the origin certificate: Caddy serves the certificate
+ * from `dir` (so it obtains none for them) and refuses a client without the app's client
+ * certificate.
+ */
+function originTlsLines(dir: string): string[] {
+  return [
+    `\ttls ${dir}/origin.pem ${dir}/origin.key {`,
+    "\t\tclient_auth {",
+    "\t\t\tmode require_and_verify",
+    `\t\t\ttrust_pool file ${dir}/pull.pem`,
+    "\t\t}",
+    "\t}",
+  ];
+}
+
+/**
+ * The sites that refuse every hostname no app serves, after the apps' sites: requests on HTTP and
+ * HTTPS are aborted, and a TLS connection for a name no site has a certificate for already fails
+ * its handshake. They come after the apps' sites because Caddy runs the first of two sites without
+ * a hostname, and an app without a domain yet is served on `:80` for every hostname.
+ */
+export const CATCH_ALL_SITES: readonly string[] = [
+  "# Requests for any other hostname are refused.",
+  "http:// {",
+  "\tabort",
+  "}",
+  "https:// {",
+  "\tabort",
+  "}",
+  "",
+];
 
 /**
  * Caddy's configuration: compression, security headers and a proxy to the app. Behind a tunnel the
@@ -94,7 +144,8 @@ export interface CaddySite {
  * (`{"scheme":"http"}` or `{"scheme":"https"}`, see
  * https://developers.cloudflare.com/fundamentals/reference/http-headers/), which can be trusted
  * because only Cloudflare reaches Caddy there. Behind the user's proxy Caddy serves `:80` and keeps
- * the `X-Forwarded-*` headers of a proxy on a private address.
+ * the `X-Forwarded-*` headers of a proxy on a private address. In `direct` mode the configuration
+ * ends with {@link CATCH_ALL_SITES}.
  */
 export function caddyfile(site: CaddySite): string[] {
   const lines: string[] = [];
@@ -113,7 +164,12 @@ export function caddyfile(site: CaddySite): string[] {
   } else if (site.acmeEmail && site.hosts.length > 0) {
     lines.push("{", `\temail ${site.acmeEmail}`, "}", "");
   }
-  return [...lines, ...siteBlock(site, [])];
+  return [
+    ...lines,
+    ...siteBlocks(site, []),
+    // Caddy is the origin visitors reach directly: it refuses every other hostname (FR-1404).
+    ...(site.mode === "direct" ? CATCH_ALL_SITES : []),
+  ];
 }
 
 /**
@@ -126,12 +182,31 @@ export function caddySite(site: CaddySite & { mode: "tunnel" | "direct" }): stri
     site.mode === "direct" && site.acmeEmail && site.hosts.length > 0
       ? [`\ttls ${site.acmeEmail}`]
       : [];
-  return [...(site.mode === "tunnel" ? [TUNNEL_NOTE] : []), ...siteBlock(site, tls)];
+  return [...(site.mode === "tunnel" ? [TUNNEL_NOTE] : []), ...siteBlocks(site, tls)];
 }
 
-/** The site block: its addresses, then `first`, the redirect, compression, the proxy and headers. */
-function siteBlock(site: CaddySite, first: readonly string[]): string[] {
-  const { mode, hosts } = site;
+/**
+ * The site's blocks: in `direct` mode the hostnames with the origin certificate get a block of
+ * their own ({@link originTlsLines}) and any others a second one with `tls`; otherwise one block
+ * with `tls` for every hostname.
+ */
+function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
+  const origin = site.mode === "direct" ? site.origin : undefined;
+  const covered = site.hosts.filter((host) => origin?.hostnames.includes(host));
+  if (origin === undefined || covered.length === 0) return siteBlock(site, site.hosts, tls);
+  const others = site.hosts.filter((host) => !covered.includes(host));
+  return [
+    ...siteBlock(site, covered, originTlsLines(origin.dir)),
+    ...(others.length === 0 ? [] : siteBlock(site, others, tls)),
+  ];
+}
+
+/**
+ * A site block for `hosts`: its addresses, then `first`, the redirect, compression, the proxy, the
+ * headers and the user's additions.
+ */
+function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly string[]): string[] {
+  const { mode } = site;
   const sites = mode === "tunnel" ? hosts.map((host) => `http://${host}`) : hosts;
   const lines = [
     `${mode === "proxy" || sites.length === 0 ? ":80" : sites.join(", ")} {`,
@@ -144,17 +219,30 @@ function siteBlock(site: CaddySite, first: readonly string[]): string[] {
       "\tredir @http_visitor https://{host}{uri} 308",
     );
   }
-  lines.push("\tencode zstd gzip", `\treverse_proxy ${site.upstream}`, "\theader {");
-  if (hosts.length > 0) {
-    lines.push('\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"');
-  }
-  lines.push(
+  const header = [
+    "\theader {",
+    ...(hosts.length > 0
+      ? ['\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"']
+      : []),
     '\t\tX-Content-Type-Options "nosniff"',
     '\t\tX-Frame-Options "SAMEORIGIN"',
     '\t\tReferrer-Policy "strict-origin-when-cross-origin"',
     ...(site.headers ?? []),
     "\t\t-Server",
     "\t}",
+  ];
+  lines.push(
+    "\tencode zstd gzip",
+    `\treverse_proxy ${site.upstream}`,
+    ...header,
+    // The same headers on the responses Caddy writes itself, such as a 502 while the app is down.
+    "\thandle_errors {",
+    ...header.map((line) => `\t${line}`),
+    '\t\trespond "{err.status_code} {err.status_text}" {err.status_code}',
+    "\t}",
+    ...(site.additions === undefined
+      ? []
+      : ["\t# Your own additions (opscrew/proxy/additions.caddy).", `\timport ${site.additions}`]),
     "}",
     "",
   );

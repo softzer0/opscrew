@@ -1,0 +1,103 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the deploy with origin TLS > matches the snapshot 1`] = `
+{
+  "start": "set -euo pipefail
+if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "::error::The build job did not report the image digest; re-run the workflow."
+  exit 1
+fi
+echo "Deploying \${TAG:-the new image} as $IMAGE"
+ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
+echo "previous=$previous" >> "$GITHUB_OUTPUT"
+printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
+ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+set -eu
+export DOCKER_CONFIG=/srv/apps/shop/.docker
+trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
+cd /srv/apps/shop
+export APP_IMAGE="$1"
+edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+docker compose pull
+mkdir -p /srv/edge/sites /srv/edge/tls
+(
+  flock 9
+  docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+  uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
+  current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  if [ "$uploaded" -gt "\${current:-0}" ]; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server is now version $uploaded."
+  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
+  elif [ "$uploaded" -lt "\${current:-0}" ]; then
+    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
+  fi
+  cp edge/tls/pull.pem /srv/edge/tls/shop/pull.pem.new
+  for f in origin.pem origin.key pull.pem; do
+    if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+    mv -f /srv/edge/tls/shop/$f.new /srv/edge/tls/shop/$f
+  done
+  rm -f .site.previous .additions.previous
+  if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+  if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
+  cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
+  cp additions.caddy /srv/edge/sites/shop.additions
+  if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+    if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+    if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+    for f in origin.pem origin.key pull.pem; do
+      if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+    done
+    echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy) or your additions (opscrew/proxy/additions.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+    exit 1
+  fi
+  rm -f /srv/edge/tls/shop/origin.pem.previous /srv/edge/tls/shop/origin.key.previous /srv/edge/tls/shop/pull.pem.previous
+) 9> /srv/edge/.lock
+docker compose up -d --no-deps --wait db
+old="$(docker compose ps -aq app | tr '\\n' ' ')"
+docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+new=""
+for id in $(docker compose ps -aq app); do
+  case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+done
+name="$(docker inspect --format '{{.Name}}' "$new")"
+if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+  docker rm -f "$new" > /dev/null
+  echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+  exit 1
+fi
+printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+for id in $old; do
+  docker stop "$id" > /dev/null
+  docker rm "$id" > /dev/null
+done
+REMOTE
+",
+  "upload": {
+    "env": {
+      "HOST": "\${{ secrets.OPSCREW_HOST }}",
+      "OPSCREW_APP_ENV": "\${{ secrets.OPSCREW_APP_ENV }}",
+      "OPSCREW_ORIGIN_TLS": "\${{ secrets.OPSCREW_ORIGIN_TLS }}",
+      "OPSCREW_SERVICE_DB_ENV": "\${{ secrets.OPSCREW_SERVICE_DB_ENV }}",
+    },
+    "name": "Upload runtime files and environment",
+    "run": "set -euo pipefail
+ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop'
+scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge opscrew/proxy/additions.caddy "deploy@\${HOST}:/srv/apps/shop/"
+printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/app.env'
+printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/db.env'
+case "\${OPSCREW_ORIGIN_TLS:-}" in
+  *"-----BEGIN CERTIFICATE-----"*"PRIVATE KEY-----"*) ;;
+  *) echo "::error::The deploy secret OPSCREW_ORIGIN_TLS must hold the app's Cloudflare origin certificate, then its private key. Run \\\`opscrew provision\\\` again to set it, then deploy again."; exit 1 ;;
+esac
+printf '%s\\n' "$OPSCREW_ORIGIN_TLS" | sed '/-BEGIN [A-Z ]*PRIVATE KEY-/,$d' | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && mkdir -p /srv/edge/tls/shop && chmod 700 /srv/edge/tls/shop && cat > /srv/edge/tls/shop/origin.pem.new'
+printf '%s\\n' "$OPSCREW_ORIGIN_TLS" | sed -n '/-BEGIN [A-Z ]*PRIVATE KEY-/,$p' | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/edge/tls/shop/origin.key.new'
+",
+  },
+}
+`;

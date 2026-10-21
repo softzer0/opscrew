@@ -7,10 +7,12 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { generateP256, selfSignedClientCertificate } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,7 +20,12 @@ import { parse } from "yaml";
 import { testPlan, testServices } from "../__fixtures__/plans";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { EDGE_VERSION, EDGE_VERSION_KEY, renderEdgeCompose } from "../edge";
-import { renderCaddyfile, renderCompose, renderRuntimeFiles } from "../runtime";
+import {
+  type RuntimeContext,
+  renderCaddyfile,
+  renderCompose,
+  renderRuntimeFiles,
+} from "../runtime";
 import type { RenderContext } from "../types";
 import {
   jobYaml,
@@ -927,6 +934,179 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(read("rabbitmq.env")).toBe(rabbitmq);
       expect(read("app.env")).toBe("LOG_LEVEL=info");
       expect(result.output).toBe("");
+    });
+  });
+
+  describe("origin TLS and the user's additions", () => {
+    const proxied = DeployPlanSchema.parse({
+      ...plan,
+      dns: {
+        provider: "cloudflare",
+        domain: "shop.example.com",
+        zone: "example.com",
+        proxied: true,
+        www: false,
+      },
+    });
+    const withTls: RuntimeContext = {
+      ...ctx,
+      originTls: { hostnames: ["shop.example.com"] },
+      additions: true,
+    };
+    const steps = () => {
+      const all: Step[] = parse(renderWorkflow(proxied, withTls).content).jobs.deploy.steps;
+      const of = (match: (s: Step) => boolean) => all.find(match)?.run ?? "";
+      return {
+        upload: of((s) => s.name?.startsWith("Upload") === true),
+        start: of((s) => s.id === "start"),
+      };
+    };
+    const tlsFile = (name: string) => join(work, "srv", "edge", "tls", "shop", name);
+    const readTls = (name: string) =>
+      existsSync(tlsFile(name)) ? readFileSync(tlsFile(name), "utf8") : undefined;
+    const edgeSite = (name: string) => join(work, "srv", "edge", "sites", name);
+    const ADDITIONS = 'header X-Robots-Tag "noindex"\n';
+    let origin = { certificate: "", key: "" };
+    let pull = "";
+
+    beforeEach(() => {
+      // Made now, never committed: the origin certificate's stand-in and its key, and pull.pem.
+      const key = generateP256().privateKey;
+      origin = {
+        certificate: selfSignedClientCertificate({ key, commonName: "shop.example.com", days: 1 }),
+        key,
+      };
+      pull = selfSignedClientCertificate({
+        key: generateP256().privateKey,
+        commonName: "opscrew-shop",
+        days: 1,
+      });
+      const checkout = join(work, "repos", "shop", "opscrew");
+      writeAll(join(checkout, "runtime"), {
+        ...runtimeFiles(proxied),
+        "edge/sites/shop.caddy": renderCaddyfile(proxied, withTls).content,
+        "edge/tls/pull.pem": pull,
+      });
+      writeAll(join(checkout, "proxy"), { "additions.caddy": ADDITIONS });
+    });
+
+    it("writes the certificate and the key from the secret into /srv/edge/tls/<app>, printing neither", () => {
+      const result = run(steps().upload, {
+        OPSCREW_ORIGIN_TLS: `${origin.certificate}${origin.key}`,
+      });
+      expect(result.status, result.output).toBe(0);
+      // PEM readers skip the blank line printf's newline adds after the key.
+      expect(readTls("origin.pem.new")).toBe(origin.certificate);
+      expect(readTls("origin.key.new")?.trimEnd()).toBe(origin.key.trimEnd());
+      expect(result.output).toBe("");
+      // pull.pem and the additions arrive with the runtime files, in the app's folder.
+      expect(read("edge/tls/pull.pem")).toBe(pull.trim());
+      expect(read("additions.caddy")).toBe(ADDITIONS.trim());
+      if (process.platform !== "win32") {
+        const mode = (path: string) => (statSync(path).mode & 0o777).toString(8);
+        expect(mode(join(work, "srv", "edge", "tls", "shop"))).toBe("700");
+        expect(mode(tlsFile("origin.pem.new"))).toBe("600");
+        expect(mode(tlsFile("origin.key.new"))).toBe("600");
+      }
+    });
+
+    it("stops before writing anything when the secret holds no certificate and key", () => {
+      for (const value of ["", origin.certificate, origin.key]) {
+        rmSync(join(work, "srv", "edge", "tls"), { recursive: true, force: true });
+        const result = run(steps().upload, { OPSCREW_ORIGIN_TLS: value });
+        expect(result.status).toBe(1);
+        expect(result.output).toContain(
+          "::error::The deploy secret OPSCREW_ORIGIN_TLS must hold the app's Cloudflare origin certificate, then its private key.",
+        );
+        expect(existsSync(join(work, "srv", "edge", "tls"))).toBe(false);
+        expect(result.output).not.toContain(origin.key.split("\n")[1] as string);
+      }
+    });
+
+    it("puts the certificate, its key, pull.pem, the site and the additions in place before the switch", () => {
+      const upload = run(steps().upload, {
+        OPSCREW_ORIGIN_TLS: `${origin.certificate}${origin.key}`,
+      });
+      expect(upload.status, upload.output).toBe(0);
+      const start = run(steps().start);
+      expect(start.status, start.output).toBe(0);
+      expect(readTls("origin.pem")).toBe(origin.certificate);
+      expect(readTls("origin.key")?.trimEnd()).toBe(origin.key.trimEnd());
+      expect(readTls("pull.pem")).toBe(pull);
+      expect(readdirSync(join(work, "srv", "edge", "tls", "shop")).sort()).toEqual([
+        "origin.key",
+        "origin.pem",
+        "pull.pem",
+      ]);
+      expect(readFileSync(edgeSite("shop.additions"), "utf8")).toBe(ADDITIONS);
+      expect(readFileSync(edgeSite("shop.caddy"), "utf8")).toContain(
+        "\ttls /etc/caddy/tls/shop/origin.pem /etc/caddy/tls/shop/origin.key {\n",
+      );
+      expect(routed()).toBe(NEW);
+    });
+
+    it("puts the previous additions and certificate files back with the previous site when Caddy refuses them", () => {
+      // What the server serves now: an earlier certificate, its key and client certificate.
+      const served = {
+        "origin.pem": "# the certificate Caddy serves now\n",
+        "origin.key": "# its key\n",
+        "pull.pem": "# the client certificate it trusts now\n",
+      };
+      writeAll(join(work, "srv", "edge", "tls", "shop"), served);
+      expect(
+        run(steps().upload, { OPSCREW_ORIGIN_TLS: `${origin.certificate}${origin.key}` }).status,
+      ).toBe(0);
+      server({ ".env": OLD }, [OLD]);
+      writeAll(join(work, "srv", "edge", "sites"), {
+        "shop.caddy": "# the site Caddy serves now\n",
+        "shop.additions": "# the additions Caddy serves now\n",
+      });
+      const start = run(steps().start, { CADDY_RELOAD_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("or your additions (opscrew/proxy/additions.caddy)");
+      expect(readFileSync(edgeSite("shop.caddy"), "utf8")).toBe("# the site Caddy serves now\n");
+      expect(readFileSync(edgeSite("shop.additions"), "utf8")).toBe(
+        "# the additions Caddy serves now\n",
+      );
+      for (const [name, content] of Object.entries(served)) expect(readTls(name)).toBe(content);
+      expect(readdirSync(join(work, "srv", "edge", "tls", "shop")).sort()).toEqual([
+        "origin.key",
+        "origin.pem",
+        "pull.pem",
+      ]);
+      expect(containers()).toEqual([OLD]);
+    });
+
+    it("keeps no earlier certificate files once Caddy took the new ones", () => {
+      writeAll(join(work, "srv", "edge", "tls", "shop"), {
+        "origin.pem": "# an earlier certificate\n",
+        "origin.key": "# its key\n",
+        "pull.pem": "# an earlier client certificate\n",
+      });
+      expect(
+        run(steps().upload, { OPSCREW_ORIGIN_TLS: `${origin.certificate}${origin.key}` }).status,
+      ).toBe(0);
+      const start = run(steps().start);
+      expect(start.status, start.output).toBe(0);
+      expect(readTls("origin.pem")).toBe(origin.certificate);
+      expect(readTls("pull.pem")).toBe(pull);
+      expect(readdirSync(join(work, "srv", "edge", "tls", "shop")).sort()).toEqual([
+        "origin.key",
+        "origin.pem",
+        "pull.pem",
+      ]);
+    });
+
+    it("removes first additions and certificate files Caddy refuses", () => {
+      expect(
+        run(steps().upload, { OPSCREW_ORIGIN_TLS: `${origin.certificate}${origin.key}` }).status,
+      ).toBe(0);
+      const start = run(steps().start, { CADDY_RELOAD_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(existsSync(edgeSite("shop.additions"))).toBe(false);
+      expect(existsSync(edgeSite("shop.caddy"))).toBe(false);
+      // The new ones are gone too: there was nothing before them.
+      expect(readdirSync(join(work, "srv", "edge", "tls", "shop"))).toEqual([]);
     });
   });
 

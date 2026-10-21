@@ -1,7 +1,8 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { renderInfra } from "../infra";
 import { portainerTarget } from "../providers";
-import type { RenderContext, RenderedFile } from "../types";
+import type { RuntimeContext } from "../runtime";
+import type { RenderedFile } from "../types";
 import { renderWorkflow } from "../workflow";
 import { renderPortainerStack } from "./stack";
 
@@ -13,7 +14,7 @@ import { renderPortainerStack } from "./stack";
  * {@link renderUpdaterStack}, {@link renderPortainerConnectorStack} and
  * {@link renderPlaceholderStack} render them. Deterministic; contains no secrets.
  */
-export function renderPortainerDeployment(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
+export function renderPortainerDeployment(plan: DeployPlan, ctx: RuntimeContext): RenderedFile[] {
   portainerTarget(plan.target);
   return [...renderInfra(plan, ctx), renderPortainerStack(plan, ctx), renderWorkflow(plan, ctx)];
 }

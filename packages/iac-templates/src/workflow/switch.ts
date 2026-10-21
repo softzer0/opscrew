@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
-import { appDir, EDGE_DIR, EDGE_PROJECT, EDGE_VERSION_KEY } from "../edge";
+import { appDir, CADDY_ADDITIONS, EDGE_DIR, EDGE_PROJECT, EDGE_VERSION_KEY } from "../edge";
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { hasCronJobs, healthPath } from "./shared";
@@ -272,9 +272,27 @@ function healthFailed(plan: DeployPlan): string {
 /** The app's site as the server had it before this deploy, while the edge takes the new one. */
 const PREVIOUS_SITE = ".site.previous";
 
+/** The app's additions as the server had them before this deploy, as {@link PREVIOUS_SITE}. */
+const PREVIOUS_ADDITIONS = ".additions.previous";
+
 /** Shown when the edge did not start or refused the app's site; names no server and no secret. */
-function edgeFailed(plan: DeployPlan): string {
-  return `::error::OpsCrew's shared edge on the server (Caddy and kamal-proxy, in ${EDGE_DIR}) did not start or did not accept this app's site (opscrew/runtime/edge/sites/${plan.app.name}.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
+function edgeFailed(plan: DeployPlan, additions: boolean): string {
+  const yours = additions ? ` or your additions (${CADDY_ADDITIONS})` : "";
+  return `::error::OpsCrew's shared edge on the server (Caddy and kamal-proxy, in ${EDGE_DIR}) did not start or did not accept this app's site (opscrew/runtime/edge/sites/${plan.app.name}.caddy)${yours}, so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
+}
+
+/** The app's origin TLS files in `/srv/edge/tls/<app>`, as a shell word list. */
+const TLS_FILES = "origin.pem origin.key pull.pem";
+
+/** What the upload left for the app's edge besides its site. */
+export interface EdgeFiles {
+  /**
+   * The upload left the app's origin certificate and key in `/srv/edge/tls/<app>/` as
+   * `origin.pem.new` and `origin.key.new`, and `pull.pem` in the app's `edge/tls/`.
+   */
+  originTls: boolean;
+  /** The upload left the user's additions in the app's folder as `additions.caddy`. */
+  additions: boolean;
 }
 
 /**
@@ -282,16 +300,25 @@ function edgeFailed(plan: DeployPlan): string {
  * when missing; puts the uploaded edge Compose file (`edge/compose.yaml` in the app's folder) in
  * `/srv/edge` only when its {@link EDGE_VERSION_KEY} is larger than the server's, so an app with an
  * older OpsCrew never downgrades the edge, or when it is the same version with other content (the
- * ports of another access mode, which all the server's apps share); puts the app's site in
- * `/srv/edge/sites`; then starts
- * the edge (Compose recreates only what changed) and reloads Caddy. When either fails, the app's
- * previous site goes back, so Caddy never keeps a site it refused.
+ * ports of another access mode, which all the server's apps share); with origin TLS puts the app's
+ * new origin certificate, its key and `pull.pem` in `/srv/edge/tls/<app>`, so no other app's
+ * reload sees a certificate without its key; puts the app's site, and its additions, in
+ * `/srv/edge/sites`; then starts the edge (Compose recreates only what changed) and reloads Caddy.
+ * When either fails, the app's previous site, additions and origin TLS files go back (or the new
+ * ones go, when it had none), so Caddy never keeps a site it refused.
  */
-function edgeCommands(plan: DeployPlan): string[] {
-  const site = `${EDGE_DIR}/sites/${plan.app.name}.caddy`;
+function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
+  const app = plan.app.name;
+  const site = `${EDGE_DIR}/sites/${app}.caddy`;
+  const additions = `${EDGE_DIR}/sites/${app}.additions`;
+  const tls = `${EDGE_DIR}/tls/${app}`;
   const version = (file: string) => `sed -n 's/^${EDGE_VERSION_KEY}: //p' ${file}`;
+  /** Puts `previous` back as `file`, or removes `file` when it had none. */
+  const restore = (previous: string, file: string) =>
+    `    if [ -f ${previous} ]; then cp ${previous} ${file}; else rm -f ${file}; fi`;
   return [
-    `mkdir -p ${EDGE_DIR}/sites`,
+    // Before the edge's Compose mounts them: Docker would create them owned by root.
+    `mkdir -p ${EDGE_DIR}/sites ${EDGE_DIR}/tls`,
     "(",
     "  flock 9",
     `  docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
@@ -308,14 +335,44 @@ function edgeCommands(plan: DeployPlan): string[] {
     '  elif [ "$uploaded" -lt "${current:-0}" ]; then',
     `    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."`,
     "  fi",
-    `  rm -f ${PREVIOUS_SITE}`,
+    ...(o.originTls
+      ? [
+          // Each file the server has is kept as `<file>.previous` (a stale one goes when it has
+          // none), and the uploaded one takes its place.
+          `  cp edge/tls/pull.pem ${tls}/pull.pem.new`,
+          `  for f in ${TLS_FILES}; do`,
+          `    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
+          `    mv -f ${tls}/$f.new ${tls}/$f`,
+          "  done",
+        ]
+      : []),
+    `  rm -f ${PREVIOUS_SITE}${o.additions ? ` ${PREVIOUS_ADDITIONS}` : ""}`,
     `  if [ -f ${site} ]; then cp ${site} ${PREVIOUS_SITE}; fi`,
-    `  cp edge/sites/${plan.app.name}.caddy ${site}`,
+    ...(o.additions
+      ? [`  if [ -f ${additions} ]; then cp ${additions} ${PREVIOUS_ADDITIONS}; fi`]
+      : []),
+    `  cp edge/sites/${app}.caddy ${site}`,
+    ...(o.additions ? [`  cp additions.caddy ${additions}`] : []),
     "  if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then",
-    `    if [ -f ${PREVIOUS_SITE} ]; then cp ${PREVIOUS_SITE} ${site}; else rm -f ${site}; fi`,
-    `    echo ${shellQuote(edgeFailed(plan))}`,
+    restore(PREVIOUS_SITE, site),
+    ...(o.additions ? [restore(PREVIOUS_ADDITIONS, additions)] : []),
+    ...(o.originTls
+      ? [
+          `    for f in ${TLS_FILES}; do`,
+          `      if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
+          "    done",
+        ]
+      : []),
+    `    echo ${shellQuote(edgeFailed(plan, o.additions))}`,
     "    exit 1",
     "  fi",
+    ...(o.originTls
+      ? [
+          `  rm -f ${TLS_FILES.split(" ")
+            .map((f) => `${tls}/${f}.previous`)
+            .join(" ")}`,
+        ]
+      : []),
     `) 9> ${EDGE_DIR}/.lock`,
   ];
 }
@@ -324,7 +381,7 @@ function edgeCommands(plan: DeployPlan): string[] {
  * The server script of the start step (POSIX sh, in the app's folder `/srv/apps/<app>`; the image
  * is `$1`, already checked to be a GHCR digest reference), in this order:
  * 1. pull the app's images;
- * 2. the shared edge ({@link edgeCommands});
+ * 2. the shared edge with the app's site and the `edgeFiles` the upload left ({@link edgeCommands});
  * 3. start the plan's services when they are not running (Compose recreates one only when its own
  *    configuration changed; nothing forces it);
  * 4. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep});
@@ -339,7 +396,11 @@ function edgeCommands(plan: DeployPlan): string[] {
  * reaches `sh` on its stdin, so the commands that read stdin (`docker compose exec` and `run`) get
  * `/dev/null`; otherwise they would swallow the rest of the script.
  */
-export function switchCommands(plan: DeployPlan, init: readonly ServiceInitStep[]): string[] {
+export function switchCommands(
+  plan: DeployPlan,
+  init: readonly ServiceInitStep[],
+  edgeFiles: EdgeFiles = { originTls: false, additions: false },
+): string[] {
   const steady = steadyServices(plan);
   const release =
     plan.app.releaseCommand === undefined
@@ -359,7 +420,7 @@ export function switchCommands(plan: DeployPlan, init: readonly ServiceInitStep[
     'export APP_IMAGE="$1"',
     EDGE_FUNCTION,
     "docker compose pull",
-    ...edgeCommands(plan),
+    ...edgeCommands(plan, edgeFiles),
     ...(steady.length === 0 ? [] : [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]),
     ...serviceInit(init, initLog(plan)),
     ...release,

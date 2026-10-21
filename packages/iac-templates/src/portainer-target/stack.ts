@@ -14,7 +14,7 @@ import { isClientExposedEnvName } from "../docker";
 import { CADDY_MEMORY_MB } from "../edge";
 import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
-import { siteHosts } from "../runtime";
+import { type RuntimeContext, siteHosts } from "../runtime";
 import {
   appVolumes,
   crontab,
@@ -29,11 +29,12 @@ import {
   cloudflaredService,
   composeLiteral,
   hardened,
+  originTlsDir,
   RELEASE_NOTE,
   shellQuote,
 } from "../runtime/services";
 import { CONNECTOR_MEMORY_MB } from "../tunnel";
-import type { RenderContext, RenderedFile } from "../types";
+import type { RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
 
@@ -66,14 +67,22 @@ const GHCR_DIGEST_REF = new RegExp(DIGEST_REF_PATTERN);
  * A stack has one environment for all its services, so OpsCrew's values carry the `OPSCREW_`
  * prefix, which the app's variables may not use: the Postgres user, database name and password
  * (`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD` in the `db` service, the values of
- * `OPSCREW_SERVICE_DB_ENV` on other targets) and the app tunnel's token (`tunnel_token` of the root
- * module, `TUNNEL_TOKEN` in the `cloudflared` service).
+ * `OPSCREW_SERVICE_DB_ENV` on other targets), the app tunnel's token (`tunnel_token` of the root
+ * module, `TUNNEL_TOKEN` in the `cloudflared` service) and, with origin TLS, the stack Caddy's
+ * certificates.
  */
 export const PORTAINER_STACK_VARIABLES = {
   dbUser: "OPSCREW_DB_USER",
   dbName: "OPSCREW_DB_NAME",
   dbPassword: "OPSCREW_DB_PASSWORD",
   tunnelToken: "OPSCREW_TUNNEL_TOKEN",
+  /**
+   * With origin TLS in web mode `caddy`: the app's Cloudflare origin certificate, its private key,
+   * then the client certificate Cloudflare presents (`pull.pem`), as one PEM text in base64:
+   * Portainer writes the stack's variables to an env file one line each, which a PEM's lines would
+   * break.
+   */
+  originTls: "OPSCREW_ORIGIN_TLS",
 } as const;
 
 /**
@@ -356,13 +365,26 @@ export interface PortainerStackEnvKeys {
 }
 
 /**
+ * The stack Caddy's origin TLS: only in web mode `caddy`, where OpsCrew's Caddy is the origin
+ * Cloudflare reaches (behind a tunnel there is no public origin, behind the user's proxy the
+ * user's proxy is the origin).
+ */
+function stackOriginTls(plan: DeployPlan, ctx: Pick<RuntimeContext, "originTls">) {
+  return portainerTarget(plan.target).web.mode === "caddy" ? ctx.originTls : undefined;
+}
+
+/**
  * Every variable the app stack interpolates, each list sorted: what its environment in Portainer
  * (`Env`, set through the API, values never in files) must hold. Portainer fills only the
- * `${VARS}` a stack references. The app's and OpsCrew's names never overlap.
+ * `${VARS}` a stack references. The app's and OpsCrew's names never overlap. With `ctx.originTls`
+ * in web mode `caddy`, OpsCrew's include {@link PORTAINER_STACK_VARIABLES}' `originTls`.
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, or a
  * service that needs a setting of the Docker host (so provision stops before any change).
  */
-export function portainerStackEnvKeys(plan: DeployPlan): PortainerStackEnvKeys {
+export function portainerStackEnvKeys(
+  plan: DeployPlan,
+  ctx: Pick<RuntimeContext, "originTls"> = {},
+): PortainerStackEnvKeys {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
   checkStackServices(plan);
@@ -372,6 +394,7 @@ export function portainerStackEnvKeys(plan: DeployPlan): PortainerStackEnvKeys {
     opscrew.add(PORTAINER_STACK_VARIABLES.dbName);
   }
   if (web.mode === "tunnel") opscrew.add(PORTAINER_STACK_VARIABLES.tunnelToken);
+  if (stackOriginTls(plan, ctx) !== undefined) opscrew.add(PORTAINER_STACK_VARIABLES.originTls);
   return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
 }
 
@@ -390,6 +413,27 @@ export function portainerStackVolumes(plan: DeployPlan): string[] {
   return volumeNames(stackServices(plan), web).map(
     (volume) => `${portainerStackName(plan)}_${volume}`,
   );
+}
+
+/**
+ * The stack Caddy's entrypoint with origin TLS (sh, after Compose turned `$$` into `$`): decodes
+ * {@link PORTAINER_STACK_VARIABLES}' `originTls` into `dir`, its tmpfs (what comes before the
+ * private key as `origin.pem`, the key as `origin.key`, the certificate after it as `pull.pem`),
+ * drops the variable from Caddy's environment, then runs Caddy as its image does. The value goes
+ * only through a pipe, never a command line.
+ */
+function originTlsEntrypoint(dir: string): string {
+  const files = [
+    'BEGIN { f = "origin.pem" }',
+    '/-BEGIN [A-Z ]*PRIVATE KEY-/ { f = "origin.key" }',
+    '/-BEGIN CERTIFICATE-/ && f == "origin.key" { f = "pull.pem" }',
+    `{ print > ("${dir}/" f) }`,
+  ].join(" ");
+  const variable = PORTAINER_STACK_VARIABLES.originTls;
+  return [
+    `umask 077 && printf '%s' "$${variable}" | base64 -d | awk '${files}' && unset ${variable}`,
+    "exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile",
+  ].join("\n");
 }
 
 /** Caddy's published ports: none behind the tunnel, the chosen port for a proxy, else 80/443. */
@@ -425,12 +469,14 @@ const STACK_HEADER = [
  * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`. Portainer
  * runs no deploy steps, so the services' one-time setup is in the stack: Garage makes the app's
  * key and bucket itself, and MongoDB's replica set is initiated by a one-shot service the app
- * waits for (see {@link stackSetup}).
+ * waits for (see {@link stackSetup}). With `ctx.originTls` in web mode `caddy`, Caddy serves the
+ * same site as a server's edge, with the origin certificate and client certificate it writes from
+ * {@link PORTAINER_STACK_VARIABLES}' `originTls` to a tmpfs before it starts.
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, a
  * service OpsCrew cannot run as planned (in a stack: one that needs a setting of the Docker host),
  * or a cron route the image cannot call.
  */
-export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
   checkStackServices(plan);
@@ -480,6 +526,8 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     backing.services,
   );
 
+  const origin = stackOriginTls(plan, ctx);
+  const tlsDir = originTlsDir(plan.app.name);
   const config = caddyfile({
     mode: web.mode === "caddy" ? "direct" : web.mode,
     hosts: siteHosts(plan),
@@ -488,13 +536,25 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     acmeEmail: ctx.acmeEmail,
     // Caddy reads the variable when it starts: the version of the image the stack runs.
     headers: [`\t\t${PORTAINER_VERSION_HEADER} "{$OPSCREW_APP_VERSION}"`],
+    origin: origin === undefined ? undefined : { hostnames: origin.hostnames, dir: tlsDir },
   }).join("\n");
   const ports = caddyPorts(web);
+  const tlsVariable = PORTAINER_STACK_VARIABLES.originTls;
   services.caddy = {
     image: IMAGES.caddy.ref,
     restart: "unless-stopped",
     ...(ports === undefined ? {} : { ports }),
-    environment: { OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER },
+    environment: {
+      OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER,
+      ...(origin === undefined ? {} : { [tlsVariable]: `\${${tlsVariable}}` }),
+    },
+    // The certificates live only in memory, written from the variable before Caddy starts.
+    ...(origin === undefined
+      ? {}
+      : {
+          entrypoint: ["/bin/sh", "-c", composeLiteral(originTlsEntrypoint(tlsDir))],
+          tmpfs: [`${tlsDir}:mode=0700`],
+        }),
     // A changed Caddyfile changes this label, so Compose recreates Caddy with the new configuration.
     labels: { "dev.opscrew.caddyfile-sha256": sha256Hex(config) },
     configs: [{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }],

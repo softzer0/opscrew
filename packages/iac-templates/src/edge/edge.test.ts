@@ -5,7 +5,12 @@ import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import { IMAGES } from "../pins";
-import { renderCaddyfile, renderCompose, renderRuntimeFiles } from "../runtime";
+import {
+  type RuntimeContext,
+  renderCaddyfile,
+  renderCompose,
+  renderRuntimeFiles,
+} from "../runtime";
 import { TUNNEL_ORIGIN_PORT } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { EDGE_UPSTREAM, EDGE_VERSION, EDGE_VERSION_KEY, renderEdgeCompose } from "./index";
@@ -84,18 +89,38 @@ describe("the edge's Compose project", () => {
     const caddy = doc.services.caddy as Service;
     expect(caddy.volumes).toEqual([
       "./sites:/etc/caddy/sites:ro",
+      // The apps' origin certificates, /srv/edge/tls/<app>/.
+      "./tls:/etc/caddy/tls:ro",
       "caddy_data:/data",
       "caddy_config:/config",
     ]);
     expect(caddy.configs).toEqual([{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }]);
     expect(doc.configs.caddyfile.content).toContain("\nimport /etc/caddy/sites/*.caddy\n");
-    // The main configuration has no global options: they would have to come before the sites.
-    expect(doc.configs.caddyfile.content).not.toContain("{");
+    // No global options. In particular no `auto_https ignore_loaded_certs`: with it Caddy would
+    // also ask Let's Encrypt for the hostnames an origin certificate serves, and without it Caddy
+    // skips only the names a loaded certificate covers, so every other hostname keeps its ACME
+    // certificate (checked with the pinned Caddy, 2.11.7).
+    expect(doc.configs.caddyfile.content).not.toMatch(/^\{/m);
+    expect(doc.configs.caddyfile.content).not.toContain("auto_https");
     expect(caddy.labels).toEqual({
       "dev.opscrew.caddyfile-sha256": sha256Hex(doc.configs.caddyfile.content),
     });
     expect(caddy.depends_on).toEqual(["kamal-proxy"]);
     expect(EDGE_UPSTREAM).toBe("kamal-proxy:80");
+  });
+
+  it("refuses every hostname no app serves, on HTTP and HTTPS, after the apps' sites", () => {
+    const content = doc.configs.caddyfile.content;
+    // An unknown Host on port 80 or 443 is aborted (curl: empty reply); an unknown name in TLS
+    // already fails the handshake, since no site has a certificate for it. With the origin
+    // certificate's client authentication Caddy also answers 421 to a Host other than the name
+    // the connection was made for. Checked against the pinned Caddy (2.11.7).
+    expect(content).toContain(
+      "\nimport /etc/caddy/sites/*.caddy\n\n# Requests for any other hostname are refused.\nhttp:// {\n\tabort\n}\nhttps:// {\n\tabort\n}\n",
+    );
+    // After the sites: Caddy runs the first of two sites without a hostname, and an app without a
+    // domain yet is served on `:80` for every hostname.
+    expect(content.indexOf("import ")).toBeLessThan(content.indexOf("http:// {"));
   });
 
   it("publishes Caddy's ports for the server's access mode", () => {
@@ -135,8 +160,8 @@ describe("the edge's Compose project", () => {
       renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
     );
     expect({ version: EDGE_VERSION, sha256: sha256Hex(files.join("\n")) }).toEqual({
-      version: 2026101902,
-      sha256: "d9243d7c30199687693384e10ae5623770dedd8c93c50b5dfe5e0e64524d3077",
+      version: 2026102101,
+      sha256: "346177842afa53dc7b212f80ae12f2657f4cd7c084c9fedbc58a90cc4bdb8030",
     });
   });
 });
@@ -175,6 +200,110 @@ describe("the app's site file", () => {
       renderCaddyfile(named("shop", { domain: "shop.example.com" }), ctx),
     );
   });
+
+  it("sets HSTS and the baseline headers and removes Server in every site with a hostname", () => {
+    const sites = [
+      renderCaddyfile(shop, ctx),
+      renderCaddyfile(shop, { ...ctx, originTls: { hostnames: ["example.com"] } }),
+      renderCaddyfile(shop, {
+        ...ctx,
+        originTls: { hostnames: ["example.com", "www.example.com"] },
+      }),
+      renderCaddyfile(tunnelled, ctx),
+    ].map((file) => file.content);
+    const header = [
+      "\theader {",
+      '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
+      '\t\tX-Content-Type-Options "nosniff"',
+      '\t\tX-Frame-Options "SAMEORIGIN"',
+      '\t\tReferrer-Policy "strict-origin-when-cross-origin"',
+      "\t\t-Server",
+      "\t}",
+    ];
+    for (const content of sites) {
+      const blocks = content.split(/\n(?=\S+.* \{\n)/).filter((block) => block.includes(" {\n"));
+      expect(blocks.length).toBeGreaterThan(0);
+      for (const block of blocks) {
+        expect(block).toContain(header.join("\n"));
+        // The same headers on the responses Caddy writes itself (a 502 while the app is down).
+        expect(block).toContain(
+          [
+            "\thandle_errors {",
+            ...header.map((line) => `\t${line}`),
+            '\t\trespond "{err.status_code} {err.status_text}" {err.status_code}',
+            "\t}",
+          ].join("\n"),
+        );
+      }
+    }
+  });
+});
+
+describe("the app's site with origin TLS", () => {
+  const ORIGIN_TLS = [
+    "\ttls /etc/caddy/tls/shop/origin.pem /etc/caddy/tls/shop/origin.key {",
+    "\t\tclient_auth {",
+    "\t\t\tmode require_and_verify",
+    "\t\t\ttrust_pool file /etc/caddy/tls/shop/pull.pem",
+    "\t\t}",
+    "\t}",
+  ].join("\n");
+  const proxied: RuntimeContext = {
+    ...ctx,
+    originTls: { hostnames: ["example.com", "www.example.com"] },
+  };
+
+  it("serves the origin certificate for exactly the proxied hostnames and requires Cloudflare's client certificate", () => {
+    const content = renderCaddyfile(shop, proxied).content;
+    expect(content).toContain(
+      `\nexample.com, www.example.com {\n${ORIGIN_TLS}\n\tencode zstd gzip\n`,
+    );
+    // Caddy asks no certificate authority for them: the site names its own certificate.
+    expect(content).not.toContain("tls ops@example.com");
+    expect(content.match(/ \{\n\ttls /g)).toHaveLength(1);
+  });
+
+  it("keeps Caddy's ACME for an app hostname the origin certificate does not cover", () => {
+    const content = renderCaddyfile(shop, {
+      ...ctx,
+      originTls: { hostnames: ["example.com"] },
+    }).content;
+    expect(content).toContain(`\nexample.com {\n${ORIGIN_TLS}\n`);
+    expect(content).toContain("\nwww.example.com {\n\ttls ops@example.com\n");
+  });
+
+  it("gets Caddy's ACME for DNS-only hostnames, as before", () => {
+    const content = renderCaddyfile(shop, ctx).content;
+    expect(content).toContain("\nexample.com, www.example.com {\n\ttls ops@example.com\n");
+    expect(content).not.toContain("/etc/caddy/tls/");
+  });
+
+  it("gives a hostname behind a Cloudflare Tunnel none of it (FR-1409)", () => {
+    const tunnel: RuntimeContext = { ...ctx, originTls: { hostnames: ["shop.example.com"] } };
+    expect(renderCaddyfile(tunnelled, tunnel)).toEqual(renderCaddyfile(tunnelled, ctx));
+    expect(renderCaddyfile(tunnelled, tunnel).content).not.toContain("tls");
+  });
+
+  it("imports the user's additions inside every block of the app's site", () => {
+    const content = (o: RuntimeContext) => renderCaddyfile(shop, o).content;
+    const IMPORT =
+      "\t# Your own additions (opscrew/proxy/additions.caddy).\n\timport /etc/caddy/sites/shop.additions\n}\n";
+    expect(content({ ...proxied, additions: true })).toContain(
+      `\t\trespond "{err.status_code} {err.status_text}" {err.status_code}\n\t}\n${IMPORT}`,
+    );
+    const split = content({ ...ctx, originTls: { hostnames: ["example.com"] }, additions: true });
+    expect(split.split(IMPORT)).toHaveLength(3);
+    expect(renderCaddyfile(tunnelled, { ...ctx, additions: true }).content).toContain(IMPORT);
+    // Without additions the site imports nothing (the edge imports only `*.caddy` files).
+    expect(content(proxied)).not.toContain("import");
+    expect(content(proxied)).toBe(content({ ...proxied, additions: false }));
+  });
+
+  it("never holds a certificate or a key", () => {
+    for (const file of [renderCaddyfile(shop, proxied), renderEdgeCompose(shop)]) {
+      expect(file.content).not.toMatch(/-----BEGIN|PRIVATE KEY/);
+    }
+  });
 });
 
 describe("snapshots", () => {
@@ -212,6 +341,20 @@ describe("snapshots", () => {
 
   it("a tunnelled app", () => {
     expect(files(tunnelled)).toMatchSnapshot();
+  });
+
+  it("a proxied app's site with origin TLS and its own additions", () => {
+    const site = renderCaddyfile(shop, {
+      ...ctx,
+      originTls: { hostnames: ["example.com", "www.example.com"] },
+      additions: true,
+    });
+    expect(site.content).toMatchSnapshot();
+  });
+
+  it("a DNS-only app's site", () => {
+    const plan = DeployPlanSchema.parse({ ...blog, dns: { ...blog.dns, proxied: false } });
+    expect(renderCaddyfile(plan, ctx).content).toMatchSnapshot();
   });
 });
 

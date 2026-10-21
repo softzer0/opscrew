@@ -323,7 +323,8 @@ describe("renderPortainerStack", () => {
     const caddyfile = doc.configs?.caddyfile?.content ?? "";
     expect(caddyfile).toContain("{\n\temail ops@example.com\n}\n");
     expect(caddyfile).toContain("shop.example.com, www.shop.example.com {");
-    expect(caddyfile).not.toContain("http://");
+    // The app's site is HTTPS; only the catch-all for other hostnames names http://.
+    expect(caddyfile).not.toContain("http://shop.example.com");
   });
 
   it("rotates every service's logs and sets no-new-privileges", () => {

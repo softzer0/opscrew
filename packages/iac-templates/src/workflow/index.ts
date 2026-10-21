@@ -2,11 +2,11 @@
 
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
-import { appDir } from "../edge";
+import { appDir, CADDY_ADDITIONS, EDGE_DIR } from "../edge";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
-import { renderRuntimeFiles } from "../runtime";
-import { sshHostname } from "../tunnel";
-import type { RenderContext, RenderedFile } from "../types";
+import { type RuntimeContext, renderRuntimeFiles } from "../runtime";
+import { sshHostname, tunnelMode } from "../tunnel";
+import type { RenderedFile } from "../types";
 import { buildJob } from "./build";
 import { afterDeployJobs } from "./jobs";
 import { renderPortainerWorkflow } from "./portainer";
@@ -162,7 +162,8 @@ function envFileServices(plan: DeployPlan): string[] {
 /**
  * What the upload copies next to compose.yaml: the `opscrew/runtime/services` folder and the
  * crontab when {@link renderRuntimeFiles} renders them, and the `opscrew/runtime/edge` folder (the
- * edge's Compose file and the app's site), which the start step puts in place.
+ * edge's Compose file, the app's site and, with origin TLS, `tls/pull.pem`), which the start step
+ * puts in place.
  */
 function runtimeUploads(plan: DeployPlan): string[] {
   const top = renderRuntimeFiles(plan).map((file) => file.path.split("/").slice(0, 3).join("/"));
@@ -174,20 +175,52 @@ function remote(script: readonly string[]): string[] {
   return [...script.map((line) => (line.length > 0 ? `    ${line}` : "")), "    REMOTE"];
 }
 
+/** Shown when the origin certificate's deploy secret holds no certificate and key. */
+const ORIGIN_TLS_MISSING = `::error::The deploy secret ${DEPLOY_SECRETS.originTls} must hold the app's Cloudflare origin certificate, then its private key. Run \\\`opscrew provision\\\` again to set it, then deploy again.`;
+
+/**
+ * The upload's lines for origin TLS (bash, after `ssh_opts`): the certificate and the key from
+ * {@link DEPLOY_SECRETS}' `originTls`, each on ssh's stdin (never in a command line or the log),
+ * into `/srv/edge/tls/<app>/` (a 0700 folder, files 0600) as `origin.pem.new` and
+ * `origin.key.new`, which the start step puts in place under the edge's lock, with `pull.pem` from
+ * the uploaded edge files.
+ */
+function originTlsUpload(plan: DeployPlan): string[] {
+  const dir = `${EDGE_DIR}/tls/${plan.app.name}`;
+  const value = `"$${DEPLOY_SECRETS.originTls}"`;
+  const ssh = 'ssh "${ssh_opts[@]}" "deploy@${HOST}"';
+  return [
+    `    case "\${${DEPLOY_SECRETS.originTls}:-}" in`,
+    '      *"-----BEGIN CERTIFICATE-----"*"PRIVATE KEY-----"*) ;;',
+    `      *) echo "${ORIGIN_TLS_MISSING}"; exit 1 ;;`,
+    "    esac",
+    `    printf '%s\\n' ${value} | sed '/-BEGIN [A-Z ]*PRIVATE KEY-/,$d' | ${ssh} 'umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && cat > ${dir}/origin.pem.new'`,
+    `    printf '%s\\n' ${value} | sed -n '/-BEGIN [A-Z ]*PRIVATE KEY-/,$p' | ${ssh} 'umask 077 && cat > ${dir}/origin.key.new'`,
+  ];
+}
+
 /**
  * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback,
  * then the optional signing, deploy tag and image retention jobs. The image is built on an arm64
  * runner for arm64 servers; in tunnel mode SSH goes through Cloudflare Access to the SSH hostname
- * with the service token from {@link TUNNEL_DEPLOY_SECRETS}.
+ * with the service token from {@link TUNNEL_DEPLOY_SECRETS}. With `ctx.originTls` (not behind a
+ * tunnel) the upload writes the origin certificate and its key from {@link DEPLOY_SECRETS}'
+ * `originTls`, and with `ctx.additions` it brings `opscrew/proxy/additions.caddy`; the start step
+ * puts both in place with the app's site.
  *
  * For a Portainer target the deploy job instead writes the stack file with the new image to the
  * `opscrew-deploy` branch (its only `contents: write`), lets Portainer redeploy (the updater stack,
  * or a webhook call through Cloudflare Access with {@link PORTAINER_DEPLOY_SECRETS}), waits for
  * the new version on the site and, when it does not come up, writes the previous version back.
  */
-export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
   checkSshPort(ctx.sshPort);
+  // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).
+  const edgeFiles = {
+    originTls: ctx.originTls !== undefined && !tunnelMode(plan),
+    additions: ctx.additions === true,
+  };
 
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
   // HCL anyway); the service token reaches cloudflared only through the environment.
@@ -217,18 +250,27 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
   const uploadEnv = [
     ...hostEnv,
     ...envFiles.map((env) => `    ${env.secret}: ${secret(env.secret)}`),
+    ...(edgeFiles.originTls
+      ? [`    ${DEPLOY_SECRETS.originTls}: ${secret(DEPLOY_SECRETS.originTls)}`]
+      : []),
   ];
   // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
   const dir = appDir(plan);
+  const uploads = [
+    "opscrew/runtime/compose.yaml",
+    ...runtimeUploads(plan),
+    ...(edgeFiles.additions ? [CADDY_ADDITIONS] : []),
+  ];
   const uploadRun = [
     "    set -euo pipefail",
     `    ${sshOpts}`,
     `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p ${dir}'`,
-    `    scp -r "\${ssh_opts[@]}" ${["opscrew/runtime/compose.yaml", ...runtimeUploads(plan)].join(" ")} "deploy@\${HOST}:${dir}/"`,
+    `    scp -r "\${ssh_opts[@]}" ${uploads.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFiles.map(
       (env) =>
         `    printf '%s\\n' "\${${env.secret}:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > ${dir}/${env.file}'`,
     ),
+    ...(edgeFiles.originTls ? originTlsUpload(plan) : []),
   ];
 
   const deploySteps = [
@@ -283,13 +325,14 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
     '    ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
     // The services' one-time setup steps come from the catalog; no entry has any yet.
-    ...remote(switchCommands(plan, initStepsFor(plan))),
+    ...remote(switchCommands(plan, initStepsFor(plan), edgeFiles)),
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",
     `    URL: ${healthUrl(plan)}`,
     "  run: |",
-    ...healthScript(caddyServesTls(plan, tunnelHost)),
+    // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
+    ...healthScript(caddyServesTls(plan, tunnelHost) && !edgeFiles.originTls),
     // Runs only when starting or checking the new version failed (not for upload or setup errors),
     // and always fails the job.
     "- name: Roll back to the previous version",

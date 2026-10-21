@@ -226,7 +226,7 @@ jobs:
           export APP_IMAGE="$1"
           edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
           docker compose pull
-          mkdir -p /srv/edge/sites
+          mkdir -p /srv/edge/sites /srv/edge/tls
           (
             flock 9
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null

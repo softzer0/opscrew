@@ -20,6 +20,11 @@ export const DEPLOY_SECRETS = {
   buildEnv: "OPSCREW_BUILD_ENV",
   /** Secret build values (`NAME=value` lines): BuildKit secret mounts only, never build arguments. */
   buildSecrets: "OPSCREW_BUILD_SECRETS",
+  /**
+   * With origin TLS: the app's Cloudflare origin certificate (PEM), then its private key (PEM),
+   * which the deploy writes to `/srv/edge/tls/<app>/origin.pem` and `origin.key`.
+   */
+  originTls: "OPSCREW_ORIGIN_TLS",
 } as const;
 
 /**

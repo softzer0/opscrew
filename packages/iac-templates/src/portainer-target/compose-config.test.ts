@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { generateP256, selfSignedClientCertificate } from "@opscrew/core";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -137,6 +138,65 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
       expect(run.stdout + run.stderr).toContain("Valid configuration");
     }, 300_000);
   }
+
+  // Pulls Caddy's image: runs the stack Caddy's own entrypoint, with `caddy validate` in place of
+  // `caddy run`, on a tmpfs as in the stack, with placeholder certificates made now.
+  it("gives Caddy its origin certificates and a valid configuration with origin TLS", () => {
+    const plan = portainerTestPlan({ web: { mode: "caddy" } });
+    const tls = { ...ctx, originTls: { hostnames: ["shop.example.com"] } };
+    const content = fillPortainerStack(renderPortainerStack(plan, tls).content, IMAGE);
+    const config = composeConfig(content, valuesFor(portainerStackEnvKeys(plan, tls)));
+    expect(config.status, config.stderr).toBe(0);
+    expect(config.stderr).not.toMatch(/variable is not set/);
+    expect(JSON.parse(config.stdout).services.caddy.tmpfs).toEqual([
+      "/etc/caddy/tls/shop:mode=0700",
+    ]);
+
+    const doc = parse(content);
+    const caddy = doc.services.caddy;
+    const pem = (commonName: string) => {
+      const key = generateP256().privateKey;
+      return { certificate: selfSignedClientCertificate({ key, commonName, days: 1 }), key };
+    };
+    const origin = pem("shop.example.com");
+    const bundle = `${origin.certificate}${origin.key}${pem("opscrew-shop").certificate}`;
+    const entrypoint = (caddy.entrypoint[2] as string)
+      .replaceAll("$$", "$")
+      .replace("exec caddy run", "caddy validate");
+    const script = [
+      "cat > /etc/caddy/Caddyfile <<'OPSCREW_EOF'",
+      (doc.configs.caddyfile.content as string).replaceAll("$$", "$"),
+      "OPSCREW_EOF",
+      entrypoint,
+      // Caddy runs without the variable.
+      "if env | grep -q '^OPSCREW_ORIGIN_TLS='; then echo 'OPSCREW_ORIGIN_TLS is still set'; exit 1; fi",
+    ].join("\n");
+    const run = spawnSync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "-i",
+        "--tmpfs",
+        caddy.tmpfs[0],
+        "-e",
+        "OPSCREW_APP_VERSION=0123456789ab",
+        "-e",
+        "OPSCREW_ORIGIN_TLS",
+        caddy.image,
+        "sh",
+        "-s",
+      ],
+      {
+        input: script,
+        encoding: "utf8",
+        timeout: 240_000,
+        env: { ...process.env, OPSCREW_ORIGIN_TLS: Buffer.from(bundle).toString("base64") },
+      },
+    );
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.stdout + run.stderr).toContain("Valid configuration");
+  }, 300_000);
 
   it("accepts a stack with every part 1 service, workers and cron", () => {
     const base = portainerTestPlan({ releaseCommand: "npm run migrate", env: TEST_ENV });
