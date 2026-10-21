@@ -76,8 +76,13 @@ export interface ResolveProjectPathsOptions {
   environment?: string;
 }
 
-/** An environment's name, as plan-schema's `EnvironmentNameSchema` allows it. */
-const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,15}$/;
+/** The rule for an environment's name; plan-schema's `EnvironmentNameSchema` checks it too. */
+export const ENVIRONMENT_NAME_PATTERN =
+  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z][a-z0-9-]{0,15}$/;
+
+/** What {@link ENVIRONMENT_NAME_PATTERN} asks for, worded to follow a name. */
+export const ENVIRONMENT_NAME_MESSAGE =
+  "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…)";
 
 /**
  * Resolves all OpsCrew paths for the project at `root` (relative roots resolve against cwd).
@@ -90,10 +95,10 @@ export function resolveProjectPaths(
   options: ResolveProjectPathsOptions = {},
 ): ProjectPaths {
   const environment = options.environment ?? "prod";
-  if (!ENVIRONMENT_NAME.test(environment)) {
+  if (!ENVIRONMENT_NAME_PATTERN.test(environment)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter.`,
+      `"${environment}" is not an environment name: it ${ENVIRONMENT_NAME_MESSAGE}.`,
       { hint: "Run `opscrew env list` to see the app's environments." },
     );
   }

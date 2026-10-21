@@ -55,7 +55,9 @@ describe("JSON Schema export", () => {
         },
         environment: {
           properties: {
-            name: { pattern: "^[a-z][a-z0-9-]{0,15}$" },
+            name: {
+              pattern: "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z][a-z0-9-]{0,15}$",
+            },
             deploySource: {
               oneOf: [
                 { properties: { from: { const: "main" } } },

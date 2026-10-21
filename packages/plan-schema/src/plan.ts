@@ -1,3 +1,4 @@
+import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN } from "@opscrew/core";
 import { z } from "zod";
 import { PlanServiceSchema, ProcessesSchema, StorageSchema, serviceOf } from "./components";
 import { CostEstimateSchema } from "./design";
@@ -134,8 +135,8 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
 ]);
 
 /** An environment's name: lower-case letters, digits and hyphens, starting with a letter. */
-export const EnvironmentNameSchema = z.string().regex(/^[a-z][a-z0-9-]{0,15}$/, {
-  message: "must be 1-16 lower-case letters, digits or hyphens and start with a letter",
+export const EnvironmentNameSchema = z.string().regex(ENVIRONMENT_NAME_PATTERN, {
+  message: ENVIRONMENT_NAME_MESSAGE,
 });
 
 /**

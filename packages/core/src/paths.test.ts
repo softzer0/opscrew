@@ -185,15 +185,21 @@ describe("resolveProjectPaths", () => {
   });
 
   it("refuses a name that is not an environment name", () => {
-    for (const environment of ["Staging", "../prod", "staging/x", "", "a-name-longer-than-16"]) {
+    const refused = ["Staging", "../prod", "staging/x", "", "a-name-longer-than-16"];
+    const reserved = ["con", "prn", "aux", "nul", "com0", "com9", "lpt0", "lpt9"];
+    for (const environment of [...refused, ...reserved]) {
       const resolve = () =>
         resolveProjectPaths(path.join(tmp, "app"), { env: {}, homedir: tmp, environment });
       expect(resolve, environment).toThrow(
         expect.objectContaining({
           code: "INVALID_INPUT",
-          message: `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter.`,
+          message: `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…).`,
         }),
       );
+    }
+    for (const environment of ["console", "com10", "nul-1", "lpt"]) {
+      const p = resolveProjectPaths(path.join(tmp, "app"), { env: {}, homedir: tmp, environment });
+      expect(p.environment).toBe(environment);
     }
   });
 

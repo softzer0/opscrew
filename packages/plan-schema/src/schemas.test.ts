@@ -1417,13 +1417,24 @@ describe("DeployPlan environment", () => {
 
   it("accepts names of lower-case letters, digits and hyphens, starting with a letter, up to 16", async () => {
     const plan = await validPlan();
-    for (const name of ["dev", "staging", "qa-2", "a", "e".repeat(16)]) {
+    for (const name of ["dev", "staging", "qa-2", "a", "e".repeat(16), "console", "com10"]) {
       const app = { ...plan.app, name: `acme-${name}` };
       const parsed = DeployPlanSchema.parse({ ...plan, app, environment: { name } });
       expect(parsed.environment?.name, name).toBe(name);
     }
-    const message = "must be 1-16 lower-case letters, digits or hyphens and start with a letter";
-    for (const name of ["", "Staging", "2dev", "-dev", "dev_1", "dev.1", "e".repeat(17)]) {
+    const message =
+      "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…)";
+    const reserved = ["con", "prn", "aux", "nul", "com0", "com9", "lpt0", "lpt9"];
+    for (const name of [
+      "",
+      "Staging",
+      "2dev",
+      "-dev",
+      "dev_1",
+      "dev.1",
+      "e".repeat(17),
+      ...reserved,
+    ]) {
       const app = { ...plan.app, name: `acme-${name}` };
       const result = DeployPlanSchema.safeParse({ ...plan, app, environment: { name } });
       expect(issue(result), name).toContainEqual({ path: "environment.name", message });

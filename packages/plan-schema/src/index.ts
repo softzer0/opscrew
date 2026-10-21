@@ -8,6 +8,7 @@ export * from "./architecture";
 export * from "./components";
 export * from "./design";
 export * from "./enums";
+export { environmentsOf, resolveEnvironmentPaths } from "./environments";
 export * from "./facts";
 export * from "./interview";
 export {
