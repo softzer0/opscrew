@@ -794,8 +794,11 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     });
 
     it("an unconfirmed host key the user declines in the dialog is refused; the model cannot supply one", async () => {
+      // Declines only the host key's confirmation: the host plan's own text mentions host keys too.
       const declineKey: Answer = (params) =>
-        params.message.includes("host key") ? { action: "decline" } : approveAll(params);
+        params.message.includes("Trust the SSH host key")
+          ? { action: "decline" }
+          : approveAll(params);
       const h = await deployed(declineKey);
       const inspections = h.host.inspections;
       await unpin(h);

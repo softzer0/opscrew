@@ -1,6 +1,6 @@
 import type { CheckResult } from "@opscrew/contracts";
 import { z } from "zod";
-import { markNoise } from "./noise";
+import { DEEP_NOISE, markNoise } from "./noise";
 import { dockerRunSkip, imageVersion, json, runLocalContainer, skipResult } from "./shared";
 import type { DeepPins, DeepToolResult, LocalDocker } from "./types";
 
@@ -108,6 +108,12 @@ export function sshAuditResults(
   audit: SshAuditResult,
   policy: SshAuditPolicyResult,
 ): CheckResult[] {
+  // A failed policy whose every mismatch is known noise (`policy:<field>`) is noise itself.
+  const reasons = policy.mismatched.map((field) => DEEP_NOISE["ssh-audit"][`policy:${field}`]);
+  const noise =
+    !policy.passed && reasons.length > 0 && reasons.every((reason) => reason !== undefined)
+      ? [...new Set(reasons)].join(" ")
+      : undefined;
   const results: CheckResult[] = [
     {
       id: "policy",
@@ -121,6 +127,7 @@ export function sshAuditResults(
         ? {}
         : { remediation: `Offer only what the policy expects. ${HARDENING_GUIDE}` }),
       source: "ssh-audit",
+      ...(noise === undefined ? {} : { noise }),
     },
     ...audit.algorithms
       .filter((a) => a.fail.length > 0 || a.warn.length > 0)

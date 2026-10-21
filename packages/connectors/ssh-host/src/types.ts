@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { HOST_SYSCTL_KEYS, MAX_COMPOSE_BYTES } from "./constants";
+import { ECDSA_HOST_KEY_TYPES, HOST_SYSCTL_KEYS, MAX_COMPOSE_BYTES } from "./constants";
 import { canonicalIpv4Cidr } from "./parse";
 
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
@@ -151,6 +151,12 @@ export const DesiredHostSchema = z
         .regex(PUBLIC_KEY_RE, { message: "must be one OpenSSH public key line" }),
     }),
     sshPort: z.number().int().min(1).max(65535),
+    /**
+     * The algorithm of the server's host key the project pinned (its known_hosts and the deploy
+     * secrets hold it). An ECDSA key keeps the ECDSA host key offered, so the pinned key still
+     * works; otherwise only the ED25519 and RSA host keys are.
+     */
+    hostKeyType: z.enum(["ssh-ed25519", "ssh-rsa", ...ECDSA_HOST_KEY_TYPES]),
     access: z.enum(["public", "tunnel"]),
     /**
      * Tunnel mode: the app's own connector's Compose file as rendered by `@opscrew/iac-templates`

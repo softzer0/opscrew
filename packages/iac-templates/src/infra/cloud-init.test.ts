@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +34,70 @@ interface CloudConfig {
   write_files: WriteFile[];
   runcmd: (string | string[])[];
   users: { name: string; ssh_authorized_keys: string[] }[];
+}
+
+const SSHD_DROP_IN = "/etc/ssh/sshd_config.d/10-opscrew.conf";
+
+/**
+ * research.md R8 on OpsCrew's own servers: ssh-audit's Ubuntu 24.04 guide without GSSAPI, exactly
+ * as the lead read it from ssh-audit.com (the user-key types too: only `deploy` logs in, with
+ * OpsCrew's ED25519 key), the two host keys, and the filtered moduli through ModuliFile.
+ */
+const R8_LINES = [
+  "KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512",
+  "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-gcm@openssh.com,aes128-ctr",
+  "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com",
+  "RequiredRSASize 3072",
+  "HostKey /etc/ssh/ssh_host_ed25519_key",
+  "HostKey /etc/ssh/ssh_host_rsa_key",
+  "HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256",
+  "CASignatureAlgorithms sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256",
+  "HostbasedAcceptedAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256-cert-v01@openssh.com,rsa-sha2-256",
+  "PubkeyAcceptedAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256",
+  "ModuliFile /etc/ssh/moduli.opscrew",
+];
+const MODULI_COMMAND = "sh -c awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.opscrew";
+const SSHD_CHECK_COMMAND = `sh -c install -d -m 0755 /run/sshd && sshd -t || rm -f ${SSHD_DROP_IN}`;
+
+/** Why the Docker check of the SSH settings is skipped, or undefined when it runs. */
+const dockerSkip = ((): string | undefined => {
+  if (process.env.OPSCREW_DOCKER_TESTS !== "1") return "set OPSCREW_DOCKER_TESTS=1 to run it";
+  const info = spawnSync("docker", ["info", "--format", "{{.OSType}}"], { encoding: "utf8" });
+  return info.status === 0 && info.stdout.trim() === "linux"
+    ? undefined
+    : "no Docker engine for Linux containers is running";
+})();
+if (dockerSkip)
+  console.warn(`[iac-templates] skipping the sshd check on ubuntu:24.04: ${dockerSkip}`);
+
+/**
+ * Runs in ubuntu:24.04 with the drop-in at /t: installs openssh-server, runs cloud-init's own
+ * moduli and sshd -t commands, starts sshd on port 2222, and prints what a modern client, an old
+ * client (NIST key exchange only) and ssh-keyscan see.
+ */
+function sshdCheckScript(): string {
+  const command = (line: string) => line.replace(/^sh -c /, "");
+  return `set -eu
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null
+apt-get install -y -qq --no-install-recommends openssh-server openssh-client >/dev/null
+useradd --create-home --shell /bin/bash deploy
+install -m 0644 /t/10-opscrew.conf ${SSHD_DROP_IN}
+${command(MODULI_COMMAND)}
+${command(SSHD_CHECK_COMMAND)}
+test -f ${SSHD_DROP_IN} && echo "sshd -t: ok"
+echo "weak moduli: $(awk '!($5 >= 3071)' /etc/ssh/moduli.opscrew | wc -l)"
+dpkg --verify openssh-server | grep -q /etc/ssh/moduli || echo "moduli conffile: unchanged"
+/usr/sbin/sshd -p 2222
+ssh-keygen -q -t ed25519 -N '' -f /root/id
+install -d -m 0700 -o deploy -g deploy /home/deploy/.ssh
+install -m 0600 -o deploy -g deploy /root/id.pub /home/deploy/.ssh/authorized_keys
+login() { ssh -i /root/id -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/known_hosts -p 2222 "$@" deploy@127.0.0.1 true; }
+login && echo "modern client: ok"
+login -o KexAlgorithms=diffie-hellman-group-exchange-sha256 && echo "group exchange: ok"
+if login -o KexAlgorithms=ecdh-sha2-nistp256 2>/dev/null; then echo "old client: accepted"; else echo "old client: refused"; fi
+echo "host keys: $(ssh-keyscan -p 2222 127.0.0.1 2>/dev/null | awk '{ print $2 }' | sort | tr '\\n' ' ' | sed 's/ $//')"
+`;
 }
 
 const rendered = renderTemplate(template, { ssh_public_key: PUBLIC_KEY });
@@ -121,10 +186,79 @@ describe("cloud-init template", () => {
     expect(last).toEqual([
       "sh",
       "-c",
-      "/usr/local/sbin/opscrew-install-docker --check && touch /var/lib/opscrew-ready",
+      "/usr/local/sbin/opscrew-install-docker --check && test -f /etc/ssh/sshd_config.d/10-opscrew.conf && touch /var/lib/opscrew-ready",
     ]);
     expect(rendered.match(/touch \/var\/lib\/opscrew-ready/g)).toHaveLength(1);
   });
+
+  it("hardens SSH to R8's algorithms with only the ED25519 and RSA host keys", () => {
+    const lines = (file(SSHD_DROP_IN)?.content ?? "").trimEnd().split("\n");
+    expect(lines.slice(0, 6)).toEqual([
+      "PasswordAuthentication no",
+      "KbdInteractiveAuthentication no",
+      "PermitRootLogin no",
+      "MaxAuthTries 3",
+      "X11Forwarding no",
+      "AllowUsers deploy",
+    ]);
+    expect(lines.slice(6)).toEqual(R8_LINES);
+    expect(lines.join("\n")).not.toContain("ecdsa");
+    // Host keys are never regenerated: their fingerprints, pinned by OpsCrew, stay.
+    expect(rendered).not.toContain("ssh-keygen");
+    expect(rendered).not.toContain("ssh_host_ecdsa");
+  });
+
+  it("writes the filtered moduli copy and lets sshd -t pass the settings before SSH restarts", () => {
+    const commands = config.runcmd.map((c) => (Array.isArray(c) ? c.join(" ") : c));
+    const moduli = commands.indexOf(MODULI_COMMAND);
+    const check = commands.indexOf(SSHD_CHECK_COMMAND);
+    const restart = commands.indexOf("systemctl restart ssh");
+    expect(moduli).toBeGreaterThan(-1);
+    // /etc/ssh/moduli is an openssh-server conffile: only read, never written.
+    expect(rendered).not.toMatch(/(>|mv [^\n]*) \/etc\/ssh\/moduli(?!\.opscrew)/);
+    expect(check).toBeGreaterThan(moduli);
+    expect(restart).toBeGreaterThan(check);
+  });
+
+  it.skipIf(dockerSkip !== undefined)(
+    "passes sshd -t on ubuntu:24.04 and accepts a modern client, offering no ECDSA host key",
+    { timeout: 300_000 },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "opscrew-sshd-"));
+      const name = `opscrew-sshd-test-${randomBytes(4).toString("hex")}`;
+      try {
+        writeFileSync(join(dir, "10-opscrew.conf"), file(SSHD_DROP_IN)?.content ?? "");
+        writeFileSync(join(dir, "check.sh"), sshdCheckScript());
+        const run = spawnSync(
+          "docker",
+          [
+            "run",
+            "--rm",
+            "--name",
+            name,
+            "--label",
+            "opscrew-test=sshd",
+            "-v",
+            `${dir}:/t:ro`,
+            "ubuntu:24.04",
+            "sh",
+            "/t/check.sh",
+          ],
+          { encoding: "utf8", env: { ...process.env, MSYS_NO_PATHCONV: "1" } },
+        );
+        expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
+        expect(run.stdout).toContain("sshd -t: ok");
+        expect(run.stdout).toContain("modern client: ok");
+        expect(run.stdout).toContain("old client: refused");
+        expect(run.stdout).toMatch(/host keys: ssh-ed25519 ssh-rsa\n/);
+        expect(run.stdout).toContain("weak moduli: 0");
+        expect(run.stdout).toContain("moduli conffile: unchanged");
+        expect(run.stdout).toContain("group exchange: ok");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.skipIf(spawnSync("sh", ["-c", "true"]).status !== 0)("installer is valid POSIX sh", () => {
     const dir = mkdtempSync(join(tmpdir(), "opscrew-cloud-init-"));

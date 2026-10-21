@@ -52,6 +52,7 @@ export const OS_PRESETS = {
   "ubuntu-22.04": {
     id: "ubuntu",
     versionId: "22.04",
+    openssh: "8.9",
     codename: "jammy",
     pretty: "Ubuntu 22.04.5 LTS",
     idLike: "debian",
@@ -59,6 +60,7 @@ export const OS_PRESETS = {
   "ubuntu-24.04": {
     id: "ubuntu",
     versionId: "24.04",
+    openssh: "9.6",
     codename: "noble",
     pretty: "Ubuntu 24.04.3 LTS",
     idLike: "debian",
@@ -66,6 +68,7 @@ export const OS_PRESETS = {
   "ubuntu-26.04": {
     id: "ubuntu",
     versionId: "26.04",
+    openssh: "10.2",
     codename: "resolute",
     pretty: "Ubuntu 26.04 LTS",
     idLike: "debian",
@@ -73,6 +76,7 @@ export const OS_PRESETS = {
   "debian-12": {
     id: "debian",
     versionId: "12",
+    openssh: "9.2",
     codename: "bookworm",
     pretty: "Debian GNU/Linux 12 (bookworm)",
     idLike: "",
@@ -80,6 +84,7 @@ export const OS_PRESETS = {
   "debian-13": {
     id: "debian",
     versionId: "13",
+    openssh: "10.0",
     codename: "trixie",
     pretty: "Debian GNU/Linux 13 (trixie)",
     idLike: "",
@@ -87,6 +92,7 @@ export const OS_PRESETS = {
   "ubuntu-20.04": {
     id: "ubuntu",
     versionId: "20.04",
+    openssh: "8.2",
     codename: "focal",
     pretty: "Ubuntu 20.04.6 LTS",
     idLike: "debian",
@@ -94,6 +100,7 @@ export const OS_PRESETS = {
   "linuxmint-22": {
     id: "linuxmint",
     versionId: "22",
+    openssh: "9.6",
     codename: "wilma",
     pretty: "Linux Mint 22",
     idLike: "ubuntu debian",
@@ -179,7 +186,7 @@ export class FakeHost implements RemoteExec {
   // identity and platform
   login: string;
   sudo: "nopasswd" | "password" | "none";
-  os: { id: string; versionId: string; codename: string; pretty: string; idLike: string };
+  os: { id: string; versionId: string; codename: string; pretty: string; idLike: string; openssh: string };
   arch: string;
   systemd = true;
   flock = true;
@@ -551,6 +558,7 @@ export class FakeHost implements RemoteExec {
     add("flock", this.flock ? "/usr/bin/flock" : "", this.flock ? 0 : 1);
     add("addresses", this.addresses.join("\n"));
     add("sshd", root ? this.sshdT() : "", root ? 0 : 1);
+    add("openssh", `OpenSSH_${this.os.openssh}p1, OpenSSL 3.0.13 30 Jan 2024`);
     add("sshd-include", this.sshdIncludesDropIns ? "Include /etc/ssh/sshd_config.d/*.conf" : "", this.sshdIncludesDropIns ? 0 : 1);
     const dropIn = this.files.get(SSHD_DROP_IN);
     add("sshd-dropin", dropIn ?? "", dropIn === undefined ? 1 : 0);

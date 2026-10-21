@@ -101,13 +101,18 @@ export function parseDf(text: string): number {
   return toNumber(rows[rows.length - 1]?.split(/\s+/)[3]);
 }
 
+/** `ssh -V` (`OpenSSH_9.6p1 Ubuntu-3ubuntu13.14, OpenSSL ...`): `9.6`, or null. */
+export function parseOpensshVersion(text: string): string | null {
+  return /^OpenSSH_(\d+\.\d+)/m.exec(text)?.[1] ?? null;
+}
+
 /**
  * `sshd -T`: the effective settings OpsCrew cares about (`allowTcpForwarding` is the global value,
  * without Match blocks); null when the output is unusable.
  */
 export function parseSshdT(
   text: string,
-): Omit<NonNullable<HostFacts["sshd"]>, "dropInIncluded" | "dropIn"> | null {
+): Omit<NonNullable<HostFacts["sshd"]>, "dropInIncluded" | "dropIn" | "version"> | null {
   const values = new Map<string, string[]>();
   for (const line of linesOf(text)) {
     const space = line.indexOf(" ");

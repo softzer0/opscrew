@@ -83,8 +83,8 @@ describe("applyHostPlan on a fresh server", () => {
       keys: [DEPLOY_KEY],
       groups: ["deploy", "docker"],
     });
-    expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(
-      "# Managed by OpsCrew. `opscrew destroy --undo-host` puts the previous setting back.\nPermitRootLogin prohibit-password\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n",
+    expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toMatch(
+      /^# Managed by OpsCrew\. `opscrew destroy --undo-host` puts the previous setting back\.\nPermitRootLogin prohibit-password\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nKexAlgorithms /,
     );
     // ufw installed (Debian), the SSH rule first, then web, then on.
     expect(fake.ufwLog).toEqual([

@@ -5,6 +5,8 @@ const NIST =
   "A NIST curve: ssh-audit distrusts these on principle, no practical attack is known, and current clients choose the post-quantum or curve25519 exchange first.";
 const NON_ETM =
   "A MAC without encrypt-then-MAC: OpenSSH clients choose the ETM variants the server also offers first.";
+const RSA_SIZE =
+  "The RSA host key has 3072 bits, which meets the same guide's RequiredRSASize 3072. The policy asks for 4096, but a new key would change the fingerprint pinned in the deploy secrets, so OpsCrew never regenerates it.";
 
 /**
  * Known noise per tool (research R1 and the spike on Ubuntu 24.04): result ids with the reason
@@ -39,6 +41,9 @@ export const DEEP_NOISE: Readonly<Record<DeepTool, Readonly<Record<string, strin
     "mac:umac-128@openssh.com": NON_ETM,
     "kex:diffie-hellman-group14-sha256":
       "The 2048-bit group14 exchange is OpenSSH 9.6's fallback for old clients; current clients never choose it.",
+    // The policy test's mismatched fields, as `policy:<mismatched_field>` (research R8).
+    "policy:Host key (rsa-sha2-256) sizes": RSA_SIZE,
+    "policy:Host key (rsa-sha2-512) sizes": RSA_SIZE,
   },
   testssl: {
     OCSP_stapling:

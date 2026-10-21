@@ -188,6 +188,27 @@ describe("markNoise", () => {
     expect(markNoise([result], "testssl")).toEqual([result]);
     expect(markNoise([{ ...result, id: "OCSP_stapling" }], "testssl")[0]?.noise).toContain("OCSP");
   });
+
+  it("lists the policy's RSA host-key size mismatch (3072 against 4096) with R8's reason, and only that", () => {
+    const errors: { mismatched_field: string; actual: string[]; expected_required: string[] }[] =
+      JSON.parse(SSH_POLICY).errors;
+    const sizes = errors.filter((e) =>
+      /^Host key \(rsa-sha2-\d+\) sizes$/.test(e.mismatched_field),
+    );
+    expect(sizes.map((e) => [e.actual, e.expected_required])).toEqual([
+      [["3072"], ["4096"]],
+      [["3072"], ["4096"]],
+    ]);
+    for (const { mismatched_field } of errors) {
+      const reason = DEEP_NOISE["ssh-audit"][`policy:${mismatched_field}`];
+      if (sizes.some((e) => e.mismatched_field === mismatched_field)) {
+        expect(reason).toContain("RequiredRSASize 3072");
+        expect(reason).toContain("fingerprint pinned in the deploy secrets");
+      } else {
+        expect(reason, mismatched_field).toBeUndefined();
+      }
+    }
+  });
 });
 
 describe("runLynis", () => {
@@ -363,6 +384,23 @@ describe("ssh-audit", () => {
     });
     expect(() => parseSshAudit({ banner: {} })).toThrow();
     expect(() => parseSshAuditPolicy({ passed: "no" })).toThrow();
+  });
+
+  it("marks the policy result as noise only when every mismatch is known noise", () => {
+    const audit = parseSshAudit(JSON.parse(SSH_AUDIT));
+    const policy = parseSshAuditPolicy(JSON.parse(SSH_POLICY));
+    // A fresh OpsCrew server: only the RSA host-key size (3072 against 4096) differs.
+    const sizes = policy.mismatched.filter((field) => field.startsWith("Host key (rsa-"));
+    const fresh = sshAuditResults(audit, { ...policy, mismatched: sizes })[0];
+    expect(fresh).toMatchObject({ id: "policy", status: "fail", severity: "high" });
+    expect(fresh?.noise).toBe(DEEP_NOISE["ssh-audit"]["policy:Host key (rsa-sha2-256) sizes"]);
+    // Any other mismatch (here the stock server's key exchanges) fails as before.
+    const stock = sshAuditResults(audit, policy)[0];
+    expect(stock).toMatchObject({ id: "policy", status: "fail" });
+    expect(stock?.noise).toBeUndefined();
+    expect(sshAuditResults(audit, { ...policy, passed: true, mismatched: [] })[0]?.noise).toBe(
+      undefined,
+    );
   });
 
   it("maps a failed policy to high fail, each flagged algorithm to low warn, and marks the noise", () => {

@@ -7,6 +7,7 @@ import {
   APPS_DIR,
   appDirs,
   DATA_DIR,
+  type EcdsaHostKeyType,
   EDGE_DIR,
   EDGE_PROJECT,
   FAIL2BAN_JAIL_PATH,
@@ -18,6 +19,7 @@ import {
   PORTAINER_REPOSITORY,
   SHARED_DIRS,
   SSHD_HEADER,
+  SSHD_MODULI_FILE,
   SUPPORTED_ARCH,
   SUPPORTED_OS,
   SYSCTL_FILE,
@@ -572,6 +574,48 @@ function deployKeyStep({ facts, desired, others }: SetupContext): HostStep {
   return step("deploy-key", title, "change", params, reason.filter(Boolean).join(" "));
 }
 
+/** OpenSSH `version` (`9.6`) is `major.minor` or later; false when the version is unknown. */
+function opensshAtLeast(version: string | null, major: number, minor: number): boolean {
+  if (version === null) return false;
+  const [have = 0, haveMinor = 0] = version.split(".").map(Number);
+  return have > major || (have === major && haveMinor >= minor);
+}
+
+/**
+ * The sshd step's algorithm parameters (research R8) for OpenSSH `version`, and what the plan says
+ * about them. Host keys are never regenerated: the ECDSA one stays offered when it is the key the
+ * project pinned. The user-key types stay as they are: other accounts may use ECDSA or FIDO keys.
+ */
+function sshdAlgorithms(
+  version: string | null,
+  desired: DesiredHost,
+): {
+  params: { moduliFile: boolean; ecdsaHostKey?: EcdsaHostKeyType };
+  text: string;
+} {
+  const moduliFile = opensshAtLeast(version, 8, 6);
+  const ecdsa = desired.hostKeyType.startsWith("ecdsa-")
+    ? (desired.hostKeyType as EcdsaHostKeyType)
+    : undefined;
+  const openssh =
+    version === null ? "OpenSSH of a version OpsCrew could not read" : `OpenSSH ${version}`;
+  const text = [
+    `SSH then offers only modern key exchanges, ciphers and MACs, and only the ED25519 and RSA host keys${ecdsa ? " and the ECDSA one" : ""} (none is regenerated, so their fingerprints stay). The key types and sizes users log in with are left as they are, so other accounts' keys keep working.`,
+    moduliFile
+      ? `sshd reads only the Diffie-Hellman groups of 3072 bits and more, from ${SSHD_MODULI_FILE} (ModuliFile); /etc/ssh/moduli itself is never changed.`
+      : `The Diffie-Hellman groups stay as they are: ${openssh} has no ModuliFile (it needs 8.6).`,
+    ...(ecdsa
+      ? [
+          "The ECDSA host key stays because it is the one this project pinned (its known_hosts and the deploy secrets hold it), and without it OpsCrew and the deploys could no longer connect; ssh-audit's policy reports it.",
+        ]
+      : []),
+  ].join(" ");
+  return {
+    params: { moduliFile, ...(ecdsa ? { ecdsaHostKey: ecdsa } : {}) },
+    text,
+  };
+}
+
 function sshdStep({ facts, desired, found, findings, others }: SetupContext): HostStep {
   const sshd = facts.sshd;
   const permitRootLogin = desired.admin.isRoot ? "prohibit-password" : "no";
@@ -582,6 +626,7 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
     found.push(findings.sshdUnreadable());
     return step("sshd", TITLES.sshd, "blocked", { permitRootLogin }, "sshd -T failed.");
   }
+  const algorithms = sshdAlgorithms(sshd.version, desired);
   const blockedBy = deployBlockedBy(sshd);
   if (blockedBy !== null) found.push(findings.sshdDeploysBlocked(blockedBy));
   // The other apps' setup chose these settings; this app never weakens or changes them.
@@ -594,6 +639,7 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
         permitRootLogin: sshd.permitRootLogin,
         disablePasswords: !sshd.passwordAuthentication,
         kbdInteractiveOff: !sshd.kbdInteractiveAuthentication,
+        ...algorithms.params,
       },
       `SSH is already hardened for ${quoted(others)}; OpsCrew leaves it as it is.`,
     );
@@ -621,7 +667,7 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
     );
   }
   const kbdInteractiveOff = disablePasswords && sshd.authenticationMethods === "any";
-  const params = { permitRootLogin, disablePasswords, kbdInteractiveOff };
+  const params = { permitRootLogin, disablePasswords, kbdInteractiveOff, ...algorithms.params };
   const why = [
     ...(lacking.length > 0
       ? [`${lacking.join(", ")} log${lacking.length === 1 ? "s" : ""} in with a password`]
@@ -639,7 +685,13 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
     sshd.dropIn?.trim() === sshdDropIn(params).trim() &&
     !facts.pendingUndo.sshd;
   if (inPlace) {
-    return step("sshd", `SSH: ${passwordText}, ${rootText}`, "in-place", params, "Already set.");
+    return step(
+      "sshd",
+      `SSH: ${passwordText}, ${rootText}, modern algorithms only`,
+      "in-place",
+      params,
+      "Already set.",
+    );
   }
   if (!sshd.dropInIncluded) {
     found.push(findings.sshdNoInclude());
@@ -647,10 +699,10 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
   }
   return step(
     "sshd",
-    `Harden SSH: ${passwordText}, ${rootText}`,
+    `Harden SSH: ${passwordText}, ${rootText}, modern algorithms only`,
     "change",
     params,
-    `OpsCrew writes /etc/ssh/sshd_config.d/10-opscrew.conf, checks it with sshd -t and reloads SSH. The server undoes the change on its own unless new logins as deploy and as ${desired.admin.user} work afterwards. AllowUsers is never set.`,
+    `OpsCrew writes /etc/ssh/sshd_config.d/10-opscrew.conf, checks it with sshd -t and reloads SSH. ${algorithms.text} The server undoes the change on its own unless new logins as deploy and as ${desired.admin.user} work afterwards. AllowUsers is never set.`,
   );
 }
 
@@ -1685,8 +1737,8 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
       step(
         "sshd",
         entry("sshd")?.previous.dropIn === "present"
-          ? "Put back the SSH settings file that was there before OpsCrew"
-          : "Remove OpsCrew's SSH settings file (10-opscrew.conf)",
+          ? "Put back the SSH settings file that was there before OpsCrew, and remove OpsCrew's moduli file (moduli.opscrew)"
+          : "Remove OpsCrew's SSH settings file (10-opscrew.conf) and its moduli file (moduli.opscrew)",
         ours || f.pendingUndo.sshd ? "change" : "in-place",
         {},
         "The server undoes this on its own unless new logins still work afterwards.",

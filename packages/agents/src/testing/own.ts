@@ -16,6 +16,7 @@ import {
   hostPlanHash,
   planHost,
   SHARED_DIRS,
+  sshdDropIn,
   tunnelProject,
   webFilterFileHashes,
 } from "@opscrew/connector-ssh-host";
@@ -209,6 +210,7 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
       allowTcpForwarding: "yes",
       dropInIncluded: true,
       dropIn: null,
+      version: "9.6",
     },
     listeners: [
       ...sshPorts.map((port) => ({ proto: "tcp", address: "0.0.0.0", port, process: "sshd" })),
@@ -339,13 +341,8 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const tunnel = paramsOf(plan, "tunnel-connector");
   const ports = String(ufw.sshPorts).split(" ").map(Number);
   const web = ufw.web === true;
-  const dropIn = [
-    "# Managed by OpsCrew. `opscrew destroy --undo-host` puts the previous setting back.",
-    `PermitRootLogin ${String(sshd.permitRootLogin)}`,
-    ...(sshd.disablePasswords === true ? ["PasswordAuthentication no"] : []),
-    ...(sshd.kbdInteractiveOff === true ? ["KbdInteractiveAuthentication no"] : []),
-    "",
-  ].join("\n");
+  // The drop-in the sshd step writes for its parameters.
+  const dropIn = sshdDropIn(sshd as unknown as Parameters<typeof sshdDropIn>[0]);
   const jail = [
     "# Managed by OpsCrew: brute-force protection for SSH.",
     "[sshd]",
@@ -495,6 +492,7 @@ export function withOtherApp(o: OtherAppOptions = {}): HostFacts {
     admin: { user: before.user, isRoot: before.privilege === "root" },
     deploy: { user: "deploy", publicKey: OTHER_DEPLOY_KEY },
     sshPort: before.sshd?.ports[0] ?? 22,
+    hostKeyType: "ssh-ed25519",
     access: "public",
     ...(filter !== undefined ? { webFilter: { ipv4: filter } } : {}),
     disablePasswords: true,

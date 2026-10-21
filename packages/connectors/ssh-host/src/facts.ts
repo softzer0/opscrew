@@ -207,6 +207,8 @@ export const HostFactsSchema = z.object({
       dropInIncluded: z.boolean(),
       /** Content of OpsCrew's drop-in, null when absent. */
       dropIn: z.string().nullable(),
+      /** OpenSSH's version from `ssh -V`, such as `9.6`; null when it could not be read. */
+      version: z.string().nullable(),
     })
     .nullable(),
   listeners: z.array(ListenerSchema),

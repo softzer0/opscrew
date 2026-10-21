@@ -42,6 +42,7 @@ import {
   parseDpkg,
   parseFree,
   parseNsswitchPasswd,
+  parseOpensshVersion,
   parseOsRelease,
   parsePairs,
   parseRuntimeFiles,
@@ -252,6 +253,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["flock", "command -v flock"],
   ["addresses", "ip -o addr show scope global"],
   ["sshd", "sshd -T"],
+  ["openssh", "ssh -V 2>&1"],
   [
     "sshd-include",
     "grep -Eis '^[[:space:]]*include[[:space:]].*sshd_config\\.d/' /etc/ssh/sshd_config",
@@ -469,6 +471,7 @@ export function factsFromOutput(
     ...sshdSettings,
     dropInIncluded: section(sections, "sshd-include").exit === 0,
     dropIn: dropIn.exit === 0 ? dropIn.text : null,
+    version: parseOpensshVersion(section(sections, "openssh").text),
   };
 
   const ufwStatus = section(sections, "ufw-status");

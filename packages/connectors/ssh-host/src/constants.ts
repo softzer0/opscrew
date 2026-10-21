@@ -151,17 +151,50 @@ export const DEFAULT_DEAD_MAN_SECONDS = 180;
 export const SSHD_HEADER =
   "# Managed by OpsCrew. `opscrew destroy --undo-host` puts the previous setting back.";
 
-/** The content of OpsCrew's sshd drop-in for the sshd step's parameters. */
+/** sshd's moduli file (an openssh-server conffile, never changed). */
+export const SSHD_MODULI = "/etc/ssh/moduli";
+/** OpsCrew's copy of it with only the groups of 3072 bits and more, read through `ModuliFile`. */
+export const SSHD_MODULI_FILE = "/etc/ssh/moduli.opscrew";
+
+/** The `awk` program that keeps only the moduli of 3072 bits and more (research R8). */
+export const MODULI_FILTER = "$5 >= 3071";
+
+/** The ECDSA host key algorithms a pinned host key may have. */
+export const ECDSA_HOST_KEY_TYPES = [
+  "ecdsa-sha2-nistp256",
+  "ecdsa-sha2-nistp384",
+  "ecdsa-sha2-nistp521",
+] as const;
+export type EcdsaHostKeyType = (typeof ECDSA_HOST_KEY_TYPES)[number];
+
+/**
+ * The content of OpsCrew's sshd drop-in for the sshd step's parameters: the login settings, and
+ * the key exchanges, ciphers, MACs and host key algorithms of ssh-audit's Ubuntu 24.04 guide
+ * (research R8). The user-key types (`PubkeyAcceptedAlgorithms` and the like) stay as they are,
+ * so other accounts' ECDSA or FIDO keys keep working.
+ */
 export function sshdDropIn(p: {
   permitRootLogin: string;
   disablePasswords: boolean;
   kbdInteractiveOff: boolean;
+  /** sshd knows `ModuliFile` (OpenSSH 8.6 and later), so it reads {@link SSHD_MODULI_FILE}. */
+  moduliFile: boolean;
+  /** The pinned host key's ECDSA algorithm, which keeps the ECDSA host key offered. */
+  ecdsaHostKey?: EcdsaHostKeyType | undefined;
 }): string {
   return [
     SSHD_HEADER,
     `PermitRootLogin ${p.permitRootLogin}`,
     ...(p.disablePasswords ? ["PasswordAuthentication no"] : []),
     ...(p.kbdInteractiveOff ? ["KbdInteractiveAuthentication no"] : []),
+    "KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512",
+    "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-gcm@openssh.com,aes128-ctr",
+    "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com",
+    "HostKey /etc/ssh/ssh_host_ed25519_key",
+    "HostKey /etc/ssh/ssh_host_rsa_key",
+    ...(p.ecdsaHostKey ? ["HostKey /etc/ssh/ssh_host_ecdsa_key"] : []),
+    `HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256${p.ecdsaHostKey ? `,${p.ecdsaHostKey}` : ""}`,
+    ...(p.moduliFile ? [`ModuliFile ${SSHD_MODULI_FILE}`] : []),
     "",
   ].join("\n");
 }

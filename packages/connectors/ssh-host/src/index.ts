@@ -21,6 +21,7 @@ export {
   runtimeFilePath,
   SECRET_RUNTIME_FILES,
   SHARED_DIRS,
+  sshdDropIn,
   tunnelDir,
   tunnelProject,
   UFW_SSH_COMMENT,

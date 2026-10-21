@@ -39,14 +39,14 @@ describe("ufw that is on but lets everything in (T927)", () => {
     // The hashes these fake servers give without a default to change (pinned since 013's layout
     // without /srv/app).
     expect(hostPlanHash(await planFor(activeUfw("deny")))).toBe(
-      "e838c958bd6032772cf0220d7b99d6133a8d7ecdbc0ba7de7fde36a96f4c11e7",
+      "df188258365920bfd05c4ea8917d442d69329a16e8f74b187258b61e460708b8",
     );
     const covered = activeUfw("deny");
     covered.ufwRules = WEB;
     const plan = await planFor(covered);
     expect(stepOf(plan, "ufw")).toMatchObject({ state: "in-place", reason: "Already set." });
     expect(hostPlanHash(plan)).toBe(
-      "dc5ded9f98241b628309e8da255afe8e796cf68b8f72687c14b7128cae342db5",
+      "da592bcdc9a95b8246563b7f5bac8857cab6f513363b8485a07656ea99e0d959",
     );
     const reject = activeUfw("reject");
     reject.ufwRules = WEB;
@@ -163,7 +163,7 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
   it("keeps today's step on servers with only OpsCrew's containers or none", async () => {
     const idle = withDocker();
     expect(hostPlanHash(await planFor(idle))).toBe(
-      "c3d6c13dba552022cbe09e29ee462d20300d757ddce5e86eb5b716d839ecfe1b",
+      "9905cc45110d45dd0322de360ae2ffff6028b4a814d61fad73a95bf0bb4065c1",
     );
     // A server OpsCrew prepared whose daemon.json is gone again, running only the app.
     const own = withDocker();
@@ -176,7 +176,7 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
     const plan = await planFor(own);
     expect(stepOf(plan, "docker-daemon")?.state).toBe("change");
     expect(hostPlanHash(plan)).toBe(
-      "d15b12eee239bc78b864142edce40e8ed25281bca6a9ba443ee4ab04a5203936",
+      "589cb9b943597da28fb7d44c9b3dac3042345cc037e242f358f6e60870ef5cfc",
     );
     // OpsCrew's add-ons are its own too: the app's tunnel connector and Portainer.
     own.containers.push(

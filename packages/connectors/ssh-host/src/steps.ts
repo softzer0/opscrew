@@ -18,11 +18,13 @@ import {
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   DOCKER_PACKAGES,
+  ECDSA_HOST_KEY_TYPES,
   EDGE_DIR,
   EDGE_PROJECT,
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
   MIN_DOCKER_MAJOR,
+  MODULI_FILTER,
   OPSCREW_DIR,
   PORTAINER_DIR,
   PORTAINER_PORT,
@@ -34,6 +36,8 @@ import {
   SSHD_BACKUP,
   SSHD_DROP_IN,
   SSHD_HEADER,
+  SSHD_MODULI,
+  SSHD_MODULI_FILE,
   SYSCTL_FILE,
   sshdDropIn,
   TUNNELS_DIR,
@@ -419,6 +423,8 @@ const SshdParams = z.object({
   permitRootLogin: z.enum(["no", "prohibit-password"]),
   disablePasswords: z.boolean(),
   kbdInteractiveOff: z.boolean(),
+  moduliFile: z.boolean(),
+  ecdsaHostKey: z.enum(ECDSA_HOST_KEY_TYPES).optional(),
 });
 
 const SSHD_RELOAD =
@@ -444,14 +450,16 @@ touch ${DEAD_MAN_DIR}/${step}.fired`;
 }
 
 /**
- * Dead-man capture shared by sshd setup and undo: restore the drop-in as it is right now, and
- * bring a stopped or failed ssh unit back (reset-failed, then reload-or-restart; Debian/Ubuntu
- * call it ssh.service).
+ * Dead-man capture shared by sshd setup and undo: restore the drop-in and OpsCrew's moduli file
+ * as they are right now, and bring a stopped or failed ssh unit back (reset-failed, then
+ * reload-or-restart; Debian/Ubuntu call it ssh.service).
  */
 const SSHD_CAPTURE = `if [ -f ${SSHD_DROP_IN} ]; then cp -p ${SSHD_DROP_IN} ${DEAD_MAN_DIR}/sshd.prev; else rm -f ${DEAD_MAN_DIR}/sshd.prev; fi
+if [ -f ${SSHD_MODULI_FILE} ]; then cp -p ${SSHD_MODULI_FILE} ${DEAD_MAN_DIR}/moduli.prev; else rm -f ${DEAD_MAN_DIR}/moduli.prev; fi
 cat > ${DEAD_MAN_DIR}/sshd.undo.sh <<'OPSCREW_UNDO'
 ${undoPreamble("sshd", "puts the previous SSH settings back.")}
 if [ -f ${DEAD_MAN_DIR}/sshd.prev ]; then cp -p ${DEAD_MAN_DIR}/sshd.prev ${SSHD_DROP_IN}; else rm -f ${SSHD_DROP_IN}; fi
+if [ -f ${DEAD_MAN_DIR}/moduli.prev ]; then cp -p ${DEAD_MAN_DIR}/moduli.prev ${SSHD_MODULI_FILE}; else rm -f ${SSHD_MODULI_FILE}; fi
 systemctl reset-failed ssh.service sshd.service >/dev/null 2>&1 || true
 systemctl reload-or-restart ssh.service >/dev/null 2>&1 || systemctl reload-or-restart sshd.service >/dev/null 2>&1 || true
 OPSCREW_UNDO`;
@@ -460,9 +468,15 @@ function sshdScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts 
   if (purpose === "undo") {
     return scripts({
       name: "sshd.undo",
-      params: { DROPIN: SSHD_DROP_IN, BACKUP: SSHD_BACKUP, HEADER: SSHD_HEADER },
+      params: {
+        DROPIN: SSHD_DROP_IN,
+        BACKUP: SSHD_BACKUP,
+        HEADER: SSHD_HEADER,
+        MODULI_FILE: SSHD_MODULI_FILE,
+      },
       verify: `  if [ -f "$BACKUP" ]; then cmp -s "$BACKUP" "$DROPIN" || return 1
   elif [ -f "$DROPIN" ]; then return 1; fi
+  [ ! -e "$MODULI_FILE" ] || return 1
   ${SSHD_UNDO_TIMER}`,
       snapshot: `if [ -f "$DROPIN" ]; then echo prev.dropIn=present; else echo prev.dropIn=absent; fi`,
       apply: `if [ -f "$BACKUP" ]; then cp -p "$BACKUP" "$DROPIN"; else rm -f "$DROPIN"; fi
@@ -471,6 +485,7 @@ if ! sshd -t >/dev/null 2>&1; then
   sh ${DEAD_MAN_DIR}/sshd.undo.sh >/dev/null 2>&1 || true
   fail 'The previous SSH settings did not pass sshd -t, so OpsCrew kept its own.' 4
 fi
+rm -f "$MODULI_FILE"
 ${SSHD_RELOAD}`,
       failed: "The previous SSH settings are not back.",
       deadMan: { step: "sshd", capture: SSHD_CAPTURE, params: {} },
@@ -491,6 +506,9 @@ ${SSHD_RELOAD}`,
       KBD_OFF: p.kbdInteractiveOff,
       DROPIN_B64: base64(dropIn),
       DROPIN_SHA256: sha256Hex(dropIn),
+      MODULI: SSHD_MODULI,
+      MODULI_FILE: SSHD_MODULI_FILE,
+      MODULI_ON: p.moduliFile,
     },
     helpers: `config_ok() {
   eff=$(sshd -T 2>/dev/null) || return 1
@@ -501,9 +519,14 @@ ${SSHD_RELOAD}`,
   if [ "$KBD_OFF" = true ]; then printf '%s\\n' "$eff" | grep -Eqx '(kbdinteractiveauthentication|challengeresponseauthentication) no' || return 1; fi
   return 0
 }
-dropin_ok() { [ -f "$DROPIN" ] && [ "$(sha256sum "$DROPIN" | cut -d ' ' -f 1)" = "$DROPIN_SHA256" ]; }`,
+dropin_ok() { [ -f "$DROPIN" ] && [ "$(sha256sum "$DROPIN" | cut -d ' ' -f 1)" = "$DROPIN_SHA256" ]; }
+moduli_ok() {
+  [ "$MODULI_ON" = true ] || return 0
+  [ -f "$MODULI_FILE" ] && [ -z "$(awk '!(${MODULI_FILTER})' "$MODULI_FILE")" ]
+}`,
     verify: `  config_ok || return 1
   dropin_ok || return 1
+  moduli_ok || return 1
   ${SSHD_UNDO_TIMER}`,
     snapshot: `if [ -f "$DROPIN" ]; then echo prev.dropIn=present; else echo prev.dropIn=absent; fi
 eff=$(sshd -T 2>/dev/null) || eff=''
@@ -513,6 +536,11 @@ echo "prev.passwordAuthentication=$(printf '%s\\n' "$eff" | sed -n 's/^passworda
 install -d -m 0700 ${OPSCREW_DIR} ${BACKUP_DIR}
 # Keep the file that was there before OpsCrew, once, for undo.
 if [ -f "$DROPIN" ] && [ ! -e "$BACKUP" ] && ! head -n 1 "$DROPIN" | grep -qxF -- "$HEADER"; then cp -p "$DROPIN" "$BACKUP"; fi
+# The Diffie-Hellman groups of 3072 bits and more, in a copy that sshd reads through ModuliFile.
+if [ "$MODULI_ON" = true ]; then
+  moduli=$(awk '${MODULI_FILTER}' "$MODULI")
+  printf '%s\\n' "$moduli" | write_file "$MODULI_FILE" 0644
+fi
 printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROPIN" 0644
 [ -d /run/sshd ] || install -d -m 0755 /run/sshd
 if ! sshd -t >/dev/null 2>&1; then

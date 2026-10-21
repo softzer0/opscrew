@@ -30,10 +30,26 @@ import {
   triggerScript,
   writeRecordScript,
 } from "./steps";
-import type { HostPlan } from "./types";
+import type { DesiredHost, HostPlan } from "./types";
 import { WEB_FILTER_DROP_IN_TEXT, WEB_FILTER_UNIT_TEXT, webFilterScript } from "./web-filter";
 
 const MAX_MAP_COUNT = { "vm.max_map_count": "262144" };
+
+/**
+ * research.md R8 on a server the user owns: ssh-audit's Ubuntu 24.04 lines without GSSAPI and
+ * without the user-key types, the two host keys, and the filtered moduli through ModuliFile.
+ */
+const R8_HOST_KEY_ALGORITHMS =
+  "HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256";
+const R8_LINES = [
+  "KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512",
+  "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-gcm@openssh.com,aes128-ctr",
+  "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com",
+  "HostKey /etc/ssh/ssh_host_ed25519_key",
+  "HostKey /etc/ssh/ssh_host_rsa_key",
+  R8_HOST_KEY_ALGORITHMS,
+  "ModuliFile /etc/ssh/moduli.opscrew",
+];
 
 /** Every script of every step of `plan`, including the dead-man scripts. */
 function allScripts(plan: HostPlan): Map<string, string> {
@@ -268,7 +284,7 @@ describe("sshd scripts", () => {
       apply.lastIndexOf("try-reload-or-restart ssh.service"),
     );
     // The Portainer tunnel (ssh -L as deploy) and the Cloudflare Tunnel (ssh://localhost) keep working:
-    // the drop-in sets only these three settings, and is written exactly as rendered.
+    // the drop-in sets only the login settings and the algorithms, and is written exactly as rendered.
     const p = scriptParams(apply);
     const written = Buffer.from(p.DROPIN_B64 ?? "", "base64").toString("utf8");
     expect(written).toBe(
@@ -276,6 +292,7 @@ describe("sshd scripts", () => {
         permitRootLogin: "prohibit-password",
         disablePasswords: true,
         kbdInteractiveOff: true,
+        moduliFile: true,
       }),
     );
     expect(p.DROPIN_SHA256).toBe(sha256Hex(written));
@@ -285,8 +302,16 @@ describe("sshd scripts", () => {
       .filter(Boolean)
       .map((line) => line.split(" ")[0])
       .sort();
+    // No user-key types (PubkeyAcceptedAlgorithms and the like): other accounts' keys keep working.
     expect(settings).toEqual([
+      "Ciphers",
+      "HostKey",
+      "HostKey",
+      "HostKeyAlgorithms",
       "KbdInteractiveAuthentication",
+      "KexAlgorithms",
+      "MACs",
+      "ModuliFile",
       "PasswordAuthentication",
       "PermitRootLogin",
     ]);
@@ -299,6 +324,89 @@ describe("sshd scripts", () => {
     await provision(fake);
     const dropIn = fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf") ?? "";
     expect(dropIn).not.toMatch(/AllowUsers|AllowTcpForwarding|ListenAddress|Match/);
+  });
+
+  const sshdOf = async (fake: FakeHost, hostKeyType: DesiredHost["hostKeyType"]) => {
+    const desired = desiredFor(fake, { hostKeyType });
+    const plan = planHost(await inspectHost(fake), desired, "opscrew provision");
+    const step = plan.steps.find((s) => s.id === "sshd");
+    if (!step) throw new Error("no sshd step");
+    const { apply } = stepScripts(plan, step);
+    const written = Buffer.from(scriptParams(apply).DROPIN_B64 ?? "", "base64").toString("utf8");
+    return { plan, step, apply, written };
+  };
+
+  it("offer only R8's algorithms and the ED25519 and RSA host keys, leave the user-key types, and read the filtered moduli", async () => {
+    const { plan, step, apply, written } = await sshdOf(new FakeHost(), "ssh-ed25519");
+    expect(written.split("\n").slice(4)).toEqual([...R8_LINES, ""]);
+    expect(written).not.toContain("ecdsa");
+    expect(written).not.toMatch(/PubkeyAccepted|HostbasedAccepted|CASignature/);
+    expect(step.title).toContain("modern algorithms only");
+    expect(step.reason).toContain("only the ED25519 and RSA host keys (none is regenerated");
+    expect(step.reason).toContain(
+      "The key types and sizes users log in with are left as they are, so other accounts' keys keep working.",
+    );
+    expect(step.reason).toContain(
+      "only the Diffie-Hellman groups of 3072 bits and more, from /etc/ssh/moduli.opscrew (ModuliFile); /etc/ssh/moduli itself is never changed.",
+    );
+    expect(step.reason).not.toContain("ECDSA");
+    // The filtered copy is written before sshd -t checks the drop-in that reads it; the conffile
+    // /etc/ssh/moduli is only read.
+    const filter = apply.indexOf("awk '$5 >= 3071' \"$MODULI\"");
+    expect(filter).toBeGreaterThan(0);
+    expect(filter).toBeLessThan(apply.indexOf("sshd -t"));
+    expect(apply).toContain('write_file "$MODULI_FILE" 0644');
+    expect(apply).not.toMatch(/write_file "\$MODULI" |> \/etc\/ssh\/moduli\b/);
+    // The approval is bound to the drop-in: another drop-in is another plan.
+    const ecdsa = await sshdOf(new FakeHost(), "ecdsa-sha2-nistp256");
+    expect(ecdsa.plan).not.toEqual(plan);
+  });
+
+  it("keep the ECDSA host key, and say why, when the project pinned an ECDSA key", async () => {
+    const { step, written } = await sshdOf(new FakeHost(), "ecdsa-sha2-nistp256");
+    expect(step.params.ecdsaHostKey).toBe("ecdsa-sha2-nistp256");
+    const lines = written.split("\n");
+    expect(lines.filter((line) => line.startsWith("HostKey "))).toEqual([
+      "HostKey /etc/ssh/ssh_host_ed25519_key",
+      "HostKey /etc/ssh/ssh_host_rsa_key",
+      "HostKey /etc/ssh/ssh_host_ecdsa_key",
+    ]);
+    expect(lines).toContain(`${R8_HOST_KEY_ALGORITHMS},ecdsa-sha2-nistp256`);
+    // Everything else is R8's.
+    for (const line of R8_LINES.filter((l) => !l.startsWith("HostKey"))) {
+      expect(lines).toContain(line);
+    }
+    expect(step.reason).toContain(
+      "The ECDSA host key stays because it is the one this project pinned (its known_hosts and the deploy secrets hold it)",
+    );
+    // An RSA pin needs nothing extra: the RSA host key stays anyway.
+    const rsa = await sshdOf(new FakeHost(), "ssh-rsa");
+    expect(rsa.written).toBe((await sshdOf(new FakeHost(), "ssh-ed25519")).written);
+  });
+
+  it("never write RequiredRSASize (other accounts may log in with RSA-2048 keys), and ModuliFile from OpenSSH 8.6", async () => {
+    const jammy = await sshdOf(new FakeHost({ os: "ubuntu-22.04" }), "ssh-ed25519");
+    expect(jammy.step.params).toMatchObject({ moduliFile: true });
+    expect(jammy.step.params).not.toHaveProperty("requiredRsaSize");
+    expect(jammy.step.reason).not.toContain("RequiredRSASize");
+    expect(jammy.written).not.toContain("RequiredRSASize");
+    expect(jammy.written).toContain("ModuliFile /etc/ssh/moduli.opscrew\n");
+
+    const old = new FakeHost();
+    old.os.openssh = "8.4";
+    const older = await sshdOf(old, "ssh-ed25519");
+    expect(older.step.params).toMatchObject({ moduliFile: false });
+    expect(older.written).not.toContain("ModuliFile");
+    expect(older.apply).toContain("MODULI_ON='false'");
+    expect(older.step.reason).toContain(
+      "The Diffie-Hellman groups stay as they are: OpenSSH 8.4 has no ModuliFile (it needs 8.6).",
+    );
+    // A version OpsCrew cannot read gets no ModuliFile line.
+    const unknown = new FakeHost();
+    unknown.os.openssh = "";
+    const unread = await sshdOf(unknown, "ssh-ed25519");
+    expect(unread.step.params).toMatchObject({ moduliFile: false });
+    expect(unread.step.reason).toContain("OpenSSH of a version OpsCrew could not read");
   });
 });
 
@@ -459,6 +567,7 @@ esac`;
       permitRootLogin: "prohibit-password",
       disablePasswords: true,
       kbdInteractiveOff: true,
+      moduliFile: true,
     });
     const h = new ShellHarness();
     try {
@@ -471,6 +580,9 @@ esac`;
         h.write("/etc/ssh/sshd_config.d/10-opscrew.conf", content);
         return h.run(check).stdout;
       };
+      // Without OpsCrew's moduli copy (sshd reads it through ModuliFile), still a change.
+      expect(run("no", dropIn)).toContain("state=change");
+      h.write("/etc/ssh/moduli.opscrew", "20231002031514 2 6 100 3071 2 F0A1\n");
       expect(run("no", dropIn)).toContain("state=in-place");
       // Effective settings already right, but no OpsCrew drop-in: still a change (secure reads it).
       expect(run("no", "PermitRootLogin no\n")).toContain("state=change");

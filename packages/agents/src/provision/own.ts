@@ -264,6 +264,8 @@ export async function desiredHost(
     },
     deploy: { user: "deploy", publicKey: input.deployPublicKey.trim() },
     sshPort: connection.port,
+    // The pinned key's ssh-keyscan type; planHost refuses any other.
+    hostKeyType: run.session.hostKey.type as DesiredHost["hostKeyType"],
     access: run.target.access,
     ...(tunnel !== undefined ? { tunnel } : {}),
     ...(portainer !== undefined ? { portainer } : {}),

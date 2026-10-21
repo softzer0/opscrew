@@ -58,6 +58,7 @@ describe("planHost: steps", () => {
       permitRootLogin: "prohibit-password",
       disablePasswords: true,
       kbdInteractiveOff: true,
+      moduliFile: true,
     });
     expect(plan.steps.find((step) => step.id === "sshd")?.title).toMatch(
       /root keeps key-only logins/,
@@ -946,19 +947,19 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     // The hashes these fake servers give without the filter (pinned since 013's per-app tunnel
     // connector and the end of /srv/app).
     expect(hostPlanHash(planHost(facts, desiredFor(fake), "opscrew provision"))).toBe(
-      "5d1032fb9cd5acedf0ca57dbbcf7ffe6b40ebf1cba1bd4ee7e40f3682e87a13c",
+      "2e67cffa0e3ed4a81ab3bb2413dec7adfb73643f1b948979d4fc5413558df75f",
     );
     expect(hostPlanHash(planHost(facts, tunnelDesired(fake), "opscrew provision"))).toBe(
-      "d5fddcbae7961a292992e7af8f5b6c1f7ff73da96ae1b62fe5df08ec25afdd34",
+      "c3c5e497d9d4a5ab892d0426a4e026e27c5ee83902b11a0f9a949ace88d04779",
     );
     const used = new FakeHost();
     await provision(used);
     expect(hostPlanHash(await planFor(used))).toBe(
-      "9dc23f150dce99dac92ea7050b6ed1b891cfa2b40fbe036362d26345b6baafa4",
+      "e78d00e243f016ca472bbbf7d68be5a6fc2a01eeb68b0f47d6081c489f347391",
     );
     await removeApp(used);
     expect(hostPlanHash(planUndo(await inspectHost(used), "opscrew destroy --undo-host"))).toBe(
-      "6eb09594464e710b56f90f87db90c2022423a6c29289a97b56a403dc6633f651",
+      "f1478d592e0984ba35ec1bd560699c01afbb9380f005ae088fe1dce4cae7fc5a",
     );
   });
 
@@ -979,7 +980,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(codes(plan)).toEqual([]);
     // The filter plan of this fake server, pinned.
     expect(hostPlanHash(plan)).toBe(
-      "76261e8588d055247369c766bcc12bc1f0c77581016f455f039847b52974a076",
+      "aaf10441f9cd1990c174871e58eb54bebfea965cfbba951c923bbc6e01299fd0",
     );
   });
 

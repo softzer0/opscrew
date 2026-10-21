@@ -94,6 +94,7 @@ export function desiredFor(fake: FakeHost, overrides: Partial<DesiredHost> = {})
     admin: { user: fake.login, isRoot: fake.login === "root" },
     deploy: { user: "deploy", publicKey: DEPLOY_KEY },
     sshPort: 22,
+    hostKeyType: "ssh-ed25519",
     access: "public",
   };
   return { ...base, ...overrides };

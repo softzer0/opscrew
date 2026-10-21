@@ -33,6 +33,16 @@ function scriptsFor(
   return stepScripts(plan, step);
 }
 
+/** A stock /etc/ssh/moduli in miniature: its comment, a 2048-bit group and two 3072-bit ones. */
+const MODULI_STRONG = ["20231002031514 2 6 100 3071 2 F0A1", "20231002031530 2 6 100 3071 5 F0B2"];
+const MODULI = [
+  "# $OpenBSD: moduli,v 1.36 2023/10/02 20:39:37 dtucker Exp $",
+  "# Time Type Tests Tries Size Generator Modulus",
+  "20231002030805 2 6 100 2047 5 C9A1",
+  ...MODULI_STRONG,
+  "",
+].join("\n");
+
 /** systemctl: units are "active" while `$S/active.<unit>` exists; everything else succeeds. */
 const SYSTEMCTL = `case "$1" in
   is-active)
@@ -85,6 +95,7 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
     h = new ShellHarness();
     h.stub("systemctl", SYSTEMCTL);
     h.stub("systemd-run", SYSTEMD_RUN);
+    h.write("/etc/ssh/moduli", MODULI);
     return h;
   };
   afterEach(() => h?.dispose());
@@ -95,11 +106,12 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
         permitRootLogin: "no",
         disablePasswords: true,
         kbdInteractiveOff: true,
+        moduliFile: true,
       });
     const DROPIN = "/etc/ssh/sshd_config.d/10-opscrew.conf";
     const DM = "/etc/opscrew/deadman";
 
-    it("arms with systemd-run and its undo.sh restores the drop-in and brings ssh back", () => {
+    it("arms with systemd-run and its undo.sh restores the drop-in, removes a new moduli copy and brings ssh back", () => {
       const h = harness();
       h.write(DROPIN, "PermitRootLogin yes\n");
       const deadMan = sshd().deadMan;
@@ -112,10 +124,13 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
       );
 
       h.write(DROPIN, "PermitRootLogin no\nPasswordAuthentication no\n");
+      h.write("/etc/ssh/moduli.opscrew", "filtered\n");
       h.clearCalls();
       const undo = h.runFile(`${DM}/sshd.undo.sh`);
       expect(undo.status).toBe(0);
       expect(h.read(DROPIN)).toBe("PermitRootLogin yes\n");
+      expect(h.exists("/etc/ssh/moduli.opscrew")).toBe(false);
+      expect(h.read("/etc/ssh/moduli")).toBe(MODULI);
       expect(h.exists(`${DM}/sshd.fired`)).toBe(true);
       expect(h.calls()).toEqual([
         "systemctl reset-failed ssh.service sshd.service",
@@ -905,25 +920,95 @@ esac`;
   });
 
   describe("sshd", () => {
-    it("writes the planned drop-in byte for byte, keeps the user's own file once, and reloads ssh", () => {
+    const SETTINGS = {
+      permitRootLogin: "no",
+      disablePasswords: true,
+      kbdInteractiveOff: true,
+      moduliFile: true,
+    };
+    /** A harness whose sshd -T shows SETTINGS in effect; `extra` adds a case (`-t) exit 255 ;;`). */
+    const sshdHarness = (extra = "") => {
       const h = harness();
       h.stub(
         "sshd",
         `case "$1" in
+  ${extra}
   -T) printf '%s\\n' 'port 22' 'permitrootlogin no' 'passwordauthentication no' 'kbdinteractiveauthentication no' ;;
 esac`,
       );
-      const settings = { permitRootLogin: "no", disablePasswords: true, kbdInteractiveOff: true };
+      return h;
+    };
+
+    it("writes the planned drop-in byte for byte, keeps the user's own file once, filters the moduli, and reloads ssh", () => {
+      const h = sshdHarness();
       h.write("/etc/ssh/sshd_config.d/10-opscrew.conf", "X11Forwarding no\n");
-      const { apply, verify } = scriptsFor("setup", "sshd", settings);
+      const { check, apply, verify } = scriptsFor("setup", "sshd", SETTINGS);
       const run = h.run(apply);
       expect(run.status, run.stderr).toBe(0);
-      expect(h.read("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(sshdDropIn(settings));
+      expect(h.read("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(sshdDropIn(SETTINGS));
       expect(h.read("/etc/opscrew/backup/10-opscrew.conf")).toBe("X11Forwarding no\n");
       // Written beside the file and renamed over it: no temporary file is left behind.
       expect(readdirSync(h.native("/etc/ssh/sshd_config.d"))).toEqual(["10-opscrew.conf"]);
       expect(h.calls()).toContain("systemctl try-reload-or-restart ssh.service");
       expect(h.run(verify).status).toBe(0);
+      // sshd reads only the groups of 3072 bits and more, from OpsCrew's copy; the conffile stays.
+      const moduli = h.read("/etc/ssh/moduli.opscrew") ?? "";
+      expect(moduli).not.toContain(" 2047 ");
+      for (const group of MODULI_STRONG) expect(moduli).toContain(group);
+      expect(h.read("/etc/ssh/moduli")).toBe(MODULI);
+      expect(readdirSync(h.native("/etc/ssh")).sort()).toEqual([
+        "moduli",
+        "moduli.opscrew",
+        "sshd_config.d",
+      ]);
+      expect(h.run(check).stdout).toContain("state=in-place");
+      // Again: nothing changes.
+      expect(h.run(apply).status).toBe(0);
+      expect(h.read("/etc/ssh/moduli.opscrew")).toBe(moduli);
+      // OpsCrew's copy gone or with weak groups: the check sees a change.
+      h.write("/etc/ssh/moduli.opscrew", MODULI);
+      expect(h.run(check).stdout).toContain("state=change");
+    });
+
+    it("writes no moduli copy where OpenSSH has no ModuliFile", () => {
+      const h = sshdHarness();
+      const settings = { ...SETTINGS, moduliFile: false };
+      const { apply, verify } = scriptsFor("setup", "sshd", settings);
+      expect(h.run(apply).status).toBe(0);
+      expect(h.exists("/etc/ssh/moduli.opscrew")).toBe(false);
+      expect(h.read("/etc/ssh/sshd_config.d/10-opscrew.conf")).not.toContain("ModuliFile");
+      expect(h.run(verify).status).toBe(0);
+    });
+
+    it("leaves the old settings in place, without a moduli copy, when sshd -t refuses the new ones", () => {
+      const h = sshdHarness("-t) exit 255 ;;");
+      const before = "PermitRootLogin yes\n";
+      h.write("/etc/ssh/sshd_config.d/10-opscrew.conf", before);
+      const { apply, deadMan } = scriptsFor("setup", "sshd", SETTINGS);
+      if (!deadMan) throw new Error("no dead-man");
+      expect(h.run(armScript(deadMan, 180)).status).toBe(0);
+      h.clearCalls();
+      const run = h.run(apply);
+      expect(run.status).toBe(4);
+      expect(run.stderr).toContain("did not pass sshd -t");
+      expect(h.read("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(before);
+      expect(h.exists("/etc/ssh/moduli.opscrew")).toBe(false);
+      expect(h.read("/etc/ssh/moduli")).toBe(MODULI);
+      expect(h.calls()).not.toContain("systemctl try-reload-or-restart ssh.service");
+    });
+
+    it("undo removes the drop-in with its ModuliFile line, and the moduli copy", () => {
+      const h = sshdHarness();
+      expect(h.run(scriptsFor("setup", "sshd", SETTINGS).apply).status).toBe(0);
+      expect(h.exists("/etc/ssh/moduli.opscrew")).toBe(true);
+      const undo = scriptsFor("undo", "sshd", {});
+      expect(h.run(undo.check).stdout).toContain("state=change");
+      const run = h.run(undo.apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.exists("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(false);
+      expect(h.exists("/etc/ssh/moduli.opscrew")).toBe(false);
+      expect(h.read("/etc/ssh/moduli")).toBe(MODULI);
+      expect(h.run(undo.verify).status).toBe(0);
     });
   });
 
