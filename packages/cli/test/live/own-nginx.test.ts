@@ -16,6 +16,7 @@ import {
 } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
+import { parse } from "yaml";
 import { underLoad } from "./builder-checks";
 import { type CloudflareZone, minutes, resolveIpv4, servedCertificate, waitFor } from "./cloud";
 import { LiveRun, localLeakSources, serverSettings } from "./harness";
@@ -239,11 +240,14 @@ describe.skipIf(MISSING.length > 0)(
       async () => {
         const before = await servedCertificate(run.appHost);
         const certbot = `$(docker ps -q --filter label=com.docker.compose.project=${EDGE_PROJECT} --filter label=com.docker.compose.service=certbot)`;
+        // The loop's own command, with its folders: certbot runs as a user who cannot write
+        // certbot's default ones.
+        const renew = certbotRenew(await run.shell().ok(`cat ${EDGE_DIR}/compose.yaml`));
         await underLoad([await run.healthUrl()], "a forced renewal", log, async () => {
           await run
             .shell()
             .ok(
-              `docker exec ${certbot} certbot renew --force-renewal --no-random-sleep-on-renew --cert-name ${run.app()}`,
+              `docker exec ${certbot} ${renew} --force-renewal --cert-name ${run.app()}`,
               minutes(5),
             );
           await waitFor("nginx serving the renewed certificate", minutes(3), async () =>
@@ -437,3 +441,14 @@ describe.skipIf(MISSING.length > 0)(
     run.registerCleanup();
   },
 );
+
+/** The loop's `certbot renew` command, with its folders, from the edge's Compose file. */
+function certbotRenew(composeFile: string): string {
+  const doc = parse(composeFile) as { services: { certbot?: { entrypoint?: string[] } } };
+  const line = (doc.services.certbot?.entrypoint?.at(-1) ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("certbot renew "));
+  if (line === undefined) throw new Error("The edge's certbot service runs no `certbot renew`.");
+  return line;
+}
