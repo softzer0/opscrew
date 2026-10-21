@@ -396,6 +396,7 @@ Effort`.
       - additions;
       - the deeper check against a container server, with the files unchanged;
       - Valkey's password.
+    - **Portainer redeploy under load (T1416's check), gated:** a local Portainer CE (`IMAGES.portainer`), a local registry and Git server bound to loopback, the stack in proxy mode; two webhook redeploys under a request loop give no failed request, and Caddy's container is the same before and after.
     - **Cleanup:** each test removes its own containers, networks, volumes and images, by id or label.
     - **gixy-ng once:** install it in a throwaway Python container (`pip install gixy-ng`) and run T1408's `runGixy` against a generated nginx additions file. Confirm the binary name, `-f json`, the report's fields and its exit code, and fix `runGixy` if they differ (T1408 took them from the original gixy).
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new files>` and `pnpm lint`
@@ -417,6 +418,7 @@ Effort`.
     - **testssl.sh** gives no high finding for either proxy (SC-1407).
     - **The leak search** ends every pass: the run's logs, commits, plans, reports and audit entries contain none of the generated keys, the client key or the age identity (SC-1406).
     - **Teardown** revokes and removes every certificate, setting and record the run created, with a fallback through the API when destroy fails.
+    - **`docs/e2e.md`** no longer mentions `X-OpsCrew-Image`; the Portainer check reads `/.well-known/opscrew-version` (T1416).
     - **The coverage page** names every new scenario as not yet run live.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint` (the live runs are T1414)
   - Effort: high
@@ -560,6 +562,7 @@ Each wave is merged, gated and pushed before the next starts.
       - `SharedDesired.tls.retiring` goes, because T1403 doesn't use it (T1403's report).
       - Verify Docker's error text when it cannot mount the host recursively read-only (T1405 recognises exit 125 with "recursive" in stderr, a guess), on a server with an old kernel or Docker if one is ever available; otherwise keep the guess documented.
       - Merge `RuntimeContext.cloudflareRanges` with `ctx.cloudflare.ipRanges` into one field (T1407's report).
+      - Portainer's `opscrew-<app>_version` volume (T1416's stamp) is removed with the stack, not left behind by `destroy --delete-data`: add it to `portainerStackVolumes` (or remove it with the stack), with the agents tests and the runbook's backup note.
       - Refresh the older pins that moved upstream (the curl and mysql 8.4 digests, uv), found by T1401b's run of `update-pins.mjs`, then run the gate.
     - **A duplication sweep over 014's whole change:** merge repeated helpers where the code gets smaller and no less clear. List what was merged, and what was left and why.
     - **No behaviour change.**
