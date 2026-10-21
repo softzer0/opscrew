@@ -53,7 +53,8 @@ interface DeepToolResult { tool: DeepTool; version: string; results: CheckResult
 
 **Guarantees:**
 - Every tool runs from a pin: the image digest, or the tarball's SHA-256 checked in the container.
-- Lynis's container mounts the host read-only, with `/tmp` as a tmpfs. Nothing it writes outlives
+- Lynis's container mounts the host with `--mount type=bind,src=/,dst=/hostfs,readonly,bind-recursive=readonly`
+  (Docker refuses where it cannot make submounts read-only, and the audit skips), with `/tmp` as a tmpfs. Nothing it writes outlives
   the container, and its image is removed afterwards when it was not on the server before.
 - A tool that cannot run gives one `skip` result with the reason and how to enable it. A refused
   or timed-out connection says so and never passes.
