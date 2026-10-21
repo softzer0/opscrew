@@ -1,3 +1,4 @@
+import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type {
   CheckResult,
   PolicyResult,
@@ -9,14 +10,17 @@ import { exists, plural, replaceNames, toPosixRelative, writeFileAtomic } from "
 import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
+  certificateHostChecks,
   type DeepPins,
   type DeepToolResult,
   defaultTcpConnect,
   evaluatePlanPolicies,
   HOST_CHECKS,
+  type HostCheck,
   type LocalDocker,
   localDocker,
   localDockerProblem,
+  originHostChecks,
   ownServerHostChecks,
   probePorts,
   probeSshPasswordAuth,
@@ -31,10 +35,18 @@ import {
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
+import { originTlsHostnames } from "../provision/origin-tls";
 import { findSavedPlan } from "../provision/plan-apply";
+import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { PortainerServices } from "../provision/types";
 import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import {
+  proxyCertificateHosts,
+  proxyRenewalAdvice,
+  readRenewalFailure,
+} from "../status/certificates";
+import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
@@ -52,6 +64,7 @@ import {
   UNKNOWN_SERVER_ADDRESS,
 } from "./report";
 import { serviceCheckInputs, servicePorts } from "./services";
+import { behindCloudflare, settingsChecks } from "./settings";
 
 /** Options for {@link runSecure}; every side effect has a default built from `deps`. */
 export interface RunSecureOptions {
@@ -75,6 +88,8 @@ export interface RunSecureOptions {
   deep?: boolean;
   /** Docker on this computer, for ssh-audit and testssl.sh (default: `docker` through `deps.runner`). */
   docker?: LocalDocker;
+  /** Cloudflare, for the zone's CAA records and minimum TLS (default: `CLOUDFLARE_API_TOKEN`'s). */
+  cloudflare?: CloudflareClient;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -84,6 +99,8 @@ export interface SecureResult {
   policies?: PolicyResult[];
   hostChecks: CheckResult[];
   probes: CheckResult[];
+  /** The app's certificates, its Cloudflare zone's CAA and minimum TLS, and the secrets copy. */
+  settings: CheckResult[];
   /** The deeper checks, one per tool; undefined without `deep`. */
   deep?: DeepToolResult[];
   /** Every failure and warning, most severe first. */
@@ -113,6 +130,32 @@ function privateReportInput(
       target === undefined || named.has(target) ? check : { ...check, target },
     );
   return { ...rest, hostChecks: strip(input.hostChecks), probes: strip(input.probes) };
+}
+
+/**
+ * The checks of the app's site from the server itself, once the app was deployed (FR-1423,
+ * FR-1406): `openssl s_client` to 127.0.0.1:443 for each hostname whose origin certificate and
+ * client certificate the app's Cloudflare record holds (refused without the client certificate,
+ * served Cloudflare's origin certificate, an unknown hostname refused), and the certificates of
+ * DNS-only hostnames renewed in time, with certbot's reason on nginx.
+ */
+async function siteTlsChecks(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  remote: RemoteExec,
+): Promise<HostCheck[]> {
+  if (!appDeployed(plan)) return [];
+  const tls = (await readCloudflareRecord(deps.paths))?.tls;
+  const origin = originTlsHostnames(plan).filter(
+    (h) => tls?.origin?.hostnames.includes(h) && tls.client?.enabled.includes(h),
+  );
+  const hosts = proxyCertificateHosts(plan);
+  const renewal =
+    hosts.length > 0 ? proxyRenewalAdvice(plan, await readRenewalFailure(deps, plan, remote)) : "";
+  return [
+    ...originHostChecks(origin),
+    ...certificateHostChecks(hosts, { now: deps.clock.now(), renewal }),
+  ];
 }
 
 /**
@@ -148,16 +191,24 @@ async function checkServer(
       : undefined);
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;
-  // The app's services: no published port, and their login set (FR-1328).
+  // The app's services: no published port, their login set (FR-1328), Valkey's password (FR-1450).
   const services = serviceHostChecks(plan.app.name, serviceCheckInputs(plan));
   if (remote === undefined) {
     skipped = `the deploy key is not on this machine (it is created by \`opscrew provision\`). Run the checks from the machine that ${own !== undefined ? "prepared your server" : "provisioned the server"}.`;
   } else if (own !== undefined) {
     reporter.step("Checking your server's hardening over SSH");
-    hostChecks = await runHostChecks(remote, [...ownServerHostChecks(own.hardening), ...services]);
+    hostChecks = await runHostChecks(remote, [
+      ...ownServerHostChecks(own.hardening),
+      ...services,
+      ...(await siteTlsChecks(deps, plan, remote)),
+    ]);
   } else {
     reporter.step(`Checking the server's hardening over SSH (${host})`);
-    hostChecks = await runHostChecks(remote, [...HOST_CHECKS, ...services]);
+    hostChecks = await runHostChecks(remote, [
+      ...HOST_CHECKS,
+      ...services,
+      ...(await siteTlsChecks(deps, plan, remote)),
+    ]);
   }
   reporter.step(
     own === undefined
@@ -208,16 +259,6 @@ const DEEP_PINS: DeepPins = {
   sshAudit: IMAGES.sshAudit.ref,
   testssl: IMAGES.testssl.ref,
 };
-
-/** True when visitors reach the app at Cloudflare's edge: proxied DNS or a Cloudflare Tunnel. */
-function behindCloudflare(plan: DeployPlan): boolean {
-  const { dns, target } = plan;
-  return (
-    (dns.provider === "cloudflare" && dns.proxied) ||
-    (target.provider === "own" && target.access === "tunnel") ||
-    (target.provider === "portainer" && target.web.mode === "tunnel")
-  );
-}
 
 /** How the deeper checks reach the server; undefined in the user's Portainer (no SSH). */
 interface DeepServer {
@@ -373,6 +414,12 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     remote = checked.remote;
   }
 
+  const settings = await settingsChecks(
+    deps,
+    plan,
+    options.cloudflare !== undefined ? { cloudflare: options.cloudflare } : {},
+  );
+
   const deep = options.deep
     ? await deepChecks(
         deps,
@@ -397,6 +444,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     scan,
     hostChecks,
     probes,
+    ...(settings.length > 0 ? { settings } : {}),
     ...(shownHost !== undefined ? { host: shownHost } : {}),
     ...(policies !== undefined ? { policies } : {}),
     ...(hostChecksSkipped !== undefined ? { hostChecksSkipped } : {}),
@@ -456,6 +504,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(policies !== undefined ? { policies } : {}),
     hostChecks,
     probes,
+    settings,
     ...(deep !== undefined ? { deep } : {}),
     problems,
     passed,

@@ -8,7 +8,8 @@ const SECRET = "\u0000secret\u0000";
 /**
  * The app's running services for the secops checks on the server (FR-1328), from the catalog:
  * each with the variables of its environment that hold its login (a generated secret), none for
- * an `internal-only` service (Valkey, Kafka, Redpanda), which only the app's containers reach.
+ * an `internal-only` service (Kafka, Redpanda), which only the app's containers reach, and for
+ * Valkey the ping it must refuse without its password.
  */
 export function serviceCheckInputs(plan: DeployPlan): ServiceCheckInput[] {
   return plan.services
@@ -23,6 +24,8 @@ export function serviceCheckInputs(plan: DeployPlan): ServiceCheckInput[] {
           spec.auth === "internal-only"
             ? []
             : Object.keys(environment).filter((name) => environment[name]?.includes(SECRET)),
+        // Valkey must refuse a request without its password (FR-1450).
+        ...(service.kind === "valkey" ? { ping: "valkey-cli PING" } : {}),
       };
     });
 }

@@ -50,6 +50,11 @@ export interface SecurityReportInput {
   portainer?: { notes: readonly string[]; probesSkipped: string };
   /** The deeper checks (`--deep`), one per tool; absent without it. */
   deep?: readonly DeepToolResult[];
+  /**
+   * The app's Cloudflare certificates and settings (CAA, minimum TLS, the permission gap) and the
+   * secrets copy's repository; absent when there is nothing of them to check.
+   */
+  settings?: readonly CheckResult[];
 }
 
 /** One item that needs attention, from any section of the report. */
@@ -62,7 +67,8 @@ export interface SecurityProblem {
     | "Server"
     | "Portainer stacks"
     | "Outside probe"
-    | "Deeper checks";
+    | "Deeper checks"
+    | "TLS and the secrets copy";
   /** What is wrong, in one line. */
   title: string;
   /** More detail: the finding's description, the policy message or what the check expects. */
@@ -143,6 +149,7 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
       input.portainer !== undefined ? "Portainer stacks" : "Server",
     ),
     ...checkProblems(input.probes, "Outside probe"),
+    ...checkProblems(input.settings ?? [], "TLS and the secrets copy"),
     ...(input.deep ?? []).flatMap((run) =>
       counted(run.results)
         .filter((check) => check.status === "fail" || check.status === "warn")
@@ -278,6 +285,9 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     } |`,
     `| ${input.portainer !== undefined ? "Stacks in your Portainer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
     `| Outside probes | ${input.probes.length === 0 ? "skipped" : summarizeChecks(input.probes)} |`,
+    ...(input.settings !== undefined
+      ? [`| TLS and the secrets copy | ${summarizeChecks(input.settings)} |`]
+      : []),
     ...(input.deep !== undefined
       ? [
           `| Deeper checks | ${summarizeChecks(input.deep.flatMap((run) => counted(run.results)))} |`,
@@ -383,6 +393,17 @@ export function renderSecurityReport(input: SecurityReportInput): string {
       `Connections attempted from this machine to ${input.host ? inlineCode(input.host) : "the server"}.`,
       "",
       ...checkTable(input.probes),
+      "",
+    );
+  }
+
+  if (input.settings !== undefined) {
+    out.push(
+      "## TLS and the secrets copy",
+      "",
+      "The app's Cloudflare certificates and settings, and where its secrets copy is committed.",
+      "",
+      ...checkTable(input.settings),
       "",
     );
   }

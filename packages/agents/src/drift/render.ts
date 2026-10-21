@@ -151,7 +151,7 @@ export function renderDriftReport(report: DriftReport): string {
 
   if (rules.length > 0) {
     lines.push(
-      `OpsCrew's shared rules in the Cloudflare zone differ from what this app's record lists (${rules.length}):`,
+      `OpsCrew's shared rules or the app's origin TLS in the Cloudflare zone differ from what this app's record lists (${rules.length}):`,
     );
     for (const item of rules) lines.push(`  ~ ${item.title}`, `      ${item.detail}`);
     lines.push("");

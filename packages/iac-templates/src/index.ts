@@ -25,6 +25,7 @@ export {
   type VercelRoutingTranslation,
 } from "./edge/vercel-routing";
 export * from "./infra";
+export { CAA_ISSUERS } from "./infra/cloudflare";
 export * from "./pins";
 export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";

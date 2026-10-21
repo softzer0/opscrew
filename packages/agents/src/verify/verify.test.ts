@@ -1,11 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
+import { writeCloudflareRecord } from "../provision/shared-cloudflare";
 import { recordServerAddress, serverAddressesFile } from "../shared";
 import {
   CLOUDFLARE_IPV4,
@@ -249,6 +250,110 @@ describe("runVerify", () => {
     const tls = byId(result.checks, "tls-certificate");
     expect(tls.status).toBe("fail");
     expect(tls.message).toContain("2026-10-20 (8 days left)");
+  });
+
+  it("warns below 30 days on a DNS-only certificate, with certbot's reason from the server (FR-1445)", async () => {
+    const deps = await setup({ proxied: false });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...testPlan({ proxied: false }),
+      target: { ...testPlan().target, edge: "nginx" } as DeployPlan["target"],
+    });
+    await mkdir(dirname(deps.paths.files.deployKey), { recursive: true });
+    await writeFile(deps.paths.files.deployKey, "placeholder for the deploy key file\n");
+    const commands: string[] = [];
+    const result = await runVerify(deps, {
+      resolver: { resolve4: async () => [SERVER_IPV4], resolve6: async () => [SERVER_IPV6] },
+      fetch: fakeSite().fetch,
+      tlsConnect: cert({ validTo: "2026-11-01T00:00:00.000Z" }),
+      tcpConnect: async () => true,
+      remote: (host) => ({
+        host,
+        async run(command) {
+          commands.push(command);
+          return {
+            exitCode: 0,
+            stdout: "Failed to renew certificate shop with error: Some challenges have failed.\n",
+            stderr: "",
+          };
+        },
+      }),
+    });
+    const tls = byId(result.checks, "tls-certificate") as { remediation?: string } & ReturnType<
+      typeof byId
+    >;
+    expect(tls.status).toBe("warn");
+    expect(tls.message).toContain("2026-11-01 (20 days left) and has not been renewed");
+    expect(tls.remediation).toContain(
+      "certbot's last renewal said: Some challenges have failed. Check that the hostname's DNS record points to the server",
+    );
+    expect(commands).toHaveLength(1);
+  });
+
+  it("warns about a damaged Cloudflare record with how to fix it, and goes on", async () => {
+    const deps = await setup();
+    await mkdir(dirname(deps.paths.files.cloudflareRecord), { recursive: true });
+    await writeFile(deps.paths.files.cloudflareRecord, '{"zoneId":"nope"}');
+    const result = await runVerify(deps, {
+      resolver: resolver(),
+      fetch: fakeSite().fetch,
+      tlsConnect: cert(),
+      tcpConnect: closed,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const check = byId(result.checks, "origin-tls-certificates") as ReturnType<typeof byId> & {
+      remediation?: string;
+    };
+    expect(check.status).toBe("warn");
+    expect(check.message).toContain("is damaged");
+    expect(check.remediation).toContain("Copy .opscrew/cloudflare.json back");
+    expect(result.passed).toBe(true);
+  });
+
+  it("warns when the record's origin or client certificate has fewer than 30 days left (FR-1406)", async () => {
+    const deps = await setup();
+    const tls = (expiresAt: string) => ({
+      origin: {
+        id: "o1",
+        hostnames: ["shop.example.com"],
+        expiresAt,
+        sha256: "a".repeat(64),
+        superseded: [],
+      },
+      client: {
+        id: "c1",
+        expiresAt: "2041-10-16T00:00:00.000Z",
+        sha256: "b".repeat(64),
+        enabled: ["shop.example.com"],
+        retiring: [],
+      },
+    });
+    const record = {
+      zoneId: "0123456789abcdef0123456789abcdef",
+      hostnames: {},
+      createdEntrypoints: [],
+    };
+    const run = () =>
+      runVerify(deps, {
+        resolver: resolver(),
+        fetch: fakeSite().fetch,
+        tlsConnect: cert(),
+        tcpConnect: closed,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+    await writeCloudflareRecord(deps.paths, { ...record, tls: tls("2041-10-16T00:00:00.000Z") });
+    expect(byId((await run()).checks, "origin-tls-certificates")).toMatchObject({
+      status: "pass",
+      message:
+        "Valid: the origin certificate until 2041-10-16 and the client certificate until 2041-10-16.",
+    });
+    await writeCloudflareRecord(deps.paths, { ...record, tls: tls("2026-11-01T00:00:00.000Z") });
+    const result = await run();
+    expect(byId(result.checks, "origin-tls-certificates")).toMatchObject({
+      status: "warn",
+      message:
+        "The app's Cloudflare origin certificate for shop.example.com expires on 2026-11-01. Run `opscrew provision`: it replaces the certificate, and the deploy brings the server the new one.",
+    });
+    expect(result.passed).toBe(true);
   });
 
   it("warns instead of failing when there is no domain (IP only)", async () => {

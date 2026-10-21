@@ -4,7 +4,7 @@ import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { normalizeHostName, upperFirst } from "@opscrew/core";
 import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import type { TcpConnect } from "@opscrew/secops";
+import { CERTIFICATE_WARN_DAYS, daysLeft, type TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import {
   checkResult,
@@ -15,6 +15,7 @@ import {
   sameIp,
 } from "../shared";
 import type { PublicAddressLookup } from "../shared/public-dns";
+import { proxyCertificateHosts, proxyRenewalAdvice } from "../status/certificates";
 import {
   type DnsResolver,
   type FetchWithLookup,
@@ -82,6 +83,11 @@ export interface VerifyCheckContext {
   fetchWithLookup?: FetchWithLookup;
   /** This computer's own host name lookup, asked first (default `dns.lookup`). */
   lookup?: LookupFunction;
+  /**
+   * certbot's reason when its last renewal of the app's certificate failed, read from the server
+   * only when a DNS-only certificate is not renewed in time; absent: no reason is given.
+   */
+  renewalFailure?: () => Promise<string | undefined>;
 }
 
 /** What `opscrew verify` says to do when the server's address is not on this computer. */
@@ -550,7 +556,11 @@ async function siteReachable(
   }
 }
 
-/** The certificate covers the host, is valid for at least {@link MIN_CERT_DAYS} days, and names its issuer. */
+/**
+ * The certificate covers the host, is valid for at least {@link MIN_CERT_DAYS} days, and names its
+ * issuer. The certificate of a DNS-only hostname, which the server's proxy gets, is warned about
+ * below 30 days, with what to do and certbot's reason (`renewalFailure`).
+ */
 export async function checkTls(
   host: string,
   ctx: VerifyCheckContext,
@@ -612,6 +622,9 @@ export async function checkTls(
       },
     );
   }
+  // A DNS-only hostname's certificate is the server's proxy's own (FR-1406, FR-1445).
+  const managed = proxyCertificateHosts(ctx.plan).includes(host);
+  const renewal = async () => proxyRenewalAdvice(ctx.plan, await ctx.renewalFailure?.());
   if (validTo <= now) {
     return checkResult(
       id,
@@ -620,8 +633,9 @@ export async function checkTls(
       "fail",
       `The certificate expired on ${day(cert.validTo)} (issued by ${cert.issuer}); browsers refuse the site.`,
       {
-        remediation:
-          "Check Caddy's logs (`docker compose logs caddy`) for renewal errors; renewal needs port 80 or 443 reachable from the internet.",
+        remediation: managed
+          ? await renewal()
+          : "Check Caddy's logs (`docker compose logs caddy`) for renewal errors; renewal needs port 80 or 443 reachable from the internet.",
         target: host,
       },
     );
@@ -636,17 +650,18 @@ export async function checkTls(
       { target: host },
     );
   }
-  const days = Math.floor((validTo - now) / 86_400_000);
-  if (days < MIN_CERT_DAYS) {
+  const days = daysLeft(cert.validTo, ctx.now);
+  if (days < MIN_CERT_DAYS || (managed && days < CERTIFICATE_WARN_DAYS)) {
     return checkResult(
       id,
       title,
       "medium",
-      "fail",
+      days < MIN_CERT_DAYS ? "fail" : "warn",
       `The certificate expires on ${day(cert.validTo)} (${days} days left) and has not been renewed (issued by ${cert.issuer}).`,
       {
-        remediation:
-          "Caddy renews 30 days ahead, so renewal is failing: check `docker compose logs caddy` on the server.",
+        remediation: managed
+          ? await renewal()
+          : "Caddy renews 30 days ahead, so renewal is failing: check `docker compose logs caddy` on the server.",
         target: host,
       },
     );

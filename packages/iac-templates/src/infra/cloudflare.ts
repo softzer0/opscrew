@@ -68,7 +68,10 @@ export function zoneTfvars(
  * The authorities each edge gets certificates from (research R4): Caddy falls back to ZeroSSL,
  * which issues under Sectigo's CAA name.
  */
-const CAA_ISSUERS = { caddy: ["letsencrypt.org", "sectigo.com"], nginx: ["letsencrypt.org"] };
+export const CAA_ISSUERS = {
+  caddy: ["letsencrypt.org", "sectigo.com"],
+  nginx: ["letsencrypt.org"],
+};
 
 /**
  * The CAA issuers of the app's domain, from the plan's edge. None for an app on the zone apex (or

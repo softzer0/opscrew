@@ -1,15 +1,23 @@
 import type { LookupFunction } from "node:net";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import { type GitHubClient, parseGitHubRepo } from "@opscrew/connector-github";
-import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { OpsCrewError, readTextIfExists, replaceNames, toPosixRelative } from "@opscrew/core";
+import type { CheckResult, FetchLike, RemoteExec } from "@opscrew/contracts";
+import {
+  isUserFacingError,
+  OpsCrewError,
+  readTextIfExists,
+  replaceNames,
+  toPosixRelative,
+} from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
+import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import {
+  checkResult,
   committableUrl,
   editCheckText,
   gitClient,
@@ -23,6 +31,12 @@ import {
   writeRenderedFiles,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import {
+  deployShell,
+  RECORD_CERTIFICATES,
+  readRenewalFailure,
+  recordCertificateCheck,
+} from "../status/certificates";
 import {
   type CloudflareRanges,
   type DeployRunInfo,
@@ -76,6 +90,11 @@ export interface RunVerifyOptions {
   fetchWithLookup?: FetchWithLookup;
   /** This computer's own host name lookup, asked first for such a host (default `dns.lookup`). */
   lookup?: LookupFunction;
+  /**
+   * The deploy user's shell on the server (default: `SshRemoteExec` with the deploy key), for
+   * certbot's last renewal when a DNS-only certificate is not renewed in time.
+   */
+  remote?: (host: string) => RemoteExec;
 }
 
 /** Outcome of {@link runVerify}. */
@@ -187,6 +206,12 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
         }
       : {}),
     ...(await cloudflareRanges(deps, plan, fetch, options)),
+    renewalFailure: async () =>
+      readRenewalFailure(
+        deps,
+        plan,
+        await deployShell(deps, plan, options.remote ? { remote: options.remote } : {}),
+      ),
     deployRuns: async () => {
       if (!github.client || !github.repo) return undefined;
       const runs = await github.client.listWorkflowRuns(github.repo.owner, github.repo.repo, {
@@ -205,6 +230,24 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     },
   });
 
+  // The app's Cloudflare record: its certificates, or how to fix it when it is damaged.
+  try {
+    checked.push(...recordCertificateCheck(await readCloudflareRecord(deps.paths), deps.clock));
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    checked.push(
+      checkResult(
+        RECORD_CERTIFICATES.id,
+        RECORD_CERTIFICATES.title,
+        "medium",
+        "warn",
+        error.message,
+        {
+          ...(error.hint !== undefined ? { remediation: error.hint } : {}),
+        },
+      ),
+    );
+  }
   // The route reads as "your route"; addresses a public resolver gave (and other registered
   // names) are masked.
   const checks = checked.map((check) =>

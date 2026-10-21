@@ -19,8 +19,8 @@ export interface PortainerDifference {
 }
 
 /**
- * One way OpsCrew's shared rules in the Cloudflare zone differ from this app's record: names the
- * rule and this app's hostnames (public), never a token or an id.
+ * One way OpsCrew's shared rules or the app's origin TLS in the Cloudflare zone differ from this
+ * app's record: names the rule and this app's hostnames (public), never a token or an id.
  */
 export interface CloudflareRuleDifference {
   title: string;
@@ -76,8 +76,10 @@ export interface DriftReport {
    */
   portainer?: PortainerDrift;
   /**
-   * How OpsCrew's shared Cloudflare rules differ from this app's record: a missing rule, a missing
-   * hostname of this app, a rule changed beyond its hostnames. Absent when the app has none there.
+   * How OpsCrew's shared Cloudflare rules and the app's origin TLS differ from this app's record: a
+   * missing rule, a missing hostname of this app, a rule changed beyond its hostnames, a missing
+   * certificate, an origin pull setting turned off or using another certificate (FR-1408). Absent
+   * when the app has none there.
    */
   cloudflareRules?: CloudflareRuleDifference[];
   /** True when nothing drifted, nothing is pending and every file (and the server) matches. */

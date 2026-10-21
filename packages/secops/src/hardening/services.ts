@@ -1,4 +1,4 @@
-import type { CheckResult, CommandResult } from "@opscrew/contracts";
+import type { CheckResult, CommandResult, Severity } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
 import type { HostCheck } from "./checks";
 
@@ -10,6 +10,11 @@ export interface ServiceCheckInput {
   title: string;
   /** The variables of its environment that hold its login; empty for an `internal-only` one. */
   login: readonly string[];
+  /**
+   * The command that pings it from inside its container without its password, which it must
+   * refuse (Valkey's `valkey-cli PING`, FR-1450); absent: not checked.
+   */
+  ping?: string;
 }
 
 /** Docker's filter for the service's containers in the app's Compose project. */
@@ -17,16 +22,18 @@ function filter(project: string, service: string): string {
   return `--filter label=com.docker.compose.project=${project} --filter label=com.docker.compose.service=${service}`;
 }
 
-function result(
+/** A host check's result, with the check's severity unless `severity` is given. */
+export function result(
   check: Pick<HostCheck, "id" | "title" | "severity">,
   status: CheckResult["status"],
   message: string,
   remediation?: string,
+  severity?: Severity,
 ): CheckResult {
   return {
     id: check.id,
     title: check.title,
-    severity: check.severity,
+    severity: severity ?? check.severity,
     status,
     message,
     ...(remediation !== undefined ? { remediation } : {}),
@@ -105,10 +112,40 @@ function loginCheck(project: string, service: ServiceCheckInput): HostCheck {
 }
 
 /**
+ * The service refuses a request without its password (FR-1450): its `ping`, run in its running
+ * container, gets `NOAUTH`. Only the reply comes back from the server, never a value.
+ */
+function pingCheck(project: string, service: ServiceCheckInput, ping: string): HostCheck {
+  const who = `${service.title} (${service.name})`;
+  return {
+    id: `service-${service.name}-auth`,
+    title: `${who} refuses requests without its password`,
+    severity: "high",
+    command: `id=$(docker ps -q ${filter(project, service.name)} | head -n 1) && [ -n "$id" ] && docker exec "$id" ${ping}`,
+    evaluate(output: CommandResult) {
+      if (output.exitCode !== 0) {
+        return result(this, "warn", `Could not ask ${who} inside its container: is it running?`);
+      }
+      if (/NOAUTH/.test(output.stdout)) {
+        return result(this, "pass", `${who} refuses a request without its password.`);
+      }
+      return /PONG/.test(output.stdout)
+        ? result(
+            this,
+            "fail",
+            `${who} answers without its password, so anything that reaches it on the app's network can read and change its data.`,
+            "Run `opscrew provision` again: it gives the service its generated password, and the next deploy restarts it with it (its data is kept).",
+          )
+        : result(this, "warn", `${who} gave an unexpected answer without its password.`);
+    },
+  };
+}
+
+/**
  * The checks of the app's backing services on the server (FR-1328), run as `deploy` with
- * `runHostChecks`: for each, that no port is published on the host, and for each with a login
- * (`auth` other than `internal-only`) that its login is set. `project` is the app's Compose
- * project, its name.
+ * `runHostChecks`: for each, that no port is published on the host, for each with a login
+ * (`auth` other than `internal-only`) that its login is set, and for each with a `ping` that it
+ * refuses a request without its password. `project` is the app's Compose project, its name.
  */
 export function serviceHostChecks(
   project: string,
@@ -117,5 +154,6 @@ export function serviceHostChecks(
   return services.flatMap((service) => [
     portCheck(project, service),
     ...(service.login.length > 0 ? [loginCheck(project, service)] : []),
+    ...(service.ping !== undefined ? [pingCheck(project, service, service.ping)] : []),
   ]);
 }

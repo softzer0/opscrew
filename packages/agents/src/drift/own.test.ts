@@ -664,6 +664,9 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       expect(site?.path).toBe("opscrew/runtime/edge/sites/shop.conf");
       expect(site?.content).toContain("ssl_verify_client on;");
       expect(expectedRuntimeFiles(plan, ctx).rendered.site).toBe(sum(site?.content ?? ""));
+      // The server's site file, which drift names when it differs, is nginx's too.
+      expect(expectedRuntimeFiles(plan, ctx).sitePath).toBe("/srv/edge/sites/shop.conf");
+      expect(expectedRuntimeFiles(ownPlan(), ctx).sitePath).toBe("/srv/edge/sites/shop.caddy");
     });
 
     it("checks each service's env file as it checks app.env", async () => {

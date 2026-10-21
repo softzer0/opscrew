@@ -1,3 +1,4 @@
+export { type TlsStatusOptions, tlsStatusReport } from "./certificates";
 export {
   type AppContainer,
   type ComponentState,

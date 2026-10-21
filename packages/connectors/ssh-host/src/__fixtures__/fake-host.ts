@@ -672,8 +672,14 @@ export class FakeHost implements RemoteExec {
                 name.endsWith(".env") && !(RUNTIME_FILE_NAMES as readonly string[]).includes(name),
             ),
           ].map((name) => {
-            // The app's site on the edge is a file of the edge's folder (deploy:deploy, 644).
-            const site = this.files.get(runtimeFilePath(app, "site"));
+            // The app's site on the edge is a file of the edge's folder (deploy:deploy, 644), the
+            // site file of the proxy the edge's Compose file is stamped with.
+            const nginx = /^x-opscrew-edge-proxy: *nginx *$/m.test(
+              this.files.get(`${EDGE_DIR}/compose.yaml`) ?? "",
+            );
+            const site = this.files.get(
+              nginx ? `${EDGE_DIR}/sites/${app}.conf` : runtimeFilePath(app, "site"),
+            );
             const file =
               name === "site"
                 ? site === undefined

@@ -26,6 +26,9 @@ import {
 } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
+  EDGE_DIR,
+  EDGE_PROXIES,
+  edgeProxy,
   keepNewerPins,
   type RuntimeContext,
   renderCompose,
@@ -389,6 +392,8 @@ function ufwSinceSetup(facts: HostFacts, step: HostStep): UfwChange[] {
 export interface ExpectedRuntimeFiles {
   /** SHA-256 of each rendered file (`compose.yaml`, the `site`) as OpsCrew renders it now. */
   rendered: Readonly<Partial<Record<(typeof HASHED_RUNTIME_FILES)[number], string>>>;
+  /** Where the app's site is on the server: the site file of the plan's proxy on the shared edge. */
+  sitePath: string;
   /**
    * The env files of the services the deploy workflow writes, by service name: each enabled
    * service with secrets in the catalog reads `<name>.env` (Postgres's `db` reads `db.env`).
@@ -421,6 +426,7 @@ export function expectedRuntimeFiles(
       "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
       ...(site !== undefined ? { site: sha256Hex(site.content) } : {}),
     },
+    sitePath: `${EDGE_DIR}/sites/${plan.app.name}.${EDGE_PROXIES[edgeProxy(plan)].site}`,
     serviceEnvFiles: Object.fromEntries(
       plan.services
         .filter((service) => service.enabled && serviceSpec(service.kind).secrets.length > 0)
@@ -475,7 +481,7 @@ function runtimeFileDetails(
     .filter((name) => !files.some((file) => file.name === name))
     .map((name) => ({ app, name: name as RuntimeFileName, kind: "absent" as const }));
   for (const file of [...files, ...unreported]) {
-    const path = runtimeFilePath(app, file.name);
+    const path = file.name === "site" ? expected.sitePath : runtimeFilePath(app, file.name);
     const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
     // The env files, each service's `<service>.env` included.
     const secret = file.name.endsWith(".env");

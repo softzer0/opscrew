@@ -221,6 +221,46 @@ describe("inspectHost: OpsCrew's runtime files in each app's folder", () => {
     expect(facts.runtimeFiles).toEqual([]);
   });
 
+  it("reads the app's nginx site on an edge that runs nginx", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    fake.files.set(
+      "/srv/edge/compose.yaml",
+      `${fake.files.get("/srv/edge/compose.yaml") ?? ""}x-opscrew-edge-proxy: nginx\n`,
+    );
+    fake.files.set("/srv/edge/sites/shop.conf", "server {\n}\n");
+    const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+    const site = (await inspectHost(fake)).runtimeFiles.find((file) => file.name === "site");
+    expect(site?.sha256).toBe(sum("server {\n}\n"));
+  });
+
+  it.skipIf(!BASH_AVAILABLE)(
+    "hashes the site file of the edge's proxy: <app>.conf on nginx, <app>.caddy otherwise (real shell)",
+    () => {
+      const sh = new ShellHarness();
+      try {
+        const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+        const site = () =>
+          parseRuntimeFiles(sh.run(RUNTIME_FILES_SNIPPET).stdout).find(
+            (file) => file.name === "site",
+          );
+        sh.write("/srv/apps/shop/compose.yaml", "services: {}\n");
+        sh.write("/srv/edge/sites/shop.caddy", ":80 {\n}\n");
+        sh.write("/srv/edge/sites/shop.conf", "server {\n}\n");
+        // An edge from before the proxy choice has no stamp: it runs Caddy.
+        sh.write("/srv/edge/compose.yaml", "name: opscrew-edge\n");
+        expect(site()?.sha256).toBe(sum(":80 {\n}\n"));
+        sh.write("/srv/edge/compose.yaml", "name: opscrew-edge\nx-opscrew-edge-proxy: nginx\n");
+        expect(site()?.sha256).toBe(sum("server {\n}\n"));
+        sh.write("/srv/edge/compose.yaml", "name: opscrew-edge\nx-opscrew-edge-proxy: caddy\n");
+        expect(site()?.sha256).toBe(sum(":80 {\n}\n"));
+      } finally {
+        sh.dispose();
+      }
+    },
+  );
+
   it.skipIf(!BASH_AVAILABLE)(
     "prints no file content and no checksum of a file that holds secrets (real shell)",
     () => {

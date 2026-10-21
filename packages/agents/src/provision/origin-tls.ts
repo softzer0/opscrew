@@ -33,6 +33,7 @@ import {
   tunnelMode,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { CERTIFICATE_WARN_DAYS, daysLeft } from "@opscrew/secops";
 import { parse } from "yaml";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -430,7 +431,7 @@ export function parseServerEdge(stdout: string): ServerEdge | undefined {
  * public origin, so nothing is read). `undefined` when this computer knows none or has no deploy
  * key.
  */
-async function deployLogin(
+export async function deployLogin(
   deps: Pick<PhaseDeps, "paths">,
   plan: DeployPlan,
 ): Promise<{ host: string; port: number } | undefined> {
@@ -528,9 +529,6 @@ export function stackServed(
   return { ...(serves ? { originSha256: sha256 } : {}), requiring };
 }
 
-/** Days before its expiry a certificate OpsCrew manages is warned about (FR-1406). */
-const WARN_DAYS = 30;
-
 /**
  * Provision's warnings about TLS: CAA records of the user's at the app's domain where OpsCrew
  * publishes its own (FR-1431: reported, never replaced), and the app's client certificate within
@@ -571,7 +569,7 @@ export function clientCertificateWarning(
 ): string | undefined {
   const client = record?.tls?.client;
   if (client === undefined) return undefined;
-  if (Date.parse(client.expiresAt) - clock.now().getTime() >= WARN_DAYS * 86_400_000) {
+  if (daysLeft(client.expiresAt, clock.now()) >= CERTIFICATE_WARN_DAYS) {
     return undefined;
   }
   return `This app's client certificate for Cloudflare's origin pulls expires on ${client.expiresAt.slice(0, 10)}, and OpsCrew does not replace it by itself: the server must trust the new one before Cloudflare sends it. To replace it: add a new client certificate after the old one in ${ORIGIN_PULL_PEM} and deploy; upload the new one and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old one from ${ORIGIN_PULL_PEM} and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json, and its key in generated_values.json.`;
