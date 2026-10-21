@@ -428,6 +428,15 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint` (the live runs are T1414)
   - Effort: high
 
+- [ ] T1414a [US1] Origin TLS in the first scripted provision (found live, 2026-10-21), in `packages/agents/src/provision/**` (+ tests), `docs/guide/origin-protection.md`
+  - Why: the `proxied` live pass provisions with `--plan-only` then `--approve`, as the MCP tools do. The approve run kept the site the plan-only run rendered, before any certificate existed, so the first deploy went live without origin protection and `opscrew drift` reported the deploy workflow and the site as changed and `pull.pem` as missing.
+  - Accept:
+    - **Server targets (cloud and own):** an approved run renders the site after the Cloudflare apply, with the record it wrote, as a single interactive run does. Runtime files are in no hashed plan there: they reach the server through the pull request and the deploy. The order still holds, since Cloudflare's setting is active before the deploy makes the server require the client certificate.
+    - **Portainer:** the stack plan's hash covers the stack, so the approved run keeps the earlier site. The guide's `origin-protection.md` says that on Portainer, origin protection arrives with the next provision after the first.
+    - **Tests:** `--plan-only` then `--approve` with a first origin TLS on Hetzner and on an own server render the origin-TLS site, `pull.pem` and the workflow's origin step; `opscrew drift` right after reports no file change. Portainer keeps its stack hash.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
+  - Effort: high
+
 - [ ] T1414 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`.
 
 ## `vercel.json` routing (founder, 2026-10-21)
