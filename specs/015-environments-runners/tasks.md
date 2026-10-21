@@ -26,7 +26,7 @@ Effort`.
 
 ## Phase 1: Foundation
 
-- [ ] T1501a Contracts: the `environment` block, the `localhost` target, the approval kinds `promote` and `github-settings`, `ResolveProjectPathsOptions.environment`, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/approvals.ts`, `packages/core/src/paths.ts` (the option type only), and every reader and writer of the changed types
+- [X] T1501a Contracts: the `environment` block, the `localhost` target, the approval kinds `promote` and `github-settings`, `ResolveProjectPathsOptions.environment`, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/approvals.ts`, `packages/core/src/paths.ts` (the option type only), and every reader and writer of the changed types
   - Owns: those paths (+ the generated JSON schema, tests and fixtures); the `switch`/`if` sites on `target.provider` across packages, for the `localhost` branch or a plain refusal only
   - Reads: data-model.md "Environment", "Localhost target", "Approval kinds"; contracts/environments.md "Paths"; plan.md "1."; research.md R6; ADR 0018
   - Depends: —
