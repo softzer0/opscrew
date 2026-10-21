@@ -543,7 +543,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, `pnpm lint`, and a Docker check against Portainer CE: two redeploys under a request loop, with no failed request
   - Effort: high
 
-- [ ] T1416b [US5] Servers: kamal-proxy holds requests during a recreate (the founder's question, 2026-10-21), in `packages/iac-templates/src/workflow/switch.ts`, `packages/agents/src/design/strategy.ts`, `docs/guide/zero-downtime.md`
+- [X] T1416b [US5] Servers: kamal-proxy holds requests during a recreate (the founder's question, 2026-10-21), in `packages/iac-templates/src/workflow/switch.ts`, `packages/agents/src/design/strategy.ts`, `docs/guide/zero-downtime.md`
   - Owns: those paths (+ tests, snapshots, and any other copy of the recreate texts), `packages/cli/test/e2e/**` for the Docker check
   - Reads: research.md "Spike results" 18; T1416
   - Depends: T1415 (the same workflow files and snapshots)
