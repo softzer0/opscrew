@@ -34,7 +34,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Hetzner, proxied, with origin TLS (feature 014): Cloudflare's side, the origin check from the server, `secure --deep`, the zone after destroy ([details below](#secops-and-tls-feature-014)) | `OPSCREW_E2E_TLS=proxied`, a Cloudflare domain, Docker here | Passed (run 5; runs 2 and 4 found T1414a and T1414b) | 2026-10-21 | — |
 | Hetzner, origin protection turned on for an app already live, under load | `OPSCREW_E2E_TLS=live`, + `OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS` | Passed (5,251 requests, 0 failed) | 2026-10-21 | — |
 | Hetzner, DNS only: CAA at the hostname, not at the apex; the minimum TLS decision | `OPSCREW_E2E_TLS=dns-only` | Passed | 2026-10-21 | — |
-| Hetzner, the recovery copy restored on a fresh clone | `OPSCREW_E2E_TLS=recovery`, the default app | **Failed** (run 2: the restore passed, but the provision after it opened a needless pull request, T1414c) | — | A rerun after T1414c |
+| Hetzner, the recovery copy restored on a fresh clone | `OPSCREW_E2E_TLS=recovery`, the default app | Passed (run 4, after T1414c; run 2 found T1414c) | 2026-10-21 | — |
 | Your own server with nginx (`own-nginx.test.ts`): certbot, an addition, a forced renewal under load, testssl.sh, two apps on one edge, origin TLS on nginx, a switch to Caddy and back | `OPSCREW_E2E_OWN_NGINX=1`, + `OPSCREW_E2E_GITHUB_REPO_B`, Docker here | **Not run yet** | — | — |
 | Your existing Portainer, step 5b: the stack's Caddy with origin TLS, `secure --deep` with only testssl.sh, a redeploy under load | `OPSCREW_E2E_PORTAINER_STEPS=5b` (or `full`), Docker here | **Not run yet** | — | — |
 
@@ -46,6 +46,13 @@ Run in development, not tracked by date:
   fixes; after the end-of-feature review's fixes, 14 of them (one or more per stack and builder)
   passed again, with the new search of each image's files, history and configuration (see
   [e2e.md](e2e.md#live-results)).
+- `OPSCREW_DOCKER_TESTS=1` also runs feature 014's checks in `packages/cli/test/e2e/`. They cover:
+  - Caddy and nginx with Pebble (the first certificate and a forced renewal), origin TLS with a
+    local CA, the additions, the deeper checks, Valkey's password, gixy-ng, and a Portainer redeploy
+    under load (T1412, T1416);
+  - the recreate hold (`recreate-hold.test.ts`, T1416b): three recreates under a request loop gave
+    72 requests and 0 failed, with the longest hold 3.2 s, and a failed health check left kamal-proxy
+    running, not paused (2026-10-21).
 - `OPSCREW_IT=1` validates every infrastructure root with both OpenTofu and Terraform.
 
 ## Your existing Portainer, step by step
@@ -219,7 +226,7 @@ zone check after the teardown.
 | Origin protection turned on for an app already live, with no failed request under 20 requests per second (SC-1408); the permission gap recorded before (FR-1405) | Hetzner `live` | [x] 2026-10-21: 5,251 requests in 263 s, 0 failed |
 | CAA records at the app's DNS-only hostname (Caddy: `letsencrypt.org`, `sectigo.com`; nginx: `letsencrypt.org`), none added at the apex, none left after destroy | Hetzner `dns-only`; own server steps 2, 6, 10 | Hetzner `dns-only` (Caddy, 2026-10-21); nginx not yet |
 | The zone's minimum TLS raised to 1.2 only when every proxied record is OpsCrew's, otherwise unchanged | every Hetzner pass | Raised from 1.0 in the second `proxied` run and left at 1.2 by every later pass (2026-10-21); a zone with someone else's proxied record not yet |
-| The recovery copy: a fresh clone, `secrets restore --key-file`, nothing to apply, nothing regenerated, the data intact, within 5 minutes (SC-1402) | Hetzner `recovery` | [ ] |
+| The recovery copy: a fresh clone, `secrets restore --key-file`, nothing to apply, nothing regenerated, the data intact, within 5 minutes (SC-1402) | Hetzner `recovery` | [x] 2026-10-21: 59 s, no pull request |
 | certbot's first certificate during the first deploy (Let's Encrypt), for two apps on one nginx edge | own server steps 2, 6 | [ ] |
 | An addition served on nginx, with OpsCrew's headers kept | own server step 3 | [ ] |
 | A forced certbot renewal under load: no failed request, the new certificate served (FR-1441) | own server step 4 | [ ] |
