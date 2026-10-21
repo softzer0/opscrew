@@ -111,6 +111,7 @@ describe.skipIf(SKIP !== undefined)("gixy-ng and runGixy (014)", () => {
         description: expect.any(String),
         reference: expect.stringMatching(/^https:\/\//),
         line: 2,
+        config: expect.stringContaining("proxy_set_header Host $http_host;"),
       });
       const clean = await docker(["exec", container, "gixy", "-f", "json", "/work/clean.nginx"]);
       expect(clean.exitCode).toBe(0);
@@ -142,7 +143,7 @@ describe.skipIf(SKIP !== undefined)("gixy-ng and runGixy (014)", () => {
   );
 
   it(
-    "reads a generated additions file (a vercel.json translation) without failing",
+    "reads a generated additions file (a vercel.json translation), with no advice that applies to it",
     async () => {
       const { text } = translateVercelRouting(
         {
@@ -167,11 +168,11 @@ describe.skipIf(SKIP !== undefined)("gixy-ng and runGixy (014)", () => {
       expect(text).toContain("location");
       const advice = await advise("additions.nginx", text);
       console.info(`gixy-ng on a generated additions file: ${JSON.stringify(advice)}`);
-      // Advice only: every result is a finding gixy-ng reported, none a run that failed.
+      // gixy-ng 0.2.57 gives http_splitting and regex_redos on OpsCrew's own lines: all noise.
       for (const result of advice) {
         expect(result).toMatchObject({ status: "warn", source: "gixy-ng" });
-        expect(result.id).toMatch(/^gixy-ng\/\w+$/);
-        expect(result.message).not.toBe("");
+        expect(["gixy-ng/http_splitting", "gixy-ng/regex_redos"]).toContain(result.id);
+        expect(result.noise).toBeDefined();
       }
     },
     TWO_MINUTES,

@@ -153,7 +153,7 @@ export async function portainerAdditionsNote(
  * Checks the app's additions for the plan's proxy on a server before any change, and says whether there are
  * any (the render's `additions`). A file for the other proxy is refused with how to convert it;
  * OpsCrew's rules refuse what is unsafe, each with its line; gixy-ng's findings on nginx are shown
- * as advice when it is installed; and when Docker runs on this computer, the proxy's own checker
+ * as advice when it is installed (not those that do not apply to what OpsCrew wrote); and when Docker runs on this computer, the proxy's own checker
  * validates the whole edge with the additions (`ctx` as the deploy renders it). Any refusal stops
  * with `PHASE_PRECONDITION` and nothing changed.
  */
@@ -199,7 +199,8 @@ export async function checkAdditions(
     const advice = await runGixy(join(root, path), deps.runner, {
       which: services.which ?? ((name: string) => findExecutable(name)),
     });
-    for (const result of advice) {
+    // Advice that does not apply to the lines OpsCrew wrote (`noise`) is not shown.
+    for (const result of advice.filter((r) => r.noise === undefined)) {
       deps.reporter.warn(deps.redactor.redact(`gixy-ng on ${path}: ${result.message}`));
     }
   }

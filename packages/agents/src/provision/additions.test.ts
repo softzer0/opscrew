@@ -32,7 +32,12 @@ const NGINX = "opscrew/proxy/additions.nginx";
  * Docker is not installed); git and ssh as in the other provision tests.
  */
 async function project(
-  o: { plan?: DeployPlan; docker?: (args: readonly string[]) => CommandResult } = {},
+  o: {
+    plan?: DeployPlan;
+    docker?: (args: readonly string[]) => CommandResult;
+    /** gixy-ng's report, which makes it installed. */
+    gixy?: string;
+  } = {},
 ) {
   const created = await createProject(o.plan ?? testPlan({ domain: "shop.example.com" }));
   await writeFile(
@@ -42,6 +47,8 @@ async function project(
   const base = projectRunner();
   const docker: string[][] = [];
   const runner = new ScriptedRunner((command, args, options) => {
+    if (command === "gixy" && o.gixy !== undefined)
+      return { exitCode: 1, stdout: o.gixy, stderr: "" };
     if (command !== "docker") return base.run(command, args, options);
     docker.push([...args]);
     if (o.docker === undefined) throw new Error("spawn docker ENOENT");
@@ -69,7 +76,7 @@ async function project(
     remote: readyRemote,
     sleep: async () => undefined,
     sharedCloudflare: fakeSharedCloudflare(zone),
-    which: () => undefined,
+    which: (name) => (name === "gixy" && o.gixy !== undefined ? "gixy" : undefined),
   };
   return { ...created, deps, handler, services, zone, docker };
 }
@@ -182,6 +189,37 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
     expect(run).toEqual(expect.arrayContaining(["--entrypoint", "nginx", IMAGES.nginx.ref, "-t"]));
     expect(s.handler.requests).toEqual([]);
     expect(s.zone.writes()).toEqual([]);
+  });
+
+  it("on nginx shows gixy-ng's advice, but not the advice that does not apply to OpsCrew's lines", async () => {
+    const base = testPlan({ domain: "shop.example.com" });
+    const issue = (plugin: string, reason: string, config: string) => ({
+      plugin,
+      summary: plugin,
+      severity: "HIGH",
+      reason,
+      config,
+    });
+    const s = await project({
+      plan: DeployPlanSchema.parse({ ...base, target: { ...base.target, edge: "nginx" } }),
+      gixy: JSON.stringify([
+        issue(
+          "http_splitting",
+          "OpsCrew's capture",
+          "if ($uri ~ ^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/old/([^/]+)$)) { return 308 /new/$1; }",
+        ),
+        issue(
+          "http_splitting",
+          "The user's capture",
+          "if ($uri ~ ^/mine/(.+)$) { return 308 /$1; }",
+        ),
+      ]),
+    });
+    await write(s, NGINX, "add_header X-Test 1;\n");
+    await runProvision(s.deps, { services: s.services });
+    const text = s.deps.reporter.text();
+    expect(text).toContain(`gixy-ng on ${NGINX}: The user's capture`);
+    expect(text).not.toContain("OpsCrew's capture");
   });
 
   it("without Docker, says the proxy's check runs in the deploy, and goes on", async () => {

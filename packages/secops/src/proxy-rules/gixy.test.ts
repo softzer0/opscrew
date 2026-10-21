@@ -63,6 +63,73 @@ describe("runGixy", () => {
     ]);
   });
 
+  it("sets apart http_splitting and regex_redos on a block OpsCrew wrote, and only there", async () => {
+    // As gixy-ng 0.2.57 reports them on OpsCrew's translation of vercel.json, and on the user's own.
+    const regex = "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/old(?:/((?:[^/]+)(?:/(?:[^/]+))*))?$)";
+    const guarded = `\nif ($uri ~ ${regex}) {\n\treturn 308 $scheme://$host/new/$1;\n}`;
+    const own = "\nif ($uri ~ ^/old/(.+)$) {\n\treturn 308 $scheme://$host/new/$1;\n}";
+    const issue = (plugin: string, config: string, flagged = regex) => ({
+      path: FILE,
+      plugin,
+      summary: plugin,
+      severity: "HIGH",
+      reason:
+        plugin === "regex_redos"
+          ? `Regex \`${flagged}\` is vulnerable: Nested quantifier in group`
+          : 'At least variable "$1" can contain "\\n"',
+      config,
+    });
+    const report = JSON.stringify([
+      issue("http_splitting", guarded),
+      issue("regex_redos", guarded),
+      issue("host_spoofing", guarded),
+      issue("http_splitting", own),
+      issue("regex_redos", own, "^/old/(.+)$"),
+    ]);
+    const results = await runGixy(
+      FILE,
+      runner({ exitCode: 1, stdout: report, stderr: "" }),
+      installed,
+    );
+    expect(results.map((r) => [r.id, r.noise !== undefined])).toEqual([
+      ["gixy-ng/http_splitting", true],
+      ["gixy-ng/regex_redos", true],
+      ["gixy-ng/host_spoofing", false],
+      ["gixy-ng/http_splitting", false],
+      ["gixy-ng/regex_redos", false],
+    ]);
+    expect(results[0]?.noise).toContain("(?!.*[\\r\\n])");
+    expect(results[0]).toMatchObject({ status: "warn", severity: "high", source: "gixy-ng" });
+  });
+
+  it("keeps regex_redos on a guarded pattern the user wrote with a repeated group of its own", async () => {
+    const guard = "^(?!/\\.well-known/)(?!.*[\\r\\n])";
+    const redos = (flagged: string) => ({
+      path: FILE,
+      plugin: "regex_redos",
+      summary: "regex_redos",
+      severity: "HIGH",
+      reason: `Regex \`${flagged}\` is vulnerable: Nested quantifier in group`,
+      config: `\nlocation ~ ${flagged} {\n}`,
+    });
+    const report = JSON.stringify([
+      // vercel.json's `^/api/((?:\w+)+)$`, and a parameter with its own pattern (`/a/:p(\d+)+`).
+      redos(`${guard}(?:/api/((?:\\w+)+)$)`),
+      redos(`${guard}(?:/a/((?:\\d+)(?:/(?:\\d+))*)$)`),
+      // OpsCrew's own repeats: cleanUrls' pages, and a rewrite location joining two sources.
+      redos(`${guard}(?:/((?:[^/]+/)*[^/.]+)$)`),
+      redos(`${guard}(?:(?:/((?:[^/]+/)*[^/.]+)$)|(?:/blog/([^/]+)$))`),
+      // A reason that does not name the regular expression is never noise.
+      { ...redos(`${guard}(?:/((?:[^/]+/)*[^/.]+)$)`), reason: "Nested quantifier in group" },
+    ]);
+    const results = await runGixy(
+      FILE,
+      runner({ exitCode: 1, stdout: report, stderr: "" }),
+      installed,
+    );
+    expect(results.map((r) => r.noise !== undefined)).toEqual([false, false, true, true, false]);
+  });
+
   it("returns nothing for a clean file", async () => {
     expect(
       await runGixy(FILE, runner({ exitCode: 0, stdout: "[]", stderr: "" }), installed),
