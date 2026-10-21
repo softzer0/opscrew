@@ -340,7 +340,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1409b [US1] [US2] [US5] [US6] drift, status, verify and secure, in `packages/agents/src/{drift,status,verify,secure}/**` (not T1405's deep parts), `packages/secops/src/hardening/**`
+- [X] T1409b [US1] [US2] [US5] [US6] drift, status, verify and secure, in `packages/agents/src/{drift,status,verify,secure}/**` (not T1405's deep parts), `packages/secops/src/hardening/**`
   - Owns: those paths (+ tests, snapshots)
   - Reads: plan.md "11."; data-model.md; spec FR-1406, FR-1408, FR-1445, FR-1450, FR-1462
   - Depends: T1409a, T1405
