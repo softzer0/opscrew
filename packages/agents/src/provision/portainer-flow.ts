@@ -24,7 +24,7 @@ import {
   renderStorage,
   siteHosts,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, type Requirements, writeArtifact } from "@opscrew/plan-schema";
+import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
 import {
@@ -110,6 +110,7 @@ import {
   publishDeployment,
   type SavedInfrastructureHashes,
   withLearnedZone,
+  writePlanIfChanged,
 } from "./steps";
 import {
   applyStorage,
@@ -765,7 +766,7 @@ export async function provisionPortainer(
       );
       if (note !== undefined) deps.reporter.info(note);
     }
-    if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
+    if (learned.zoneLearned) await writePlanIfChanged(deps, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
       ...cloudflareHash,
@@ -795,7 +796,7 @@ export async function provisionPortainer(
   });
   const earlyApplied = early?.applied === true;
   plan = record(earlyApplied);
-  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await writePlanIfChanged(deps, plan);
 
   // 5b. Caddy asks Let's Encrypt for its certificates as soon as it starts, and a failed request
   // stays cached: in web mode caddy the domain's records must resolve publicly before the deploy
@@ -838,7 +839,7 @@ export async function provisionPortainer(
   if (stack.approval) approvals.push(approvalEntry(stack.approval));
   const stackApplied = stack.applied || earlyApplied;
   plan = record(stackApplied);
-  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await writePlanIfChanged(deps, plan);
 
   // 8. The deploy secrets: the build's values, and the webhook through Cloudflare Access.
   const secretsStored = await deploySecretsStep(deps, {
@@ -899,7 +900,8 @@ export async function provisionPortainer(
   if (dns !== undefined) deps.reporter.info(dns);
   if (routeChanges) deps.reporter.warn(ROUTE_CHANGE_NOTE);
   deps.reporter.info(PORTAINER_NOTES);
-  if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
+  const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
+  if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),
     ...cloudflareHash,

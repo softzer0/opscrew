@@ -5,7 +5,7 @@ import type { ApprovalHandler, CommandRunner, FetchLike } from "@opscrew/contrac
 import { fakeSecret } from "@opscrew/core/testing";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../../testing";
-import { localPath } from "../files";
+import { localPath, readLocalFiles } from "../files";
 import { FAKE_SOPS, FakeSops } from "./fake-sops";
 
 /** The generated values of the test app, each a fake secret. */
@@ -82,6 +82,17 @@ export async function readLocal(deps: TestPhaseDeps, paths: readonly string[]) {
     out[path] = await readFile(localPath(deps.paths, path), "utf8").catch(() => undefined);
   }
   return out;
+}
+
+/**
+ * `opscrew/plan.yaml` and every file of the recovery copy on this computer, as text: what a run
+ * with nothing to change must leave byte-identical.
+ */
+export async function planAndCopyFiles(deps: Pick<TestPhaseDeps, "paths" | "redactor">) {
+  return {
+    plan: await readFile(deps.paths.files.plan, "utf8"),
+    files: await readLocalFiles(deps.paths, deps.redactor),
+  };
 }
 
 /** Writes the files a refresh returned into the repository, as the publish step does. */

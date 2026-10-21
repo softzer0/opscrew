@@ -18,6 +18,7 @@ import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-s
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import type { PortainerServices } from "../portainer";
+import { planAndCopyFiles } from "../secrets/__fixtures__/world";
 import {
   hostPlanFile,
   type OwnServerConnectionInput,
@@ -350,13 +351,18 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     s.engine.changes = [];
     s.github.openPull = OPEN_PULL;
     s.handler.requests.length = 0;
+    const before = await planAndCopyFiles(s.deps);
+    s.deps.clock = { now: () => new Date("2026-10-12T12:00:00.000Z") };
 
     const again = await runProvision(s.deps, { services: s.services });
     expect(kinds(s)).not.toContain("cloudflare-apply");
     expect(kinds(s)).not.toContain("iac-apply");
     expect(kinds(s)).not.toContain("host-apply");
     expect(kinds(s)).not.toContain("remote-exec");
-    expect(again).toMatchObject({ applied: false, hostApplied: false });
+    // Nothing changed on this computer or in the repository, so nothing is pushed.
+    expect(await planAndCopyFiles(s.deps)).toEqual(before);
+    expect(kinds(s)).not.toContain("git-push");
+    expect(again).toMatchObject({ applied: false, hostApplied: false, prUrl: OPEN_PULL.url });
     expect(s.host.applies).toHaveLength(1);
     expect(s.engine.applies).toHaveLength(1);
     expect(s.deps.reporter.text()).toContain("Your server is already prepared");

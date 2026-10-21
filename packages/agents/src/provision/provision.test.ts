@@ -136,6 +136,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       lastApplyAt: "2026-10-11T12:00:00.000Z",
       lastCompletedPhase: "provision",
     });
+    // The apply changed the plan, so it says when.
+    expect(plan.updatedAt).toBe("2026-10-11T12:00:00.000Z");
     // The server's address is in OpsCrew's local state only, never in the repository or the PR.
     expect((await readServerAddresses(deps.paths)).deployment).toEqual({
       ipv4: SERVER_IPV4,
@@ -1150,6 +1152,31 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(await git(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe(DEPLOY_SETUP_BRANCH);
     expect(await git(bare, "branch", "--list", DEPLOY_SETUP_BRANCH)).toBe("");
     expect(deps.reporter.text()).toContain("Not pushed");
+  });
+
+  it("a rerun after a refused push, with nothing new to commit, asks for the push again", async () => {
+    let pushes = 0;
+    const { deps, services, github, git, root, bare, engine, handler } = await setup({
+      answer: (request) => request.kind !== "git-push" || ++pushes > 1,
+    });
+    await runProvision(deps, { services });
+    const commit = await git(root, "rev-parse", "HEAD");
+    engine.scenario.changes = [];
+    handler.requests.length = 0;
+
+    const again = await runProvision(deps, { services });
+
+    expect(handler.requests.map((r) => r.kind)).toEqual([
+      "github-secrets",
+      "git-push",
+      "pull-request",
+    ]);
+    expect(await git(root, "rev-parse", "HEAD")).toBe(commit);
+    expect(await git(bare, "rev-parse", DEPLOY_SETUP_BRANCH)).toBe(commit);
+    expect(github.pulls).toEqual([
+      expect.objectContaining({ head: DEPLOY_SETUP_BRANCH, base: "main" }),
+    ]);
+    expect(again).toMatchObject({ branch: DEPLOY_SETUP_BRANCH, prUrl: OPEN_PULL.url });
   });
 
   it("refuses to continue when the server's host key changed", async () => {

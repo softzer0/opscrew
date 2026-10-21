@@ -27,6 +27,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
+import { planAndCopyFiles } from "../secrets/__fixtures__/world";
 import {
   type PortainerConnection,
   type PortainerConnectionInput,
@@ -73,6 +74,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   stackPlanFile,
 } from "./portainer";
+import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import { ROUTE_CHANGE_NOTE, switchesWebRoute } from "./stack-plan";
 import { STORAGE_KEY_VARS } from "./storage";
@@ -578,16 +580,45 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     s.engine.scenario.changes = [];
     s.handler.requests.length = 0;
     s.deps.reporter.lines.length = 0;
+    const before = await planAndCopyFiles(s.deps);
+    s.deps.clock = { now: () => new Date("2026-10-12T12:00:00.000Z") };
 
     const second = await s.run();
     expect(s.fake.mutations()).toHaveLength(mutations);
     expect(kinds(s)).not.toContain("stack-apply");
     expect(kinds(s)).not.toContain("iac-apply");
     expect(s.github.branches).toHaveLength(1);
-    expect(second).toMatchObject({ applied: false, stackApplied: false });
+    // Nothing changed on this computer or in the repository, so nothing is pushed.
+    expect(await planAndCopyFiles(s.deps)).toEqual(before);
+    expect(kinds(s)).not.toContain("git-push");
+    expect(second).toMatchObject({ applied: false, stackApplied: false, prUrl: OPEN_PULL.url });
     expect(first.stackApplied).toBe(true);
     expect(s.deps.reporter.text()).toContain(
       "Your Portainer is already set up as planned; nothing in it changes.",
+    );
+  });
+
+  it("after the merge, a run with nothing to change publishes nothing and says how stored values reach the app", async () => {
+    const s = await setup({ changes: APP_TUNNEL });
+    await s.run();
+    // GitHub merged the pull request and deleted its branch; this clone pulled main.
+    const merged = await s.git(s.root, "rev-parse", DEPLOY_SETUP_BRANCH);
+    await s.git(s.bare, "update-ref", "refs/heads/main", merged);
+    await s.git(s.bare, "update-ref", "-d", `refs/heads/${DEPLOY_SETUP_BRANCH}`);
+    await s.git(s.root, "checkout", "-q", "main");
+    await s.git(s.root, "merge", "-q", "--ff-only", DEPLOY_SETUP_BRANCH);
+    s.engine.scenario.changes = [];
+    s.handler.requests.length = 0;
+    const pulls = s.github.pulls.length;
+
+    const second = await s.run();
+    expect(kinds(s)).toContain("github-secrets");
+    expect(kinds(s)).not.toContain("git-push");
+    expect(s.github.pulls).toHaveLength(pulls);
+    expect(second).not.toHaveProperty("prUrl");
+    expect(await s.git(s.root, "branch", "--show-current")).toBe("main");
+    expect(s.deps.reporter.text()).toContain(
+      "OpsCrew stored the deploy secrets in GitHub Actions again. If you changed a value, the running app gets it on its next deploy: run opscrew-deploy.yml on main in GitHub Actions, or push a commit.",
     );
   });
 

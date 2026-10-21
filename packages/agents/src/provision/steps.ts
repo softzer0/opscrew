@@ -1,8 +1,15 @@
+import { posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readOptionalArtifact,
+  serializeArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type PlanApproval, type ProjectEngine, projectEngine } from "../shared";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
@@ -133,10 +140,30 @@ export function publicOutputs(outputs: Record<string, unknown>): Record<string, 
 }
 
 /**
+ * Writes `plan` to `opscrew/plan.yaml` with `updatedAt` now, unless it equals the plan there apart
+ * from `updatedAt`: then the file stays as it is, so a run with nothing to change commits nothing.
+ */
+export async function writePlanIfChanged(
+  deps: Pick<PhaseDeps, "paths" | "clock">,
+  plan: DeployPlan,
+): Promise<void> {
+  const file = deps.paths.files.plan;
+  const onDisk = await readOptionalArtifact("plan", file);
+  if (
+    onDisk !== undefined &&
+    serializeArtifact("plan", { ...plan, updatedAt: onDisk.updatedAt }) ===
+      serializeArtifact("plan", onDisk)
+  ) {
+    return;
+  }
+  await writeArtifact("plan", file, { ...plan, updatedAt: deps.clock.now().toISOString() });
+}
+
+/**
  * `opscrew/plan.yaml` after this run, for `record(otherApplied)`: the approvals (`approvals` is
  * read when called, so later ones count), the domain URL, the infrastructure apply (`iac`) and,
  * with `otherApplied`, a change on the server or in Portainer. A new deployment after
- * `opscrew destroy` is no longer destroyed.
+ * `opscrew destroy` is no longer destroyed. `updatedAt` is left to {@link writePlanIfChanged}.
  */
 export function deploymentRecord(
   deps: Pick<PhaseDeps, "clock">,
@@ -152,7 +179,6 @@ export function deploymentRecord(
   const { destroyedAt: _destroyedAt, url: _url, ...previous } = plan.deployment;
   return (otherApplied) => ({
     ...plan,
-    updatedAt: now,
     approvals: [...plan.approvals, ...approvals],
     deployment: {
       ...previous,
@@ -216,7 +242,7 @@ export async function publishDeployment(
     ...input.plan,
     deployment: { ...input.plan.deployment, lastCompletedPhase: "provision" },
   };
-  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await writePlanIfChanged(deps, plan);
   const published = await publishDeploySetup(deps, {
     git: input.git,
     github: input.github,
@@ -232,9 +258,21 @@ export async function publishDeployment(
   return { plan, published };
 }
 
-/** What merging the deploy pull request (or the branch) does; said once the secrets are stored. */
-export function mergeDeploysNote(plan: Pick<DeployPlan, "cicd">, published: PublishResult): string {
-  return published.prUrl
-    ? `Merging ${published.prUrl} deploys the app.`
-    : `Merging ${published.branch} into ${plan.cicd.branch} deploys the app.`;
+/**
+ * What deploys the app once the secrets are stored: merging the deploy pull request (or the
+ * branch). When the files are already on `plan.cicd.branch` and the secrets were stored again in
+ * this run (`storedNow`), how a changed value reaches the running app; else `undefined`.
+ */
+export function mergeDeploysNote(
+  plan: Pick<DeployPlan, "cicd">,
+  published: PublishResult,
+  storedNow: boolean,
+): string | undefined {
+  if (published.prUrl) return `Merging ${published.prUrl} deploys the app.`;
+  if (published.branch !== plan.cicd.branch) {
+    return `Merging ${published.branch} into ${plan.cicd.branch} deploys the app.`;
+  }
+  return storedNow
+    ? `OpsCrew stored the deploy secrets in GitHub Actions again. If you changed a value, the running app gets it on its next deploy: run ${posix.basename(plan.cicd.workflowPath)} on ${plan.cicd.branch} in GitHub Actions, or push a commit.`
+    : undefined;
 }

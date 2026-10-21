@@ -4,7 +4,7 @@ import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
@@ -88,6 +88,7 @@ import {
   publishDeployment,
   type SavedInfrastructureHashes,
   withLearnedZone,
+  writePlanIfChanged,
 } from "./steps";
 import {
   applyStorage,
@@ -651,7 +652,7 @@ async function provisionFlow(
         );
       }
     }
-    if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, persisted(plan));
+    if (learned.zoneLearned) await writePlanIfChanged(deps, persisted(plan));
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
       ...storageHash,
@@ -702,7 +703,7 @@ async function provisionFlow(
     approvals,
   });
   plan = record(false);
-  await writeArtifact("plan", deps.paths.files.plan, persisted(plan));
+  await writePlanIfChanged(deps, persisted(plan));
 
   let secretsTarget: {
     host: string;
@@ -725,7 +726,7 @@ async function provisionFlow(
     // The server changed before the removal already when that deleted the tunnel.
     const hostApplied = host.applied || earlyHost?.applied === true;
     plan = record(hostApplied);
-    await writeArtifact("plan", deps.paths.files.plan, persisted(plan));
+    await writePlanIfChanged(deps, persisted(plan));
     host = { ...host, applied: hostApplied };
     secretsTarget = ownDeployTarget(deps, ownRun, { plan, outputs });
   } else {
@@ -801,7 +802,8 @@ async function provisionFlow(
     ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
   });
   plan = published.plan;
-  if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
+  const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
+  if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   if (renewed && secretsStored && ctx.originTls !== undefined) {
     await deployRenewedCertificate(deps, github, plan, phase);
   }

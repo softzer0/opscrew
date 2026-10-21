@@ -26,7 +26,9 @@ const PINNED_ACTIONS_CHECK = "- [ ] The workflow only uses pinned, first-party a
 const RECOVERY_COPY_LINE = `- \`${COPY_PATH}\`: the encrypted recovery copy of what OpsCrew keeps on your computer for this app (its generated secrets, the deploy key, the infrastructure state and its records). Only your age key opens it; the names of the files in it are readable. \`opscrew secrets restore\` rebuilds them on another computer.`;
 
 export interface PublishResult {
+  /** The branch holding the files: the current one when nothing was committed. */
   branch: string;
+  /** This run's commit, when it committed anything. */
   commit?: string;
   prUrl?: string;
   pushed: boolean;
@@ -474,7 +476,8 @@ async function recoveryCopyFiles(
  * {@link localDeployBranch} without a push), with the recovery copy's files when this computer's
  * files changed since the last copy, then (when `push`) pushes it and opens a pull request into the
  * deploy branch, each after its own approval. A refused push or pull request is not an error: the
- * commit stays local and the user is told how to continue.
+ * commit stays local and the user is told how to continue. When nothing changed and nothing waits
+ * to be pushed, it commits, pushes and opens nothing ({@link commitAndPropose}).
  */
 export async function publishDeploySetup(
   deps: PhaseDeps,
@@ -530,11 +533,23 @@ export async function publishDeploySetup(
 }
 
 /**
- * The commit, push and pull request every OpsCrew pull request shares: switches to
- * `chosen.branch`, writes `files` there, commits `paths` (when anything is staged), then (when
+ * True when the deploy branch this clone is on has commits GitHub lacks (an earlier run's commit
+ * whose push was refused): HEAD is not in the branch on GitHub, or, before its first push, not in
+ * `base` there.
+ */
+async function hasUnpushedCommits(git: GitClient, branch: string, base: string): Promise<boolean> {
+  const pushed = (await git.remoteBranchSha(branch)) ?? (await git.remoteBranchSha(base));
+  return pushed === undefined || !(await git.isAncestor("HEAD", pushed));
+}
+
+/**
+ * The commit, push and pull request every OpsCrew pull request shares: writes `files` and stages
+ * `paths`; when nothing is staged, and the deploy branch this clone is on has no commits GitHub
+ * lacks, it stops there (no branch, push or pull request, and the current branch's open pull
+ * request is named). Otherwise it switches to `chosen.branch`, commits what is staged, then (when
  * `push`) pushes and opens the pull request `title` with `body`, or adds to the open one, each
  * after its own approval. A refused push or pull request is not an error: the commit stays local
- * and the user is told how to continue. `what` names the files in the success line.
+ * and the user is told how to continue. `what` names the files in the messages.
  */
 export async function commitAndPropose(
   deps: PhaseDeps,
@@ -556,10 +571,7 @@ export async function commitAndPropose(
   const { git, github, plan, chosen, paths, title, body } = input;
   const branch = chosen.branch;
   const phase = input.phase !== undefined ? { phase: input.phase } : {};
-  if ((await git.currentBranch()) !== branch) {
-    if (await git.branchExists(branch)) await git.checkout(branch);
-    else await git.createBranch(branch);
-  }
+  const current = await git.currentBranch();
   for (const file of input.files) {
     await writeFileAtomic(join(deps.paths.root, file.path), file.content, {
       mode: file.mode ?? 0o644,
@@ -567,6 +579,27 @@ export async function commitAndPropose(
   }
   await git.add(paths);
   const staged = (await git.status()).some((e) => e.code[0] !== " " && e.code[0] !== "?");
+  const unpushed =
+    !staged &&
+    input.push &&
+    current === branch &&
+    (await hasUnpushedCommits(git, branch, plan.cicd.branch));
+  if (!staged && !unpushed) {
+    deps.reporter.info(
+      `${upperFirst(input.what)} did not change, so OpsCrew committed nothing and opened no pull request.`,
+    );
+    return {
+      branch: current,
+      pushed: false,
+      ...(chosen.pullRequest !== undefined && branch === current
+        ? { prUrl: chosen.pullRequest.url }
+        : {}),
+    };
+  }
+  if (current !== branch) {
+    if (await git.branchExists(branch)) await git.checkout(branch);
+    else await git.createBranch(branch);
+  }
   let commit: string | undefined;
   if (staged) {
     commit = await git.commit(input.commitMessage);

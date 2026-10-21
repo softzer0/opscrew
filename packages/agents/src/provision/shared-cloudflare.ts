@@ -96,12 +96,17 @@ export async function readCloudflareRecord(
   );
 }
 
-/** Writes this app's record of its hostnames in OpsCrew's shared Cloudflare rules. */
+/**
+ * Writes this app's record of its hostnames in OpsCrew's shared Cloudflare rules, its keys in the
+ * schema's order: the same record gives the same bytes, whether a plan or an apply made it. A
+ * record the schema refuses is written as it is, so what reached Cloudflare is still recorded.
+ */
 export async function writeCloudflareRecord(
   paths: Pick<ProjectPaths, "files">,
   record: SharedRecord,
 ): Promise<void> {
-  await writeFileAtomic(paths.files.cloudflareRecord, `${JSON.stringify(record, null, 2)}\n`);
+  const normalized = SharedRecordSchema.safeParse(record).data ?? record;
+  await writeFileAtomic(paths.files.cloudflareRecord, `${JSON.stringify(normalized, null, 2)}\n`);
 }
 
 /**

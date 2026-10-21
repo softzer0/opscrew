@@ -382,7 +382,6 @@ export async function setDeploySecrets(
       host: secrets[DEPLOY_SECRETS.host] ?? options.record,
       repo,
       names,
-      storedAt: deps.clock.now().toISOString(),
     })}\n`,
   );
   deps.reporter.success(`Stored ${names.length} deploy secrets in GitHub Actions.`);
