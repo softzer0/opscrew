@@ -39,7 +39,11 @@ export interface ApiResult {
   json: unknown;
 }
 
-/** A bearer-token JSON API call. Never throws for an HTTP error status; the caller checks it. */
+/**
+ * A bearer-token JSON API call. Never throws for an HTTP error status; the caller checks it. A GET
+ * that fails on the network (a connect timeout, a reset) is tried again, up to 4 times 5 s apart,
+ * so a long pass does not fail on one lost poll; other methods are never repeated.
+ */
 export async function api(
   base: string,
   token: string,
@@ -47,16 +51,26 @@ export async function api(
   path: string,
   body?: unknown,
 ): Promise<ApiResult> {
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: base === GITHUB_API ? "application/vnd.github+json" : "application/json",
-      "User-Agent": "opscrew-e2e",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  const send = () =>
+    fetch(`${base}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: base === GITHUB_API ? "application/vnd.github+json" : "application/json",
+        "User-Agent": "opscrew-e2e",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  let response: Response | undefined;
+  for (let attempt = 1; response === undefined; attempt++) {
+    try {
+      response = await send();
+    } catch (error) {
+      if (method !== "GET" || attempt >= 4) throw error;
+      await sleep(5_000);
+    }
+  }
   const text = await response.text();
   let json: unknown;
   try {
