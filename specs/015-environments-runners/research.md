@@ -173,6 +173,36 @@ considered. The open items for the spike (T1502) are at the end.
 **Alternatives:**
 - **One `plan.yaml` with an `environments:` overlay,** and a merged view at read time: less duplication, but every read and write of the plan would go through a merge layer (about 20 writers). Rejected as the larger change.
 
+## Spike results (T1502, 2026-10-22)
+
+Run on the throwaway repository (private, owned by a user) through a throwaway workflow, removed afterwards; and locally on this Windows 11 computer (Docker Desktop, WSL2). Items 1, 4, 5 and 9 wait for the e2e token's new permissions.
+
+- **The e2e token** answers 403 for runners, the fork-PR policy, Actions permissions, variables and deployments, and for `PUT environments` (accepted: `administration=write`). Listing environments works. The founder must add the fine-grained permissions **Administration: Read and write**, **Environments: Read and write**, **Variables: Read and write** and **Deployments: Read** before items 1, 4, 5 and 9, and before the live tests.
+- **2. Retagging:** `docker buildx imagetools create --tag … image@<digest>` with the GITHUB_TOKEN (`packages: write`) kept the digest exactly (`sha256:f0f40b0a…` before and after).
+  - The provenance is SLSA v1 (`buildDefinition`, `runDetails`).
+  - With 012's `provenance-add-gha=false` it holds no ref or commit. `runDetails.builder.id` is the build run's URL (`https://github.com/<owner>/<repo>/actions/runs/<id>/attempts/1`).
+  - **Decision:** promotion's check reads the run id from the provenance. The run must belong to this repository, and its API record (`GET /repos/{o}/{r}/actions/runs/{id}`) gives `head_branch` and `head_sha`. The branch must be the default branch, and `head_sha` must match the image's commit tag. The signature is checked when signing is on.
+  - The spike left a tag `opscrew-spike` on one version of the test repository's image. GHCR cannot remove a tag without deleting the version; it's harmless.
+- **3. Dispatch:** `POST …/actions/workflows/<file>/dispatches` with `{ ref, inputs }` returned 204. The run appeared in `…/runs?event=workflow_dispatch` after 7 s, and the input reached the job. The workflow file had to be on the default branch.
+- **6. Localhost on Windows:**
+  - Docker Desktop reports `MemTotal` 16.7 GB (12 CPUs) and Compose v5.5.1, and ports 80, 443, 8080 and 8443 were free.
+  - A script piped to Git Bash's `sh -s`, with `EDGE_DIR` from `OPSCREW_EDGE_DIR`, ran `docker compose up -d`. The relative bind mount resolved to the Windows folder (`D:\…\sites`), the edge published only `127.0.0.1:8443`, and a probe with `Host: app.localhost` got the answer.
+  - `app.localhost` does NOT resolve on Windows for Node (`ENOTFOUND`) or the system resolver (`Resolve-DnsName`: no such name). curl and browsers resolve it themselves. So OpsCrew's checks connect to 127.0.0.1 with the Host header and SNI, as planned.
+  - The trust step (`certutil -user -addstore Root`) was not run: it changes the founder's trust store, so it is checked by hand later.
+- **7. Linux (`ubuntu-latest`):** Docker Engine with 8.3 GB and Compose v2.38.2. `127.0.0.1:80` and `:443` bind with the root daemon. `*.localhost` resolves through systemd-resolved (`getent`: `::1`), and Node's lookup gives `::1` and `127.0.0.1`.
+- **8. macOS Intel (`macos-15-intel`):**
+  - The runner has `kern.hv_support: 1`. `brew install colima docker` took 15 s, and `colima start --cpu 3 --memory 6` came up after 382 s, leaving Docker 6.2 GB.
+  - A container on `127.0.0.1:8443` answered through Colima's port forwarding.
+  - `dscacheutil` does not resolve `app.localhost`, the same as Windows.
+  - The whole job took 428 s, about 70 minutes of the plan's macOS quota on a private repository.
+  - **`windows-latest`:** Docker's server OS is `windows`, and `docker run alpine` fails: no Linux containers. Node cannot resolve `app.localhost`.
+- **10. The local CA in both proxies** (openssl, the same shape as T1501b's): a P-256 CA (CA:TRUE, pathlen 0) and a leaf for `app.localhost` and `staging.app.localhost` (serverAuth). With Node's TLS against the CA:
+  - pinned Caddy (`tls <cert> <key>`) and pinned nginx-unprivileged (`ssl_certificate`) served both names (200);
+  - Caddy refused an unknown name at the handshake;
+  - nginx served its certificate (a name mismatch), which the edge's catch-all `default_server` covers.
+
+  Git Bash's curl (schannel) failed with `--cacert`; that's irrelevant, since OpsCrew checks with Node.
+
 ## Open items for the spike (T1502)
 
 1. **GitHub environments on a Free private repository** (the throwaway repository):
