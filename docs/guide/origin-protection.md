@@ -73,10 +73,15 @@ plan's approval text says so first.
 
 In scripts (`provision --plan-only`, then `provision --approve <hash> …`, as the MCP tools do too),
 a server gets origin protection with the first provision: the approved run writes the site with the
-certificates the Cloudflare plan created, and the deploy-setup pull request brings it. In
-[your Portainer](portainer-target.md), the stack plan's hash covers the stack, so the approved run
-applies the stack exactly as it was shown, before the certificates existed. There, origin
-protection arrives with the next provision after the first.
+certificates the Cloudflare plan created, and the deploy-setup pull request brings it.
+
+In [your Portainer](portainer-target.md), the stack plan follows the Cloudflare plan and is approved
+by its own hash, because the stack gets the certificates the Cloudflare plan creates.
+`provision --plan-only` says so and prints only the Cloudflare plan's hash. The run that applies
+that plan then stops before it changes anything in Portainer: it prints the stack plan with its hash
+and asks you to run again with `--approve` and that hash. The MCP tools show the stack plan in its
+own dialog instead. The same happens whenever a Cloudflare plan gives the stack a new origin
+certificate.
 
 ## Day to day
 

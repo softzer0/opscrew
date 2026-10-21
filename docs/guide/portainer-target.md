@@ -128,6 +128,13 @@ npx opscrew provision --approve <Cloudflare plan hash> --approve <infrastructure
 npx opscrew provision --approve <stack plan hash> --yes
 ```
 
+With Caddy behind Cloudflare's proxy (web mode `caddy`), the stack plan also follows the Cloudflare
+plan when that plan creates the stack's [origin protection](origin-protection.md) certificates,
+because the stack gets them. The first `--plan-only` says so and prints only the Cloudflare plan's
+hash. Applying it ends with an error, before anything in Portainer changes, that prints the stack
+plan and its hash and says to run again with `--approve` and that hash. The third run approves it,
+as above.
+
 ## Portainer's certificate
 
 Portainer uses a self-signed certificate by default. OpsCrew never skips the check. Instead it
