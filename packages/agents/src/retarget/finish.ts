@@ -1,4 +1,4 @@
-import { isUserFacingError, lowerFirst, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { dataWarning, serverData } from "../destroy/checks";
@@ -179,8 +179,10 @@ async function finish(
     `The move of ${app} to ${freshWords.name} is finished; the old ${words.noun} is deleted.`,
   );
 
-  // 6. The final files in a pull request (a failure here does not undo the finished move).
+  // 6. The final files in a pull request, with the recovery copy when OpsCrew's local files
+  // changed (a failure here does not undo the finished move).
   const branch = finalPlan.cicd.branch;
+  const byHand = `commit the changed files under opscrew/ and open a pull request into ${branch} yourself, so the repository describes the new deployment.`;
   let publish: string;
   try {
     const published = await publishDeploySetup(deps, {
@@ -200,8 +202,10 @@ async function finish(
       ? `Merge ${published.prUrl} so the repository describes the new deployment.`
       : `Push the branch ${published.branch} and open a pull request into ${branch} so the repository describes the new deployment.`;
   } catch (error) {
-    // A branch check (an earlier run's pull request) stops before anything is committed.
+    // A branch check (an earlier run's pull request) stops before anything is committed, and so
+    // does a recovery copy another computer updated (restored first, then published by hand).
     const stopped = isUserFacingError(error) && error.code === "PHASE_PRECONDITION";
+    const elsewhere = isUserFacingError(error) && error.code === "SECRETS_COPY_CHANGED_ELSEWHERE";
     deps.reporter.warn(
       deps.redactor.redact(
         stopped
@@ -212,7 +216,9 @@ async function finish(
     publish =
       stopped && error.hint !== undefined
         ? deps.redactor.redact(error.hint)
-        : `Commit the changed files under opscrew/ and open a pull request into ${branch} yourself, so the repository describes the new deployment.`;
+        : elsewhere && error.hint !== undefined
+          ? `${error.hint} Then ${byHand}`
+          : upperFirst(byHand);
   }
   const remaining = remainingAfterDeletion({
     provider: old.provider,

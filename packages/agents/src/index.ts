@@ -12,6 +12,7 @@ export * from "./portainer";
 export * from "./providers";
 export * from "./provision";
 export * from "./retarget";
+export * from "./secrets";
 export * from "./secure";
 export * from "./shared";
 export * from "./shared/apply-command";

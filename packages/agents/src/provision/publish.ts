@@ -1,11 +1,18 @@
+import { join } from "node:path";
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, upperFirst } from "@opscrew/core";
-import { portainerTarget } from "@opscrew/iac-templates";
+import { isUserFacingError, OpsCrewError, upperFirst, writeFileAtomic } from "@opscrew/core";
+import { portainerTarget, type RenderedFile } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { planProvider, providerProfile } from "../providers";
+import {
+  COPY_PATH,
+  keyHandoverNote,
+  type RefreshRecoveryOptions,
+  refreshRecoveryCopy,
+} from "../secrets";
 import { type GitHubSetup, portainerCloudflare } from "./credentials";
 import { type DependabotStep, dependabotPullRequestLines } from "./dependabot";
 
@@ -14,6 +21,9 @@ export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
 
 /** The review checklist item of every deploy-setup pull request about the workflow's actions. */
 const PINNED_ACTIONS_CHECK = "- [ ] The workflow only uses pinned, first-party actions.";
+
+/** The pull request's line for the recovery copy, when it is in the pull request. */
+const RECOVERY_COPY_LINE = `- \`${COPY_PATH}\`: the encrypted recovery copy of what OpsCrew keeps on your computer for this app (its generated secrets, the deploy key, the infrastructure state and its records). Only your age key opens it; the names of the files in it are readable. \`opscrew secrets restore\` rebuilds them on another computer.`;
 
 export interface PublishResult {
   branch: string;
@@ -44,6 +54,8 @@ interface DeploySetupBodyOptions {
   secretsStored?: boolean;
   /** Dependabot's configuration: added in this pull request, or the user's and what it lacks. */
   dependabot?: DependabotStep;
+  /** Whether the recovery copy (`opscrew/secrets.sops.json`) is in the pull request. */
+  recoveryCopy?: boolean;
 }
 
 /**
@@ -77,6 +89,7 @@ export function deploySetupPullRequestBody(
       : "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
+    ...(options.recoveryCopy === true ? [RECOVERY_COPY_LINE] : []),
     ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, ready, host),
@@ -164,6 +177,7 @@ function portainerPullRequestBody(
     `- \`opscrew/runtime/compose.yaml\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`opscrew-deploy\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`opscrew-deploy\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran `opscrew provision`.",
+    ...(options.recoveryCopy === true ? [RECOVERY_COPY_LINE] : []),
     ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, "The app's stacks are set up in your Portainer", where),
@@ -421,11 +435,46 @@ export async function chooseDeployBranch(
 }
 
 /**
+ * The recovery copy's files for the pull request when this computer's files changed since the
+ * last copy ({@link refreshRecoveryCopy}, which asks GitHub whether the repository is private only
+ * before the copy's first commit), saying where the first key and the folder copy were written, or
+ * why there is no copy.
+ */
+async function recoveryCopyFiles(
+  deps: PhaseDeps,
+  input: {
+    github: GitHubSetup;
+    plan: DeployPlan;
+    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+  },
+): Promise<RenderedFile[]> {
+  const { github } = input;
+  const result = await refreshRecoveryCopy(deps, input.plan, {
+    repositoryPrivate: async () => (await github.api.getRepo(github.owner, github.repo)).private,
+    ...input.recovery,
+  });
+  if (result.changed && result.firstKey !== undefined) {
+    deps.reporter.warn(keyHandoverNote(result.firstKey));
+  }
+  if (result.changed && result.recipient !== undefined) {
+    deps.reporter.info(
+      `The recovery copy of this app's secrets is encrypted to your own age key ${result.recipient}; only that key (or your backup key) opens it.`,
+    );
+  }
+  if (result.changed && result.folderCopy !== undefined) {
+    deps.reporter.info(`Wrote the encrypted recovery copy to ${result.folderCopy}.`);
+  }
+  if (result.warning !== undefined) deps.reporter.warn(deps.redactor.redact(result.warning));
+  return result.changed ? result.repositoryFiles : [];
+}
+
+/**
  * Commits the generated files and the plan on the deploy branch (`input.branch`, chosen with
  * {@link chooseDeployBranch} before anything changed; when absent it is chosen here, or with
- * {@link localDeployBranch} without a push), then (when `push`) pushes it and opens a pull request
- * into the deploy branch, each after its own approval. A refused push or pull request is not an
- * error: the commit stays local and the user is told how to continue.
+ * {@link localDeployBranch} without a push), with the recovery copy's files when this computer's
+ * files changed since the last copy, then (when `push`) pushes it and opens a pull request into the
+ * deploy branch, each after its own approval. A refused push or pull request is not an error: the
+ * commit stays local and the user is told how to continue.
  */
 export async function publishDeploySetup(
   deps: PhaseDeps,
@@ -443,25 +492,38 @@ export async function publishDeploySetup(
     branch?: DeployBranch;
     /** Dependabot's configuration, for the pull request's file list. */
     dependabot?: DependabotStep;
+    /**
+     * What the recovery copy's first key needs: the user's own recipient, or the file to write a
+     * new key to; a backup recipient.
+     */
+    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
   },
 ): Promise<PublishResult> {
   const { git, github, plan } = input;
   const phase = input.phase ?? "provision";
-  const body = deploySetupPullRequestBody(plan, deps.version, {
-    secretsStored: input.secretsStored !== false,
-    ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
-  });
   const chosen =
     input.branch ??
     (input.push
       ? await chooseDeployBranch(deps, git, github, plan, phase)
       : { branch: await localDeployBranch(git, plan, phase) });
   const branch = chosen.branch;
+  const recovery = await recoveryCopyFiles(deps, input);
+  const paths = [...input.paths, ...recovery.map((file) => file.path)];
+  const body = deploySetupPullRequestBody(plan, deps.version, {
+    secretsStored: input.secretsStored !== false,
+    ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
+    recoveryCopy: recovery.some((file) => file.path === COPY_PATH),
+  });
   if ((await git.currentBranch()) !== branch) {
     if (await git.branchExists(branch)) await git.checkout(branch);
     else await git.createBranch(branch);
   }
-  await git.add(input.paths);
+  for (const file of recovery) {
+    await writeFileAtomic(join(deps.paths.root, file.path), file.content, {
+      mode: file.mode ?? 0o644,
+    });
+  }
+  await git.add(paths);
   const staged = (await git.status()).some((e) => e.code[0] !== " " && e.code[0] !== "?");
   let commit: string | undefined;
   if (staged) {
@@ -490,7 +552,7 @@ export async function publishDeploySetup(
   const push = await deps.approvals.request({
     kind: "git-push",
     title: `Push branch ${branch} to ${repo}`,
-    details: `Files:\n${input.paths.map((p) => `  ${p}`).join("\n")}`,
+    details: `Files:\n${paths.map((p) => `  ${p}`).join("\n")}`,
   });
   if (!push.approved) {
     deps.reporter.warn(
