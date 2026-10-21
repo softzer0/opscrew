@@ -106,7 +106,7 @@ Effort`.
 
 ## Phase 2: Spike (lead)
 
-- [ ] T1402 The spike (lead), with local Docker and the e2e Cloudflare token (which needs SSL and Certificates: Edit and Zone Settings: Edit on the test zone). It settles research.md's open items 1–17. Item 16, Portainer's redeploy and the version check, decides T1416's mechanism, and item 17, the 404 fallback forms, decides T1417b's. The results go into research.md as "Spike results", with one line per item: what was run, and what was seen. It also records the fixtures the parsers need: a Lynis report, ssh-audit's JSON and testssl.sh's JSON, with any address replaced by a documentation one.
+- [X] T1402 The spike (lead; done 2026-10-21, with item 14 moved to the live run T1413), with local Docker and the e2e Cloudflare token (which needs SSL and Certificates: Edit and Zone Settings: Edit on the test zone). It settles research.md's open items 1–17. Item 16, Portainer's redeploy and the version check, decides T1416's mechanism, and item 17, the 404 fallback forms, decides T1417b's. The results go into research.md as "Spike results", with one line per item: what was run, and what was seen. It also records the fixtures the parsers need: a Lynis report, ssh-audit's JSON and testssl.sh's JSON, with any address replaced by a documentation one.
 
 ## Phase 3: Packages (parallel)
 
