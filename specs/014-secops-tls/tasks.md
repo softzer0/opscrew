@@ -308,6 +308,10 @@ Effort`.
     - **The edge choice:** provision reads what the server runs (the host record, or the edge stamp over SSH). With other OpsCrew apps on the server, a different `target.edge` is refused before any change. The message says the proxy is shared, and that it can be switched while the server holds one OpsCrew app. With the app alone, the switch is planned, with the interruption stated.
     - **Origin TLS** for proxied hostnames on cloud, own and Portainer (`web: caddy`) targets:
       - the keys and the CSR come from core, and only when a new certificate is needed (contract rules). The client certificate lasts 15 years, like the origin certificate;
+      - provision always passes a fresh key and CSR, and keeps the key only when the applied plan created the certificate (T1403 creates one only when the rule wants it and a CSR is given);
+      - a hostname leaving the proxy stays in `desired.tls.proxied` until `served` shows the origin no longer requires the client certificate for it; then it leaves `proxied`, and the planner disables it (T1403 does not use `retiring`);
+      - client certificates are never replaced in v1 (T1403 refuses it); `status` and `secure` warn when one nears its expiry, with the manual steps;
+      - `applyZonePlan` passes `keys`, `csr: plan.csr`, the clock and sleep to `applyShared`, and stores the returned `originCertificate` PEM as the generated value `ORIGIN_TLS_CERT`;
       - the keys are stored as generated values (`ORIGIN_TLS_KEY`, `ORIGIN_TLS_CERT`, `ORIGIN_PULL_KEY`);
       - `served` is read over SSH as `deploy`, or through Portainer's API;
       - the shared plan is shown, approved by its hash and applied with the keys and the CSR passed in;
