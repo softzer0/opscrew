@@ -201,7 +201,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
 
-- [ ] T1406 [P] [US1] [US5] Caddy: origin TLS, the baseline headers, the catch-all and the additions, and the origin files in the deploy, in `packages/iac-templates/src/{edge,runtime,workflow,portainer-target}/**`
+- [X] T1406 [P] [US1] [US5] Caddy: origin TLS, the baseline headers, the catch-all and the additions, and the origin files in the deploy, in `packages/iac-templates/src/{edge,runtime,workflow,portainer-target}/**`
   - Owns: those paths (+ tests, snapshots)
   - Reads: contracts/edge-and-checks.md "The edge on the server"; data-model.md "Server layout", "User additions"; research.md R3 (Caddy), R5; plan.md "7."
   - Depends: T1401a, T1402
