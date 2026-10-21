@@ -115,11 +115,13 @@ Each rule refuses, with its line and what to do:
 
 | Rule | Refuses |
 |---|---|
-| `tls-version` | `ssl_protocols` or `protocols` naming TLS 1.0 or 1.1, or SSLv3 |
+| `tls` | every nginx `ssl_*` directive and Caddy's `tls` directive: TLS is managed by OpsCrew |
 | `admin-endpoint` | Caddy's `admin`, `metrics`; nginx's `stub_status`, `api`, `status` |
-| `upstream` | `proxy_pass`, `reverse_proxy`, `fastcgi_pass`, `grpc_pass`, `uwsgi_pass` to anything but `ctx.upstream` |
-| `hostname` | `server_name`, `host` matchers, `bind`, `listen` |
+| `upstream` | `proxy_pass`, `reverse_proxy`, `fastcgi_pass`, `grpc_pass`, `uwsgi_pass`, `scgi_pass`, `memcached_pass`, `php_fastcgi`, `forward_auth` to anything but exactly `ctx.upstream` (no variable after it); `transport` inside `reverse_proxy` |
+| `hostname` | `server_name` and `host` matchers naming a host outside `ctx.hostnames`; `bind`, `listen` |
 | `filesystem` | `root`, `alias`, `autoindex`, `file_server`, `auth_basic_user_file`: the edge serves no files of its own |
 | `includes` | `include`, `import` |
 | `scripting` | `*_by_lua*`, `js_*`, `perl` |
+| `placeholders` | any word, quoted or not, containing Caddy's `{file.`, `{env.` or `{$`: they read files or the environment, which can hold secrets |
+| `logs` | Caddy `log` with `output net`, and nginx `access_log`/`error_log` to `syslog:`: request data leaves the server |
 | `size` | a file over 64 KiB |
