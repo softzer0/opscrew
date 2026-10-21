@@ -446,7 +446,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --concurrency=2`, the Docker-gated tests (`OPSCREW_DOCKER_TESTS=1`), and `pnpm lint`
   - Effort: medium
 
-- [ ] T1414c [US2] A provision with nothing to change publishes nothing (found live, 2026-10-21), in `packages/agents/src/provision/**`, `packages/agents/src/secrets/**` (+ tests)
+- [X] T1414c [US2] A provision with nothing to change publishes nothing (found live, 2026-10-21), in `packages/agents/src/provision/**`, `packages/agents/src/secrets/**` (+ tests)
   - Why: in the `recovery` live pass, `provision` on a freshly restored clone planned "Nothing to apply". It still opened a pull request with two changes:
     - `opscrew/plan.yaml`, where only `updatedAt` changed: `deploymentRecord` in `provision/steps.ts` stamps it on every run;
     - a re-encrypted recovery copy, because a file in it changed on disk. `deploy_secrets.json` gets a fresh `storedAt` each time the deploy secrets are stored (`provision/secrets.ts`), and nothing reads that field.
