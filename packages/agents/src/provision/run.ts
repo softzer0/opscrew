@@ -2,7 +2,7 @@ import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine } from "@opscrew/contracts";
-import { exists, isUserFacingError, listText, OpsCrewError } from "@opscrew/core";
+import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -456,10 +456,7 @@ async function provisionFlow(
   // 3c. OpsCrew's shared Cloudflare change (its rules in the zone, the account's Zero Trust
   // organization and one-time PIN login) before the infrastructure plan of this setup (after a
   // mode switch's removal of the old one): shown, approved by its hash, applied and recorded. The
-  // infrastructure takes the PIN login's id from it. Applying a saved plan renders nothing, so its
-  // files keep the site the --plan-only run wrote (the next run brings a new origin TLS).
-  const siteBefore =
-    approveHash === undefined ? undefined : (await recordedEdge(deps, persisted(plan))).edge;
+  // infrastructure takes the PIN login's id from it.
   const sharedResult =
     shared === undefined
       ? undefined
@@ -482,15 +479,14 @@ async function provisionFlow(
     shared?.main !== undefined &&
     renewsOriginCertificate(shared.main.plan);
 
-  // 4. Render (skipped when applying a saved plan: its files were written by the --plan-only run)
+  // 4. Render
   const knownServer =
     hidesServerAddress(plan) || ownServer
       ? undefined
       : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
   // The app's site: origin TLS as Cloudflare now has it (a missing permission keeps today's
   // site), and the user's additions.
-  const after = await recordedEdge(deps, persisted(plan));
-  const site = { edge: siteBefore ?? after.edge, values: after.values };
+  const site = await recordedEdge(deps, persisted(plan));
   const ctx = deploymentRenderContext(deps, {
     plan,
     requirements,
@@ -507,7 +503,26 @@ async function provisionFlow(
     ...deploymentFiles(plan, ctx, site.values),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
   ];
-  if (approveHash === undefined) await approveAndWriteRenderedFiles(deps, root, files);
+  // Applying a saved plan keeps the infrastructure code the --plan-only run wrote, which that plan
+  // was made from. The other files are in no hashed plan (the pull request and the deploy bring
+  // them), so they get the site Cloudflare has now, as in a single run: the client certificate is
+  // active at Cloudflare before the deploy makes the server require it. A refusal names the
+  // Cloudflare plans this run applied (each one's approval is this run's).
+  const cloudflareApplied = [shared?.leave, shared?.main].flatMap((zone) =>
+    zone !== undefined && sharedResult?.approvals.some((a) => a.planHash === zone.plan.hash)
+      ? [`Cloudflare plan ${zone.plan.hash}, ${plural(zone.plan.changes.length, "change")}`]
+      : [],
+  );
+  await approveAndWriteRenderedFiles(
+    deps,
+    root,
+    approveHash === undefined ? files : files.filter((f) => f.kind !== "infra"),
+    cloudflareApplied.length === 0
+      ? {}
+      : {
+          refused: `OpsCrew applied the Cloudflare changes you approved (${cloudflareApplied.join("; ")}); it wrote no files and created nothing else. Run \`${command}\` again to finish.`,
+        },
+  );
 
   // 4b. The app's bucket (the `storage` root): its own plan, approved by its hash, before the
   // infrastructure plan.

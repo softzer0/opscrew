@@ -71,6 +71,13 @@ the server before the app's site switches to it. Turning the protection off goes
 When only the certificate or a secret changed, OpsCrew starts the deploy workflow itself, and the
 plan's approval text says so first.
 
+In scripts (`provision --plan-only`, then `provision --approve <hash> …`, as the MCP tools do too),
+a server gets origin protection with the first provision: the approved run writes the site with the
+certificates the Cloudflare plan created, and the deploy-setup pull request brings it. In
+[your Portainer](portainer-target.md), the stack plan's hash covers the stack, so the approved run
+applies the stack exactly as it was shown, before the certificates existed. There, origin
+protection arrives with the next provision after the first.
+
 ## Day to day
 
 - `npx opscrew status` shows both certificates and when they expire.
