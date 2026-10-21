@@ -224,7 +224,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1408 [P] [US5] The additions rules, in `packages/secops/src/proxy-rules/**` (new)
+- [X] T1408 [P] [US5] The additions rules, in `packages/secops/src/proxy-rules/**` (new)
   - Owns: that path (+ tests, fixtures); `packages/secops/src/index.ts` for the new export only
   - Reads: contracts/edge-and-checks.md "The additions rules"; plan.md "9."; spec FR-1443
   - Depends: T1401a
