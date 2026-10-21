@@ -5,7 +5,7 @@
  * refused while both are there, origin TLS on nginx behind Cloudflare's proxy, a switch to Caddy
  * and back within the stated interruption, and a destroy that removes the certificates.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   CAA_ISSUERS,
@@ -44,6 +44,11 @@ const SECOND_APP = "express-api";
 /** The addition the test commits (an exact-match location that answers by itself). */
 const ADDITION_PATH = "/opscrew-e2e-addition";
 const ADDITION_BODY = "served by the addition";
+/** The same addition in each proxy's syntax. */
+const ADDITIONS: Record<EdgeProxy, string> = {
+  nginx: `location = ${ADDITION_PATH} {\n    return 200 "${ADDITION_BODY}";\n}\n`,
+  caddy: `handle ${ADDITION_PATH} {\n\trespond "${ADDITION_BODY}" 200\n}\n`,
+};
 /**
  * The interruption a switch of the proxy may cause for a proxied hostname (the plan states "a few
  * seconds"; research R5).
@@ -106,6 +111,37 @@ describe.skipIf(MISSING.length > 0)(
         ...plan,
         target: { ...plan.target, edge },
       });
+    }
+
+    /**
+     * Writes the addition in `edge`'s syntax and deletes the other proxy's file, as OpsCrew asks
+     * before a switch; with `push`, commits and pushes it, since the deploy takes it from `main`.
+     */
+    async function writeAddition(edge: EdgeProxy, push: boolean): Promise<void> {
+      const dir = join(run.repo, "opscrew/proxy");
+      await mkdir(dir, { recursive: true });
+      await rm(join(dir, `additions.${edge === "nginx" ? "caddy" : "nginx"}`), { force: true });
+      await writeFile(join(dir, `additions.${edge}`), ADDITIONS[edge]);
+      if (push) {
+        await run.git("add", "-A", "opscrew/proxy");
+        await run.git("commit", "-q", "-m", `e2e: the addition for ${edge}`);
+        await run.git("push", "-q", "origin", "main");
+      }
+    }
+
+    /** Waits until the addition answers on the app's hostname, with OpsCrew's headers. */
+    async function expectAddition(): Promise<void> {
+      const url = `https://${run.appHost}${ADDITION_PATH}`;
+      const answer = await waitFor(`${url} answering`, minutes(5), async () => {
+        const got = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+        const body = await got.text();
+        return got.status === 200 && body.includes(ADDITION_BODY) ? got : undefined;
+      });
+      expect(
+        answer.headers.get("strict-transport-security"),
+        "the addition's location keeps OpsCrew's HSTS header",
+      ).toBeTruthy();
+      expect(answer.headers.get("x-content-type-options"), "and nosniff").toBe("nosniff");
     }
 
     /** The proxy the server's edge runs, from the stamp in its Compose file. */
@@ -209,28 +245,10 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step("3. an addition is served, with OpsCrew's headers", minutes(45), async () => {
-      const file = join(run.repo, "opscrew/proxy/additions.nginx");
-      await mkdir(join(run.repo, "opscrew/proxy"), { recursive: true });
-      await writeFile(
-        file,
-        `location = ${ADDITION_PATH} {\n    return 200 "${ADDITION_BODY}";\n}\n`,
-      );
-      await run.git("add", "opscrew/proxy/additions.nginx");
-      await run.git("commit", "-q", "-m", "e2e: an nginx addition");
-      await run.git("push", "-q", "origin", "main");
+      await writeAddition("nginx", true);
       await run.provisionUntilDone("the addition");
       await run.deployAny("the addition");
-      const url = `https://${run.appHost}${ADDITION_PATH}`;
-      const answer = await waitFor(`${url} answering`, minutes(5), async () => {
-        const got = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-        const body = await got.text();
-        return got.status === 200 && body.includes(ADDITION_BODY) ? got : undefined;
-      });
-      expect(
-        answer.headers.get("strict-transport-security"),
-        "the addition's location keeps OpsCrew's HSTS header",
-      ).toBeTruthy();
-      expect(answer.headers.get("x-content-type-options"), "and nosniff").toBe("nosniff");
+      await expectAddition();
       log("the addition is served with OpsCrew's headers");
     });
 
@@ -292,6 +310,9 @@ describe.skipIf(MISSING.length > 0)(
         await run.waitForHealth(minutes(5), false);
         const planFile = join(run.repo, "opscrew/plan.yaml");
         const kept = await readFile(planFile, "utf8");
+        // The addition in Caddy's syntax first, as OpsCrew asks, so that the refusal is the shared
+        // proxy's.
+        await writeAddition("caddy", false);
         await setEdge("caddy");
         const refused = await run.opscrew(
           "provision",
@@ -300,6 +321,7 @@ describe.skipIf(MISSING.length > 0)(
           "--yes",
         );
         await writeFile(planFile, kept);
+        await writeAddition("nginx", false);
         expect(refused.exitCode, "provision refuses another proxy for the first app").not.toBe(0);
         expect(
           refused.output.includes("which every OpsCrew app on it shares") &&
@@ -356,6 +378,7 @@ describe.skipIf(MISSING.length > 0)(
       minutes(90),
       async () => {
         for (const edge of ["caddy", "nginx"] as const) {
+          await writeAddition(edge, true);
           await setEdge(edge);
           const provisioned = await run.provisionUntilDone(`the switch to ${edge}`);
           expect(
@@ -374,6 +397,8 @@ describe.skipIf(MISSING.length > 0)(
           ).toBeLessThanOrEqual(SWITCH_BOUND_MS);
           expect(await serverProxy(), `the edge runs ${edge}`).toBe(edge);
           await run.waitForHealth(minutes(5));
+          await expectAddition();
+          log(`the addition is served on ${edge}, with OpsCrew's headers`);
         }
       },
     );

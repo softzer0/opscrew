@@ -643,8 +643,9 @@ passes (a folder copy, `--key-out`).
    finding from testssl.sh (SC-1407), ssh-audit's policy passing apart from the listed noise, and
    Lynis's hardening index.
 6. **A second app on the same edge**, DNS only with nginx, set up the same way. Then the first
-   app's `target.edge` set to `caddy` must be refused by `provision --plan-only` before any change
-   ("which every OpsCrew app on it shares", "Nothing was changed"); the plan is put back.
+   app's `target.edge` set to `caddy`, with the addition rewritten in Caddy's syntax as OpsCrew asks,
+   must be refused by `provision --plan-only` before any change ("which every OpsCrew app on it
+   shares", "Nothing was changed"); the plan and the addition are put back.
 7. **The second app's destroy** (without `--undo-host`): nothing of it left in Cloudflare, the first
    app still answers.
 8. **Origin TLS on nginx:** interview and design again with `server.serve: proxy` (design keeps
@@ -652,11 +653,11 @@ passes (a folder copy, `--key-out`).
    check from the server as in the Hetzner `proxied` pass (on nginx a connection without the client
    certificate completes the handshake and gets HTTP 400, which counts as refused); `secure` and
    `drift`.
-9. **A switch to Caddy and back**, now that one app is left: for each, `target.edge` set,
-   provision (its output must state the switch and its interruption), then the deploy while 20
+9. **A switch to Caddy and back**, now that one app is left: for each, the addition rewritten in
+   that proxy's syntax and pushed, `target.edge` set, provision (its output must state the switch and its interruption), then the deploy while 20
    requests per second go through Cloudflare. The longest stretch of failed requests must be at
-   most 15 seconds ("a few seconds" for a proxied hostname), and the edge must then run the new
-   proxy.
+   most 15 seconds ("a few seconds" for a proxied hostname), the edge must then run the new
+   proxy, and the addition must answer on it with OpsCrew's headers.
 10. **`destroy --undo-host`:** nothing of the app left in Cloudflare, its origin certificate
     revoked, its client certificate and origin pull settings gone, no CAA record at its hostname,
     and root still logs in.
