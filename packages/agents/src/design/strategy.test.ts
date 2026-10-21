@@ -34,7 +34,7 @@ describe("deployStrategyFor", () => {
     expect(deployStrategyFor(target("digitalocean", 0.5))).toEqual({
       strategy: "recreate",
       reason:
-        "Each deploy stops the old version before the new one starts, because the server has 512 MB of memory, too little for two copies of the app.",
+        "Each deploy stops the old version before the new one starts, because the server has 512 MB of memory, too little for two copies of the app. Requests wait meanwhile, so visitors see a short pause, not an error.",
     });
     // A server the user owns: the memory inspection read (a 1 GB machine reads as 0.9 GiB).
     expect(deployStrategyFor(target("own", 0.9)).strategy).toBe("recreate");
@@ -42,8 +42,16 @@ describe("deployStrategyFor", () => {
 
   it("says so when the own server's memory could not be read", () => {
     expect(deployStrategyFor(target("own", 0.01)).reason).toBe(
-      "Each deploy stops the old version before the new one starts, because OpsCrew could not read how much memory the server has.",
+      "Each deploy stops the old version before the new one starts, because OpsCrew could not read how much memory the server has. Requests wait meanwhile, so visitors see a short pause, not an error.",
     );
+  });
+
+  it("recreates an app on SQLite, saying that requests wait meanwhile", () => {
+    expect(deployStrategyFor(target("hetzner", 4), true)).toEqual({
+      strategy: "recreate",
+      reason:
+        "Each deploy stops the old version before the new one starts, because the app keeps its data in SQLite, which two copies must never write at once. Requests wait meanwhile, so visitors see a short pause, not an error.",
+    });
   });
 
   it("always recreates in Portainer", () => {

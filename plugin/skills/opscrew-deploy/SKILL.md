@@ -105,8 +105,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      projects and the rest, or the repository's own Dockerfile), how deploys switch, and the signing, deploy tag
      and image retention settings, each with its reason; pass them on. Deploys have no downtime: the
      new version gets traffic only once its health check passes. Servers under 1 GB and Portainer
-     restart the app instead, with a short gap. Tell the user that migrations must keep working
-     with the version still running. They change these settings in `opscrew/plan.yaml` (the
+     restart the app instead: requests wait meanwhile, so visitors see a short pause, not an
+     error. Tell the user that migrations must keep working with the version still running. They change these settings in `opscrew/plan.yaml` (the
      builder needs `app.build.chosen: user`); then call `opscrew_select_design` again.
    - **The reverse proxy.** The server's proxy is Caddy (the default) or nginx with certbot, set as
      `target.edge` in `opscrew/plan.yaml`; both give visitors the same TLS and headers. Every app on

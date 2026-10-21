@@ -106,8 +106,8 @@ A SQLite database is a file inside your app, so OpsCrew does not run a database 
   Buildpacks, `/app` with Railpack and with OpsCrew's Dockerfile (`/app/<folder>` for a Node.js app
   in a subfolder of the repository), and the last `WORKDIR` of your own Dockerfile.
 - **Deploys stop the old version before the new one starts**, so two copies never write to the
-  database at once (`deploy.strategy: recreate`). The site is down for a few seconds during each
-  deploy.
+  database at once (`deploy.strategy: recreate`). Requests wait meanwhile, so visitors see a short
+  pause, not an error (see [Small servers restart the app instead](zero-downtime.md#small-servers-restart-the-app-instead)).
 
 ### Who owns the database folder
 

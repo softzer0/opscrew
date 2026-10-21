@@ -152,14 +152,15 @@ const PRELUDE = [
  * `compose` calls act on $WORK/containers-<project>; the workers and cron named in PROCESSES live
  * in $WORK/processes-<project>, one container each unless REPLICAS says otherwise (`worker=2`), as
  * `p<n> <service> <image> <status> <restarts>`; they are recreated only when their image changed,
- * as Compose does, and `compose stop` exits them. Any other `compose exec` in an app project is a
- * setup step: it fails when its words are a line of $WORK/failing. In the edge's project, `up`
- * fails with EDGE_UP_FAIL, Caddy's reload with CADDY_RELOAD_FAIL, nginx's from its
- * NGINX_RELOAD_FAIL-th on, and kamal-proxy's `deploy <service>` writes the target it routes to in
- * $WORK/routes/<service>. The edge's one-off certbot containers act on $WORK/letsencrypt: `test`
+ * as Compose does, and `compose stop` exits them. `compose up` fails with COMPOSE_UP_FAIL, and for
+ * the app only with APP_UP_FAIL. Any other `compose exec` in an app project is a setup step: it
+ * fails when its words are a line of $WORK/failing. In the edge's project, `up` fails with
+ * EDGE_UP_FAIL, Caddy's reload with CADDY_RELOAD_FAIL, nginx's from its NGINX_RELOAD_FAIL-th on,
+ * and kamal-proxy's `deploy <service>` writes the target it routes to in $WORK/routes/<service>;
+ * its `pause` and `resume` fail for a service without a route, and mark it paused in
+ * $WORK/paused/<service>. The edge's one-off certbot containers act on $WORK/letsencrypt: `test`
  * looks for a file, `certbot` gets the certificate (fails with CERTBOT_FAIL, and the first time
- * with another certbot's lock with CERTBOT_LOCKED), `sh` runs its
- * script there.
+ * with another certbot's lock with CERTBOT_LOCKED), `sh` runs its script there.
  */
 const FAKE_DOCKER = [
   "#!/usr/bin/env bash",
@@ -200,6 +201,7 @@ const FAKE_DOCKER = [
   '  "compose up")',
   '    if [[ "$project" == opscrew-edge ]]; then [[ -z "${EDGE_UP_FAIL:-}" ]]; exit; fi',
   '    [[ -z "${COMPOSE_UP_FAIL:-}" ]] || exit 1',
+  '    [[ -z "${APP_UP_FAIL:-}" || "${@: -1}" != app ]] || exit 1',
   '    if [[ "${@: -1}" != app ]]; then',
   '      for arg in "${@:3}"; do [[ " ${PROCESSES:-} " != *" $arg "* ]] || up_process "$arg"; done',
   "      exit 0",
@@ -258,6 +260,13 @@ const FAKE_DOCKER = [
   '    if [[ "$4" == nginx ]]; then',
   '      n=$(( $(cat "$WORK/nginx-reloads" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$WORK/nginx-reloads"',
   '      if (( ${NGINX_RELOAD_FAIL:-0} > 0 && n >= ${NGINX_RELOAD_FAIL:-0} )); then echo "nginx: [emerg] cannot load certificate" >&2; exit 1; fi',
+  "      exit 0",
+  "    fi",
+  // kamal-proxy's pause and resume of a service it has (a route), which $WORK/paused/<service> marks.
+  '    if [[ "$6" == pause || "$6" == resume ]]; then',
+  '      if [[ ! -f "$WORK/routes/$7" ]]; then echo "Error: service not found" >&2; exit 1; fi',
+  '      mkdir -p "$WORK/paused"',
+  '      if [[ "$6" == pause ]]; then touch "$WORK/paused/$7"; else rm -f "$WORK/paused/$7"; fi',
   "      exit 0",
   "    fi",
   '    target=""; prev=""; for arg in "$@"; do [[ "$prev" == --target ]] && target="$arg"; prev="$arg"; done',
@@ -463,6 +472,13 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(calls.indexOf("kamal-proxy deploy")).toBeLessThan(calls.indexOf("docker stop c90"));
       expect(calls).toContain("docker rm c90");
       expect(calls).toContain("docker logout ghcr.io");
+      // No pause: the old copy serves until the new one takes traffic.
+      expect(file("projects.log")).not.toMatch(/kamal-proxy (pause|resume)/);
+      expect(rolling.start).toContain("trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT");
+      for (const script of [rolling.start, rolling.rollback]) {
+        expect(script).not.toMatch(/kamal-proxy (pause|resume)/);
+        expect(script.match(/\btrap /g) ?? []).toHaveLength(script === rolling.start ? 1 : 0);
+      }
     });
 
     it("removes every old copy, also one a broken run left behind", () => {
@@ -556,8 +572,25 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
   });
 
   describe("recreate", () => {
-    it("replaces the container, then routes to it", () => {
+    const PAUSE =
+      "opscrew-edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s";
+    const RESUME = "opscrew-edge exec -T kamal-proxy kamal-proxy resume shop";
+    const RESUME_TRAP =
+      "edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true";
+    /** Whether kamal-proxy holds the app's requests (the fake's mark). */
+    const paused = () => existsSync(join(work, "paused", "shop"));
+    /** The running version of the app, with its service on kamal-proxy. */
+    const deployed = () => {
       server({ ".env": OLD }, [OLD]);
+      mkdirSync(join(work, "routes"));
+      writeFileSync(join(work, "routes", "shop"), "shop-app-90:3000\n");
+    };
+    const log = () => file("projects.log").split("\n");
+    const at = (prefix: string) => log().findIndex((line) => line.startsWith(prefix));
+    const lastAt = (prefix: string) => log().findLastIndex((line) => line.startsWith(prefix));
+
+    it("replaces the container, then routes to it", () => {
+      deployed();
       const start = run(recreate.start);
       expect(start.status, start.output).toBe(0);
       expect(containers()).toEqual([NEW]);
@@ -565,6 +598,91 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(dockerCalls()).toContain("docker compose up -d --no-deps --remove-orphans app");
       expect(dockerCalls()).not.toContain("--scale");
       expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
+    });
+
+    it("holds the app's requests on kamal-proxy while it replaces the container", () => {
+      deployed();
+      const start = run(recreate.start);
+      expect(start.status, start.output).toBe(0);
+      // Pause (drain, then hold), replace, deploy the new copy, resume.
+      expect(at(PAUSE)).toBeGreaterThan(-1);
+      expect(at(PAUSE)).toBeLessThan(at("shop up -d --no-deps --remove-orphans app"));
+      expect(at("shop up -d --no-deps --remove-orphans app")).toBeLessThan(
+        at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop "),
+      );
+      expect(at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(
+        at(RESUME),
+      );
+      expect(paused()).toBe(false);
+      // The EXIT trap resumes once more and keeps the registry logout.
+      expect(recreate.start).toContain(
+        `trap '${RESUME_TRAP}; docker logout ghcr.io > /dev/null 2>&1' EXIT`,
+      );
+      expect(dockerCalls().split("\n").slice(-2)).toEqual([
+        expect.stringMatching(/ exec -T kamal-proxy kamal-proxy resume shop$/),
+        "docker logout ghcr.io",
+      ]);
+    });
+
+    it("lifts the pause when the new copy fails its health check", () => {
+      deployed();
+      const start = run(recreate.start, { UNHEALTHY: NEW });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("::error::The new version did not pass its health check");
+      expect(paused()).toBe(false);
+      expect(lastAt(RESUME)).toBeGreaterThan(
+        at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy"),
+      );
+      expect(dockerCalls()).toContain("docker logout ghcr.io");
+    });
+
+    it("lifts the pause when a command after it fails", () => {
+      deployed();
+      const start = run(recreate.start, { APP_UP_FAIL: "1" });
+      expect(start.status).not.toBe(0);
+      expect(at(PAUSE)).toBeGreaterThan(-1);
+      expect(paused()).toBe(false);
+      expect(lastAt(RESUME)).toBeGreaterThan(at(PAUSE));
+      expect(dockerCalls()).toContain("docker logout ghcr.io");
+    });
+
+    it("deploys the first version although kamal-proxy has no service to pause yet", () => {
+      const start = run(recreate.start);
+      expect(start.status, start.output).toBe(0);
+      expect(at(PAUSE)).toBeGreaterThan(-1);
+      expect(containers()).toEqual([NEW]);
+      expect(routed()).toBe(NEW);
+      expect(paused()).toBe(false);
+      expect(start.output).not.toContain("service not found");
+    });
+
+    it("holds requests during the rollback's own recreate, printing only its outcome", () => {
+      deployed();
+      expect(run(recreate.start).status).toBe(0);
+      resetCalls();
+      const rollback = run(recreate.rollback);
+      // `restored` alone on stdout: the resume prints nothing there.
+      expect(rollback.output).toContain("restored the previous version");
+      expect(routed()).toBe(OLD);
+      expect(at(PAUSE)).toBeLessThan(at("shop up -d --no-deps --remove-orphans app"));
+      expect(at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(
+        at(RESUME),
+      );
+      expect(paused()).toBe(false);
+      expect(recreate.rollback).toContain(`trap '${RESUME_TRAP}' EXIT`);
+    });
+
+    it("lifts the pause when the rollback's previous version fails its health check too", () => {
+      deployed();
+      expect(run(recreate.start).status).toBe(0);
+      resetCalls();
+      const rollback = run(recreate.rollback, { UNHEALTHY: OLD });
+      expect(rollback.output).toContain(
+        "The previous version did not pass its health check either",
+      );
+      expect(rollback.output).toContain("could not restore the previous version");
+      expect(paused()).toBe(false);
+      expect(lastAt(RESUME)).toBeGreaterThan(at(PAUSE));
     });
 
     it("gives the health message and the builder hint when the new copy exits at once", () => {

@@ -8,9 +8,11 @@ export const PORTAINER_RECREATE_NOTE =
 export const ROLLING_NOTE =
   "New versions start next to the running one and take traffic only once their health check passes, so deploys have no downtime.";
 
+/** What a recreate on a server means for visitors: kamal-proxy holds their requests meanwhile. */
+const RECREATE_PAUSE = "Requests wait meanwhile, so visitors see a short pause, not an error.";
+
 /** FR-1313: why an app on SQLite stops its old copy first. */
-export const SQLITE_RECREATE_NOTE =
-  "Each deploy stops the old version before the new one starts, because the app keeps its data in SQLite, which two copies must never write at once.";
+export const SQLITE_RECREATE_NOTE = `Each deploy stops the old version before the new one starts, because the app keeps its data in SQLite, which two copies must never write at once. ${RECREATE_PAUSE}`;
 
 /** Memory below which the server cannot run two copies of the app during a deploy. */
 const ROLLING_MIN_MEMORY_GB = 1;
@@ -39,7 +41,7 @@ export function deployStrategyFor(
       : `the server has ${mb} MB of memory, too little for two copies of the app`;
   return {
     strategy: "recreate",
-    reason: `Each deploy stops the old version before the new one starts, because ${why}.`,
+    reason: `Each deploy stops the old version before the new one starts, because ${why}. ${RECREATE_PAUSE}`,
   };
 }
 

@@ -38,17 +38,26 @@ message also names the builder that made the image and the setting that switches
   when the drain ends at the latest. Your app's clients should reconnect.
 - **Requests longer than 300 seconds are cut.** This includes slow uploads and downloads.
 - **The drain time** is 30 seconds by default. Change it with `deploy.drainSeconds` (5 to 300) in
-  `opscrew/plan.yaml`, then run `npx opscrew provision`.
+  `opscrew/plan.yaml`, then run `npx opscrew provision`. On a server that restarts the app instead
+  (`recreate`, below), a drain longer than 90 seconds can make the requests waiting for the new
+  version time out.
 
 ## Small servers restart the app instead
 
 Two copies of the app run during a switch. On a server with less than 1 GB of memory, OpsCrew
 records `deploy.strategy: recreate` in `opscrew/plan.yaml` and says why: each deploy stops the old
-version before the new one starts, so the site is down for a few seconds. A broken release is still
-caught: OpsCrew then switches back to the previous version.
+version before the new one starts. An app that keeps its data in SQLite deploys this way on every
+server. kamal-proxy holds the requests meanwhile: the old version first finishes the requests it
+has, and requests that arrive during the switch wait, for up to 90 seconds, until the new version
+passes its health check and answers them. Visitors see a short pause, not an error.
 
-To switch anyway, set `deploy.strategy: rolling` in `opscrew/plan.yaml` and run
-`npx opscrew provision`. You can also set `recreate` on a larger server. `npx opscrew design` keeps
+A broken release is still caught, but it costs more than in a rolling deploy, because the old
+version is already stopped. When the new version fails its health check, the requests that waited
+for it get an error, and so do new ones until OpsCrew has switched back to the previous version.
+The switch back starts right away, and requests wait again while the previous version starts.
+
+On a small server you can switch anyway: set `deploy.strategy: rolling` in `opscrew/plan.yaml` and
+run `npx opscrew provision`. An app on SQLite always recreates, whatever the server. You can also set `recreate` on a larger server. `npx opscrew design` keeps
 your choice while the server type stays the same. On a server you already have, it reads the
 memory again each time, and below 1 GB it goes back to `recreate`. `npx opscrew status` shows the
 strategy in use.

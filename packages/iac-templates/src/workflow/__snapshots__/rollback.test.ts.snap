@@ -120,6 +120,8 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
             rm -rf /srv/edge/tls/shop
           ) 9> /srv/edge/.lock
           docker compose up -d --no-deps --wait db
+          trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+          edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
           docker compose up -d --no-deps --remove-orphans app
           new="$(docker compose ps -aq app)"
@@ -129,6 +131,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
             echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built with Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml).'
             exit 1
           fi
+          edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null
           REMOTE
       - id: health
         name: Check that the app is healthy
@@ -162,6 +165,8 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
           {
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
             docker compose up -d --no-deps --remove-orphans app
             new="$(docker compose ps -aq app)"
@@ -171,6 +176,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
               echo '::error::The previous version did not pass its health check either.'
               exit 1
             fi
+            edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null
           } >&2
           rm -f .env.previous .processes.previous
           echo restored

@@ -234,19 +234,39 @@ function proxyHosts(plan: DeployPlan): string {
 }
 
 /**
+ * How long kamal-proxy holds a request while a recreate replaces the app: the default drain (30
+ * seconds) and the new copy's health check ({@link DEPLOY_TIMEOUT_SECONDS}), below the 100 seconds
+ * Cloudflare's proxy waits for an answer.
+ */
+const MAX_PAUSE_SECONDS = 90;
+
+/** `kamal-proxy <words>` in the edge's kamal-proxy, with no stdin (the script arrives on it). */
+function kamalProxy(words: string): string {
+  return `edge exec -T kamal-proxy kamal-proxy ${words} < /dev/null`;
+}
+
+/** What the start script's EXIT trap runs: the registry logout of the app's own Docker settings. */
+const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
+
+/**
  * Switches traffic to a copy of `$APP_IMAGE` (POSIX sh, in the app's folder) and writes it to
  * `.env`. `rolling`: starts a second `app` container next to the running one; the edge's
  * kamal-proxy, where the app is the service `<app>` with its hostnames, sends it traffic once its
- * health check passes and drains the old one, which is then removed. `recreate`: replaces the
- * container, then hands it to kamal-proxy. The first deploy registers the first target the same
- * way. Containers of services the Compose file no longer has go with the new copy's start. When
- * the new copy never becomes healthy it is removed, `failed` is printed and the script exits 1.
+ * health check passes and drains the old one, which is then removed. `recreate`: kamal-proxy
+ * pauses the service (the requests in flight finish, new ones wait), the container is replaced
+ * and handed to kamal-proxy, and the service resumes; the script's EXIT trap, which also runs
+ * `onExit` (the script's own trap commands), resumes it on every other exit, since kamal-proxy
+ * keeps a pause even across its restarts. The first deploy registers the first target the same
+ * way (its pause fails, as kamal-proxy has no service yet, and the deploy goes on). Containers of
+ * services the Compose file no longer has go with the new copy's start. When the new copy never
+ * becomes healthy it is removed, `failed` is printed and the script exits 1.
  */
-function switchApp(plan: DeployPlan, failed: string): string[] {
+function switchApp(plan: DeployPlan, failed: string, onExit: readonly string[] = []): string[] {
   const { strategy, drainSeconds } = plan.deploy;
+  const app = plan.app.name;
   const kamal = [
     'name="$(docker inspect --format \'{{.Name}}\' "$new")"',
-    `if ! edge exec -T kamal-proxy kamal-proxy deploy ${plan.app.name} --target "\${name#/}:${plan.app.port}"${proxyHosts(plan)} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s < /dev/null; then`,
+    `if ! ${kamalProxy(`deploy ${app} --target "\${name#/}:${plan.app.port}"${proxyHosts(plan)} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)}; then`,
     '  docker rm -f "$new" > /dev/null',
     `  echo ${shellQuote(failed)}`,
     "  exit 1",
@@ -254,11 +274,17 @@ function switchApp(plan: DeployPlan, failed: string): string[] {
   ];
   const writeEnv = "printf 'APP_IMAGE=%s\\n' \"$APP_IMAGE\" > .env";
   if (strategy === "recreate") {
+    const resume = kamalProxy(`resume ${app}`);
+    // Resuming a service that is not paused, or that kamal-proxy does not have, changes nothing.
+    const trap = [`${resume} > /dev/null 2>&1 || true`, ...onExit].join("; ");
     return [
+      `trap '${trap}' EXIT`,
+      `${kamalProxy(`pause ${app} --drain-timeout ${drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`)} > /dev/null 2>&1 || true`,
       writeEnv,
       "docker compose up -d --no-deps --remove-orphans app",
       'new="$(docker compose ps -aq app)"',
       ...kamal,
+      resume,
     ];
   }
   return [
@@ -598,7 +624,7 @@ export function switchCommands(
   return [
     "set -eu",
     `export DOCKER_CONFIG=${dockerConfig(plan)}`,
-    "trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT",
+    `trap '${LOGOUT}' EXIT`,
     `cd ${appDir(plan)}`,
     'export APP_IMAGE="$1"',
     EDGE_FUNCTION,
@@ -609,7 +635,7 @@ export function switchCommands(
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),
-    ...switchApp(plan, healthFailed(plan)),
+    ...switchApp(plan, healthFailed(plan), [LOGOUT]),
     ...startProcesses(plan, processServices(plan)),
   ];
 }
