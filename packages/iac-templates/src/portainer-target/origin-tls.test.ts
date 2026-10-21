@@ -13,7 +13,7 @@ import { portainerTestPlan } from "./__fixtures__/plans";
 import { PORTAINER_STACK_VARIABLES, portainerStackEnvKeys, renderPortainerStack } from "./index";
 
 type Caddy = {
-  environment: Record<string, string>;
+  environment?: Record<string, string>;
   entrypoint?: string[];
   tmpfs?: string[];
 };
@@ -36,7 +36,7 @@ function placeholder(commonName: string): { certificate: string; key: string } {
 describe("the stack Caddy with origin TLS (web mode caddy)", () => {
   it("gets the certificates as one stack variable", () => {
     expect(PORTAINER_STACK_VARIABLES.originTls).toBe("OPSCREW_ORIGIN_TLS");
-    expect(caddyOf().environment.OPSCREW_ORIGIN_TLS).toBe("${OPSCREW_ORIGIN_TLS}");
+    expect(caddyOf().environment?.OPSCREW_ORIGIN_TLS).toBe("${OPSCREW_ORIGIN_TLS}");
     expect(portainerStackEnvKeys(caddyMode, origin).opscrew).toContain("OPSCREW_ORIGIN_TLS");
     expect(portainerStackEnvKeys(caddyMode).opscrew).not.toContain("OPSCREW_ORIGIN_TLS");
     // Only Caddy reads it.
@@ -135,7 +135,7 @@ describe("the stack without OpsCrew's public Caddy", () => {
     const caddy = caddyOf(caddyMode, ctx);
     expect(caddy.entrypoint).toBeUndefined();
     expect(caddy.tmpfs).toBeUndefined();
-    expect(Object.keys(caddy.environment)).toEqual(["OPSCREW_APP_VERSION"]);
+    expect(caddy.environment).toBeUndefined();
     expect(stack(caddyMode, ctx).configs.caddyfile.content).not.toContain("/etc/caddy/tls/");
   });
 });

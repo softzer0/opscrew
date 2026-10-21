@@ -139,10 +139,11 @@ describe("renderWorkflow for a Portainer target", () => {
       const health = step(doc, "health");
       expect(health.env).toEqual({
         URL: "https://shop.example.com/api/health",
+        VERSION_URL: "https://shop.example.com/.well-known/opscrew-version",
         IMAGE: "${{ needs.build.outputs.image }}",
       });
       expect(health.run).toContain(`for attempt in $(seq 1 ${attempts}); do`);
-      expect(health.run).toContain("-w '%header{x-opscrew-image}'");
+      expect(health.run).not.toContain("x-opscrew-image");
     }
     expect(portainerHealthUrl(updaterPlan)).toBe("https://shop.example.com/api/health");
   });

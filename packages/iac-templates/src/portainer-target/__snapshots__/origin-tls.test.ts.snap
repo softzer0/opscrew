@@ -25,6 +25,34 @@ services:
       - ALL
     networks:
       - internal
+  stamp:
+    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+    volumes:
+      - version:/version
+    depends_on:
+      app:
+        condition: service_started
+    read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
@@ -33,7 +61,6 @@ services:
       - 443:443
       - 443:443/udp
     environment:
-      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
       OPSCREW_ORIGIN_TLS: \${OPSCREW_ORIGIN_TLS}
     entrypoint:
       - /bin/sh
@@ -44,13 +71,14 @@ services:
     tmpfs:
       - /etc/caddy/tls/shop:mode=0700
     labels:
-      dev.opscrew.caddyfile-sha256: cc88025e90a9dff6b58b8c3181542bae6ce31aa971c442cf26587119352807bc
+      dev.opscrew.caddyfile-sha256: 1f61a9f8abd9c995609e7a89ec19fc0747f738f1720b69e1131ac5cd540cdb81
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      - version:/srv/opscrew-version:ro
     depends_on:
       - app
     mem_limit: 64m
@@ -69,6 +97,7 @@ networks:
 volumes:
   caddy_data: {}
   caddy_config: {}
+  version: {}
 configs:
   caddyfile:
     content: |
@@ -83,14 +112,21 @@ configs:
       			trust_pool file /etc/caddy/tls/shop/pull.pem
       		}
       	}
+      	handle /.well-known/opscrew-version {
+      		root * /srv/opscrew-version
+      		rewrite * /version
+      		file_server
+      	}
       	encode zstd gzip
-      	reverse_proxy app:3000
+      	reverse_proxy app:3000 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
       		X-Content-Type-Options "nosniff"
       		X-Frame-Options "SAMEORIGIN"
       		Referrer-Policy "strict-origin-when-cross-origin"
-      		X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       		-Server
       	}
       	handle_errors {
@@ -99,7 +135,6 @@ configs:
       			X-Content-Type-Options "nosniff"
       			X-Frame-Options "SAMEORIGIN"
       			Referrer-Policy "strict-origin-when-cross-origin"
-      			X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       			-Server
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}

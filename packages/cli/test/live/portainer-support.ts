@@ -155,7 +155,7 @@ export interface DeployedImage {
   repository: string;
   /** The image digest, 64 hex digits. */
   digest: string;
-  /** The digest's first 12 hex digits, as the `X-OpsCrew-Image` header shows it. */
+  /** The digest's first 12 hex digits, as the site serves them at `/.well-known/opscrew-version`. */
   version: string;
 }
 

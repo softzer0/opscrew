@@ -106,12 +106,14 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
           "value-of-opscrew_tunnel_token",
         );
       }
-      expect(config.configs.caddyfile.content).toContain(
-        'X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"',
+      // Compose prints `$$` as it read it: the stamp's shell gets the variable, never Compose.
+      expect(config.services.stamp.environment.OPSCREW_APP_VERSION).toBe("abababababab");
+      expect(config.services.stamp.entrypoint[2]).toBe(
+        `printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version`,
       );
     }, 60_000);
 
-    // Pulls Caddy's image: the inline Caddyfile is what Caddy accepts, with the variable set.
+    // Pulls Caddy's image: the inline Caddyfile is what Caddy accepts.
     it(`gives Caddy a valid configuration in ${web.mode} mode`, () => {
       const plan = portainerTestPlan({ web });
       const doc = parse(fillPortainerStack(renderPortainerStack(plan, ctx).content, IMAGE));
@@ -122,8 +124,6 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
           "run",
           "--rm",
           "-i",
-          "-e",
-          `OPSCREW_APP_VERSION=${doc.services.caddy.environment.OPSCREW_APP_VERSION}`,
           doc.services.caddy.image,
           "caddy",
           "validate",
@@ -179,8 +179,6 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
         "-i",
         "--tmpfs",
         caddy.tmpfs[0],
-        "-e",
-        "OPSCREW_APP_VERSION=0123456789ab",
         "-e",
         "OPSCREW_ORIGIN_TLS",
         caddy.image,

@@ -53,12 +53,6 @@ export const PORTAINER_IMAGE_PLACEHOLDER = "__OPSCREW_APP_IMAGE__";
 /** Stands for {@link portainerImageVersion} of that image in the template. */
 export const PORTAINER_VERSION_PLACEHOLDER = "__OPSCREW_APP_VERSION__";
 
-/**
- * Response header Caddy adds with {@link portainerImageVersion} of the running image: the deploy
- * workflow knows the new version runs when the site answers with it.
- */
-export const PORTAINER_VERSION_HEADER = "X-OpsCrew-Image";
-
 /** A GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
 const GHCR_DIGEST_REF = new RegExp(DIGEST_REF_PATTERN);
 
@@ -246,6 +240,41 @@ const TUNNEL_TOKEN = "TUNNEL_TOKEN";
 /** The updater's memory limit: its shell loop and one curl call at a time. */
 const UPDATER_MEMORY_MB = 16;
 
+/** The stamp's memory limit: one `printf`. */
+const STAMP_MEMORY_MB = 16;
+
+/** The named volume the stamp writes the version to, and where Caddy reads it. */
+const VERSION_VOLUME = "version";
+const CADDY_VERSION_DIR = "/srv/opscrew-version";
+
+/**
+ * The one-shot service `stamp`: the pinned curl image, with the image's version in its own
+ * environment, writes it to {@link VERSION_VOLUME} and exits, once the new app container started.
+ * Only the stamp and the app's containers change from one image to the next, so Portainer's
+ * redeploy (Compose `up`, no forced recreate) leaves Caddy running and Caddy holds requests while
+ * the app restarts. It runs as root, which owns the new volume, with no capabilities and no
+ * network.
+ */
+function stampService(): object {
+  return {
+    image: IMAGES.curl.ref,
+    restart: "no",
+    user: "0:0",
+    network_mode: "none",
+    environment: { OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER },
+    entrypoint: [
+      "/bin/sh",
+      "-c",
+      composeLiteral(`printf '%s\\n' "$OPSCREW_APP_VERSION" > /version/version`),
+    ],
+    volumes: [`${VERSION_VOLUME}:/version`],
+    depends_on: { app: { condition: "service_started" } },
+    read_only: true,
+    ...memoryLimit(STAMP_MEMORY_MB),
+    ...hardened({ noCapabilities: true }),
+  };
+}
+
 /**
  * Prefixes the app's variables may not use in a stack: OpsCrew's own values, and the settings
  * Docker Compose reads from the environment it runs in (`COMPOSE_PROJECT_NAME`, `COMPOSE_FILE`, …).
@@ -278,7 +307,7 @@ export function portainerConnectorStackName(plan: DeployPlan): string {
   return `${portainerStackName(plan)}-portainer-tunnel`;
 }
 
-/** The first 12 hex digits of the image's digest, which Caddy reports in {@link PORTAINER_VERSION_HEADER}. */
+/** The first 12 hex digits of the image's digest, which Caddy serves at {@link PORTAINER_VERSION_PATH}. */
 export function portainerImageVersion(image: string): string {
   return checkImage(image)
     .slice(image.indexOf("@sha256:") + "@sha256:".length)
@@ -398,7 +427,7 @@ export function portainerStackEnvKeys(
   return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
 }
 
-/** Named volumes of the app stack, in the order the stack declares them. */
+/** Named data volumes of the app stack, in the order the stack declares them. */
 function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
   return [...services.volumes, ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : [])];
 }
@@ -406,7 +435,8 @@ function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
 /**
  * The Docker volumes the app stack creates (`<stack>_<volume>`): each service's data
  * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), and Caddy's
- * certificates in `caddy` mode. Stack deletion keeps them; they go only with data deletion.
+ * certificates in `caddy` mode. Stack deletion keeps them; they go only with data deletion. The
+ * stamp's version volume, which holds no data, is not among them.
  */
 export function portainerStackVolumes(plan: DeployPlan): string[] {
   const { web } = portainerTarget(plan.target);
@@ -471,7 +501,10 @@ const STACK_HEADER = [
  * key and bucket itself, and MongoDB's replica set is initiated by a one-shot service the app
  * waits for (see {@link stackSetup}). With `ctx.originTls` in web mode `caddy`, Caddy serves the
  * same site as a server's edge, with the origin certificate and client certificate it writes from
- * {@link PORTAINER_STACK_VARIABLES}' `originTls` to a tmpfs before it starts.
+ * {@link PORTAINER_STACK_VARIABLES}' `originTls` to a tmpfs before it starts. A redeploy
+ * recreates only the containers of the app's image and the one-shot {@link stampService}, which
+ * writes the version Caddy serves at {@link PORTAINER_VERSION_PATH}; Caddy stays and holds
+ * requests while the app restarts.
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, a
  * service OpsCrew cannot run as planned (in a stack: one that needs a setting of the Docker host),
  * or a cron route the image cannot call.
@@ -531,23 +564,22 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
   const config = caddyfile({
     mode: web.mode === "caddy" ? "direct" : web.mode,
     hosts: siteHosts(plan),
-    // Portainer recreates the stack, so Caddy reaches the app directly (no kamal-proxy).
+    // Portainer restarts the app in place (no start-first), so Caddy reaches it directly (no
+    // kamal-proxy) and holds requests while it restarts.
     upstream: `app:${plan.app.port}`,
     acmeEmail: ctx.acmeEmail,
-    // Caddy reads the variable when it starts: the version of the image the stack runs.
-    headers: [`\t\t${PORTAINER_VERSION_HEADER} "{$OPSCREW_APP_VERSION}"`],
     origin: origin === undefined ? undefined : { hostnames: origin.hostnames, dir: tlsDir },
+    versionDir: CADDY_VERSION_DIR,
   }).join("\n");
   const ports = caddyPorts(web);
   const tlsVariable = PORTAINER_STACK_VARIABLES.originTls;
+  services.stamp = stampService();
+  // Nothing here changes with the image, so a redeploy leaves Caddy running.
   services.caddy = {
     image: IMAGES.caddy.ref,
     restart: "unless-stopped",
     ...(ports === undefined ? {} : { ports }),
-    environment: {
-      OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER,
-      ...(origin === undefined ? {} : { [tlsVariable]: `\${${tlsVariable}}` }),
-    },
+    ...(origin === undefined ? {} : { environment: { [tlsVariable]: `\${${tlsVariable}}` } }),
     // The certificates live only in memory, written from the variable before Caddy starts.
     ...(origin === undefined
       ? {}
@@ -558,7 +590,10 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     // A changed Caddyfile changes this label, so Compose recreates Caddy with the new configuration.
     labels: { "dev.opscrew.caddyfile-sha256": sha256Hex(config) },
     configs: [{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }],
-    ...(web.mode === "caddy" ? { volumes: ["caddy_data:/data", "caddy_config:/config"] } : {}),
+    volumes: [
+      ...(web.mode === "caddy" ? ["caddy_data:/data", "caddy_config:/config"] : []),
+      `${VERSION_VOLUME}:${CADDY_VERSION_DIR}:ro`,
+    ],
     depends_on: ["app"],
     // As the server edge's Caddy (FR-1325, SC-1304).
     ...memoryLimit(CADDY_MEMORY_MB),
@@ -576,12 +611,12 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     );
   }
 
-  const volumes = volumeNames(backing, web);
+  const volumes = [...volumeNames(backing, web), VERSION_VOLUME];
   const document = {
     name: portainerStackName(plan),
     services,
     networks: { internal: {} },
-    ...(volumes.length > 0 ? { volumes: Object.fromEntries(volumes.map((v) => [v, {}])) } : {}),
+    volumes: Object.fromEntries(volumes.map((v) => [v, {}])),
     configs: {
       caddyfile: { content: composeLiteral(config) },
       ...backing.configs,

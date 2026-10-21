@@ -5,11 +5,11 @@ import {
   PORTAINER_DEPLOY_BRANCH,
   PORTAINER_IMAGE_PLACEHOLDER,
   PORTAINER_STACK_TEMPLATE_PATH,
-  PORTAINER_VERSION_HEADER,
   PORTAINER_VERSION_PLACEHOLDER,
   portainerStackName,
 } from "../portainer-target/stack";
 import { portainerTarget } from "../providers";
+import { PORTAINER_VERSION_PATH } from "../runtime/services";
 import type { RenderedFile } from "../types";
 import { buildJob } from "./build";
 import { afterDeployJobs } from "./jobs";
@@ -126,9 +126,10 @@ function webhookEnv(): string[] {
 }
 
 /**
- * Waits until the site answers with the new image's version in {@link PORTAINER_VERSION_HEADER}
- * (curl 7.84 or newer reads it with `%header{}`): until then the previous version may still be
- * serving. Bounded by `attempts`.
+ * Waits until the site serves the new image's version at {@link PORTAINER_VERSION_PATH}
+ * (`VERSION_URL`) and then answers its health route (`URL`): until the version is there the
+ * previous version may still be serving, and the new app may still be starting after it. Bounded
+ * by `attempts`.
  */
 function healthScript(plan: DeployPlan, attempts: number): string[] {
   const minutes = Math.round((attempts * HEALTH_INTERVAL) / 60);
@@ -144,12 +145,13 @@ function healthScript(plan: DeployPlan, attempts: number): string[] {
     'want="${digest:0:12}"',
     "state=down",
     `for attempt in $(seq 1 ${attempts}); do`,
-    `  if seen="$(curl -fsS --max-time 10 -o /dev/null -w '%header{${PORTAINER_VERSION_HEADER.toLowerCase()}}' "$URL")"; then`,
-    '    if [[ "$seen" == "$want" ]]; then',
-    '      echo "The new version answers after $attempt attempt(s)."',
-    "      exit 0",
-    "    fi",
+    '  if ! seen="$(curl -fsS --max-time 10 "$VERSION_URL")"; then',
+    "    state=down",
+    '  elif [[ "$seen" != "$want" ]]; then',
     "    state=previous",
+    '  elif curl -fsS --max-time 10 -o /dev/null "$URL"; then',
+    '    echo "The new version answers after $attempt attempt(s)."',
+    "    exit 0",
     "  else",
     "    state=down",
     "  fi",
@@ -288,6 +290,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
       ...(probe ? ["  if: steps.probe.outputs.reachable == 'true'"] : []),
       "  env:",
       `    URL: ${url}`,
+      `    VERSION_URL: https://${plan.dns.domain}${PORTAINER_VERSION_PATH}`,
       image,
       ...run(healthScript(plan, HEALTH_ATTEMPTS[target.redeploy])),
       // Runs only when the branch was changed (not when the version was already there), and always

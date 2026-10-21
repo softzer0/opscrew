@@ -53,6 +53,8 @@ type Service = {
   read_only?: boolean;
   cap_drop?: string[];
   restart?: string;
+  user?: string;
+  network_mode?: string;
   healthcheck?: unknown;
   mem_limit?: string;
   memswap_limit?: string;
@@ -68,6 +70,28 @@ type Stack = {
 
 const ctx = testContext({ acmeEmail: "ops@example.com" });
 const IMAGE = `ghcr.io/acme/shop@sha256:${"c0ffee".repeat(10)}abcd`;
+const NEXT_IMAGE = `ghcr.io/acme/shop@sha256:${"d1".repeat(32)}`;
+
+/** The stack Caddy's version file, from the volume the stamp writes. */
+const VERSION_BLOCK = [
+  "\thandle /.well-known/opscrew-version {",
+  "\t\troot * /srv/opscrew-version",
+  "\t\trewrite * /version",
+  "\t\tfile_server",
+  "\t}",
+  "",
+].join("\n");
+
+/** The stack Caddy's proxy, which holds requests while the app restarts. */
+const HOLDING_PROXY = [
+  "\treverse_proxy app:3000 {",
+  "\t\tlb_try_duration 30s",
+  "\t\tlb_try_interval 250ms",
+  "\t}",
+  "",
+].join("\n");
+
+const WEBS = [{ mode: "tunnel" }, { mode: "proxy", port: 8080 }, { mode: "caddy" }] as const;
 
 function stack(content: string): Stack {
   return parse(content) as Stack;
@@ -228,7 +252,7 @@ describe("renderPortainerStack", () => {
   it("keeps Postgres and Valkey data in named volumes, with no file next to the stack", () => {
     expect(fullStack.services.db?.volumes).toEqual(["db_data:/var/lib/postgresql/data"]);
     expect(fullStack.services.cache?.volumes).toEqual(["cache_data:/data"]);
-    expect(Object.keys(fullStack.volumes ?? {})).toEqual(["db_data", "cache_data"]);
+    expect(Object.keys(fullStack.volumes ?? {})).toEqual(["db_data", "cache_data", "version"]);
     expect(portainerStackVolumes(full)).toEqual([
       "opscrew-shop_db_data",
       "opscrew-shop_cache_data",
@@ -288,12 +312,19 @@ describe("renderPortainerStack", () => {
       ctx,
     ).content;
     const inline = (fullStack.configs?.caddyfile?.content ?? "").replaceAll("$$", "$");
+    // Only the stack serves the version file and holds requests while the app restarts.
+    expect(inline).toContain(VERSION_BLOCK);
+    expect(inline).toContain(HOLDING_PROXY);
     const site = (text: string) =>
       text
+        .replace(VERSION_BLOCK, "")
+        .replace(HOLDING_PROXY, "\treverse_proxy app:3000\n")
         .split("\n")
-        .filter((line) => line.startsWith("\t") && !line.includes("X-OpsCrew-Image"))
+        .filter((line) => line.startsWith("\t"))
         .map((line) => line.replace(/^\treverse_proxy .*$/, "\treverse_proxy <upstream>"));
     expect(site(inline)).toEqual(site(server));
+    expect(server).not.toContain("opscrew-version");
+    expect(server).not.toContain("lb_try");
   });
 
   it("proxy: Caddy publishes the chosen port over plain HTTP and trusts the forwarding proxy", () => {
@@ -307,15 +338,20 @@ describe("renderPortainerStack", () => {
     expect(caddyfile).toContain("trusted_proxies static private_ranges");
     expect(caddyfile).toContain(":80 {");
     expect(caddyfile).not.toContain("Cf-Visitor");
-    expect(doc.volumes).toBeUndefined();
+    // Only the stamp's version.
+    expect(doc.volumes).toEqual({ version: {} });
   });
 
   it("caddy: Caddy publishes 80 and 443 and gets certificates for the domain", () => {
     const plan = portainerTestPlan({ web: { mode: "caddy" }, www: true, proxied: false });
     const doc = stack(renderPortainerStack(plan, ctx).content);
     expect(doc.services.caddy?.ports).toEqual(["80:80", "443:443", "443:443/udp"]);
-    expect(doc.services.caddy?.volumes).toEqual(["caddy_data:/data", "caddy_config:/config"]);
-    expect(Object.keys(doc.volumes ?? {})).toEqual(["caddy_data", "caddy_config"]);
+    expect(doc.services.caddy?.volumes).toEqual([
+      "caddy_data:/data",
+      "caddy_config:/config",
+      "version:/srv/opscrew-version:ro",
+    ]);
+    expect(Object.keys(doc.volumes ?? {})).toEqual(["caddy_data", "caddy_config", "version"]);
     expect(portainerStackVolumes(plan)).toEqual([
       "opscrew-shop_caddy_data",
       "opscrew-shop_caddy_config",
@@ -344,21 +380,88 @@ describe("renderPortainerStack", () => {
 
   it("marks the image for the deploy workflow, which fills in the digest it built", () => {
     expect(fullStack.services.app?.image).toBe(PORTAINER_IMAGE_PLACEHOLDER);
-    expect(fullStack.services.caddy?.environment).toEqual({
+    expect(fullStack.services.stamp?.environment).toEqual({
       OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER,
     });
-    expect(fullStack.configs?.caddyfile?.content).toContain(
-      '\t\tX-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"',
-    );
     const filled = fillPortainerStack(fullFile.content, IMAGE);
     expect(filled).not.toContain("__OPSCREW_");
     const doc = stack(filled);
     expect(doc.services.app?.image).toBe(IMAGE);
     expect(doc.services.release?.image).toBe(IMAGE);
-    expect(doc.services.caddy?.environment).toEqual({
+    expect(doc.services.stamp?.environment).toEqual({
       OPSCREW_APP_VERSION: portainerImageVersion(IMAGE),
     });
     expect(portainerImageVersion(IMAGE)).toBe("c0ffeec0ffee");
+  });
+
+  it("keeps Caddy's service the same from one image to the next, so a redeploy never recreates it", () => {
+    const plans = [
+      full,
+      ...WEBS.map((web) => portainerTestPlan({ web, postgres: true, releaseCommand: "true" })),
+    ];
+    for (const plan of plans) {
+      for (const c of [ctx, { ...ctx, originTls: { hostnames: ["shop.example.com"] } }]) {
+        const content = renderPortainerStack(plan, c).content;
+        const [one, two] = [IMAGE, NEXT_IMAGE].map((image) =>
+          stack(fillPortainerStack(content, image)),
+        );
+        const changed = Object.keys(one?.services ?? {}).filter(
+          (name) => JSON.stringify(one?.services[name]) !== JSON.stringify(two?.services[name]),
+        );
+        // Only the containers of the app's image and the stamp change.
+        expect(changed.sort()).toEqual(["app", "release", "stamp"]);
+        expect(one?.configs).toEqual(two?.configs);
+        expect(JSON.stringify(one?.services.caddy)).not.toContain("OPSCREW_APP_VERSION");
+        expect(JSON.stringify(one?.services.caddy)).not.toContain("c0ffeec0ffee");
+      }
+    }
+  });
+
+  it("stamps the version: a one-shot curl container writes it to the volume Caddy serves", () => {
+    for (const web of WEBS) {
+      const doc = stack(
+        fillPortainerStack(renderPortainerStack(portainerTestPlan({ web }), ctx).content, IMAGE),
+      );
+      expect(doc.services.stamp).toEqual({
+        image: IMAGES.curl.ref,
+        restart: "no",
+        // A new volume belongs to root; without capabilities, root can write only what it owns.
+        user: "0:0",
+        network_mode: "none",
+        environment: { OPSCREW_APP_VERSION: "c0ffeec0ffee" },
+        entrypoint: ["/bin/sh", "-c", `printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version`],
+        volumes: ["version:/version"],
+        // Written once the new app container started, never before.
+        depends_on: { app: { condition: "service_started" } },
+        read_only: true,
+        mem_limit: "16m",
+        memswap_limit: "16m",
+        security_opt: ["no-new-privileges:true"],
+        logging: serviceLogging(),
+        cap_drop: ["ALL"],
+      });
+      expect(doc.services.caddy?.volumes).toContain("version:/srv/opscrew-version:ro");
+      expect(Object.keys(doc.volumes ?? {})).toContain("version");
+    }
+  });
+
+  it("serves the version and holds requests while the app restarts, in every web mode", () => {
+    for (const web of WEBS) {
+      for (const c of [ctx, { ...ctx, originTls: { hostnames: ["shop.example.com"] } }]) {
+        const www = web.mode === "caddy";
+        const plan = portainerTestPlan({ web, www, ...(www ? { proxied: false } : {}) });
+        const caddyfile = stack(renderPortainerStack(plan, c).content).configs?.caddyfile?.content;
+        // Every site block of the app (with origin TLS in caddy mode: the certificate's and www's).
+        const sites = (caddyfile ?? "")
+          .match(/^\S.* \{$/gm)
+          ?.filter((line) => !/^https?:\/\/ \{$/.test(line));
+        const blocks = web.mode === "caddy" && c !== ctx ? 2 : 1;
+        expect(sites, `${web.mode} ${sites}`).toHaveLength(blocks);
+        expect(caddyfile?.split(VERSION_BLOCK)).toHaveLength(blocks + 1);
+        expect(caddyfile?.split(HOLDING_PROXY)).toHaveLength(blocks + 1);
+        expect(caddyfile).not.toMatch(/\treverse_proxy app:3000\n/);
+      }
+    }
   });
 
   it("refuses an image that is not a GHCR reference pinned by digest", () => {
@@ -385,13 +488,14 @@ describe("renderPortainerStack", () => {
     expect(images).toEqual([
       IMAGES.postgres.ref,
       IMAGES.valkey.ref,
+      IMAGES.curl.ref,
       IMAGES.caddy.ref,
       IMAGES.cloudflared.ref,
     ]);
     for (const image of images) expect(pinned.has(image)).toBe(true);
     expect(fullStack.services.proxy).toBeUndefined();
     expect(fullFile.content).not.toContain("kamal-proxy");
-    expect(fullStack.configs?.caddyfile?.content).toContain("\treverse_proxy app:3000\n");
+    expect(fullStack.configs?.caddyfile?.content).toContain(HOLDING_PROXY);
     expect(fullStack.services.app?.healthcheck).toBeUndefined();
   });
 
@@ -455,13 +559,14 @@ describe("the components in a stack", () => {
       "mysql",
       "rabbitmq",
       "kafka",
+      "stamp",
       "caddy",
       "cloudflared",
     ]);
     expect(componentsFile.content).toMatchSnapshot();
   });
 
-  it("gives every container its memory limit: the app's image, the services, Caddy and the tunnel's connector", () => {
+  it("gives every container its memory limit: the app's image, the services, Caddy, the stamp and the tunnel's connector", () => {
     const limits = Object.fromEntries(
       Object.entries(componentsStack.services).map(([name, service]) => [
         name,
@@ -479,6 +584,8 @@ describe("the components in a stack", () => {
       kafka: ["1024m", "1024m"],
       // As the server edge's Caddy and connector (SC-1304).
       caddy: ["64m", "64m"],
+      // It only writes the version.
+      stamp: ["16m", "16m"],
       cloudflared: ["32m", "32m"],
     });
     for (const [name, service] of Object.entries(componentsStack.services)) {
@@ -529,6 +636,7 @@ describe("the components in a stack", () => {
       "kafka_data",
       "kafka_secrets",
       "kafka_config",
+      "version",
     ]);
     expect(portainerStackVolumes(components)).toEqual([
       "opscrew-shop_mysql_data",
@@ -607,6 +715,7 @@ describe("the components in a stack", () => {
       "kafka_secrets",
       "kafka_config",
       "sqlite",
+      "version",
     ]);
     // Data deletion removes it with the services' volumes.
     expect(portainerStackVolumes(sqlite)).toEqual([

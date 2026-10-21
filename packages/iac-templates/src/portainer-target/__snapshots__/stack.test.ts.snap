@@ -55,6 +55,34 @@ services:
       - ALL
     networks:
       - internal
+  stamp:
+    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+    volumes:
+      - version:/version
+    depends_on:
+      app:
+        condition: service_started
+    read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
@@ -62,16 +90,15 @@ services:
       - 80:80
       - 443:443
       - 443:443/udp
-    environment:
-      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
     labels:
-      dev.opscrew.caddyfile-sha256: 7f19d3ddbb76f25aa7376d16206417bc06ce71a69c085662fb31cbf734dc73f9
+      dev.opscrew.caddyfile-sha256: 5235d51c7dbd9e3e65fcd8fd9a325c58aafbb89153b5128d7199be52f2160ae2
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      - version:/srv/opscrew-version:ro
     depends_on:
       - app
     mem_limit: 64m
@@ -90,6 +117,7 @@ networks:
 volumes:
   caddy_data: {}
   caddy_config: {}
+  version: {}
 configs:
   caddyfile:
     content: |
@@ -98,14 +126,21 @@ configs:
       }
 
       shop.example.com {
+      	handle /.well-known/opscrew-version {
+      		root * /srv/opscrew-version
+      		rewrite * /version
+      		file_server
+      	}
       	encode zstd gzip
-      	reverse_proxy app:3000
+      	reverse_proxy app:3000 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
       		X-Content-Type-Options "nosniff"
       		X-Frame-Options "SAMEORIGIN"
       		Referrer-Policy "strict-origin-when-cross-origin"
-      		X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       		-Server
       	}
       	handle_errors {
@@ -114,7 +149,6 @@ configs:
       			X-Content-Type-Options "nosniff"
       			X-Frame-Options "SAMEORIGIN"
       			Referrer-Policy "strict-origin-when-cross-origin"
-      			X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       			-Server
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
@@ -156,18 +190,46 @@ services:
       - ALL
     networks:
       - internal
+  stamp:
+    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+    volumes:
+      - version:/version
+    depends_on:
+      app:
+        condition: service_started
+    read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     ports:
       - 8080:80
-    environment:
-      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
     labels:
-      dev.opscrew.caddyfile-sha256: 03b32b7e2b6528ee72830672d39bd58212d9a28aa7a9c9231bfab35cd2df90d9
+      dev.opscrew.caddyfile-sha256: 985bc6421d64f53b3e8f9a8160ec9a1a8569e239d5bd31db51d2b4c0fac78450
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
+    volumes:
+      - version:/srv/opscrew-version:ro
     depends_on:
       - app
     mem_limit: 64m
@@ -183,6 +245,8 @@ services:
       - internal
 networks:
   internal: {}
+volumes:
+  version: {}
 configs:
   caddyfile:
     content: |
@@ -194,14 +258,21 @@ configs:
       }
 
       :80 {
+      	handle /.well-known/opscrew-version {
+      		root * /srv/opscrew-version
+      		rewrite * /version
+      		file_server
+      	}
       	encode zstd gzip
-      	reverse_proxy app:3000
+      	reverse_proxy app:3000 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
       		X-Content-Type-Options "nosniff"
       		X-Frame-Options "SAMEORIGIN"
       		Referrer-Policy "strict-origin-when-cross-origin"
-      		X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       		-Server
       	}
       	handle_errors {
@@ -210,7 +281,6 @@ configs:
       			X-Content-Type-Options "nosniff"
       			X-Frame-Options "SAMEORIGIN"
       			Referrer-Policy "strict-origin-when-cross-origin"
-      			X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       			-Server
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
@@ -344,16 +414,44 @@ services:
         max-file: "3"
     networks:
       - internal
+  stamp:
+    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+    volumes:
+      - version:/version
+    depends_on:
+      app:
+        condition: service_started
+    read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
-    environment:
-      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
     labels:
-      dev.opscrew.caddyfile-sha256: c4170216a66fc4ebc62dd5f045beb881de8fbfecadd5b7dfa83213b491c49eb7
+      dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
+    volumes:
+      - version:/srv/opscrew-version:ro
     depends_on:
       - app
     mem_limit: 64m
@@ -399,6 +497,7 @@ networks:
 volumes:
   db_data: {}
   cache_data: {}
+  version: {}
 configs:
   caddyfile:
     content: |
@@ -406,14 +505,21 @@ configs:
       http://shop.example.com {
       	@http_visitor header Cf-Visitor \`*"http"*\`
       	redir @http_visitor https://{host}{uri} 308
+      	handle /.well-known/opscrew-version {
+      		root * /srv/opscrew-version
+      		rewrite * /version
+      		file_server
+      	}
       	encode zstd gzip
-      	reverse_proxy app:3000
+      	reverse_proxy app:3000 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
       		X-Content-Type-Options "nosniff"
       		X-Frame-Options "SAMEORIGIN"
       		Referrer-Policy "strict-origin-when-cross-origin"
-      		X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       		-Server
       	}
       	handle_errors {
@@ -422,7 +528,6 @@ configs:
       			X-Content-Type-Options "nosniff"
       			X-Frame-Options "SAMEORIGIN"
       			Referrer-Policy "strict-origin-when-cross-origin"
-      			X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       			-Server
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
@@ -763,16 +868,44 @@ services:
         max-file: "3"
     networks:
       - internal
+  stamp:
+    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+    volumes:
+      - version:/version
+    depends_on:
+      app:
+        condition: service_started
+    read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
-    environment:
-      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
     labels:
-      dev.opscrew.caddyfile-sha256: c4170216a66fc4ebc62dd5f045beb881de8fbfecadd5b7dfa83213b491c49eb7
+      dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
+    volumes:
+      - version:/srv/opscrew-version:ro
     depends_on:
       - app
     mem_limit: 64m
@@ -822,6 +955,7 @@ volumes:
   kafka_secrets: {}
   kafka_config: {}
   sqlite: {}
+  version: {}
 configs:
   caddyfile:
     content: |
@@ -829,14 +963,21 @@ configs:
       http://shop.example.com {
       	@http_visitor header Cf-Visitor \`*"http"*\`
       	redir @http_visitor https://{host}{uri} 308
+      	handle /.well-known/opscrew-version {
+      		root * /srv/opscrew-version
+      		rewrite * /version
+      		file_server
+      	}
       	encode zstd gzip
-      	reverse_proxy app:3000
+      	reverse_proxy app:3000 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
       		X-Content-Type-Options "nosniff"
       		X-Frame-Options "SAMEORIGIN"
       		Referrer-Policy "strict-origin-when-cross-origin"
-      		X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       		-Server
       	}
       	handle_errors {
@@ -845,7 +986,6 @@ configs:
       			X-Content-Type-Options "nosniff"
       			X-Frame-Options "SAMEORIGIN"
       			Referrer-Policy "strict-origin-when-cross-origin"
-      			X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       			-Server
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
@@ -1162,16 +1302,44 @@ services:
         max-file: "3"
     networks:
       - internal
+  stamp:
+    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+    volumes:
+      - version:/version
+    depends_on:
+      app:
+        condition: service_started
+    read_only: true
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
   caddy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
-    environment:
-      OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
     labels:
-      dev.opscrew.caddyfile-sha256: c4170216a66fc4ebc62dd5f045beb881de8fbfecadd5b7dfa83213b491c49eb7
+      dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
+    volumes:
+      - version:/srv/opscrew-version:ro
     depends_on:
       - app
     mem_limit: 64m
@@ -1220,6 +1388,7 @@ volumes:
   kafka_data: {}
   kafka_secrets: {}
   kafka_config: {}
+  version: {}
 configs:
   caddyfile:
     content: |
@@ -1227,14 +1396,21 @@ configs:
       http://shop.example.com {
       	@http_visitor header Cf-Visitor \`*"http"*\`
       	redir @http_visitor https://{host}{uri} 308
+      	handle /.well-known/opscrew-version {
+      		root * /srv/opscrew-version
+      		rewrite * /version
+      		file_server
+      	}
       	encode zstd gzip
-      	reverse_proxy app:3000
+      	reverse_proxy app:3000 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
       		X-Content-Type-Options "nosniff"
       		X-Frame-Options "SAMEORIGIN"
       		Referrer-Policy "strict-origin-when-cross-origin"
-      		X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       		-Server
       	}
       	handle_errors {
@@ -1243,7 +1419,6 @@ configs:
       			X-Content-Type-Options "nosniff"
       			X-Frame-Options "SAMEORIGIN"
       			Referrer-Policy "strict-origin-when-cross-origin"
-      			X-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"
       			-Server
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}

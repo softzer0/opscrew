@@ -1,3 +1,4 @@
+export { PORTAINER_VERSION_PATH } from "../runtime/services";
 export { renderPortainerDeployment } from "./deployment";
 export {
   fillPortainerStack,
@@ -6,7 +7,6 @@ export {
   PORTAINER_IMAGE_PLACEHOLDER,
   PORTAINER_STACK_TEMPLATE_PATH,
   PORTAINER_STACK_VARIABLES,
-  PORTAINER_VERSION_HEADER,
   PORTAINER_VERSION_PLACEHOLDER,
   type PortainerStackEnvKeys,
   type PortainerStackFile,

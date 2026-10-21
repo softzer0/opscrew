@@ -21,6 +21,7 @@ const RESERVED_NAMES: ReadonlySet<string> = new Set([
   "proxy",
   "caddy",
   "sysctl",
+  "stamp",
 ]);
 
 /** A name in the app's Compose project and data folders: `worker`, `db`, `mail-2`. */

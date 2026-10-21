@@ -92,8 +92,13 @@ export interface CaddySite {
   /** What Caddy proxies to: the shared edge's kamal-proxy on a server, `app:<port>` in a stack. */
   upstream: string;
   acmeEmail?: string | undefined;
-  /** Extra response header lines, before `-Server`. */
-  headers?: readonly string[];
+  /**
+   * A Portainer stack, where the app restarts in place: the folder whose file `version` Caddy
+   * serves at {@link PORTAINER_VERSION_PATH} (the version of the image the stack runs, which its
+   * deploy workflow waits for). Caddy also holds each request up to 30 seconds, trying the
+   * upstream every 250 ms, so visitors wait while the app restarts instead of getting an error.
+   */
+  versionDir?: string | undefined;
   /**
    * `direct` mode only: the `hostnames` among `hosts` served with the app's Cloudflare origin
    * certificate from `dir` ({@link originTlsDir}), which accept only TLS connections that present
@@ -108,6 +113,13 @@ export interface CaddySite {
    */
   realIp?: boolean | undefined;
 }
+
+/**
+ * Where the Portainer stack's Caddy serves the version of the image the stack runs (from
+ * {@link CaddySite}'s `versionDir`): the deploy workflow knows the new version runs when the site
+ * answers with it.
+ */
+export const PORTAINER_VERSION_PATH = "/.well-known/opscrew-version";
 
 /** Strict-Transport-Security, one year with subdomains, on both proxies (FR-1442). */
 export const HSTS = "max-age=31536000; includeSubDomains";
@@ -228,8 +240,8 @@ function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
 }
 
 /**
- * A site block for `hosts`: its addresses, then `first`, the redirect, compression, the proxy, the
- * headers and the user's additions.
+ * A site block for `hosts`: its addresses, then `first`, the redirect, the version file,
+ * compression, the proxy, the headers and the user's additions.
  */
 function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly string[]): string[] {
   const { mode } = site;
@@ -249,15 +261,29 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
     "\theader {",
     ...(hosts.length > 0 ? [`\t\tStrict-Transport-Security "${HSTS}"`] : []),
     ...BASELINE_HEADERS.map(([name, value]) => `\t\t${name} "${value}"`),
-    ...(site.headers ?? []),
     "\t\t-Server",
     "\t}",
   ];
+  const proxy = [
+    ...(site.realIp ? ["\t\theader_up X-Forwarded-For {client_ip}"] : []),
+    ...(site.versionDir === undefined
+      ? []
+      : ["\t\tlb_try_duration 30s", "\t\tlb_try_interval 250ms"]),
+  ];
   lines.push(
+    ...(site.versionDir === undefined
+      ? []
+      : [
+          `\thandle ${PORTAINER_VERSION_PATH} {`,
+          `\t\troot * ${site.versionDir}`,
+          "\t\trewrite * /version",
+          "\t\tfile_server",
+          "\t}",
+        ]),
     "\tencode zstd gzip",
-    ...(site.realIp
-      ? [`\treverse_proxy ${site.upstream} {`, "\t\theader_up X-Forwarded-For {client_ip}", "\t}"]
-      : [`\treverse_proxy ${site.upstream}`]),
+    ...(proxy.length === 0
+      ? [`\treverse_proxy ${site.upstream}`]
+      : [`\treverse_proxy ${site.upstream} {`, ...proxy, "\t}"]),
     ...header,
     // The same headers on the responses Caddy writes itself, such as a 502 while the app is down.
     "\thandle_errors {",

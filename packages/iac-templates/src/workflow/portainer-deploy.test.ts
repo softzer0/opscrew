@@ -36,14 +36,17 @@ const ACCESS_SECRET = "access-client-secret-placeholder";
 const WEBHOOK = "https://portainer-shop.example.com/api/stacks/webhooks/webhook-id-placeholder";
 
 const FAKES = [
-  // curl: `CURL_CODE` (default 204) for the webhook; the health check answers `HEALTH` per call
-  // (`down`, or the version it reports), the last one repeating.
+  // curl: `CURL_CODE` (default 204) for the webhook; the version file answers `VERSION` per call
+  // and any other URL `HEALTH` (default `ok`) per call (`down`, or what it answers), the last one
+  // repeating. `<kind>-count` counts the calls.
   "curl() {",
   '  echo "curl $*" >> "$WORK/curl.log"',
   '  for arg in "$@"; do case "$arg" in @*) cat "${arg#@}" >> "$WORK/headers.log" ;; esac; done',
   '  if [[ " $* " == *" -w %{http_code} "* ]]; then printf \'%s\' "${CURL_CODE:-204}"; return 0; fi',
-  '  local n; n=$(( $(cat "$WORK/health-count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$WORK/health-count"',
-  "  local answers=($HEALTH) answer",
+  "  local kind=health list=${HEALTH:-ok}",
+  '  if [[ " $* " == *"/.well-known/opscrew-version "* ]]; then kind=version list=$VERSION; fi',
+  '  local n; n=$(( $(cat "$WORK/$kind-count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$WORK/$kind-count"',
+  "  local answers=($list) answer",
   '  answer="${answers[$(( n <= ${#answers[@]} ? n - 1 : ${#answers[@]} - 1 ))]}"',
   '  [[ "$answer" == down ]] && return 22',
   "  printf '%s' \"$answer\"",
@@ -259,32 +262,61 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
   );
 
   it(
-    "succeeds once the site answers with the new version, not while the previous one serves",
+    "succeeds once the site serves the new version and its health route answers, not before",
     () => {
       const version = portainerImageVersion(NEW);
-      const env = { URL: "https://shop.example.com/api/health", IMAGE: NEW };
-      const ok = sh(steps.health ?? "", {
-        ...env,
-        HEALTH: `down ${portainerImageVersion(OLD)} ${version}`,
-      });
+      const previous = portainerImageVersion(OLD);
+      const env = {
+        URL: "https://shop.example.com/api/health",
+        VERSION_URL: "https://shop.example.com/.well-known/opscrew-version",
+        IMAGE: NEW,
+      };
+      const count = (kind: "version" | "health") => {
+        const file = join(work, `${kind}-count`);
+        return existsSync(file) ? readFileSync(file, "utf8").trim() : "0";
+      };
+      const reset = () => {
+        for (const kind of ["version", "health"])
+          rmSync(join(work, `${kind}-count`), { force: true });
+      };
+
+      const ok = sh(steps.health ?? "", { ...env, VERSION: `down ${previous} ${version}` });
       expect(ok.status, ok.output).toBe(0);
       expect(ok.output).toContain("The new version answers after 3 attempt(s).");
-      expect(readFileSync(join(work, "curl.log"), "utf8")).toContain(
-        "-w %header{x-opscrew-image} https://shop.example.com/api/health",
+      const log = readFileSync(join(work, "curl.log"), "utf8");
+      expect(log).toContain(
+        "curl -fsS --max-time 10 https://shop.example.com/.well-known/opscrew-version",
       );
+      expect(log).toContain(
+        "curl -fsS --max-time 10 -o /dev/null https://shop.example.com/api/health",
+      );
+      // The health route is asked only once the new version is there.
+      expect(count("health")).toBe("1");
 
-      rmSync(join(work, "health-count"));
-      const stale = sh(steps.health ?? "", { ...env, HEALTH: portainerImageVersion(OLD) });
+      // The new version is stamped, but the app does not answer its health route yet.
+      reset();
+      const starting = sh(steps.health ?? "", { ...env, VERSION: version, HEALTH: "down down ok" });
+      expect(starting.status, starting.output).toBe(0);
+      expect(starting.output).toContain("The new version answers after 3 attempt(s).");
+
+      reset();
+      const stale = sh(steps.health ?? "", { ...env, VERSION: previous });
       expect(stale.status).toBe(1);
       expect(stale.output).toContain("still runs the previous version");
-      expect(readFileSync(join(work, "health-count"), "utf8").trim()).toBe("30");
+      expect([count("version"), count("health")]).toEqual(["30", "0"]);
 
-      rmSync(join(work, "health-count"));
-      const down = sh(steps.health ?? "", { ...env, HEALTH: "down" });
-      expect(down.status).toBe(1);
-      expect(down.output).toContain(
-        "The new version did not answer at https://shop.example.com/api/health within 5 minutes",
-      );
+      const failing: Record<string, string>[] = [
+        { VERSION: "down" },
+        { VERSION: version, HEALTH: "down" },
+      ];
+      for (const answers of failing) {
+        reset();
+        const down = sh(steps.health ?? "", { ...env, ...answers });
+        expect(down.status).toBe(1);
+        expect(down.output).toContain(
+          "The new version did not answer at https://shop.example.com/api/health within 5 minutes",
+        );
+      }
     },
     timeout,
   );

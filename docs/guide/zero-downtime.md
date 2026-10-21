@@ -55,6 +55,15 @@ strategy in use.
 
 ## In your Portainer
 
-In a Portainer you already run, Portainer itself redeploys the app's stack, and it recreates the
-stack each time. The app is unreachable for a few seconds while the new version starts. OpsCrew
-says so at design and records `deploy.strategy: recreate`.
+In a Portainer you already run, Portainer itself redeploys the app's stack. Standalone Docker cannot
+start the new copy before it stops the old one, so the app restarts in place. Caddy keeps running
+through the redeploy and holds each request for up to 30 seconds until the new version answers, so
+visitors see a short pause instead of an error. Only the app's own containers restart; the database,
+the cache and Caddy stay up. OpsCrew says so at design and records `deploy.strategy: recreate`.
+
+The deploy workflow waits until the site serves the new version and its health route answers. If
+the new version does not answer in time, it writes the previous version back.
+
+A Docker Swarm environment in Portainer would give true rolling updates, with the new copy started
+before the old one stops. OpsCrew does not support Swarm environments yet; it is planned for a later
+release.

@@ -186,6 +186,7 @@ describe("DeployPlan components", () => {
       "proxy",
       "caddy",
       "sysctl",
+      "stamp",
       "Worker",
       "1st",
       "a_b",

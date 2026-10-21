@@ -16,6 +16,7 @@ import {
   opscrewNames,
   sameCertFingerprint,
 } from "@opscrew/connector-portainer";
+import { PORTAINER_VERSION_PATH } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import {
@@ -353,15 +354,20 @@ describe.skipIf(MISSING.length > 0)(
       return stackHash;
     }
 
-    /** The app's health URL for the current web mode (proxy: Caddy on the host's port). */
-    async function siteUrl(): Promise<string> {
-      const health = (await run.readPlan()).app.healthPath;
-      return web === "proxy"
-        ? `http://${run.ipv4()}:${PROXY_PORT}${health}`
-        : `https://${appHost}${health}`;
+    /** The site's address for the current web mode (proxy: Caddy on the host's port). */
+    function siteBase(): string {
+      return web === "proxy" ? `http://${run.ipv4()}:${PROXY_PORT}` : `https://${appHost}`;
     }
 
-    /** The version (`X-OpsCrew-Image`) the site answers 200 with, checking Cloudflare per mode. */
+    /** The app's health URL for the current web mode. */
+    async function siteUrl(): Promise<string> {
+      return `${siteBase()}${(await run.readPlan()).app.healthPath}`;
+    }
+
+    /**
+     * The version the site serves at `/.well-known/opscrew-version` once its health route answers
+     * 200, checking Cloudflare per mode.
+     */
     async function siteVersion(): Promise<string> {
       const answer = await httpRequest(await siteUrl());
       if (answer.status !== 200) throw new Error(`the site answered ${answer.status}`);
@@ -373,8 +379,8 @@ describe.skipIf(MISSING.length > 0)(
           );
         }
       }
-      const version = answer.headers["x-opscrew-image"];
-      return typeof version === "string" ? version : "";
+      const version = await httpRequest(`${siteBase()}${PORTAINER_VERSION_PATH}`);
+      return version.status === 200 ? version.body.trim() : "";
     }
 
     /** Waits until the site answers 200 with `version`. */

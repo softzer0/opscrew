@@ -174,6 +174,7 @@ jobs:
         name: Wait until the new version answers
         env:
           URL: https://shop.example.com/api/health
+          VERSION_URL: https://shop.example.com/.well-known/opscrew-version
           IMAGE: \${{ needs.build.outputs.image }}
         run: |
           set -euo pipefail
@@ -181,12 +182,13 @@ jobs:
           want="\${digest:0:12}"
           state=down
           for attempt in $(seq 1 30); do
-            if seen="$(curl -fsS --max-time 10 -o /dev/null -w '%header{x-opscrew-image}' "$URL")"; then
-              if [[ "$seen" == "$want" ]]; then
-                echo "The new version answers after $attempt attempt(s)."
-                exit 0
-              fi
+            if ! seen="$(curl -fsS --max-time 10 "$VERSION_URL")"; then
+              state=down
+            elif [[ "$seen" != "$want" ]]; then
               state=previous
+            elif curl -fsS --max-time 10 -o /dev/null "$URL"; then
+              echo "The new version answers after $attempt attempt(s)."
+              exit 0
             else
               state=down
             fi
@@ -547,6 +549,7 @@ jobs:
         name: Wait until the new version answers
         env:
           URL: https://shop.example.com/api/health
+          VERSION_URL: https://shop.example.com/.well-known/opscrew-version
           IMAGE: \${{ needs.build.outputs.image }}
         run: |
           set -euo pipefail
@@ -554,12 +557,13 @@ jobs:
           want="\${digest:0:12}"
           state=down
           for attempt in $(seq 1 60); do
-            if seen="$(curl -fsS --max-time 10 -o /dev/null -w '%header{x-opscrew-image}' "$URL")"; then
-              if [[ "$seen" == "$want" ]]; then
-                echo "The new version answers after $attempt attempt(s)."
-                exit 0
-              fi
+            if ! seen="$(curl -fsS --max-time 10 "$VERSION_URL")"; then
+              state=down
+            elif [[ "$seen" != "$want" ]]; then
               state=previous
+            elif curl -fsS --max-time 10 -o /dev/null "$URL"; then
+              echo "The new version answers after $attempt attempt(s)."
+              exit 0
             else
               state=down
             fi
