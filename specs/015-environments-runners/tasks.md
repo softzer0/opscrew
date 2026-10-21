@@ -49,7 +49,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1501b [P] Pins: the runner, and the local CA in core crypto, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`, `packages/core/src/crypto/**`
+- [X] T1501b [P] Pins: the runner, and the local CA in core crypto, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`, `packages/core/src/crypto/**`
   - Owns: those paths (+ tests); `packages/core/src/index.ts` for the new exports only
   - Reads: contracts/runners.md "The pin"; contracts/localhost.md "Local CA"; research.md R3, R4; plan.md "2."
   - Depends: —

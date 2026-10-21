@@ -18,6 +18,9 @@ signedLeafCertificate(o: {
 The CA certificate is CA:TRUE (pathlen 0) with keyCertSign and cRLSign. A leaf certificate has SAN
 DNS names, digitalSignature, and serverAuth.
 
+A leaf is issued for 1 year. Callers must never exceed 825 days: Apple's platforms refuse TLS
+server certificates valid for longer, locally trusted ones included (the T1501b review).
+
 ## Local executor (`@opscrew/connector-ssh-host`)
 
 ```ts
