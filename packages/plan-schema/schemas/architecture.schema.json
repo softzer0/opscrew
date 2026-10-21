@@ -372,6 +372,144 @@
             "additionalProperties": false
           }
         },
+        "platformRouting": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "const": "vercel.json"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{64}$"
+            },
+            "redirects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "source": {
+                    "type": "string",
+                    "pattern": "^[/^]\\S*$"
+                  },
+                  "destination": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "statusCode": {
+                    "type": "number",
+                    "enum": [301, 302, 303, 307, 308]
+                  }
+                },
+                "required": ["index", "source", "destination", "statusCode"],
+                "additionalProperties": false
+              }
+            },
+            "rewrites": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "source": {
+                    "type": "string",
+                    "pattern": "^[/^]\\S*$"
+                  },
+                  "destination": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["index", "source", "destination"],
+                "additionalProperties": false
+              }
+            },
+            "headers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "source": {
+                    "type": "string",
+                    "pattern": "^[/^]\\S*$"
+                  },
+                  "headers": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "value": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["key", "value"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["index", "source", "headers"],
+                "additionalProperties": false
+              }
+            },
+            "cleanUrls": {
+              "type": "boolean"
+            },
+            "trailingSlash": {
+              "type": "boolean"
+            },
+            "unsupported": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "property": {
+                    "type": "string",
+                    "enum": [
+                      "redirects",
+                      "rewrites",
+                      "headers",
+                      "cleanUrls",
+                      "trailingSlash",
+                      "routes"
+                    ]
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["property", "reason"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["source", "sha256", "redirects", "rewrites", "headers", "unsupported"],
+          "additionalProperties": false
+        },
         "hostedServices": {
           "minItems": 1,
           "type": "array",

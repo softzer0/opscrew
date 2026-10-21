@@ -1,0 +1,37 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "redirects": [
+    { "source": "/old-blog/:slug", "destination": "/blog/:slug" },
+    { "source": "/beta", "destination": "/", "permanent": false },
+    { "source": "^/articles/(\\d{4})/(.+)$", "destination": "/posts/$1/$2", "statusCode": 301 },
+    {
+      "source": "/:path((?!uk/).*)",
+      "has": [{ "type": "header", "key": "x-vercel-ip-country", "value": "GB" }],
+      "destination": "/uk/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/docs/:path*",
+      "destination": "https://docs.example.com/:path*",
+      "statusCode": 302
+    },
+    { "source": "/pricing", "destination": "/plans", "permanent": true }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/:path*",
+      "missing": [{ "type": "cookie", "key": "preview" }],
+      "headers": [{ "key": "X-Robots-Tag", "value": "noindex" }]
+    },
+    {
+      "source": "/:path((?!api/).*)",
+      "headers": [{ "key": "X-Frame-Options", "value": "DENY" }]
+    }
+  ],
+  "crons": [{ "path": "/api/cron", "schedule": "0 8 * * *" }]
+}

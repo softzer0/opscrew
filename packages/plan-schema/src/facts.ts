@@ -5,6 +5,7 @@ import {
   EnvVarNameSchema,
   LanguageSchema,
   PackageManagerSchema,
+  PlanHashSchema,
   PlatformExportSchema,
   PortSchema,
   RepoPathSchema,
@@ -65,6 +66,71 @@ const RuntimeEvidenceSchema = z.strictObject({
   value: z.string().min(1),
   source: z.string().min(1),
 });
+
+/**
+ * A `vercel.json` source pattern: path-to-regexp (`/blog/:slug`, `/:path*`, `/(.*)`) or the regex
+ * form (`^/articles/(\d{4})$`). Matched case-sensitively against the path only.
+ */
+export const VercelSourceSchema = z.string().regex(/^[/^]\S*$/, {
+  message: "must start with `/` (a path pattern) or `^` (a regular expression)",
+});
+
+/** A rule's position in its `vercel.json` array, so skipped rules can be named. */
+const RuleIndexSchema = z.int().min(0);
+
+/** The `vercel.json` properties OpsCrew reads for routing. */
+const VercelRoutingPropertySchema = z.enum([
+  "redirects",
+  "rewrites",
+  "headers",
+  "cleanUrls",
+  "trailingSlash",
+  "routes",
+]);
+
+/**
+ * The routing rules of a `vercel.json`, for apps leaving Vercel (FR-1446). Redirects carry their
+ * status code: `permanent: true` (Vercel's default) is 308 and `false` is 307.
+ */
+export const PlatformRoutingSchema = z.strictObject({
+  source: z.literal("vercel.json"),
+  /** The file's SHA-256, so a later change to it can be noticed. */
+  sha256: PlanHashSchema,
+  redirects: z.array(
+    z.strictObject({
+      index: RuleIndexSchema,
+      source: VercelSourceSchema,
+      destination: z.string().min(1),
+      statusCode: z.literal([301, 302, 303, 307, 308]),
+    }),
+  ),
+  rewrites: z.array(
+    z.strictObject({
+      index: RuleIndexSchema,
+      source: VercelSourceSchema,
+      destination: z.string().min(1),
+    }),
+  ),
+  headers: z.array(
+    z.strictObject({
+      index: RuleIndexSchema,
+      source: VercelSourceSchema,
+      headers: z.array(z.strictObject({ key: z.string().min(1), value: z.string() })).min(1),
+    }),
+  ),
+  cleanUrls: z.boolean().optional(),
+  trailingSlash: z.boolean().optional(),
+  /** What is not translated (`routes`, `has` and `missing` conditions, malformed rules), and why. */
+  unsupported: z.array(
+    z.strictObject({
+      property: VercelRoutingPropertySchema,
+      /** The rule's index in the property's array; absent for the property as a whole. */
+      index: RuleIndexSchema.optional(),
+      reason: z.string().min(1),
+    }),
+  ),
+});
+export type PlatformRouting = z.infer<typeof PlatformRoutingSchema>;
 
 /** Deterministic facts about a repository, produced by `@opscrew/detect`. */
 export const ProjectFactsSchema = z.strictObject({
@@ -213,6 +279,8 @@ export const ProjectFactsSchema = z.strictObject({
     )
     .min(1)
     .optional(),
+  /** Routing rules from `vercel.json`. Absent when the file has none. */
+  platformRouting: PlatformRoutingSchema.optional(),
   /** Services the app reaches at a hosting provider (Atlas, PlanetScale, Upstash, Neon). */
   hostedServices: z
     .array(

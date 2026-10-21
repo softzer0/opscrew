@@ -93,6 +93,7 @@ import {
   scanSource,
 } from "./sources";
 import { detectObjectStorage, detectSqlite } from "./storage";
+import { vercelRouting } from "./vercel-routing";
 import { dockerfileWorkdir } from "./workdir";
 
 /** Options for {@link detectProject}. */
@@ -651,7 +652,9 @@ export async function detectProjectDetails(
   const schedulerNote = await inProcessSchedulerNote(processContext);
   if (schedulerNote) notes.push(schedulerNote);
   const vercelJson = findIn("vercel.json");
-  const cronJobs = vercelCronJobs(vercelJson ? await read(vercelJson) : undefined);
+  const vercelText = vercelJson ? await read(vercelJson) : undefined;
+  const cronJobs = vercelCronJobs(vercelText);
+  const platformRouting = vercelRouting(vercelText);
   const sqlite = await detectSqlite({ ...sources, envTexts, dbConnection, serverDatabase });
   const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
   if (appKind !== "static-spa") {
@@ -828,6 +831,7 @@ export async function detectProjectDetails(
     services: serviceList,
     ...(workers.length > 0 ? { workers } : {}),
     ...(cronJobs.length > 0 ? { cronJobs } : {}),
+    ...(platformRouting ? { platformRouting } : {}),
     ...(hostedServices.length > 0 ? { hostedServices } : {}),
     ...(sqlite ? { sqlite } : {}),
     ...(objectStorage ? { objectStorage } : {}),

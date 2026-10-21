@@ -259,6 +259,49 @@ describe("ProjectFacts", () => {
     }
   });
 
+  it("records optional vercel.json routing with indexed rules and Vercel's status codes", async () => {
+    const f = await facts();
+    expect(ProjectFactsSchema.parse(f).platformRouting).toBeUndefined();
+    const platformRouting = {
+      source: "vercel.json",
+      sha256: "a".repeat(64),
+      redirects: [
+        { index: 0, source: "/old/:slug", destination: "/new/:slug", statusCode: 308 },
+        { index: 2, source: "^/blog/(\\d{4})$", destination: "/posts/$1", statusCode: 301 },
+      ],
+      rewrites: [{ index: 0, source: "/(.*)", destination: "/index.html" }],
+      headers: [
+        { index: 0, source: "/:path*", headers: [{ key: "X-Frame-Options", value: "DENY" }] },
+      ],
+      cleanUrls: true,
+      unsupported: [
+        { property: "routes", reason: "not translated" },
+        { property: "redirects", index: 1, reason: "has a condition" },
+      ],
+    };
+    expect(ProjectFactsSchema.parse({ ...f, platformRouting }).platformRouting).toEqual(
+      platformRouting,
+    );
+    const redirect = platformRouting.redirects[0];
+    const bad: [string, unknown][] = [
+      ["platformRouting.redirects.0.statusCode", { ...redirect, statusCode: 304 }],
+      ["platformRouting.redirects.0.source", { ...redirect, source: "old" }],
+      ["platformRouting.redirects.0.index", { ...redirect, index: -1 }],
+      ["platformRouting.redirects.0", { ...redirect, permanent: true }],
+    ];
+    for (const [path, entry] of bad) {
+      const wrong = { ...f, platformRouting: { ...platformRouting, redirects: [entry] } };
+      expect(pathsOf(ProjectFactsSchema.safeParse(wrong)), path).toEqual([path]);
+    }
+    const wrongProperty = {
+      ...f,
+      platformRouting: { ...platformRouting, unsupported: [{ property: "crons", reason: "x" }] },
+    };
+    expect(pathsOf(ProjectFactsSchema.safeParse(wrongProperty))).toEqual([
+      "platformRouting.unsupported.0.property",
+    ]);
+  });
+
   it("records optional notes on what OpsCrew deploys", async () => {
     const f = await facts();
     expect(ProjectFactsSchema.parse(f).notes).toBeUndefined();

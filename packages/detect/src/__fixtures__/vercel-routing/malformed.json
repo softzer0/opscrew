@@ -1,0 +1,17 @@
+{
+  "redirects": [
+    "/old",
+    { "source": "/a", "destination": "/b", "permanent": true, "statusCode": 301 },
+    { "source": "/c", "destination": "/d", "statusCode": 304 },
+    { "source": "/e" },
+    { "source": "f", "destination": "/g" },
+    { "source": "/h", "destination": "/i", "permanent": "yes" },
+    { "source": "/ok", "destination": "/fine", "statusCode": 303 }
+  ],
+  "rewrites": { "source": "/(.*)", "destination": "/index.html" },
+  "headers": [
+    { "source": "/x", "headers": [] },
+    { "source": "/y", "headers": [{ "key": "X-Test" }] }
+  ],
+  "cleanUrls": "yes"
+}
