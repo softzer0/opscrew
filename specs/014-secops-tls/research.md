@@ -245,7 +245,9 @@ Stock Ubuntu 24.04, and so OpsCrew's servers, fails ssh-audit's "Hardened Ubuntu
   - Only the ED25519 and RSA host keys are offered (`HostKey` lines), so the ECDSA key goes.
   - The guide's regeneration of RSA at 4096 bits is **not** done. Regenerating a host key changes the fingerprint pinned in the deploy secrets, and 3072 bits meets the same guide's `RequiredRSASize 3072`. The policy's RSA-size mismatch is listed as noise.
   - An own server whose pinned key is ECDSA keeps ECDSA, and the report explains why.
-- **Moduli:** `awk '$5 >= 3071'` filters `/etc/ssh/moduli`.
+- **Moduli:** a filtered copy (`awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.opscrew`) with `ModuliFile /etc/ssh/moduli.opscrew`, where OpenSSH is 8.6 or later. `/etc/ssh/moduli` is an openssh-server conffile, and editing it in place could hold back OpenSSH updates (T1418).
+- **Own servers keep their user-key types** (lead decision after T1418): `PubkeyAcceptedAlgorithms`, `HostbasedAcceptedAlgorithms` and `CASignatureAlgorithms` are written only on the cloud servers OpsCrew creates, where only `deploy` logs in with OpsCrew's ED25519 key. On a server the user owns, other accounts may use ECDSA or FIDO keys, so only what the server offers changes.
+- **Ubuntu 22.04:** OpenSSH 8.9 rejects `RequiredRSASize`, so the line is left out there.
 - **Rate throttling** against DHEat is left out: fail2ban covers SSH, and OpsCrew never runs ssh-audit's `--dheat`.
 - **Clients:** OpenSSH 8.5 and newer (the GitHub runners, Windows 11's OpenSSH 9.5, macOS) all speak `sntrup761` or `curve25519` with these ciphers and MACs.
 
