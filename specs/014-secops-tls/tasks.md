@@ -542,6 +542,8 @@ Each wave is merged, gated and pushed before the next starts.
   - Owns: the files each item names (+ tests and snapshots), and any 014 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
   - Accept:
     - **The items listed below.**
+      - The zone fill written out by hand in `provision/steps.ts`, `portainer/run.ts` and `drift/portainer.ts` calls T1410's `withCloudflareZone` instead, and agents' index re-exports it (T1410's report).
+      - `SharedDesired.tls.retiring` goes, because T1403 doesn't use it (T1403's report).
       - Refresh the older pins that moved upstream (the curl and mysql 8.4 digests, uv), found by T1401b's run of `update-pins.mjs`, then run the gate.
     - **A duplication sweep over 014's whole change:** merge repeated helpers where the code gets smaller and no less clear. List what was merged, and what was left and why.
     - **No behaviour change.**
