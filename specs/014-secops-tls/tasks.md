@@ -208,7 +208,7 @@ Effort`.
   - Accept:
     - **A proxied app with origin TLS** (`RuntimeContext` gains `originTls: { hostnames } | undefined`):
       - its site uses `tls /etc/caddy/tls/<app>/origin.pem /etc/caddy/tls/<app>/origin.key { client_auth { mode require_and_verify; trust_pool file /etc/caddy/tls/<app>/pull.pem } }` for exactly those hostnames;
-      - the edge's global block has `auto_https ignore_loaded_certificates`;
+      - no `auto_https` option (Caddy skips ACME for the names a loaded certificate covers; T1406 found that `ignore_loaded_certs` requests them anyway);
       - the edge mounts `./tls:/etc/caddy/tls:ro`.
     - **Every site** sets HSTS, `X-Content-Type-Options nosniff` and `Referrer-Policy strict-origin-when-cross-origin`, and removes `Server`.
     - **The edge** refuses unknown hostnames on 80 and 443, in the form the spike settled.
@@ -295,6 +295,11 @@ Effort`.
       - the job states the interruption: a few seconds for proxied hostnames, under a minute for DNS-only ones (R5).
     - **The checker step, for both proxies:** before any upload, the job runs the pinned image on the runner (`caddy validate --adapter caddyfile`, or `nginx -t`) against the whole rendered edge, with placeholder certificates. A failure ends the job, with the checker's output, before anything reaches the server.
     - **Tests:** snapshots of the nginx edge (proxied, DNS-only, two apps), of the switch, of the first-certificate step and of the checker step.
+    - **From T1406:**
+      - `renderDeployment`'s context in `packages/iac-templates/src/render.ts` is typed `RuntimeContext`;
+      - nginx sends `X-Frame-Options: SAMEORIGIN` as Caddy does;
+      - a deploy without additions removes the app's `/srv/edge/sites/<app>.additions` from the server;
+      - the edge version number is after T1406's 2026102101.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
@@ -316,6 +321,8 @@ Effort`.
       - `served` is read over SSH as `deploy`, or through Portainer's API;
       - the shared plan is shown, approved by its hash and applied with the keys and the CSR passed in;
       - the deploy secret `OPSCREW_ORIGIN_TLS` is set, or the stack variable on Portainer;
+      - on Portainer the variable is base64 of the certificate, the key and `pull.pem` (one line, as Portainer writes stack variables); on servers the secret is plain PEM, the certificate then the key (T1406);
+      - the renderer's context carries `originTls` and `additions` (`RuntimeContext`, T1406);
       - `pull.pem` and the additions go into the runtime files.
     - **A missing permission** keeps today's site, records the gap for `secure`, and the run goes on (FR-1405).
     - **A hostname leaving the proxy** takes two runs: the first keeps the record proxied and drops the requirement, and says to run again (R3).
@@ -336,6 +343,7 @@ Effort`.
   - Depends: T1409a, T1405
   - Accept:
     - **drift:** a per-hostname setting disabled, or using another certificate, and a missing origin certificate at Cloudflare are reported, with "run provision".
+    - **drift's site comparison** (`drift/host.ts` hashes `renderCaddyfile(plan, ctx)`) passes the same `originTls` and `additions` as provision, so an unchanged site never shows as drift (T1406).
     - **status:**
       - each certificate's expiry (origin and client from the record, DNS-only hostnames from a TLS handshake through an injected connector);
       - the server's proxy;

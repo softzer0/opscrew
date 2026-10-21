@@ -318,7 +318,9 @@ research.md, and the tasks after it read them.
   - `tls /etc/caddy/tls/<app>/origin.pem /etc/caddy/tls/<app>/origin.key { client_auth { mode
     require_and_verify; trust_pool file /etc/caddy/tls/<app>/pull.pem } }`;
   - with the exact hostnames;
-  - `auto_https ignore_loaded_certificates` in the global block, so DNS-only names keep ACME.
+  - no `auto_https` option. Caddy skips ACME for exactly the names a loaded certificate covers, so
+    DNS-only names keep ACME, and `ignore_loaded_certs` would make it ask Let's Encrypt for the
+    proxied names too (T1406).
 - **Every site gets the baseline headers:** HSTS (as today), `X-Content-Type-Options nosniff`,
   `Referrer-Policy strict-origin-when-cross-origin`, `-Server`.
 - **The edge's Caddyfile:** a catch-all `https://` site with `tls internal { on_demand }` and
