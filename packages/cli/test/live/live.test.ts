@@ -789,6 +789,7 @@ async function deployAndTearDown(
     expect(deployed.conclusion, "the deploy workflow succeeded").toBe("success");
 
     const verify = await opscrew("verify");
+    if (verify.exitCode !== 0) await printEdgeDiagnostics(repo, env);
     expect(verify.exitCode, verify.output).toBe(0);
     // The app answers on the health path OpsCrew planned for it (not a framework default).
     const deployedPlan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
@@ -1042,6 +1043,52 @@ async function deleteDeploySecrets(
  * title or body of the repository (any state), and, when the domain is behind Cloudflare's proxy,
  * in no tracked file: a published origin address would let anyone go around Cloudflare.
  */
+/**
+ * After a failed `verify`, prints what the server's own edge answers before the teardown removes
+ * it: port 80 for the app's hostname from the server itself, the edge Caddy's last log lines and
+ * its adapted configuration. Read-only, as `deploy`; addresses are masked in what is printed.
+ */
+async function printEdgeDiagnostics(repo: string, env: NodeJS.ProcessEnv): Promise<void> {
+  try {
+    const paths = resolveProjectPaths(repo, { env });
+    const host = (await readServerAddresses(paths)).deployment?.ipv4;
+    const plan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
+    const domain = plan.dns.domain;
+    if (host === undefined || domain === undefined) return;
+    const script = [
+      `echo "--- curl http://127.0.0.1/ with Host ${domain}"`,
+      `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\\n' -H 'Host: ${domain}' http://127.0.0.1/ || echo "curl exit $?"`,
+      'echo "--- edge caddy logs"',
+      "docker compose -p opscrew-edge logs --no-color --tail 80 caddy 2>&1 | tail -80",
+      'echo "--- caddy adapt"',
+      'docker exec "$(docker ps -qf label=com.docker.compose.project=opscrew-edge -f label=com.docker.compose.service=caddy)" caddy adapt --config /etc/caddy/Caddyfile 2>&1 | head -c 8000',
+    ].join("; ");
+    const result = await runner.run(
+      "ssh",
+      [
+        "-i",
+        paths.files.deployKey,
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        `UserKnownHostsFile=${paths.files.knownHosts}`,
+        `deploy@${host}`,
+        script,
+      ],
+      { env, timeoutMs: minutes(2) },
+    );
+    const mask = (text: string) => text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "<ip>");
+    console.log(`OpsCrew E2E: edge diagnostics after a failed verify\n${mask(result.stdout)}`);
+    if (result.stderr.trim() !== "") console.log(mask(result.stderr));
+  } catch (error) {
+    console.log(`OpsCrew E2E: edge diagnostics failed: ${(error as Error).message}`);
+  }
+}
+
 async function expectAddressUnpublished(
   repo: string,
   env: Record<string, string | undefined>,
