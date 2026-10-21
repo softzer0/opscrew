@@ -222,6 +222,11 @@ export interface ProvisionResult {
    * `.opscrew/plans/stack-<hash>.json`). With `--plan-only` it is the hash to approve.
    */
   stackPlanHash?: string;
+  /**
+   * The user's Portainer, with `--plan-only`: the stack plan follows the Cloudflare plan, because
+   * the stack's Caddy needs the origin certificate it creates (`stackPlanHash` is then absent).
+   */
+  stackFollowsOriginTls?: true;
   /** The user's Portainer: true when this run changed something in Portainer. */
   stackApplied?: boolean;
   /** Root-module outputs after the run (server IPs, id, name, url). */

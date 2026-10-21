@@ -8,7 +8,7 @@ import {
   portainerClient,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
-import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
   IMAGES,
@@ -40,6 +40,7 @@ import {
   tunnelDeletePlanJson,
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
+import { stackFollowsReason } from "../shared/apply-command";
 import {
   createProject,
   createTestPhaseDeps,
@@ -65,7 +66,7 @@ import {
   writeFakeState,
 } from "../testing";
 import { bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
-import { readOriginTlsValues } from "./origin-tls";
+import { readOriginTlsValues, stackServed } from "./origin-tls";
 import {
   portainerContainerUrl,
   portainerValueKeyFile,
@@ -76,6 +77,7 @@ import {
 } from "./portainer";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
+import { readCloudflareRecord } from "./shared-cloudflare";
 import { ROUTE_CHANGE_NOTE, switchesWebRoute } from "./stack-plan";
 import { STORAGE_KEY_VARS } from "./storage";
 import type { ProvisionOptions, ProvisionServices } from "./types";
@@ -1880,32 +1882,313 @@ describe.skipIf(!findExecutable("git"))(
       expect(published).not.toContain("PRIVATE KEY-----\n");
     });
 
-    it("--plan-only, then --approve with both hashes: the stack plan keeps the hash it was shown with", async () => {
+    /**
+     * Like the CLI without a terminal and with `--yes`: a Cloudflare, infrastructure or stack plan
+     * only by a hash in `approved`, everything else (files, branch, secrets, pull request) granted.
+     */
+    const byHash =
+      (approved: readonly string[]) =>
+      (request: ApprovalRequest): boolean =>
+        request.kind === "cloudflare-apply" ||
+        request.kind === "iac-apply" ||
+        request.kind === "stack-apply"
+          ? approved.includes(request.planHash ?? "")
+          : true;
+    const appStack = (s: Setup) => s.fake.stacks.find((item) => item.Name === "opscrew-shop");
+    const SCRIPTS_LINE = "in scripts: run again with `--approve` and the stack plan's hash";
+    const FOLLOWS_NOTE =
+      "The stack plan for your Portainer follows once this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates. Applying it shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the stack plan's hash).";
+    /** The hash a refused stack plan's hint names (`… --approve <hash>`). */
+    const hintedHash = (error: OpsCrewError): string =>
+      /--approve ([0-9a-f]{64})$/.exec(error.hint ?? "")?.[1] ?? "";
+
+    it("in scripts the stack plan follows the Cloudflare plan: --approve applies it and stops at the stack plan, which a second --approve applies", async () => {
       const approved: string[] = [];
+      const s = await setup({ plan: proxied(), answer: byHash(approved) });
+      const planned = await s.run({ planOnly: true });
+      const cloudflare = planned.cloudflarePlanHash as string;
+      expect(cloudflare).toMatch(/^[0-9a-f]{64}$/);
+      // The stack plan follows: --plan-only says so up front and shows no stack plan.
+      expect(planned).toMatchObject({ stackFollowsOriginTls: true });
+      expect(planned.stackPlanHash).toBeUndefined();
+      expect(s.deps.reporter.text()).toContain(FOLLOWS_NOTE);
+      expect(s.zone.writes()).toEqual([]);
+
+      // The Cloudflare plan is applied. The stack plan, with the stack Caddy's origin TLS, has a hash
+      // that was not given: the run stops at it, before anything changes in Portainer.
+      approved.push(cloudflare);
+      s.deps.reporter.lines.length = 0;
+      const stopped = (await s
+        .run({ approveHashes: [cloudflare] })
+        .catch((e: unknown) => e)) as OpsCrewError;
+      expect(stopped).toBeInstanceOf(OpsCrewError);
+      expect(stopped.code).toBe("APPROVAL_REFUSED");
+      expect(stopped.message).toContain("Nothing in Portainer was changed.");
+      const next = hintedHash(stopped);
+      expect(next).toMatch(/^[0-9a-f]{64}$/);
+      expect(stopped.hint).toBe(
+        `To apply it later without prompts, run: opscrew provision --approve ${next}`,
+      );
+      const output = s.deps.reporter.text();
+      expect(output).toContain(`Stack plan hash: ${next}`);
+      expect(output).toContain(SCRIPTS_LINE);
+      expect(s.zone.originCertificates).toHaveLength(1);
+      expect(s.zone.hostnameAop.get("shop.example.com")?.enabled).toBe(true);
+      expect(s.fake.mutations()).toEqual([]);
+      expect(s.github.pulls).toEqual([]);
+      // The files in the working copy are those of the plan shown: the template serves the origin
+      // certificate and requires the client certificate.
+      const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      expect(template).toContain("client_auth");
+      // The Cloudflare record and the values on this computer are saved before the stop, so the next
+      // run renders the same certificate (and creates no other).
+      const record = await readCloudflareRecord(s.deps.paths);
+      expect(record?.tls?.client?.enabled).toEqual(["shop.example.com"]);
+      const values = await readOriginTlsValues(s.deps);
+      expect(fingerprintSha256(values.ORIGIN_TLS_CERT ?? "")).toBe(record?.tls?.origin?.sha256);
+      expect(values.ORIGIN_TLS_KEY).toBeDefined();
+      expect(values.ORIGIN_TLS_REQUEST).toBeUndefined();
+
+      // The next run approves that hash: the same stack plan, applied.
+      approved.push(next);
+      s.handler.requests.length = 0;
+      const result = await s.run({ approveHashes: [next] });
+      expect(result).toMatchObject({ stackApplied: true, stackPlanHash: next });
+      expect(kinds(s)).not.toContain("cloudflare-apply");
+      expect(s.zone.originCertificates).toHaveLength(1);
+      const bundle =
+        appStack(s)?.Env.find((entry) => entry.name === "OPSCREW_ORIGIN_TLS")?.value ?? "";
+      expect(Buffer.from(bundle, "base64").toString("utf8")).toBe(
+        `${values.ORIGIN_TLS_CERT}${values.ORIGIN_TLS_KEY}${values.ORIGIN_PULL_CERT}`,
+      );
+      // The committed template is the one the stack plan was made for. The deploy writes it to the
+      // deploy branch: the stack's Caddyfile then requires the client certificate.
+      const committed = await s.git(s.root, "show", `HEAD:${PORTAINER_STACK_TEMPLATE_PATH}`);
+      expect(committed).toBe(template.trimEnd());
+      const app = appStack(s);
+      if (app === undefined) throw new Error("no app stack");
+      app.file = committed;
+      expect(stackServed(app.file, record, { held: undefined, fingerprint: undefined })).toEqual({
+        requiring: ["shop.example.com"],
+      });
+
+      const published = [await everythingPublished(s), stopped.message, stopped.hint].join("\n");
+      for (const secret of [values.ORIGIN_TLS_KEY, values.ORIGIN_PULL_KEY, bundle] as string[]) {
+        expect(published).not.toContain(secret);
+      }
+    });
+
+    it("with Cloudflare redeploys, the run that applies the saved infrastructure plan writes the template of the stack plan it stops at", async () => {
+      const approved: string[] = [];
+      const base = portainerPlan({ web: { mode: "caddy" }, redeploy: "cloudflare" });
       const s = await setup({
-        plan: proxied(),
-        // Like the CLI's non-interactive handler: Cloudflare and stack plans by hash only.
-        answer: (request) =>
-          request.kind === "cloudflare-apply" || request.kind === "stack-apply"
-            ? approved.includes(request.planHash ?? "")
-            : true,
+        plan: DeployPlanSchema.parse({ ...base, dns: { ...base.dns, proxied: true } }),
+        changes: WEBHOOK_TUNNEL,
+        env: { CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token") },
+        answer: byHash(approved),
       });
       const planned = await s.run({ planOnly: true });
       const cloudflare = planned.cloudflarePlanHash as string;
-      const stack = planned.stackPlanHash as string;
-      expect(cloudflare).toMatch(/^[0-9a-f]{64}$/);
-      expect(stack).toMatch(/^[0-9a-f]{64}$/);
-      expect(s.zone.writes()).toEqual([]);
+      const infrastructure = planned.planHash as string;
+      // The stack plan needs the webhook tunnel's token: it follows the infrastructure apply.
+      expect(planned.stackPlanHash).toBeUndefined();
+      const before = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      expect(before).not.toContain("client_auth");
 
-      approved.push(cloudflare, stack);
+      approved.push(cloudflare, infrastructure);
+      const stopped = (await s
+        .run({ approveHashes: [cloudflare, infrastructure] })
+        .catch((e: unknown) => e)) as OpsCrewError;
+      expect(stopped.code).toBe("APPROVAL_REFUSED");
+      expect(s.engine.applied).toHaveLength(1);
+      expect(s.fake.mutations()).toEqual([]);
+      // The infrastructure code stays as the saved plan was made from; the template is the new one.
+      const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      expect(template).toContain("client_auth");
+
+      // The infrastructure is applied: the next run plans no change there.
+      s.engine.scenario.changes = [];
+      approved.push(hintedHash(stopped));
+      const result = await s.run({ approveHashes: [hintedHash(stopped)] });
+      expect(result).toMatchObject({ stackApplied: true, stackPlanHash: hintedHash(stopped) });
+      expect(appStack(s)?.Env.some((entry) => entry.name === "OPSCREW_ORIGIN_TLS")).toBe(true);
+      expect(await s.git(s.root, "show", `HEAD:${PORTAINER_STACK_TEMPLATE_PATH}`)).toBe(
+        template.trimEnd(),
+      );
+    });
+
+    it("an approving run with no origin TLS change applies the stack plan it was shown, as before", async () => {
+      const approved: string[] = [];
+      let scripted = false;
+      const s = await setup({
+        plan: proxied(),
+        answer: (request) => !scripted || byHash(approved)(request),
+      });
+      await s.run();
+      s.github.openPull = OPEN_PULL;
+      const rotated = fakeSecret("stripe-live-key", "rotated");
+      await writeFile(join(s.root, "production.env"), `STRIPE_SECRET_KEY=${rotated}\n`);
+      scripted = true;
+      const planned = await s.run({ planOnly: true });
+      expect(planned.cloudflarePlanHash).toBeUndefined();
+      const shown = planned.stackPlanHash as string;
+
+      approved.push(shown);
       s.handler.requests.length = 0;
-      const result = await s.run({ approveHashes: [cloudflare, stack] });
-      expect(result).toMatchObject({ stackApplied: true, stackPlanHash: stack });
+      s.deps.reporter.lines.length = 0;
+      const result = await s.run({ approveHashes: [shown] });
+      expect(result).toMatchObject({ stackApplied: true, stackPlanHash: shown });
+      expect(kinds(s)).not.toContain("cloudflare-apply");
+      expect(kinds(s)).not.toContain("repo-write");
+      expect(s.deps.reporter.text()).not.toContain(SCRIPTS_LINE);
       expect(s.zone.originCertificates).toHaveLength(1);
-      expect(s.handler.requests.find((r) => r.kind === "stack-apply")?.planHash).toBe(stack);
-      // The stack keeps the site of the shown plan; the next run brings the origin TLS.
-      const app = s.fake.stacks.find((item) => item.Name === "opscrew-shop");
-      expect(app?.Env.some((entry) => entry.name === "OPSCREW_ORIGIN_TLS")).toBe(false);
+      expect(appStack(s)?.Env.find((entry) => entry.name === "STRIPE_SECRET_KEY")?.value).toBe(
+        rotated,
+      );
+    });
+
+    it("--plan-only says the stack plan follows exactly when the Cloudflare plan changes the stack Caddy's origin TLS", async () => {
+      const approved: string[] = [];
+      let scripted = false;
+      const s = await setup({
+        plan: proxied(),
+        answer: (request) => !scripted || byHash(approved)(request),
+      });
+      // A first origin certificate and client certificate: the stack plan follows.
+      const first = await s.run({ planOnly: true });
+      expect(first).toMatchObject({ stackFollowsOriginTls: true });
+      expect(s.deps.reporter.text()).toContain(FOLLOWS_NOTE);
+
+      // Once set up, a Cloudflare plan without new origin TLS for the stack: the hostname's origin
+      // pull setting turned back on (the site already requires the client certificate for it) and
+      // the zone's minimum TLS raised again. The stack plan (a rotated secret) comes with it.
+      await s.run();
+      s.github.openPull = OPEN_PULL;
+      const setting = s.zone.hostnameAop.get("shop.example.com");
+      if (setting === undefined) throw new Error("no origin pull setting");
+      setting.enabled = false;
+      s.zone.minTls.value = "1.0";
+      const rotated = fakeSecret("stripe-live-key", "rotated");
+      await writeFile(join(s.root, "production.env"), `STRIPE_SECRET_KEY=${rotated}\n`);
+      scripted = true;
+      s.deps.reporter.lines.length = 0;
+      const again = await s.run({ planOnly: true });
+      const output = s.deps.reporter.text();
+      const cloudflare = again.cloudflarePlanHash as string;
+      const shown = again.stackPlanHash as string;
+      expect(cloudflare).toMatch(/^[0-9a-f]{64}$/);
+      expect(output).toContain("Turn on this app's client certificate for shop.example.com");
+      expect(output).toContain("Raise the zone's minimum TLS version from 1.0 to 1.2");
+      expect(again.stackFollowsOriginTls).toBeUndefined();
+      expect(shown).toMatch(/^[0-9a-f]{64}$/);
+      expect(output).not.toContain(FOLLOWS_NOTE);
+
+      // Approving both applies both: the stack plan is the one shown, with no stop.
+      approved.push(cloudflare, shown);
+      s.deps.reporter.lines.length = 0;
+      const result = await s.run({ approveHashes: [cloudflare, shown] });
+      expect(result).toMatchObject({
+        cloudflarePlanHash: cloudflare,
+        stackApplied: true,
+        stackPlanHash: shown,
+      });
+      expect(s.zone.hostnameAop.get("shop.example.com")?.enabled).toBe(true);
+      expect(s.zone.minTls.value).toBe("1.2");
+      expect(s.deps.reporter.text()).not.toContain(SCRIPTS_LINE);
+    });
+
+    it("with a Cloudflare root whose infrastructure plan makes no tunnel, the stack plan follows the Cloudflare plan's origin certificate", async () => {
+      // Set up with Cloudflare redeploys and the domain DNS only, then behind Cloudflare's proxy.
+      const s = await setup({
+        plan: portainerPlan({ web: { mode: "caddy" }, redeploy: "cloudflare" }),
+        changes: WEBHOOK_TUNNEL,
+        env: { CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token") },
+      });
+      await s.run();
+      s.github.openPull = OPEN_PULL;
+      const current = await readArtifact("plan", s.deps.paths.files.plan);
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...current,
+        dns: { ...current.dns, proxied: true },
+      });
+      // A new DNS record and no new tunnel: the stack plan has every token it needs.
+      s.engine.scenario.changes = [
+        tunnelChange("portainer_tunnel", "cloudflare_dns_record", "route"),
+      ];
+      s.deps.reporter.lines.length = 0;
+      const planned = await s.run({ planOnly: true });
+      expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(planned.cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(planned).toMatchObject({ stackFollowsOriginTls: true });
+      expect(planned.stackPlanHash).toBeUndefined();
+      const output = s.deps.reporter.text();
+      expect(output).toContain(FOLLOWS_NOTE);
+      expect(output).not.toContain("because it needs the Cloudflare Tunnel's token");
+      // What the CLI and opscrew_plan say, with the saved infrastructure plan beside it.
+      expect(stackFollowsReason(planned, true)).toBe(
+        "this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates",
+      );
+    });
+
+    it("a refused file write after the Cloudflare apply says what is applied and that the next run continues", async () => {
+      const s = await setup({
+        plan: proxied(),
+        answer: (request) => request.kind !== "repo-write",
+      });
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("APPROVAL_REFUSED");
+      const cloudflare = s.handler.requests.find((r) => r.kind === "cloudflare-apply")?.planHash;
+      expect(error.message).toBe(
+        `OpsCrew applied the Cloudflare changes you approved (Cloudflare plan ${cloudflare}); it wrote no files and changed nothing in your Portainer. Run \`opscrew provision\` again to continue from there.`,
+      );
+      expect(s.zone.originCertificates).toHaveLength(1);
+      expect(s.fake.mutations()).toEqual([]);
+    });
+
+    it("through opscrew_apply (its hashes, the user's dialogs) the new stack plan gets its own dialog; declined, nothing in Portainer changes", async () => {
+      const given: { cloudflare?: string } = {};
+      const dialogs: ApprovalRequest[] = [];
+      let accept = false;
+      const s = await setup({
+        plan: proxied(),
+        // opscrew_apply's gate: a Cloudflare plan only with the cloudflarePlanHash opscrew_plan
+        // returned; every other plan in a dialog of the user's.
+        answer: (request) => {
+          if (request.kind === "cloudflare-apply") return request.planHash === given.cloudflare;
+          if (request.kind === "stack-apply") {
+            dialogs.push(request);
+            return accept;
+          }
+          return true;
+        },
+      });
+      // opscrew_plan returns only the Cloudflare plan and says why the stack plan follows; then
+      // opscrew_apply with its cloudflarePlanHash.
+      const planned = await s.run({ planOnly: true });
+      given.cloudflare = planned.cloudflarePlanHash as string;
+      expect(planned.stackPlanHash).toBeUndefined();
+      expect(stackFollowsReason(planned, false)).toBe(
+        "this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates",
+      );
+      const declined = (await s
+        .run({ approveHashes: [given.cloudflare] })
+        .catch((e: unknown) => e)) as OpsCrewError;
+      expect(declined.code).toBe("APPROVAL_REFUSED");
+      expect(s.zone.originCertificates).toHaveLength(1);
+      const dialog = dialogs.at(-1);
+      expect(dialogs).toHaveLength(1);
+      expect(dialog?.planHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(dialog?.details).toContain(`Stack plan hash: ${dialog?.planHash}`);
+      expect(s.fake.mutations()).toEqual([]);
+
+      // opscrew_plan again returns that stack plan, and the user approves it in its dialog.
+      const again = await s.run({ planOnly: true });
+      expect(again.cloudflarePlanHash).toBeUndefined();
+      expect(again.stackPlanHash).toBe(dialog?.planHash);
+      accept = true;
+      const result = await s.run({ approveHashes: [again.stackPlanHash as string] });
+      expect(result).toMatchObject({ stackApplied: true, stackPlanHash: dialog?.planHash });
+      expect(appStack(s)?.Env.some((entry) => entry.name === "OPSCREW_ORIGIN_TLS")).toBe(true);
     });
 
     it("asks for the recovery copy's first key through the run's recovery options", async () => {

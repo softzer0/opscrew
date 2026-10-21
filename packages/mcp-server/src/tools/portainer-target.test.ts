@@ -87,11 +87,20 @@ function fakeAccess(rejectToken = false) {
  * A fake `runProvision` for the user's Portainer: `planOnly` saves a stack plan and describes it;
  * otherwise it asks for that plan's `stack-apply` approval, as provision does.
  */
-function fakeProvision(o: { bucket?: boolean } = {}) {
+function fakeProvision(o: { bucket?: boolean; originTls?: boolean } = {}) {
   const calls: ProvisionOptions[] = [];
   const run: typeof runProvision = async (deps, options = {}) => {
     calls.push(options);
     if (o.bucket === true) return bucketProvision(deps, options);
+    if (o.originTls === true && options.planOnly === true) {
+      // The Cloudflare plan creates the stack Caddy's origin certificate: the stack plan follows.
+      return {
+        cloudflarePlanHash: CLOUDFLARE_HASH,
+        stackFollowsOriginTls: true,
+        applied: false,
+        outputs: {},
+      };
+    }
     const text = `${JSON.stringify({ changes: [{ id: "app-stack", state: "change" }] })}\n`;
     const hash = createHash("sha256").update(text).digest("hex");
     await mkdir(deps.paths.files.plansDir, { recursive: true });
@@ -119,6 +128,8 @@ function fakeProvision(o: { bucket?: boolean } = {}) {
 
 /** The hash of the fake bucket plan (the `storage` root) {@link bucketProvision} saves. */
 const BUCKET_HASH = "cd".repeat(32);
+/** The hash of the fake Cloudflare plan that brings the stack Caddy's origin TLS. */
+const CLOUDFLARE_HASH = "ab".repeat(32);
 
 /**
  * `runProvision` for an app with an R2 bucket still to create: `planOnly` saves only the bucket's
@@ -167,7 +178,13 @@ async function bucketProvision(
 }
 
 async function connect(
-  options: { elicit?: Answer; token?: string; rejectToken?: boolean; bucket?: boolean } = {},
+  options: {
+    elicit?: Answer;
+    token?: string;
+    rejectToken?: boolean;
+    bucket?: boolean;
+    originTls?: boolean;
+  } = {},
 ) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-portainer-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -194,7 +211,10 @@ async function connect(
     cwd: root,
   });
   const { access, listed } = fakeAccess(options.rejectToken);
-  const provision = fakeProvision({ bucket: options.bucket === true });
+  const provision = fakeProvision({
+    bucket: options.bucket === true,
+    originTls: options.originTls === true,
+  });
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerInterviewTools(server, deps, { portainerAccess: access });
   registerDesignTools(server, deps);
@@ -425,6 +445,26 @@ describe("the MCP tools for the user's existing Portainer", () => {
     const unknown = await h.call("opscrew_apply", { storagePlanHash: "ef".repeat(32) });
     expect(unknown.isError).toBe(true);
     expect(textOf(unknown)).toContain("No saved bucket plan has the hash");
+  });
+
+  it("says the stack plan follows the Cloudflare plan when the stack's Caddy needs the origin certificate it creates", async () => {
+    const h = await connect({ elicit: trust, originTls: true });
+    await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    const options = await h.call("opscrew_design_options");
+    const id = (options.structuredContent as { options: { id: string }[] }).options[0]?.id;
+    await h.call("opscrew_select_design", { optionId: id });
+
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(planned.structuredContent).toMatchObject({
+      cloudflarePlanHash: CLOUDFLARE_HASH,
+      stackPlanFollows: true,
+    });
+    const text = textOf(planned);
+    expect(text).toContain(`call opscrew_apply with cloudflarePlanHash ${CLOUDFLARE_HASH}`);
+    expect(text).toContain(
+      "The stack plan for the user's Portainer follows once this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates: opscrew_apply then shows it to the user in its own dialog.",
+    );
   });
 
   it("refuses a bucket plan the chat was not given, before any dialog and without applying it", async () => {

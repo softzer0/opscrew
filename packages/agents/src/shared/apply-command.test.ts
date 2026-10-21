@@ -1,6 +1,33 @@
 import { describe, expect, it } from "vitest";
 import { exactBuyCommand } from "../domain/purchase";
-import { applyCommand, pathWord, shellWord } from "./apply-command";
+import { applyCommand, pathWord, shellWord, stackFollowsReason } from "./apply-command";
+
+describe("stackFollowsReason", () => {
+  const hash = "a".repeat(64);
+
+  it("says why the stack plan follows: the bucket, then the origin certificate, then the tunnel's token", () => {
+    const origin = { stackFollowsOriginTls: true as const };
+    const certificate =
+      "this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates";
+    expect(stackFollowsReason({ storagePlanHash: hash, ...origin }, true)).toBe(
+      "the app's bucket exists, because the app's stack gets the bucket's key",
+    );
+    // Provision sets the flag only when the stack plan waits for no tunnel: an infrastructure plan
+    // beside it changes something else.
+    expect(stackFollowsReason(origin, true)).toBe(certificate);
+    expect(stackFollowsReason(origin, false)).toBe(certificate);
+    expect(stackFollowsReason({}, true)).toBe(
+      "this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token",
+    );
+  });
+
+  it("gives none when the stack plan came with the plans, or nothing makes it wait", () => {
+    expect(stackFollowsReason({ stackPlanHash: hash, stackFollowsOriginTls: true }, true)).toBe(
+      undefined,
+    );
+    expect(stackFollowsReason({}, false)).toBeUndefined();
+  });
+});
 
 describe("applyCommand", () => {
   it("repeats --key-out with the file the planning run named", () => {

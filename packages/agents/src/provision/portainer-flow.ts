@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { SharedPlan } from "@opscrew/connector-cloudflare";
 import type { GitClient } from "@opscrew/connector-github";
 import {
   type ApplySecrets,
@@ -147,6 +148,33 @@ interface StackValues {
 const STACKS_SET_UP =
   "The app's stacks are set up in your Portainer; only the deploy secrets are not stored yet.";
 
+/** Said with the stack plan when this run's Cloudflare apply changed the stack Caddy's origin TLS. */
+const ORIGIN_STACK_NOTE =
+  "The Cloudflare plan applied in this run changed the origin protection of the stack's Caddy (its certificates), so the stack plan for your Portainer changed with it and needs its own approval (in scripts: run again with `--approve` and the stack plan's hash).";
+
+/**
+ * What of the app's site reaches its stack plan: the hostnames the stack's Caddy serves with
+ * origin TLS and the origin certificate (public); `""` without origin TLS.
+ */
+function stackOrigin({ edge, values }: Awaited<ReturnType<typeof recordedEdge>>): string {
+  const hostnames = edge.originTls?.hostnames;
+  return hostnames === undefined ? "" : `${hostnames.join(" ")}\n${values.ORIGIN_TLS_CERT ?? ""}`;
+}
+
+/**
+ * True when applying the Cloudflare plan changes the stack Caddy's origin TLS, and so its stack
+ * plan: a new origin certificate, or the client certificate turned on for a hostname the site
+ * does not serve with origin TLS yet (`serving`).
+ */
+function bringsOriginTls(plan: Pick<SharedPlan, "changes">, serving: readonly string[]): boolean {
+  return plan.changes.some(
+    (change) =>
+      change.kind === "create-origin-certificate" ||
+      (change.kind === "enable-client-certificate" &&
+        change.hostnames.some((hostname) => !serving.includes(hostname))),
+  );
+}
+
 /**
  * A sensitive output the stacks or the deploy secrets need, registered with the redactor. `done`
  * says what is already changed when it is missing (default: nothing in Portainer).
@@ -189,9 +217,13 @@ function requiredOutput(
  * a plan, the output, the audit log, a file in the repository or the pull request.
  *
  * `--plan-only` shows the plans and their hashes and changes nothing (the stack plan follows the
- * infrastructure apply when it needs a tunnel's token that does not exist yet); `--approve` names
+ * infrastructure apply when it needs a tunnel's token that does not exist yet, and the Cloudflare
+ * apply when its Caddy needs the origin certificate that plan creates); `--approve` names
  * the infrastructure plan's hash, the Cloudflare plan's and the stack plan's (the approval handler
- * grants the latter two).
+ * grants the latter two). The stack plan is made after the Cloudflare apply, with the stack Caddy's
+ * origin TLS as Cloudflare then has it, as in a single run: when that apply changed it, the stack
+ * plan has a new hash, which the hash shown before does not approve, so a script stops at it
+ * before anything in Portainer changes.
  */
 export async function provisionPortainer(
   deps: PhaseDeps,
@@ -398,11 +430,13 @@ export async function provisionPortainer(
 
   // 3. OpsCrew's shared Cloudflare change (its rule in the zone, the account's Zero Trust
   // organization for the webhook's Access) before anything else changes: shown, approved by its
-  // hash, applied and recorded. A run that applies plans shown before (`--approve`) keeps the stack
-  // Caddy's site as it was then, so the stack plan keeps the hash shown (the next run brings a new
-  // origin TLS).
-  const siteBefore =
-    (options.approveHashes ?? []).length > 0 ? await recordedEdge(deps, plan) : undefined;
+  // hash, applied and recorded. In a run that applies plans shown before (`--approve`), the stack
+  // Caddy's origin TLS before this apply: when the apply changes it, the stack plan differs from
+  // the one shown, and its new hash needs an approval of its own.
+  const originBefore =
+    (options.approveHashes ?? []).length > 0
+      ? stackOrigin(await recordedEdge(deps, plan))
+      : undefined;
   const sharedResult =
     shared === undefined
       ? undefined
@@ -416,13 +450,17 @@ export async function provisionPortainer(
   const cloudflareHash = sharedResult?.fields ?? {};
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
 
-  // 3b. Render and write the files (skipped when applying a saved plan: --plan-only wrote them).
-  // Dependabot's configuration comes with the workflow and the stack template it watches
-  // (FR-1221); the template is committed in `opscrew/runtime` on the default branch, which is the
-  // only branch Dependabot reads, so its Compose entry applies here too.
+  // 3b. Render and write the files, with the stack Caddy's origin TLS as Cloudflare now has it.
+  // Applying a saved plan keeps the infrastructure code the --plan-only run wrote, which that plan
+  // was made from; the other files are in no hashed plan, so the stack template and the workflow
+  // are those of the stack plan this run shows. Dependabot's configuration comes with the workflow
+  // and the stack template it watches (FR-1221); the template is committed in `opscrew/runtime` on
+  // the default branch, which is the only branch Dependabot reads, so its Compose entry applies
+  // here too.
   const writes = saved.apply === undefined && saved.removal === undefined;
   const dependabot = await deploySetupDependabot(deps, plan, { writes });
-  const site = siteBefore ?? (await recordedEdge(deps, plan));
+  const site = await recordedEdge(deps, plan);
+  const originChanged = originBefore !== undefined && originBefore !== stackOrigin(site);
   const ctx = deploymentRenderContext(deps, {
     plan,
     requirements: input.requirements,
@@ -442,7 +480,20 @@ export async function provisionPortainer(
     ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
   ];
-  if (writes) await approveAndWriteRenderedFiles(deps, root, files);
+  // A refusal names the Cloudflare plans this run applied (each one's approval is this run's).
+  const cloudflareApplied = (sharedResult?.approvals ?? []).map(
+    (approval) => `Cloudflare plan ${approval.planHash}`,
+  );
+  await approveAndWriteRenderedFiles(
+    deps,
+    root,
+    writes ? files : files.filter((file) => file.kind !== "infra"),
+    cloudflareApplied.length === 0
+      ? {}
+      : {
+          refused: `OpsCrew applied the Cloudflare changes you approved (${cloudflareApplied.join("; ")}); it wrote no files and changed nothing in your Portainer. Run \`${command}\` again to continue from there.`,
+        },
+  );
 
   // 3c. The app's bucket (the `storage` root): its own plan, approved by its hash, before the
   // infrastructure plan and the stacks (the app's stack gets its key).
@@ -597,6 +648,7 @@ export async function provisionPortainer(
       deps.reporter.info(`Saved the stack plan (hash ${hash}); nothing in Portainer was changed.`);
       return { plan: stackPlan, hash, applied: false };
     }
+    if (originChanged) deps.reporter.info(ORIGIN_STACK_NOTE);
     const approval = await deps.approvals.request({
       kind: "stack-apply",
       title: `Apply the stack plan to your Portainer (${plural(work.length, "change")})`,
@@ -732,6 +784,7 @@ export async function provisionPortainer(
     const tokensKnown =
       (target.web.mode !== "tunnel" || stringOutput(outputs, "tunnel_token") !== undefined) &&
       (updater || stringOutput(outputs, "portainer_tunnel_token") !== undefined);
+    let originFollows = false;
     if (createsAppStack) {
       const state = await deployBranchState(git, github, plan);
       if (state !== "placeholder") {
@@ -746,12 +799,20 @@ export async function provisionPortainer(
       deps.reporter.info(
         "The stack plan for your Portainer follows once the app's bucket exists, because the app's stack gets the bucket's key. Applying the bucket's plan shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and the hashes shown, then again with `--approve` and the stack plan's hash).",
       );
-    } else if (tokensKnown && !tunnelChange(changes, "create", "replace")) {
-      stackHash = (await stackStep(outputs, true)).hash;
-    } else {
+    } else if (!tokensKnown || tunnelChange(changes, "create", "replace")) {
       deps.reporter.info(
         "The stack plan for your Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token. Applying it shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the stack plan's hash).",
       );
+    } else if (
+      shared?.main !== undefined &&
+      bringsOriginTls(shared.main.plan, ctx.originTls?.hostnames ?? [])
+    ) {
+      originFollows = true;
+      deps.reporter.info(
+        "The stack plan for your Portainer follows once this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates. Applying it shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the stack plan's hash).",
+      );
+    } else {
+      stackHash = (await stackStep(outputs, true)).hash;
     }
     if (changes.length > 0 && tunnelChange(changes, "delete") && stackHash !== undefined) {
       deps.reporter.info(
@@ -772,6 +833,7 @@ export async function provisionPortainer(
       ...cloudflareHash,
       ...storageHash,
       ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
+      ...(originFollows ? { stackFollowsOriginTls: true as const } : {}),
       applied: false,
       outputs: {},
     };
