@@ -8,6 +8,7 @@ import {
   generateAgeIdentity,
   isAgeRecipient,
   OpsCrewError,
+  plural,
   readTextIfExists,
   sha256Hex,
   sopsEncrypt,
@@ -15,6 +16,7 @@ import {
 } from "@opscrew/core";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { formatUtc } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { COPY_PATH, readLocalFiles } from "./files";
@@ -137,7 +139,8 @@ function notCommittedWarning(
 const NO_KEY_FILE =
   "OpsCrew has made no encrypted recovery copy of this app's secrets yet: it needs a file to write your new age key to, outside the repository, or your own age key (age1…). Run `opscrew provision` in a terminal, which asks for them, or name the file with `--key-out <path>`.";
 
-const OLD_COMMITS = `Older commits of ${COPY_PATH} can still be opened with the old key. If the old key may have leaked, change the secrets themselves too (the generated passwords, the deploy key and the state passphrase), because anyone with the old key and an old commit can read them.`;
+/** FR-1414: older commits stay readable with the old key, and when to change the secrets too. */
+export const OLD_COMMITS = `Older commits of ${COPY_PATH} can still be opened with the old key. If the old key may have leaked, change the secrets themselves too (the generated passwords, the deploy key and the state passphrase), because anyone with the old key and an old commit can read them.`;
 
 /** A new age key, registered with the redactor at once. */
 function newKey(deps: PhaseDeps): { identity: string; recipient: string } {
@@ -469,4 +472,30 @@ export async function recoveryStatus(deps: PhaseDeps): Promise<RecoveryStatus> {
     recipients: metadata.age?.length ?? 0,
     ...status,
   };
+}
+
+/**
+ * What `opscrew secrets status` and `opscrew_secrets_status` show of the recovery copy: its last
+ * update and how many keys open it, whether it is behind, and the folder copy.
+ */
+export function recoveryStatusLines(copy: RecoveryStatus): string[] {
+  const folder =
+    copy.folder === undefined
+      ? "Folder copy: none. Set a folder with `opscrew secrets folder <path>`."
+      : `Folder copy: written to ${copy.folder} as well.`;
+  if (!copy.exists) {
+    return [
+      "There is no recovery copy of this app's secrets yet: the first `opscrew provision` makes it.",
+      folder,
+    ];
+  }
+  const updated =
+    copy.lastModified === undefined ? "" : `, last updated ${formatUtc(copy.lastModified)}`;
+  return [
+    `Recovery copy (${COPY_PATH})${updated}: ${plural(copy.recipients, "key")} can open it.`,
+    copy.behind
+      ? "Behind: files on this computer changed since the copy in the repository was made; the next `opscrew provision` updates it."
+      : "Up to date with the files on this computer.",
+    folder,
+  ];
 }

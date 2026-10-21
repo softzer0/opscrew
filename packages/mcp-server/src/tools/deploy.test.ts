@@ -14,8 +14,10 @@ import {
 import type { ProvisionServices } from "@opscrew/agents";
 import {
   createProject as createGitProject,
+  FAKE_SOPS,
   FakeEngine,
   FakeGitHub,
+  FakeSops,
   forbiddenFetch,
   projectRunner,
   readyRemote,
@@ -29,6 +31,7 @@ import { readArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
+import { auditText } from "./__fixtures__/audit";
 import { type DeployToolOptions, registerDeployTools } from "./deploy";
 import { approvalMessage } from "./elicitation";
 
@@ -76,6 +79,8 @@ interface HarnessOptions {
   plan?: ReturnType<typeof testPlan>;
   engine?: FakeEngine;
   tools?: Omit<DeployToolOptions, "provisionServices">;
+  /** Answers `OPSCREW_SOPS_BIN=fake-sops` for the recovery copy. */
+  sops?: FakeSops;
 }
 
 const textOf = (result: CallToolResult) =>
@@ -111,7 +116,7 @@ async function connect(options: HarnessOptions = {}) {
     version: "0.0.0-test",
     env,
     fetch: forbiddenFetch,
-    runner: projectRunner(),
+    runner: options.sops === undefined ? projectRunner() : options.sops.runner(projectRunner()),
     clock: { now: () => new Date("2026-10-11T12:00:00.000Z") },
     cwd: project.root,
     scanners: () => defaultScanners({ includeExternal: false }),
@@ -308,6 +313,27 @@ describe.skipIf(!findExecutable("git"))(
       expectNoSecrets(h);
     });
 
+    it("opscrew_apply writes the recovery copy's first key only to keyOut and never returns it", async () => {
+      const h = await connect({
+        elicit: approveAll,
+        env: { OPSCREW_SOPS_BIN: FAKE_SOPS },
+        sops: new FakeSops(),
+      });
+      const keyOut = path.join(await tempDir("opscrew-mcp-keys-"), "age-key.txt");
+      const planHash = dataOf(await h.call("opscrew_plan")).planHash as string;
+      const result = await h.call("opscrew_apply", { planHash, keyOut });
+      expect(result.isError, textOf(result)).toBeFalsy();
+      const identity = (await readFile(keyOut, "utf8"))
+        .split("\n")
+        .find((line) => line.startsWith("AGE-SECRET-KEY-1"));
+      expect(identity).toBeDefined();
+      expect(textOf(result)).toContain(`OpsCrew wrote your new age key to ${keyOut}.`);
+      const audit = await auditText(h.root, h.deps.env);
+      expect(audit).toContain('"action":"pull-request"');
+      expect(JSON.stringify([h.outputs, h.elicited, audit])).not.toContain(identity);
+      expectNoSecrets(h);
+    });
+
     it("without OPSCREW_APP_ENV_FILE it applies but leaves the secrets to `opscrew provision`", async () => {
       const h = await connect({ elicit: approveAll });
       const planHash = dataOf(await h.call("opscrew_plan")).planHash as string;
@@ -431,6 +457,28 @@ describe.skipIf(!findExecutable("git"))(
         readFile(path.join(s.root, "opscrew", "SECURITY_REPORT.md"), "utf8"),
       ).resolves.toContain("shop");
       expect(s.engine.calls).toEqual([]);
+      expect(data.deep).toBeUndefined();
+    });
+
+    it("opscrew_secure with deep returns the deeper checks per tool", async () => {
+      const remote: RemoteExec = {
+        host: SERVER_IPV4,
+        run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      };
+      // No Docker on this computer: ssh-audit and testssl.sh are skipped with how to enable them.
+      const docker = { run: async () => ({ exitCode: 127, stdout: "", stderr: "not found" }) };
+      const s = await connect({
+        plan: testPlan({ deployed: true }),
+        tools: { secure: { remote, docker, tcpConnect: async () => false, probeTimeoutMs: 10 } },
+      });
+      const result = await s.call("opscrew_secure", { offline: true, deep: true });
+      expect(result.isError, textOf(result)).toBeFalsy();
+      const tools = (dataOf(result).deep as { tool: string }[]).map((run) => run.tool);
+      expect(tools).toContain("ssh-audit");
+      expect(textOf(result)).toContain("Deeper check: ssh-audit");
+      await expect(
+        readFile(path.join(s.root, "opscrew", "SECURITY_REPORT.md"), "utf8"),
+      ).resolves.toContain("## Deeper checks");
     });
 
     it("opscrew_verify returns the check results, or says to provision first", async () => {

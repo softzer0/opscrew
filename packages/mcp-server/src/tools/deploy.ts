@@ -40,6 +40,7 @@ import {
   resolveProjectPaths,
 } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { DEEP_TOOL_NAME, type DeepToolResult } from "@opscrew/secops";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import {
@@ -59,7 +60,10 @@ export interface DeployToolOptions {
   /** Fakes for `runProvision` / `previewDeploymentFiles` (engine, cloud provider, GitHub, SSH, waits). */
   provisionServices?: ProvisionServices;
   /** Fakes for `runSecure` (remote shell, TCP probe). */
-  secure?: Pick<RunSecureOptions, "remote" | "tcpConnect" | "probeTimeoutMs" | "portainer">;
+  secure?: Pick<
+    RunSecureOptions,
+    "remote" | "tcpConnect" | "probeTimeoutMs" | "portainer" | "docker"
+  >;
   /** Fakes for `runVerify` (resolver, fetch, TLS, TCP, Cloudflare ranges). */
   verify?: RunVerifyOptions;
   /** Replaces `runProvision` (tests of the user's Portainer, whose flow `@opscrew/agents` tests). */
@@ -131,6 +135,20 @@ function checkLines(checks: readonly CheckResult[]): string[] {
     (c) =>
       `${CHECK_MARK[c.status]} [${c.severity}] ${c.title}: ${c.message}${c.status === "fail" && c.remediation ? ` Fix: ${c.remediation}` : ""}`,
   );
+}
+
+/** The deeper checks per tool: its version, the results that count, then its known noise apart. */
+function deepLines(runs: readonly DeepToolResult[]): string[] {
+  return runs.flatMap((run) => {
+    const index = run.hardeningIndex === undefined ? "" : `, hardening index ${run.hardeningIndex}`;
+    const noise = run.results.filter((result) => result.noise !== undefined);
+    return [
+      "",
+      `Deeper check: ${DEEP_TOOL_NAME[run.tool]} ${run.version}${index}`,
+      ...checkLines(run.results.filter((result) => result.noise === undefined)),
+      ...noise.map((result) => `  known noise: ${result.title} (${result.noise})`),
+    ];
+  });
 }
 
 /** The CLI's `--password-logins off|keep` for a server the user owns. */
@@ -517,6 +535,12 @@ export function registerDeployTools(
         ),
         publicImage: PUBLIC_IMAGE_INPUT,
         replaceTokens: REPLACE_TOKENS_INPUT,
+        keyOut: z
+          .string()
+          .optional()
+          .describe(
+            "The first time OpsCrew makes the encrypted recovery copy of the app's secrets: the full path of a file outside the repository, which the user chose, for their new age key. OpsCrew writes the key there once and never returns it; never read that file. Without it, no copy is made yet and the result says how to make it.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -537,6 +561,7 @@ export function registerDeployTools(
         passwordLogins,
         publicImage,
         replaceTokens,
+        keyOut,
       },
       extra: CallExtra,
     ) =>
@@ -636,6 +661,7 @@ export function registerDeployTools(
             ...(saved === undefined ? {} : { engine: saved.engine.name }),
             ...(passwordLogins === undefined ? {} : { passwordLogins }),
             ...portainerImageOptions(publicImage, replaceTokens),
+            ...(keyOut !== undefined ? { recovery: { keyOut: async () => keyOut } } : {}),
             secrets,
             ...servicesOption(options),
           });
@@ -727,23 +753,30 @@ export function registerDeployTools(
     {
       title: "Security check of the deployment",
       description:
-        "Re-scan the repository, re-check the applied plan against the security policies, run hardening checks on the server over SSH (password and root login, firewall, fail2ban, automatic updates, Docker exposure, listening ports, pending reboot, disk) and probe from outside that only the expected ports answer. In a Portainer the user already runs it checks the app's stack through Portainer's API instead (never the host: its firewall, SSH and Portainer's own security stay the user's, as do backups). Writes opscrew/SECURITY_REPORT.md and returns every check result and the problems to fix. Changes nothing on the server or in Portainer.",
+        "Re-scan the repository, re-check the applied plan against the security policies, run hardening checks on the server over SSH (password and root login, firewall, fail2ban, automatic updates, Docker exposure, listening ports, pending reboot, disk) and probe from outside that only the expected ports answer. In a Portainer the user already runs it checks the app's stack through Portainer's API instead (never the host: its firewall, SSH and Portainer's own security stay the user's, as do backups). With deep, it also runs three pinned audits, read-only: Lynis on the server (through Docker over SSH), and ssh-audit and testssl.sh in Docker on the user's computer (skipped with how to enable them when Docker is missing; in a Portainer only testssl.sh), each with its known noise set apart; this takes a few minutes. Writes opscrew/SECURITY_REPORT.md and returns every check result and the problems to fix. Changes nothing on the server or in Portainer.",
       inputSchema: {
         ...projectDirInput,
         offline: z
           .boolean()
           .optional()
           .describe("Skip the online dependency-vulnerability lookup (default false)."),
+        deep: z
+          .boolean()
+          .optional()
+          .describe(
+            "Also run the deeper checks: Lynis, ssh-audit and testssl.sh (default false). Only when the user asks for them.",
+          ),
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, offline }) =>
+    ({ projectDir, offline, deep }) =>
       runTool(deps, "opscrew_secure", projectDir, async (call) => {
         const phase = await call.phaseDeps();
         const result = await runSecure(phase, {
           offline: offline ?? false,
           scanners: deps.scanners(),
           ...options.secure,
+          ...(deep === true ? { deep: true } : {}),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan).catch(() => undefined);
         const inPortainer = plan?.target.provider === "portainer";
@@ -760,6 +793,7 @@ export function registerDeployTools(
           ...(result.probes.length > 0
             ? ["", "Outside probes:", ...checkLines(result.probes)]
             : []),
+          ...(result.deep !== undefined ? deepLines(result.deep) : []),
           "",
           `Report: ${result.reportPath}`,
         ];
@@ -771,6 +805,7 @@ export function registerDeployTools(
             problems: result.problems,
             hostChecks: result.hostChecks,
             probes: result.probes,
+            ...(result.deep !== undefined ? { deep: result.deep } : {}),
             policies: result.policies,
             scan: { counts: result.scan.counts, findings: result.scan.findings.length },
             reportPath: result.reportPath,

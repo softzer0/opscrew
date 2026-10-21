@@ -1,0 +1,36 @@
+# The OpsCrew guide
+
+One topic per page. Start with the [Quickstart](../../README.md#quickstart) if you have not deployed
+an app yet.
+
+## Where your app runs
+
+- [Deploy to a server you already have](own-server.md)
+- [Deploy to a Portainer you already run](portainer-target.md)
+- [Portainer: a web UI for your containers](portainer.md)
+- [Buying or connecting a domain](domains.md)
+- [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
+
+## How your app is built and shipped
+
+- [How OpsCrew builds your app's image](builders.md)
+- [Deploys without downtime](zero-downtime.md)
+- [The image supply chain](supply-chain.md)
+- [The reverse proxy: Caddy or nginx, and your own rules](reverse-proxy.md)
+
+## What runs next to your app
+
+- [What runs next to your app: components](components.md)
+- [Workers and cron jobs](workers-and-cron.md)
+- [Databases](databases.md)
+- [Object storage](object-storage.md)
+- [Message brokers and queues](brokers.md)
+- [Search and analytics engines](search-and-analytics.md)
+
+## Security
+
+- [Security: what OpsCrew sets up and checks](security.md)
+- [Only Cloudflare reaches your server: origin protection](origin-protection.md)
+- [Certificates, CAA records and the minimum TLS version](tls-and-caa.md)
+- [The recovery copy of your app's secrets](secrets-recovery.md)
+- [Deeper security checks](deeper-checks.md)

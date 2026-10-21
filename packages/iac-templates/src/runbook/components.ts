@@ -1,11 +1,14 @@
 import { formatMoney, listText } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { dataDirs, enabledServices, serviceSpec } from "../catalog";
-import { appDir } from "../edge";
+import { appDir, EDGE_PROXIES, type EdgeProxy, edgeProxy } from "../edge";
+import { CAA_ISSUERS } from "../infra/cloudflare";
 import { storageRootDir } from "../infra/storage";
 import { portainerStackName } from "../portainer-target/stack";
+import { usesCloudflare } from "../predicates";
 import { STORAGE_NAMES } from "../prices";
 import { cronMemoryMb } from "../runtime/components";
+import { tunnelMode } from "../tunnel";
 import { cell } from "./shared";
 
 /** True for an app in the user's Portainer, whose components are the app's stack. */
@@ -134,17 +137,21 @@ export function componentsSection(plan: DeployPlan): string[] {
 }
 
 /**
- * "The shared edge": Caddy and kamal-proxy in `/srv/edge`, the app's site file, and how deploys
- * keep the newest edge. `shared`: a server several OpsCrew apps may share (the user's own).
+ * "The shared edge": the server's proxy (Caddy, or nginx with certbot) and kamal-proxy in
+ * `/srv/edge`, the app's site file and the user's additions, how deploys keep the newest edge, and
+ * the app's certificates with their renewal. `shared`: a server several OpsCrew apps may share
+ * (the user's own).
  */
 export function edgeSection(plan: DeployPlan, shared: boolean): string[] {
   const name = plan.app.name;
+  const proxy = edgeProxy(plan);
+  const { label, site, additions } = EDGE_PROXIES[proxy];
   return [
     shared ? "## The shared edge" : "## The edge",
     "",
-    "Web traffic reaches the app through OpsCrew's edge in `/srv/edge`, the Compose project `opscrew-edge`: Caddy",
+    `Web traffic reaches the app through OpsCrew's edge in \`/srv/edge\`, the Compose project \`opscrew-edge\`: ${label}`,
     "serves HTTPS and passes each request to kamal-proxy, which switches deploys without downtime. The app's site is",
-    `\`/srv/edge/sites/${name}.caddy\` (from \`opscrew/runtime/edge/sites/${name}.caddy\`). Each deploy copies the edge's files`,
+    `\`/srv/edge/sites/${name}.${site}\` (from \`opscrew/runtime/edge/sites/${name}.${site}\`). Each deploy copies the edge's files`,
     "from `opscrew/runtime/edge/` and replaces the edge only with a newer version, so an older app never downgrades it.",
     ...(shared
       ? [
@@ -152,6 +159,74 @@ export function edgeSection(plan: DeployPlan, shared: boolean): string[] {
           "`/srv/data` and its own site file. `opscrew destroy` removes the edge only with the last app.",
         ]
       : []),
+    "",
+    `- **Your own rules:** \`${additions}\` holds this app's own ${label} rules (headers, redirects, rate limits, basic`,
+    "  authentication). OpsCrew checks them with its rules and with the proxy's own checker before they go live.",
+    `- **The proxy:** \`target.edge\` in \`opscrew/plan.yaml\` (\`caddy\` or \`nginx\`). Every app on a server uses the same one;`,
+    "  it can be switched while the server holds only one OpsCrew app, with a short interruption the plan states.",
+    ...certificateLines(plan, proxy),
+    "",
+  ];
+}
+
+/** The app's certificates and who renews them, for "The edge". */
+function certificateLines(plan: DeployPlan, proxy: EdgeProxy): string[] {
+  if (tunnelMode(plan)) {
+    return [
+      "- **Certificates:** Cloudflare's edge serves HTTPS; the tunnel needs no certificate on the server.",
+    ];
+  }
+  if (!usesCloudflare(plan) || plan.dns.domain === undefined) return [];
+  if (plan.dns.proxied) {
+    return [
+      "- **Certificates:** the server serves a Cloudflare origin certificate for this app's hostnames (valid for 15 years)",
+      "  and refuses any connection without this app's own client certificate, which only Cloudflare sends for your",
+      "  zone. `opscrew status` shows both and when they expire; `opscrew provision` replaces the origin certificate",
+      "  when fewer than 30 days remain. Without the Cloudflare token's SSL and Certificates permission the site keeps",
+      "  public certificates, and `opscrew secure` lists the gap.",
+    ];
+  }
+  const caa = `OpsCrew's CAA records name only ${listText(CAA_ISSUERS[proxy].map((issuer) => `\`${issuer}\``))} (none at the zone's apex).`;
+  return proxy === "nginx"
+    ? [
+        "- **Certificates:** certbot gets the first certificate from Let's Encrypt during the first deploy and renews it",
+        "  twice a day when it is due; nginx reloads without dropping connections. `opscrew status`, `opscrew verify`",
+        "  and `opscrew secure` warn 30 days before a certificate expires, with certbot's reason when a renewal failed.",
+        `  ${caa}`,
+      ]
+    : [
+        "- **Certificates:** Caddy gets and renews the certificates itself (Let's Encrypt, with ZeroSSL as its fallback).",
+        "  `opscrew status`, `opscrew verify` and `opscrew secure` warn 30 days before a certificate expires.",
+        `  ${caa}`,
+      ];
+}
+
+/**
+ * "The secrets recovery copy": what `opscrew/secrets.sops.json` holds, how it stays current, how
+ * to restore it on another computer (with OpsCrew, or with sops alone) and how to change the key.
+ */
+export function recoverySection(): string[] {
+  return [
+    "## The secrets recovery copy",
+    "",
+    "`opscrew/secrets.sops.json` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran",
+    "`opscrew provision`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,",
+    "and OpsCrew's records. Only your age key (or your backup key) opens it, and OpsCrew keeps no copy of the key.",
+    "`opscrew provision` updates it in its pull request whenever one of those files changes; `opscrew secrets status`",
+    "shows when it was last updated and whether it is behind.",
+    "",
+    "To manage the deployment from another computer:",
+    "",
+    "```bash",
+    "git clone <this repository> && cd <it>",
+    "opscrew secrets restore --key-file <your age key file>   # or without --key-file, to paste the key unseen",
+    "opscrew provision                                        # reuses the restored files: nothing is generated again",
+    "```",
+    "",
+    "- **Without OpsCrew:** `SOPS_AGE_KEY_FILE=<your age key file> sops decrypt opscrew/secrets.sops.json` prints the files.",
+    "- **A new key:** `opscrew secrets rotate --key-out <file>` writes a new key to that file and proposes the copy,",
+    "  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets",
+    "  themselves too.",
     "",
   ];
 }

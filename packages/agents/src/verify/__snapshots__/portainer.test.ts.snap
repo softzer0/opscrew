@@ -53,6 +53,27 @@ OpsCrew creates no DNS record for shop.example.com: create one yourself that poi
 The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran \`opscrew provision\`; they are never in the repository, the pull requests or GitHub Actions.
 To change one, update the production values and run \`opscrew provision\`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run \`opscrew provision --replace-token repository\` or \`--replace-token registry\`.
 
+## The secrets recovery copy
+
+\`opscrew/secrets.sops.json\` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran
+\`opscrew provision\`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,
+and OpsCrew's records. Only your age key (or your backup key) opens it, and OpsCrew keeps no copy of the key.
+\`opscrew provision\` updates it in its pull request whenever one of those files changes; \`opscrew secrets status\`
+shows when it was last updated and whether it is behind.
+
+To manage the deployment from another computer:
+
+\`\`\`bash
+git clone <this repository> && cd <it>
+opscrew secrets restore --key-file <your age key file>   # or without --key-file, to paste the key unseen
+opscrew provision                                        # reuses the restored files: nothing is generated again
+\`\`\`
+
+- **Without OpsCrew:** \`SOPS_AGE_KEY_FILE=<your age key file> sops decrypt opscrew/secrets.sops.json\` prints the files.
+- **A new key:** \`opscrew secrets rotate --key-out <file>\` writes a new key to that file and proposes the copy,
+  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
+  themselves too.
+
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
@@ -118,6 +139,27 @@ Route your reverse proxy to port 8080 of your Portainer host; it manages the add
 The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran \`opscrew provision\`; they are never in the repository, the pull requests or GitHub Actions.
 To change one, update the production values and run \`opscrew provision\`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run \`opscrew provision --replace-token repository\` or \`--replace-token registry\`.
 
+## The secrets recovery copy
+
+\`opscrew/secrets.sops.json\` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran
+\`opscrew provision\`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,
+and OpsCrew's records. Only your age key (or your backup key) opens it, and OpsCrew keeps no copy of the key.
+\`opscrew provision\` updates it in its pull request whenever one of those files changes; \`opscrew secrets status\`
+shows when it was last updated and whether it is behind.
+
+To manage the deployment from another computer:
+
+\`\`\`bash
+git clone <this repository> && cd <it>
+opscrew secrets restore --key-file <your age key file>   # or without --key-file, to paste the key unseen
+opscrew provision                                        # reuses the restored files: nothing is generated again
+\`\`\`
+
+- **Without OpsCrew:** \`SOPS_AGE_KEY_FILE=<your age key file> sops decrypt opscrew/secrets.sops.json\` prints the files.
+- **A new key:** \`opscrew secrets rotate --key-out <file>\` writes a new key to that file and proposes the copy,
+  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
+  themselves too.
+
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
@@ -179,6 +221,27 @@ In your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscr
 
 The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran \`opscrew provision\`; they are never in the repository, the pull requests or GitHub Actions.
 To change one, update the production values and run \`opscrew provision\`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run \`opscrew provision --replace-token repository\` or \`--replace-token registry\`.
+
+## The secrets recovery copy
+
+\`opscrew/secrets.sops.json\` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran
+\`opscrew provision\`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,
+and OpsCrew's records. Only your age key (or your backup key) opens it, and OpsCrew keeps no copy of the key.
+\`opscrew provision\` updates it in its pull request whenever one of those files changes; \`opscrew secrets status\`
+shows when it was last updated and whether it is behind.
+
+To manage the deployment from another computer:
+
+\`\`\`bash
+git clone <this repository> && cd <it>
+opscrew secrets restore --key-file <your age key file>   # or without --key-file, to paste the key unseen
+opscrew provision                                        # reuses the restored files: nothing is generated again
+\`\`\`
+
+- **Without OpsCrew:** \`SOPS_AGE_KEY_FILE=<your age key file> sops decrypt opscrew/secrets.sops.json\` prints the files.
+- **A new key:** \`opscrew secrets rotate --key-out <file>\` writes a new key to that file and proposes the copy,
+  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
+  themselves too.
 
 ## What OpsCrew does not do here
 
@@ -255,6 +318,27 @@ In your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscr
 
 The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran \`opscrew provision\`; they are never in the repository, the pull requests or GitHub Actions.
 To change one, update the production values and run \`opscrew provision\`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run \`opscrew provision --replace-token repository\` or \`--replace-token registry\`.
+
+## The secrets recovery copy
+
+\`opscrew/secrets.sops.json\` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran
+\`opscrew provision\`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,
+and OpsCrew's records. Only your age key (or your backup key) opens it, and OpsCrew keeps no copy of the key.
+\`opscrew provision\` updates it in its pull request whenever one of those files changes; \`opscrew secrets status\`
+shows when it was last updated and whether it is behind.
+
+To manage the deployment from another computer:
+
+\`\`\`bash
+git clone <this repository> && cd <it>
+opscrew secrets restore --key-file <your age key file>   # or without --key-file, to paste the key unseen
+opscrew provision                                        # reuses the restored files: nothing is generated again
+\`\`\`
+
+- **Without OpsCrew:** \`SOPS_AGE_KEY_FILE=<your age key file> sops decrypt opscrew/secrets.sops.json\` prints the files.
+- **A new key:** \`opscrew secrets rotate --key-out <file>\` writes a new key to that file and proposes the copy,
+  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
+  themselves too.
 
 ## What OpsCrew does not do here
 

@@ -13,4 +13,5 @@ export * from "./move";
 export * from "./own";
 export * from "./portainer";
 export * from "./registrars";
+export * from "./sops";
 export * from "./state";

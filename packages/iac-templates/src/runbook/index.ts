@@ -4,7 +4,13 @@ import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
 import { siteHosts } from "../runtime";
 import type { RenderContext, RenderedFile } from "../types";
-import { componentsSection, dataCell, edgeSection, objectStorageSection } from "./components";
+import {
+  componentsSection,
+  dataCell,
+  edgeSection,
+  objectStorageSection,
+  recoverySection,
+} from "./components";
 import { renderOwnRunbook } from "./own";
 import {
   cell,
@@ -22,7 +28,7 @@ import {
   TROUBLESHOOTING,
 } from "./shared";
 
-export { componentsSection, objectStorageSection } from "./components";
+export { componentsSection, objectStorageSection, recoverySection } from "./components";
 export { cell, deployRows, externalDatabaseCell, runbookHead } from "./shared";
 
 const PENDING = "_(set by `opscrew provision`)_";
@@ -127,6 +133,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
       "- **Server size, location, domain:** run `opscrew design` and `opscrew provision`. OpsCrew shows the plan and the cost",
       "  change and applies nothing without your approval. Destroying or replacing the server always needs a typed confirmation.",
     ]),
+    ...recoverySection(),
     ...moving(plan),
     "## Check for drift",
     "",

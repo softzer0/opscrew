@@ -741,4 +741,22 @@ describe("renderPortainerRunbook", () => {
     expect(runbook).toContain("Portainer shows each container's log");
     expect(runbook).not.toContain("/srv/");
   });
+
+  it("explains the recovery copy, and origin protection only where the stack's Caddy has it", () => {
+    const render = (plan: DeployPlan) =>
+      renderPortainerRunbook(plan, { opscrewVersion: "0.1.0", github }).content;
+    const base = portainerPlan({ web: { mode: "caddy" } });
+    const caddy = render({ ...base, dns: { ...base.dns, proxied: true } });
+    expect(render(base)).not.toContain("## Origin protection");
+    expect(caddy).toContain("## The secrets recovery copy");
+    expect(caddy).toContain("opscrew secrets restore --key-file <your age key file>");
+    expect(caddy).toContain("## Origin protection");
+    expect(caddy).toContain(
+      "Cloudflare origin certificate (valid for 15 years) for `shop.example.com`",
+    );
+
+    const tunnel = render(portainerPlan());
+    expect(tunnel).toContain("## The secrets recovery copy");
+    expect(tunnel).not.toContain("## Origin protection");
+  });
 });

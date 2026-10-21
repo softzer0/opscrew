@@ -4,7 +4,13 @@ import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
-import { componentsSection, dataCell, edgeSection, objectStorageSection } from "./components";
+import {
+  componentsSection,
+  dataCell,
+  edgeSection,
+  objectStorageSection,
+  recoverySection,
+} from "./components";
 import {
   cell,
   DATABASE_DUMP,
@@ -170,6 +176,7 @@ export function renderOwnRunbook(
       "- **Your server itself** (size, operating system, other software) is yours to manage; OpsCrew changes only what its",
       "  host plan lists, and records each change in `/etc/opscrew/host.json` on the server.",
     ]),
+    ...recoverySection(),
     "## Check for drift",
     "",
     "Run `opscrew drift` on the machine that ran `opscrew provision`. It compares:",

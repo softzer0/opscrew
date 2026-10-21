@@ -14,6 +14,7 @@ import * as portainer from "./portainer";
 import * as provision from "./provision";
 import * as retarget from "./retarget";
 import * as scan from "./scan";
+import * as secrets from "./secrets";
 import * as secure from "./secure";
 import * as status from "./status";
 import * as verify from "./verify";
@@ -41,5 +42,6 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   retarget,
   destroy,
   status,
+  secrets,
   mcp,
 ];

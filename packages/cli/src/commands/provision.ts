@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   applyCommand,
   approveLaterHint,
@@ -14,10 +15,11 @@ import {
   readSavedPlanChanges,
   runProvision,
   type SavedPlanKind,
+  SOPS_CONFIG_PATH,
   stackFollowsReason,
   stringOutput,
 } from "@opscrew/agents";
-import { isPlanHash, OpsCrewError } from "@opscrew/core";
+import { exists, isPlanHash, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { type Command, InvalidArgumentError, Option } from "commander";
 import { APPROVE_BY_HASH_KINDS, checkConfirmName, FlagConfirmation } from "../approval";
@@ -32,6 +34,7 @@ import {
 } from "../ui/deploy";
 import { createEnvPrompt } from "../ui/env-prompt";
 import { printNextSteps } from "../ui/output";
+import { recoveryOptions, userPath } from "../ui/recovery";
 import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
 
 /** Flags shared by `provision` and `dns`. */
@@ -55,6 +58,8 @@ export interface InfraFlags {
   privateImage?: boolean;
   /** `--replace-token repository|registry` (`provision` only, repeatable): send a rotated token again. */
   replaceToken?: ReplaceableToken[];
+  /** `--key-out <path>` (`provision` only): the file the recovery copy's first age key goes to. */
+  keyOut?: string;
 }
 
 /** Commander parser of the repeatable `--replace-token repository|registry`. */
@@ -250,6 +255,7 @@ export async function runInfraCommand(
         ...(hostKey === undefined ? {} : { hostKey }),
         ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
         ...portainerImageOptions(publicImage, flags.replaceToken),
+        ...(command === "provision" ? recoveryOptions(ctx, flags.keyOut) : {}),
         services: {
           ...(ctx.isInteractive
             ? {
@@ -312,6 +318,12 @@ export async function runInfraCommand(
         stackFollows,
         publicImage,
         confirmApp: removes ? app : undefined,
+        // No `opscrew/.sops.yaml` yet: the apply makes the recovery copy's first key.
+        keyWanted:
+          planOnly &&
+          command === "provision" &&
+          flags.keyOut === undefined &&
+          !(await exists(path.join(deps.paths.root, SOPS_CONFIG_PATH))),
         // `opscrew dns` has no --confirm: a deleting plan is approved in a terminal or by provision.
         dnsDeletes: removes && command === "dns" ? plan?.app.name : undefined,
       };
@@ -345,9 +357,15 @@ export async function runInfraCommand(
               ...(flags.push === false ? { push: false } : {}),
               ...(flags.yes === true ? { yes: true } : {}),
               ...(result.confirmApp === undefined ? {} : { confirm: result.confirmApp }),
+              ...(flags.keyOut === undefined ? {} : { keyOut: userPath(ctx, flags.keyOut) }),
             },
           ),
         );
+        if (result.keyWanted) {
+          ctx.stdout(
+            "The first encrypted recovery copy of this app's secrets needs a file for your new age key: in a script, add --key-out <file outside the repository> to the command above (a terminal asks for it).\n",
+          );
+        }
         if (result.confirmApp !== undefined) {
           ctx.stdout(
             `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
@@ -474,6 +492,10 @@ export function register(program: Command, ctx: CliContext): void {
       "--replace-token <which>",
       `Your existing Portainer: send a rotated token again, "repository" (${REPOSITORY_TOKEN_VAR}) or "registry" (${REGISTRY_TOKEN_VAR}); repeat for both`,
       collectToken,
+    )
+    .option(
+      "--key-out <path>",
+      "The first time OpsCrew makes the encrypted recovery copy of this app's secrets: write your new age key to this file, outside the repository (a terminal asks for it); the key is never printed",
     )
     .action((flags: InfraFlags) => runInfraCommand(ctx, "provision", flags, runProvision));
 }

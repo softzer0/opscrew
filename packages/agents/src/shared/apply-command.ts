@@ -38,6 +38,8 @@ export interface ApplyCommandFlags {
   yes?: boolean;
   /** `--confirm <app>`, for a plan that deletes or replaces resources. */
   confirm?: string;
+  /** `--key-out <file>`: the file the planning run named for the recovery copy's first age key. */
+  keyOut?: string;
 }
 
 /**
@@ -75,6 +77,7 @@ export function applyCommand(
     ...(flags.push === false ? ["--no-push"] : []),
     ...(flags.yes === true ? ["--yes"] : []),
     ...(flags.confirm === undefined ? [] : [`--confirm ${flags.confirm}`]),
+    ...(flags.keyOut === undefined ? [] : [`--key-out ${pathWord(flags.keyOut)}`]),
   ].join(" ");
 }
 

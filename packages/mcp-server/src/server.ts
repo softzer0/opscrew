@@ -9,6 +9,7 @@ import { registerInitCheckTool } from "./tools/init";
 import { registerInterviewTools } from "./tools/interview";
 import { registerPortainerTools } from "./tools/portainer";
 import { registerScanTool } from "./tools/scan";
+import { registerSecretsTools } from "./tools/secrets";
 import { registerStatusTool } from "./tools/status";
 
 /**
@@ -21,7 +22,7 @@ const INSTRUCTIONS = [
   "Deploy, only after the app is adapted and merged: opscrew_render → opscrew_plan → show the user the plan, its cost and policy results → opscrew_apply → the user merges the pull request → opscrew_verify and opscrew_secure.",
   "Hard rules:",
   "- Only the user approves a change, each plan in its own OpsCrew dialog: never approve or claim approval yourself. The user also confirms the SSH host key of their server and the certificate fingerprint of their Portainer in a dialog: never confirm one for them or pass one yourself.",
-  "- Never ask the user to paste tokens, passwords, passphrases, private keys or .env values into the chat. Tokens come only from the environment (the user's Portainer: PORTAINER_API_KEY); a server the user has is reached with a key file or the SSH agent, never a password. Never read Portainer's password file into the chat.",
+  "- Never ask the user to paste tokens, passwords, passphrases, private keys or .env values into the chat. Tokens come only from the environment (the user's Portainer: PORTAINER_API_KEY); a server the user has is reached with a key file or the SSH agent, never a password. Never read Portainer's password file into the chat, nor an age key file.",
   '- The address of a server the user has and of their Portainer stays on their computer: results say "your server" and "your Portainer"; never write the address into a file.',
   "- Never run tofu, terraform, hcloud, doctl, ssh or curl against Portainer yourself.",
   "- Terminal-only, with no tool on purpose (give the user the command): moving to another cloud provider, `npx opscrew retarget --to <provider>` (while a move is in progress, pass on the commands the tools name to continue, finish or abort it); buying a domain, `npx opscrew domain buy <domain> [--registrar <id>]` (it shows the price and asks the user to type the domain; scripts need --confirm and --max-price); connecting a domain they own, `npx opscrew domain connect <domain>`; removing the app, `npx opscrew destroy` (deleting the app's data needs `--delete-data` and the app's name typed by the user; `--undo-host` also reverses OpsCrew's changes to a server the user has).",
@@ -52,5 +53,6 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerInitCheckTool(server, resolved);
   registerDomainCheckTool(server, resolved);
   registerPortainerTools(server, resolved);
+  registerSecretsTools(server, resolved);
   return server;
 }

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import {
   ageRecipientOf,
   ensureStateDir,
+  listText,
   OpsCrewError,
   readTextIfExists,
   sha256Hex,
@@ -140,4 +141,16 @@ export async function restoreRecoveryCopy(
     copySha256: sha256Hex(encrypted),
   });
   return { restored };
+}
+
+/**
+ * Why a restore wrote nothing: the files on this computer that differ from the copy, and the names
+ * of the generated values that differ (never values).
+ */
+export function restoreConflictText(conflicts: NonNullable<RestoreResult["conflicts"]>): string {
+  const named =
+    conflicts.values.length > 0
+      ? ` The generated values that differ: ${listText(conflicts.values)}.`
+      : "";
+  return `These files on this computer differ from the recovery copy: ${listText(conflicts.paths)}.${named} OpsCrew wrote nothing.`;
 }

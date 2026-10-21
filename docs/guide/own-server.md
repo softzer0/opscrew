@@ -139,7 +139,9 @@ The host plan lists these steps, and only the ones that are not in place yet are
     anyway, `--password-logins keep` leaves them on;
   - if you connect as `root`, root keeps logging in with its key only (so you are never locked
     out); otherwise root logins are turned off. The stricter option is a sudo user and no root
-    login.
+    login;
+  - only modern key exchanges, ciphers, MACs and host keys are offered, as on the servers OpsCrew
+    creates (see [deeper checks](deeper-checks.md)).
 - **The ufw firewall**: incoming traffic is denied except SSH on the port your server really uses
   (never port 22 by assumption) and, when the server serves the web itself instead of through the
   tunnel, HTTP and HTTPS. When ufw is already on but lets everything in, OpsCrew sets it to deny
@@ -195,7 +197,8 @@ up by its own `npx opscrew provision`, and they share only what must be shared:
   data in `/srv/data/<app>`, its deploy key, its record in `/etc/opscrew/apps/<app>.json`, its
   components with their memory limits, and, with the Cloudflare Tunnel, its own tunnel and tunnel
   connector (the Compose project `<app>-tunnel`).
-- **The edge is shared:** OpsCrew's Caddy and kamal-proxy in `/srv/edge` (the Compose project
+- **The edge is shared:** the server's proxy (Caddy, or nginx with certbot; see
+  [the reverse proxy](reverse-proxy.md)) and kamal-proxy in `/srv/edge` (the Compose project
   `opscrew-edge`) serve every app, each on its own hostnames, with one site file per app in
   `/srv/edge/sites/`. Each deploy brings the edge's files along and keeps the newer
   version, so an app deployed with an older OpsCrew never downgrades it, and only a changed edge is
@@ -212,7 +215,9 @@ Before any change, OpsCrew refuses an app when:
 - another app already serves one of its hostnames;
 - one of them has no domain (each app needs its own hostnames on a shared edge);
 - the apps would reach visitors in different ways: all apps on a server use the same one of the
-  three ways below (the tunnel, behind Cloudflare's proxy with the filter, or DNS only).
+  three ways below (the tunnel, behind Cloudflare's proxy with the filter, or DNS only);
+- the app asks for a different proxy (`target.edge`) than the server runs. A server's proxy can be
+  switched while it holds only one OpsCrew app.
 
 Design checks the memory: the server's memory, minus the memory limits of the apps already there
 and their tunnel connectors, OpsCrew's edge (128 MB) and the system (384 MB), must hold the new
@@ -236,7 +241,9 @@ The interview asks how your site is served. There are three ways:
    filter sits in Docker's own `DOCKER-USER` chain, because ports that Docker publishes bypass ufw
    and ufw rules could not limit them. It fails closed: if the filter cannot be installed when the
    server starts, Docker does not start either, so the site goes down instead of being open to
-   everyone. Pick this when you cannot or do not want to use Cloudflare Zero Trust. When Cloudflare
+   everyone. On top of the filter, [origin protection](origin-protection.md) makes the server
+   accept the app's hostnames only from Cloudflare acting for your own zone. Pick this when you
+   cannot or do not want to use Cloudflare Zero Trust. When Cloudflare
    changes its address ranges, the next `npx opscrew provision` shows the update as a host plan
    change and `npx opscrew drift` reports it.
 3. **Directly, DNS only** (no Cloudflare proxy, or your DNS somewhere else). The server answers
@@ -272,10 +279,12 @@ ones. For the commands in a script, see [In scripts](#in-scripts).
 
 ### Cloudflare token permissions
 
-Your `CLOUDFLARE_API_TOKEN` needs Zone → Zone → Read, Zone → DNS → Edit, Zone → Config Rules → Edit
-and Zone → Zone WAF → Edit, as for every OpsCrew deployment (the last two for the rules OpsCrew keeps
-in your zone; see [Your domain on Cloudflare](cloudflare.md)). Tunnel mode (and a Portainer
-subdomain) also needs:
+Your `CLOUDFLARE_API_TOKEN` needs Zone → Zone → Read, Zone → DNS → Edit, Zone → Config Rules → Edit,
+Zone → Zone WAF → Edit, Zone → SSL and Certificates → Edit and Zone → Zone Settings → Edit, as for
+every OpsCrew deployment (the rules OpsCrew keeps in your zone, see
+[Your domain on Cloudflare](cloudflare.md), then [origin protection](origin-protection.md) behind
+Cloudflare's proxy and the [minimum TLS version](tls-and-caa.md#the-minimum-tls-version)). Tunnel
+mode (and a Portainer subdomain) also needs:
 
 - Account → Cloudflare Tunnel → Edit
 - Account → Access: Apps and Policies → Edit
@@ -302,11 +311,13 @@ confirmed.
 
 ## Day to day
 
-- `npx opscrew status` lists the app's components and whether each runs.
+- `npx opscrew status` lists the app's components and whether each runs, the server's proxy, each
+  certificate's expiry and the state of the [recovery copy](secrets-recovery.md).
 - `npx opscrew drift` compares the server with what OpsCrew set up (SSH settings, firewall rules,
   the deploy user, runtime files and the app's components) and Cloudflare with the plan, and
   reports every difference without changing anything.
-- `npx opscrew secure` checks the server's hardening and probes it from outside.
+- `npx opscrew secure` checks the server's hardening and probes it from outside; `--deep` adds
+  [Lynis, ssh-audit and testssl.sh](deeper-checks.md).
 - `npx opscrew verify` checks the live site.
 
 ## Backups are your responsibility

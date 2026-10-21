@@ -64,6 +64,20 @@ describe("opscrew secure", () => {
     expect(await run(ctx, "secure")).toBe(1);
   });
 
+  it("--deep adds the deeper checks to the report; without it the report has none", async () => {
+    // No Docker on this computer: ssh-audit and testssl.sh are skipped with how to enable them.
+    const docker = { run: async () => ({ exitCode: 127, stdout: "", stderr: "not found" }) };
+    const { ctx, root } = await setup(deployed(), { docker });
+    await run(ctx, "secure", "--deep");
+    const report = await readFile(path.join(root, "opscrew", "SECURITY_REPORT.md"), "utf8");
+    expect(report).toContain("## Deeper checks");
+    expect(report).toContain("ssh-audit");
+
+    expect(await run(ctx, "secure")).toBe(0);
+    const plain = await readFile(path.join(root, "opscrew", "SECURITY_REPORT.md"), "utf8");
+    expect(plain).not.toContain("## Deeper checks");
+  });
+
   it("exits 1 when there is no plan yet (an earlier step has not run)", async () => {
     const { ctx } = await setup(undefined);
     expect(await run(ctx, "secure")).toBe(1);

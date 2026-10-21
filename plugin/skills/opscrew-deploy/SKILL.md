@@ -108,6 +108,14 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      restart the app instead, with a short gap. Tell the user that migrations must keep working
      with the version still running. They change these settings in `opscrew/plan.yaml` (the
      builder needs `app.build.chosen: user`); then call `opscrew_select_design` again.
+   - **The reverse proxy.** The server's proxy is Caddy (the default) or nginx with certbot, set as
+     `target.edge` in `opscrew/plan.yaml`; both give visitors the same TLS and headers. Every app on
+     one server uses the same proxy, so OpsCrew refuses a different one while other OpsCrew apps are
+     there; with one app the switch is planned, with a short interruption it states. The user's own
+     rules for the app go in `opscrew/proxy/additions.caddy` or `.nginx`; OpsCrew checks them before
+     they go live and refuses unsafe ones. For an app leaving Vercel, design writes the
+     `vercel.json` routing rules it can translate into that file and lists the ones it left out:
+     pass that list on. A Portainer stack always uses Caddy and does not use additions yet.
    - **Currencies.** When the user's budget is in another currency than the provider's prices,
      OpsCrew converts with a fixed approximate rate. If the user wants exact numbers, search the
      web for today's exchange rate, recalculate the monthly costs with it and say which rate and
@@ -153,6 +161,25 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    dialog (a destroying plan needs them to type the server name); never claim approval yourself.
    Unless `OPSCREW_APP_ENV_FILE` is set, the deploy secrets still have to be stored by running
    `npx opscrew provision` in their terminal afterwards (it resumes without changing the server).
+
+   **The recovery copy of the app's secrets.** The first provision that generates secrets makes an
+   encrypted copy of them, of the deploy key and of the infrastructure state, committed as
+   `opscrew/secrets.sops.json` with OpsCrew's pull request. Only the user's age key opens it. In a
+   terminal OpsCrew asks for the user's own age key or where to write a new one. Through
+   `opscrew_apply`, ask the user for a full path outside the repository (for example in their home
+   folder) and pass it as `keyOut`: OpsCrew writes the new key there once and never returns it.
+   Tell the user to move it into their password manager and delete the file. Never read that file,
+   and never ask for the key itself. Without `keyOut` no copy is made yet, and the result says so.
+   Through the tools, a public repository's copy is never committed: OpsCrew writes only the
+   folder copy, if one is set, and says to run `npx opscrew provision` (or `secrets rotate`) in a
+   terminal, which asks.
+
+   **Origin protection.** For hostnames behind Cloudflare's proxy, OpsCrew serves a Cloudflare
+   origin certificate and requires a client certificate only the user's zone sends, so only
+   Cloudflare acting for their zone reaches the server. Its changes are in the Cloudflare plan.
+   It needs **Zone → SSL and Certificates → Edit** and **Zone → Zone Settings → Edit** on the
+   Cloudflare token; without them the site keeps its current protection and the result names the
+   missing permission.
 
    **Workers and cron jobs** need nothing extra: the deploy starts the services first, then the
    new web version, then the workers and the cron jobs with the same image. When a new worker does
@@ -242,6 +269,13 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    operations. For an app in the user's Portainer behind their own reverse proxy, ask where the
    proxy serves it and pass that address as `url` to `opscrew_verify` (`--url` in a terminal).
 
+   **The deeper check**, only when the user asks for it: `opscrew_secure` with `deep: true`
+   (`npx opscrew secure --deep`) also runs Lynis on the server and ssh-audit and testssl.sh in
+   Docker on the user's computer, read-only, in a few minutes. Present each tool's findings by
+   severity, and the known noise apart with its reason. Without Docker the two outside audits are
+   skipped with how to enable them; in a Portainer only testssl.sh runs. A fix OpsCrew can make (an
+   SSH setting) happens only through its approved plans, never by itself.
+
 ## Before you start and later
 
 - **Preflight.** On a fresh machine or clone, call `opscrew_init_check` first and help the user fix
@@ -257,11 +291,22 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   container the plan no longer has and a stopped one. To undo
   drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
   be updated to match first.
-- **Status.** `opscrew_status` lists the app's components (web process, workers, cron jobs,
+- **Status.** `opscrew_status` shows the server's proxy, each certificate OpsCrew manages with its
+  expiry (pass on any warning: fewer than 30 days left, or a failed renewal with its reason), and
+  the recovery copy's state. It lists the app's components (web process, workers, cron jobs,
   services) and, once the app was deployed, whether each runs: read over SSH on a server, or
   through Portainer's API (with `PORTAINER_API_KEY`) in the user's Portainer. On the user's own
   server it reads them only after the SSH host key was confirmed once; otherwise ask the user to
   run `npx opscrew status` in a terminal.
+- **The recovery copy.** `opscrew_secrets_status` shows when the copy was last updated, how many
+  keys open it and whether it is behind. On a new computer, `opscrew_secrets_restore` rebuilds
+  OpsCrew's files from it with the key file the user names (`keyFile`, a full path; never read it
+  yourself). When files differ, it writes nothing and lists them by name: ask the user which side
+  to keep and call it again with `onConflict`. `opscrew_secrets_rotate` makes a new key, written
+  only to the `keyOut` file the user names, and proposes the re-encrypted copy in a pull request
+  (dialogs approve each step); older commits stay readable with the old key.
+  `opscrew_secrets_folder` sets a folder the copy is also written to, or stops it with `null`.
+  In a terminal: `npx opscrew secrets status|restore|rotate|folder`.
 - **Getting a domain.** When the user has no domain yet, call `opscrew_domain_check` with a name
   or a domain. It checks availability live and returns the first-year and renewal prices with
   their currency, and a plain reason for names that cannot be bought through the API (taken,

@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { exactBuyCommand } from "../domain/purchase";
-import { pathWord, shellWord } from "./apply-command";
+import { applyCommand, pathWord, shellWord } from "./apply-command";
+
+describe("applyCommand", () => {
+  it("repeats --key-out with the file the planning run named", () => {
+    const hash = "a".repeat(64);
+    expect(applyCommand("provision", [hash], { yes: true, keyOut: "/home/me/age key.txt" })).toBe(
+      `opscrew provision --approve ${hash} --yes --key-out '/home/me/age key.txt'`,
+    );
+    expect(applyCommand("provision", [hash])).toBe(`opscrew provision --approve ${hash}`);
+  });
+});
 
 describe("shellWord", () => {
   it("leaves plain words as they are and single-quotes anything a shell would change", () => {

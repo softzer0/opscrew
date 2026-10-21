@@ -117,6 +117,34 @@ describe("opscrew status and the server's address", () => {
     expect(ip.errors).toContain("is damaged");
   });
 
+  it("shows the proxy, each certificate's expiry and the recovery copy (FR-1462)", async () => {
+    const paths = resolveProjectPaths(dir, { env: {} });
+    const plan = testPlan({ deployed: true, domain: "shop.example.com", userSecret: false });
+    await writeArtifact("plan", paths.files.plan, {
+      ...plan,
+      dns: { ...plan.dns, proxied: false },
+      deployment: { ...plan.deployment, lastDeployAt: "2026-10-11T12:00:00.000Z" },
+    });
+    const ctx = createTestContext({ cwd: dir });
+    withServices(ctx, {
+      clock: { now: () => new Date("2026-10-21T12:00:00.000Z") },
+      verify: {
+        tlsConnect: async () => ({
+          subjectAltNames: ["shop.example.com"],
+          validFrom: "2026-10-01T00:00:00.000Z",
+          validTo: "2026-12-30T00:00:00.000Z",
+          issuer: "Let's Encrypt",
+        }),
+      },
+    });
+    expect(await main(argv("status"), ctx)).toBe(0);
+    expect(ctx.output).toContain("\nProxy: Caddy\n");
+    expect(ctx.output).toContain(
+      "\nCertificates:\n  shop.example.com (from Let's Encrypt): expires 2026-12-30 (69 days left)\n",
+    );
+    expect(ctx.output).toContain("\nSecrets copy: none yet (`opscrew provision` makes it).\n");
+  });
+
   describe("the app's components (FR-1331)", () => {
     /** A deployed plan with a worker and MySQL, after a deploy `opscrew verify` saw. */
     async function deployedWithComponents(): Promise<void> {

@@ -47,7 +47,9 @@ The zone permissions OpsCrew already asks for must then also cover all zones of 
 - Zone → Zone → Read;
 - Zone → DNS → Edit;
 - Zone → Config Rules → Edit;
-- Zone → Zone WAF → Edit.
+- Zone → Zone WAF → Edit;
+- Zone → SSL and Certificates → Edit;
+- Zone → Zone Settings → Edit.
 
 A token limited to the zones you have today does not cover the zone of a domain you buy. If you keep
 the token limited, add the new domain's zone to it right after buying, before `opscrew dns` or

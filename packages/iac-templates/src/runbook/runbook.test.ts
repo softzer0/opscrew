@@ -295,4 +295,43 @@ describe("the runbook's shared rows", () => {
     expect(webOnlyFromCloudflare(only)).toBe(true);
     expect(webOnlyFromCloudflare({ ...only, dns: { ...only.dns, proxied: false } })).toBe(false);
   });
+
+  describe("the proxy, its certificates and the recovery copy", () => {
+    /** The plan with `target.edge` set. */
+    const onEdge = (p: DeployPlan, edge: "caddy" | "nginx"): DeployPlan =>
+      p.target.provider === "hetzner" ? { ...p, target: { ...p.target, edge } } : p;
+
+    it("names the proxy, the site file and the additions, and the origin certificate when proxied", () => {
+      const { content } = renderRunbook(plan({ domain: "shop.example.com" }), deployed);
+      expect(content).toContain("`opscrew-edge`: Caddy");
+      expect(content).toContain("`/srv/edge/sites/shop.caddy`");
+      expect(content).toContain("`opscrew/proxy/additions.caddy` holds this app's own Caddy rules");
+      expect(content).toContain("Cloudflare origin certificate for this app's hostnames");
+      expect(content).toContain("`opscrew provision` replaces the origin certificate");
+    });
+
+    it("with nginx and DNS only, says certbot renews and names the CAA authority", () => {
+      const p = onEdge(plan({ domain: "shop.example.com", proxied: false }), "nginx");
+      const { content } = renderRunbook(p, deployed);
+      expect(content).toContain("`opscrew-edge`: nginx");
+      expect(content).toContain("`/srv/edge/sites/shop.conf`");
+      expect(content).toContain("`opscrew/proxy/additions.nginx`");
+      expect(content).toContain("certbot gets the first certificate from Let's Encrypt");
+      expect(content).toContain(
+        "OpsCrew's CAA records name only `letsencrypt.org` (none at the zone's apex).",
+      );
+
+      const caddy = renderRunbook(plan({ domain: "shop.example.com", proxied: false }), deployed);
+      expect(caddy.content).toContain("Caddy gets and renews the certificates itself");
+      expect(caddy.content).toContain("`letsencrypt.org` and `sectigo.com`");
+    });
+
+    it("explains the recovery copy, with the restore steps and sops alone", () => {
+      const { content } = renderRunbook(plan(), deployed);
+      expect(content).toContain("## The secrets recovery copy");
+      expect(content).toContain("opscrew secrets restore --key-file <your age key file>");
+      expect(content).toContain("sops decrypt opscrew/secrets.sops.json");
+      expect(content).toContain("opscrew secrets rotate --key-out <file>");
+    });
+  });
 });

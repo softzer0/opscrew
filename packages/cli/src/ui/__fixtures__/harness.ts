@@ -3,12 +3,12 @@
  * without real credentials, a git-only command runner, a recording fetch and scripted prompts.
  * For tests only.
  */
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CommandOptions, CommandResult, CommandRunner, FetchLike } from "@opscrew/contracts";
-import { findExecutable, NodeCommandRunner } from "@opscrew/core";
+import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
 import { withServices, type CliServices } from "../../deps";
 import { main } from "../../program";
@@ -201,6 +201,14 @@ export function projectContext(
     ...options.services,
   });
   return Object.assign(ctx, { fetchUrls: fetch.urls });
+}
+
+/** Every audit log entry the project's runs wrote (`<OPSCREW_HOME>/audit/*`), as one text. */
+export async function auditText(project: Pick<TempProject, "root" | "env">): Promise<string> {
+  const dir = resolveProjectPaths(project.root, { env: project.env }).auditDir;
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const texts = await Promise.all(names.map((name) => readFile(path.join(dir, name), "utf8")));
+  return texts.join("\n");
 }
 
 /** Runs `opscrew <args>` with `ctx` and returns the exit code. */

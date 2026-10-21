@@ -85,6 +85,22 @@ describe.skipIf(!GIT)("opscrew init", () => {
     expect(`${ctx.output}${ctx.errors}`).not.toContain(GITHUB);
   });
 
+  it("lists the Cloudflare token's permissions, with those for origin protection", async () => {
+    const { ctx } = await setup({ gitignore: ".opscrew/\n.terraform/\n" });
+    expect(await run(ctx, "init", "--offline")).toBe(0);
+    expect(ctx.output).toContain("CLOUDFLARE_API_TOKEN is not set.");
+    for (const permission of [
+      "Zone → Zone → Read",
+      "Zone → DNS → Edit",
+      "Zone → Config Rules → Edit",
+      "Zone → Zone WAF → Edit",
+      "Zone → SSL and Certificates → Edit",
+      "Zone → Zone Settings → Edit",
+    ]) {
+      expect(ctx.output).toContain(permission);
+    }
+  });
+
   it("exits 1 with install instructions when no engine is installed", async () => {
     const { ctx } = await setup({ tools: ["git", "ssh", "ssh-keyscan"], gitignore: ".opscrew/\n" });
     expect(await run(ctx, "init", "--offline")).toBe(1);

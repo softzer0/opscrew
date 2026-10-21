@@ -11,11 +11,13 @@ import {
   portainerUpdaterStackName,
   providerBucket,
   type RenderedFile,
+  recoverySection,
   runbookHead,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type PortainerDeployTarget, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { originTlsHostnames } from "../provision/origin-tls";
 import { portainerDnsRecordNote } from "../provision/publish";
 import { addressNames, hidePortainerAddress, readPortainerConnection } from "../shared";
 
@@ -131,6 +133,21 @@ function redeployLines(plan: DeployPlan, target: PortainerDeployTarget): string[
 }
 
 /**
+ * "Origin protection" when the stack's Caddy serves the app's hostnames behind Cloudflare's proxy:
+ * the origin certificate, the client certificate it requires, and who replaces them.
+ */
+function originTlsLines(plan: DeployPlan): string[] {
+  const hostnames = originTlsHostnames(plan);
+  if (hostnames.length === 0) return [];
+  return [
+    "## Origin protection",
+    "",
+    `The stack's Caddy serves a Cloudflare origin certificate (valid for 15 years) for ${hostnames.map((name) => `\`${name}\``).join(", ")} and refuses any connection without this app's own client certificate, which only Cloudflare sends for your zone. \`opscrew status\` shows both and when they expire; \`opscrew provision\` replaces the origin certificate when fewer than 30 days remain. Without the Cloudflare token's SSL and Certificates permission the stack keeps a public certificate, and \`opscrew secure\` lists the gap.`,
+    "",
+  ];
+}
+
+/**
  * `opscrew/RUNBOOK.md` for an app in the user's Portainer: how it runs and deploys, where its logs
  * are, how to roll back and rotate secrets, how to remove it, and that OpsCrew does not change the
  * host and backups are the user's. Committed: never Portainer's address, a token or a value.
@@ -187,6 +204,8 @@ export function renderPortainerRunbook(
     "The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran `opscrew provision`; they are never in the repository, the pull requests or GitHub Actions.",
     "To change one, update the production values and run `opscrew provision`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run `opscrew provision --replace-token repository` or `--replace-token registry`.",
     "",
+    ...originTlsLines(plan),
+    ...recoverySection(),
     "## What OpsCrew does not do here",
     "",
     `- ${PORTAINER_HOST_NOTE}`,

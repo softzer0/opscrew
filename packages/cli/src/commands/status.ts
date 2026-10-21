@@ -7,6 +7,7 @@ import {
   type ServerAddress,
   serverAddress,
   supplyChainLines,
+  tlsStatusReport,
 } from "@opscrew/agents";
 import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
@@ -67,9 +68,23 @@ async function componentLines(
 }
 
 /**
+ * The server's proxy, each certificate OpsCrew manages with its expiry, and the recovery copy's
+ * last update, key count and whether it is behind (FR-1462).
+ */
+async function tlsLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
+  const { verify, provision } = servicesOf(ctx);
+  const { lines } = await tlsStatusReport(deps, plan, {
+    ...(verify?.tlsConnect !== undefined ? { tlsConnect: verify.tlsConnect } : {}),
+    ...(provision !== undefined ? { services: provision } : {}),
+  });
+  return ["", ...lines];
+}
+
+/**
  * `opscrew status`: which phases have run in this project, with their result and time, the
  * image builder and the deploy strategy with their reasons, the supply-chain settings (signing,
- * deploy tags, image retention), the app's components and whether each runs, the server's
+ * deploy tags, image retention), the app's components and whether each runs, the server's proxy,
+ * the certificates OpsCrew manages with their expiry, the recovery copy's state, the server's
  * address (from OpsCrew's local state; it is never committed) and a `retarget` line while a move
  * to another provider is in progress (from → to, last completed step, the next command).
  * `--ip` prints only the server's IPv4 address, for scripts such as
@@ -117,6 +132,7 @@ export function register(program: Command, ctx: CliContext): void {
             ...buildStatusLines(plan),
             ...supplyChainLines(plan),
             ...(await componentLines(ctx, deps, plan, flags.hostKey?.trim())),
+            ...(await tlsLines(ctx, deps, plan)),
           ];
     if (Object.keys(state.phases).length === 0) {
       ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");

@@ -30,6 +30,13 @@ How your app is built and shipped:
 - [How OpsCrew builds your app's image](docs/guide/builders.md): a builder chosen per language, non-root and pinned.
 - [Deploys without downtime](docs/guide/zero-downtime.md): a broken release never gets traffic.
 - [The image supply chain](docs/guide/supply-chain.md): SBOM, provenance, optional signing, Dependabot and deploy tags.
+- [The reverse proxy](docs/guide/reverse-proxy.md): Caddy or nginx, with your own rules.
+
+How it stays secure:
+- [Security](docs/guide/security.md): what OpsCrew sets up and checks.
+- [Origin protection](docs/guide/origin-protection.md): only Cloudflare reaches your server.
+- [Certificates and CAA](docs/guide/tls-and-caa.md), and the [deeper checks](docs/guide/deeper-checks.md).
+- [The recovery copy of your secrets](docs/guide/secrets-recovery.md): restore on a new computer with your key.
 
 What runs next to your app:
 - [Components](docs/guide/components.md): workers, cron jobs, services and storage, each with a memory limit and its share of the price.
@@ -67,6 +74,7 @@ node packages/cli/dist/opscrew.js --cwd /path/to/your/app init   # then analyze,
 - `npx opscrew retarget --to <provider>` moves a live app to another cloud provider with its data (not yet to or from your own server or a Portainer). It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`.
 - No domain yet? `npx opscrew domain buy <domain>` buys one at cost after you confirm the price, through Cloudflare, Porkbun, Namecheap or GoDaddy. Already own one? `npx opscrew domain connect <domain>` moves its DNS to Cloudflare. See [Buying or connecting a domain](docs/guide/domains.md).
 - Several apps under one domain? See [Your domain on Cloudflare, and several apps in one zone](docs/guide/cloudflare.md).
+- Every guide page is listed in [the guide's index](docs/guide/index.md).
 
 ## Development
 

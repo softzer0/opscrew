@@ -312,3 +312,57 @@ describe("opscrew_status during a move", () => {
     },
   );
 });
+
+describe("opscrew_status: the proxy, the certificates and the recovery copy (FR-1462)", () => {
+  it("shows the proxy, each certificate's expiry and the copy's state", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const base = testPlan({ deployed: true, domain: "shop.example.com", userSecret: false });
+    await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), {
+      ...base,
+      dns: { ...base.dns, proxied: false },
+      deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+    });
+    const deps = resolveMcpDeps({
+      version: "0.0.0-test",
+      env: { OPSCREW_HOME: path.join(dir, "home") },
+      fetch: forbiddenFetch,
+      runner: new ScriptedRunner(),
+      clock: { now: () => new Date("2026-10-21T12:00:00.000Z") },
+      cwd: dir,
+    });
+    const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
+    registerStatusTool(server, deps, {
+      tlsConnect: async () => ({
+        subjectAltNames: ["shop.example.com"],
+        validFrom: "2026-10-01T00:00:00.000Z",
+        validTo: "2026-12-30T00:00:00.000Z",
+        issuer: "Let's Encrypt",
+      }),
+    });
+    const client = new Client({ name: "opscrew-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    cleanups.push(async () => {
+      await client.close();
+      await server.close();
+    });
+    const result = (await client.callTool({
+      name: "opscrew_status",
+      arguments: {},
+    })) as CallToolResult;
+    expect(result.isError).toBeFalsy();
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    expect(text).toContain(
+      [
+        "Proxy: Caddy",
+        "Certificates:",
+        "  shop.example.com (from Let's Encrypt): expires 2026-12-30 (69 days left)",
+        "Secrets copy: none yet (`opscrew provision` makes it).",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
+      tls: expect.arrayContaining(["Proxy: Caddy"]),
+    });
+  });
+});

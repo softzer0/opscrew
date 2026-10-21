@@ -10,6 +10,8 @@ import {
   providerProfile,
   readOwnServer,
   supplyChainLines,
+  type TlsStatusOptions,
+  tlsStatusReport,
 } from "@opscrew/agents";
 import { exists, toPosixRelative } from "@opscrew/core";
 import { type DeployPlan, type Retarget, readArtifact } from "@opscrew/plan-schema";
@@ -50,6 +52,19 @@ function billing(move: Retarget): string {
 export interface StatusToolOptions {
   /** The deploy user's shell on a server OpsCrew created, and own-server fakes. */
   services?: ComponentStatusOptions["services"];
+  /** Reads the certificate a DNS-only hostname presents (production: `node:tls`). */
+  tlsConnect?: TlsStatusOptions["tlsConnect"];
+}
+
+/**
+ * The server's proxy, each certificate OpsCrew manages with its expiry, and the recovery copy's
+ * last update, key count and whether it is behind (FR-1462).
+ */
+function tlsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOptions) {
+  return tlsStatusReport(phase, plan, {
+    ...(options.tlsConnect === undefined ? {} : { tlsConnect: options.tlsConnect }),
+    ...(options.services === undefined ? {} : { services: options.services }),
+  });
 }
 
 /**
@@ -74,7 +89,8 @@ function componentsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOpt
 /**
  * `opscrew_status`: which phases have run (from `.opscrew/state.json`), which artefacts exist, the
  * plan's image builder and deploy strategy, its supply-chain settings (signing, deploy tags,
- * image retention), the app's components and whether each runs, and the next step. Writes
+ * image retention), the app's components and whether each runs, the proxy, certificates and
+ * recovery copy (`tlsStatusReport`), and the next step. Writes
  * nothing. `options` is for tests only.
  */
 export function registerStatusTool(
@@ -87,7 +103,7 @@ export function registerStatusTool(
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) and, once the app was deployed, whether each runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) and, once the app was deployed, whether each runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -148,6 +164,7 @@ export function registerStatusTool(
             : `${move.message} ${move.hint} Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.`;
         const components =
           plan === undefined ? undefined : await componentsOf(phase, plan, options);
+        const tls = plan === undefined ? undefined : await tlsOf(phase, plan, options);
         const text = [
           `OpsCrew phases in ${paths.root}:`,
           ...lines,
@@ -158,6 +175,7 @@ export function registerStatusTool(
           ),
           ...(plan === undefined ? [] : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)]),
           ...(components === undefined ? [] : ["", ...components.lines]),
+          ...(tls === undefined ? [] : ["", ...tls.lines]),
           ...moveLines,
           "",
           `Next: ${step}`,
@@ -171,6 +189,7 @@ export function registerStatusTool(
             nextStep: step,
             move: moveData,
             ...(components?.status === undefined ? {} : { components: components.status }),
+            ...(tls === undefined ? {} : { tls: tls.lines }),
           },
         };
       }),

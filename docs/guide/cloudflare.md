@@ -125,6 +125,8 @@ Give your `CLOUDFLARE_API_TOKEN` these permissions for the zone:
 - Zone → DNS → Edit
 - Zone → Zone WAF → Edit (the probe block)
 - Zone → Config Rules → Edit (the strict TLS rule)
+- Zone → SSL and Certificates → Edit ([origin protection](origin-protection.md))
+- Zone → Zone Settings → Edit (the [minimum TLS version](tls-and-caa.md#the-minimum-tls-version))
 
 Where the app uses Cloudflare Access (tunnel mode on your own server, Portainer on a subdomain or
 Portainer's Cloudflare redeploys), also add Account → Access: Organizations, Identity Providers, and Groups →

@@ -1,9 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import {
+  FAKE_SOPS,
   FakeEngine,
   FakeGitHub,
+  FakeSops,
   fakeSharedCloudflare,
   planJsonFor,
   SERVER_IPV4,
@@ -22,7 +24,15 @@ import {
   deployProject,
   provisionServices,
 } from "../ui/__fixtures__/deploy";
-import { GIT, git, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
+import {
+  auditText,
+  CANCEL,
+  GIT,
+  git,
+  projectContext,
+  run,
+  ScriptedPrompts,
+} from "../ui/__fixtures__/harness";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -51,6 +61,8 @@ interface Setup {
   prompts?: ScriptedPrompts;
   /** The Cloudflare zone of OpsCrew's shared rules, kept between runs. */
   zone?: FakeZone;
+  /** Answers `OPSCREW_SOPS_BIN=fake-sops` for the recovery copy. */
+  sops?: FakeSops;
 }
 
 /** A non-interactive context (the real `--approve`/`--yes` handler) with deploy fakes attached. */
@@ -61,7 +73,7 @@ function context(p: DeployProject, options: Setup = {}) {
   const ctx = projectContext(p, {
     interactive: options.interactive ?? false,
     services: {
-      runner,
+      runner: options.sops === undefined ? runner : options.sops.runner(runner),
       ...(options.approvals === undefined ? {} : { approvalHandler: options.approvals }),
       ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
     },
@@ -220,14 +232,18 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     project = await deployProject(testPlan({ userSecret: true }));
     const stripe = fakeSecret("stripe-live-key");
     const approvals = new ApproveAll();
-    const prompts = new ScriptedPrompts([stripe]);
+    // No age key of the user's own, and no file for a new one yet: no recovery copy this time.
+    const prompts = new ScriptedPrompts([stripe, "", CANCEL]);
     const { ctx, engine, github } = context(project, { interactive: true, approvals, prompts });
     expect(await run(ctx, "provision")).toBe(0);
 
     expect(engine.calls).toEqual(["init", "validate", "plan", "apply"]);
     expect(prompts.calls.map((c) => c.message)).toEqual([
       "Production value for STRIPE_SECRET_KEY (leave empty to skip)",
+      expect.stringContaining("Do you already have an age key for it?"),
+      expect.stringContaining("Where should OpsCrew write your new age key"),
     ]);
+    expect(ctx.errors).toContain("OpsCrew has made no encrypted recovery copy");
     expect(github.secrets.get("OPSCREW_APP_ENV")).toContain(`STRIPE_SECRET_KEY=${stripe}`);
     expect(approvals.requests.map((r) => r.kind)).toEqual([
       "repo-write",
@@ -237,6 +253,83 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       "pull-request",
     ]);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(stripe);
+  });
+
+  describe("the recovery copy's first age key", () => {
+    /** The key line of a key file OpsCrew wrote, failing the test when there is none. */
+    async function identityIn(file: string): Promise<string> {
+      const line = (await readFile(file, "utf8"))
+        .split("\n")
+        .find((text) => text.startsWith("AGE-SECRET-KEY-1"));
+      if (line === undefined) throw new Error(`no age key in ${file}`);
+      return line;
+    }
+
+    it("--key-out writes the new key to that file only, never prints it, and commits the copy", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const sops = new FakeSops();
+      const keyFile = path.join(project.dir, "age-key.txt");
+      // Without --key-out the plan-only run says the apply needs one; with it, the command repeats it.
+      const bare = context(project, { sops });
+      expect(await run(bare.ctx, "provision", "--plan-only", "--yes")).toBe(0);
+      expect(bare.ctx.output).toContain("in a script, add --key-out <file outside the repository>");
+      const first = context(project, { sops });
+      expect(await run(first.ctx, "provision", "--plan-only", "--yes", "--key-out", keyFile)).toBe(
+        0,
+      );
+      const hash = printedHash(first.ctx.output);
+      expect(first.ctx.output).toContain(
+        `    opscrew provision --approve ${hash} --yes --key-out ${keyFile.replaceAll("\\", "/")}\n`,
+      );
+      expect(first.ctx.output).not.toContain("in a script, add --key-out");
+      const second = context(project, { sops });
+      const code = await run(
+        second.ctx,
+        "provision",
+        "--approve",
+        hash,
+        "--yes",
+        "--key-out",
+        keyFile,
+      );
+      expect(code, second.ctx.errors).toBe(0);
+
+      const identity = await identityIn(keyFile);
+      if (process.platform !== "win32") expect((await stat(keyFile)).mode & 0o777).toBe(0o600);
+      const said = `${second.ctx.output}${second.ctx.errors}`;
+      expect(said).toContain(`OpsCrew wrote your new age key to ${keyFile}.`);
+      expect(said).not.toContain(identity);
+      const committed = await git(
+        project.env,
+        project.root,
+        "show",
+        "opscrew/deploy-setup:opscrew/secrets.sops.json",
+      );
+      expect(committed).toContain("ENC[AES256_GCM");
+      expect(committed).not.toContain(identity);
+      expect(await auditText(project)).not.toContain(identity);
+    });
+
+    it("asks for the key file's path in a terminal and offers a backup key", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const keyFile = path.join(project.dir, "asked-key.txt");
+      const prompts = new ScriptedPrompts(["", keyFile, ""]);
+      const { ctx } = context(project, {
+        interactive: true,
+        approvals: new ApproveAll(),
+        prompts,
+        sops: new FakeSops(),
+      });
+      expect(await run(ctx, "provision"), ctx.errors).toBe(0);
+      expect(prompts.calls.map((call) => call.message)).toEqual([
+        expect.stringContaining("Do you already have an age key for it?"),
+        expect.stringContaining("Where should OpsCrew write your new age key"),
+        expect.stringContaining("Add a second, offline backup key"),
+      ]);
+      expect(`${ctx.output}${ctx.errors}`).not.toContain(await identityIn(keyFile));
+    });
   });
 
   describe("a plan that removes something (needs the app's name)", () => {
@@ -378,6 +471,7 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
         engine: removal(),
         interactive: true,
         approvals,
+        prompts: new ScriptedPrompts(["", CANCEL]),
       });
       expect(await run(ctx, "provision")).toBe(0);
       expect(engine.calls).toContain("apply");
