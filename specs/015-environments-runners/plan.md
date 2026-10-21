@@ -248,7 +248,7 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
   - its secrets are the environment's names, or the `OPSCREW_<ENV>_*` names;
   - `runs-on` per the runner choice: `ubuntu-latest`, or `[self-hosted, opscrew-<app>-<env>]`;
   - `concurrency: opscrew-deploy-<app>-<env>`, with `cancel-in-progress: false`.
-- **The verify job** (promoted environments) runs on GitHub's machines. It checks the image's provenance names this repository and the default branch, and the cosign signature when the app signs images (012). Then the deploy job runs `needs: verify`.
+- **The verify job** (promoted environments) runs on GitHub's machines. It reads the build run from the image's provenance and checks, through the API with the job's token, that the run is this repository's, on the default branch, at the image's commit. When the app signs images (012), it checks the cosign signature too. Then the deploy job runs `needs: verify`.
 - **After a healthy deploy,** the deploy job tags the digest `opscrew-<env>` and the previous one `opscrew-<env>-previous`, with `packages: write`, through a tag-only `imagetools create`. Retention never deletes a version that carries an `opscrew-` environment tag.
 
 ### 7. Localhost templates (T1506)
@@ -296,7 +296,7 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
 
 `opscrew promote --to <env> [--digest <sha256>]`:
 1. **The source:** the `deploySource.source` environment. Its digest is the `opscrew-<source>` tag, or the given digest for a rollback, which must be a version labelled `opscrew-<target>-previous` or `opscrew-<source>`.
-2. **The provenance:** the repository, the default branch and the commit, plus the signature when the app signs images.
+2. **The provenance:** the image's SLSA v1 provenance names its build run (`runDetails.builder.id`). That run must belong to this repository and, per its API record, have run on the default branch at the commit the image is tagged with. The signature is checked when the app signs images (spike result 2).
 3. **The target's plan:** its pending changes must be none, or the user is sent to `provision --env <target>` first.
 4. **The `promote` approval:** its hash is `sha256(canonical{ target, source, digest, targetPlanHash })`.
 5. **The dispatch,** then waiting for the run, then recording the digest in the target's state.
