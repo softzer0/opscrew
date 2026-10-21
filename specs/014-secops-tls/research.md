@@ -319,6 +319,12 @@ Each line gives what was run, and what was seen.
   - Caddy 2.11.7: `reverse_proxy up:80 { @nf status 404; handle_response @nf { rewrite * /index.html; reverse_proxy up:80 } }`. The `status` matcher must be declared inside `reverse_proxy`, because at site level Caddy refuses it with "module not registered: http.matchers.status".
   - nginx 1.30.6: `proxy_intercept_errors on; error_page 404 = @fallback;` and `location @fallback { rewrite ^ /index.html break; proxy_pass http://up:80; }`.
   - Both serve `/assets/app.js` as it is, and `/unknown/route` gets `/index.html` with 200.
+- **18. Holding requests during a server's recreate.** Tried with the pinned kamal-proxy v0.10.2, locally, on 2026-10-21, after the founder asked why T1416's hold stopped at Portainer:
+  - Today's recreate: a request sent between the old copy's stop and the new copy's deploy gets kamal-proxy's 502.
+  - `kamal-proxy pause <service> --drain-timeout <d> --max-pause <m>`, then the recreate, then `kamal-proxy deploy` of the new copy (which works while paused), then `resume`. A request sent after the old copy was gone was held for 5.3 s, and the new copy answered it with 200.
+  - While paused, kamal-proxy answers the service's health-check path itself with an empty 200, by design, so checks upstream keep the service. A request held past `--max-pause` gets 504 (`PauseWaitActionTimedOut` in its source).
+  - The paused state is part of kamal-proxy's saved state (`PauseController.UnmarshalJSON` restores it), so a pause the deploy never lifts outlives a restart of kamal-proxy.
+  - The edge's timeouts leave room: nginx reads from kamal-proxy for up to 300 s, Caddy sets no read timeout, and Cloudflare's proxy waits 100 s.
 
 ## Open items for the spike (T1402) and the live runs
 

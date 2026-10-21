@@ -528,11 +528,34 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, `pnpm lint`, and a Docker check against Portainer CE: two redeploys under a request loop, with no failed request
   - Effort: high
 
+- [ ] T1416b [US5] Servers: kamal-proxy holds requests during a recreate (the founder's question, 2026-10-21), in `packages/iac-templates/src/workflow/switch.ts`, `packages/agents/src/design/strategy.ts`, `docs/guide/zero-downtime.md`
+  - Owns: those paths (+ tests, snapshots, and any other copy of the recreate texts), `packages/cli/test/e2e/**` for the Docker check
+  - Reads: research.md "Spike results" 18; T1416
+  - Depends: T1415 (the same workflow files and snapshots)
+  - Accept:
+    - **The recreate switch** (`switchApp` with `deploy.strategy: recreate`, used by the deploy and by the rollback) pauses the app's kamal-proxy service before it replaces the container: `kamal-proxy pause <app> --drain-timeout <deploy.drainSeconds>s --max-pause 90s`. Then come today's `compose up` and `kamal-proxy deploy`, then `kamal-proxy resume <app>`.
+      - In-flight requests finish first (the drain), and requests that arrive meanwhile wait for the new copy.
+      - The 90 seconds cover the default drain and the health check's wait, and stay below Cloudflare's 100 s.
+    - **The pause is always lifted.** Both scripts resume the service on every exit path, through the EXIT trap: a failed health check, a failed deploy command, and any `set -e` exit. In the start script the trap keeps today's `docker logout`. Resuming a service that is not paused, or does not exist, does no harm.
+    - **The first deploy:** kamal-proxy has no service yet, so the pause fails. That failure is ignored, and the deploy goes on as today.
+    - **A broken release:** once the new copy fails its health check, the pause is lifted. Requests then get errors until the rollback has the previous version back, as today, and the rollback's own recreate holds requests while that version starts.
+    - **`rolling` is unchanged.**
+    - **The texts:**
+      - The recreate reasons in `strategy.ts` (small server, unknown memory, SQLite) say that requests wait meanwhile, so visitors see a short pause, not an error.
+      - The guide's "Small servers restart the app instead" says the same, and says what a broken release costs.
+      - No other message promises downtime for a recreate on a server (grep).
+    - **Tests:** the start and rollback scripts for `recreate` (the pause, the resume, the trap), the first deploy, and `rolling` without either.
+    - **The Docker check,** gated by `OPSCREW_DOCKER_TESTS=1`, with the pinned kamal-proxy and an app whose health path is separate from `/`:
+      - a recreate under a request loop gives no failed request;
+      - after a deploy whose health check fails, the service is running, not paused.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`, `pnpm lint`, `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new file>`
+  - Effort: high
+
 ## Dependencies
 
 {T1401a, T1401b} → T1402 (lead) → {T1403, T1404, T1405, T1406, T1408, T1410} → T1407 (after
 T1406) → T1409a → T1409b → {T1411, T1412} → T1413 → T1414. T1416 runs alongside T1409a, after
-T1407. T1417a runs in wave 3, after T1401a. T1417b runs alongside T1409a, after T1417a, T1407 and
+T1407. T1416b runs after T1415. T1417a runs in wave 3, after T1401a. T1417b runs alongside T1409a, after T1417a, T1407 and
 T1408.
 
 **User stories:**
