@@ -380,6 +380,7 @@ Effort`.
     - **MCP:** the same tools. A new key goes only to the required `keyOut` file, restore takes only `keyFile`, and no response contains a key.
     - **The plugin's skills** describe the copy, the deeper check and the proxy choice.
     - **The runbook** covers the proxy, the certificates and their renewal, and the copy with restore steps.
+    - **`reverse-proxy.md` says** what the `vercel.json` translation leaves out, and that only one fallback applies per request: with `cleanUrls` and an SPA catch-all together, an unknown path tries `<path>.html`, then gets the app's 404 (T1417b).
     - **The guide:** `origin-protection.md`, `secrets-recovery.md`, `deeper-checks.md`, `tls-and-caa.md` and `reverse-proxy.md`, plus updates to `security.md` and `own-server.md`. Each is written for users, one topic per page, linked from the guide's index. The README links to them and gains no detail.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
