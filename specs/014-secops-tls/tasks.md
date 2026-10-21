@@ -445,6 +445,24 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
 
+## SSH algorithm hardening (lead, 2026-10-21, after T1405)
+
+- [ ] T1418 [P] [US3] Modern-only SSH algorithms on OpsCrew's servers, in `packages/iac-templates/modules/{hetzner-vps,digitalocean-droplet}/**`, `packages/iac-templates/src/generated/**`, `packages/connectors/ssh-host/src/**`, `packages/secops/src/deep/noise.ts`
+  - Owns: those paths (+ tests, snapshots)
+  - Reads: research.md R8; `packages/secops/src/deep/__fixtures__/ssh-audit-policy.json` (what the policy expects); spec FR-1426
+  - Depends: T1405 (noise.ts), T1410 (the generated modules)
+  - Accept:
+    - **The sshd drop-in** that cloud-init writes (Hetzner and DigitalOcean) and the ssh-host `sshd` step applies gains R8's lines exactly, plus `HostKey` lines for the ED25519 and RSA keys only. The moduli are filtered with `awk '$5 >= 3071'`. `sshd -t` validates the configuration before the reload, and a failure leaves the old configuration in place.
+    - **On an own server**, the host plan shows the change, and it is approved by its hash. When the deploy secrets' pinned host key is ECDSA, the ECDSA `HostKey` line stays, and the plan says why. Host keys are never regenerated.
+    - **`noise.ts`** lists the policy's RSA host-key size mismatch (3072 against 4096), with R8's reason.
+    - **Tests:**
+      - the rendered cloud-init and the host-plan step;
+      - the ECDSA-pinned case;
+      - a Docker check, when Docker is present: an `ubuntu:24.04` container with `openssh-server` and the drop-in passes `sshd -t` and accepts a modern client.
+    - **T1413's live pass** adds that ssh-audit's policy passes on a fresh OpsCrew server, apart from the noise.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/secops` (with `.tools/bin` on PATH) and `pnpm lint`
+  - Effort: high
+
 ## Follow-up from 010 (founder, 2026-10-21)
 
 - [ ] T1416 [P] Portainer: Caddy holds requests during a redeploy, in `packages/iac-templates/src/portainer-target/**`, `packages/iac-templates/src/workflow/portainer.ts`, `docs/guide/zero-downtime.md`
@@ -489,7 +507,7 @@ T1408.
    secrets with two call sites; secops deep with agents secure's deep parts; iac-templates edge,
    runtime, workflow and portainer-target; secops proxy rules; iac-templates catalog, modules and
    infra; plan-schema facts and detect.
-4. T1407.
+4. T1407, T1418 (iac-templates edge, runtime and workflow; the server modules, ssh-host and secops noise).
 5. T1409a, T1416, T1417b (agents provision, destroy and retarget; iac-templates portainer-target;
    iac-templates edge translation and agents design).
 6. T1409b.

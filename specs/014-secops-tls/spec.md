@@ -229,6 +229,7 @@ Valkey now requires a password, like Redis 8 and Dragonfly already do. The app r
 - **FR-1423**: For proxied hostnames, the TLS audit MUST be reported as Cloudflare's edge. The origin's certificate and client-certificate requirement MUST be verified from the server itself.
 - **FR-1424**: When the user's machine cannot run an outside audit, it MUST be skipped with instructions while the rest runs. On a Portainer target, only the TLS audit runs, and the report says why.
 - **FR-1425**: Without the deeper check, `opscrew secure` MUST behave and take as long as today.
+- **FR-1426**: OpsCrew's own SSH hardening MUST restrict the server's key exchange, ciphers, MACs and host-key algorithms to modern ones, so the SSH audit passes on OpsCrew's servers apart from documented noise. This applies to the servers it creates and, through the host plan, to a server the user owns.
 
 **CAA and minimum TLS**
 

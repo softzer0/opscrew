@@ -228,6 +228,27 @@ Sonnet research of 2026-10-21 on vercel.com/docs, caddyserver.com/docs and nginx
 - **Not translated:** rewrites to another site, `has` and `missing`, `routes`, and Vercel's own
   firewall, bulk redirects and dashboard rules (outside the file).
 
+## R8. SSH algorithm hardening (lead decision, 2026-10-21, after T1405)
+
+Stock Ubuntu 24.04, and so OpsCrew's servers, fails ssh-audit's "Hardened Ubuntu Server 24.04 LTS (version 2)" policy. OpsCrew's sshd drop-in hardens logins, not algorithms. Without a fix, every `secure --deep` would end on a high finding OpsCrew caused itself.
+
+- **Source:** ssh-audit's official Ubuntu 24.04 guide (`ssh-audit.com/hardening_guides.html`, read 2026-10-21).
+- **The drop-in gains**, with the GSSAPI entries left out because OpsCrew uses no GSSAPI:
+  - `KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512`
+  - `Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-gcm@openssh.com,aes128-ctr`
+  - `MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com`
+  - `RequiredRSASize 3072`
+  - `HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256`
+  - `CASignatureAlgorithms sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256`
+  - `HostbasedAcceptedAlgorithms` and `PubkeyAcceptedAlgorithms`, the same set as the guide's.
+- **Host keys:**
+  - Only the ED25519 and RSA host keys are offered (`HostKey` lines), so the ECDSA key goes.
+  - The guide's regeneration of RSA at 4096 bits is **not** done. Regenerating a host key changes the fingerprint pinned in the deploy secrets, and 3072 bits meets the same guide's `RequiredRSASize 3072`. The policy's RSA-size mismatch is listed as noise.
+  - An own server whose pinned key is ECDSA keeps ECDSA, and the report explains why.
+- **Moduli:** `awk '$5 >= 3071'` filters `/etc/ssh/moduli`.
+- **Rate throttling** against DHEat is left out: fail2ban covers SSH, and OpsCrew never runs ssh-audit's `--dheat`.
+- **Clients:** OpenSSH 8.5 and newer (the GitHub runners, Windows 11's OpenSSH 9.5, macOS) all speak `sntrup761` or `curve25519` with these ciphers and MACs.
+
 ## Spike results (T1402, 2026-10-21)
 
 Each line gives what was run, and what was seen.

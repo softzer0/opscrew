@@ -306,6 +306,10 @@ research.md, and the tasks after it read them.
   - on Portainer: Lynis and ssh-audit, with the reason.
 - **The report** gains a "Deeper checks" section per tool, with its version, results and noise.
   OpsCrew's own fixable items (an SSH option) name the plan that changes them.
+- **OpsCrew's own SSH algorithms** (T1418, R8): the sshd drop-in that cloud-init writes and the
+  own-server host plan applies gains ssh-audit's Ubuntu 24.04 algorithm lists, offers only the
+  ED25519 and RSA host keys, and filters the moduli. So the policy passes on OpsCrew's servers
+  apart from the RSA-size noise.
 
 ### 7. Caddy: origin TLS, headers, additions (T1406)
 
