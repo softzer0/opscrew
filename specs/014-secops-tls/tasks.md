@@ -476,7 +476,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew --concurrency=2`, `pnpm lint`
   - Effort: high
 
-- [ ] T1414e [US1] Portainer: a scripted provision brings origin TLS to the stack in the same run, or stops at the stack plan (found live, 2026-10-21), in `packages/agents/src/provision/portainer-flow.ts` (+ tests), `docs/guide/origin-protection.md`, `docs/guide/portainer-target.md`
+- [X] T1414e [US1] Portainer: a scripted provision brings origin TLS to the stack in the same run, or stops at the stack plan (found live, 2026-10-21), in `packages/agents/src/provision/portainer-flow.ts` (+ tests), `docs/guide/origin-protection.md`, `docs/guide/portainer-target.md`
   - Why: in Portainer step 5b, `provision --plan-only` showed only the Cloudflare plan. `provision --approve <its hash>` applied it: the origin certificate, the client certificate and the origin pull setting. But the approving run keeps the stack Caddy's site as it was before (`siteBefore`, so an approved stack hash stays valid), and it finished with success.
     - The deploy then ran with the old site. The stack's Caddy answered HTTP 200 on the host without Cloudflare's client certificate, while Cloudflare showed origin protection on.
     - Nothing told the user that origin protection needs another run. Scripts, MCP's `opscrew_apply` and the plugin all go through this approving path.
