@@ -247,7 +247,7 @@ Stock Ubuntu 24.04, and so OpsCrew's servers, fails ssh-audit's "Hardened Ubuntu
   - An own server whose pinned key is ECDSA keeps ECDSA, and the report explains why.
 - **Moduli:** a filtered copy (`awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.opscrew`) with `ModuliFile /etc/ssh/moduli.opscrew`, where OpenSSH is 8.6 or later. `/etc/ssh/moduli` is an openssh-server conffile, and editing it in place could hold back OpenSSH updates (T1418).
 - **Own servers keep their user-key types** (lead decision after T1418): `PubkeyAcceptedAlgorithms`, `HostbasedAcceptedAlgorithms` and `CASignatureAlgorithms` are written only on the cloud servers OpsCrew creates, where only `deploy` logs in with OpsCrew's ED25519 key. On a server the user owns, other accounts may use ECDSA or FIDO keys, so only what the server offers changes.
-- **Ubuntu 22.04:** OpenSSH 8.9 rejects `RequiredRSASize`, so the line is left out there.
+- **`RequiredRSASize` only on cloud servers:** it also refuses other accounts' 2048-bit RSA user keys, and skips a 2048-bit RSA host key while `sshd -t` still passes (T1418's review, in Docker). So own servers never get it, and Ubuntu 22.04's OpenSSH 8.9 would reject it anyway.
 - **Rate throttling** against DHEat is left out: fail2ban covers SSH, and OpsCrew never runs ssh-audit's `--dheat`.
 - **Clients:** OpenSSH 8.5 and newer (the GitHub runners, Windows 11's OpenSSH 9.5, macOS) all speak `sntrup761` or `curve25519` with these ciphers and MACs.
 
