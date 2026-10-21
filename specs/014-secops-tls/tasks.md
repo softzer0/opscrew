@@ -367,7 +367,7 @@ Effort`.
 
 ## Phase 6: Surfaces, the Docker pass and live tests
 
-- [ ] T1411 [P] Surfaces and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
+- [X] T1411 [P] Surfaces and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ tests)
   - Reads: contracts/recovery-copy.md "CLI and MCP"; plan.md "13."; spec FR-1462, FR-1463
   - Depends: T1409b
