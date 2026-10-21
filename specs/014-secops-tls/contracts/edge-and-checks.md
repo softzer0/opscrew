@@ -139,5 +139,6 @@ Each rule refuses, with its line and what to do:
 | `includes` | `include`, `import` |
 | `scripting` | `*_by_lua*`, `js_*`, `perl` |
 | `placeholder` | any word, quoted or not, containing Caddy's `{file.`, `{env.` or `{$`: they read files or the environment, which can hold secrets |
+| `nested-proxy-header` | nginx `proxy_set_header` inside `location` or `if`: it would drop OpsCrew's Host and `X-Forwarded-*` there (nginx has no inherit switch for it); allowed at server level |
 | `logs` | Caddy `log` with `output net`, and nginx `access_log`/`error_log` to `syslog:`: request data leaves the server |
 | `size` | a file over 64 KiB |
