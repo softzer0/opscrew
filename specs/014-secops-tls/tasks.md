@@ -258,7 +258,7 @@ Effort`.
 
 ## Phase 4: The nginx edge
 
-- [ ] T1407 [US5] [US1] The nginx edge with certbot, the proxy switch, and the proxy's own checker in the deploy job, in `packages/iac-templates/src/{edge,runtime,workflow}/**`
+- [X] T1407 [US5] [US1] The nginx edge with certbot, the proxy switch, and the proxy's own checker in the deploy job, in `packages/iac-templates/src/{edge,runtime,workflow}/**`
   - Owns: those paths (+ tests, snapshots)
   - Reads: contracts/edge-and-checks.md; data-model.md "Proxy choice", "Server layout"; research.md R5, "Spike results" 5, 6, 12, 13; plan.md "8.", "9."
   - Depends: T1406
@@ -336,7 +336,7 @@ Effort`.
     - **From T1407:**
       - the ssh-host teardown (`packages/connectors/ssh-host/src/**`, the app-removal path only) removes the app's nginx site `<app>.conf` and `<app>.additions` and reloads nginx when the edge is nginx;
       - design counts the edge per proxy: Caddy 128 MB, nginx 160 MB (nginx 64, certbot 64, kamal-proxy 32), plus the connector (`EDGE_MEMORY_MB`, wherever it lives);
-      - provision passes Cloudflare's IP ranges (already read for the web filter) into the runtime context for the real-IP settings.
+      - provision passes Cloudflare's IP ranges into the runtime context's `cloudflareRanges` for the real-IP settings, from the same `ctx.cloudflare.ipRanges` it reads for the web filter, so every app on a server passes the same ranges and the shared edge doesn't change between apps (T1407).
     - **Tests:** first provision, idempotent rerun (no new certificate), renewal at 29 days, a changed hostname set, permission missing, a hostname leaving the proxy, the edge conflict, Portainer, destroy and retarget. No key in any output, plan, audit entry or snapshot.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
@@ -449,7 +449,7 @@ Effort`.
       - sources become anchored, case-sensitive regular expressions, and destinations' parameters become the proxy's capture placeholders; unused parameters go to the query string (R7);
       - the order is headers, then redirects (including `cleanUrls` and `trailingSlash`), then rewrites;
       - an internal rewrite is a fallback that applies when the app answers 404 for the original path (Caddy `handle_response`, nginx `proxy_intercept_errors` with `error_page 404` and a named location, in the forms R7 settled);
-      - on nginx, every `location` it writes repeats OpsCrew's baseline headers (the `add_header` inheritance);
+      - on nginx, the locations it writes do **not** repeat OpsCrew's baseline headers: the edge sets `add_header_inherit merge;`, so they are inherited, and repeating them would send them twice (T1407);
       - `proxy_pass` and `reverse_proxy` name exactly the app's upstream with no variable after it (T1408's rules refuse `http://app:3000$request_uri`), and sources are checked with plan-schema's `VercelSourceSchema`;
       - skipped, each with its reason: rewrites to another site, `has` and `missing`, patterns the proxy cannot express, and everything in `unsupported`.
     - **Design:**
@@ -558,6 +558,7 @@ Each wave is merged, gated and pushed before the next starts.
       - The zone fill written out by hand in `provision/steps.ts`, `portainer/run.ts` and `drift/portainer.ts` calls T1410's `withCloudflareZone` instead, and agents' index re-exports it (T1410's report).
       - `SharedDesired.tls.retiring` goes, because T1403 doesn't use it (T1403's report).
       - Verify Docker's error text when it cannot mount the host recursively read-only (T1405 recognises exit 125 with "recursive" in stderr, a guess), on a server with an old kernel or Docker if one is ever available; otherwise keep the guess documented.
+      - Merge `RuntimeContext.cloudflareRanges` with `ctx.cloudflare.ipRanges` into one field (T1407's report).
       - Refresh the older pins that moved upstream (the curl and mysql 8.4 digests, uv), found by T1401b's run of `update-pins.mjs`, then run the gate.
     - **A duplication sweep over 014's whole change:** merge repeated helpers where the code gets smaller and no less clear. List what was merged, and what was left and why.
     - **No behaviour change.**
