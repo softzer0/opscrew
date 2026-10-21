@@ -1,8 +1,17 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
+import {
+  buildCsr,
+  canonicalJson,
+  errorText,
+  fingerprintSha256,
+  generateP256,
+  OpsCrewError,
+  selfSignedClientCertificate,
+  sha256Hex,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { CloudflareClient } from "./client";
+import { CloudflareClient, OPSCREW_MANAGED_COMMENT } from "./client";
 import {
   applyShared,
   inspectShared,
@@ -15,7 +24,12 @@ import {
   type SharedRecord,
   SharedRecordSchema,
 } from "./shared";
-import { FAKE_ACCOUNT_ID as ACCOUNT_ID, FakeZone, FAKE_ZONE_ID as ZONE_ID } from "./testing";
+import {
+  FAKE_ACCOUNT_ID as ACCOUNT_ID,
+  type FakeOriginCertificate,
+  FakeZone,
+  FAKE_ZONE_ID as ZONE_ID,
+} from "./testing";
 
 const TOKEN = fakeSecret("cloudflare-token");
 const WAF = "http_request_firewall_custom";
@@ -1097,51 +1111,929 @@ describe("SharedRecordSchema", () => {
   });
 });
 
-describe("origin TLS and the zone's minimum TLS (planned and applied from feature 014 on)", () => {
-  it("plans none of them yet: the same changes and hash, no CSR and no advice", async () => {
-    const zone = new FakeZone();
-    const plain = await planFor(zone, { hostnames: both(A) });
-    const tls = await planFor(zone, {
-      hostnames: both(A),
-      tls: {
-        proxied: A,
-        retiring: [],
-        served: { requiring: [] },
-        origin: { csr: "a certificate signing request" },
-        client: { sha256: "b".repeat(64) },
-      },
-      minTls: true,
+describe("origin TLS and the zone's minimum TLS", () => {
+  const SSL = "Zone → SSL and Certificates → Edit";
+  const AOP = `/zones/${ZONE_ID}/origin_tls_client_auth/hostnames`;
+  /** The fake zone's issue time, and where each test's clock starts. */
+  const START = new Date("2026-10-21T09:00:00Z");
+  const IN_15_YEARS = "2041-10-21T09:00:00.000Z";
+  const [SHOP, WWW] = A as [string, string];
+
+  /** The app's keys, client certificate and CSR, made at test time. */
+  function material(hostnames: readonly string[] = A) {
+    const origin = generateP256();
+    const client = generateP256();
+    const clientCertificate = selfSignedClientCertificate({
+      key: client.privateKey,
+      commonName: "opscrew-shop",
+      days: 5475,
+      now: START,
     });
-    expect(tls).toEqual(plain);
-    expect(plain.advice).toEqual([]);
-    expect(plain).not.toHaveProperty("csr");
+    return {
+      originKey: origin.privateKey,
+      csr: buildCsr({ key: origin.privateKey, hostnames }),
+      keys: { clientCertificate, clientKey: client.privateKey },
+      sha256: fingerprintSha256(clientCertificate),
+    };
+  }
+  type Material = ReturnType<typeof material>;
+  type DesiredTls = NonNullable<SharedDesired["tls"]>;
+  type ClientRecord = NonNullable<NonNullable<SharedRecord["tls"]>["client"]>;
+
+  /** A clock that each `sleep` moves on. */
+  function fakeTime() {
+    let now = START.getTime();
+    const sleeps: number[] = [];
+    return {
+      clock: { now: () => new Date(now) },
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+      sleeps,
+    };
+  }
+  type Time = ReturnType<typeof fakeTime>;
+
+  /** A provision that wants origin TLS for `proxied` (and 011's rules for A). */
+  const wanted = (m: Material, proxied = A, extra: Partial<DesiredTls> = {}): SharedDesired => ({
+    hostnames: both(A),
+    tls: { proxied, retiring: [], origin: { csr: m.csr }, client: { sha256: m.sha256 }, ...extra },
+  });
+  /** A destroy: no hostnames, nothing proxied. */
+  const gone = (served?: DesiredTls["served"]): SharedDesired => ({
+    hostnames: {},
+    tls: { proxied: [], retiring: [], ...(served ? { served } : {}) },
   });
 
-  it("refuses to apply them until they are built, and writes nothing", async () => {
+  async function tlsPlan(
+    zone: FakeZone,
+    desired: SharedDesired,
+    record?: SharedRecord,
+    time: Time = fakeTime(),
+  ): Promise<SharedPlan> {
+    const facts = await inspectShared(clientFor(zone), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+      ...(desired.tls ? { tls: { proxied: desired.tls.proxied, record } } : {}),
+      ...(desired.minTls ? { minTls: true } : {}),
+      clock: time.clock,
+    });
+    return planShared(facts, desired, record);
+  }
+
+  /** Applies the approved plan with the plan's CSR and `m`'s client certificate and key. */
+  const applyTls = (zone: FakeZone, plan: SharedPlan, m?: Material, time: Time = fakeTime()) =>
+    applyShared(clientFor(zone), plan, {
+      approvedHash: plan.hash,
+      ...(m ? { keys: m.keys } : {}),
+      ...(plan.csr ? { csr: plan.csr } : {}),
+      clock: time.clock,
+      sleep: time.sleep,
+    });
+
+  /** Origin TLS for A, applied. */
+  async function provisioned(zone: FakeZone, m: Material) {
+    return applyTls(zone, await tlsPlan(zone, wanted(m)), m);
+  }
+
+  it("plans a new app's origin TLS in the contract's order before 011's rules, and applies it with the keys and the CSR it is given", async () => {
     const zone = new FakeZone();
-    const empty = await planFor(zone, { hostnames: {} });
-    const changes: SharedChange[] = [
-      { kind: "upload-client-certificate", sha256: "b".repeat(64) },
-      { kind: "enable-client-certificate", hostnames: A, sha256: "b".repeat(64) },
-      { kind: "create-origin-certificate", hostnames: A, csrSha256: "c".repeat(64) },
-      { kind: "disable-client-certificate", hostnames: A },
-      { kind: "delete-client-certificate", id: "client-1" },
-      { kind: "revoke-origin-certificate", id: "origin-1" },
+    zone.addDnsRecord({ type: "A", name: SHOP, proxied: true, comment: OPSCREW_MANAGED_COMMENT });
+    zone.addDnsRecord({
+      type: "CNAME",
+      name: WWW,
+      proxied: true,
+      comment: OPSCREW_MANAGED_COMMENT,
+    });
+    zone.addDnsRecord({ type: "A", name: "mail.example.com", proxied: false });
+    const m = material();
+    const time = fakeTime();
+    const plan = await tlsPlan(zone, { ...wanted(m), minTls: true }, undefined, time);
+    expect(plan.findings).toEqual([]);
+    expect(plan.advice).toEqual([]);
+    expect(plan.changes.slice(0, 4)).toEqual([
+      { kind: "upload-client-certificate", sha256: m.sha256 },
+      { kind: "enable-client-certificate", hostnames: A, sha256: m.sha256 },
+      { kind: "create-origin-certificate", hostnames: A, csrSha256: sha256Hex(m.csr) },
       { kind: "set-min-tls", from: "1.0", to: "1.2" },
-    ];
-    for (const change of changes) {
-      const plan = { ...empty, changes: [change] };
-      const hash = sha256Hex(
-        canonicalJson({ zoneId: ZONE_ID, accountId: ACCOUNT_ID, changes: [change], expect: {} }),
-      );
-      const before = zone.calls.length;
+    ]);
+    expect(kinds(plan).slice(4)).toEqual(["create-entrypoint", "create-entrypoint"]);
+    expect(plan.csr).toBe(m.csr);
+    const hashed = canonicalJson({
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      changes: plan.changes,
+      expect: plan.expect,
+    });
+    expect(plan.hash).toBe(sha256Hex(hashed));
+    expect(hashed).not.toContain("CERTIFICATE REQUEST");
+
+    const before = zone.calls.length;
+    const result = await applyTls(zone, plan, m, time);
+    expect(result.applied).toEqual([
+      ...kinds(plan).slice(0, 4),
+      `create-entrypoint ${WAF}`,
+      `create-entrypoint ${CONFIG}`,
+    ]);
+    const writes = writesSince(zone, before);
+    expect(writes.map((c) => `${c.method} ${c.path}`)).toEqual([
+      `POST ${AOP}/certificates`,
+      `PUT ${AOP}`,
+      "POST /certificates",
+      `PATCH /zones/${ZONE_ID}/settings/min_tls_version`,
+      `PUT /zones/${ZONE_ID}/rulesets/phases/${WAF}/entrypoint`,
+      `PUT /zones/${ZONE_ID}/rulesets/phases/${CONFIG}/entrypoint`,
+    ]);
+    const [client] = zone.clientCertificates;
+    const [origin] = zone.originCertificates;
+    expect(writes[0]?.body).toEqual({
+      certificate: m.keys.clientCertificate,
+      private_key: m.keys.clientKey,
+      bundle_method: "ubiquitous",
+    });
+    expect(writes[1]?.body).toEqual({
+      config: A.map((hostname) => ({ hostname, cert_id: client?.id, enabled: true })),
+    });
+    expect(writes[2]?.body).toEqual({
+      csr: m.csr,
+      hostnames: A,
+      request_type: "origin-ecc",
+      requested_validity: 5475,
+    });
+    // Both hostnames were read until active before the origin certificate was asked for.
+    const calls = zone.calls.slice(before).map((c) => `${c.method} ${c.path}`);
+    expect(
+      calls.slice(calls.indexOf(`PUT ${AOP}`) + 1, calls.indexOf("POST /certificates")),
+    ).toEqual([
+      `GET ${AOP}/${SHOP}`,
+      `GET ${AOP}/${WWW}`,
+      `GET ${AOP}/${SHOP}`,
+      `GET ${AOP}/${WWW}`,
+    ]);
+    expect(time.sleeps).toEqual([2000]);
+    expect(result.originCertificate).toBe(origin?.certificate);
+    expect(result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: both(A),
+      createdEntrypoints: [WAF, CONFIG],
+      tls: {
+        origin: {
+          id: origin?.id,
+          hostnames: A,
+          expiresAt: IN_15_YEARS,
+          sha256: fingerprintSha256(origin?.certificate ?? ""),
+          superseded: [],
+        },
+        client: {
+          id: client?.id,
+          expiresAt: IN_15_YEARS,
+          sha256: m.sha256,
+          enabled: A,
+          retiring: [],
+        },
+      },
+      zoneSettings: { minTlsVersion: { setAt: "2026-10-21T09:00:02.000Z", previous: "1.0" } },
+    });
+    expect(zone.minTls.value).toBe("1.2");
+    expect(SharedRecordSchema.parse(JSON.parse(JSON.stringify(result.record)))).toEqual(
+      result.record,
+    );
+
+    const again = await tlsPlan(zone, { ...wanted(m), minTls: true }, result.record);
+    expect(again).toMatchObject({ changes: [], findings: [], advice: [], record: result.record });
+    expect(again).not.toHaveProperty("csr");
+  });
+
+  it("reads the zone's certificates, the proxied hostnames' settings, the minimum TLS and the proxied records", async () => {
+    const zone = new FakeZone();
+    zone.addDnsRecord({ type: "A", name: SHOP, proxied: true, comment: OPSCREW_MANAGED_COMMENT });
+    zone.addDnsRecord({ type: "CNAME", name: "blog.example.com", proxied: true });
+    zone.addDnsRecord({ type: "TXT", name: "example.com", proxied: false });
+    const m = material();
+    await provisioned(zone, m);
+    const facts = await inspectShared(clientFor(zone), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+      tls: { proxied: [...A, "new.example.com"], record: undefined },
+      minTls: true,
+      clock: fakeTime().clock,
+    });
+    const [client] = zone.clientCertificates;
+    expect(facts.tls).toEqual({
+      readAt: START.toISOString(),
+      origin: [{ id: zone.originCertificates[0]?.id, hostnames: A, expiresOn: IN_15_YEARS }],
+      client: [{ id: client?.id, expiresOn: IN_15_YEARS, status: "active" }],
+      aop: A.map((hostname) => ({ hostname, certId: client?.id, enabled: true, status: "active" })),
+    });
+    expect(facts.minTls).toEqual({
+      value: "1.0",
+      editable: true,
+      proxied: [{ name: SHOP, comment: OPSCREW_MANAGED_COMMENT }, { name: "blog.example.com" }],
+    });
+    expect(facts).not.toHaveProperty("deniedTls");
+  });
+
+  it("waits for active with the injected clock, stops after 5 minutes with the still-deploying error, and the next run continues without uploading again", async () => {
+    const quick = new FakeZone();
+    quick.pendingReads = 3;
+    const m = material();
+    const time = fakeTime();
+    await applyTls(quick, await tlsPlan(quick, wanted(m)), m, time);
+    expect(time.sleeps).toEqual([2000, 2000, 2000]);
+
+    const zone = new FakeZone();
+    zone.pendingReads = Number.POSITIVE_INFINITY;
+    const slow = fakeTime();
+    const stuck = await tlsPlan(zone, wanted(m), undefined, slow);
+    const error = (await rejection(applyTls(zone, stuck, m, slow))) as SharedApplyError;
+    expect(error).toBeInstanceOf(SharedApplyError);
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      `Cloudflare is still turning on the client certificate for ${SHOP} and ${WWW}: it was not active after 5 minutes. The server does not require it yet, so no request fails.`,
+    );
+    expect(error.hint).toBe(
+      "Run `opscrew provision` again in a few minutes: OpsCrew continues from where it stopped.",
+    );
+    expect(slow.sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(300_000);
+    expect(error.applied).toEqual(["upload-client-certificate"]);
+    expect(error.record.tls).toEqual({
+      client: {
+        id: zone.clientCertificates[0]?.id,
+        expiresAt: IN_15_YEARS,
+        sha256: m.sha256,
+        enabled: A,
+        retiring: [],
+      },
+    });
+    expect(zone.calls.some((c) => c.method === "POST" && c.path === "/certificates")).toBe(false);
+
+    // Cloudflare finishes: the next run creates the origin certificate and nothing else for TLS.
+    zone.pendingReads = 0;
+    const next = await tlsPlan(zone, wanted(m), error.record);
+    expect(kinds(next)).toEqual([
+      "create-origin-certificate",
+      "create-entrypoint",
+      "create-entrypoint",
+    ]);
+    const done = await applyTls(zone, next, m);
+    expect(done.record.tls).toMatchObject({ client: { enabled: A }, origin: { hostnames: A } });
+    expect(zone.clientCertificates).toHaveLength(1);
+    expect(zone.calls.filter((c) => c.method === "POST" && c.path.startsWith(AOP))).toHaveLength(1);
+  });
+
+  it("records each change as it is made, so the next plan after a failed origin certificate continues without uploading again", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    zone.faults.push({
+      match: "POST /certificates",
+      reply: {
+        status: 400,
+        body: {
+          success: false,
+          errors: [{ code: 1010, message: "invalid request" }],
+          result: null,
+        },
+      },
+    });
+    const error = (await rejection(
+      applyTls(zone, await tlsPlan(zone, wanted(m)), m),
+    )) as SharedApplyError;
+    expect(error.message).toBe(
+      `Cloudflare could not create an origin certificate for ${SHOP} and ${WWW}: invalid request.`,
+    );
+    expect(error.applied).toEqual(["upload-client-certificate", "enable-client-certificate"]);
+    expect(error.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: {},
+      createdEntrypoints: [],
+      tls: {
+        client: {
+          id: zone.clientCertificates[0]?.id,
+          expiresAt: IN_15_YEARS,
+          sha256: m.sha256,
+          enabled: A,
+          retiring: [],
+        },
+      },
+    });
+    const next = await tlsPlan(zone, wanted(m), error.record);
+    expect(next.changes[0]).toEqual({
+      kind: "create-origin-certificate",
+      hostnames: A,
+      csrSha256: sha256Hex(m.csr),
+    });
+    expect(kinds(next).slice(1)).toEqual(["create-entrypoint", "create-entrypoint"]);
+    await applyTls(zone, next, m);
+    expect(zone.clientCertificates).toHaveLength(1);
+    expect(zone.originCertificates).toHaveLength(1);
+  });
+
+  it("replaces an origin certificate with fewer than 30 days left, and revokes the old one only once the server serves the new one", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const first = record.tls?.origin as NonNullable<NonNullable<SharedRecord["tls"]>["origin"]>;
+    const expiring = (days: number): SharedRecord => ({
+      ...record,
+      tls: {
+        ...record.tls,
+        origin: {
+          ...first,
+          expiresAt: new Date(START.getTime() + days * 86_400_000).toISOString(),
+        },
+      },
+    });
+    expect((await tlsPlan(zone, wanted(m), expiring(30))).changes).toEqual([]);
+
+    const { csr } = material();
+    const renew = await tlsPlan(zone, wanted(m, A, { origin: { csr } }), expiring(29));
+    expect(renew.changes).toEqual([
+      { kind: "create-origin-certificate", hostnames: A, csrSha256: sha256Hex(csr) },
+    ]);
+    const renewed = await applyTls(zone, renew, m);
+    const second = renewed.record.tls?.origin;
+    expect(second).toMatchObject({ hostnames: A, expiresAt: IN_15_YEARS, superseded: [first.id] });
+    expect(second?.id).not.toBe(first.id);
+    expect(renewed.originCertificate).toBe(zone.originCertificates[1]?.certificate);
+
+    // The server still serves the old certificate, or could not be read: the old one waits.
+    for (const extra of [{ served: { originSha256: first.sha256, requiring: A } }, {}]) {
+      const waits = await tlsPlan(zone, wanted(m, A, extra), renewed.record);
+      expect(waits.changes).toEqual([]);
+      expect(waits.record.tls?.origin?.superseded).toEqual([first.id]);
+    }
+    const served = { originSha256: second?.sha256 as string, requiring: A };
+    const moved = await tlsPlan(zone, wanted(m, A, { served }), renewed.record);
+    expect(moved.changes).toEqual([{ kind: "revoke-origin-certificate", id: first.id }]);
+    const revoked = await applyTls(zone, moved, m);
+    expect(zone.originCertificates.find((c) => c.id === first.id)?.revoked_at).toBeDefined();
+    expect(revoked.record.tls?.origin).toEqual({ ...second, superseded: [] });
+  });
+
+  it("plans a new origin certificate when Cloudflare no longer lists the app's, and uploads the client certificate again when it is gone", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const old = zone.originCertificates[0] as FakeOriginCertificate;
+    old.revoked_at = "2026-10-22T00:00:00Z";
+    zone.clientCertificates.splice(0);
+    zone.hostnameAop.clear();
+    const plan = await tlsPlan(zone, wanted(m), record);
+    expect(kinds(plan)).toEqual([
+      "upload-client-certificate",
+      "enable-client-certificate",
+      "create-origin-certificate",
+    ]);
+    // The record follows what Cloudflare lists: neither certificate is in it any more.
+    expect(plan.record).not.toHaveProperty("tls");
+    const done = await applyTls(zone, plan, m);
+    expect(done.record.tls?.origin).toMatchObject({ superseded: [] });
+    expect(done.record.tls?.origin?.id).not.toBe(old.id);
+    expect(done.record.tls?.client?.id).toBe(zone.clientCertificates[0]?.id);
+  });
+
+  it("keeps a revoked origin certificate in the record only while superseded ones it held are still listed", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const first = zone.originCertificates[0] as FakeOriginCertificate;
+    const origin = record.tls?.origin as NonNullable<NonNullable<SharedRecord["tls"]>["origin"]>;
+    // It expires now: a new one is wanted.
+    const renewing = {
+      ...record,
+      tls: { ...record.tls, origin: { ...origin, expiresAt: START.toISOString() } },
+    };
+    const { csr } = material();
+    const renew = await tlsPlan(zone, wanted(m, A, { origin: { csr } }), renewing);
+    const renewed = await applyTls(zone, renew, m);
+    const second = zone.originCertificates[1] as FakeOriginCertificate;
+    second.revoked_at = "2026-10-22T00:00:00Z";
+    const plan = await tlsPlan(
+      zone,
+      wanted(m, A, { origin: { csr: material().csr } }),
+      renewed.record,
+    );
+    expect(plan.record.tls?.origin).toMatchObject({ id: second.id, superseded: [first.id] });
+    first.revoked_at = "2026-10-22T00:00:00Z";
+    const later = await tlsPlan(
+      zone,
+      wanted(m, A, { origin: { csr: material().csr } }),
+      renewed.record,
+    );
+    expect(later.record.tls).not.toHaveProperty("origin");
+  });
+
+  it("asks for a CSR when a new origin certificate is needed and none was given", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const desired = wanted(m);
+    const { origin: _origin, ...withoutCsr } = desired.tls as DesiredTls;
+    const error = await rejection(tlsPlan(zone, { ...desired, tls: withoutCsr }));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      `A new origin certificate is needed for ${SHOP} and ${WWW} (there is none, it expires within 30 days, Cloudflare no longer lists it, or the hostnames changed), but this plan was given no certificate request.`,
+    );
+    expect(error.hint).toContain("CSR");
+  });
+
+  it("refuses to replace a client certificate Cloudflare still has, and says how to replace it by hand", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const error = await rejection(tlsPlan(zone, wanted(material()), record));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "This app's client certificate at Cloudflare is not the one asked for, and OpsCrew does not replace a client certificate: it lasts 15 years, and a safe switch needs the server to trust both certificates first.",
+    );
+    expect(error.hint).toContain("To replace it by hand");
+    expect(error.hint).toContain("opscrew/runtime/edge/tls/pull.pem");
+    expect(error.hint).toContain(".opscrew/cloudflare.json");
+  });
+
+  it("waits until the uploaded client certificate is active before turning it on, and stops after 5 minutes", async () => {
+    const zone = new FakeZone();
+    zone.certificatePendingReads = 2;
+    const m = material();
+    const time = fakeTime();
+    const before = zone.calls.length;
+    await applyTls(zone, await tlsPlan(zone, wanted(m)), m, time);
+    const calls = zone.calls.slice(before).map((c) => `${c.method} ${c.path}`);
+    const certificates = `GET ${AOP}/certificates?page=1&per_page=50`;
+    // The certificate until active, then each hostname's setting read again before the write.
+    expect(
+      calls.slice(calls.indexOf(`POST ${AOP}/certificates`) + 1, calls.indexOf(`PUT ${AOP}`)),
+    ).toEqual([
+      certificates,
+      certificates,
+      certificates,
+      `GET ${AOP}/${SHOP}`,
+      `GET ${AOP}/${WWW}`,
+    ]);
+    expect(time.sleeps).toEqual([2000, 2000, 2000]);
+
+    const stuck = new FakeZone();
+    stuck.certificatePendingReads = Number.POSITIVE_INFINITY;
+    const slow = fakeTime();
+    const error = (await rejection(
+      applyTls(stuck, await tlsPlan(stuck, wanted(m)), m, slow),
+    )) as SharedApplyError;
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      "Cloudflare is still deploying the app's client certificate: it was not active after 5 minutes. The server does not require it yet, so no request fails.",
+    );
+    expect(error.hint).toBe(
+      "Run `opscrew provision` again in a few minutes: OpsCrew continues from where it stopped.",
+    );
+    expect(slow.sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(300_000);
+    expect(error.applied).toEqual(["upload-client-certificate"]);
+    expect(error.record.tls?.client).toMatchObject({ enabled: [], retiring: [] });
+    expect(stuck.calls.some((c) => c.method === "PUT" && c.path === AOP)).toBe(false);
+
+    // Once Cloudflare has deployed it, the next run turns it on without uploading again.
+    stuck.certificatePendingReads = 0;
+    const next = await tlsPlan(stuck, wanted(m), error.record);
+    expect(kinds(next).slice(0, 2)).toEqual([
+      "enable-client-certificate",
+      "create-origin-certificate",
+    ]);
+    await applyTls(stuck, next, m);
+    expect(stuck.clientCertificates).toHaveLength(1);
+  });
+
+  it("retires a hostname that leaves the proxy once the server stops requiring it, and removes everything on destroy, in order, once the server shows it", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const first = await provisioned(zone, m);
+    const old = first.record.tls?.origin as { id: string; sha256: string };
+    const { csr } = material([SHOP]);
+    const leaving = (served: { originSha256: string; requiring: string[] }) =>
+      wanted(m, [SHOP], { retiring: [WWW], origin: { csr }, served });
+
+    // The first run: a certificate for what stays proxied; www keeps its requirement for now.
+    const one = await tlsPlan(
+      zone,
+      leaving({ originSha256: old.sha256, requiring: A }),
+      first.record,
+    );
+    expect(one.changes).toEqual([
+      { kind: "create-origin-certificate", hostnames: [SHOP], csrSha256: sha256Hex(csr) },
+    ]);
+    expect(one.record.tls?.client).toMatchObject({ enabled: A, retiring: [WWW] });
+    const oneDone = await applyTls(zone, one, m);
+    const current = oneDone.record.tls?.origin as { id: string; sha256: string };
+    expect(oneDone.record.tls?.client).toMatchObject({ enabled: A, retiring: [WWW] });
+
+    // The next run, once the server serves the new certificate and requires the client one only for shop.
+    const two = await tlsPlan(
+      zone,
+      leaving({ originSha256: current.sha256, requiring: [SHOP] }),
+      oneDone.record,
+    );
+    expect(two.changes).toEqual([
+      { kind: "disable-client-certificate", hostnames: [WWW] },
+      { kind: "revoke-origin-certificate", id: old.id },
+    ]);
+    const twoDone = await applyTls(zone, two, m);
+    expect(zone.calls.filter((c) => c.method === "PUT" && c.path === AOP).at(-1)?.body).toEqual({
+      config: [{ hostname: WWW, cert_id: zone.clientCertificates[0]?.id, enabled: null }],
+    });
+    expect(zone.hostnameAop.get(WWW)).toMatchObject({ enabled: null });
+    expect(twoDone.record.tls?.client).toMatchObject({ enabled: [SHOP], retiring: [] });
+    expect(twoDone.record.tls?.origin).toMatchObject({ id: current.id, superseded: [] });
+
+    // Destroy: while the server cannot be read, the TLS changes wait.
+    const unread = await tlsPlan(zone, gone(), twoDone.record);
+    expect(unread.changes.filter((c) => !("phase" in c))).toEqual([]);
+    expect(unread.record.tls).toMatchObject({
+      client: { enabled: [SHOP], retiring: [SHOP] },
+      origin: { id: current.id },
+    });
+    const destroy = await tlsPlan(zone, gone({ requiring: [] }), twoDone.record);
+    expect(destroy.changes.slice(0, 3)).toEqual([
+      { kind: "disable-client-certificate", hostnames: [SHOP] },
+      { kind: "delete-client-certificate", id: zone.clientCertificates[0]?.id },
+      { kind: "revoke-origin-certificate", id: current.id },
+    ]);
+    expect(kinds(destroy).slice(3)).toEqual([
+      "delete-rule",
+      "delete-entrypoint",
+      "delete-rule",
+      "delete-entrypoint",
+    ]);
+    const before = zone.calls.length;
+    const destroyed = await applyTls(zone, destroy);
+    const [certificate] = zone.clientCertificates;
+    expect(
+      writesSince(zone, before)
+        .slice(0, 3)
+        .map((c) => `${c.method} ${c.path}`),
+    ).toEqual([
+      `PUT ${AOP}`,
+      `DELETE ${AOP}/certificates/${certificate?.id}`,
+      `DELETE /certificates/${current.id}`,
+    ]);
+    expect(destroyed.record).toEqual({ zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] });
+    expect(certificate?.status).toBe("pending_deletion");
+    expect(zone.originCertificates.every((c) => c.revoked_at !== undefined)).toBe(true);
+  });
+
+  it("drops a client certificate from the record once Cloudflare lists it as being deleted, after a delete whose answer was lost", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const origin = record.tls?.origin as { id: string };
+    const id = zone.clientCertificates[0]?.id as string;
+    zone.faults.push({
+      match: `DELETE ${AOP}/certificates/${id}`,
+      reply: { error: new TypeError("fetch failed") },
+      applied: true,
+    });
+    const destroy = await tlsPlan(zone, gone({ requiring: [] }), record);
+    const error = (await rejection(applyTls(zone, destroy))) as SharedApplyError;
+    expect(error.message).toContain("may still have reached Cloudflare");
+    expect(error.applied).toEqual(["disable-client-certificate"]);
+    expect(error.record.tls?.client).toMatchObject({ id, enabled: [], retiring: [] });
+    expect(zone.clientCertificates[0]?.status).toBe("pending_deletion");
+
+    // A fresh plan follows what Cloudflare lists: the client certificate is gone from the record,
+    // and only the origin certificate is left to revoke.
+    const next = await tlsPlan(zone, gone({ requiring: [] }), error.record);
+    expect(next.record.tls).not.toHaveProperty("client");
+    expect(next.changes.filter((c) => !("phase" in c))).toEqual([
+      { kind: "revoke-origin-certificate", id: origin.id },
+    ]);
+    const done = await applyTls(zone, next);
+    expect(done.record).not.toHaveProperty("tls");
+  });
+
+  it("refuses a hostname another app's client certificate holds, and writes nothing", async () => {
+    const zone = new FakeZone();
+    const other = material(B);
+    const theirs: DesiredTls = {
+      proxied: B,
+      retiring: [],
+      origin: { csr: other.csr },
+      client: { sha256: other.sha256 },
+    };
+    await applyTls(zone, await tlsPlan(zone, { hostnames: both(B), tls: theirs }), other);
+    const m = material(B);
+    const plan = await tlsPlan(zone, {
+      hostnames: {},
+      tls: { ...theirs, origin: { csr: m.csr }, client: { sha256: m.sha256 } },
+    });
+    expect(plan.changes).toEqual([]);
+    expect(plan.findings).toEqual([
+      {
+        code: "hostname-tls-claimed",
+        message: expect.stringContaining(
+          "api.example.com already requires a client certificate at Cloudflare that this app did not upload",
+        ),
+        hint: expect.stringContaining("OpsCrew never takes a hostname from another app."),
+      },
+    ]);
+    const before = zone.calls.length;
+    expect((await rejection(applyTls(zone, plan, m))).code).toBe("PHASE_PRECONDITION");
+    expect(zone.calls.length).toBe(before);
+  });
+
+  /** Another app's client certificate on `hostname`, as Cloudflare would hold it. */
+  const takeOver = (zone: FakeZone, hostname: string) =>
+    zone.hostnameAop.set(hostname, { hostname, cert_id: "f".repeat(32), enabled: true });
+
+  it("never turns off a hostname another certificate holds when the plan is made, and drops it from the record", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const origin = record.tls?.origin as { sha256: string };
+    takeOver(zone, WWW);
+    const { csr } = material([SHOP]);
+    const served = { originSha256: origin.sha256, requiring: [SHOP] };
+    const plan = await tlsPlan(zone, wanted(m, [SHOP], { origin: { csr }, served }), record);
+    expect(kinds(plan)).toEqual(["create-origin-certificate"]);
+    expect(plan.record.tls?.client).toMatchObject({ enabled: [SHOP], retiring: [] });
+  });
+
+  it("stops before turning a hostname on when another certificate took it after the plan", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const plan = await tlsPlan(zone, wanted(m));
+    takeOver(zone, WWW);
+    const error = (await rejection(applyTls(zone, plan, m))) as SharedApplyError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `${WWW} is held by another client certificate at Cloudflare now: another OpsCrew app turned on Authenticated Origin Pulls for it after this Cloudflare plan was made. OpsCrew stopped before changing it.`,
+    );
+    expect(error.applied).toEqual(["upload-client-certificate"]);
+    expect(error.record.tls?.client).toMatchObject({ enabled: [] });
+    expect(zone.calls.some((c) => c.method === "PUT" && c.path === AOP)).toBe(false);
+    expect(zone.hostnameAop.get(WWW)).toMatchObject({ cert_id: "f".repeat(32), enabled: true });
+  });
+
+  it("stops before turning a hostname off when another certificate took it after the plan", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const { csr } = material([SHOP]);
+    const origin = record.tls?.origin as { sha256: string };
+    const served = { originSha256: origin.sha256, requiring: [SHOP] };
+    const plan = await tlsPlan(zone, wanted(m, [SHOP], { origin: { csr }, served }), record);
+    expect(kinds(plan)).toEqual(["create-origin-certificate", "disable-client-certificate"]);
+    takeOver(zone, WWW);
+    const error = (await rejection(applyTls(zone, plan, m))) as SharedApplyError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(`${WWW} is held by another client certificate`);
+    expect(error.applied).toEqual(["create-origin-certificate"]);
+    expect(zone.calls.filter((c) => c.method === "PUT" && c.path === AOP)).toHaveLength(1);
+    expect(zone.hostnameAop.get(WWW)).toMatchObject({ cert_id: "f".repeat(32), enabled: true });
+  });
+
+  it("turns on only the client certificate the approved plan names", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await provisioned(zone, m);
+    const certId = zone.clientCertificates[0]?.id as string;
+    zone.hostnameAop.set(SHOP, { hostname: SHOP, cert_id: certId, enabled: null });
+    const plan = await tlsPlan(zone, wanted(m), record);
+    expect(plan.changes).toEqual([
+      { kind: "enable-client-certificate", hostnames: [SHOP], sha256: m.sha256 },
+    ]);
+    const client = plan.record.tls?.client as ClientRecord;
+    // The record is outside the hash: one naming another certificate is refused.
+    const tampered: SharedPlan = {
+      ...plan,
+      record: {
+        ...plan.record,
+        tls: { ...plan.record.tls, client: { ...client, sha256: "0".repeat(64) } },
+      },
+    };
+    const before = zone.calls.length;
+    const error = await rejection(applyTls(zone, tampered, m));
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(writesSince(zone, before)).toEqual([]);
+  });
+
+  it("leaves origin TLS out with the tls-permission-missing advice when the token lacks the permission, records the gap, and still applies 011's rules", async () => {
+    const zone = new FakeZone();
+    zone.denied.add("ssl");
+    const m = material();
+    const facts = await inspectShared(clientFor(zone), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+      tls: { proxied: A, record: undefined },
+    });
+    expect(facts.deniedTls).toEqual([SSL]);
+    expect(facts).not.toHaveProperty("tls");
+    const plan = planShared(facts, wanted(m), undefined);
+    expect(plan.findings).toEqual([]);
+    expect(kinds(plan)).toEqual(["create-entrypoint", "create-entrypoint"]);
+    expect(plan.advice).toEqual([
+      {
+        code: "tls-permission-missing",
+        message: `The Cloudflare token lacks ${SSL} for this zone (HTTP 403), so this plan leaves out the app's origin certificate and Authenticated Origin Pulls. The app keeps today's protection: only Cloudflare's addresses reach the server.`,
+        hint: `Edit the token at https://dash.cloudflare.com/profile/api-tokens and give it ${SSL} for this zone, then run the command again.`,
+      },
+    ]);
+    expect(plan).not.toHaveProperty("csr");
+    const result = await applyTls(zone, plan);
+    expect(result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: both(A),
+      createdEntrypoints: [WAF, CONFIG],
+      tls: { gap: "permission" },
+    });
+
+    // Once the token has it, the gap goes and origin TLS is planned.
+    zone.denied.delete("ssl");
+    const next = await tlsPlan(zone, wanted(m), result.record);
+    expect(kinds(next)).toEqual([
+      "upload-client-certificate",
+      "enable-client-certificate",
+      "create-origin-certificate",
+    ]);
+    expect(next.advice).toEqual([]);
+    expect(next.record).not.toHaveProperty("tls");
+  });
+
+  it.each([
+    ["settings", "Zone → Zone Settings → Edit"],
+    ["dns", "Zone → DNS → Edit"],
+  ])(
+    "names the permission when the token may not read the zone's %s for the minimum TLS, and still plans origin TLS",
+    async (denied, permission) => {
+      const zone = new FakeZone();
+      zone.denied.add(denied);
+      const plan = await tlsPlan(zone, { ...wanted(material()), minTls: true });
+      expect(kinds(plan)).toEqual([
+        "upload-client-certificate",
+        "enable-client-certificate",
+        "create-origin-certificate",
+        "create-entrypoint",
+        "create-entrypoint",
+      ]);
+      expect(plan.advice).toEqual([
+        {
+          code: "tls-permission-missing",
+          message: `The Cloudflare token lacks ${permission} for this zone (HTTP 403), so this plan leaves out the zone's minimum TLS version.`,
+          hint: expect.stringContaining(`${permission} for this zone`),
+        },
+      ]);
+      expect(plan.record).not.toHaveProperty("tls");
+    },
+  );
+
+  it.each<[string, (zone: FakeZone) => void, "raise" | "advise" | "nothing"]>([
+    [
+      "every proxied record is OpsCrew's",
+      (z) =>
+        z.addDnsRecord({ type: "A", name: SHOP, proxied: true, comment: OPSCREW_MANAGED_COMMENT }),
+      "raise",
+    ],
+    [
+      "a DNS-only record of someone else",
+      (z) => z.addDnsRecord({ type: "A", name: "mail.example.com", proxied: false }),
+      "raise",
+    ],
+    [
+      "a proxied record of someone else",
+      (z) => z.addDnsRecord({ type: "CNAME", name: "blog.example.com", proxied: true }),
+      "advise",
+    ],
+    [
+      "a proxied AAAA record with another comment",
+      (z) =>
+        z.addDnsRecord({ type: "AAAA", name: "v6.example.com", proxied: true, comment: "mine" }),
+      "advise",
+    ],
+    ["1.1, set by someone", (z) => Object.assign(z.minTls, { value: "1.1" }), "advise"],
+    [
+      "a setting the zone cannot change",
+      (z) => Object.assign(z.minTls, { editable: false }),
+      "advise",
+    ],
+    ["1.2", (z) => Object.assign(z.minTls, { value: "1.2" }), "nothing"],
+    ["1.3", (z) => Object.assign(z.minTls, { value: "1.3" }), "nothing"],
+  ])("decides the zone's minimum TLS version: %s", async (_, setup, outcome) => {
+    const zone = new FakeZone();
+    setup(zone);
+    const plan = await tlsPlan(zone, { hostnames: {}, minTls: true });
+    expect(plan.changes).toEqual(
+      outcome === "raise" ? [{ kind: "set-min-tls", from: "1.0", to: "1.2" }] : [],
+    );
+    expect(plan.advice).toEqual(
+      outcome === "advise"
+        ? [
+            {
+              code: "min-tls-advised",
+              message: expect.stringContaining("OpsCrew leaves it as it is"),
+              hint: expect.stringContaining("Minimum TLS Version"),
+            },
+          ]
+        : [],
+    );
+  });
+
+  it("names the proxied records that are not OpsCrew's in the advice, and plans nothing when the decision is not asked for", async () => {
+    const zone = new FakeZone();
+    for (const name of ["a.example.com", "b.example.com", "c.example.com", "d.example.com"]) {
+      zone.addDnsRecord({ type: "CNAME", name, proxied: true });
+    }
+    const plan = await tlsPlan(zone, { hostnames: {}, minTls: true });
+    expect(plan.advice[0]?.message).toBe(
+      "The zone's minimum TLS version is 1.0, so visitors can still connect with TLS 1.0 and 1.1. OpsCrew leaves it as it is because the zone has proxied hostnames that are not OpsCrew's: a.example.com, b.example.com, c.example.com and 1 more.",
+    );
+    const before = zone.calls.length;
+    const notAsked = await tlsPlan(zone, { hostnames: {} });
+    expect(notAsked).toMatchObject({ changes: [], advice: [] });
+    expect(zone.calls.slice(before).some((c) => c.path.includes("/settings/"))).toBe(false);
+  });
+
+  it("raises the minimum TLS only from 1.0: a value changed after the plan stops the apply", async () => {
+    const zone = new FakeZone();
+    const plan = await tlsPlan(zone, { hostnames: {}, minTls: true });
+    expect(kinds(plan)).toEqual(["set-min-tls"]);
+    zone.minTls.value = "1.3";
+    const error = (await rejection(applyTls(zone, plan))) as SharedApplyError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "The zone's minimum TLS version is 1.3 now, not the 1.0 this Cloudflare plan raises, so OpsCrew leaves it as it is.",
+    );
+    expect(zone.writes()).toEqual([]);
+    expect(zone.minTls.value).toBe("1.3");
+    expect(error.record).not.toHaveProperty("zoneSettings");
+  });
+
+  it("carries the record's origin TLS and zone settings over when the plan does not ask for them, reading none of them", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const { record } = await applyTls(zone, await tlsPlan(zone, { ...wanted(m), minTls: true }), m);
+    const before = zone.calls.length;
+    const plan = await planFor(zone, { hostnames: both(A) }, record);
+    expect(plan.changes).toEqual([]);
+    expect(plan.record).toEqual(record);
+    expect(
+      zone.calls
+        .slice(before)
+        .every((c) => c.path.includes("/rulesets/") || c.path === `/zones/${ZONE_ID}`),
+    ).toBe(true);
+  });
+
+  it("refuses an apply given another CSR or client certificate than the approved plan's, writing nothing", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const plan = await tlsPlan(zone, wanted(m));
+    const other = material();
+    for (const given of [
+      { csr: other.csr, keys: m.keys },
+      { keys: m.keys },
+      { csr: m.csr, keys: other.keys },
+      { csr: m.csr },
+    ]) {
       const error = await rejection(
-        applyShared(clientFor(zone), { ...plan, hash }, { approvedHash: hash }),
+        applyShared(clientFor(zone), plan, { approvedHash: plan.hash, ...given }),
       );
-      expect(error.code, change.kind).toBe("INTERNAL");
-      expect(error.message).toContain(`"${change.kind}"`);
-      expect(error).toMatchObject({ applied: [], record: empty.record });
-      expect(writesSince(zone, before)).toEqual([]);
+      expect(error.code).toBe("PLAN_HASH_MISMATCH");
+      expect(error).not.toBeInstanceOf(SharedApplyError);
+    }
+    expect(zone.writes()).toEqual([]);
+  });
+
+  it("keeps every key out of the plan, its hash and the errors, and the CSR's text out of the hash", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const secrets = [m.originKey, m.keys.clientKey].map((key) => key.split("\n")[1] as string);
+    const plan = await tlsPlan(zone, { ...wanted(m), minTls: true });
+    const text = JSON.stringify(plan);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    const hashed = canonicalJson({
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      changes: plan.changes,
+      expect: plan.expect,
+    });
+    expect(hashed).not.toContain(m.csr.split("\n")[1]);
+
+    // Cloudflare refuses the upload quoting the key; then a setting never becomes active.
+    zone.faults.push({
+      match: `POST ${AOP}/certificates`,
+      reply: {
+        status: 400,
+        body: {
+          success: false,
+          errors: [{ code: 1406, message: `Bad key ${m.keys.clientKey}` }],
+          result: null,
+        },
+      },
+    });
+    const refused = await rejection(applyTls(zone, plan, m));
+    zone.pendingReads = Number.POSITIVE_INFINITY;
+    const stuck = await rejection(applyTls(zone, plan, m));
+    for (const error of [refused, stuck]) {
+      const shown = `${error.message} ${error.hint} ${JSON.stringify(error)} ${errorText(error.cause)}`;
+      for (const secret of secrets) expect(shown).not.toContain(secret);
     }
   });
 });

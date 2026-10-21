@@ -1,9 +1,11 @@
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeFetch as coreFakeFetch, type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
   CLOUDFLARE_API,
+  CLOUDFLARE_TOKEN_PERMISSIONS,
   CloudflareClient,
+  CloudflareError,
   OPSCREW_MANAGED_COMMENT,
   zoneCandidates,
 } from "./client";
@@ -468,5 +470,333 @@ describe("cloudflareConnector", () => {
     const connector = cloudflareConnector({ env: {}, fetch: fakeFetch({}).fetch });
     expect(connector.client).toBeUndefined();
     expect(await connector.verifyCredentials()).toMatchObject({ ok: false });
+  });
+
+  it("gives its client the connector's redactor", async () => {
+    // No pattern rules: only registered values are masked.
+    const redactor = new Redactor({ rules: [] });
+    const privateKey = fakeSecret("private-key-pem");
+    const connector = cloudflareConnector({
+      env: { CLOUDFLARE_API_TOKEN: TOKEN },
+      fetch: fakeFetch({ "/": fail(400, [{ message: "refused" }]) }).fetch,
+      sleep: noSleep,
+      redactor,
+    });
+    await connector.client
+      ?.uploadHostnameClientCertificate("z1", { certificate: "certificate", privateKey })
+      .catch(() => undefined);
+    expect(redactor.redact(`key: ${privateKey}`)).not.toContain(privateKey);
+    expect(redactor.redact(`token ${TOKEN}`)).not.toContain(TOKEN);
+  });
+});
+
+describe("CloudflareClient origin TLS calls", () => {
+  const AOP = "/zones/z1/origin_tls_client_auth/hostnames";
+  const client = (routes: Record<string, FakeReply | FakeReply[]>) => {
+    const fake = fakeFetch(routes);
+    return {
+      ...fake,
+      cf: new CloudflareClient({ token: TOKEN, fetch: fake.fetch, sleep: noSleep }),
+    };
+  };
+  const denied = fail(403, [{ code: 10000, message: "Authentication error" }]);
+  const accepted = (result: unknown) => ({
+    status: 202,
+    body: { success: true, errors: [], messages: [], result },
+  });
+  /** A PEM block around `text` (not a real certificate or key). */
+  const pem = (label: string, text: string) =>
+    `-----BEGIN ${label}-----\n${Buffer.from(text).toString("base64")}\n-----END ${label}-----\n`;
+
+  it("creates an origin certificate for exact hostnames, for 15 years, with its expiry as an ISO time", async () => {
+    const csr = pem("CERTIFICATE REQUEST", "a request");
+    const certificate = pem("CERTIFICATE", "a certificate");
+    const { cf, calls } = client({
+      "POST /certificates": ok({
+        id: "1234567890",
+        certificate,
+        csr,
+        expires_on: "2041-10-16 23:53:00 +0000 UTC",
+        hostnames: ["app.example.com"],
+        request_type: "origin-ecc",
+        requested_validity: 5475,
+      }),
+    });
+    expect(
+      await cf.createOriginCertificate({ csr, hostnames: ["app.example.com"], days: 5475 }),
+    ).toEqual({ id: "1234567890", certificate, expiresOn: "2041-10-16T23:53:00.000Z" });
+    expect(calls.map((c) => [c.method, c.path, c.body])).toEqual([
+      [
+        "POST",
+        "/certificates",
+        {
+          csr,
+          hostnames: ["app.example.com"],
+          request_type: "origin-ecc",
+          requested_validity: 5475,
+        },
+      ],
+    ]);
+  });
+
+  it("lists the zone's origin certificates across pages, leaving out revoked ones, and revokes one", async () => {
+    const item = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      hostnames: ["app.example.com"],
+      expires_on: "2041-10-16 23:53:00 +0000 UTC",
+      request_type: "origin-ecc",
+      ...extra,
+    });
+    const { cf, calls } = client({
+      "/certificates?page=1": ok([item("c1"), item("c2", { revoked_at: "2026-10-21T00:00:00Z" })], {
+        result_info: { page: 1, total_pages: 2 },
+      }),
+      "/certificates?page=2": ok([item("c3")], { result_info: { page: 2, total_pages: 2 } }),
+      "DELETE /certificates/c1": ok({ id: "c1", revoked_at: "2026-10-21T00:00:00Z" }),
+    });
+    expect(await cf.listOriginCertificates("z1")).toEqual([
+      { id: "c1", hostnames: ["app.example.com"], expiresOn: "2041-10-16T23:53:00.000Z" },
+      { id: "c3", hostnames: ["app.example.com"], expiresOn: "2041-10-16T23:53:00.000Z" },
+    ]);
+    expect(new URL(calls[0]?.url ?? "").searchParams.get("zone_id")).toBe("z1");
+    await cf.revokeOriginCertificate("c1");
+    expect(calls.at(-1)).toMatchObject({ method: "DELETE", path: "/certificates/c1" });
+  });
+
+  it("uploads a client certificate with its key registered with the redactor first, then lists and deletes it", async () => {
+    const certificate = pem("CERTIFICATE", "a client certificate");
+    const privateKey = fakeSecret("private-key-pem");
+    const redactor = new Redactor({ rules: [] });
+    let maskedFirst = false;
+    const fake = fakeFetch({
+      [`POST ${AOP}/certificates`]: {
+        status: 201,
+        body: {
+          success: true,
+          errors: [],
+          result: {
+            id: "cc1",
+            certificate,
+            expires_on: "2041-10-16T23:58:23Z",
+            issuer: "CN=opscrew-shop",
+            status: "pending_deployment",
+          },
+        },
+      },
+      [`GET ${AOP}/certificates`]: ok([
+        { id: "cc1", certificate, expires_on: "2041-10-16T23:58:23Z", status: "active" },
+        { id: "cc0", certificate, expires_on: "2041-10-16T23:58:23Z", status: "pending_deletion" },
+      ]),
+      [`DELETE ${AOP}/certificates/cc1`]: ok({ id: "cc1", status: "pending_deletion" }),
+    });
+    const cf = new CloudflareClient({
+      token: TOKEN,
+      fetch: async (input, init) => {
+        maskedFirst ||= !redactor.redact(privateKey).includes(privateKey);
+        return fake.fetch(input, init);
+      },
+      sleep: noSleep,
+      redactor,
+    });
+    expect(await cf.uploadHostnameClientCertificate("z1", { certificate, privateKey })).toEqual({
+      id: "cc1",
+      expiresOn: "2041-10-16T23:58:23.000Z",
+      status: "pending_deployment",
+    });
+    expect(maskedFirst).toBe(true);
+    expect(fake.calls[0]?.body).toEqual({
+      certificate,
+      private_key: privateKey,
+      bundle_method: "ubiquitous",
+    });
+    expect(await cf.listHostnameClientCertificates("z1")).toEqual([
+      { id: "cc1", expiresOn: "2041-10-16T23:58:23.000Z", status: "active" },
+    ]);
+    await cf.deleteHostnameClientCertificate("z1", "cc1");
+    expect(fake.calls.at(-1)).toMatchObject({
+      method: "DELETE",
+      path: `${AOP}/certificates/cc1`,
+    });
+  });
+
+  it("keeps the client key out of every error, even one that quotes it", async () => {
+    const certificate = pem("CERTIFICATE", "a client certificate");
+    const privateKey = fakeSecret("private-key-pem");
+    const body = privateKey.split("\n")[1] as string;
+    for (const reply of [
+      fail(400, [{ code: 1406, message: `The private key ${privateKey} does not match` }]),
+      denied,
+      { status: 502, body: { success: false, errors: [{ message: privateKey }] } },
+      { error: new TypeError("fetch failed") },
+    ] satisfies FakeReply[]) {
+      const { cf } = client({ [`POST ${AOP}/certificates`]: reply });
+      const error = (await cf
+        .uploadHostnameClientCertificate("z1", { certificate, privateKey })
+        .catch((e: unknown) => e)) as OpsCrewError;
+      expect(error).toBeInstanceOf(OpsCrewError);
+      const text = `${error.message} ${error.hint} ${JSON.stringify(error)}`;
+      expect(text).not.toContain(body);
+    }
+  });
+
+  it("turns per-hostname origin pulls on and off, and reads each hostname's setting", async () => {
+    const setting = (hostname: string, enabled: boolean | null, status: string) => ({
+      hostname,
+      cert_id: "cc1",
+      cert_status: "active",
+      enabled,
+      status,
+      expires_on: "2041-10-16T23:58:23Z",
+    });
+    const { cf, calls } = client({
+      [`PUT ${AOP}`]: [
+        accepted([setting("a.example.com", true, "pending_deployment")]),
+        accepted([setting("a.example.com", null, "pending_deployment")]),
+      ],
+      [`GET ${AOP}/a.example.com`]: ok(setting("a.example.com", true, "active")),
+      [`GET ${AOP}/b.example.com`]: fail(404, [{ code: 1404, message: "Not found" }]),
+      [`GET ${AOP}/c.example.com`]: ok({ hostname: "c.example.com", enabled: null, status: null }),
+    });
+    expect(
+      await cf.putHostnameAopSettings("z1", [
+        { hostname: "a.example.com", certId: "cc1", enabled: true },
+      ]),
+    ).toEqual([
+      { hostname: "a.example.com", certId: "cc1", enabled: true, status: "pending_deployment" },
+    ]);
+    await cf.putHostnameAopSettings("z1", [
+      { hostname: "a.example.com", certId: "cc1", enabled: null },
+    ]);
+    expect(calls.map((c) => c.body)).toEqual([
+      { config: [{ hostname: "a.example.com", cert_id: "cc1", enabled: true }] },
+      { config: [{ hostname: "a.example.com", cert_id: "cc1", enabled: null }] },
+    ]);
+    expect(
+      await cf.listHostnameAopSettings("z1", ["a.example.com", "b.example.com", "c.example.com"]),
+    ).toEqual([
+      { hostname: "a.example.com", certId: "cc1", enabled: true, status: "active" },
+      { hostname: "c.example.com", enabled: null, status: "" },
+    ]);
+  });
+
+  it("reads the zone's minimum TLS version and raises it", async () => {
+    const { cf, calls } = client({
+      "GET /zones/z1/settings/min_tls_version": ok({
+        id: "min_tls_version",
+        value: "1.0",
+        editable: true,
+        modified_on: null,
+      }),
+      "PATCH /zones/z1/settings/min_tls_version": ok({
+        id: "min_tls_version",
+        value: "1.2",
+        editable: true,
+      }),
+    });
+    expect(await cf.getZoneSetting("z1", "min_tls_version")).toEqual({
+      value: "1.0",
+      editable: true,
+    });
+    await cf.patchZoneSetting("z1", "min_tls_version", "1.2");
+    expect(calls.at(-1)).toMatchObject({ method: "PATCH", body: { value: "1.2" } });
+  });
+
+  it.each<[string, (cf: CloudflareClient) => Promise<unknown>, string, string]>([
+    [
+      "listOriginCertificates",
+      (cf) => cf.listOriginCertificates("z1"),
+      "/certificates",
+      "SSL and Certificates",
+    ],
+    [
+      "listHostnameClientCertificates",
+      (cf) => cf.listHostnameClientCertificates("z1"),
+      `${AOP}/certificates`,
+      "SSL and Certificates",
+    ],
+    [
+      "listHostnameAopSettings",
+      (cf) => cf.listHostnameAopSettings("z1", ["a.example.com"]),
+      `${AOP}/a.example.com`,
+      "SSL and Certificates",
+    ],
+    [
+      "createOriginCertificate",
+      (cf) => cf.createOriginCertificate({ csr: "csr", hostnames: ["a.example.com"], days: 5475 }),
+      "POST /certificates",
+      "SSL and Certificates",
+    ],
+    [
+      "putHostnameAopSettings",
+      (cf) =>
+        cf.putHostnameAopSettings("z1", [
+          { hostname: "a.example.com", certId: "cc1", enabled: true },
+        ]),
+      `PUT ${AOP}`,
+      "SSL and Certificates",
+    ],
+    [
+      "getZoneSetting",
+      (cf) => cf.getZoneSetting("z1", "min_tls_version"),
+      "/zones/z1/settings/min_tls_version",
+      "Zone Settings",
+    ],
+    [
+      "patchZoneSetting",
+      (cf) => cf.patchZoneSetting("z1", "min_tls_version", "1.2"),
+      "PATCH /zones/z1/settings/min_tls_version",
+      "Zone Settings",
+    ],
+  ])(
+    "gives a refused %s (HTTP 403) the permission code and the permission to add",
+    async (_, call, route, permission) => {
+      const { cf } = client({ [route]: denied });
+      const error = (await call(cf).catch((e: unknown) => e)) as CloudflareError;
+      expect(error).toBeInstanceOf(CloudflareError);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error.reason).toBe("permission");
+      expect(error.code).toBe("CREDENTIALS_INVALID");
+      expect(error.hint).toContain(`Zone → ${permission} → Edit`);
+    },
+  );
+
+  it("refuses an answer of an unexpected shape, naming the call", async () => {
+    const { cf } = client({
+      "/certificates?page=1": ok([
+        { id: "c1", hostnames: ["a.example.com"], expires_on: "in 15 years" },
+      ]),
+      [`GET ${AOP}/certificates`]: ok([{ id: "cc1", status: "active" }]),
+      [`GET ${AOP}/a.example.com`]: ok({ hostname: "a.example.com", enabled: "yes" }),
+      "GET /zones/z1/settings/min_tls_version": ok({ value: "1.0" }),
+      "POST /certificates": ok({ id: "c2", expires_on: "2041-10-16 23:53:00 +0000 UTC" }),
+    });
+    await expect(cf.listOriginCertificates("z1")).rejects.toMatchObject({
+      message: expect.stringContaining("origin certificates"),
+    });
+    await expect(cf.listHostnameClientCertificates("z1")).rejects.toMatchObject({
+      message: expect.stringContaining("client certificates"),
+    });
+    await expect(cf.listHostnameAopSettings("z1", ["a.example.com"])).rejects.toMatchObject({
+      message: expect.stringContaining("a.example.com"),
+    });
+    await expect(cf.getZoneSetting("z1", "min_tls_version")).rejects.toMatchObject({
+      message: expect.stringContaining("minimum TLS version"),
+    });
+    await expect(
+      cf.createOriginCertificate({ csr: "csr", hostnames: ["a.example.com"], days: 5475 }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("may still have reached Cloudflare"),
+    });
+  });
+
+  it("asks for the certificate and zone settings permissions", () => {
+    expect(CLOUDFLARE_TOKEN_PERMISSIONS).toEqual([
+      "Zone → Zone → Read",
+      "Zone → DNS → Edit",
+      "Zone → Config Rules → Edit",
+      "Zone → Zone WAF → Edit",
+      "Zone → SSL and Certificates → Edit",
+      "Zone → Zone Settings → Edit",
+    ]);
   });
 });

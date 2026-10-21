@@ -32,6 +32,7 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
     ? new CloudflareClient({
         token,
         fetch: options.fetch,
+        redactor,
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
         ...(options.version ? { version: options.version } : {}),
         ...(options.sleep ? { sleep: options.sleep } : {}),

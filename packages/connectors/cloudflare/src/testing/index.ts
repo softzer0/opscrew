@@ -2,5 +2,8 @@
 export {
   FAKE_ACCOUNT_ID,
   FAKE_ZONE_ID,
+  type FakeClientCertificate,
+  type FakeHostnameAop,
+  type FakeOriginCertificate,
   FakeZone,
 } from "./fake-zone";

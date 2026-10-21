@@ -1,26 +1,40 @@
 /**
  * Cloudflare resources several OpsCrew apps share (feature 011, ADR 0014): one OpsCrew rule per
  * phase in a zone, found by its fixed `ref` and listing the hostnames of every OpsCrew app there,
- * and the account's Zero Trust organization and one-time PIN login. `inspectShared` reads them,
+ * and the account's Zero Trust organization and one-time PIN login; and (feature 014, ADR 0017)
+ * each app's origin TLS, per hostname (an Origin CA certificate and a client certificate for
+ * Authenticated Origin Pulls), and the zone's minimum TLS version. `inspectShared` reads them,
  * `planShared` plans one app's change, `applyShared` applies a plan approved by its hash
  * (`cloudflare-apply`). A rule OpsCrew did not create is never written. See
- * `specs/011-shared-cloudflare-zone/contracts/cloudflare-shared.md`.
+ * `specs/011-shared-cloudflare-zone/contracts/cloudflare-shared.md` and
+ * `specs/014-secops-tls/contracts/cloudflare-tls.md`.
  */
+import type { Clock } from "@opscrew/contracts";
 import {
   canonicalJson,
+  durationText,
+  fingerprintSha256,
   isPlanHash,
   listText,
   normalizeHostName,
   OpsCrewError,
   plural,
+  pollAction,
+  realSleep,
   sha256Hex,
+  systemClock,
 } from "@opscrew/core";
 import { z } from "zod";
 import {
   CLOUDFLARE_TOKEN_PAGE,
   type CloudflareClient,
+  CloudflareError,
   type CloudflareRuleInput,
   type EntrypointRuleset,
+  type HostnameAop,
+  type HostnameClientCertificate,
+  OPSCREW_MANAGED_COMMENT,
+  type OriginCertificate,
   type RulesetRule,
 } from "./client";
 
@@ -105,6 +119,24 @@ const RULE_LIMITS = new Map<string, PlanLimits>([
   ],
 ]);
 
+/** The token permissions origin TLS and the zone's minimum TLS need, named as in the token builder. */
+const SSL_PERMISSION = "Zone → SSL and Certificates → Edit";
+const SETTINGS_PERMISSION = "Zone → Zone Settings → Edit";
+const DNS_PERMISSION = "Zone → DNS → Edit";
+
+/** Cloudflare's longest Origin CA validity, 15 years (research R3, constitution II). */
+const ORIGIN_CERTIFICATE_DAYS = 5475;
+/** A certificate with fewer days left than this is replaced. */
+const RENEW_DAYS = 30;
+const DAY_MS = 86_400_000;
+/** How long the apply waits for every hostname's origin pull setting to be active, and how often it reads. */
+const ACTIVE_WAIT_MS = 5 * 60_000;
+const ACTIVE_POLL_MS = 2000;
+/** The DNS records whose proxied hostnames count for the zone's minimum TLS decision. */
+const PROXIED_TYPES = new Set(["A", "AAAA", "CNAME"]);
+/** Proxied hostnames that are not OpsCrew's, named in the advice before the rest are counted. */
+const NAMED_OTHERS = 3;
+
 /** A hostname OpsCrew writes into an expression: lower-case labels joined by dots. */
 const HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
 /** The hostname set at the start of an OpsCrew expression: quoted names, separated by spaces. */
@@ -123,6 +155,28 @@ export interface SharedFacts {
   /** Present only when Access is wanted. */
   organization?: { authDomain: string } | undefined;
   oneTimePinId?: string | undefined;
+  /** The zone's origin TLS, when asked for (`tls`) and the token may read it. */
+  tls?: {
+    /** When it was read (ISO time): what certificates have left is counted from it. */
+    readAt: string;
+    /** The zone's Origin CA certificates that are not revoked. */
+    origin: OriginCertificate[];
+    /** The zone's client certificates for per-hostname origin pulls. */
+    client: HostnameClientCertificate[];
+    /**
+     * The origin pull settings of the app's proxied hostnames and of those its record's client
+     * certificate is on or leaving; a hostname without one is absent.
+     */
+    aop: HostnameAop[];
+  };
+  /** The zone's minimum TLS version and its proxied A, AAAA and CNAME records, when asked for. */
+  minTls?: {
+    value: string;
+    editable: boolean;
+    proxied: { name: string; comment?: string }[];
+  };
+  /** The token permissions a TLS read was refused for (HTTP 403), as the token builder names them. */
+  deniedTls?: string[];
 }
 
 export interface SharedDesired {
@@ -134,7 +188,11 @@ export interface SharedDesired {
   tls?: {
     /** The app's proxied hostnames (empty on destroy). */
     proxied: string[];
-    /** Hostnames that left the proxy, kept until the server shows it. */
+    /**
+     * Hostnames that left the proxy, kept until the server shows it. The plan turns off every
+     * hostname this app's record turned on that is not in `proxied` and whose setting is still on
+     * with the app's client certificate, and no other.
+     */
     retiring: string[];
     /** What the origin uses now, read from the server; absent when it could not be read. */
     served?: { originSha256?: string; requiring: string[] };
@@ -252,6 +310,23 @@ export type SharedChange =
 
 type RuleChange = Extract<SharedChange, { phase: SharedPhase }>;
 
+type TlsRecord = NonNullable<SharedRecord["tls"]>;
+type ClientRecord = NonNullable<TlsRecord["client"]>;
+type DesiredTls = NonNullable<SharedDesired["tls"]>;
+type Advice = SharedPlan["advice"][number];
+type TlsChange = Exclude<
+  SharedChange,
+  RuleChange | { kind: "create-organization" | "create-identity-provider" }
+>;
+
+/** The origin TLS part of a plan: its changes and finding, the record's `tls` before them, the CSR. */
+interface TlsPlan {
+  changes: SharedChange[];
+  findings: SharedFinding[];
+  tls: TlsRecord | undefined;
+  csr?: string;
+}
+
 /** A blocking finding: what OpsCrew found and the next step, in plain English. */
 export interface SharedFinding {
   code:
@@ -276,7 +351,13 @@ export interface SharedPlan {
   findings: SharedFinding[];
   /**
    * The app's record before the plan, and once it is applied (also write `record` after a plan
-   * with no changes and no findings). Local only, never sent to Cloudflare, so not in the hash.
+   * with no changes and no findings). Its `tls` and `zoneSettings` are carried over from
+   * `previous`, following what Cloudflare lists: a client certificate it no longer lists is
+   * dropped, as are hostnames whose setting is no longer on with it; an origin certificate it no
+   * longer lists is dropped unless superseded ones it lists remain, and superseded ids it no
+   * longer lists are dropped; `gap` is set or cleared. `applyShared` updates them change by
+   * change, so after an apply write the record it returns. Local only, never sent to Cloudflare,
+   * so not in the hash.
    */
   previous: SharedRecord | undefined;
   record: SharedRecord;
@@ -295,22 +376,26 @@ export interface SharedPlan {
 }
 
 export interface SharedApplyResult {
-  /** The changes made, in order: `<kind> <phase>` for rules, `<kind>` for Zero Trust. */
+  /** The changes made, in order: `<kind> <phase>` for rules, `<kind>` for the others. */
   applied: string[];
   record: SharedRecord;
   organization?: { authDomain: string };
   oneTimePinId?: string;
+  /** The origin certificate (PEM, public) this apply created; keep it with its key. */
+  originCertificate?: string;
 }
 
 /**
  * An apply that stopped part-way: `applied` lists the changes made before the failure and
- * `record` is the app's record after them (save it). The write that failed may have reached
- * Cloudflare, so its phase is read again and the record keeps the app's hostnames OpsCrew's rule
- * holds; when that read fails too, it keeps the hostnames of both the old and the new record.
+ * `record` is the app's record after them (save it), with `originCertificate` when one was
+ * created before the failure. The write that failed may have reached Cloudflare, so its phase is
+ * read again and the record keeps the app's hostnames OpsCrew's rule holds; when that read fails
+ * too, it keeps the hostnames of both the old and the new record.
  */
 export class SharedApplyError extends OpsCrewError {
   readonly applied: string[];
   readonly record: SharedRecord;
+  readonly originCertificate?: string;
 
   constructor(
     code: OpsCrewError["code"],
@@ -318,23 +403,42 @@ export class SharedApplyError extends OpsCrewError {
     options: { hint?: string; cause?: unknown },
     applied: string[],
     record: SharedRecord,
+    originCertificate?: string,
   ) {
     super(code, message, options);
     this.name = "SharedApplyError";
     this.applied = applied;
     this.record = record;
+    if (originCertificate !== undefined) this.originCertificate = originCertificate;
   }
 }
 
 // --- Inspect -------------------------------------------------------------------------------------
 
 /**
- * Reads the zone's plan and its two entrypoint rulesets and, when `access` is set, the account's
- * Zero Trust organization and its one-time PIN login method. Read-only.
+ * Reads the zone's plan and its two entrypoint rulesets; with `tls`, the zone's origin and client
+ * certificates and the origin pull settings of the proxied hostnames and of those the record's
+ * client certificate is on or leaving; with `minTls`, the zone's minimum
+ * TLS version and its proxied A, AAAA and CNAME records; and, when `access` is set, the account's
+ * Zero Trust organization and its one-time PIN login method. A TLS read the token may not make
+ * (HTTP 403) leaves its facts out and names the permission in `deniedTls`. Read-only.
  */
 export async function inspectShared(
   client: CloudflareClient,
-  opts: { zoneId: string; accountId: string; access: boolean },
+  opts: {
+    zoneId: string;
+    accountId: string;
+    access: boolean;
+    /**
+     * Read the zone's origin TLS for the app's proxied hostnames (`desired.tls.proxied`) and for
+     * those its record's client certificate is on or leaving (the record to be planned against).
+     */
+    tls?: { proxied: readonly string[]; record: SharedRecord | undefined };
+    /** Read what the decision on the zone's minimum TLS needs (`desired.minTls`). */
+    minTls?: boolean;
+    /** Default: this computer's clock. */
+    clock?: Clock;
+  },
 ): Promise<SharedFacts> {
   const zonePlan = await client.zonePlan(opts.zoneId);
   const entrypoints: Record<string, EntrypointRuleset | undefined> = {};
@@ -352,6 +456,51 @@ export async function inspectShared(
     entrypoints,
   };
   if (deniedPhases.length > 0) facts.deniedPhases = deniedPhases;
+  const denied: string[] = [];
+  /** `read()`, or undefined (with `permission` noted) when Cloudflare refuses it with HTTP 403. */
+  const allowed = async <T>(permission: string, read: () => Promise<T>) => {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof CloudflareError)) throw error;
+      denied.push(permission);
+      return undefined;
+    }
+  };
+  if (opts.tls) {
+    const mine = opts.tls.record?.tls?.client;
+    const hostnames = sortedUnique([
+      ...appHostnames(opts.tls.proxied),
+      ...(mine?.enabled ?? []),
+      ...(mine?.retiring ?? []),
+    ]);
+    const readAt = (opts.clock ?? systemClock).now().toISOString();
+    const tls = await allowed(SSL_PERMISSION, async () => ({
+      readAt,
+      origin: await client.listOriginCertificates(opts.zoneId),
+      client: await client.listHostnameClientCertificates(opts.zoneId),
+      aop: await client.listHostnameAopSettings(opts.zoneId, hostnames),
+    }));
+    if (tls) facts.tls = tls;
+  }
+  if (opts.minTls) {
+    const setting = await allowed(SETTINGS_PERMISSION, () =>
+      client.getZoneSetting(opts.zoneId, "min_tls_version"),
+    );
+    const records =
+      setting && (await allowed(DNS_PERMISSION, () => client.listDnsRecords(opts.zoneId)));
+    if (setting && records) {
+      const proxied = records.filter((r) => r.proxied === true && PROXIED_TYPES.has(r.type));
+      facts.minTls = {
+        ...setting,
+        proxied: proxied.map((r) => ({
+          name: r.name,
+          ...(r.comment ? { comment: r.comment } : {}),
+        })),
+      };
+    }
+  }
+  if (denied.length > 0) facts.deniedTls = denied;
   if (!opts.access) return facts;
   const organization = await client.accessOrganization(opts.accountId);
   if (!organization) return facts;
@@ -380,8 +529,13 @@ export function planShared(
   const hostnames = Object.fromEntries(
     REFS.map((ref) => [ref, appHostnames(desired.hostnames[ref] ?? [])]),
   ) as Record<SharedRuleRef, string[]>;
-  const changes: SharedChange[] = [];
-  const findings: SharedFinding[] = [];
+  // Origin TLS and the zone's minimum TLS go first: the apply's order (contract "Order of the apply").
+  const tls: TlsPlan = desired.tls
+    ? planTls(facts, desired.tls, record?.tls)
+    : { changes: [], findings: [], tls: record?.tls };
+  const minTls = planMinTls(facts, desired);
+  const changes: SharedChange[] = [...tls.changes, ...minTls.changes];
+  const findings: SharedFinding[] = [...tls.findings];
   const expect: SharedPlan["expect"] = {};
   for (const ref of REFS) {
     const { phase } = SHARED_RULES[ref];
@@ -422,18 +576,164 @@ export function planShared(
     expect,
     findings,
     previous: record,
-    record: {
-      zoneId: facts.zoneId,
-      hostnames: Object.fromEntries(
-        REFS.flatMap((ref) => (hostnames[ref].length > 0 ? [[ref, hostnames[ref]]] : [])),
-      ),
-      createdEntrypoints: createdAfter(record, changes),
-    },
-    advice: [],
+    record: withTls(
+      {
+        zoneId: facts.zoneId,
+        hostnames: Object.fromEntries(
+          REFS.flatMap((ref) => (hostnames[ref].length > 0 ? [[ref, hostnames[ref]]] : [])),
+        ),
+        createdEntrypoints: createdAfter(record, changes),
+      },
+      { tls: tls.tls, zoneSettings: record?.zoneSettings },
+    ),
+    ...(tls.csr !== undefined ? { csr: tls.csr } : {}),
+    advice: [
+      ...(facts.deniedTls?.length ? [tlsPermissionMissing(facts.deniedTls)] : []),
+      ...minTls.advice,
+    ],
     ...(facts.organization ? { organization: facts.organization } : {}),
     ...(facts.oneTimePinId ? { oneTimePinId: facts.oneTimePinId } : {}),
   };
   return { ...plan, hash: sharedPlanHash(plan) };
+}
+
+/**
+ * The app's origin TLS changes (contract "Plan rules"), in the apply's order: the client
+ * certificate uploaded and turned on for every proxied hostname, a new origin certificate for
+ * exactly the proxied hostnames when there is none or it has fewer than 30 days left, then, once
+ * the server shows it has moved on (`served`), the hostnames that left the proxy turned off, a
+ * client certificate no hostname uses deleted, and the origin certificates it no longer serves
+ * revoked. Also the finding that stops them, the record's `tls` before them, and the CSR the new
+ * origin certificate is created from. A token without the certificate permission plans none of
+ * them and records the gap.
+ */
+function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | undefined): TlsPlan {
+  const { gap: _gap, ...kept } = previous ?? {};
+  if (facts.deniedTls?.includes(SSL_PERMISSION)) {
+    return { changes: [], findings: [], tls: { ...kept, gap: "permission" } };
+  }
+  const read = facts.tls;
+  if (read === undefined) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      "OpsCrew planned the app's origin TLS without reading the zone's first.",
+      { hint: "Report this to OpsCrew: inspectShared needs `tls` whenever the plan has it." },
+    );
+  }
+  const proxied = appHostnames(want.proxied);
+  const listed = (id: string) => read.origin.some((c) => c.id === id);
+  // The record follows what Cloudflare lists.
+  const recorded = kept.client;
+  const client = recorded && read.client.some((c) => c.id === recorded.id) ? recorded : undefined;
+  const superseded = (kept.origin?.superseded ?? []).filter(listed);
+  const origin =
+    kept.origin && (listed(kept.origin.id) || superseded.length > 0)
+      ? { ...kept.origin, superseded }
+      : undefined;
+  // A hostname is this app's while its setting is on with the app's client certificate: only
+  // those are turned off, and the others leave the record.
+  const holds = (hostname: string) =>
+    client !== undefined && heldBy(read.aop, hostname) === client.id;
+  const enabled = client ? sortedUnique([...client.enabled, ...client.retiring]).filter(holds) : [];
+  const retiring = enabled.filter((h) => !proxied.includes(h));
+  const tls: TlsRecord = {
+    ...(origin ? { origin } : {}),
+    ...(client ? { client: { ...client, enabled, retiring } } : {}),
+  };
+  const claimed = proxied.filter((hostname) => {
+    const holder = heldBy(read.aop, hostname);
+    return holder !== undefined && holder !== client?.id;
+  });
+  if (claimed.length > 0) return { changes: [], findings: [hostnameTlsClaimed(claimed)], tls };
+
+  const changes: SharedChange[] = [];
+  let sha256 = client?.sha256;
+  if (want.client && proxied.length > 0 && want.client.sha256 !== sha256) {
+    if (sha256 !== undefined) throw clientCertificateDiffers();
+    sha256 = want.client.sha256;
+    changes.push({ kind: "upload-client-certificate", sha256 });
+  }
+  const uploading = changes.length > 0;
+  if (sha256 !== undefined) {
+    const enable = proxied.filter((h) => uploading || !isOn(read.aop, h, client?.id));
+    if (enable.length > 0) {
+      changes.push({ kind: "enable-client-certificate", hostnames: enable, sha256 });
+    }
+  }
+  const valid =
+    origin !== undefined &&
+    listed(origin.id) &&
+    sameList(origin.hostnames, proxied) &&
+    Date.parse(origin.expiresAt) - Date.parse(read.readAt) >= RENEW_DAYS * DAY_MS;
+  let csr: string | undefined;
+  if (proxied.length > 0 && !valid) {
+    if (want.origin === undefined) throw originCsrMissing(proxied);
+    csr = want.origin.csr;
+    changes.push({
+      kind: "create-origin-certificate",
+      hostnames: proxied,
+      csrSha256: sha256Hex(csr),
+    });
+  }
+  // Clean-up waits for what the server uses now (`served`).
+  const { served } = want;
+  const disable = served ? retiring.filter((h) => !served.requiring.includes(h)) : [];
+  if (disable.length > 0) changes.push({ kind: "disable-client-certificate", hostnames: disable });
+  if (client !== undefined && proxied.length === 0 && disable.length === retiring.length) {
+    changes.push({ kind: "delete-client-certificate", id: client.id });
+  }
+  if (served && origin) {
+    // A superseded certificate goes once the server serves the newer one; with nothing proxied,
+    // the current one goes too once the server no longer serves it.
+    const revoke =
+      served.originSha256 === origin.sha256
+        ? superseded
+        : proxied.length === 0
+          ? [...superseded, ...(listed(origin.id) ? [origin.id] : [])]
+          : [];
+    for (const id of revoke) changes.push({ kind: "revoke-origin-certificate", id });
+  }
+  return { changes, findings: [], tls, ...(csr !== undefined ? { csr } : {}) };
+}
+
+/**
+ * The decision on the zone's minimum TLS version (research R4), when provision asks for it: raised
+ * from 1.0 to 1.2 only when Cloudflare lets it be changed and every proxied A, AAAA and CNAME
+ * record in the zone is OpsCrew's; otherwise advised while it is below 1.2.
+ */
+function planMinTls(
+  facts: SharedFacts,
+  desired: SharedDesired,
+): { changes: SharedChange[]; advice: Advice[] } {
+  const setting = facts.minTls;
+  if (!desired.minTls || !setting || (setting.value !== "1.0" && setting.value !== "1.1")) {
+    return { changes: [], advice: [] };
+  }
+  const others = sortedUnique(
+    setting.proxied.filter((r) => r.comment !== OPSCREW_MANAGED_COMMENT).map((r) => r.name),
+  );
+  if (setting.value === "1.0" && setting.editable && others.length === 0) {
+    return { changes: [{ kind: "set-min-tls", from: "1.0", to: "1.2" }], advice: [] };
+  }
+  return { changes: [], advice: [minTlsAdvised(setting.value, setting.editable, others)] };
+}
+
+/** The client certificate the hostname's origin pull setting is on with (undefined: it is off). */
+function heldBy(settings: readonly HostnameAop[], hostname: string): string | undefined {
+  const setting = settings.find((s) => s.hostname === hostname);
+  return setting?.enabled === true ? setting.certId : undefined;
+}
+
+/** True when the hostname's origin pull setting is on and active with the certificate `certId`. */
+function isOn(settings: readonly HostnameAop[], hostname: string, certId: string | undefined) {
+  const setting = settings.find((s) => s.hostname === hostname);
+  return (
+    certId !== undefined && heldBy(settings, hostname) === certId && setting?.status === "active"
+  );
+}
+
+function sortedUnique(items: readonly string[]): string[] {
+  return [...new Set(items)].sort();
 }
 
 /**
@@ -611,20 +911,98 @@ function ruleChanged(ref: SharedRuleRef, differences: readonly string[]): Shared
   };
 }
 
+function hostnameTlsClaimed(hostnames: readonly string[]): SharedFinding {
+  const one = hostnames.length === 1;
+  return {
+    code: "hostname-tls-claimed",
+    message: `${listText(hostnames)} already ${one ? "requires" : "require"} a client certificate at Cloudflare that this app did not upload: another OpsCrew app uses ${one ? "it" : "them"}, or one whose project folder is gone.`,
+    hint: `OpsCrew never takes a hostname from another app. Use another hostname, or run \`opscrew destroy\` for the app that uses ${one ? "it" : "them"}. If that app's folder is gone, turn the setting off with Cloudflare's API (PUT /zones/<zone id>/origin_tls_client_auth/hostnames with "enabled": null for ${one ? "the hostname" : "each hostname"}), then run the command again.`,
+  };
+}
+
+function originCsrMissing(hostnames: readonly string[]): OpsCrewError {
+  return new OpsCrewError(
+    "INVALID_INPUT",
+    `A new origin certificate is needed for ${listText(hostnames)} (there is none, it expires within 30 days, Cloudflare no longer lists it, or the hostnames changed), but this plan was given no certificate request.`,
+    {
+      hint: "Plan again with a CSR for the app's proxied hostnames (`desired.tls.origin.csr`).",
+    },
+  );
+}
+
+function clientCertificateDiffers(): OpsCrewError {
+  return new OpsCrewError(
+    "INVALID_INPUT",
+    "This app's client certificate at Cloudflare is not the one asked for, and OpsCrew does not replace a client certificate: it lasts 15 years, and a safe switch needs the server to trust both certificates first.",
+    {
+      hint: "Use the app's client certificate and its key as they are, or restore them from the app's secrets copy, then run the command again. To replace it by hand: add the new certificate after the old one in opscrew/runtime/edge/tls/pull.pem and deploy; upload the new certificate and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old certificate from pull.pem and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json.",
+    },
+  );
+}
+
+/** Advice for TLS reads the token was refused: which permissions to add, and what is left out. */
+function tlsPermissionMissing(denied: readonly string[]): Advice {
+  const certificates = denied.includes(SSL_PERMISSION);
+  const left = [
+    ...(certificates ? ["the app's origin certificate and Authenticated Origin Pulls"] : []),
+    ...(denied.some((p) => p !== SSL_PERMISSION) ? ["the zone's minimum TLS version"] : []),
+  ];
+  const keeps = certificates
+    ? " The app keeps today's protection: only Cloudflare's addresses reach the server."
+    : "";
+  return {
+    code: "tls-permission-missing",
+    message: `The Cloudflare token lacks ${listText(denied)} for this zone (HTTP 403), so this plan leaves out ${listText(left)}.${keeps}`,
+    hint: `Edit the token at ${CLOUDFLARE_TOKEN_PAGE} and give it ${listText(denied)} for this zone, then run the command again.`,
+  };
+}
+
+/** Advice to raise the zone's minimum TLS version, with why OpsCrew does not. */
+function minTlsAdvised(value: string, editable: boolean, others: readonly string[]): Advice {
+  const named =
+    others.length > NAMED_OTHERS
+      ? `${others.slice(0, NAMED_OTHERS).join(", ")} and ${others.length - NAMED_OTHERS} more`
+      : listText(others);
+  const reasons = [
+    ...(value === "1.0" ? [] : [`it was set to ${value} outside OpsCrew`]),
+    ...(editable ? [] : ["Cloudflare does not let it be changed for this zone"]),
+    ...(others.length > 0
+      ? [`the zone has proxied hostnames that are not OpsCrew's: ${named}`]
+      : []),
+  ];
+  return {
+    code: "min-tls-advised",
+    message: `The zone's minimum TLS version is ${value}, so visitors can still connect with TLS ${value === "1.0" ? "1.0 and 1.1" : value}. OpsCrew leaves it as it is because ${listText(reasons)}.`,
+    hint: "Once every site in the zone works with TLS 1.2, raise it in the Cloudflare dashboard: SSL/TLS → Edge Certificates → Minimum TLS Version.",
+  };
+}
+
 // --- Apply ---------------------------------------------------------------------------------------
 
 /**
- * Applies an approved plan: throws OpsCrewError PLAN_HASH_MISMATCH when `approvedHash` differs,
- * PHASE_PRECONDITION when the plan has findings or OpsCrew's rule changed since the plan (nothing
- * written), and SharedApplyError {applied, record} when a write fails part-way. Every phase the
- * plan changes is read again before the first write and before each write; every write is sent
- * once and checked against the ruleset Cloudflare returns. Origin TLS and the zone's minimum TLS
- * are not applied yet: such a change stops the apply with INTERNAL.
+ * Applies an approved plan, in its order (origin TLS and the zone's minimum TLS first, then 011's
+ * rules, then Zero Trust): throws OpsCrewError PLAN_HASH_MISMATCH when `approvedHash` differs or
+ * the CSR or client certificate given is not the plan's, PHASE_PRECONDITION when the plan has
+ * findings or OpsCrew's rule changed since the plan (nothing written), and SharedApplyError
+ * {applied, record} when a change fails part-way. Every phase the plan changes is read again
+ * before the first write and before each write; every write is sent once and checked against the
+ * ruleset Cloudflare returns. Before a client certificate is turned on, the certificate is waited
+ * for until Cloudflare reports it active, and then each hostname's setting (each wait at most 5
+ * minutes); the record is updated after each change.
  */
 export async function applyShared(
   client: CloudflareClient,
   plan: SharedPlan,
-  opts: { approvedHash: string },
+  opts: {
+    approvedHash: string;
+    /** The client certificate and its key `upload-client-certificate` sends; never in the plan. */
+    keys?: { clientCertificate: string; clientKey: string };
+    /** The CSR (PEM) `create-origin-certificate` sends: the plan's `csr`. */
+    csr?: string;
+    /** Times the wait for active and `setAt`. Default: this computer's clock. */
+    clock?: Clock;
+    sleep?: (ms: number) => Promise<void>;
+  },
 ): Promise<SharedApplyResult> {
   if (!isPlanHash(opts.approvedHash) || opts.approvedHash.toLowerCase() !== sharedPlanHash(plan)) {
     throw new OpsCrewError(
@@ -640,6 +1018,7 @@ export async function applyShared(
       { hint: plan.findings.map((f) => f.hint).join(" ") },
     );
   }
+  checkGiven(plan, opts);
   const ruleChanges = plan.changes.filter((c): c is RuleChange => "phase" in c);
   for (const phase of new Set(ruleChanges.map((c) => c.phase))) {
     const first = ruleChanges.find((c) => c.phase === phase) as RuleChange;
@@ -647,6 +1026,11 @@ export async function applyShared(
     if (reason) throw staleError(phase, reason, "OpsCrew changed nothing.");
   }
 
+  const given = { ...opts, clock: opts.clock ?? systemClock, sleep: opts.sleep ?? realSleep };
+  const state: TlsState = {
+    tls: structuredClone(plan.record.tls ?? {}),
+    zoneSettings: structuredClone(plan.record.zoneSettings),
+  };
   const done: SharedChange[] = [];
   let sent: SharedChange | undefined;
   let organization = plan.organization;
@@ -669,12 +1053,7 @@ export async function applyShared(
         sent = change;
         await writeRule(client, plan, change);
       } else {
-        // Origin TLS and the zone's minimum TLS: planShared plans none of them yet.
-        throw new OpsCrewError(
-          "INTERNAL",
-          `OpsCrew cannot apply the Cloudflare change "${change.kind}" yet, so it stopped there.`,
-          { hint: "Report this to OpsCrew: no Cloudflare plan should hold this change yet." },
-        );
+        await applyTlsChange(client, plan.zoneId, change, state, given);
       }
       done.push(change);
       sent = undefined;
@@ -682,7 +1061,7 @@ export async function applyShared(
       const unclear =
         sent && "phase" in sent && sent.kind !== "delete-entrypoint" ? sent : undefined;
       const held = unclear ? await heldHostnames(client, plan.zoneId, unclear.phase) : undefined;
-      const record = recordAfter(plan, done, unclear, held);
+      const record = withTls(recordAfter(plan, done, unclear, held), state);
       const applied = done.map(changeId);
       if (error instanceof OpsCrewError) {
         throw new SharedApplyError(
@@ -691,6 +1070,7 @@ export async function applyShared(
           { ...(error.hint === undefined ? {} : { hint: error.hint }), cause: error },
           applied,
           record,
+          state.originCertificate,
         );
       }
       throw new SharedApplyError(
@@ -699,15 +1079,260 @@ export async function applyShared(
         { hint: "Run the command again to see the current state.", cause: error },
         applied,
         record,
+        state.originCertificate,
       );
     }
   }
   return {
     applied: done.map(changeId),
-    record: plan.record,
+    record: withTls(plan.record, state),
     ...(organization ? { organization } : {}),
     ...(oneTimePinId ? { oneTimePinId } : {}),
+    ...(state.originCertificate ? { originCertificate: state.originCertificate } : {}),
   };
+}
+
+/** The app's origin TLS and zone settings as the apply changes them. */
+interface TlsState {
+  tls: TlsRecord;
+  zoneSettings: SharedRecord["zoneSettings"];
+  /** The origin certificate (PEM) this apply created. */
+  originCertificate?: string;
+}
+
+/** `record` with `state`'s origin TLS (left out when empty) and zone settings. */
+function withTls(
+  record: SharedRecord,
+  state: { tls: TlsRecord | undefined; zoneSettings: SharedRecord["zoneSettings"] },
+): SharedRecord {
+  const { tls: _tls, zoneSettings: _zoneSettings, ...rest } = record;
+  const { tls, zoneSettings } = state;
+  return {
+    ...rest,
+    ...(tls && (tls.origin || tls.client || tls.gap) ? { tls } : {}),
+    ...(zoneSettings ? { zoneSettings } : {}),
+  };
+}
+
+/** Throws unless the apply was given the CSR and the client certificate the approved plan sends. */
+function checkGiven(
+  plan: SharedPlan,
+  given: { keys?: { clientCertificate: string }; csr?: string },
+): void {
+  const refuse = (what: string) =>
+    new OpsCrewError(
+      "PLAN_HASH_MISMATCH",
+      `The ${what} given to the apply is not the one in the approved Cloudflare plan, so OpsCrew changes nothing in Cloudflare.`,
+      { hint: "Look at the current Cloudflare plan and approve it by its hash." },
+    );
+  for (const change of plan.changes) {
+    if (
+      change.kind === "create-origin-certificate" &&
+      (given.csr === undefined || sha256Hex(given.csr) !== change.csrSha256)
+    ) {
+      throw refuse("certificate request");
+    }
+    if (
+      change.kind === "upload-client-certificate" &&
+      (given.keys === undefined ||
+        fingerprintSha256(given.keys.clientCertificate) !== change.sha256)
+    ) {
+      throw refuse("client certificate");
+    }
+  }
+}
+
+/**
+ * Makes one origin TLS or zone setting change and records it in `state`. A setting is turned on
+ * once its client certificate is active, recorded before it is sent (it may reach Cloudflare even
+ * when the answer does not), then waited for until active; the others are recorded once
+ * Cloudflare carried them out.
+ */
+async function applyTlsChange(
+  client: CloudflareClient,
+  zoneId: string,
+  change: TlsChange,
+  state: TlsState,
+  given: {
+    keys?: { clientCertificate: string; clientKey: string };
+    csr?: string;
+    clock: Clock;
+    sleep: (ms: number) => Promise<void>;
+  },
+): Promise<void> {
+  const { tls } = state;
+  switch (change.kind) {
+    case "upload-client-certificate": {
+      const keys = given.keys as NonNullable<typeof given.keys>;
+      const uploaded = await client.uploadHostnameClientCertificate(zoneId, {
+        certificate: keys.clientCertificate,
+        privateKey: keys.clientKey,
+      });
+      tls.client = {
+        id: uploaded.id,
+        expiresAt: uploaded.expiresOn,
+        sha256: change.sha256,
+        enabled: [],
+        retiring: [],
+      };
+      return;
+    }
+    case "enable-client-certificate": {
+      const current = clientOf(tls);
+      // The certificate the hash covers, not just any the record names.
+      if (current.sha256 !== change.sha256) {
+        throw new OpsCrewError(
+          "PLAN_HASH_MISMATCH",
+          "The client certificate this app's record names is not the one the approved Cloudflare plan turns on, so OpsCrew stopped before turning it on.",
+          { hint: "Run the command again to make a new plan, and approve that one." },
+        );
+      }
+      // The certificate itself first: an upload answers `pending_deployment` (spike T1402).
+      await untilActive(
+        given,
+        () => client.listHostnameClientCertificates(zoneId),
+        (certificates) => certificates.some((c) => c.id === current.id && c.status === "active"),
+        () => "deploying the app's client certificate",
+      );
+      await checkNotTaken(client, zoneId, change.hostnames, current.id);
+      current.enabled = sortedUnique([...current.enabled, ...change.hostnames]);
+      current.retiring = current.retiring.filter((h) => !change.hostnames.includes(h));
+      await client.putHostnameAopSettings(
+        zoneId,
+        change.hostnames.map((hostname) => ({ hostname, certId: current.id, enabled: true })),
+      );
+      await untilActive(
+        given,
+        () => client.listHostnameAopSettings(zoneId, change.hostnames),
+        (settings) => change.hostnames.every((h) => isOn(settings, h, current.id)),
+        (settings) =>
+          `turning on the client certificate for ${listText(change.hostnames.filter((h) => !isOn(settings, h, current.id)))}`,
+      );
+      return;
+    }
+    case "create-origin-certificate": {
+      const created = await client.createOriginCertificate({
+        csr: given.csr as string,
+        hostnames: change.hostnames,
+        days: ORIGIN_CERTIFICATE_DAYS,
+      });
+      state.originCertificate = created.certificate;
+      tls.origin = {
+        id: created.id,
+        hostnames: change.hostnames,
+        expiresAt: created.expiresOn,
+        sha256: fingerprintSha256(created.certificate),
+        superseded: tls.origin ? [...tls.origin.superseded, tls.origin.id] : [],
+      };
+      return;
+    }
+    case "disable-client-certificate": {
+      const current = clientOf(tls);
+      await checkNotTaken(client, zoneId, change.hostnames, current.id);
+      await client.putHostnameAopSettings(
+        zoneId,
+        change.hostnames.map((hostname) => ({ hostname, certId: current.id, enabled: null })),
+      );
+      current.enabled = current.enabled.filter((h) => !change.hostnames.includes(h));
+      current.retiring = current.retiring.filter((h) => !change.hostnames.includes(h));
+      return;
+    }
+    case "delete-client-certificate": {
+      await client.deleteHostnameClientCertificate(zoneId, change.id);
+      const { client: _deleted, ...rest } = tls;
+      state.tls = rest;
+      return;
+    }
+    case "revoke-origin-certificate": {
+      await client.revokeOriginCertificate(change.id);
+      const { origin, ...rest } = tls;
+      if (origin?.id === change.id) state.tls = rest;
+      else if (origin) origin.superseded = origin.superseded.filter((id) => id !== change.id);
+      return;
+    }
+    case "set-min-tls": {
+      const { value } = await client.getZoneSetting(zoneId, "min_tls_version");
+      if (value !== change.from) {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          `The zone's minimum TLS version is ${value} now, not the ${change.from} this Cloudflare plan raises, so OpsCrew leaves it as it is.`,
+          { hint: "Run the command again to make a new plan from the zone's current settings." },
+        );
+      }
+      await client.patchZoneSetting(zoneId, "min_tls_version", change.to);
+      state.zoneSettings = {
+        ...state.zoneSettings,
+        minTlsVersion: { setAt: given.clock.now().toISOString(), previous: change.from },
+      };
+      return;
+    }
+  }
+}
+
+/**
+ * Reads the hostnames' origin pull settings again right before a write to them, and stops
+ * (PHASE_PRECONDITION, nothing written) when another client certificate holds one of them now.
+ */
+async function checkNotTaken(
+  client: CloudflareClient,
+  zoneId: string,
+  hostnames: readonly string[],
+  certId: string,
+): Promise<void> {
+  const settings = await client.listHostnameAopSettings(zoneId, hostnames);
+  const taken = hostnames.filter((h) => {
+    const holder = heldBy(settings, h);
+    return holder !== undefined && holder !== certId;
+  });
+  if (taken.length === 0) return;
+  const one = taken.length === 1;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${listText(taken)} ${one ? "is" : "are"} held by another client certificate at Cloudflare now: another OpsCrew app turned on Authenticated Origin Pulls for ${one ? "it" : "them"} after this Cloudflare plan was made. OpsCrew stopped before changing ${one ? "it" : "them"}.`,
+    {
+      hint: "Run the command again to make a new plan from the current settings, and approve that one.",
+    },
+  );
+}
+
+/** The client certificate `tls` records; the plan only turns it on or off when there is one. */
+function clientOf(tls: TlsRecord): ClientRecord {
+  if (tls.client) return tls.client;
+  throw new OpsCrewError(
+    "INTERNAL",
+    "OpsCrew lost track of the app's client certificate while changing Cloudflare.",
+    {
+      hint: "Run the command again to see the current state; if this repeats, report it to OpsCrew.",
+    },
+  );
+}
+
+/**
+ * Reads until `finished` says Cloudflare is done; after 5 minutes, stops with the plain
+ * still-deploying error for what `pending` names ("Cloudflare is still …").
+ */
+function untilActive<T>(
+  given: { clock: Clock; sleep: (ms: number) => Promise<void> },
+  read: () => Promise<T>,
+  finished: (state: T) => boolean,
+  pending: (state: T) => string,
+): Promise<T> {
+  return pollAction({
+    read,
+    finished,
+    timedOut: (state) =>
+      new OpsCrewError(
+        "PROVIDER_ERROR",
+        `Cloudflare is still ${pending(state)}: it was not active after ${durationText(ACTIVE_WAIT_MS)}. The server does not require it yet, so no request fails.`,
+        {
+          hint: "Run `opscrew provision` again in a few minutes: OpsCrew continues from where it stopped.",
+        },
+      ),
+    timeoutMs: ACTIVE_WAIT_MS,
+    intervalMs: ACTIVE_POLL_MS,
+    sleep: given.sleep,
+    now: () => given.clock.now().getTime(),
+  });
 }
 
 function changeId(change: SharedChange): string {

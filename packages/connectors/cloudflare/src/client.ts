@@ -10,6 +10,7 @@ import type {
 import {
   CONNECTION_HINT,
   durationText,
+  listText,
   lowerFirst,
   maybeDoneHint,
   maybeStarted,
@@ -17,6 +18,7 @@ import {
   OpsCrewError,
   parseAnswer,
   plural,
+  Redactor,
   realSleep,
   statusPageHint,
   zodIssues,
@@ -44,6 +46,8 @@ export const CLOUDFLARE_TOKEN_PERMISSIONS = [
   "Zone → DNS → Edit",
   "Zone → Config Rules → Edit",
   "Zone → Zone WAF → Edit",
+  "Zone → SSL and Certificates → Edit",
+  "Zone → Zone Settings → Edit",
 ] as const;
 
 /** Where users create and edit Cloudflare API tokens. */
@@ -134,6 +138,52 @@ export interface CloudflareClientOptions {
   registrarSandbox?: boolean;
   /** How long one request may take (default 30 seconds). */
   timeoutMs?: number;
+  /**
+   * Masks secrets in Cloudflare's error texts; a client key sent to Cloudflare is registered with
+   * it first. Pass the session's redactor so that key is masked everywhere.
+   */
+  redactor?: Redactor;
+}
+
+/** One of the zone's Cloudflare Origin CA certificates. */
+export interface OriginCertificate {
+  id: string;
+  hostnames: string[];
+  /** ISO time in UTC. */
+  expiresOn: string;
+}
+
+/** A client certificate uploaded for per-hostname Authenticated Origin Pulls. */
+export interface HostnameClientCertificate {
+  id: string;
+  /** ISO time in UTC. */
+  expiresOn: string;
+  /** `pending_deployment` right after the upload, then `active`. */
+  status: string;
+}
+
+/** One hostname's per-hostname Authenticated Origin Pulls setting. */
+export interface HostnameAop {
+  hostname: string;
+  /** The client certificate Cloudflare presents to the origin for the hostname. */
+  certId?: string;
+  /** `true` while on; `null` (or `false`) once turned off. */
+  enabled: boolean | null;
+  /** `pending_deployment` after a change, then `active` (spike T1402); `""` when absent. */
+  status: string;
+}
+
+/**
+ * A request Cloudflare refused with HTTP 403 because the token lacks a permission (`reason`
+ * `permission`). It is shown as CREDENTIALS_INVALID, with the permission to add in its hint.
+ */
+export class CloudflareError extends OpsCrewError {
+  readonly reason = "permission";
+
+  constructor(message: string, options: { hint?: string }) {
+    super("CREDENTIALS_INVALID", message, options);
+    this.name = "CloudflareError";
+  }
 }
 
 /** A Cloudflare account the token can see. */
@@ -301,6 +351,54 @@ const TunnelSchema = z.looseObject({
 });
 
 /**
+ * An expiry time as an ISO time in UTC. Origin CA writes `2041-10-16 23:53:00 +0000 UTC`, and
+ * Authenticated Origin Pulls `2041-10-16T23:58:23Z` (spike T1402); any other form is refused.
+ */
+const ExpiryTime = z.string().transform((raw, ctx) => {
+  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:Z| \+0000 UTC)$/.exec(raw);
+  const time = match ? Date.parse(`${match[1]}T${match[2]}Z`) : Number.NaN;
+  if (Number.isNaN(time)) {
+    ctx.addIssue({ code: "custom", message: "not an expiry time Cloudflare is known to write" });
+    return z.NEVER;
+  }
+  return new Date(time).toISOString();
+});
+
+const OriginCertificateSchema = z.looseObject({
+  id: z.string().min(1),
+  hostnames: z.array(z.string()),
+  expires_on: ExpiryTime,
+  revoked_at: z.string().nullish(),
+});
+
+const CreatedOriginCertificateSchema = z.looseObject({
+  id: z.string().min(1),
+  certificate: z.string().min(1),
+  expires_on: ExpiryTime,
+});
+
+const ClientCertificateSchema = z.looseObject({
+  id: z.string().min(1),
+  expires_on: ExpiryTime,
+  status: z.string(),
+});
+
+const HostnameAopSchema = z.looseObject({
+  hostname: z.string().min(1),
+  cert_id: z.string().nullish(),
+  enabled: z.boolean().nullish(),
+  status: z.string().nullish(),
+});
+
+/** The answer to a delete or a revoke: the id it was carried out for. */
+const IdResultSchema = z.looseObject({ id: z.string().min(1) });
+
+const ZoneSettingSchema = z.looseObject({ value: z.string(), editable: z.boolean() });
+
+/** Client certificates Cloudflare is deleting: listed for a while, but gone for OpsCrew. */
+const DELETED_STATUS = new Set(["pending_deletion", "deleted"]);
+
+/**
  * Most records one batch call creates. Cloudflare's limit depends on the plan (200 on Free, 3,500
  * on paid plans); larger lists are split into several calls of 200, each its own transaction.
  */
@@ -407,6 +505,36 @@ function mayHaveReached(what: string, detail: string, cause?: unknown): OpsCrewE
 const TUNNEL_HINTS: FailHints = {
   auth: `Reading a Cloudflare Tunnel needs the account permission "Cloudflare Tunnel" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
+
+/** Hints for origin certificates and per-hostname Authenticated Origin Pulls. */
+const CERTIFICATE_HINTS: FailHints = {
+  auth: `Origin certificates and Authenticated Origin Pulls need the token permission "Zone → SSL and Certificates → Edit" for this zone. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Hints for the zone's settings. */
+const SETTINGS_HINTS: FailHints = {
+  auth: `The zone's minimum TLS version needs the token permission "Zone → Zone Settings → Edit" for this zone. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+function toClientCertificate(
+  raw: z.infer<typeof ClientCertificateSchema>,
+): HostnameClientCertificate {
+  return { id: raw.id, expiresOn: raw.expires_on, status: raw.status };
+}
+
+function toHostnameAop(raw: z.infer<typeof HostnameAopSchema>): HostnameAop {
+  return {
+    hostname: raw.hostname,
+    ...(raw.cert_id ? { certId: raw.cert_id } : {}),
+    enabled: raw.enabled ?? null,
+    status: raw.status ?? "",
+  };
+}
+
+/** `/zones/{id}/origin_tls_client_auth/hostnames`: per-hostname Authenticated Origin Pulls. */
+function aopPath(zoneId: string): string {
+  return `/zones/${encodeURIComponent(zoneId)}/origin_tls_client_auth/hostnames`;
+}
 
 interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -534,6 +662,7 @@ export class CloudflareClient {
   readonly #userAgent: string;
   readonly #registrar: string;
   readonly #timeoutMs: number;
+  readonly #redactor: Redactor;
 
   constructor(options: CloudflareClientOptions) {
     this.#token = options.token;
@@ -543,6 +672,7 @@ export class CloudflareClient {
     this.#userAgent = `opscrew/${options.version ?? "0.1.0"}`;
     this.#registrar = options.registrarSandbox ? "registrar-sandbox" : "registrar";
     this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.#redactor = options.redactor ?? new Redactor();
   }
 
   /**
@@ -634,9 +764,12 @@ export class CloudflareClient {
     }
   }
 
-  /** Cloudflare's explanation of a failed answer, in plain English where the code is known. */
+  /**
+   * Cloudflare's explanation of a failed answer, in plain English where the code is known, with
+   * any secret in it masked (a client key it quotes back, for one).
+   */
   #detail(status: number, body: EnvelopeBody): string {
-    return (
+    return this.#redactor.redactSecrets(
       body.errors
         .map((e) =>
           (
@@ -645,13 +778,18 @@ export class CloudflareClient {
           ).replace(/\.$/, ""),
         )
         .filter(Boolean)
-        .join("; ") || `HTTP ${status}`
+        .join("; ") || `HTTP ${status}`,
     );
   }
 
   #fail(status: number, body: EnvelopeBody, what: string, hints: FailHints = {}): never {
     const detail = this.#detail(status, body);
-    if (status === 401 || status === 403) {
+    if (status === 403) {
+      throw new CloudflareError(`Cloudflare refused the request to ${what}: ${detail}.`, {
+        hint: hints.auth ?? permissionHint(),
+      });
+    }
+    if (status === 401) {
       throw new OpsCrewError(
         "CREDENTIALS_INVALID",
         `Cloudflare refused the request to ${what}: ${detail}.`,
@@ -934,6 +1072,173 @@ export class CloudflareClient {
       `delete the ruleset ${rulesetId}`,
       { method: "DELETE" },
     );
+  }
+
+  /**
+   * Asks Cloudflare's Origin CA for an ECDSA certificate for exactly `hostnames`, valid for `days`
+   * (5475: 15 years), from `csr` (`POST /certificates`). Only the CSR is sent: the key stays with
+   * the caller. Sent once.
+   */
+  async createOriginCertificate(input: {
+    csr: string;
+    hostnames: string[];
+    days: 5475;
+  }): Promise<{ id: string; certificate: string; expiresOn: string }> {
+    const what = `create an origin certificate for ${listText(input.hostnames)}`;
+    const answer = await this.#send("/certificates", what, {
+      method: "POST",
+      body: {
+        csr: input.csr,
+        hostnames: input.hostnames,
+        request_type: "origin-ecc",
+        requested_validity: input.days,
+      },
+      hints: CERTIFICATE_HINTS,
+    });
+    const created = this.#parseWrite(CreatedOriginCertificateSchema, answer.body.result, what);
+    return { id: created.id, certificate: created.certificate, expiresOn: created.expires_on };
+  }
+
+  /** The zone's Origin CA certificates (`GET /certificates?zone_id=`), revoked ones left out. */
+  async listOriginCertificates(zoneId: string): Promise<OriginCertificate[]> {
+    const certificates = await this.#all(
+      "/certificates",
+      OriginCertificateSchema,
+      "list the zone's origin certificates",
+      { perPage: 50, filter: { zone_id: zoneId }, hints: CERTIFICATE_HINTS },
+    );
+    return certificates
+      .filter((c) => c.revoked_at == null)
+      .map((c) => ({ id: c.id, hostnames: c.hostnames, expiresOn: c.expires_on }));
+  }
+
+  /** Revokes an Origin CA certificate (`DELETE /certificates/{id}`). Sent once. */
+  async revokeOriginCertificate(id: string): Promise<void> {
+    const what = `revoke the origin certificate ${id}`;
+    const answer = await this.#send(`/certificates/${encodeURIComponent(id)}`, what, {
+      method: "DELETE",
+      hints: CERTIFICATE_HINTS,
+    });
+    this.#parseWrite(IdResultSchema, answer.body.result, what);
+  }
+
+  /**
+   * Uploads a client certificate and its key for per-hostname Authenticated Origin Pulls
+   * (`POST …/origin_tls_client_auth/hostnames/certificates`). The key is registered with the
+   * redactor before the request, so no error or log can show it. Sent once.
+   */
+  async uploadHostnameClientCertificate(
+    zoneId: string,
+    pem: { certificate: string; privateKey: string },
+  ): Promise<HostnameClientCertificate> {
+    this.#redactor.addLiteral(pem.privateKey, "ORIGIN_PULL_KEY");
+    const what = "upload the app's client certificate for Authenticated Origin Pulls";
+    const answer = await this.#send(`${aopPath(zoneId)}/certificates`, what, {
+      method: "POST",
+      body: {
+        certificate: pem.certificate,
+        private_key: pem.privateKey,
+        bundle_method: "ubiquitous",
+      },
+      hints: CERTIFICATE_HINTS,
+    });
+    return toClientCertificate(this.#parseWrite(ClientCertificateSchema, answer.body.result, what));
+  }
+
+  /** The zone's client certificates for per-hostname origin pulls, those being deleted left out. */
+  async listHostnameClientCertificates(zoneId: string): Promise<HostnameClientCertificate[]> {
+    const certificates = await this.#all(
+      `${aopPath(zoneId)}/certificates`,
+      ClientCertificateSchema,
+      "list the zone's client certificates for Authenticated Origin Pulls",
+      { perPage: 50, hints: CERTIFICATE_HINTS },
+    );
+    return certificates.filter((c) => !DELETED_STATUS.has(c.status)).map(toClientCertificate);
+  }
+
+  /** Deletes a client certificate for per-hostname origin pulls. Sent once. */
+  async deleteHostnameClientCertificate(zoneId: string, id: string): Promise<void> {
+    const what = "delete the app's client certificate for Authenticated Origin Pulls";
+    const answer = await this.#send(
+      `${aopPath(zoneId)}/certificates/${encodeURIComponent(id)}`,
+      what,
+      { method: "DELETE", hints: CERTIFICATE_HINTS },
+    );
+    this.#parseWrite(IdResultSchema, answer.body.result, what);
+  }
+
+  /**
+   * Sets per-hostname Authenticated Origin Pulls (`PUT …/origin_tls_client_auth/hostnames`):
+   * `enabled: true` turns it on with `certId`, `null` turns it off. Cloudflare answers with each
+   * setting `pending_deployment`. Sent once.
+   */
+  async putHostnameAopSettings(
+    zoneId: string,
+    config: { hostname: string; certId: string; enabled: boolean | null }[],
+  ): Promise<HostnameAop[]> {
+    const what = `set Authenticated Origin Pulls for ${listText(config.map((c) => c.hostname))}`;
+    const answer = await this.#send(aopPath(zoneId), what, {
+      method: "PUT",
+      body: {
+        config: config.map((c) => ({
+          hostname: c.hostname,
+          cert_id: c.certId,
+          enabled: c.enabled,
+        })),
+      },
+      hints: CERTIFICATE_HINTS,
+    });
+    const settings = this.#parseWrite(
+      z.array(HostnameAopSchema).nullish(),
+      answer.body.result,
+      what,
+    );
+    return (settings ?? []).map(toHostnameAop);
+  }
+
+  /** Each hostname's per-hostname origin pull setting; a hostname without one (404) is left out. */
+  async listHostnameAopSettings(
+    zoneId: string,
+    hostnames: readonly string[],
+  ): Promise<HostnameAop[]> {
+    const out: HostnameAop[] = [];
+    for (const hostname of hostnames) {
+      const answer = await this.#request(`${aopPath(zoneId)}/${encodeURIComponent(hostname)}`);
+      if (answer.status === 404) continue;
+      const setting = this.#result(
+        answer,
+        HostnameAopSchema.nullish(),
+        `read Authenticated Origin Pulls for ${hostname}`,
+        CERTIFICATE_HINTS,
+      );
+      if (setting) out.push(toHostnameAop(setting));
+    }
+    return out;
+  }
+
+  /** The zone's minimum TLS version and whether the zone's plan lets it be changed. */
+  async getZoneSetting(
+    zoneId: string,
+    id: "min_tls_version",
+  ): Promise<{ value: string; editable: boolean }> {
+    const setting = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}/settings/${id}`,
+      ZoneSettingSchema,
+      "read the zone's minimum TLS version",
+      { hints: SETTINGS_HINTS },
+    );
+    return { value: setting.value, editable: setting.editable };
+  }
+
+  /** Raises the zone's minimum TLS version (`PATCH /zones/{id}/settings/min_tls_version`). */
+  async patchZoneSetting(zoneId: string, id: "min_tls_version", value: "1.2"): Promise<void> {
+    const what = `raise the zone's minimum TLS version to ${value}`;
+    const answer = await this.#send(`/zones/${encodeURIComponent(zoneId)}/settings/${id}`, what, {
+      method: "PATCH",
+      body: { value },
+      hints: SETTINGS_HINTS,
+    });
+    this.#parseWrite(ZoneSettingSchema, answer.body.result, what);
   }
 
   /** Cloudflare's published edge IP ranges (public endpoint, no token needed). */

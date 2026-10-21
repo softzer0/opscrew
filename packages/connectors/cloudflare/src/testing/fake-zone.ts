@@ -10,7 +10,16 @@ import { CLOUDFLARE_API } from "../client";
  * duplicate `ref` is refused (20023), as is an expression over 4,096 characters (20127) and a rule
  * beyond the zone plan's limit (a plan the fake does not know has the Free plan's 5 custom and 10
  * configuration rules). The zone details answer with its `plan.legacy_id`. The account holds the
- * Zero Trust organization and login methods. State is plain data for assertions.
+ * Zero Trust organization and login methods.
+ *
+ * Origin TLS as feature 014's spike saw it: Origin CA certificates (15 years, `expires_on` as
+ * `2041-10-16 23:53:00 +0000 UTC`, revoked ones still listed with `revoked_at`); client
+ * certificates for per-hostname origin pulls (uploaded `pending_deployment`, listed so for
+ * {@link FakeZone.certificatePendingReads} lists, then `active`; a deleted one stays listed as
+ * `pending_deletion`); per-hostname settings, with their `cert_status`, that read
+ * `pending_deployment` for {@link FakeZone.pendingReads} reads after each change, then `active`,
+ * and 404 for a hostname without one; the zone's `min_tls_version`; and its DNS records. State is
+ * plain data for assertions.
  */
 
 /** The fake zone's id. */
@@ -33,6 +42,33 @@ export interface FakeZoneCall {
   method: string;
   path: string;
   body: unknown;
+}
+
+/** An Origin CA certificate as Cloudflare lists it. */
+export interface FakeOriginCertificate {
+  id: string;
+  hostnames: string[];
+  /** As Origin CA writes it: `2041-10-16 23:53:00 +0000 UTC`. */
+  expires_on: string;
+  /** A PEM block (not a real certificate). */
+  certificate: string;
+  revoked_at?: string;
+}
+
+/** A client certificate for per-hostname origin pulls, as Cloudflare lists it (no key kept). */
+export interface FakeClientCertificate {
+  id: string;
+  certificate: string;
+  /** As origin pulls write it: `2041-10-16T23:58:23Z`. */
+  expires_on: string;
+  status: string;
+}
+
+/** A hostname's per-hostname origin pull setting. */
+export interface FakeHostnameAop {
+  hostname: string;
+  cert_id: string;
+  enabled: boolean | null;
 }
 
 /** A one-shot failure of the next request matching `"METHOD /path"` (prefix). */
@@ -72,11 +108,40 @@ export class FakeZone {
   readonly entrypoints = new Map<string, FakeRuleset>();
   organization: { name: string; auth_domain: string } | undefined;
   readonly providers: { id: string; name: string; type: string }[] = [];
-  /** Phases whose rulesets the token may not read or change (HTTP 403). */
+  /**
+   * What the token may not read or change (HTTP 403): phases by name, `ssl` for origin
+   * certificates and origin pulls, `settings` for the zone's settings, `dns` for its DNS records.
+   */
   readonly denied = new Set<string>();
   readonly faults: FakeFault[] = [];
   readonly calls: FakeZoneCall[] = [];
+  /** The zone's Origin CA certificates, revoked ones included. */
+  readonly originCertificates: FakeOriginCertificate[] = [];
+  /** The zone's client certificates for per-hostname origin pulls. */
+  readonly clientCertificates: FakeClientCertificate[] = [];
+  /** Per-hostname origin pull settings, by hostname. */
+  readonly hostnameAop = new Map<string, FakeHostnameAop>();
+  /**
+   * How many reads of a hostname setting after its change show `pending_deployment` before
+   * `active`; checked at each read, so lowering it lets Cloudflare finish (`Infinity`: never).
+   */
+  pendingReads = 1;
+  /**
+   * How many lists of the client certificates after an upload still show it
+   * `pending_deployment` before `active`, checked at each list (`Infinity`: never).
+   */
+  certificatePendingReads = 0;
+  /** The zone's `min_tls_version` setting. */
+  minTls = { value: "1.0", editable: true };
+  /** The zone's DNS records, as Cloudflare lists them. */
+  readonly dnsRecords: Record<string, unknown>[] = [];
+  /** When the fake issues certificates (they expire 15 years later). */
+  now = new Date("2026-10-21T09:00:00Z");
   #ids = 0;
+  /** Reads of each hostname setting since it last changed. */
+  readonly #reads = new Map<string, number>();
+  /** Lists of the client certificates since each one was uploaded, by id. */
+  readonly #certificateReads = new Map<string, number>();
 
   readonly fetch: FetchLike = async (input, init) => {
     const method = init?.method ?? "GET";
@@ -113,6 +178,17 @@ export class FakeZone {
   /** The write requests received (everything but `GET`). */
   writes(): FakeZoneCall[] {
     return this.calls.filter((c) => c.method !== "GET");
+  }
+
+  /** Adds a DNS record to the zone, as Cloudflare would list it. */
+  addDnsRecord(record: { type: string; name: string; proxied: boolean; comment?: string }) {
+    this.dnsRecords.push({
+      id: this.#id(),
+      content: record.type === "CNAME" ? "target.example.net" : "203.0.113.10",
+      ttl: 1,
+      comment: null,
+      ...record,
+    });
   }
 
   #id(): string {
@@ -180,7 +256,161 @@ export class FakeZone {
     if (ruleset?.[1] && method === "DELETE") return this.#deleteRuleset(ruleset[1]);
     if (path === `${account}/organizations`) return this.#organizations(method, body);
     if (path === `${account}/identity_providers`) return this.#providers(method, body);
+    const url = new URL(path, "https://fake.invalid");
+    const route = url.pathname;
+    if (route.startsWith("/certificates")) return this.#originCa(method, route, url, body);
+    const aop = `/zones/${FAKE_ZONE_ID}/origin_tls_client_auth/hostnames`;
+    if (route.startsWith(aop)) return this.#aop(method, route.slice(aop.length), body);
+    if (route === `/zones/${FAKE_ZONE_ID}/settings/min_tls_version`) {
+      return this.#minTls(method, body);
+    }
+    if (route === `/zones/${FAKE_ZONE_ID}/dns_records` && method === "GET") {
+      if (this.denied.has("dns")) return refuse(403, 10000, "Authentication error");
+      return {
+        body: {
+          success: true,
+          errors: [],
+          messages: [],
+          result: this.dnsRecords,
+          result_info: { page: 1, total_pages: 1 },
+        },
+      };
+    }
     throw new Error(`fake zone: no route for ${method} ${path}`);
+  }
+
+  /** `now` plus 15 years, as an ISO time without milliseconds. */
+  #expiry(): string {
+    const at = new Date(this.now);
+    at.setUTCFullYear(at.getUTCFullYear() + 15);
+    return `${at.toISOString().slice(0, 19)}Z`;
+  }
+
+  /** A PEM block that is not a real certificate, unique to `id`. */
+  #pem(id: string): string {
+    const der = Buffer.from(`fake certificate ${id}`).toString("base64");
+    return `-----BEGIN CERTIFICATE-----\n${der}\n-----END CERTIFICATE-----\n`;
+  }
+
+  #originCa(method: string, route: string, url: URL, body: unknown): FakeReply {
+    if (this.denied.has("ssl")) return refuse(403, 10000, "Authentication error");
+    if (method === "GET" && route === "/certificates") {
+      if (url.searchParams.get("zone_id") !== FAKE_ZONE_ID) {
+        return refuse(400, 1001, "zone_id is required");
+      }
+      return ok(this.originCertificates);
+    }
+    if (method === "POST" && route === "/certificates") {
+      const sent = body as Record<string, unknown>;
+      const hostnames = sent.hostnames as string[];
+      if (
+        sent.request_type !== "origin-ecc" ||
+        sent.requested_validity !== 5475 ||
+        !String(sent.csr).includes("BEGIN CERTIFICATE REQUEST") ||
+        !Array.isArray(hostnames) ||
+        hostnames.length === 0
+      ) {
+        return refuse(400, 1010, "invalid certificate request");
+      }
+      const id = this.#id();
+      const expiry = this.#expiry();
+      const certificate: FakeOriginCertificate = {
+        id,
+        hostnames: [...hostnames],
+        expires_on: `${expiry.slice(0, 10)} ${expiry.slice(11, 19)} +0000 UTC`,
+        certificate: this.#pem(id),
+      };
+      this.originCertificates.push(certificate);
+      return ok({
+        ...certificate,
+        csr: sent.csr,
+        request_type: "origin-ecc",
+        requested_validity: 5475,
+      });
+    }
+    const id = /^\/certificates\/([^/]+)$/.exec(route)?.[1];
+    const certificate = this.originCertificates.find((c) => c.id === id && !c.revoked_at);
+    if (method !== "DELETE" || !certificate) return refuse(404, 1004, "certificate not found");
+    certificate.revoked_at = this.now.toISOString();
+    return ok({ id: certificate.id, revoked_at: certificate.revoked_at });
+  }
+
+  /** `…/origin_tls_client_auth/hostnames` + `rest`. */
+  #aop(method: string, rest: string, body: unknown): FakeReply {
+    if (this.denied.has("ssl")) return refuse(403, 10000, "Authentication error");
+    if (rest === "/certificates" && method === "GET") {
+      return ok(
+        this.clientCertificates.map((c) => {
+          const reads = this.#certificateReads.get(c.id) ?? Number.POSITIVE_INFINITY;
+          this.#certificateReads.set(c.id, reads + 1);
+          return reads < this.certificatePendingReads ? { ...c, status: "pending_deployment" } : c;
+        }),
+      );
+    }
+    if (rest === "/certificates" && method === "POST") {
+      const sent = body as Record<string, unknown>;
+      if (
+        !String(sent.certificate).includes("BEGIN CERTIFICATE") ||
+        !String(sent.private_key).includes("PRIVATE KEY")
+      ) {
+        return refuse(400, 1406, "invalid certificate or key");
+      }
+      const id = this.#id();
+      const stored = {
+        id,
+        certificate: String(sent.certificate),
+        expires_on: this.#expiry(),
+        status: "active",
+      };
+      this.clientCertificates.push(stored);
+      this.#certificateReads.set(id, 0);
+      return { status: 201, ...ok({ ...stored, status: "pending_deployment" }) };
+    }
+    const certificateId = /^\/certificates\/([^/]+)$/.exec(rest)?.[1];
+    const usable = (id: string) =>
+      this.clientCertificates.find((c) => c.id === id && c.status !== "pending_deletion");
+    if (certificateId !== undefined && method === "DELETE") {
+      const certificate = usable(certificateId);
+      if (!certificate) return refuse(404, 1404, "certificate not found");
+      // Listed as being deleted from then on (spike T1402: 200, `pending_deletion`).
+      certificate.status = "pending_deletion";
+      return ok({ id: certificateId, status: "pending_deletion" });
+    }
+    if (rest === "" && method === "PUT") {
+      const config = (body as { config: FakeHostnameAop[] }).config;
+      if (config.some((c) => !usable(c.cert_id))) return refuse(404, 1404, "certificate not found");
+      for (const c of config) {
+        this.hostnameAop.set(c.hostname, { ...c });
+        this.#reads.set(c.hostname, 0);
+      }
+      return {
+        status: 202,
+        ...ok(config.map((c) => ({ ...c, status: "pending_deployment" }))),
+      };
+    }
+    const hostname = /^\/([^/]+)$/.exec(rest)?.[1];
+    const setting = hostname === undefined ? undefined : this.hostnameAop.get(hostname);
+    if (method !== "GET" || hostname === undefined) {
+      throw new Error(`fake zone: ${method} on origin pulls ${rest}`);
+    }
+    if (!setting) return refuse(404, 1404, "hostname not found");
+    const reads = this.#reads.get(hostname) ?? Number.POSITIVE_INFINITY;
+    this.#reads.set(hostname, reads + 1);
+    const certificate = this.clientCertificates.find((c) => c.id === setting.cert_id);
+    return ok({
+      ...setting,
+      cert_status: certificate?.status ?? "active",
+      status: reads < this.pendingReads ? "pending_deployment" : "active",
+    });
+  }
+
+  #minTls(method: string, body: unknown): FakeReply {
+    if (this.denied.has("settings")) return refuse(403, 10000, "Authentication error");
+    if (method === "PATCH") {
+      if (!this.minTls.editable) return refuse(400, 1007, "setting is not editable");
+      this.minTls.value = String((body as { value: unknown }).value);
+    }
+    return ok({ id: "min_tls_version", ...this.minTls, modified_on: null });
   }
 
   #entrypoint(method: string, phase: string, body: unknown): FakeReply {
