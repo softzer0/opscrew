@@ -75,7 +75,7 @@ Effort`.
 ## Phase 3: Packages (parallel)
 
 - [ ] T1503 [P] [US2] Paths per environment, in `packages/core/src/paths.ts`, `packages/core/src/environments.ts` (new)
-  - Owns: those paths (+ tests); `packages/core/src/index.ts` for the new exports only
+  - Owns: those paths (+ tests); `packages/core/src/index.ts` for the new exports only; `packages/plan-schema/src/environments.ts` (new), its tests and `index.ts` export, and `plan.ts` for the shared name rule (moved there by the lead, 2026-10-22, since core has no YAML parser)
   - Reads: data-model.md "Paths per environment"; contracts/environments.md "Paths"; plan.md "4."
   - Depends: T1501a
   - Accept:
@@ -181,7 +181,7 @@ Effort`.
     - **Design for an environment** copies the shared parts from prod's plan, sets `app.name` to `<app>-<env>`, derives the hostnames, and writes `plan.environment`.
     - **`listEnvironments`** gives each environment's name, target, source, runner and deployed state. **`removeEnvironment`** refuses while the environment is deployed, and removes its files.
     - **`sharedPartsDiffer(prodPlan, envPlan)`** runs in provision's preflight: `PHASE_PRECONDITION` naming the fields, with the hint `opscrew design --env <env>`.
-    - **Every phase** (provision, destroy, drift, status, verify, secure, retarget, secrets) resolves its paths through the environment.
+    - **Every phase** (provision, destroy, drift, status, verify, secure, retarget, secrets) resolves its paths through the environment. Agents' `stateFile()` (`shared/engine.ts`) uses core's `tfstateFile(paths)`, since today it hard-codes `prod.tfstate` (T1503's review).
     - **Tests:** an existing prod app is unchanged, with nothing to apply; adding staging; two environments on one own server; the shared-parts refusal; the choice in scripts.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
