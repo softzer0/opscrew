@@ -113,7 +113,7 @@ interface KeyHandover { path: string }   // the 0600 file the key was written to
 | Command | Does |
 |---|---|
 | `opscrew secrets status` | the copy's last update, its recipients, whether it is behind, the folder |
-| `opscrew secrets restore [--key-file <path>] [--use-copy\|--keep-local]` | a hidden prompt when no file is given (CLI only) |
+| `opscrew secrets restore [--key-file <path>] [--from <copy file>] [--use-copy\|--keep-local]` | a hidden prompt when no file is given (CLI only) |
 | `opscrew secrets rotate [--backup <age1…>\|--no-backup] [--key-out <path>]` | a new key, written to the file; the copy in a pull request |
 | `opscrew secrets folder <path>\|--none` | sets or clears the folder copy |
 
