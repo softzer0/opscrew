@@ -26,6 +26,7 @@ import {
   portainerStackEnvKeys,
   portainerStackVolumes,
   portainerTarget,
+  type RuntimeContext,
   renderPortainerConnectorStack,
   renderUpdaterStack,
 } from "@opscrew/iac-templates";
@@ -81,10 +82,12 @@ export function desiredStacks(
     committed: string;
     fingerprints?: DesiredValueFingerprints;
     replaceTokens?: DesiredStacks["replaceTokens"];
+    /** The stack Caddy's origin TLS (`RuntimeContext.originTls`), whose variable the stack then holds. */
+    originTls?: RuntimeContext["originTls"];
   },
 ): DesiredStacks {
   const target = portainerTarget(plan.target);
-  const keys = portainerStackEnvKeys(plan);
+  const keys = portainerStackEnvKeys(plan, { originTls: opts.originTls });
   const { fingerprints, replaceTokens } = opts;
   return {
     app: plan.app.name,

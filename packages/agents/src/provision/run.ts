@@ -1,12 +1,14 @@
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
+import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine } from "@opscrew/contracts";
-import { exists, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { renderStorage, usesTunnel } from "@opscrew/iac-templates";
+import { exists, isUserFacingError, listText, OpsCrewError } from "@opscrew/core";
+import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
+import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
 import {
   addressFromOutputs,
   approvalEntry,
@@ -30,9 +32,24 @@ import {
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
+import { checkAdditions } from "./additions";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { requireNoMoveInProgress } from "./guard";
+import {
+  deployRenewedCertificate,
+  edgeSwitch,
+  keepCertificateRequest,
+  originTlsApply,
+  originTlsHostnames,
+  originTlsNotes,
+  originTlsSecret,
+  planOriginTls,
+  readEdgeOver,
+  readServerEdge,
+  renewsOriginCertificate,
+  tlsWarnings,
+} from "./origin-tls";
 import {
   applyOwnHostPlan,
   type OwnServerRun,
@@ -50,12 +67,14 @@ import {
   deploymentRenderContext,
   type OwnRenderInput,
   readRequirements,
+  recordedEdge,
 } from "./render";
 import { buildAppEnvironment, deploySecrets, setDeploySecrets } from "./secrets";
 import {
   applySharedCloudflare,
   cloudflarePlanHashes,
   planSharedCloudflare,
+  readCloudflareRecord,
 } from "./shared-cloudflare";
 import {
   currentOutputs,
@@ -234,7 +253,9 @@ async function provisionFlow(
   const ownServer = plan.target.provider === "own";
   const command = `opscrew ${phase}`;
 
-  // 1–2. Preconditions and credentials
+  // 1–2. Preconditions and credentials. A recovery copy another computer updated stops the run
+  // before any plan or change (FR-1417).
+  requireOwnCopy(await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
   const git = await requireGitRepo(deps);
   await requireDockerfile(deps, git, plan);
   if (plan.target.provider === "portainer") {
@@ -259,10 +280,71 @@ async function provisionFlow(
     bucket !== undefined && bucket.provider !== "r2"
       ? await requireStorageKey(deps, plan, services, { command })
       : undefined;
+  // The app's own additions to its site, checked before any change (FR-1443) against the site
+  // this run means to deploy.
+  const intended = originTlsHostnames(plan);
+  await checkAdditions(
+    deps,
+    plan,
+    deploymentRenderContext(deps, {
+      plan,
+      requirements,
+      github,
+      deployPublicKey: "",
+      cloudflare,
+      edge: {
+        ...(intended.length > 0 ? { originTls: { hostnames: intended } } : {}),
+        additions: true,
+      },
+    }),
+    services,
+  );
+  // What the server runs now (read-only, over SSH as deploy): its proxy, and the app's origin
+  // certificate and client-certificate requirement, which the origin TLS clean-up waits for.
+  const served = await readServerEdge(deps, plan, services);
+  const tls =
+    cloudflare === undefined
+      ? undefined
+      : await planOriginTls(deps, {
+          plan,
+          record: await readCloudflareRecord(deps.paths).then((r) =>
+            r?.zoneId === cloudflare.zoneId ? r : undefined,
+          ),
+          served: served?.served,
+        });
+  // A hostname leaving Cloudflare's proxy keeps its DNS record proxied for this run, while the
+  // deploy gives the origin a public certificate (research R3); plan.yaml keeps the user's choice.
+  const userProxied = plan.dns.proxied;
+  const persisted = (p: DeployPlan): DeployPlan => ({
+    ...p,
+    dns: { ...p.dns, proxied: userProxied },
+  });
+  if (tls?.holdsProxy) plan = { ...plan, dns: { ...plan.dns, proxied: true } };
   // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
-  // no longer uses), planned read-only now (it stops on its findings) and applied before the
-  // infrastructure plan.
-  const shared = await planSharedCloudflare(deps, { services, plan, cloudflare, command });
+  // no longer uses), with the app's origin TLS and the zone's minimum TLS, planned read-only now
+  // (it stops on its findings) and applied before the infrastructure plan.
+  const shared = await planSharedCloudflare(deps, {
+    services,
+    plan,
+    cloudflare,
+    command,
+    tls: { ...(tls !== undefined ? { tls: tls.desired } : {}), minTls: true },
+    ...(tls !== undefined
+      ? {
+          notes: originTlsNotes(tls, {
+            workflow: posix.basename(plan.cicd.workflowPath),
+            branch: plan.cicd.branch,
+          }),
+        }
+      : {}),
+  });
+  if (tls !== undefined && shared?.main !== undefined) {
+    await keepCertificateRequest(deps, tls, shared.main.plan);
+  }
+  // A server OpsCrew creates holds only this app, so a proxy switch there is planned and said.
+  const edgeNotes: string[] = [];
+  const switchNote = ownServer ? undefined : edgeSwitch(plan, served, []);
+  if (switchNote !== undefined) edgeNotes.push(switchNote);
   // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
   const saved = await savedInfrastructureHashes(deps, options, plan, cloudflarePlanHashes(shared));
   const approveHash = saved.apply;
@@ -309,6 +391,12 @@ async function provisionFlow(
       phase,
       command,
     });
+    // The server's proxy, which every OpsCrew app on it shares: another one is refused while other
+    // apps are there, and planned with its interruption while this app is alone (FR-1440, FR-1444).
+    const running = await readEdgeOver(deps, ownRun.session.remote, plan.app.name);
+    const others = otherActiveApps(ownRun.facts.apps, plan.app.name).map((r) => r.app);
+    const ownSwitch = edgeSwitch(plan, running, others);
+    if (ownSwitch !== undefined) edgeNotes.push(ownSwitch);
     await ownEngineEnv(deps, ownRun, engineEnv, () =>
       infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv }),
     );
@@ -368,7 +456,10 @@ async function provisionFlow(
   // 3c. OpsCrew's shared Cloudflare change (its rules in the zone, the account's Zero Trust
   // organization and one-time PIN login) before the infrastructure plan of this setup (after a
   // mode switch's removal of the old one): shown, approved by its hash, applied and recorded. The
-  // infrastructure takes the PIN login's id from it.
+  // infrastructure takes the PIN login's id from it. Applying a saved plan renders nothing, so its
+  // files keep the site the --plan-only run wrote (the next run brings a new origin TLS).
+  const siteBefore =
+    approveHash === undefined ? undefined : (await recordedEdge(deps, persisted(plan))).edge;
   const sharedResult =
     shared === undefined
       ? undefined
@@ -377,6 +468,7 @@ async function provisionFlow(
           planOnly: options.planOnly === true,
           command,
           phase,
+          ...originTlsApply(deps, tls, services),
         });
   const cloudflareHash = sharedResult?.fields ?? {};
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
@@ -384,12 +476,21 @@ async function provisionFlow(
   if (sharedResult?.oneTimePinId !== undefined) {
     ownRender = { ...ownRender, oneTimePinIdentityProviderId: sharedResult.oneTimePinId };
   }
+  // The new origin certificate of a renewal reaches the server only with a deploy.
+  const renewed =
+    sharedResult?.applied === true &&
+    shared?.main !== undefined &&
+    renewsOriginCertificate(shared.main.plan);
 
   // 4. Render (skipped when applying a saved plan: its files were written by the --plan-only run)
   const knownServer =
     hidesServerAddress(plan) || ownServer
       ? undefined
       : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
+  // The app's site: origin TLS as Cloudflare now has it (a missing permission keeps today's
+  // site), and the user's additions.
+  const after = await recordedEdge(deps, persisted(plan));
+  const site = { edge: siteBefore ?? after.edge, values: after.values };
   const ctx = deploymentRenderContext(deps, {
     plan,
     requirements,
@@ -398,11 +499,12 @@ async function provisionFlow(
     cloudflare,
     server: knownServer,
     ...(ownRender !== undefined ? { own: ownRender } : {}),
+    edge: site.edge,
   });
   // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).
   const dependabot = await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
   const files = [
-    ...deploymentFiles(plan, ctx),
+    ...deploymentFiles(plan, ctx, site.values),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
   ];
   if (approveHash === undefined) await approveAndWriteRenderedFiles(deps, root, files);
@@ -429,6 +531,14 @@ async function provisionFlow(
     storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined;
   const storageHash = storagePlanHash !== undefined ? { storagePlanHash } : {};
 
+  // The server's proxy switch, said now and in the infrastructure approval; CAA records of the
+  // user's next to OpsCrew's, and a client certificate near its end.
+  for (const note of edgeNotes) deps.reporter.warn(note);
+  const approvalNotes = [...(extras.approvalNotes ?? []), ...edgeNotes];
+  for (const warning of tlsWarnings(plan, cloudflare, shared?.main?.plan, deps.clock)) {
+    deps.reporter.warn(warning);
+  }
+
   // 5. Plan → policies → approval → apply. A plan that deletes the tunnel (for example when
   // plan.yaml no longer has a Portainer subdomain) is applied only after the connector on the
   // server is removed (its own host-apply approval) and Cloudflare reports no active connections.
@@ -453,7 +563,7 @@ async function provisionFlow(
         phase,
         ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         done: "The change on your server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel this plan deletes is still there.",
-        ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),
+        ...(approvalNotes.length > 0 ? { notes: approvalNotes } : {}),
       })
     : connectorFirst(deps, {
         command,
@@ -463,7 +573,7 @@ async function provisionFlow(
         hostHash: () => cloudHostHash,
         done: "The Cloudflare Tunnel connector is removed from the server; the Cloudflare Tunnel this plan deletes is still there.",
         ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
-        ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),
+        ...(approvalNotes.length > 0 ? { notes: approvalNotes } : {}),
       });
   let applied: Awaited<ReturnType<typeof planAndApply>>;
   try {
@@ -526,7 +636,7 @@ async function provisionFlow(
         );
       }
     }
-    if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
+    if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, persisted(plan));
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
       ...storageHash,
@@ -577,7 +687,7 @@ async function provisionFlow(
     approvals,
   });
   plan = record(false);
-  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await writeArtifact("plan", deps.paths.files.plan, persisted(plan));
 
   let secretsTarget: {
     host: string;
@@ -600,7 +710,7 @@ async function provisionFlow(
     // The server changed before the removal already when that deleted the tunnel.
     const hostApplied = host.applied || earlyHost?.applied === true;
     plan = record(hostApplied);
-    await writeArtifact("plan", deps.paths.files.plan, plan);
+    await writeArtifact("plan", deps.paths.files.plan, persisted(plan));
     host = { ...host, applied: hostApplied };
     secretsTarget = ownDeployTarget(deps, ownRun, { plan, outputs });
   } else {
@@ -648,6 +758,7 @@ async function provisionFlow(
           knownHosts: secretsTarget.knownHosts,
           environment,
           ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
+          ...(ctx.originTls !== undefined ? { originTls: originTlsSecret(site.values) } : {}),
         }),
         environment.names,
         phase,
@@ -657,20 +768,33 @@ async function provisionFlow(
     noun: "server",
   });
 
-  // 10. Commit, push and open the pull request
+  // 10. Commit, push and open the pull request (with the user's additions, which the deploy
+  // uploads, and the recovery copy when this computer's files changed).
   const published = await publishDeployment(deps, {
     git,
     github,
-    plan,
-    files: files.map((f) => f.path),
+    plan: persisted(plan),
+    files: [
+      ...files.map((f) => f.path),
+      ...(ctx.additions === true ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
+    ],
     push: options.push !== false,
     secretsStored,
     phase,
     branch: deployBranch,
     dependabot,
+    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
   });
   plan = published.plan;
   if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
+  if (renewed && secretsStored && ctx.originTls !== undefined) {
+    await deployRenewedCertificate(deps, github, plan, phase);
+  }
+  if (tls !== undefined && tls.leaving.length > 0) {
+    deps.reporter.info(
+      `${listText(tls.leaving)} left Cloudflare's proxy. Once the deploy has given the server ${tls.leaving.length === 1 ? "its" : "their"} public certificate, run \`${command}\` again: it turns Cloudflare's client certificate off for ${tls.leaving.length === 1 ? "it" : "them"}${tls.holdsProxy ? " and switches the DNS records to DNS only" : ""}.`,
+    );
+  }
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
     ...storageHash,

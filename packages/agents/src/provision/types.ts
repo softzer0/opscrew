@@ -19,6 +19,7 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
+import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
 import type { StorageKey, StorageKeyQuestion } from "./storage";
 
@@ -48,6 +49,7 @@ export type GitHubApi = Pick<
   | "setActionsSecret"
   | "findOpenPullRequest"
   | "createPullRequest"
+  | "dispatchWorkflow"
 > & {
   createOrphanBranch(input: DeployBranchInput): Promise<{ commit: string }>;
   replaceOrphanBranch(input: DeployBranchInput): Promise<{ commit: string; previous: string }>;
@@ -95,6 +97,8 @@ export interface ProvisionServices {
   sharedCloudflare?: CloudflareClient;
   /** The user's Portainer (`target.provider: portainer`): its client and local randomness (fakes in tests). */
   portainer?: PortainerServices;
+  /** Finds an optional tool on `PATH`, such as gixy-ng (default: `findExecutable`). */
+  which?: (name: string) => string | undefined;
 }
 
 /**
@@ -178,6 +182,12 @@ export interface ProvisionOptions {
    * so OpsCrew replaces them only when asked; set it only on the run that should replace them.
    */
   replaceTokens?: { repository?: boolean; registry?: boolean };
+  /**
+   * What the recovery copy's first key needs, asked only when the first copy is made: the user's
+   * own age recipient, or the file to write a new key to (a prompt or `--key-out`), and a backup
+   * recipient.
+   */
+  recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
   services?: ProvisionServices;
 }
 

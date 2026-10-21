@@ -1,5 +1,6 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { edgeProxy } from "@opscrew/iac-templates";
 import type { Retarget } from "@opscrew/plan-schema";
 import { failureReason } from "../destroy/deletion";
 import {
@@ -371,6 +372,7 @@ export async function maintenanceWindow(
     newAppStopped = false;
     await waitAppHealthy(fresh, plan.app.port, plan.app.healthPath, {
       ...ops,
+      edge: edgeProxy(plan),
       ...waitsOf(session.services),
     });
   } catch (error) {

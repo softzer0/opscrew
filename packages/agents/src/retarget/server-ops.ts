@@ -1,6 +1,12 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { durationText, errorMessage, OpsCrewError, type Redactor } from "@opscrew/core";
-import { appDir, EDGE_DIR, processServices } from "@opscrew/iac-templates";
+import {
+  appDir,
+  EDGE_DIR,
+  EDGE_PROXIES,
+  type EdgeProxy,
+  processServices,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
 
@@ -8,8 +14,8 @@ import { pollUntil, sshArgs } from "../shared";
  * Typed server operations for moving a deployment between servers (feature 005). Every command is
  * fixed here; callers choose an operation and pass validated values, never shell text. Commands
  * run as the `deploy` user in the app's folder (`/srv/apps/<app>`), where the deploy workflow keeps
- * `compose.yaml` and the `.env` file that names `APP_IMAGE`; Caddy is the shared edge's, in
- * `/srv/edge`. A server OpsCrew creates runs one app.
+ * `compose.yaml` and the `.env` file that names `APP_IMAGE`; the proxy (Caddy or nginx) is the shared
+ * edge's, in `/srv/edge`. A server OpsCrew creates runs one app.
  */
 
 /** Where the database dump lives on both servers while it is moved (mode 0600, owned by deploy). */
@@ -17,8 +23,11 @@ export function dumpPath(folder: string): string {
   return `${folder}/opscrew-move.dump`;
 }
 
-/** Compose services OpsCrew stops and starts during a move: the app's, and the edge's Caddy. */
-export type MoveService = "app" | "caddy";
+/**
+ * Compose services OpsCrew stops and starts during a move: the app's, and the edge's proxy (its
+ * service is named after it: `caddy` or `nginx`).
+ */
+export type MoveService = "app" | EdgeProxy;
 
 /** Passes user-visible text through the redactor (`deps.redactor.redact`). */
 export type RedactText = (text: string) => string;
@@ -39,16 +48,20 @@ export function serverOps(plan: DeployPlan, redactor: Pick<Redactor, "redact">):
   return { redact: redactor.redact, folder: appDir(plan), processes: processServices(plan) };
 }
 
-/** Where a service's Compose project is: the app's folder, or the edge's for Caddy. */
+/** Where a service's Compose project is: the app's folder, or the edge's for its proxy. */
 function projectFolder(service: MoveService, options: Pick<ServerOpOptions, "folder">): string {
-  return service === "caddy" ? EDGE_DIR : options.folder;
+  return service === "app" ? options.folder : EDGE_DIR;
+}
+
+/** The service in words: the app, or the edge's proxy by its name. */
+function serviceLabel(service: MoveService): string {
+  return service === "app" ? "the app" : EDGE_PROXIES[service].label;
 }
 
 const MINUTE = 60_000;
 /** 100 MB (binary, as database sizes are shown): the unit the move's time estimates count in. */
 export const HUNDRED_MB = 100 * 1024 * 1024;
 const STDERR_LIMIT = 500;
-const SERVICE_LABEL: Record<MoveService, string> = { app: "the app", caddy: "Caddy" };
 
 /**
  * Timeout for a database dump, copy or restore: 5 minutes plus 1 minute per started 100 MB of
@@ -146,7 +159,7 @@ function processesOf(service: MoveService, options: ServerOpOptions): readonly s
 
 /**
  * Stops a Compose service: `app` in the app's folder, then its workers and cron (so nothing of
- * the app writes to its database any more), or the edge's `caddy` in `/srv/edge`.
+ * the app writes to its database any more), or the edge's proxy in `/srv/edge`.
  */
 export async function stopService(
   remote: RemoteExec,
@@ -159,7 +172,7 @@ export async function stopService(
     remote,
     `cd ${folder} && docker compose stop ${service}`,
     2 * MINUTE,
-    { what: `stop ${SERVICE_LABEL[service]}`, hint },
+    { what: `stop ${serviceLabel(service)}`, hint },
     options.redact,
   );
   const processes = processesOf(service, options);
@@ -185,7 +198,7 @@ export async function startService(
     remote,
     `cd ${folder} && docker compose up -d ${service}`,
     5 * MINUTE,
-    { what: `start ${SERVICE_LABEL[service]}`, hint },
+    { what: `start ${serviceLabel(service)}`, hint },
     options.redact,
   );
   const processes = processesOf(service, options);
@@ -199,8 +212,11 @@ export async function startService(
   );
 }
 
-/** The health check; `port` is the plan's (`app.port`, a validated TCP port). */
-function healthCommand(port: number, healthPath: string): string {
+/**
+ * The health check; `port` is the plan's (`app.port`, a validated TCP port), `edge` the server's
+ * proxy, whose image (Caddy's, or nginx's on Alpine) has busybox `wget`.
+ */
+function healthCommand(port: number, healthPath: string, edge: EdgeProxy): string {
   // Single-quoted in the remote shell; quotes, whitespace, `$`, backticks and backslashes refused.
   if (!/^\/[^\s'"`$\\]*$/.test(healthPath)) {
     throw new OpsCrewError(
@@ -211,10 +227,10 @@ function healthCommand(port: number, healthPath: string): string {
       },
     );
   }
-  // A one-off container of the edge's Caddy (busybox wget) on the edge's network, which the app's
+  // A one-off container of the edge's proxy (busybox wget) on the edge's network, which the app's
   // web service joins as `app` (a server OpsCrew creates runs one app): works whether or not the
-  // `caddy` service is running (it is stopped on the new server until DNS points at it).
-  return `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget caddy -q -O /dev/null -T 5 'http://app:${port}${healthPath}'`;
+  // proxy is running (it is stopped on the new server until DNS points at it).
+  return `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget ${edge} -q -O /dev/null -T 5 'http://app:${port}${healthPath}'`;
 }
 
 async function probe(
@@ -238,11 +254,14 @@ export async function isAppHealthy(
   remote: RemoteExec,
   port: number,
   healthPath: string,
+  edge: EdgeProxy,
 ): Promise<boolean> {
-  return (await probe(remote, healthCommand(port, healthPath))).healthy;
+  return (await probe(remote, healthCommand(port, healthPath, edge))).healthy;
 }
 
 export interface WaitAppHealthyOptions extends ServerOpOptions {
+  /** The server's proxy, whose image runs the check. */
+  edge: EdgeProxy;
   /** Default 5 minutes. */
   timeoutMs?: number;
   /** Pause between checks; default 5 seconds. */
@@ -259,7 +278,7 @@ export async function waitAppHealthy(
   healthPath: string,
   options: WaitAppHealthyOptions,
 ): Promise<void> {
-  const command = healthCommand(port, healthPath);
+  const command = healthCommand(port, healthPath, options.edge);
   const timeoutMs = options.timeoutMs ?? 5 * MINUTE;
   let detail = "";
   const healthy = await pollUntil(

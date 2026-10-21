@@ -64,6 +64,7 @@ import {
   writeFakeState,
 } from "../testing";
 import { bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
+import { readOriginTlsValues } from "./origin-tls";
 import {
   portainerContainerUrl,
   portainerValueKeyFile,
@@ -1804,3 +1805,91 @@ describe("switchesWebRoute", () => {
     expect(switchesWebRoute(target({ mode: "caddy" }), none)).toBe(false);
   });
 });
+
+describe.skipIf(!findExecutable("git"))(
+  "opscrew provision for the user's Portainer: the stack Caddy's origin TLS",
+  () => {
+    const proxied = () => {
+      const base = portainerPlan({ web: { mode: "caddy" } });
+      return DeployPlanSchema.parse({ ...base, dns: { ...base.dns, proxied: true } });
+    };
+
+    it("web mode caddy behind Cloudflare's proxy: Cloudflare first, then the stack holds the certificates in one variable", async () => {
+      const s = await setup({ plan: proxied() });
+      const result = await s.run();
+      expect(result.stackApplied).toBe(true);
+      // The Cloudflare plan (origin TLS and the zone's minimum TLS) goes before anything else.
+      expect(kinds(s)[0]).toBe("cloudflare-apply");
+      const cloudflare = s.handler.requests[0]?.details ?? "";
+      expect(cloudflare).toContain(
+        "Create a Cloudflare origin certificate for shop.example.com (15 years)",
+      );
+      // The stack's Caddy delivers it itself: no deploy is started for it.
+      expect(cloudflare).not.toContain("starts the deploy workflow");
+      expect(s.zone.hostnameAop.get("shop.example.com")?.enabled).toBe(true);
+
+      // The stack template serves the origin certificate and requires the client certificate,
+      // from the variable it writes to a tmpfs; Portainer holds the variable's value.
+      const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      expect(template).toContain("client_auth");
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a Compose variable, not a JavaScript template.
+      expect(template).toContain("OPSCREW_ORIGIN_TLS: ${OPSCREW_ORIGIN_TLS}");
+      const values = await readOriginTlsValues(s.deps);
+      const stack = s.fake.stacks.find((item) => item.Name === "opscrew-shop");
+      const bundle = stack?.Env.find((entry) => entry.name === "OPSCREW_ORIGIN_TLS")?.value ?? "";
+      expect(Buffer.from(bundle, "base64").toString("utf8")).toBe(
+        `${values.ORIGIN_TLS_CERT}${values.ORIGIN_TLS_KEY}${values.ORIGIN_PULL_CERT}`,
+      );
+      // No pull.pem in the repository: the stack has it in the variable.
+      await expect(stat(join(s.root, "opscrew/runtime/edge/tls/pull.pem"))).rejects.toThrow();
+
+      const published = await everythingPublished(s);
+      for (const secret of [values.ORIGIN_TLS_KEY, values.ORIGIN_PULL_KEY, bundle] as string[]) {
+        expect(published).not.toContain(secret);
+      }
+      expect(published).not.toContain("PRIVATE KEY-----\n");
+    });
+
+    it("--plan-only, then --approve with both hashes: the stack plan keeps the hash it was shown with", async () => {
+      const approved: string[] = [];
+      const s = await setup({
+        plan: proxied(),
+        // Like the CLI's non-interactive handler: Cloudflare and stack plans by hash only.
+        answer: (request) =>
+          request.kind === "cloudflare-apply" || request.kind === "stack-apply"
+            ? approved.includes(request.planHash ?? "")
+            : true,
+      });
+      const planned = await s.run({ planOnly: true });
+      const cloudflare = planned.cloudflarePlanHash as string;
+      const stack = planned.stackPlanHash as string;
+      expect(cloudflare).toMatch(/^[0-9a-f]{64}$/);
+      expect(stack).toMatch(/^[0-9a-f]{64}$/);
+      expect(s.zone.writes()).toEqual([]);
+
+      approved.push(cloudflare, stack);
+      s.handler.requests.length = 0;
+      const result = await s.run({ approveHashes: [cloudflare, stack] });
+      expect(result).toMatchObject({ stackApplied: true, stackPlanHash: stack });
+      expect(s.zone.originCertificates).toHaveLength(1);
+      expect(s.handler.requests.find((r) => r.kind === "stack-apply")?.planHash).toBe(stack);
+      // The stack keeps the site of the shown plan; the next run brings the origin TLS.
+      const app = s.fake.stacks.find((item) => item.Name === "opscrew-shop");
+      expect(app?.Env.some((entry) => entry.name === "OPSCREW_ORIGIN_TLS")).toBe(false);
+    });
+
+    it("asks for the recovery copy's first key through the run's recovery options", async () => {
+      const s = await setup({ plan: proxied() });
+      const asked: string[] = [];
+      await s.run({
+        recovery: {
+          keyOut: async () => {
+            asked.push("keyOut");
+            return undefined;
+          },
+        },
+      });
+      expect(asked).toEqual(["keyOut"]);
+    });
+  },
+);

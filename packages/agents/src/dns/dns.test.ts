@@ -184,13 +184,15 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     expect(request?.allowDestroy).toBeUndefined();
     expect(zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"app.example.com"})');
     expect(zone.opscrewRule(WAF)?.expression).toContain('(http.host in {"app.example.com"})');
-    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toEqual({
+    // The record holds the app's origin TLS too (feature 014): the new hostname's certificate.
+    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toMatchObject({
       zoneId: FAKE_ZONE_ID,
       hostnames: {
         "opscrew-block-probes": ["app.example.com"],
         "opscrew-strict-tls": ["app.example.com"],
       },
       createdEntrypoints: [WAF, CONFIG],
+      tls: { origin: { hostnames: ["app.example.com"] } },
     });
   });
 

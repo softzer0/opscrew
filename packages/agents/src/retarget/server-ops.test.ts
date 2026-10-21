@@ -86,6 +86,23 @@ describe("services", () => {
     ]);
   });
 
+  it("stops and starts nginx on the nginx edge, named in its steps", async () => {
+    const remote = new FakeRemote("203.0.113.10");
+    await stopService(remote, "nginx", { redact: identity, folder: FOLDER });
+    await startService(remote, "nginx", { redact: identity, folder: FOLDER });
+    expect(remote.calls.map((call) => call.command)).toEqual([
+      "cd /srv/edge && docker compose stop nginx",
+      "cd /srv/edge && docker compose up -d nginx",
+    ]);
+    const error = await caught(
+      stopService(new FakeRemote("h", () => fail("no such service")), "nginx", {
+        redact: identity,
+        folder: FOLDER,
+      }),
+    );
+    expect(error.message).toContain("stop nginx");
+  });
+
   it("names the step and host and passes stderr through the redactor", async () => {
     const token = fakeSecret("github-token");
     const redactor = new Redactor();
@@ -135,27 +152,29 @@ describe("services", () => {
 });
 
 describe("app health", () => {
-  it("asks the app from a one-off Caddy container on the Compose network", async () => {
+  it("asks the app from a one-off container of the edge's proxy on the Compose network", async () => {
     const remote = new FakeRemote("h");
-    expect(await isAppHealthy(remote, 3000, "/healthz")).toBe(true);
-    expect(remote.calls).toEqual([
-      {
-        command:
-          "cd /srv/edge && docker compose run --rm --no-deps -T --entrypoint wget caddy -q -O /dev/null -T 5 'http://app:3000/healthz'",
+    expect(await isAppHealthy(remote, 3000, "/healthz", "caddy")).toBe(true);
+    // nginx's image is Alpine, with busybox wget too.
+    expect(await isAppHealthy(remote, 3000, "/healthz", "nginx")).toBe(true);
+    expect(remote.calls).toEqual(
+      ["caddy", "nginx"].map((proxy) => ({
+        command: `cd /srv/edge && docker compose run --rm --no-deps -T --entrypoint wget ${proxy} -q -O /dev/null -T 5 'http://app:3000/healthz'`,
         timeoutMs: MIN,
-      },
-    ]);
+      })),
+    );
   });
 
   it("is false on a failed check, a timeout or a connection error", async () => {
-    expect(await isAppHealthy(new FakeRemote("h", () => fail("wget: bad address")), 80, "/")).toBe(
-      false,
-    );
+    expect(
+      await isAppHealthy(new FakeRemote("h", () => fail("wget: bad address")), 80, "/", "caddy"),
+    ).toBe(false);
     expect(
       await isAppHealthy(
         new FakeRemote("h", () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: true })),
         80,
         "/",
+        "caddy",
       ),
     ).toBe(false);
     expect(
@@ -165,6 +184,7 @@ describe("app health", () => {
         }),
         80,
         "/",
+        "caddy",
       ),
     ).toBe(false);
   });
@@ -172,7 +192,7 @@ describe("app health", () => {
   it("refuses paths that are not safe to put in the command", async () => {
     const remote = new FakeRemote("h");
     for (const path of ["health", "/'; reboot; '", "/a b", "/$(id)", "/`id`"]) {
-      const error = await caught(isAppHealthy(remote, 3000, path));
+      const error = await caught(isAppHealthy(remote, 3000, path, "caddy"));
       expect(error.code).toBe("INVALID_INPUT");
     }
     expect(remote.calls).toEqual([]);
@@ -186,6 +206,7 @@ describe("app health", () => {
     await waitAppHealthy(remote, 8080, "/up", {
       redact: identity,
       folder: FOLDER,
+      edge: "caddy",
       now: () => t,
       sleep: async (ms) => {
         sleeps.push(ms);
@@ -204,6 +225,7 @@ describe("app health", () => {
       waitAppHealthy(remote, 3000, "/health", {
         redact: (text) => text.split(token).join("[redacted]"),
         folder: FOLDER,
+        edge: "caddy",
         timeoutMs: 60_000,
         intervalMs: 10_000,
         now: () => t,

@@ -333,6 +333,8 @@ export async function startMove(
     requirements: { ...requirements, provider: to },
     catalog,
     now: deps.clock.now(),
+    // The new server runs the same proxy, whose memory the sizing counts.
+    edge: from.edge,
   });
   for (const option of designOptions) deps.reporter.info(designOptionLine(option));
   const chosen = await pickOption(designOptions, options);

@@ -1204,6 +1204,9 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
       APP_COMPOSE: `${dirs.app}/compose.yaml`,
       DATA_DIR: dirs.data,
       SITE: runtimeFilePath(p.app, "site"),
+      NGINX_SITE: `${EDGE_DIR}/sites/${p.app}.conf`,
+      ADDITIONS: `${EDGE_DIR}/sites/${p.app}.additions`,
+      TLS_DIR: `${EDGE_DIR}/tls/${p.app}`,
       EDGE_COMPOSE: `${EDGE_DIR}/compose.yaml`,
       EDGE_PROJECT,
     },
@@ -1217,19 +1220,25 @@ remove_dir() {
 edge() { docker compose -p "$EDGE_PROJECT" -f "$EDGE_COMPOSE" "$@"; }`,
     verify: `  project_gone "$APP" "$DELETE_DATA" || return 1
   [ ! -e "$APP_DIR" ] || return 1
-  [ ! -e "$SITE" ] && [ ! -L "$SITE" ] || return 1
+  for f in "$SITE" "$NGINX_SITE" "$ADDITIONS" "$TLS_DIR"; do
+    [ ! -e "$f" ] && [ ! -L "$f" ] || return 1
+  done
   if [ "$DELETE_DATA" = true ] && [ -e "$DATA_DIR" ]; then return 1; fi
   return 0`,
     snapshot: `echo "prev.appFiles=$(ls -A "$APP_DIR" 2>/dev/null | wc -l)"
 echo "prev.dataFiles=$(ls -A "$DATA_DIR" 2>/dev/null | wc -l)"`,
-    apply: `for d in "$APP_DIR" "$DATA_DIR"; do
+    apply: `for d in "$APP_DIR" "$DATA_DIR" "$TLS_DIR"; do
   if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
 done
 remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
-# The app's site and its kamal-proxy service leave the shared edge, which stays for other apps
-# (remove_project started Docker when it was stopped).
+# The app's site (Caddy's or nginx's), its additions, its origin certificate and its kamal-proxy
+# service leave the shared edge, which stays for other apps (remove_project started Docker when it
+# was stopped).
 reload=''
-if [ -e "$SITE" ] || [ -L "$SITE" ]; then rm -f "$SITE"; reload=true; fi
+if [ -e "$SITE" ] || [ -L "$SITE" ]; then rm -f "$SITE"; reload=caddy; fi
+if [ -e "$NGINX_SITE" ] || [ -L "$NGINX_SITE" ]; then rm -f "$NGINX_SITE"; reload=nginx; fi
+rm -f "$ADDITIONS"
+remove_dir "$TLS_DIR"
 if [ -f "$EDGE_COMPOSE" ] && command -v docker >/dev/null 2>&1; then
   # A stopped kamal-proxy keeps the app's route on its volume: it runs while the route goes.
   edge up -d kamal-proxy >/dev/null 2>&1 || fail "The shared edge's kamal-proxy did not start, so OpsCrew could not remove the app's route from it."
@@ -1240,9 +1249,10 @@ if [ -f "$EDGE_COMPOSE" ] && command -v docker >/dev/null 2>&1; then
       *) fail "kamal-proxy did not remove the app's route." ;;
     esac
   fi
-  if [ -n "$reload" ]; then
-    edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null >/dev/null 2>&1 || true
-  fi
+  case "$reload" in
+    caddy) edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null >/dev/null 2>&1 || true ;;
+    nginx) edge exec -T nginx sh -c 'nginx -t && nginx -s reload' </dev/null >/dev/null 2>&1 || true ;;
+  esac
 fi
 remove_dir "$APP_DIR"
 if [ "$DELETE_DATA" = true ]; then remove_dir "$DATA_DIR"; fi

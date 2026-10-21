@@ -1,3 +1,4 @@
+import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
   appDirs,
   type HASHED_RUNTIME_FILES,
@@ -26,9 +27,9 @@ import {
 import {
   DEPLOY_SECRETS,
   keepNewerPins,
-  type RenderContext,
-  renderCaddyfile,
+  type RuntimeContext,
   renderCompose,
+  renderEdgeSite,
   serviceEnvSecret,
   serviceSpec,
 } from "@opscrew/iac-templates";
@@ -36,7 +37,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
-import { readRequirements } from "../provision/render";
+import { readRequirements, recordedEdge, siteContext } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
 import { committedText, lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
@@ -396,29 +397,29 @@ export interface ExpectedRuntimeFiles {
 }
 
 /**
- * The SHA-256 of `opscrew/runtime/compose.yaml` and the app's site file
- * (`opscrew/runtime/edge/sites/<app>.caddy`) as OpsCrew renders them from `plan` now (the deploy
- * workflow copies exactly these to the app's folder and the shared edge). Both read only the plan
- * and the contact email for certificates, so no secret and no connection is needed. The Compose
- * file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
+ * The SHA-256 of `opscrew/runtime/compose.yaml` and the app's site file for the server's proxy
+ * (`opscrew/runtime/edge/sites/<app>.caddy` or `.conf`) as OpsCrew renders them from `plan` now
+ * (the deploy workflow copies exactly these to the app's folder and the shared edge). The site
+ * gets what provision renders it with (`siteContext`: its origin TLS, additions and Cloudflare's
+ * ranges) and the contact email for certificates, so no secret and no connection is needed. The
+ * Compose file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
  */
 export function expectedRuntimeFiles(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "opscrewVersion" | "acmeEmail">,
+  ctx: Pick<
+    RuntimeContext,
+    "opscrewVersion" | "acmeEmail" | "originTls" | "additions" | "cloudflareRanges"
+  >,
   committedCompose = "",
 ): ExpectedRuntimeFiles {
   // The site file does not depend on the repository or the deploy key (a test checks both files
   // match the full render), so these stay empty here.
-  const full: RenderContext = {
-    opscrewVersion: ctx.opscrewVersion,
-    github: { owner: "", repo: "" },
-    deploySshPublicKey: "",
-    ...(ctx.acmeEmail !== undefined ? { acmeEmail: ctx.acmeEmail } : {}),
-  };
+  const full: RuntimeContext = { ...ctx, github: { owner: "", repo: "" }, deploySshPublicKey: "" };
+  const [site] = renderEdgeSite(plan, full);
   return {
     rendered: {
       "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
-      site: sha256Hex(renderCaddyfile(plan, full).content),
+      ...(site !== undefined ? { site: sha256Hex(site.content) } : {}),
     },
     serviceEnvFiles: Object.fromEntries(
       plan.services
@@ -818,11 +819,22 @@ export async function ownHostDrift(
     },
   );
   const contactEmail = (await readRequirements(deps))?.contactEmail;
-  const runtimeFiles = expectedRuntimeFiles(
+  const ranges = await siteRanges(deps, plan, options.cloudflare);
+  const rendered = expectedRuntimeFiles(
     plan,
-    { opscrewVersion: deps.version, ...(contactEmail ? { acmeEmail: contactEmail } : {}) },
+    {
+      opscrewVersion: deps.version,
+      ...(contactEmail ? { acmeEmail: contactEmail } : {}),
+      ...siteContext(
+        (await recordedEdge(deps, plan)).edge,
+        ranges === "unreadable" ? undefined : ranges,
+      ),
+    },
     await committedText(deps.paths.root, [renderCompose(plan).path]),
   );
+  // Without Cloudflare's current ranges the site cannot be rendered as provision would.
+  const { site: _site, ...withoutSite } = rendered.rendered;
+  const runtimeFiles = ranges === "unreadable" ? { ...rendered, rendered: withoutSite } : rendered;
   return {
     differences: hostDifferences(
       facts,
@@ -857,6 +869,28 @@ export async function serverComponentDrift(
     if (!isUserFacingError(error)) throw error;
     notes.push(`OpsCrew could not compare the app's components on the server. ${errorText(error)}`);
     return undefined;
+  }
+}
+
+/**
+ * Cloudflare's current IP ranges for the app's site, as provision passes them (any app with a
+ * domain on Cloudflare); `undefined` without one. When they cannot be read the site is not
+ * compared, and a warning says so (`unreadable`).
+ */
+async function siteRanges(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  cloudflare: Pick<CloudflareApi, "getIpRanges"> | null | undefined,
+): Promise<{ ipv4: string[]; ipv6: string[] } | "unreadable" | undefined> {
+  if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return undefined;
+  const client = cloudflare ?? new CloudflareClient({ fetch: deps.fetch, version: deps.version });
+  try {
+    return await client.getIpRanges();
+  } catch {
+    deps.reporter.warn(
+      "OpsCrew could not read Cloudflare's current IP ranges, so it did not compare the app's site on the server with what OpsCrew renders. Run `opscrew drift` again when Cloudflare's API is reachable.",
+    );
+    return "unreadable";
   }
 }
 

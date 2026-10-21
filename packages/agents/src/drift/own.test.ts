@@ -3,9 +3,11 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { renderEdgeSite } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, serviceOf, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
+import { recordedEdge, siteContext } from "../provision/render";
 import { lastHostSetup, passwordLoginChoice, recordOwnServer } from "../shared";
 import { CF_V4, CF_V6, ownCloudflare, ownPlan, withOtherApp } from "../testing";
 import {
@@ -502,10 +504,13 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         "requirements",
         s.deps.paths.files.requirements,
       ).catch(() => undefined);
+      // The site as provision renders it: with the app's origin TLS and Cloudflare's ranges.
       const expected = expectedRuntimeFiles(plan, {
         opscrewVersion: s.deps.version,
         ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
+        ...siteContext((await recordedEdge(s.deps, plan)).edge, { ipv4: CF_V4, ipv6: CF_V6 }),
       });
+      expect(expected.rendered.site).toBeDefined();
       expect(expected.rendered).toEqual({ "compose.yaml": sums.compose, site: sums.site });
       await deployed(s);
       const report = await runDrift(s.deps, { services: s.services });
@@ -640,6 +645,25 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         "~ OpsCrew's runtime files of the app: /srv/edge/sites/shop.caddy differs",
       );
       expect(s.host.applies).toHaveLength(1);
+    });
+
+    it("renders the site for the server's proxy, with what provision renders it with", () => {
+      const plan = DeployPlanSchema.parse({
+        ...ownPlan(),
+        target: { ...ownPlan().target, edge: "nginx" },
+      });
+      const ctx = {
+        opscrewVersion: "0.0.0",
+        ...siteContext({ originTls: { hostnames: ["shop.example.com"] } }, undefined),
+      };
+      const [site] = renderEdgeSite(plan, {
+        ...ctx,
+        github: { owner: "", repo: "" },
+        deploySshPublicKey: "",
+      });
+      expect(site?.path).toBe("opscrew/runtime/edge/sites/shop.conf");
+      expect(site?.content).toContain("ssl_verify_client on;");
+      expect(expectedRuntimeFiles(plan, ctx).rendered.site).toBe(sum(site?.content ?? ""));
     });
 
     it("checks each service's env file as it checks app.env", async () => {

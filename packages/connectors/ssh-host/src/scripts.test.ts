@@ -561,6 +561,50 @@ esac`;
     }
   });
 
+  it("app teardown on the nginx edge: removes the app's site, its additions and origin TLS files, then reloads nginx", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    const plan = planTeardown(
+      await inspectHost(fake),
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      "opscrew destroy",
+    );
+    const step = plan.steps.find((item) => item.id === "app-dirs");
+    if (step === undefined) throw new Error("no app-dirs step");
+    const { apply, verify } = stepScripts(plan, step);
+    const h = new ShellHarness();
+    try {
+      h.stub("docker", "exit 0");
+      h.stub("systemctl", "exit 0");
+      h.write("/srv/edge/compose.yaml", "name: opscrew-edge\nx-opscrew-edge-proxy: nginx\n");
+      h.write("/srv/edge/sites/shop.conf", "server {\n}\n");
+      h.write("/srv/edge/sites/shop.additions", "add_header X-Test 1;\n");
+      h.write("/srv/edge/sites/blog.conf", "server {\n}\n");
+      h.write("/srv/edge/tls/shop/origin.pem", "certificate\n");
+      h.write("/srv/edge/tls/shop/origin.key", "placeholder key\n");
+      h.write("/srv/edge/tls/shop/pull.pem", "certificate\n");
+      h.write("/srv/apps/shop/compose.yaml", "name: shop\n");
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      for (const gone of [
+        "/srv/edge/sites/shop.conf",
+        "/srv/edge/sites/shop.additions",
+        "/srv/edge/tls/shop",
+      ]) {
+        expect(h.exists(gone)).toBe(false);
+      }
+      // Another app's site stays, and the reload checks nginx's configuration first.
+      expect(h.exists("/srv/edge/sites/blog.conf")).toBe(true);
+      const edge = `docker compose -p opscrew-edge -f ${h.posix("/srv/edge/compose.yaml")}`;
+      expect(h.calls()).toContain(`${edge} exec -T nginx sh -c nginx -t && nginx -s reload`);
+      expect(h.calls().some((call) => call.includes("caddy reload"))).toBe(false);
+      expect(h.run(verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("sshd: the check accepts without-password for prohibit-password and needs OpsCrew's drop-in", async () => {
     const { check } = await stepOf((f) => desiredFor(f), "sshd");
     const dropIn = sshdDropIn({

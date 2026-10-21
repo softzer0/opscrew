@@ -275,6 +275,7 @@ export function describeCloudflarePlan(
   plan: SharedPlan,
   desired: SharedDesired,
   zone: string,
+  notes: readonly string[] = [],
 ): string {
   const items = [
     ...plan.changes.flatMap((change) => tlsItem(change) ?? []),
@@ -316,6 +317,7 @@ export function describeCloudflarePlan(
     findings: plan.findings,
     note: [
       ...advice,
+      ...notes,
       "OpsCrew keeps one rule of its own per kind of rule in the zone, listing the hostnames of every OpsCrew app there, and changes only this app's hostnames in it. Rules OpsCrew did not create stay exactly as they are, in the same order.",
     ].join("\n"),
     hashLabel: "Cloudflare plan hash",
@@ -359,9 +361,13 @@ export function cloudflarePlanHashes(planned: PlannedCloudflare | undefined): st
   );
 }
 
-/** One zone's plan; stops (`PHASE_PRECONDITION`, nothing changed) on its findings. */
+/**
+ * One zone's plan, reading the app's origin TLS and the zone's minimum TLS when `desired` asks
+ * for them; stops (`PHASE_PRECONDITION`, nothing changed) on its findings. `notes` adds lines to
+ * the plan's text.
+ */
 export async function zonePlan(
-  deps: Pick<PhaseDeps, "reporter">,
+  deps: Pick<PhaseDeps, "reporter" | "clock">,
   input: {
     client: CloudflareClient;
     zoneId: string;
@@ -370,15 +376,22 @@ export async function zonePlan(
     desired: SharedDesired;
     record: SharedRecord | undefined;
     command: string;
+    notes?: (plan: SharedPlan) => string[];
   },
 ): Promise<ZonePlan> {
+  const { desired } = input;
   const facts = await inspectShared(input.client, {
     zoneId: input.zoneId,
     accountId: input.accountId,
-    access: input.desired.access !== undefined,
+    access: desired.access !== undefined,
+    ...(desired.tls !== undefined
+      ? { tls: { proxied: desired.tls.proxied, record: input.record } }
+      : {}),
+    ...(desired.minTls === true ? { minTls: true } : {}),
+    clock: deps.clock,
   });
-  const plan = planShared(facts, input.desired, input.record);
-  const details = describeCloudflarePlan(plan, input.desired, input.zone);
+  const plan = planShared(facts, desired, input.record);
+  const details = describeCloudflarePlan(plan, desired, input.zone, input.notes?.(plan));
   if (plan.findings.length > 0) {
     deps.reporter.info(details);
     throw adapterBlocked({
@@ -400,12 +413,16 @@ export async function zonePlan(
  * anything changes.
  */
 export async function planSharedCloudflare(
-  deps: Pick<PhaseDeps, "reporter" | "paths" | "env" | "fetch" | "redactor" | "version">,
+  deps: Pick<PhaseDeps, "reporter" | "paths" | "env" | "fetch" | "redactor" | "version" | "clock">,
   input: {
     services: Pick<ProvisionServices, "sharedCloudflare">;
     plan: DeployPlan;
     cloudflare: Pick<CloudflareSetup, "zoneId" | "zoneName" | "accountId"> | undefined;
     command: string;
+    /** The app's origin TLS and the minimum-TLS decision in the plan's zone (provision). */
+    tls?: Pick<SharedDesired, "tls" | "minTls">;
+    /** Lines added to the text of the plan's zone plan. */
+    notes?: (plan: SharedPlan) => string[];
   },
 ): Promise<PlannedCloudflare | undefined> {
   const { cloudflare, command } = input;
@@ -437,9 +454,10 @@ export async function planSharedCloudflare(
           zoneId: cloudflare.zoneId,
           accountId: cloudflare.accountId,
           zone: cloudflare.zoneName,
-          desired: sharedDesired(input.plan, cloudflare.zoneName),
+          desired: { ...sharedDesired(input.plan, cloudflare.zoneName), ...input.tls },
           record: record?.zoneId === cloudflare.zoneId ? record : undefined,
           command,
+          ...(input.notes !== undefined ? { notes: input.notes } : {}),
         });
   return {
     client,
@@ -462,6 +480,15 @@ export interface SharedCloudflareInput {
    * Cloudflare (destroy: removing this app's hostnames takes their protection away).
    */
   allowDestroy?: boolean;
+  /** The client certificate and its key `upload-client-certificate` sends (never in the plan). */
+  keys?: { clientCertificate: string; clientKey: string };
+  /** Waits between Cloudflare's reads while a setting deploys (default: real time). */
+  sleep?: (ms: number) => Promise<void>;
+  /**
+   * Keeps the origin certificate the apply created, with its key, before anything else happens:
+   * also when the apply stops after creating it.
+   */
+  keepOriginCertificate?: (certificate: string) => Promise<void>;
 }
 /** The outcome of {@link applySharedCloudflare}. */
 export interface SharedCloudflareResult {
@@ -556,17 +583,31 @@ export async function applyZonePlan(
   );
   let applied: SharedApplyResult;
   try {
-    applied = await applyShared(client, plan, { approvedHash: plan.hash });
+    applied = await applyShared(client, plan, {
+      approvedHash: plan.hash,
+      ...(input.keys !== undefined ? { keys: input.keys } : {}),
+      ...(plan.csr !== undefined ? { csr: plan.csr } : {}),
+      clock: deps.clock,
+      ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
+    });
   } catch (error) {
     // What reached Cloudflare before the failure is this app's: recorded before the error shows.
     const done = error instanceof SharedApplyError ? error.applied : [];
-    if (error instanceof SharedApplyError) await writeCloudflareRecord(deps.paths, error.record);
+    if (error instanceof SharedApplyError) {
+      if (error.originCertificate !== undefined) {
+        await input.keepOriginCertificate?.(error.originCertificate);
+      }
+      await writeCloudflareRecord(deps.paths, error.record);
+    }
     await audit(
       "cloudflare apply failed",
       "refused",
       `changes applied before the failure: ${done.length > 0 ? done.join(", ") : "none"}`,
     );
     throw error;
+  }
+  if (applied.originCertificate !== undefined) {
+    await input.keepOriginCertificate?.(applied.originCertificate);
   }
   await writeCloudflareRecord(deps.paths, applied.record);
   for (const id of applied.applied) await audit(`cloudflare change ${id}`, "approved", id);

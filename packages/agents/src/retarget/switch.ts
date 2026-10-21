@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import type { ApprovalRecord, FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { EDGE_DIR } from "@opscrew/iac-templates";
+import { EDGE_DIR, EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
 import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
@@ -211,7 +211,7 @@ async function switchManagedDns(
     costDelta: null,
     notes: [
       `This points ${plan.dns.domain} at the new ${fresh.noun}; the records are updated in place.`,
-      `Then OpsCrew starts Caddy on the new ${fresh.noun}, checks the app through its domain and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
+      `Then OpsCrew starts ${EDGE_PROXIES[edgeProxy(plan)].label} on the new ${fresh.noun}, checks the app through its domain and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
     ],
   };
   const prepared = await prepareInfraPlan(session, input);
@@ -308,7 +308,7 @@ async function switchByHand(
               `The app on the old ${old.noun} is stopped (its database was copied), so your users are offline ${untilSwitched(plan)}.`,
             ]
           : []),
-        `Confirm once you made this change. OpsCrew then starts Caddy on the new ${fresh.noun}, checks the app at ${url} and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
+        `Confirm once you made this change. OpsCrew then starts ${EDGE_PROXIES[edgeProxy(plan)].label} on the new ${fresh.noun}, checks the app at ${url} and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
       ].join("\n"),
     });
     if (!approval.approved) {
@@ -424,7 +424,7 @@ interface Unsettled {
 }
 
 /**
- * The end of a switch, done again on every later run (and before `--finish`): Caddy starts on the
+ * The end of a switch, done again on every later run (and before `--finish`): the edge's proxy starts on the
  * new server; without managed DNS the app's domain must resolve to the new server (and no longer
  * to the old one), so the check below reaches the new server and not the old app; the app must
  * answer through its URL within 5 minutes; then the app on the old server is stopped when it still
@@ -442,19 +442,21 @@ async function settleSwitch(
   const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
   const ops = serverOps(plan, deps.redactor);
+  const edge = edgeProxy(plan);
+  const { label } = EDGE_PROXIES[edge];
   const remote = newRemote(session);
   const site = publicUrl(plan, next.ipv4);
   const check = `${site}${plan.app.healthPath}`;
-  const logs = `See what happens with \`ssh deploy@${next.ipv4}\`, \`cd ${EDGE_DIR} && docker compose logs --tail 100 caddy\` and \`cd ${ops.folder} && docker compose logs --tail 100 app\`, then run \`${RUN_COMMAND}\` to check again.`;
-  deps.reporter.step(`Starting Caddy on the new ${fresh.noun}`);
+  const logs = `See what happens with \`ssh deploy@${next.ipv4}\`, \`cd ${EDGE_DIR} && docker compose logs --tail 100 ${edge}\` and \`cd ${ops.folder} && docker compose logs --tail 100 app\`, then run \`${RUN_COMMAND}\` to check again.`;
+  deps.reporter.step(`Starting ${label} on the new ${fresh.noun}`);
   try {
-    await startService(remote, "caddy", ops);
+    await startService(remote, edge, ops);
   } catch (error) {
-    throw refuse({ problem: `starting Caddy there failed (${reasonOf(error)})`, hint: logs });
+    throw refuse({ problem: `starting ${label} there failed (${reasonOf(error)})`, hint: logs });
   }
   await auditMove(session, {
     kind: "remote-exec",
-    action: "start caddy",
+    action: `start ${edge}`,
     target: remote.host,
     decision: "approved",
   });
@@ -481,7 +483,7 @@ async function settleSwitch(
       answer.last !== undefined ? ` (last answer: ${deps.redactor.redact(answer.last)})` : "";
     const tls =
       domain !== undefined
-        ? `Caddy on the new ${fresh.noun} may still be getting its TLS certificate${managedDns(plan) ? ", or the DNS change has not reached this computer yet" : ""}. `
+        ? `${label} on the new ${fresh.noun} may still be getting its TLS certificate${managedDns(plan) ? ", or the DNS change has not reached this computer yet" : ""}. `
         : "";
     throw refuse({
       problem: `the app did not answer at ${check} within 5 minutes${why}`,

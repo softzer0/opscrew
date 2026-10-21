@@ -46,6 +46,11 @@ export interface CloudflareSetup {
    * `setupCloudflare` runs with `foreignRecords: "report"` (otherwise they stop the run).
    */
   foreignRecords?: { type: string; name: string; content: string }[];
+  /**
+   * CAA records at the app's domain that OpsCrew did not create: left as they are, and reported
+   * where OpsCrew publishes its own (FR-1431).
+   */
+  foreignCaa?: { name: string; content: string }[];
 }
 
 export interface GitHubSetup {
@@ -182,26 +187,30 @@ async function knownServers(deps: PhaseDeps, plan: DeployPlan): Promise<string[]
 }
 
 /**
- * A, AAAA and CNAME records at the app's hostnames that OpsCrew did not create: no OpsCrew comment
- * and not pointing at a server OpsCrew already deployed. Doubles as the DNS-read permission check.
+ * Records at the app's hostnames that OpsCrew did not create (no OpsCrew comment): A, AAAA and
+ * CNAME records not pointing at a server OpsCrew already deployed (`clashing`), and CAA records
+ * (`caa`). Doubles as the DNS-read permission check.
  */
 async function foreignDnsRecords(
   api: CloudflareApi,
   zoneId: string,
   servers: readonly string[],
   hosts: readonly string[],
-): Promise<CloudflareDnsRecord[]> {
+): Promise<{ clashing: CloudflareDnsRecord[]; caa: CloudflareDnsRecord[] }> {
   const known = new Set(servers.filter((ip) => ip !== "").map(canonicalAddress));
-  const foreign: CloudflareDnsRecord[] = [];
+  const clashing: CloudflareDnsRecord[] = [];
+  const caa: CloudflareDnsRecord[] = [];
   for (const host of hosts) {
     for (const record of await api.listDnsRecords(zoneId, { name: host })) {
-      if (!CLASHING_RECORD_TYPES.has(record.type.toUpperCase())) continue;
       if (record.comment?.trim() === OPSCREW_MANAGED_COMMENT) continue;
+      const type = record.type.toUpperCase();
+      if (type === "CAA") caa.push(record);
+      if (!CLASHING_RECORD_TYPES.has(type)) continue;
       if (known.has(canonicalAddress(record.content))) continue;
-      foreign.push(record);
+      clashing.push(record);
     }
   }
-  return foreign;
+  return { clashing, caa };
 }
 
 /**
@@ -235,17 +244,19 @@ export function cloudflareTokenMissing(
  * and the tunnel and Access in front of Portainer's webhook (redeploy mode `cloudflare`), each
  * only with a domain on Cloudflare. `undefined` for any other target. Without either, a Portainer
  * plan has no Cloudflare resources: OpsCrew creates no DNS record for web modes `proxy` and
- * `caddy` (the user does).
+ * `caddy` (the user does). `originTls`: the stack's Caddy serves the domain behind Cloudflare's
+ * proxy (web mode `caddy`), so the app's origin TLS is set up at Cloudflare.
  */
 export function portainerCloudflare(
   plan: Pick<DeployPlan, "target" | "dns">,
-): { appTunnel: boolean; webhook: boolean } | undefined {
+): { appTunnel: boolean; webhook: boolean; originTls: boolean } | undefined {
   const { target, dns } = plan;
   if (target.provider !== "portainer") return undefined;
   const cloudflare = dns.provider === "cloudflare" && dns.domain !== undefined;
   return {
     appTunnel: cloudflare && target.web.mode === "tunnel",
     webhook: cloudflare && target.redeploy === "cloudflare",
+    originTls: cloudflare && target.web.mode === "caddy" && dns.proxied,
   };
 }
 
@@ -291,9 +302,16 @@ export async function setupCloudflare(
 ): Promise<CloudflareSetup | undefined> {
   if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return undefined;
   const portainer = portainerCloudflare(plan);
-  // In the user's Portainer only a tunnel or an R2 bucket (it belongs to the zone's account) needs it.
+  // In the user's Portainer only a tunnel, the stack Caddy's origin TLS or an R2 bucket (it
+  // belongs to the zone's account) needs it.
   const r2 = plan.storage?.objectStorage?.provider === "r2";
-  if (portainer !== undefined && !portainer.appTunnel && !portainer.webhook && !r2) {
+  if (
+    portainer !== undefined &&
+    !portainer.appTunnel &&
+    !portainer.webhook &&
+    !portainer.originTls &&
+    !r2
+  ) {
     return undefined;
   }
   /** A Cloudflare Tunnel is part of the plan, so the token needs the tunnel permissions. */
@@ -331,7 +349,8 @@ export async function setupCloudflare(
           ].filter((host): host is string => host !== undefined);
     // The user's Portainer has no server whose records OpsCrew could have made.
     const servers = portainer === undefined ? await knownServers(deps, plan) : [];
-    const foreign = await foreignDnsRecords(api, zone.id, servers, hosts);
+    const found = await foreignDnsRecords(api, zone.id, servers, hosts);
+    const foreign = found.clashing;
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {
       const lines = foreign.map((r) => `  ${r.type} ${r.name} ${r.content}`);
@@ -366,15 +385,18 @@ export async function setupCloudflare(
             })),
           }
         : {}),
+      ...(found.caa.length > 0
+        ? {
+            foreignCaa: found.caa.map((r) => ({
+              name: r.name,
+              content: deps.redactor.redact(r.content),
+            })),
+          }
+        : {}),
     };
-    // The user's Portainer has no firewall to fill with Cloudflare's ranges.
-    if (
-      portainer === undefined &&
-      plan.dns.proxied &&
-      plan.security.httpAllowedFrom === "cloudflare"
-    ) {
-      setup.ipRanges = await api.getIpRanges();
-    }
+    // Cloudflare's ranges fill a server's web filter and the edge's real-IP settings, which every
+    // app on the server shares, so each app on a server reads them; a Portainer stack has neither.
+    if (portainer === undefined) setup.ipRanges = await api.getIpRanges();
     return setup;
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "CREDENTIALS_INVALID") {

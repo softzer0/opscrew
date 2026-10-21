@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { errorMessage, formatMoney, OpsCrewError } from "@opscrew/core";
+import { EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
 import { providerProfile } from "../providers";
 import {
   buildAppEnvironment,
@@ -11,6 +12,7 @@ import {
   setDeploySecrets,
   storageLogin,
 } from "../provision";
+import { originTlsSecret } from "../provision/origin-tls";
 import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
 import { moveProvider } from "../shared/vps-target";
 import { planThenApply } from "./plans";
@@ -167,7 +169,7 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     notes: [
       `This creates the new ${fresh.noun} on ${fresh.name} next to the current ${old.noun}; your app keeps running on the old one.`,
       `Both are billed until the move is finished or aborted: about ${formatMoney(session.plan.cost.monthly)} per month extra while they run.`,
-      `Then OpsCrew deploys the app there with the deploy workflow and keeps its web server (Caddy) stopped until traffic is switched to it.`,
+      `Then OpsCrew deploys the app there with the deploy workflow and keeps its web server (${EDGE_PROXIES[edgeProxy(session.plan)].label}) stopped until traffic is switched to it.`,
     ],
     // `opscrew design` refuses during a move: another size means aborting and starting again.
     redesignHint: `Run \`${ABORT_COMMAND}\` (your app keeps running on the old ${old.noun}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${moveProvider(session.plan.target)} --option <id>\`. Nothing that was already created is removed until you abort.`,
@@ -247,6 +249,9 @@ export async function storeDeploySecrets(
         privateKey: session.deployKey.privateKeyOpenSsh,
         knownHosts: pinned.knownHostsLines,
         environment,
+        ...(session.site.edge.originTls !== undefined
+          ? { originTls: originTlsSecret(session.site.values) }
+          : {}),
       }),
       environment.names,
     );
@@ -328,7 +333,7 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
 
 /**
  * Step 4: the deploy secrets point to the new server, the deploy workflow puts the app there, the
- * app answers over SSH, and Caddy on the new server is stopped until the switch.
+ * app answers over SSH, and the edge's proxy on the new server is stopped until the switch.
  */
 export async function deployStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
@@ -350,15 +355,19 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
   const remote = newRemote(session);
   deps.reporter.step(`Checking the app on the new ${fresh.noun} over SSH`);
   const ops = serverOps(plan, deps.redactor);
+  const edge = edgeProxy(plan);
   await waitAppHealthy(remote, plan.app.port, plan.app.healthPath, {
     ...ops,
+    edge,
     ...waitsOf(session.services),
   });
-  deps.reporter.step(`Stopping Caddy on the new ${fresh.noun} until traffic is switched to it`);
-  await stopService(remote, "caddy", ops);
+  deps.reporter.step(
+    `Stopping ${EDGE_PROXIES[edge].label} on the new ${fresh.noun} until traffic is switched to it`,
+  );
+  await stopService(remote, edge, ops);
   await auditMove(session, {
     kind: "remote-exec",
-    action: "stop caddy",
+    action: `stop ${edge}`,
     target: remote.host,
     decision: "approved",
   });

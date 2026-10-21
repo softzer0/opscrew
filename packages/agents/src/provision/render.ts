@@ -1,8 +1,11 @@
 import { join } from "node:path";
+import { exists } from "@opscrew/core";
 import {
-  type RenderContext,
+  EDGE_PROXIES,
+  edgeProxy,
   type RenderedFile,
   type RenderedFileKind,
+  type RuntimeContext,
   renderDeployment,
   renderStorage,
   renderTunnelConnectorCompose,
@@ -25,6 +28,8 @@ import {
 } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
 import { type CloudflareSetup, setupCloudflare } from "./credentials";
+import { type OriginTlsValues, originTlsFor, pullPemFile, readOriginTlsValues } from "./origin-tls";
+import { readCloudflareRecord } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
 export async function readRequirements(deps: PhaseDeps): Promise<Requirements | undefined> {
@@ -51,6 +56,22 @@ export interface OwnRenderInput {
 }
 
 /**
+ * What the app's site is rendered with besides the plan, in provision and in drift's comparison
+ * alike: its origin TLS and additions (`edge`, see {@link recordedEdge}), and Cloudflare's IP
+ * ranges, which every app on a server passes so the shared edge is the same for all.
+ */
+export function siteContext(
+  edge: Pick<RuntimeContext, "originTls" | "additions"> | undefined,
+  ipRanges: { ipv4: readonly string[]; ipv6: readonly string[] } | undefined,
+): Pick<RuntimeContext, "originTls" | "additions" | "cloudflareRanges"> {
+  return {
+    ...(edge?.originTls !== undefined ? { originTls: edge.originTls } : {}),
+    ...(edge?.additions === true ? { additions: true } : {}),
+    ...(ipRanges !== undefined ? { cloudflareRanges: [...ipRanges.ipv4, ...ipRanges.ipv6] } : {}),
+  };
+}
+
+/**
  * The secret-free render context provision uses (shared with the read-only preview). The rendered
  * files are committed, so it carries the server's address (`input.server`, from
  * `serverAddress`) only when the plan does not hide it behind Cloudflare's proxy: then the
@@ -70,12 +91,15 @@ export function deploymentRenderContext(
     server?: ServerAddress | undefined;
     /** A server the user owns: see {@link OwnRenderInput}. */
     own?: OwnRenderInput;
+    /** The app's site: its origin TLS and its own additions (see {@link recordedEdge}). */
+    edge?: Pick<RuntimeContext, "originTls" | "additions">;
   },
-): RenderContext {
-  const { requirements, cloudflare, own } = input;
+): RuntimeContext {
+  const { requirements, cloudflare, own, edge } = input;
   const ownServer = input.plan.target.provider === "own";
   const server = hidesServerAddress(input.plan) || ownServer ? undefined : input.server;
   return {
+    ...siteContext(edge, cloudflare?.ipRanges),
     opscrewVersion: deps.version,
     github: { owner: input.github.owner, repo: input.github.repo },
     deploySshPublicKey: input.deployPublicKey,
@@ -101,13 +125,45 @@ export function deploymentRenderContext(
 
 /**
  * Every file provision writes for the plan: the deployment (`renderDeployment`), the
- * `storage` root of the app's bucket at a provider (`renderStorage`) and, whenever the plan has a
+ * `storage` root of the app's bucket at a provider (`renderStorage`), whenever the plan has a
  * Cloudflare Tunnel (an own server in tunnel mode, or a Portainer subdomain), the tunnel
- * connector's Compose file (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server).
+ * connector's Compose file (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server)
+ * and, with origin TLS on a server, `pull.pem`, the client certificate (`values`) the site trusts.
  */
-export function deploymentFiles(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
+export function deploymentFiles(
+  plan: DeployPlan,
+  ctx: RuntimeContext,
+  values: OriginTlsValues = {},
+): RenderedFile[] {
   const files = [...renderDeployment(plan, ctx), ...renderStorage(plan, ctx)];
-  return usesTunnel(plan) ? [...files, renderTunnelConnectorCompose(plan)] : files;
+  if (usesTunnel(plan)) files.push(renderTunnelConnectorCompose(plan));
+  if (ctx.originTls !== undefined && plan.target.provider !== "portainer") {
+    files.push(pullPemFile(values));
+  }
+  return files;
+}
+
+/**
+ * The app's site as this computer's records describe it, for a render without provision's
+ * Cloudflare step (retarget, the preview): the origin TLS the record and the generated values
+ * hold ({@link originTlsFor}), and whether the app has additions for the plan's proxy on a server.
+ */
+export async function recordedEdge(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  plan: DeployPlan,
+): Promise<{ edge: Pick<RuntimeContext, "originTls" | "additions">; values: OriginTlsValues }> {
+  const values = await readOriginTlsValues(deps);
+  const originTls = originTlsFor(plan, await readCloudflareRecord(deps.paths), values);
+  const additions =
+    plan.target.provider !== "portainer" &&
+    (await exists(join(deps.paths.root, EDGE_PROXIES[edgeProxy(plan)].additions)));
+  return {
+    edge: {
+      ...(originTls !== undefined ? { originTls } : {}),
+      ...(additions ? { additions } : {}),
+    },
+    values,
+  };
 }
 
 /**
@@ -215,6 +271,7 @@ export async function previewDeploymentFiles(
         () => undefined,
       );
   const own = await previewRender(deps, plan);
+  const { edge, values } = await recordedEdge(deps, plan);
   const files = deploymentFiles(
     plan,
     deploymentRenderContext(deps, {
@@ -225,7 +282,9 @@ export async function previewDeploymentFiles(
       cloudflare,
       server,
       own,
+      edge,
     }),
+    values,
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   return {

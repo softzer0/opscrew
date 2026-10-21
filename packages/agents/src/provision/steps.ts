@@ -191,7 +191,8 @@ export async function deploySecretsStep(
 
 /**
  * Marks the provision as completed in `opscrew/plan.yaml`, then commits `files` and the plan on
- * the deploy branch, pushes it and opens the pull request (each after its own approval).
+ * the deploy branch (with the recovery copy when this computer's files changed), pushes it and
+ * opens the pull request (each after its own approval).
  */
 export async function publishDeployment(
   deps: PhaseDeps,
@@ -206,6 +207,8 @@ export async function publishDeployment(
     branch: DeployBranch | undefined;
     /** Dependabot's configuration (`deploySetupDependabot`), for the pull request's body. */
     dependabot: DependabotStep | undefined;
+    /** What the recovery copy's first key needs (`ProvisionOptions.recovery`). */
+    recovery?: ProvisionOptions["recovery"];
   },
 ): Promise<{ plan: DeployPlan; published: PublishResult }> {
   const plan: DeployPlan = {
@@ -223,6 +226,7 @@ export async function publishDeployment(
     phase: input.phase,
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
     ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
+    ...(input.recovery !== undefined ? { recovery: input.recovery } : {}),
   });
   return { plan, published };
 }

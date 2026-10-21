@@ -236,7 +236,7 @@ describe.skipIf(!findExecutable("git"))("runProvision: web ports of an own serve
     expect(s.host.applies).toHaveLength(0);
   });
 
-  it("not proxied: the web ports stay open to every address and the ranges are not read", async () => {
+  it("not proxied: the web ports stay open to every address (the ranges are read for the shared edge only)", async () => {
     let reads = 0;
     const cloudflare = {
       ...ownCloudflare(),
@@ -247,7 +247,9 @@ describe.skipIf(!findExecutable("git"))("runProvision: web ports of an own serve
     };
     const s = await setup({ plan: unproxied(ownPlan()), cloudflare });
     await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
-    expect(reads).toBe(0);
+    // Every app on a server passes Cloudflare's ranges to the edge's real-IP settings, which the
+    // apps share; the web filter does not use them without the proxy.
+    expect(reads).toBe(1);
     expect(stepOf(s, "web-filter")).toBeUndefined();
     expect(stepOf(s, "ufw")?.params).toEqual({
       sshPorts: "22",

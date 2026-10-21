@@ -1,6 +1,6 @@
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { appDir } from "@opscrew/iac-templates";
+import { appDir, edgeProxy } from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
   type CostEstimate,
@@ -306,6 +306,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     remoteFor(deps, session.services, session.deployKey.privateKeyFile, oldHost),
     restored.app.port,
     restored.app.healthPath,
+    edgeProxy(restored),
   );
   if (healthy) {
     deps.reporter.success(`The move is aborted; ${app} runs on the old ${old.noun} (${oldHost}).`);

@@ -31,9 +31,11 @@ export interface SharedRemoval {
 
 /**
  * Plans the removal of everything this app's record lists in OpsCrew's shared Cloudflare rules
- * (read-only): `undefined` without a record or when it lists nothing. A damaged record, and a
- * finding of the plan (OpsCrew's rule changed by someone, a refused read), stop before anything
- * changes.
+ * and its origin TLS (read-only): `undefined` without a record or when it lists nothing. The plan
+ * is applied only after the app's site is gone, so it is made for an origin that serves nothing:
+ * the client certificate is turned off and deleted, and the origin certificate and every one it
+ * replaced are revoked. The zone's minimum TLS stays. A damaged record, and a finding of the plan
+ * (OpsCrew's rule changed by someone, a refused read), stop before anything changes.
  */
 export async function planSharedRemoval(
   deps: PhaseDeps,
@@ -42,15 +44,19 @@ export async function planSharedRemoval(
 ): Promise<SharedRemoval | undefined> {
   const record = await readCloudflareRecord(deps.paths);
   if (record === undefined) return undefined;
-  if (!listsHostnames(record) && record.createdEntrypoints.length === 0) return undefined;
+  const tls = record.tls?.origin !== undefined || record.tls?.client !== undefined;
+  if (!listsHostnames(record) && record.createdEntrypoints.length === 0 && !tls) return undefined;
   const client = sharedCloudflareClient(deps, services);
   const zone = await zonePlan(deps, {
     client,
     zoneId: record.zoneId,
-    // A removal changes only the zone's rules: no account is involved.
+    // A removal changes only the zone's rules and the app's certificates: no account is involved.
     accountId: "",
     zone: plan.dns.domain === undefined ? "the app's zone" : `the zone of ${plan.dns.domain}`,
-    desired: { hostnames: {} },
+    desired: {
+      hostnames: {},
+      ...(tls ? { tls: { proxied: [], retiring: [], served: { requiring: [] } } } : {}),
+    },
     record,
     command: COMMAND,
   });

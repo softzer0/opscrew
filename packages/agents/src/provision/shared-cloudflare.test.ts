@@ -403,7 +403,8 @@ describe.skipIf(!findExecutable("git"))(
       expect(planned.cloudflarePlanDeletes).toBeUndefined();
       expect(planned.planHash).toBeUndefined();
       const text = s.deps.reporter.text();
-      expect(text).toContain("Cloudflare plan for example.com: 4 to change, 0 already in place.");
+      // The rules, Zero Trust, the app's origin TLS and the zone's minimum TLS.
+      expect(text).toContain("Cloudflare plan for example.com: 8 to change, 0 already in place.");
       expect(text).toContain(`Cloudflare plan hash: ${cloudflareHash}`);
       expect(text).toContain(
         `The infrastructure plan follows once this Cloudflare plan is applied, because it needs the one-time PIN login the Cloudflare plan adds (in scripts: run \`opscrew provision --approve ${cloudflareHash}\`, then again with \`--approve\` and the infrastructure plan's hash).`,
@@ -449,15 +450,19 @@ describe.skipIf(!findExecutable("git"))(
       expect(error).toBeDefined();
       expect(s.zone.opscrewRule(WAF)).toBeDefined();
       expect(s.zone.entrypoints.has(CONFIG)).toBe(false);
-      expect(await record(s)).toEqual({
+      // The origin TLS and the zone setting went first, and are recorded with the block rule.
+      expect(await record(s)).toMatchObject({
         zoneId: FAKE_ZONE_ID,
         hostnames: { [BLOCK]: ["shop.example.com"] },
         createdEntrypoints: [WAF],
+        tls: { origin: { hostnames: ["shop.example.com"] } },
+        zoneSettings: { minTlsVersion: { previous: "1.0" } },
       });
+      expect((await record(s)).hostnames).toEqual({ [BLOCK]: ["shop.example.com"] });
       expect(s.deps.audit.entries).toContainEqual(
         expect.objectContaining({
           action: "cloudflare apply failed",
-          detail: `changes applied before the failure: create-entrypoint ${WAF}`,
+          detail: `changes applied before the failure: upload-client-certificate, enable-client-certificate, create-origin-certificate, set-min-tls, create-entrypoint ${WAF}`,
         }),
       );
       expect(s.engine.calls).toEqual([]);
@@ -555,11 +560,12 @@ describe.skipIf(!findExecutable("git"))(
       await runProvision(s.deps, { services: s.services });
       expect(s.zone.entrypoints.has(WAF)).toBe(false);
       expect(s.zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"shop.example.com"})');
-      expect(await record(s)).toEqual({
+      expect(await record(s)).toMatchObject({
         zoneId: FAKE_ZONE_ID,
         hostnames: { [TLS]: ["shop.example.com"] },
         createdEntrypoints: [CONFIG],
       });
+      expect((await record(s)).hostnames).toEqual({ [TLS]: ["shop.example.com"] });
     });
 
     it("a plan without a Cloudflare zone any more first removes this app's hostnames from the zone it used", async () => {
@@ -618,7 +624,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(zone.opscrewRule(WAF)).toBeUndefined();
       expect(zone.userRulesText(WAF)).toBe(userRules);
       expect(zone.entrypoints.has(CONFIG)).toBe(false);
-      expect(await record(s)).toEqual({
+      expect(await record(s)).toMatchObject({
         zoneId: FAKE_ZONE_ID,
         hostnames: {},
         createdEntrypoints: [],
@@ -682,7 +688,7 @@ describe.skipIf(!findExecutable("git"))(
       });
       expect(old.entrypoints.size).toBe(0);
       expect(current.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"shop.example.com"})');
-      expect(await record(s)).toEqual({
+      expect(await record(s)).toMatchObject({
         zoneId: FAKE_ZONE_ID,
         hostnames: both(["shop.example.com"]),
         createdEntrypoints: [WAF, CONFIG],

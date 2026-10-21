@@ -522,6 +522,7 @@ function outputsOf(
 
 export interface FakeHost {
   app: boolean;
+  /** The edge's proxy (Caddy, or nginx on the nginx edge) runs. */
   caddy: boolean;
   /** What the database holds (a marker, never real data). */
   db: string;
@@ -533,9 +534,10 @@ function opOf(command: string): string {
   if (command.includes("opscrew-ready")) return "ready?";
   if (command.endsWith("docker compose stop app")) return "stop app";
   if (command.endsWith("docker compose up -d app")) return "start app";
-  if (command.endsWith("docker compose stop caddy")) return "stop caddy";
-  if (command.endsWith("docker compose up -d caddy")) return "start caddy";
-  if (command.includes("--entrypoint wget caddy")) return "health";
+  // The edge's proxy: Caddy, or nginx on the nginx edge.
+  const edge = /docker compose (stop|up -d) (caddy|nginx)$/.exec(command);
+  if (edge) return `${edge[1] === "stop" ? "stop" : "start"} ${edge[2]}`;
+  if (/--entrypoint wget (caddy|nginx) /.test(command)) return "health";
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
   if (command.includes("pg_restore --list")) return "verify dump";
@@ -594,9 +596,11 @@ export class FakeHosts {
         h.app = true;
         return ok();
       case "stop caddy":
+      case "stop nginx":
         h.caddy = false;
         return ok();
       case "start caddy":
+      case "start nginx":
         h.caddy = true;
         return ok();
       case "health":
@@ -694,7 +698,12 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
     this.events.push({ type: "secret", name });
   }
 
-  async dispatchWorkflow(_owner: string, _repo: string, workflowFile: string, ref: string) {
+  override async dispatchWorkflow(
+    _owner: string,
+    _repo: string,
+    workflowFile: string,
+    ref: string,
+  ) {
     this.runs.push({ workflowFile, ref });
     this.events.push({ type: "dispatch", ref });
     return { runId: 99 };

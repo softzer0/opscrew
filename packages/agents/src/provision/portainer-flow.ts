@@ -20,6 +20,7 @@ import {
   portainerStackEnvKeys,
   portainerTarget,
   portainerWebhookHostname,
+  type RuntimeContext,
   renderStorage,
   siteHosts,
 } from "@opscrew/iac-templates";
@@ -45,6 +46,7 @@ import {
   stringOutput,
 } from "../shared";
 import { connectorFirst, tunnelChange } from "../shared/tunnel-connections";
+import { portainerAdditionsNote } from "./additions";
 import { caddyRecordNote, deletedRecordHosts, requireCaddyRecords } from "./caddy-records";
 import {
   cloudflareTokenMissing,
@@ -54,6 +56,13 @@ import {
 } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { deployBranchState, startDeployBranch } from "./deploy-branch";
+import {
+  keepCertificateRequest,
+  originTlsApply,
+  originTlsNotes,
+  portainerOriginTls,
+  stackOriginTls,
+} from "./origin-tls";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import {
   ensurePortainerValueKey,
@@ -67,7 +76,7 @@ import {
   stackPlanFile,
 } from "./portainer";
 import { portainerDnsRecordNote } from "./publish";
-import { deploymentFiles, deploymentRenderContext } from "./render";
+import { deploymentFiles, deploymentRenderContext, recordedEdge } from "./render";
 import {
   buildAppEnvironment,
   PORTAINER_SECRETS_RECORD,
@@ -195,14 +204,18 @@ export async function provisionPortainer(
   const root = deps.paths.root;
   let plan = input.plan;
   const target = portainerTarget(plan.target);
-  const cloudflareRoot = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
+  const cloudflareRoot = portainerCloudflare(plan) ?? {
+    appTunnel: false,
+    webhook: false,
+    originTls: false,
+  };
   const hasRoot = cloudflareRoot.appTunnel || cloudflareRoot.webhook;
   // The app's bucket at a provider: an R2 bucket needs the plan's Cloudflare account.
   const bucket = providerBucket(plan);
-  const usesCloudflare = hasRoot || bucket?.provider === "r2";
+  const usesCloudflare = hasRoot || cloudflareRoot.originTls || bucket?.provider === "r2";
   // The stack's variables, before anything else: an app variable a stack cannot hold, or a
   // service that needs a setting of the Docker host, stops here.
-  const keys = portainerStackEnvKeys(plan);
+  portainerStackEnvKeys(plan);
 
   // 1. Preconditions: Portainer's token and connection, GitHub, Cloudflare when the plan has a
   // tunnel or an R2 bucket.
@@ -231,19 +244,58 @@ export async function provisionPortainer(
     });
   }
   requireR2Cloudflare(plan, account);
-  // What the Cloudflare root and OpsCrew's shared Cloudflare rules work with: only a plan with a
-  // tunnel has them (an R2 bucket alone needs only the account).
-  const cloudflare = hasRoot ? account : undefined;
+  // What the Cloudflare root and OpsCrew's shared Cloudflare plan work with: only a plan with a
+  // tunnel, or with the stack Caddy's origin TLS, has them (an R2 bucket alone needs only the
+  // account).
+  const cloudflare = hasRoot || cloudflareRoot.originTls ? account : undefined;
   // A Hetzner or Spaces bucket is created with the user's key, so it is needed now (R2's comes
   // after its bucket, as a token limited to it).
   const storageKey =
     bucket !== undefined && bucket.provider !== "r2"
       ? await requireStorageKey(deps, plan, services, { command })
       : undefined;
+  // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
+  const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
+  const client = portainerClientFor(deps, {
+    connection,
+    token,
+    client: portainerServices.client,
+    valueKey,
+  });
+  const inspect = async (detail?: string): Promise<PortainerFacts> => {
+    const facts = await inspectAudited(deps, client, {
+      plan,
+      target,
+      step: "Inspecting your Portainer (read-only)",
+      phase,
+      ...(detail !== undefined ? { detail } : {}),
+    });
+    requireUsableFacts(facts, target);
+    return facts;
+  };
+  let facts = await inspect();
+  // The app's own additions: a Portainer stack has none yet (said when there is a file).
+  await portainerAdditionsNote(deps);
+  // The stack Caddy's origin TLS, planned against what the stack serves now (its file and the
+  // fingerprint of its values in Portainer).
+  const tls =
+    cloudflare === undefined
+      ? undefined
+      : await stackOriginTls(deps, { plan, cloudflare, connection, facts, valueKey });
   // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
-  // no longer uses, for example after leaving web mode tunnel), planned read-only now and applied
-  // before the infrastructure plan.
-  const shared = await planSharedCloudflare(deps, { services, plan, cloudflare, command });
+  // no longer uses, for example after leaving web mode tunnel), with the stack Caddy's origin TLS
+  // and the zone's minimum TLS, planned read-only now and applied before the infrastructure plan.
+  const shared = await planSharedCloudflare(deps, {
+    services,
+    plan,
+    cloudflare,
+    command,
+    tls: { ...(tls !== undefined ? { tls: tls.desired } : {}), minTls: true },
+    ...(tls !== undefined ? { notes: originTlsNotes(tls, undefined) } : {}),
+  });
+  if (tls !== undefined && shared?.main !== undefined) {
+    await keepCertificateRequest(deps, tls, shared.main.plan);
+  }
   const repository = await github.api.getRepo(github.owner, github.repo);
   const commits = !(options.planOnly && saved.apply === undefined && saved.removal === undefined);
   const deployBranch = await deployBranchFor(deps, {
@@ -293,26 +345,6 @@ export async function provisionPortainer(
     if (removal && !deps.env.CLOUDFLARE_API_TOKEN?.trim()) throw cloudflareTokenMissing(deps);
   }
 
-  // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
-  const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
-  const client = portainerClientFor(deps, {
-    connection,
-    token,
-    client: portainerServices.client,
-    valueKey,
-  });
-  const inspect = async (detail?: string): Promise<PortainerFacts> => {
-    const facts = await inspectAudited(deps, client, {
-      plan,
-      target,
-      step: "Inspecting your Portainer (read-only)",
-      phase,
-      ...(detail !== undefined ? { detail } : {}),
-    });
-    requireUsableFacts(facts, target);
-    return facts;
-  };
-  let facts = await inspect();
   // Visitors lose the current route when the earlier setup's Cloudflare resources go, or the app
   // is served another way than now: said once this run is done.
   const routeChanges = removal || switchesWebRoute(target, connection);
@@ -322,6 +354,8 @@ export async function provisionPortainer(
   const publicImage = options.publicImage ?? connection.publicImage ?? false;
   const imagePrivate = !publicImage;
   const committed = await committedStackPins(root);
+  /** The stack Caddy's origin TLS as rendered (known once the Cloudflare change is applied). */
+  let siteOrigin: RuntimeContext["originTls"];
   const desired = (fingerprints?: DesiredValueFingerprints): DesiredStacks =>
     desiredStacks(plan, {
       connection,
@@ -331,6 +365,7 @@ export async function provisionPortainer(
       imagePrivate,
       ...(fingerprints !== undefined ? { fingerprints } : {}),
       ...(options.replaceTokens !== undefined ? { replaceTokens: options.replaceTokens } : {}),
+      ...(siteOrigin !== undefined ? { originTls: siteOrigin } : {}),
     });
   // Without values: what blocks the deploy shows before anything is written or changed.
   const preliminary = planStacks(facts, desired());
@@ -362,7 +397,11 @@ export async function provisionPortainer(
 
   // 3. OpsCrew's shared Cloudflare change (its rule in the zone, the account's Zero Trust
   // organization for the webhook's Access) before anything else changes: shown, approved by its
-  // hash, applied and recorded.
+  // hash, applied and recorded. A run that applies plans shown before (`--approve`) keeps the stack
+  // Caddy's site as it was then, so the stack plan keeps the hash shown (the next run brings a new
+  // origin TLS).
+  const siteBefore =
+    (options.approveHashes ?? []).length > 0 ? await recordedEdge(deps, plan) : undefined;
   const sharedResult =
     shared === undefined
       ? undefined
@@ -371,6 +410,7 @@ export async function provisionPortainer(
           planOnly: options.planOnly === true,
           command,
           phase,
+          ...originTlsApply(deps, tls, services),
         });
   const cloudflareHash = sharedResult?.fields ?? {};
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
@@ -381,6 +421,7 @@ export async function provisionPortainer(
   // only branch Dependabot reads, so its Compose entry applies here too.
   const writes = saved.apply === undefined && saved.removal === undefined;
   const dependabot = await deploySetupDependabot(deps, plan, { writes });
+  const site = siteBefore ?? (await recordedEdge(deps, plan));
   const ctx = deploymentRenderContext(deps, {
     plan,
     requirements: input.requirements,
@@ -388,7 +429,14 @@ export async function provisionPortainer(
     // A Portainer target has no SSH deploy: its files never use the deploy key.
     deployPublicKey: "",
     cloudflare: account,
+    // The stack Caddy's origin TLS as Cloudflare now has it (none without the permissions).
+    edge: site.edge,
   });
+  siteOrigin = ctx.originTls;
+  // The stack's variables with the origin TLS bundle, when its Caddy serves the certificate.
+  const stackKeys = portainerStackEnvKeys(plan, ctx);
+  const originBundle = ctx.originTls === undefined ? undefined : portainerOriginTls(site.values);
+  if (originBundle !== undefined) deps.redactor.addLiteral(originBundle, "origin-tls");
   const files = [
     ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
@@ -454,18 +502,19 @@ export async function provisionPortainer(
   const values = async (outputs: Record<string, unknown>): Promise<StackValues> => {
     const env = await appEnvironment();
     const out: Record<string, string> = {};
-    for (const key of keys.app) out[key] = env.values.app[key] ?? "";
+    for (const key of stackKeys.app) out[key] = env.values.app[key] ?? "";
     const opscrew: Record<string, string | undefined> = {
       [PORTAINER_STACK_VARIABLES.dbUser]: env.values.db?.user,
       [PORTAINER_STACK_VARIABLES.dbName]: env.values.db?.name,
       [PORTAINER_STACK_VARIABLES.tunnelToken]:
         target.web.mode === "tunnel" ? requiredOutput(deps, outputs, "tunnel_token") : undefined,
+      [PORTAINER_STACK_VARIABLES.originTls]: originBundle,
     };
     // Each service's generated secrets (Postgres's password among them), as the stack's variables.
     for (const { service, secret, variable } of portainerSecretVariables(plan)) {
       opscrew[variable] = env.values.services[service]?.[secret];
     }
-    for (const key of keys.opscrew) out[key] = opscrew[key] ?? "";
+    for (const key of stackKeys.opscrew) out[key] = opscrew[key] ?? "";
     const webhookId = (await portainerWebhookId(deps, {
       create: true,
       ...(portainerServices.randomUUID !== undefined
@@ -843,6 +892,7 @@ export async function provisionPortainer(
     phase,
     branch: deployBranch,
     dependabot,
+    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
   });
   plan = published.plan;
   const dns = portainerDnsRecordNote(plan);

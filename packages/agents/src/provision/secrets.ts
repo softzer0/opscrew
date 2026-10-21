@@ -25,15 +25,21 @@ import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
 /** Private file (0600) beside the deploy key holding generated values between runs. */
-export function generatedValuesFile(deps: PhaseDeps): string {
+export function generatedValuesFile(deps: Pick<PhaseDeps, "paths">): string {
   return join(deps.paths.projectHomeDir, "generated_values.json");
 }
 
-async function readGenerated(deps: PhaseDeps): Promise<GeneratedValues | undefined> {
+/**
+ * The generated values of earlier runs, with the app's origin TLS values (`originTls`, kept by
+ * `./origin-tls`) as they are.
+ */
+async function readGenerated(
+  deps: PhaseDeps,
+): Promise<(GeneratedValues & { originTls?: unknown }) | undefined> {
   const text = await readTextIfExists(generatedValuesFile(deps));
   if (text === undefined) return undefined;
   try {
-    return JSON.parse(text) as GeneratedValues;
+    return JSON.parse(text) as GeneratedValues & { originTls?: unknown };
   } catch {
     return undefined;
   }
@@ -75,15 +81,21 @@ export async function buildAppEnvironment(
       }
     }
   }
+  const previous = await readGenerated(deps);
   const environment = await assembleAppEnv({
     plan,
     ...(dotenvText !== undefined ? { dotenvText } : {}),
     ...(ask ? { ask } : {}),
     ...(serverHost !== undefined ? { serverHost } : {}),
-    ...(await readGenerated(deps).then((previous) => (previous ? { previous } : {}))),
+    ...(previous ? { previous } : {}),
     ...(options.storage !== undefined ? { storage: options.storage } : {}),
   });
-  await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(environment.generated)}\n`);
+  // The origin TLS values stay as provision's Cloudflare step left them.
+  const kept = previous?.originTls === undefined ? {} : { originTls: previous.originTls };
+  await writeFileAtomic(
+    generatedValuesFile(deps),
+    `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
+  );
   const { app, build, services: secrets } = environment.values;
   for (const [name, value] of Object.entries({ ...app, ...build })) {
     // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual, and
@@ -189,6 +201,8 @@ export function deploySecretNames(plan: DeployPlan): string[] {
  * ({@link serviceEnvSecrets}). In tunnel mode (a server the user owns without a public address)
  * `tunnel` adds the Cloudflare Access service token the workflow reaches SSH through; `host` is
  * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.
+ * With origin TLS, `originTls` is the origin certificate's PEM, then its key's
+ * (`OPSCREW_ORIGIN_TLS`).
  */
 export function deploySecrets(input: {
   plan: DeployPlan;
@@ -197,6 +211,7 @@ export function deploySecrets(input: {
   knownHosts: string;
   environment: AppEnvironment;
   tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
+  originTls?: string;
 }): Record<string, string> {
   return {
     [DEPLOY_SECRETS.host]: input.host,
@@ -212,6 +227,7 @@ export function deploySecrets(input: {
           [TUNNEL_DEPLOY_SECRETS.serviceTokenSecret]: input.tunnel.serviceTokenSecret,
         }
       : {}),
+    ...(input.originTls !== undefined ? { [DEPLOY_SECRETS.originTls]: input.originTls } : {}),
   };
 }
 

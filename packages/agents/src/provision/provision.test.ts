@@ -960,13 +960,19 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       "cloudflare-apply",
       "repo-write",
     ]);
-    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toEqual({
+    // The record holds the app's origin TLS and the zone setting OpsCrew raised, too.
+    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toMatchObject({
       zoneId: FAKE_ZONE_ID,
       hostnames: {
         "opscrew-block-probes": ["shop.example.com"],
         "opscrew-strict-tls": ["shop.example.com"],
       },
       createdEntrypoints: [WAF, CONFIG],
+      tls: {
+        origin: { hostnames: ["shop.example.com"], superseded: [] },
+        client: { enabled: ["shop.example.com"], retiring: [] },
+      },
+      zoneSettings: { minTlsVersion: { previous: "1.0" } },
     });
     await writeFakeState(deps.paths);
     const tfvarsFile = join(root, "opscrew/infra/prod/terraform.tfvars.json");
@@ -1017,8 +1023,9 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(zone.entrypoints.get(CONFIG)?.rules).toHaveLength(1);
     // The plan names this app's hostnames and only counts the other app's.
     const request = handler.requests.find((r) => r.kind === "cloudflare-apply");
+    // The rules' two changes and this app's origin TLS (the other app raised the minimum TLS).
     expect(request?.title).toBe(
-      "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (2 changes)",
+      "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (5 changes)",
     );
     expect(request?.details).toContain(
       "Block probes for secrets and admin panels: add example.com and www.example.com",
@@ -1045,7 +1052,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     await runProvision(deps, { services });
     // The user's rulesets stay (nothing replaced them); OpsCrew's rule is added to each.
     expect([WAF, CONFIG].map((phase) => zone.entrypoints.get(phase)?.id)).toEqual(ids);
-    expect(zone.writes().map((call) => call.method)).toEqual(["POST", "POST"]);
+    const rules = zone.writes().filter((call) => call.path.includes("/rulesets/"));
+    expect(rules.map((call) => call.method)).toEqual(["POST", "POST"]);
     expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toMatchObject({
       createdEntrypoints: [],
     });

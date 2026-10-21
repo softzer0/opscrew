@@ -1,8 +1,14 @@
 import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FAKE_ZONE_ID } from "@opscrew/connector-cloudflare/testing";
 import type { CommandResult } from "@opscrew/contracts";
-import { findExecutable } from "@opscrew/core";
+import {
+  findExecutable,
+  fingerprintSha256,
+  generateP256,
+  selfSignedClientCertificate,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -1334,5 +1340,104 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const password = (JSON.parse(generated) as { dbPassword: string }).dbPassword;
     expect(password.length).toBeGreaterThan(8);
     expect(printed).not.toContain(password);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runRetarget on the nginx edge", () => {
+  it("sizes the new server for nginx, and stops, checks and starts nginx instead of Caddy", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact(
+      "plan",
+      h.paths.files.plan,
+      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "nginx" } }),
+    );
+    let offered: string[] = [];
+    const result = await run(h, {
+      choose: async (options) => {
+        offered = options.map((option) => option.summary);
+        return options.find((option) => option.recommended)?.id ?? (options[0]?.id as string);
+      },
+    });
+    expect(result).toMatchObject({ step: "switched", done: true });
+    // The sizing counts nginx's edge (nginx, certbot and kamal-proxy), as the plan's proxy.
+    expect(offered.length).toBeGreaterThan(0);
+    for (const summary of offered) expect(summary).toContain("behind nginx.");
+    const n = h.newServer.ipv4;
+    const steps = trail(h.events);
+    expect(steps).toContain(`${n} stop nginx`);
+    expect(steps).toContain(`${n} start nginx`);
+    expect(steps.some((step) => step.includes("caddy"))).toBe(false);
+    expect(h.reporter.text()).toContain("Starting nginx on the new");
+    expect((await readArtifact("plan", h.paths.files.plan)).target).toMatchObject({
+      edge: "nginx",
+    });
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runRetarget: the app's origin TLS", () => {
+  /** A certificate and key made now, standing in for one Cloudflare issued. */
+  const pair = (name: string) => {
+    const key = generateP256().privateKey;
+    return { key, certificate: selfSignedClientCertificate({ key, commonName: name, days: 1 }) };
+  };
+
+  it("the certificates follow the move: the same origin certificate reaches the new server in the same deploy secret", async () => {
+    const h = await moveHarness();
+    const origin = pair(DOMAIN);
+    const client = pair("opscrew-shop");
+    // What the last provision left: the record of the app's certificates and their keys.
+    await writeFile(
+      h.paths.files.cloudflareRecord,
+      JSON.stringify({
+        zoneId: FAKE_ZONE_ID,
+        hostnames: {},
+        createdEntrypoints: [],
+        tls: {
+          origin: {
+            id: "o1",
+            hostnames: [DOMAIN],
+            expiresAt: "2041-10-21T09:00:00.000Z",
+            sha256: fingerprintSha256(origin.certificate),
+            superseded: [],
+          },
+          client: {
+            id: "c1",
+            expiresAt: "2041-10-21T09:00:00.000Z",
+            sha256: fingerprintSha256(client.certificate),
+            enabled: [DOMAIN],
+            retiring: [],
+          },
+        },
+      }),
+    );
+    const generated = join(h.paths.projectHomeDir, "generated_values.json");
+    const earlier = JSON.parse(await readFile(generated, "utf8").catch(() => "{}"));
+    await writeFile(
+      generated,
+      JSON.stringify({
+        ...earlier,
+        originTls: {
+          ORIGIN_TLS_KEY: origin.key,
+          ORIGIN_TLS_CERT: origin.certificate,
+          ORIGIN_PULL_KEY: client.key,
+          ORIGIN_PULL_CERT: client.certificate,
+        },
+      }),
+    );
+
+    const result = await run(h);
+    expect(result).toMatchObject({ step: "switched", done: true });
+    expect(h.github.secrets.get("OPSCREW_ORIGIN_TLS")).toBe(`${origin.certificate}${origin.key}`);
+    // The proxy choice carries over.
+    expect((await readArtifact("plan", h.paths.files.plan)).target).toMatchObject({
+      provider: "digitalocean",
+      edge: "caddy",
+    });
+    // The generated values keep the keys; nothing printed holds one.
+    const kept = JSON.parse(await readFile(generated, "utf8"));
+    expect(kept.originTls.ORIGIN_TLS_KEY).toBe(origin.key);
+    expect(everythingPrinted(h)).not.toContain(origin.key);
+    expect(everythingPrinted(h)).not.toContain(client.key);
   });
 });

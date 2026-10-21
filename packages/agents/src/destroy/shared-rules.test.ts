@@ -94,12 +94,31 @@ describe.skipIf(!findExecutable("git"))(
         "cloudflare-apply",
         "github-secrets",
       ]);
+      // The app's origin TLS goes first (its site is gone): the client certificate is turned off
+      // and deleted, the origin certificate revoked; then its hostnames leave OpsCrew's rules.
       expect(
         zone
           .writes()
           .slice(writes)
-          .map((c) => c.method),
-      ).toEqual(["PATCH", "PATCH"]);
+          .map((c) => {
+            const what = c.path.includes("/origin_tls_client_auth/")
+              ? "origin pulls"
+              : c.path.startsWith("/certificates")
+                ? "origin certificate"
+                : "rules";
+            return `${c.method} ${what}`;
+          }),
+      ).toEqual([
+        "PUT origin pulls",
+        "DELETE origin pulls",
+        "DELETE origin certificate",
+        "PATCH rules",
+        "PATCH rules",
+      ]);
+      expect(zone.hostnameAop.get("shop.example.com")?.enabled).toBeNull();
+      expect(zone.hostnameAop.get("api.example.com")?.enabled).toBe(true);
+      expect(zone.originCertificates.filter((c) => c.revoked_at === undefined)).toHaveLength(1);
+      expect((await readCloudflareRecord(a.deps.paths))?.tls).toBeUndefined();
       expect(listed(zone, WAF)).toEqual(["api.example.com"]);
       expect(listed(zone, CONFIG)).toEqual(["api.example.com"]);
       expect(await readCloudflareRecord(a.deps.paths)).toMatchObject({ hostnames: {} });

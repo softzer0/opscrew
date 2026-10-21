@@ -184,10 +184,13 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(apply?.options.secrets).toEqual({});
     expect(apply?.verified).toBe(true);
     // verifyLogin opened NEW connections as deploy (deploy key) and as the admin login.
-    // The first ssh call is connectOwnServer's test login; then verifyLogin's two new logins.
+    // The first ssh call is connectOwnServer's test login, the second reads the edge's proxy
+    // (read-only, as the admin login); then verifyLogin's two new logins.
     const ssh = s.runner.calls.filter((c) => c.command === "ssh");
     expect(ssh[0]?.args.at(-1)).toBe("true");
-    const logins = ssh.slice(1);
+    expect(ssh[1]?.args.at(-2)).toBe(`root@${OWN_IPV4}`);
+    expect(ssh[1]?.args.at(-1)).toContain("opscrew-edge-read 1");
+    const logins = ssh.slice(2);
     expect(logins.map((c) => c.args.at(-2))).toEqual([`deploy@${OWN_IPV4}`, `root@${OWN_IPV4}`]);
     for (const call of logins) {
       expect(call.args).toEqual(expect.arrayContaining(["ControlMaster=no", "ControlPath=none"]));
@@ -433,10 +436,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(tunnelStep?.params.tunnelId).toBe(TUNNEL_ID);
     expect(apply?.options.secrets).toEqual({ tunnelToken: token });
     expect(apply?.verified).toBe(true);
-    // The first ssh call is connectOwnServer's test login; then verifyLogin's two new logins.
+    // The first ssh call is connectOwnServer's test login, the second reads the edge's proxy;
+    // then verifyLogin's two new logins.
     const ssh = s.runner.calls.filter((c) => c.command === "ssh");
     expect(ssh[0]?.args.at(-1)).toBe("true");
-    const logins = ssh.slice(1);
+    expect(ssh[1]?.args.at(-1)).toContain("opscrew-edge-read 1");
+    const logins = ssh.slice(2);
     expect(logins.map((c) => c.args.at(-2))).toEqual([`deploy@${LAN_IPV4}`, `alice@${LAN_IPV4}`]);
     expect(logins[1]?.args).toEqual(expect.arrayContaining(["-i", key, "-p", "2222"]));
 
@@ -608,6 +613,16 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
     it("sets up only this app's own items; the shared parts and the other app stay as they are", async () => {
       const s = await setup({ plan: direct(), facts: withOtherApp() });
+      // The shared edge runs Caddy, the plan's proxy.
+      s.deps.runner = ownRunner(undefined, (args) =>
+        String(args.at(-1)).includes("opscrew-edge-read 1")
+          ? {
+              exitCode: 0,
+              stdout: "opscrew-edge-read 1\nproxy=caddy\n--origin--\n--site--\n--end--\n",
+              stderr: "",
+            }
+          : undefined,
+      );
       const result = await runProvision(s.deps, {
         services: s.services,
         hostKey: ED25519_FINGERPRINT,
@@ -1104,5 +1119,76 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.hint).toContain("opscrew interview");
     expect(`${error.message} ${error.hint}`).not.toMatch(/replace the token|create a new one/i);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns: its proxy", () => {
+  /** The edge read's answer for a server whose shared edge runs `proxy`. */
+  const edge = (proxy: string) => ({
+    exitCode: 0,
+    stdout: `opscrew-edge-read 1\nproxy=${proxy}\n--origin--\n--site--\n--end--\n`,
+    stderr: "",
+  });
+  const nginx = (plan: DeployPlan) =>
+    DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "nginx" } });
+  const reading = (proxy: string) =>
+    ownRunner(undefined, (args) =>
+      String(args.at(-1)).includes("opscrew-edge-read 1") ? edge(proxy) : undefined,
+    );
+
+  it("refuses another proxy before any change while other OpsCrew apps share the server", async () => {
+    // DNS only, as the other app (blog), so the server's firewall suits both.
+    const plan = ownPlan();
+    const s = await setup({
+      plan: nginx({ ...plan, dns: { ...plan.dns, proxied: false } }),
+      facts: withOtherApp(),
+    });
+    s.deps.runner = reading("caddy");
+    const error = (await runProvision(s.deps, {
+      services: s.services,
+      hostKey: ED25519_FINGERPRINT,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "Your server's proxy is Caddy, which every OpsCrew app on it shares (also blog), so OpsCrew cannot switch it to nginx for shop. Nothing was changed.",
+    );
+    expect(error.hint).toContain("while it holds one OpsCrew app");
+    // Nothing was asked or changed: no Cloudflare plan applied, no infrastructure, no host plan.
+    expect(s.handler.requests).toEqual([]);
+    expect(s.zone.writes()).toEqual([]);
+    expect(s.host.applies).toHaveLength(0);
+  });
+
+  it("fails closed: with other OpsCrew apps there, a proxy it cannot read stops before any change", async () => {
+    const plan = ownPlan();
+    const s = await setup({
+      plan: { ...plan, dns: { ...plan.dns, proxied: false } },
+      facts: withOtherApp(),
+    });
+    s.deps.runner = ownRunner(undefined, (args) =>
+      String(args.at(-1)).includes("opscrew-edge-read 1")
+        ? { exitCode: 255, stdout: "", stderr: "Connection reset" }
+        : undefined,
+    );
+    const error = (await runProvision(s.deps, {
+      services: s.services,
+      hostKey: ED25519_FINGERPRINT,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("OpsCrew could not read which proxy your server runs");
+    expect(error.message).toContain("Nothing was changed.");
+    expect(s.handler.requests).toEqual([]);
+    expect(s.zone.writes()).toEqual([]);
+    expect(s.host.applies).toHaveLength(0);
+  });
+
+  it("plans the switch, with its interruption, while this app is alone on the server", async () => {
+    const s = await setup({ plan: nginx(ownPlan()) });
+    s.deps.runner = reading("caddy");
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+    const said = "switches the server's proxy from Caddy to nginx";
+    expect(s.deps.reporter.text()).toContain(said);
+    expect(s.handler.requests.find((r) => r.kind === "iac-apply")?.details).toContain(said);
   });
 });

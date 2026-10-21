@@ -37,7 +37,7 @@ import {
   setupCloudflare,
   setupGitHub,
 } from "../provision";
-import { withCloudflareZone } from "../provision/render";
+import { recordedEdge, withCloudflareZone } from "../provision/render";
 import {
   approvalEntry,
   confirmChangedHostKey,
@@ -91,6 +91,11 @@ export interface MoveSession {
    * Portainer on a subdomain): the move renders with them, as the last provision did.
    */
   committedRender: OwnRenderInput;
+  /**
+   * The app's site as the last provision left it (its origin TLS and additions) and the origin TLS
+   * values: the new server gets the same certificates, with the same deploy secret.
+   */
+  site: Awaited<ReturnType<typeof recordedEdge>>;
 }
 
 /**
@@ -272,6 +277,7 @@ export async function openSession(
     approve: input.approvePlanHash?.trim() || undefined,
     servers,
     committedRender: ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan)),
+    site: await recordedEdge(deps, withCloudflareZone(plan, cloudflare)),
   };
 }
 
@@ -308,6 +314,7 @@ export function renderFiles(
     deployPublicKey: session.deployKey.publicKeyOpenSsh,
     cloudflare: session.cloudflare,
     own: session.committedRender,
+    edge: session.site.edge,
   });
   return renderDeployment(plan, layout ? { ...ctx, layout } : ctx);
 }
