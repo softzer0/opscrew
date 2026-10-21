@@ -43,7 +43,6 @@ interface SharedDesired {
   access?: { authDomain: string; oneTimePin: boolean };  // as in 011
   tls?: {
     proxied: string[];                // the app's proxied hostnames (empty on destroy)
-    retiring: string[];               // hostnames that left the proxy, kept until the server shows it
     served?: { originSha256?: string; requiring: string[] };   // what the origin uses now
     origin?: { csr: string };         // present only when a new origin certificate is wanted
     client?: { sha256: string };      // the client certificate to upload, if not yet at Cloudflare
@@ -87,8 +86,8 @@ Each step's result goes into the record before the next one.
   servers it is read over SSH as `deploy` from `/srv/edge/tls/<app>/` and the site file, and on
   Portainer from the stack through its API.
   - A `superseded` certificate is revoked once `served` has the newer fingerprint.
-  - A `retiring` hostname is disabled once `served` no longer requires the client certificate for
-    it.
+  - A hostname in the record's `client.retiring` (one that left the proxy) is disabled once
+    `served` no longer requires the client certificate for it.
   - Without `served` (the server unreachable), both wait, and the plan says so.
 - `set-min-tls` is planned only when the value is `1.0`, `editable` is true, and every proxied A,
   AAAA and CNAME record in the zone carries `Managed by OpsCrew`. Otherwise the plan carries the `min-tls-advised` advice for `secure`.
