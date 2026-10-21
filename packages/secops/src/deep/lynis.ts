@@ -168,9 +168,8 @@ function containerScript(sha256: string): string {
  * The `docker run` of Lynis's throwaway container `name`: the host's root read-only at `/hostfs`,
  * its submounts too (a plain `readonly` bind is read-only all the way down from Linux 5.12 and
  * Docker 25, which {@link runLynis} checks first: Docker 29 refuses `bind-recursive=readonly` for
- * `/`), an executable tmpfs over `/hostfs/tmp`, the
- * host's processes and network, no new privileges, and root inside (the pinned image runs as a
- * non-root user).
+ * `/`), an executable tmpfs over `/hostfs/tmp`, the host's processes and network, no new
+ * privileges, and root inside (the pinned image runs as a non-root user).
  */
 export function lynisDockerCommand(pins: DeepPins, name: string): string {
   return [
@@ -289,6 +288,10 @@ export async function runLynis(
       "Run `opscrew secure --deep` again later. If it keeps failing, the download has changed: report it to OpsCrew.",
     );
   }
+  // A guess, not seen on a real server: no server with an old kernel or Docker has been available,
+  // and the version check above should stop one first. Docker exits 125 when it cannot create the
+  // container, and its refusal is expected to name the "recursive" read-only mount. Any other
+  // failure is still reported below, so the guess only chooses the wording of the skip.
   if (run.exitCode === 125 && /recursive/i.test(run.stderr)) {
     return failed(readOnlyReason(lastLine(run)), READ_ONLY_REMEDIATION);
   }
