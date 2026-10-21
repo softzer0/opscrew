@@ -143,7 +143,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1404 [P] [US2] The recovery copy, in `packages/agents/src/secrets/**` (new), and the copy in provision's and retarget's pull requests, in `packages/agents/src/provision/publish.ts`, `packages/agents/src/retarget/finish.ts`
+- [X] T1404 [P] [US2] The recovery copy, in `packages/agents/src/secrets/**` (new), and the copy in provision's and retarget's pull requests, in `packages/agents/src/provision/publish.ts`, `packages/agents/src/retarget/finish.ts`
   - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
   - Reads: contracts/recovery-copy.md; data-model.md "Recovery copy", "Age key"; research.md R2; plan.md "5."; spec US2, FR-1410–FR-1417
   - Depends: T1401b
