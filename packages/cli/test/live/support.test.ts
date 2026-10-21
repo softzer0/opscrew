@@ -529,6 +529,7 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
       "3b",
       "4",
       "5",
+      "5b",
       "6",
       "7",
       "7b",
@@ -557,6 +558,7 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
 
   it("adds what each chosen step needs", () => {
     expect(portainerSteps("3b")).toEqual(["1", "1b", "2a", "2", "3b", "12"]);
+    expect(portainerSteps("5b")).toEqual(["1", "1b", "2a", "2", "5", "5b", "12"]);
     expect(portainerSteps("9")).toEqual(["1", "1b", "2a", "2", "8", "9", "12"]);
     expect(portainerSteps("5,6")).toEqual(["1", "1b", "2a", "2", "5", "6", "12"]);
     expect(portainerSteps("10")).toEqual(["1", "1b", "2a", "10", "12"]);

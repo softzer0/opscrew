@@ -4,7 +4,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { promises as dnsPromises } from "node:dns";
 import { existsSync, statSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { dohQuery, readPortainerConnection } from "@opscrew/agents";
@@ -19,6 +19,7 @@ import {
 import { PORTAINER_VERSION_PATH } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
+import { underLoad } from "./builder-checks";
 import {
   type CloudflareZone,
   canConnect,
@@ -95,6 +96,8 @@ import {
   printedHash,
   SERVER_E2E_VARIABLES,
 } from "./support";
+import { originCheck, readTlsRecord, requireDocker, secureDeep } from "./tls-checks";
+import { cloudflareSideProblems } from "./tls-support";
 
 const ENV = process.env;
 const STEPS_VALUE = ENV.OPSCREW_E2E_PORTAINER_STEPS;
@@ -189,6 +192,8 @@ describe.skipIf(MISSING.length > 0)(
     /** The rules of every zone ruleset that existed before the run (id → name and rules). */
     const rulesetsBefore = new Map<string, { name: string; rules: string | undefined }>();
     let web: Web = "tunnel";
+    /** Step 5b: the user's records for Caddy are behind Cloudflare's proxy (origin TLS). */
+    let caddyProxied = false;
     let recordedVolumes: string[] = [];
     let registryId: number | undefined;
     const testRecords: string[] = [];
@@ -373,7 +378,7 @@ describe.skipIf(MISSING.length > 0)(
       if (answer.status !== 200) throw new Error(`the site answered ${answer.status}`);
       if (web !== "proxy") {
         const ray = answer.headers["cf-ray"] !== undefined;
-        if (ray !== (web === "tunnel")) {
+        if (ray !== (web === "tunnel" || (web === "caddy" && caddyProxied))) {
           throw new Error(
             `the site answered ${ray ? "with" : "without"} Cloudflare's cf-ray header`,
           );
@@ -1828,6 +1833,72 @@ describe.skipIf(MISSING.length > 0)(
           "the app's tunnel is gone",
         ).toEqual([]);
         await expectDecoysUnchanged("the switch to caddy");
+      },
+    );
+
+    step(
+      "5b. caddy behind Cloudflare's proxy: origin TLS on the stack's Caddy, secure --deep with only testssl.sh, a redeploy under load with no failed request",
+      minutes(90),
+      async () => {
+        await requireDocker("Step 5b");
+        // The recovery copy's first key goes to a file of the test's own, its copy to a folder
+        // (a public repository gets no committed copy in a script).
+        const copies = join(run.work, "copies");
+        await mkdir(copies, { recursive: true });
+        await run.opscrewOk("secrets", "folder", copies);
+        run.provisionFlags = ["--key-out", join(run.work, "age-key.txt")];
+        // As the guide says: the domain behind Cloudflare's proxy, the user's records proxied.
+        const plan = await run.readPlan();
+        await writeArtifact("plan", join(run.repo, "opscrew/plan.yaml"), {
+          ...plan,
+          dns: { ...plan.dns, proxied: true },
+        });
+        const z = run.zone as CloudflareZone;
+        for (const id of testRecords) {
+          const patched = await run.cloudflare.call("PATCH", `/zones/${z.id}/dns_records/${id}`, {
+            proxied: true,
+          });
+          expect(patched.status, "Cloudflare proxies the user's record").toBe(200);
+        }
+        caddyProxied = true;
+        await run.provisionUntilDone("origin TLS in the stack");
+        await run.deploy("origin TLS in the stack");
+        await waitForSite((await deployBranchImage()).version, minutes(15));
+        await run.rememberGeneratedValues();
+        if (!(await run.rememberSecretFile(join(run.work, "age-key.txt"), "age-identity"))) {
+          run.findings.push(
+            "the recovery copy's key file was not written, so the leak search misses the age identity",
+          );
+        }
+        const hosts = plan.dns.www ? [appHost, `www.${appHost}`] : [appHost];
+        expect(
+          cloudflareSideProblems(
+            await run.cloudflare.zoneTls(z, hosts),
+            await readTlsRecord(run.paths()),
+            hosts,
+          ),
+          "the app's origin TLS at Cloudflare",
+        ).toEqual([]);
+        const origin = await originCheck((c) => run.shell().run(c), hosts, undefined, log);
+        run.findings.push(...origin.findings);
+        expect(origin.problems, "the origin check on the Portainer host").toEqual([]);
+        // Lynis and ssh-audit need a login to the host, which OpsCrew has not in a Portainer.
+        const took = await secureDeep(
+          (...args) => run.opscrew(...args),
+          run.paths().files.securityReport,
+          { ran: ["testssl"], skipped: ["lynis", "ssh-audit"] },
+          (text) => run.tail(text),
+        );
+        observe(`opscrew secure --deep (testssl.sh only) took ${duration(took)}`);
+        // T1416: Caddy holds requests while Portainer recreates the app, so visitors see a pause.
+        await underLoad([await siteUrl()], "a redeploy of the stack", log, () =>
+          mergeChange(
+            "e2e: a redeploy under load",
+            { "opscrew-e2e-change.txt": `Redeployed under load in run ${run.runId}.\n` },
+            "success",
+          ),
+        );
+        await expectDecoysUnchanged("origin TLS in the stack");
       },
     );
 

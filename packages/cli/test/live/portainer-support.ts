@@ -44,6 +44,7 @@ export const PORTAINER_STEPS: readonly { id: string; needs: readonly string[] }[
   { id: "3b", needs: ["2"] },
   { id: "4", needs: ["2"] },
   { id: "5", needs: ["2"] },
+  { id: "5b", needs: ["5"] },
   { id: "6", needs: ["2"] },
   { id: "7", needs: ["2"] },
   { id: "7b", needs: ["2"] },

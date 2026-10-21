@@ -68,6 +68,8 @@ The test is skipped unless its environment variables are set, so normal runs and
 | `OPSCREW_E2E_STORAGE` | With `OPSCREW_E2E_COMPONENTS=1` and `OPSCREW_E2E_APP=s3-uploads`: where the bucket goes, `r2` (the default) or `hetzner`. |
 | `OPSCREW_E2E_R2` | `1` once R2 is turned on for the Cloudflare account and `OPSCREW_E2E_CLOUDFLARE_TOKEN` also has Account → Workers R2 Storage → Edit. Without it the R2 pass is skipped with a message. |
 | `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | For `OPSCREW_E2E_STORAGE=hetzner`: S3 credentials from the Hetzner Console of the throwaway project (Security → S3 credentials). Without them the Hetzner Object Storage pass is skipped with a message. The test never deletes them. |
+| `OPSCREW_E2E_TLS` | Optional, one of `proxied`, `live`, `dns-only` or `recovery`: runs that pass of [origin TLS, the recovery copy and the deeper checks](#origin-tls-the-recovery-copy-and-the-deeper-checks) (feature 014) in the Hetzner pass, with the Cloudflare domain. Off by default. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS` | Needed with `OPSCREW_E2E_TLS=live`: a second token for the same zone with only Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit (no SSL and Certificates, no Zone Settings), so the first deploy goes live without origin protection. |
 
 Requirements:
 
@@ -347,6 +349,78 @@ public repositories). R2 is within its free tier. Hetzner Object Storage bills i
 a month for every hour in which a bucket exists, so its pass adds about one cent more, unless the
 account pays that base already.
 
+### Origin TLS, the recovery copy and the deeper checks
+
+Feature 014 runs in three places: four Hetzner passes of `live.test.ts`, chosen with
+`OPSCREW_E2E_TLS` (one per run), [your own server with nginx](#your-own-server-with-nginx), and
+step 5b of [your existing Portainer](#your-existing-portainer). Each needs the Cloudflare zone
+(`OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN`), and the token needs all six zone
+permissions: Zone Read, DNS Edit, Config Rules Edit, Zone WAF Edit, **SSL and Certificates Edit**
+and **Zone Settings Edit**. The own-server and Portainer tests now read the zone's certificates
+before the run even without feature 014's steps, so their token needs the six too.
+
+`packages/cli/test/live/tls-checks.ts` holds the checks. Every Hetzner pass also:
+
+- **makes the recovery copy:** before the first provision it sets a folder copy (`opscrew secrets
+  folder`, so a public repository gets a copy too) and gives every provision `--key-out <file>`, a
+  file in the test's own temporary folder, outside the repository and OpsCrew's folders;
+- **checks the zone's minimum TLS decision:** before the first provision it reads the zone's
+  setting and its proxied A, AAAA and CNAME records. When the setting is 1.0, editable, and every
+  proxied record carries `Managed by OpsCrew`, the zone must be at 1.2 afterwards and
+  `.opscrew/cloudflare.json` must say OpsCrew set it; otherwise the setting must be unchanged. **A
+  zone that qualifies stays at TLS 1.2 after the run:** OpsCrew never lowers it, and the test never
+  sets it back by hand;
+- **ends with the leak search** (SC-1406): none of the tokens, the deploy key, the state passphrase,
+  the generated values (the origin certificate's key and the client certificate's key among them,
+  not the public certificates), the Portainer bundle built from them, nor the age identity from
+  the key file is in any CLI output, commit, pull request or audit entry of the run, any saved plan
+  in `.opscrew/plans/` (encrypted ones are skipped), `opscrew/SECURITY_REPORT.md`,
+  `opscrew/RUNBOOK.md`, `.opscrew/cloudflare.json`, the state files in `.opscrew/tfstate/` or the
+  folder copy. A pass with origin TLS fails with a finding when OpsCrew kept no origin keys;
+- **checks the zone after the teardown:** no origin certificate for the run's hostnames that is
+  not revoked, no client certificate the run uploaded and no origin pull setting of its hostnames
+  still on. After a finished destroy anything left is a problem (the test removes it through
+  Cloudflare's API and fails); after a failed destroy that removal is the fallback. Then nothing
+  else in the zone may have changed: the DNS records off the run's hostnames (compared whole,
+  reported by type and count only), the other origin certificates, the client certificates, and
+  the minimum TLS (apart from the raise the plan made).
+
+The passes:
+
+| `OPSCREW_E2E_TLS` | What it checks |
+|---|---|
+| `proxied` | The usual proxied deploy, then: the site answers through Cloudflare (`cf-ray`); from Cloudflare's side, the record's origin certificate covers exactly the app's hostnames and each hostname's origin pull setting is on with the app's client certificate; from the server, as `deploy`, `opscrew secure`'s own `openssl s_client` checks to 127.0.0.1:443 (refused without the client certificate, the issuer Cloudflare's Origin CA, an unknown hostname refused); `opscrew secure --deep` within 5 minutes (SC-1403), no high or critical finding from testssl.sh (SC-1407), ssh-audit's policy passing apart from the listed noise (T1418), Lynis's hardening index, and secure's own origin checks passing. Needs Docker on this computer. |
+| `live` | An app already live (SC-1408): the first provision uses `OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS`, so it records the permission gap (FR-1405) and the site goes live behind Cloudflare without origin protection. Then, as a user who adds the permissions, the pass switches to the full token and provisions and deploys again while it sends 20 requests per second through Cloudflare: no request may fail, and afterwards Cloudflare's side and the check from the server pass as for `proxied`. Before any change it checks that the narrower token really cannot read the zone's origin certificates. |
+| `dns-only` | `dns.proxied: false` in `opscrew/plan.yaml` after design: the site answers straight from the server; CAA records at the app's hostname name exactly `letsencrypt.org` and `sectigo.com` (Caddy's), with `Managed by OpsCrew`; the zone's apex has the same CAA records as before; no origin certificate. |
+| `recovery` | The default app (`nextjs-postgres`): a row written into its Postgres, then the project's folder (`~/.opscrew/projects/<id>`, under the test's `OPSCREW_HOME`) and the whole checkout (its `.opscrew` with it) deleted, a fresh clone, `opscrew secrets restore --key-file <file>` (from the committed copy, or with `--from` the folder copy when the repository is public), `provision --plan-only` with nothing to apply, `provision`, then the generated values, deploy key and state passphrase as they were, the row still there, and all of it within 5 minutes (SC-1402). The teardown then runs from the fresh clone. |
+
+The origin check from the server (research "Spike results" 14): when the server cannot even
+connect to 127.0.0.1:443 under OpsCrew's web filter, the test runs the same check from a throwaway
+container of the pinned testssl.sh image (it has openssl) on the edge's network, against the
+proxy's own address there, removes the image again when it was not there before, and records a
+finding: `opscrew secure` then needs the same fallback. A Portainer stack has no edge network, so
+there is no fallback there.
+
+Run the passes one after another (each creates and destroys its own server):
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
+for pass in proxied dns-only recovery; do
+  echo "=== $pass"
+  OPSCREW_E2E_TLS="$pass" npx vitest run test/live/live.test.ts || echo "FAILED: $pass"
+done
+OPSCREW_E2E_TLS=live OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS=… npx vitest run test/live/live.test.ts
+```
+
+**Expected time and cost** (not measured yet): `proxied` about 15 minutes (the usual 7, then
+`secure --deep`), `live` about 20 (two provisions and two deploys, one under load), `dns-only`
+about 10, `recovery` about 15. Each uses the recommended cx23 for about a quarter of an hour, about
+one cent of server time, plus GitHub Actions minutes. Origin CA certificates, client certificates
+and the per-hostname settings cost nothing on the Free plan.
+
 ## Your own server
 
 `packages/cli/test/live/own-server.test.ts` runs the flow for a server the user already has
@@ -472,6 +546,10 @@ cleanup always runs:
   (which should have left nothing): DNS records on the app's hostname, `www.`, `ssh-<app>.` and
   `portainer.`, the tunnel `opscrew-<app>`, and the Access applications and policies and the
   service token named after the app. Anything that existed before the run is skipped.
+- It removes the app's origin TLS (feature 014): it turns off the origin pull setting of each of
+  the app's hostnames that is still on, deletes the client certificates that were not in the zone
+  before the run, and revokes the origin certificates for the run's hostnames, each logged. After a
+  finished `destroy` anything of it left is a problem that fails the run.
 - It cleans up the zone's WAF custom rules and configuration rules: it deletes the rules it
   seeded, and OpsCrew's rules (found by `ref`, never by name) that list only this run's hostnames,
   each logged. An OpsCrew rule that lists this run's hostnames next to other hostnames is reported
@@ -493,7 +571,12 @@ tokens `OpsCrew deploy (<app>)`, the rules described "OpsCrew E2E: a rule of the
 by run <run id>" in Security → WAF → Custom rules and Rules → Configuration Rules, and the run's
 hostnames from OpsCrew's rules there ("OpsCrew: block probes for secrets and admin panels" and
 "OpsCrew: verify the origin certificate (Full (strict) TLS)"; delete a rule that lists nothing
-else).
+else). For feature 014's runs also: revoke the origin certificates for those hostnames (SSL/TLS →
+Origin Server in the zone's dashboard), and with Cloudflare's API turn off their origin pull
+settings (`PUT /zones/<zone id>/origin_tls_client_auth/hostnames` with `"enabled": null` for each
+hostname) and delete the client certificates they used (`GET` and `DELETE
+/zones/<zone id>/origin_tls_client_auth/hostnames/certificates`). The zone's minimum TLS version
+stays as OpsCrew set it.
 
 | Variable | What it is |
 |---|---|
@@ -529,6 +612,81 @@ plus GitHub Actions minutes for the builds (free for public repositories). Left 
 the GitHub Actions secrets and the container images in the throwaway repositories (as above), the
 zone's rules that existed before the run (OpsCrew's shared rules too, when they listed other apps'
 hostnames), and the Zero Trust organization and one-time PIN login if OpsCrew created them (OpsCrew never deletes them: other apps may use them).
+
+## Your own server with nginx
+
+`packages/cli/test/live/own-nginx.test.ts` runs the nginx edge (feature 014) on a throwaway
+Hetzner server made as for [your own server](#your-own-server), with the same harness, scrubber and
+cleanup. The first app is `OPSCREW_E2E_APP` (default `nextjs-postgres`), the second
+`examples/express-api` from `OPSCREW_E2E_GITHUB_REPO_B`, each on its own hostname
+(`e2e-<run id>.<zone>`, `e2e-<run id>-b.<zone>`), each with `target.edge: nginx` set in
+`opscrew/plan.yaml` after design, as the guide says, and its recovery copy made as in the Hetzner
+passes (a folder copy, `--key-out`).
+
+1. The server, outside OpsCrew. Docker must answer on this computer (step 5).
+2. **DNS only with nginx:** `init --fix`, analyze, interview (`server.serve: dns-only`), design,
+   `target.edge: nginx`, adapt, provision, deploy. certbot gets the first certificate during that
+   deploy: the site answers straight from the server with a Let's Encrypt certificate, the edge's
+   Compose file says `x-opscrew-edge-proxy: nginx`, and the CAA records at the hostname name only
+   `letsencrypt.org`. Then `verify`, `secure` and `drift`.
+3. **An addition:** `opscrew/proxy/additions.nginx` with `location = /opscrew-e2e-addition { return
+   200 "…"; }` committed, provision and deploy; the path answers with it, and still with OpsCrew's
+   `Strict-Transport-Security` and `X-Content-Type-Options` headers.
+4. **A forced renewal under load:** while 20 requests per second go to the health route, `certbot
+   renew --force-renewal --no-random-sleep-on-renew --cert-name <app>` in the edge's certbot
+   container; nginx must serve the new certificate (another serial number) within 3 minutes, and no
+   request may fail. This costs one more Let's Encrypt certificate for the run's own names.
+5. **`secure --deep` through nginx:** within 5 minutes (a finding otherwise), no high or critical
+   finding from testssl.sh (SC-1407), ssh-audit's policy passing apart from the listed noise, and
+   Lynis's hardening index.
+6. **A second app on the same edge**, DNS only with nginx, set up the same way. Then the first
+   app's `target.edge` set to `caddy` must be refused by `provision --plan-only` before any change
+   ("which every OpsCrew app on it shares", "Nothing was changed"); the plan is put back.
+7. **The second app's destroy** (without `--undo-host`): nothing of it left in Cloudflare, the first
+   app still answers.
+8. **Origin TLS on nginx:** interview and design again with `server.serve: proxy` (design keeps
+   nginx), provision, deploy; the site answers through Cloudflare; Cloudflare's side and the origin
+   check from the server as in the Hetzner `proxied` pass (on nginx a connection without the client
+   certificate completes the handshake and gets HTTP 400, which counts as refused); `secure` and
+   `drift`.
+9. **A switch to Caddy and back**, now that one app is left: for each, `target.edge` set,
+   provision (its output must state the switch and its interruption), then the deploy while 20
+   requests per second go through Cloudflare. The longest stretch of failed requests must be at
+   most 15 seconds ("a few seconds" for a proxied hostname), and the edge must then run the new
+   proxy.
+10. **`destroy --undo-host`:** nothing of the app left in Cloudflare, its origin certificate
+    revoked, its client certificate and origin pull settings gone, no CAA record at its hostname,
+    and root still logs in.
+11. **The leak search**, as for your own server (step 8), plus the age identities of both apps'
+    key files and, searched for secrets only, both apps' saved plans, reports, records, state files
+    and folder copies.
+
+The two apps are never one DNS-only and one proxied at the same time, as quickstart.md has it:
+the apps on a server share one access mode, and the host plan refuses a proxied app (which needs
+OpsCrew's web filter) next to a DNS-only one. So the pass covers certbot's certificates with two
+apps first, and origin TLS on nginx once the second app is gone.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_OWN_NGINX` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [your own server](#your-own-server); the Cloudflare token needs the six zone permissions and none of the account's. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_OWN_SERVER_TYPE`, `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as for your own server (not `express-api`, the second app's). |
+
+Requirements: those of your own server, and Docker on this computer. Run only this file:
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_OWN_NGINX=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/own-nginx.test.ts
+```
+
+**Expected time and cost** (not measured yet): about 75–90 minutes, with seven deploys (two first
+deploys, the addition, origin TLS and two switches; the second app's one more), on the smallest x86
+server (about one or two cents of server time), plus GitHub Actions minutes. The cleanup is that of
+your own server; if a run was interrupted, delete what it left by hand as described there.
 
 ## Your existing Portainer
 
@@ -592,7 +750,8 @@ other value skips the whole test and names the variable.
    two runs writes the branch again (it already holds exactly the placeholder). Then: the record in
    `.opscrew/server.json`, the app stack's `GitConfig`, `AutoUpdate` and `DeploymentStatus` (their
    shapes are logged, never their values), the deploy pull request merged and its run, the site
-   through the tunnel with the new version in `X-OpsCrew-Image`, `GET /api/stacks/{id}/file`
+   through the tunnel serving the new version at `/.well-known/opscrew-version` (a one-shot `stamp`
+   service writes it there, so the stack's Caddy never changes between deploys), `GET /api/stacks/{id}/file`
    returning the deployed file, the volumes' `com.docker.compose.project` label, GHCR's answers for
    the registry login (the owner as user name, another user name, a wrong token), `verify`,
    `secure`, `drift`, and a re-run of `provision --plan-only` with nothing to apply.
@@ -614,6 +773,20 @@ other value skips the whole test and names the variable.
    `Id` and `CreationDate` and its `UpdateDate` or variables change, so it was updated in place,
    not created again), the DNS record OpsCrew prints is created by the test (DNS only, to the server), the
    deploy, the site with a Let's Encrypt certificate and without Cloudflare, `verify`, `drift`.
+
+   5b. **Caddy behind Cloudflare's proxy** (feature 014), as the guide describes it: the recovery
+   copy's folder and `--key-out` set as in the Hetzner passes, `dns.proxied: true` in
+   `opscrew/plan.yaml`, the test's records from step 5 switched to proxied, then provision (its
+   Cloudflare plan creates the origin certificate, uploads the client certificate and turns on the
+   origin pull settings; the stack gets the bundle as a variable) and the deploy, until the site
+   answers through Cloudflare with the deployed version. Then: Cloudflare's side and the origin
+   check on the Portainer host (as root, `opscrew secure`'s own checks to 127.0.0.1:443, without the
+   edge-network fallback) as in the Hetzner `proxied` pass; `opscrew secure --deep`, in which only
+   testssl.sh runs (no high or critical finding) and Lynis and ssh-audit are skipped with their
+   reason; and a merged change redeployed while 20 requests per second go through Cloudflare: no
+   request may fail (T1416: Caddy holds them while Portainer recreates the app). Needs Docker on
+   this computer. Steps 6 and later switch away from it; destroy (step 8) must revoke and remove the
+   app's certificates and settings, which the cleanup checks.
 6. **proxy** on port 8080: the test removes its DNS record first (the user points the domain at
    their own proxy), then the switch, the deploy (GitHub cannot reach the app, so the run only
    notes it), the site on `http://<server>:8080`, `verify --url http://<server>:8080`, `drift`.
@@ -706,7 +879,8 @@ The cleanup always runs: it deletes the server, its SSH key and its firewall (ev
 with the run's id, and nothing else), removes what the run created in Cloudflare for each app (DNS
 records on `e2e-<run id>.<zone>`, `e2e-<run id>-b.<zone>`, `www.` and `portainer-<app>.<zone>`,
 the tunnels `opscrew-<app>` and `opscrew-<app>-portainer`, the Access application `OpsCrew
-Portainer webhook (<app>)`, the policy and service token `OpsCrew deploy (<app>)`), cleans up the
+Portainer webhook (<app>)`, the policy and service token `OpsCrew deploy (<app>)`) and its origin
+TLS (as for your own server: anything a finished destroy left fails the run), cleans up the
 zone's rules as for [your own server](#your-own-server) (the seeded rules, OpsCrew's rules that
 list only this run's hostnames, a rule list the run created once it is empty), then reports any
 zone ruleset that existed before the run and has other rules now (it never restores one), and
@@ -746,7 +920,7 @@ OPSCREW_E2E_PORTAINER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you
 ```
 
 That runs the core pass. For the full one, add `OPSCREW_E2E_PORTAINER_STEPS=full` to the same
-command.
+command; it includes step 5b, which needs Docker on this computer.
 
 ### Running chosen steps
 
@@ -761,6 +935,7 @@ server, which it deletes at the end like every run (a server is never kept betwe
 | 2a | 1 |
 | 2, 10, 11 | 2a |
 | 3, 3b, 4, 5, 6, 7, 7b, 8 | 2 |
+| 5b | 5 |
 | 9 | 8 |
 | 9b | 7b, 8 |
 
@@ -774,6 +949,10 @@ Steps run in their usual order. Examples:
 - `OPSCREW_E2E_PORTAINER_STEPS=3b` runs steps 1, 1b, 2a, 2, 3b and 12: the rollback after the first
   deploy.
 - `OPSCREW_E2E_PORTAINER_STEPS=2,10` runs steps 1, 1b, 2a, 2, 8, 9, 10 and 12.
+- `OPSCREW_E2E_PORTAINER_STEPS=5b` runs steps 1, 1b, 2a, 2, 5, 5b and 12 (expected about an hour,
+  not measured yet: step 5 waits up to 35 minutes for the public resolver): Caddy with origin TLS
+  in the stack, then the leak search. The cleanup removes the app's certificates and settings, as
+  step 8 does not run.
 - `OPSCREW_E2E_PORTAINER_STEPS=7b` runs steps 1, 1b, 2a, 2, 7b, 8, 9b and 12: the second app next
   to the first one's updater + tunnel setup, then both destroys.
 
@@ -825,6 +1004,10 @@ Teardown runs in a `finally` block, so it happens even after a failure:
    API, and asserts again that nothing is left. The shared `managed-by:opscrew` DigitalOcean tag
    is never deleted. A bucket is destroyed with its own `storage` root, and through R2's API when
    that fails; then no bucket of the app may be left.
+4. With `OPSCREW_E2E_TLS`, the app's origin certificates, client certificate and origin pull
+   settings left in the zone are removed through Cloudflare's API (a problem after a finished
+   destroy), and nothing else in the zone may have changed (see
+   [Origin TLS, the recovery copy and the deeper checks](#origin-tls-the-recovery-copy-and-the-deeper-checks)).
 
 That fallback normally runs only when destroy fails. To test it on purpose, set
 `OPSCREW_E2E_SKIP_DESTROY=1` (off by default; the Hetzner pass only): the pass logs that it skips

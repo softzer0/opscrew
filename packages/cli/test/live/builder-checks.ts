@@ -48,7 +48,7 @@ const DEPLOY_JOB = "Deploy to the server";
 const PRUNE_JOB = "Delete old images";
 
 /** Requests per second the load sends to the health route. */
-const LOAD_RPS = 20;
+export const LOAD_RPS = 20;
 
 /** What T1205 asked to confirm live that this pass cannot, logged on every run. */
 const NOT_COVERED = [

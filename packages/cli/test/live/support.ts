@@ -473,9 +473,13 @@ export class Scrubber {
     if (literal === "") return;
     this.literals.set(literal, `[${label}]`);
     this.redactor.addLiteral(literal, label);
-    // Multi-line secrets (private keys) are also masked line by line.
+    // Multi-line secrets (private keys) are also masked line by line, apart from a PEM armor line
+    // (`-----BEGIN PRIVATE KEY-----`), which every PEM file has, a committed certificate too.
     for (const line of literal.split(/\r?\n/)) {
-      if (line.trim().length >= 16) this.literals.set(line.trim(), `[${label}]`);
+      const trimmed = line.trim();
+      if (trimmed.length >= 16 && !/^-----(BEGIN|END) [A-Z0-9 ]+-----$/.test(trimmed)) {
+        this.literals.set(trimmed, `[${label}]`);
+      }
     }
   }
 

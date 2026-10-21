@@ -55,6 +55,7 @@ import {
   unprotectHetznerRoot,
   type ZoneEntrypoints,
 } from "./support";
+import { type PreparedRun, tlsPass, tlsPreflight, tlsSettings } from "./tls-checks";
 
 const E2E = {
   hcloudToken: process.env.OPSCREW_E2E_HCLOUD_TOKEN,
@@ -311,6 +312,16 @@ const COMPONENTS = componentSettings(
 );
 
 /**
+ * A pass of feature 014 on Hetzner with OPSCREW_E2E_TLS (`proxied`, `live`, `dns-only`,
+ * `recovery`); the reason the pass is skipped (a missing variable, another app); or the line the
+ * pass logs instead.
+ */
+const TLS = tlsSettings(
+  APP instanceof Error || APP.kind !== "example" ? undefined : APP.name,
+  process.env,
+);
+
+/**
  * OPSCREW_E2E_SKIP_DESTROY=1: the Hetzner pass skips `opscrew destroy` and takes the fallback a
  * failed destroy takes (the IaC destroy, the provider API, the shared Cloudflare rules), whose
  * leftover checks must then find nothing.
@@ -322,17 +333,34 @@ const TOKENS = [
   { label: "OPSCREW_E2E_GITHUB_TOKEN", value: E2E.githubToken },
   { label: "OPSCREW_E2E_HCLOUD_TOKEN", value: E2E.hcloudToken },
   { label: "OPSCREW_E2E_CLOUDFLARE_TOKEN", value: E2E.cloudflareToken },
+  {
+    label: "OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS",
+    value: process.env.OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS,
+  },
 ];
 
 for (const provider of [HETZNER, DIGITALOCEAN]) {
   const onHetzner = provider.id === "hetzner";
   const builders = onHetzner && typeof BUILDERS !== "string" ? BUILDERS : undefined;
   const components = onHetzner && typeof COMPONENTS !== "string" ? COMPONENTS : undefined;
+  const tls = onHetzner && typeof TLS !== "string" ? TLS : undefined;
   describe.skipIf(!(provider.token && withGitHub))(`live end-to-end on ${provider.name}`, () => {
     it(`deploys ${APP_LABEL} from a GitHub repository and tears everything down`, {
-      timeout: minutes(builders === undefined && components === undefined ? 75 : 180),
+      timeout: minutes(
+        builders === undefined && components === undefined && tls === undefined ? 75 : 180,
+      ),
     }, async (context) => {
       const cleanup = { skipDestroy: onHetzner && skipDestroy };
+      if (tls !== undefined) {
+        if ("skip" in tls) {
+          console.log(`OpsCrew E2E: skipped: ${tls.skip}`);
+          return context.skip(tls.skip);
+        }
+        // Before any GitHub or cloud change.
+        await tlsPreflight(tls);
+        await deployAndTearDown(provider, { ...cleanup, ...tlsPass(tls, TOKENS) });
+        return;
+      }
       if (components !== undefined) {
         const skip = (reason: string) => {
           console.log(`OpsCrew E2E: skipped: ${reason}`);
@@ -348,7 +376,7 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
         return;
       }
       if (builders === undefined) {
-        for (const note of [BUILDERS, COMPONENTS]) {
+        for (const note of [BUILDERS, COMPONENTS, TLS]) {
           if (onHetzner && typeof note === "string") console.log(`OpsCrew E2E: ${note}`);
         }
         await deployAndTearDown(provider, cleanup);
@@ -535,8 +563,19 @@ interface DeployOptions {
   env?: Record<string, string>;
   /** A change a user makes in opscrew/plan.yaml after design, before design runs again. */
   planEdit?: (plan: DeployPlan) => DeployPlan;
+  /** A change to opscrew/plan.yaml after the last design, which design would undo (DNS only). */
+  finalPlanEdit?: (plan: DeployPlan) => DeployPlan;
+  /** Flags every provision run passes (`--key-out <file>`, the recovery copy's first key). */
+  provisionFlags?: readonly string[];
+  /** Runs after adapt, just before the first provision. */
+  beforeProvision?: (run: PreparedRun) => Promise<void>;
   /** Runs after the deployment was verified, before the teardown. */
   afterDeploy?: (run: DeployedRun) => Promise<void>;
+  /**
+   * Runs after the teardown and its shared-rule checks, `destroyed` telling whether `opscrew
+   * destroy` finished; returns what it found left or changed (feature 014's certificates).
+   */
+  afterTeardown?: (destroyed: boolean) => Promise<string[]>;
   /** Skips `opscrew destroy`, so the fallback cleanup a failed destroy gets runs and is checked. */
   skipDestroy?: boolean;
   /**
@@ -672,6 +711,13 @@ async function deployAndTearDown(
       const redesigned = await opscrew("design");
       expect(redesigned.exitCode, redesigned.output).toBe(0);
     }
+    if (options.finalPlanEdit !== undefined) {
+      await writeArtifact(
+        "plan",
+        planFile,
+        options.finalPlanEdit(await readArtifact("plan", planFile)),
+      );
+    }
     const plan = await readArtifact("plan", planFile);
     appName = plan.app.name;
     expect(plan.target.provider).toBe(provider.id);
@@ -691,7 +737,9 @@ async function deployAndTearDown(
       const zone = await cloudflare.zoneOf(E2E.domain as string);
       shared = { cloudflare, zone, before: await cloudflare.sharedEntrypoints(zone) };
     }
-    const planned = await opscrew("provision", "--plan-only", "--yes");
+    await options.beforeProvision?.({ repo, env, opscrew });
+    const flags = options.provisionFlags ?? [];
+    const planned = await opscrew("provision", "--plan-only", ...flags, "--yes");
     expect(planned.exitCode, planned.output).toBe(0);
     // With a Cloudflare domain the Cloudflare plan comes first; every printed plan is approved.
     const hashes = approveHashes(planned.output);
@@ -699,6 +747,7 @@ async function deployAndTearDown(
     let applied = await opscrew(
       "provision",
       ...hashes.flatMap((hash) => ["--approve", hash]),
+      ...flags,
       "--yes",
     );
     // Hetzner Object Storage can show a new bucket late; OpsCrew then keeps it (or finds it in the
@@ -715,11 +764,12 @@ async function deployAndTearDown(
         `OpsCrew E2E: ${app.label}: provision stopped at the new bucket and asks for a rerun; running it again (retry ${retry} of ${BUCKET_RETRIES}${waits ? ", after 30 s" : ""})`,
       );
       if (waits) await sleep(30_000);
-      const replanned = await opscrew("provision", "--plan-only", "--yes");
+      const replanned = await opscrew("provision", "--plan-only", ...flags, "--yes");
       expect(replanned.exitCode, replanned.output).toBe(0);
       applied = await opscrew(
         "provision",
         ...approveHashes(replanned.output).flatMap((hash) => ["--approve", hash]),
+        ...flags,
         "--yes",
       );
     }
@@ -761,9 +811,9 @@ async function deployAndTearDown(
 
     if (options.afterDeploy !== undefined) {
       const paths = resolveProjectPaths(repo, { env });
-      const ssh = async (host: string, command: string) => {
+      const sshRun = (host: string, command: string) => {
         const target = host.includes(":") ? `deploy@[${host}]` : `deploy@${host}`;
-        const result = await runner.run(
+        return runner.run(
           "ssh",
           [
             "-i",
@@ -781,6 +831,9 @@ async function deployAndTearDown(
           ],
           { env, timeoutMs: minutes(2) },
         );
+      };
+      const ssh = async (host: string, command: string) => {
+        const result = await sshRun(host, command);
         if (result.exitCode !== 0) throw new Error(`ssh ${host} failed: ${result.stderr}`);
         return result.stdout.trim();
       };
@@ -792,6 +845,7 @@ async function deployAndTearDown(
         deployed: { runId: deployed.id, sha: mergeSha },
         appName: name,
         ssh,
+        sshRun,
         opscrew,
         mergeFiles,
         git,
@@ -917,6 +971,13 @@ async function deployAndTearDown(
       expectInSharedRules(zone, sharedRules, false),
     );
     await attempt("check the zone's DNS records", () => expectNoRecordsLeft(zone, sharedRules));
+  }
+  // … and, for feature 014, no certificate or setting of the app, nothing else in the zone changed.
+  const { afterTeardown } = options;
+  if (afterTeardown !== undefined) {
+    await attempt("check the zone's certificates and settings", async () => {
+      problems.push(...(await afterTeardown(destroyed)));
+    });
   }
   // … and the bucket is gone; the user's key for it stays theirs (OpsCrew never deletes one). A
   // bucket this run left is deleted by the test first, so no run leaves one behind; it still fails.

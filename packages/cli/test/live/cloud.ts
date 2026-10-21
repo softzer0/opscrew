@@ -11,6 +11,7 @@ import { Resolver } from "node:dns";
 import { request as nodeHttpRequest } from "node:http";
 import { request as nodeHttpsRequest } from "node:https";
 import { connect, type LookupFunction } from "node:net";
+import { connect as tlsConnect } from "node:tls";
 import { SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
 import {
@@ -23,6 +24,7 @@ import {
   type ZoneEntrypoints,
   type ZoneRule,
 } from "./support";
+import { tlsLeft, type ZoneRecord, type ZoneTls } from "./tls-support";
 
 export const HETZNER_API = "https://api.hetzner.cloud/v1";
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -570,6 +572,111 @@ export class Cloudflare {
     return problems;
   }
 
+  /** Every DNS record of the zone (feature 014's checks compare the ones off the run's hostnames). */
+  zoneRecords(zone: CloudflareZone): Promise<ZoneRecord[]> {
+    return this.list<ZoneRecord>(`/zones/${zone.id}/dns_records`);
+  }
+
+  /**
+   * The zone's origin TLS (feature 014, contracts/cloudflare-tls.md): its Origin CA certificates
+   * that are not revoked, its client certificates for per-hostname origin pulls (those being
+   * deleted left out), the per-hostname settings of `hostnames`, and its minimum TLS version.
+   * Throws on an answer it cannot read (the token's permissions).
+   */
+  async zoneTls(zone: CloudflareZone, hostnames: readonly string[]): Promise<ZoneTls> {
+    const origin = await this.list<{
+      id: string;
+      hostnames?: string[];
+      revoked_at?: string | null;
+    }>(`/certificates?zone_id=${zone.id}`);
+    const aop = `/zones/${zone.id}/origin_tls_client_auth/hostnames`;
+    const clients = await this.list<{ id: string; status?: string }>(`${aop}/certificates`);
+    const hostnameSettings: ZoneTls["hostnameSettings"] = [];
+    for (const hostname of hostnames) {
+      const read = await this.call("GET", `${aop}/${encodeURIComponent(hostname)}`);
+      if (read.status === 404) continue;
+      const setting = (
+        read.json as
+          | { result?: { hostname?: string; cert_id?: string | null; enabled?: boolean | null } }
+          | undefined
+      )?.result;
+      if (read.status !== 200) {
+        throw new Error(
+          `Cloudflare did not show the origin pull setting of ${hostname} (HTTP ${read.status}); check the token's SSL and Certificates permission in docs/e2e.md.`,
+        );
+      }
+      if (setting == null) continue;
+      hostnameSettings.push({
+        hostname: setting.hostname ?? hostname,
+        ...(setting.cert_id ? { certId: setting.cert_id } : {}),
+        enabled: setting.enabled ?? null,
+      });
+    }
+    const min = await this.call("GET", `/zones/${zone.id}/settings/min_tls_version`);
+    const setting = (min.json as { result?: { value?: string; editable?: boolean } } | undefined)
+      ?.result;
+    if (min.status !== 200 || typeof setting?.value !== "string") {
+      throw new Error(
+        `Cloudflare did not show the zone's minimum TLS version (HTTP ${min.status}); check the token's Zone Settings permission in docs/e2e.md.`,
+      );
+    }
+    return {
+      originCertificates: origin
+        .filter((cert) => cert.revoked_at == null)
+        .map((cert) => ({ id: cert.id, hostnames: cert.hostnames ?? [] })),
+      clientCertificates: clients
+        .filter((cert) => cert.status !== "pending_deletion" && cert.status !== "deleted")
+        .map((cert) => cert.id),
+      hostnameSettings,
+      minTls: { value: setting.value, editable: setting.editable === true },
+    };
+  }
+
+  /**
+   * The fallback after a destroy that did not finish (and the check after one that did): turns off
+   * the origin pull setting of each of the run's `hostnames` that is still on, deletes the client
+   * certificates that were not in the zone `before` the run, and revokes the origin certificates
+   * for the run's hostnames ({@link tlsLeft}), each logged. Returns what it removed, and what
+   * Cloudflare did not remove as problems.
+   */
+  async removeTlsOfRun(
+    zone: CloudflareZone,
+    before: ZoneTls,
+    hostnames: readonly string[],
+    log: (message: string) => void,
+  ): Promise<{ removed: string[]; problems: string[] }> {
+    const now = await this.zoneTls(zone, hostnames);
+    const left = tlsLeft(now, before, hostnames);
+    const aop = `/zones/${zone.id}/origin_tls_client_auth/hostnames`;
+    const removed: string[] = [];
+    const problems: string[] = [];
+    const remove = async (what: string, request: () => Promise<{ status: number }>) => {
+      if (await retryDelete(request)) {
+        removed.push(what);
+        log(`removed ${what}`);
+      } else {
+        problems.push(`${what}: Cloudflare did not remove it`);
+      }
+    };
+    for (const hostname of left.hostnameSettings) {
+      const certId = now.hostnameSettings.find((s) => s.hostname === hostname)?.certId;
+      await remove(`the origin pull setting of ${hostname}`, () =>
+        this.call("PUT", aop, { config: [{ hostname, cert_id: certId, enabled: null }] }),
+      );
+    }
+    for (const id of left.clientCertificates) {
+      await remove(`the client certificate ${id}`, () =>
+        this.call("DELETE", `${aop}/certificates/${id}`),
+      );
+    }
+    for (const id of left.originCertificates) {
+      await remove(`the origin certificate ${id}`, () =>
+        this.call("DELETE", `/certificates/${id}`),
+      );
+    }
+    return { removed, problems };
+  }
+
   /**
    * The account's Zero Trust organization and one-time PIN logins (none when Cloudflare answers
    * 404); any other answer than 200 throws.
@@ -1014,6 +1121,34 @@ export function httpRequest(
     req.on("error", reject);
     if (options.body !== undefined) req.write(options.body);
     req.end();
+  });
+}
+
+/**
+ * The certificate `hostname` serves on port 443 (its name resolved through Cloudflare's public
+ * resolver, the certificate checked as a browser would): its issuer's organisation and its serial
+ * number. Rejects on a network or certificate error and after `timeoutMs`.
+ */
+export function servedCertificate(
+  hostname: string,
+  timeoutMs = 15_000,
+): Promise<{ issuer: string; serial: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = tlsConnect(
+      { host: hostname, port: 443, servername: hostname, lookup: publicLookup },
+      () => {
+        const certificate = socket.getPeerCertificate();
+        socket.destroy();
+        if (!certificate.serialNumber) reject(new Error(`${hostname} served no certificate.`));
+        else
+          resolve({
+            issuer: String(certificate.issuer?.O ?? ""),
+            serial: certificate.serialNumber,
+          });
+      },
+    );
+    socket.setTimeout(timeoutMs, () => socket.destroy(new Error("The TLS handshake timed out.")));
+    socket.once("error", reject);
   });
 }
 

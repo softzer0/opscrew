@@ -27,6 +27,7 @@ import {
   waitFor,
   type ZeroTrust,
 } from "./cloud";
+import { isEncryptedPlan } from "./portainer-support";
 import {
   type AppRules,
   appRules,
@@ -39,7 +40,6 @@ import {
   fingerprintFromKeygen,
   generatesValues,
   ipv6PrefixForms,
-  jsonStrings,
   newRunId,
   removalApproval,
   runHostname,
@@ -50,6 +50,7 @@ import {
   userRules,
   type ZoneEntrypoints,
 } from "./support";
+import { generatedSecrets, type ZoneTls } from "./tls-support";
 
 export const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 /** The built CLI the live tests run (`pnpm --filter opscrew build`). */
@@ -144,13 +145,16 @@ export interface ServerSettings {
 /** The file a merged change adds or rewrites, so that its deploy builds a new image. */
 export const CHANGE_FILE = "opscrew-e2e-change.txt";
 
-/** Every string value of OpsCrew's generated values for the app (8 characters or more), if it kept any. */
+/**
+ * The secret values among OpsCrew's generated values for the app (`generatedSecrets`: 8 characters
+ * or more, and of origin TLS only the keys), if it kept any.
+ */
 export async function readGeneratedValues(
   paths: Pick<ReturnType<typeof resolveProjectPaths>, "projectHomeDir">,
 ): Promise<string[] | undefined> {
   const file = join(paths.projectHomeDir, "generated_values.json");
   if (!existsSync(file)) return undefined;
-  return jsonStrings(JSON.parse(await readFile(file, "utf8")));
+  return generatedSecrets(JSON.parse(await readFile(file, "utf8")));
 }
 
 /** What the leak search reads of one app: its git history, its pull requests and its audit log. */
@@ -194,6 +198,37 @@ export async function leakSourcesOf(app: LeakSourceApp, which = ""): Promise<Lea
   return sources;
 }
 
+/**
+ * The files OpsCrew wrote on this computer that feature 014's leak search reads too (SC-1406):
+ * each saved plan in `.opscrew/plans/` that is not encrypted, the reports
+ * (`opscrew/SECURITY_REPORT.md`, `opscrew/RUNBOOK.md`), the record `.opscrew/cloudflare.json`, the
+ * engine's state files in `.opscrew/tfstate/`, and the files in `extra` (a folder copy of the
+ * recovery copy). Search them for secrets only: plans and state name the server's address.
+ */
+export async function localLeakSources(
+  paths: ReturnType<typeof resolveProjectPaths>,
+  extra: readonly string[] = [],
+): Promise<LeakSource[]> {
+  const sources: LeakSource[] = [];
+  const read = async (file: string, where: string) => {
+    if (!existsSync(file)) return;
+    const text = await readFile(file, "utf8");
+    if (!isEncryptedPlan(text)) sources.push({ kind: "file", where, text });
+  };
+  for (const [dir, what] of [
+    [paths.files.plansDir, "the saved plan"],
+    [paths.files.tfstateDir, "the state file"],
+  ] as const) {
+    if (!existsSync(dir)) continue;
+    for (const file of await readdir(dir)) await read(join(dir, file), `${what} ${file}`);
+  }
+  await read(paths.files.securityReport, "opscrew/SECURITY_REPORT.md");
+  await read(paths.files.runbook, "opscrew/RUNBOOK.md");
+  await read(paths.files.cloudflareRecord, ".opscrew/cloudflare.json");
+  for (const file of extra) await read(file, `the file ${file}`);
+  return sources;
+}
+
 /** The settings both server live tests share; `serverTypeVariable` names the test's own one. */
 export function serverSettings(
   env: Record<string, string | undefined>,
@@ -224,7 +259,7 @@ export interface CliRun {
 
 /** One text the leak search reads; `where` names it in a leak. */
 export interface LeakSource {
-  kind: "commits" | "pull request" | "audit log";
+  kind: "commits" | "pull request" | "audit log" | "file";
   where: string;
   text: string;
 }
@@ -279,6 +314,10 @@ export class LiveRun {
   destroyed = false;
   /** The zone's two entrypoint rulesets before the run (and its seeded rules); the first app only. */
   sharedBefore: ZoneEntrypoints | undefined;
+  /** The zone's origin TLS before the run (feature 014), for the cleanup's leftover decision. */
+  tlsBefore: ZoneTls | undefined;
+  /** Flags every `provisionUntilDone` run passes (`--key-out <file>`, the recovery copy's key). */
+  provisionFlags: string[] = [];
 
   private stopped = false;
   private publicKey = "";
@@ -743,6 +782,7 @@ export class LiveRun {
     this.zone = zone;
     this.hostnames = hostnames(zone);
     this.cloudflareBefore = await this.cloudflare.appResources(zone, this.app(), this.hostnames);
+    this.tlsBefore = await this.cloudflare.zoneTls(zone, this.hostnames);
     if (this.parent === undefined) {
       this.sharedBefore = await this.cloudflare.sharedEntrypoints(zone);
       this.noteZeroTrust(await this.cloudflare.zeroTrust(zone.accountId));
@@ -909,8 +949,15 @@ export class LiveRun {
   ): Promise<string> {
     const all: string[] = [];
     let removed = false;
+    const flags = this.provisionFlags;
     for (let round = 1; round <= 4; round++) {
-      const planned = await this.opscrewOkWith(overrides, "provision", "--plan-only", "--yes");
+      const planned = await this.opscrewOkWith(
+        overrides,
+        "provision",
+        "--plan-only",
+        ...flags,
+        "--yes",
+      );
       all.push(planned.output);
       const removal = removalApproval(planned.output);
       if (removal !== undefined) {
@@ -925,7 +972,7 @@ export class LiveRun {
       let hashes = removal?.hashes ?? approveHashes(planned.output);
       if (hashes.length === 0) {
         this.log(`${label}: every plan is applied already; finishing provision`);
-        all.push((await this.opscrewOkWith(overrides, "provision", "--yes")).output);
+        all.push((await this.opscrewOkWith(overrides, "provision", ...flags, "--yes")).output);
         return all.join("\n");
       }
       const confirm = removal === undefined ? [] : ["--confirm", removal.app];
@@ -935,6 +982,7 @@ export class LiveRun {
           "provision",
           ...hashes.flatMap((hash) => ["--approve", hash]),
           ...confirm,
+          ...flags,
           "--yes",
         );
         all.push(applied.output);
@@ -1124,6 +1172,24 @@ export class LiveRun {
             cloudflareBefore,
           ),
         );
+        // Feature 014: the app's origin and client certificates and its origin pull settings. A
+        // finished destroy must have removed them; the cleanup removes what is left either way.
+        const { tlsBefore } = app;
+        if (tlsBefore === undefined) continue;
+        await attempt(`remove the origin TLS of ${appName}`, async () => {
+          const { removed, problems: kept } = await app.cloudflare.removeTlsOfRun(
+            zone,
+            tlsBefore,
+            app.hostnames,
+            app.log,
+          );
+          return [
+            ...kept,
+            ...(app.destroyed
+              ? removed.map((what) => `destroy left ${what} of ${appName}; the cleanup removed it`)
+              : []),
+          ];
+        });
       }
       const { zone, sharedBefore } = this;
       if (zone !== undefined && sharedBefore !== undefined) {

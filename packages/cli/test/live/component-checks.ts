@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type ProviderBucket, readServerAddresses, storageS3Client } from "@opscrew/agents";
+import type { CommandResult } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { appDir, EDGE_PROJECT, hostSysctl, serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
@@ -455,6 +456,8 @@ async function tokenId(cloudflare: Cloudflare, accountId: string): Promise<strin
 /** What the checks need from the deployed run of `live.test.ts`. */
 export interface DeployedRun extends BuilderRun {
   appName: string;
+  /** SSH as `deploy`, like `ssh`, resolving with the result instead of throwing on an exit code. */
+  sshRun: (host: string, command: string) => Promise<CommandResult>;
   opscrew: (...args: string[]) => Promise<{ exitCode: number; output: string }>;
   git: (...args: string[]) => Promise<string>;
   /** Every CLI output of the run so far (never printed). */
