@@ -388,7 +388,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
-- [ ] T1412 [P] The Docker pass, in `packages/cli/test/e2e/**`, `examples/**`
+- [X] T1412 [P] The Docker pass, in `packages/cli/test/e2e/**`, `examples/**`
   - Owns: those paths
   - Reads: quickstart.md "Local Docker pass"; research.md "Spike results"
   - Depends: T1409b
