@@ -495,7 +495,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/mcp-server --concurrency=2`, `pnpm lint`
   - Effort: xhigh (the hash-bound stack approval)
 
-- [ ] T1414 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`.
+- [X] T1414 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`.
 
 ## `vercel.json` routing (founder, 2026-10-21)
 
