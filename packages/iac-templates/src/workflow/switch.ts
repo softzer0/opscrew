@@ -9,6 +9,7 @@ import {
   EDGE_VERSION_KEY,
   type EdgeProxy,
   edgeProxy,
+  otherProxy,
 } from "../edge";
 import {
   ACME_WEBROOT,
@@ -305,11 +306,6 @@ function edgeFailed(plan: DeployPlan, additions: boolean): string {
   const { label, additions: file } = EDGE_PROXIES[edgeProxy(plan)];
   const yours = additions ? ` or your additions (${file})` : "";
   return `::error::OpsCrew's shared edge on the server (${label} and kamal-proxy, in ${EDGE_DIR}) did not start or did not accept this app's site (${siteFile(plan)})${yours}, so the new version was not started, the previous version keeps serving and ${label} keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
-}
-
-/** The other proxy of {@link EDGE_PROXIES}. */
-function otherProxy(proxy: EdgeProxy): EdgeProxy {
-  return proxy === "caddy" ? "nginx" : "caddy";
 }
 
 /**

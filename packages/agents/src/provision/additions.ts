@@ -20,6 +20,7 @@ import {
   type EdgeProxy,
   edgeProxy,
   IMAGES,
+  otherProxy,
   type RuntimeContext,
   renderEdgeCompose,
   renderEdgeSite,
@@ -33,10 +34,6 @@ import type { ProvisionServices } from "./types";
 
 /** How long the proxy's checker may take, pulling its pinned image included. */
 const CHECK_TIMEOUT_MS = 5 * 60_000;
-
-function otherProxy(proxy: EdgeProxy): EdgeProxy {
-  return proxy === "caddy" ? "nginx" : "caddy";
-}
 
 /** The edge's main configuration as its Compose file holds it (`configs.<name>.content`). */
 function mainConfig(compose: string, proxy: EdgeProxy): string {

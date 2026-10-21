@@ -196,6 +196,11 @@ export async function runLynis(
   const version = pins.lynis.version;
   const skip = (reason: string, remediation: string) =>
     skippedTool("lynis", pins, reason, remediation);
+  const unreachable = (result: CommandResult) =>
+    skip(
+      `OpsCrew could not reach the server over SSH to run Lynis (${lastLine(result)}).`,
+      "Check that the server is up and this computer can log in as `deploy`, then run `opscrew secure --deep` again.",
+    );
 
   let tarball: Uint8Array;
   try {
@@ -210,12 +215,7 @@ export async function runLynis(
   }
 
   const versions = await ssh.run(LYNIS_VERSIONS_COMMAND);
-  if (versions.exitCode !== 0) {
-    return skip(
-      `OpsCrew could not reach the server over SSH to run Lynis (${lastLine(versions)}).`,
-      "Check that the server is up and this computer can log in as `deploy`, then run `opscrew secure --deep` again.",
-    );
-  }
+  if (versions.exitCode !== 0) return unreachable(versions);
   // Fails closed: an older or unreadable version never runs Lynis with writable submounts.
   const [kernel, dockerVersion] = versions.stdout.split("\n").map((line) => line.trim());
   if (!atLeast(kernel, 5, 12) || !atLeast(dockerVersion, 25, 0)) {
@@ -229,12 +229,7 @@ export async function runLynis(
   const before = await ssh.run(
     `docker image inspect ${image} > /dev/null 2>&1 && echo yes || echo no`,
   );
-  if (before.exitCode !== 0) {
-    return skip(
-      `OpsCrew could not reach the server over SSH to run Lynis (${lastLine(before)}).`,
-      "Check that the server is up and this computer can log in as `deploy`, then run `opscrew secure --deep` again.",
-    );
-  }
+  if (before.exitCode !== 0) return unreachable(before);
   const present = before.stdout.trim() === "yes";
   const name = containerName("lynis");
   let run: CommandResult | undefined;

@@ -92,6 +92,11 @@ export function edgeProxy(plan: DeployPlan): EdgeProxy {
   return plan.target.provider === "portainer" ? "caddy" : plan.target.edge;
 }
 
+/** The other proxy of {@link EDGE_PROXIES}. */
+export function otherProxy(proxy: EdgeProxy): EdgeProxy {
+  return proxy === "caddy" ? "nginx" : "caddy";
+}
+
 /** The memory limits of the edge's containers, in MB. */
 export const CADDY_MEMORY_MB = 64;
 const KAMAL_PROXY_MEMORY_MB = 32;
