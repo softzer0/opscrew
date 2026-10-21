@@ -40,7 +40,31 @@ describe("JSON Schema export", () => {
                 },
               },
             },
+            {
+              properties: {
+                provider: { const: "localhost" },
+                mode: { const: "local-compose" },
+                ports: {
+                  properties: { https: { enum: [443, 8443] }, http: { enum: [80, 8080] } },
+                },
+                image: { enum: ["registry", "local-build"] },
+                edge,
+              },
+            },
           ],
+        },
+        environment: {
+          properties: {
+            name: { pattern: "^[a-z][a-z0-9-]{0,15}$" },
+            deploySource: {
+              oneOf: [
+                { properties: { from: { const: "main" } } },
+                { properties: { from: { const: "promote" }, source: { type: "string" } } },
+              ],
+            },
+            runner: { enum: ["github", "server", "local"], default: "github" },
+            secrets: { enum: ["environment", "prefixed"] },
+          },
         },
         portainer: { properties: { access: { enum: ["local", "subdomain"] } } },
       },

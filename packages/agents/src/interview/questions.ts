@@ -54,12 +54,16 @@ export function signingPublicLog(repositoryPrivate: boolean | undefined): string
     : `If your repository is private, ${log} once images are signed.`;
 }
 
-/** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
+/**
+ * The provider default: the previous answer, else the one inferred from tokens, else Hetzner. A
+ * previous `localhost` is no default: the question does not offer it yet.
+ */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): DeployProvider {
-  return previous?.provider ?? context.inferredProvider ?? "hetzner";
+  const answered = previous?.provider === "localhost" ? undefined : previous?.provider;
+  return answered ?? context.inferredProvider ?? "hetzner";
 }
 
 /**

@@ -52,7 +52,18 @@ export type ApprovalKind =
    * Applying a shared Cloudflare plan (OpsCrew's rules in a zone, the Zero Trust organization and
    * one-time-PIN identity provider); bound to the plan's SHA-256 hash, never granted by `--yes`.
    */
-  | "cloudflare-apply";
+  | "cloudflare-apply"
+  /**
+   * Deploying the image another environment runs to the next one (a promotion, or a rollback);
+   * bound to the SHA-256 hash of the target environment's plan hash, the image digest and both
+   * environments, never granted by `--yes`.
+   */
+  | "promote"
+  /**
+   * Changing the repository's GitHub settings: creating or deleting a GitHub environment, its
+   * protection rules, the approval policy for outside contributors' workflow runs.
+   */
+  | "github-settings";
 
 export interface PolicyResult {
   policyId: string;
@@ -72,8 +83,8 @@ export interface ApprovalRequest {
   /** Multi-line summary shown before asking (diff summary, resources, cost). Redacted. */
   details: string;
   /**
-   * SHA-256 hex of the plan file. Required for `iac-apply`, `host-apply`, `stack-apply` and
-   * `cloudflare-apply`.
+   * SHA-256 hex of the plan file. Required for `iac-apply`, `host-apply`, `stack-apply`,
+   * `cloudflare-apply` and `promote` (the promotion's own hash).
    */
   planHash?: string;
   /** True when the change deletes or replaces anything. Requires `confirmPhrase`. */

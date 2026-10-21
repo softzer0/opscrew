@@ -19,6 +19,7 @@ import {
   deepDomainProblem,
   FRAMEWORK_ENV,
   hostListKind,
+  localhostNotSupported,
   STORAGE_VARIABLES,
   serviceAppVariables,
   serviceUrlKind,
@@ -94,6 +95,8 @@ function targetFor(
       access,
     } as const;
   }
+  // Design offers no option for the localhost target yet.
+  if (target.provider === "localhost") throw localhostNotSupported("Designing an app");
   if (target.provider === "portainer") {
     if (portainer === undefined) {
       throw new Error("A design for an existing Portainer needs the interview's answers.");

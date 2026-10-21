@@ -4,7 +4,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
-import { portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
+import { localhostNotSupported, portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import {
   type AppContainer,
@@ -50,6 +50,9 @@ export async function readServerContainers(
   const services = options.services ?? {};
   if (plan.target.provider === "portainer") {
     throw new Error("A Portainer deployment has no server for OpsCrew to log in to.");
+  }
+  if (plan.target.provider === "localhost") {
+    throw localhostNotSupported("Reading the app's containers");
   }
   if (plan.target.provider === "own") {
     const { facts } = await connectAndInspectOwnServer(deps, {

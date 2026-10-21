@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
 import path from "node:path";
+import { OpsCrewError } from "./errors";
 import { sha256Hex } from "./values";
 
 /** Absolute paths of every file and directory OpsCrew reads or writes for one project. */
@@ -32,6 +33,8 @@ export interface ProjectFiles {
 export interface ProjectPaths {
   /** Absolute project root. */
   root: string;
+  /** The environment these paths belong to: `prod` unless another one was asked for. */
+  environment: string;
   /** Stable id: `<slug(basename)>-<first 12 hex of sha256(normalised root)>`. */
   projectId: string;
   /** `<root>/opscrew` — committed artefacts. */
@@ -52,13 +55,26 @@ export interface ResolveProjectPathsOptions {
   env?: Record<string, string | undefined>;
   /** User home directory. Defaults to `os.homedir()`. */
   homedir?: string;
+  /** The app's environment. Absent or `prod`: today's paths. */
+  environment?: string;
 }
 
-/** Resolves all OpsCrew paths for the project at `root` (relative roots resolve against cwd). */
+/**
+ * Resolves all OpsCrew paths for the project at `root` (relative roots resolve against cwd).
+ * Throws `INVALID_INPUT` for an environment other than prod, which has no paths yet.
+ */
 export function resolveProjectPaths(
   root: string,
   options: ResolveProjectPathsOptions = {},
 ): ProjectPaths {
+  const environment = options.environment ?? "prod";
+  if (environment !== "prod") {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The environment "${environment}" is not supported yet: OpsCrew deploys only prod.`,
+      { hint: "Leave out the environment to use prod." },
+    );
+  }
   const absRoot = path.resolve(root);
   const env = options.env ?? process.env;
   const override = env.OPSCREW_HOME;
@@ -73,6 +89,7 @@ export function resolveProjectPaths(
 
   return {
     root: absRoot,
+    environment,
     projectId,
     artefactsDir,
     stateDir,

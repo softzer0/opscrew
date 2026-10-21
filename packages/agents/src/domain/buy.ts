@@ -2,6 +2,7 @@ import type { Money, Registrar, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError, plural } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
+import { localhostNotSupported } from "../shared/vps-target";
 import { cloudflareFlow, registrarRead } from "./cloudflare";
 import {
   auditDomain,
@@ -91,6 +92,9 @@ export async function buyDomain(
   const services = resolveDomainServices(deps, options.services);
   // Read (and validate) the project files before anything costs money.
   const files = await readProjectFiles(deps);
+  if (files.plan?.target.provider === "localhost") {
+    throw localhostNotSupported("`opscrew domain buy`");
+  }
   if (files.plan !== undefined) requireNoMoveInProgress(files.plan);
 
   const recordFile = purchaseRecordPath(deps.paths);

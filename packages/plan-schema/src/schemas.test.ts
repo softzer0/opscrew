@@ -20,6 +20,7 @@ import {
   type DesignOption,
   DesignOptionListSchema,
   DesignOptionSchema,
+  type LocalhostDeployTarget,
   likelyCloudflareZone,
   type Money as MoneyExport,
   type MoneySchema,
@@ -51,9 +52,13 @@ function issuesOf(kind: ArtifactKind, text: string) {
   throw new Error("expected the fixture to be rejected");
 }
 
-/** The target as a Hetzner/DigitalOcean target; fails the test for an own server or Portainer. */
+/** The target as a Hetzner/DigitalOcean target; fails the test for any other target. */
 function cloud(target: DeployTarget): CloudDeployTarget {
-  if (target.provider === "own" || target.provider === "portainer") {
+  if (
+    target.provider === "own" ||
+    target.provider === "portainer" ||
+    target.provider === "localhost"
+  ) {
     throw new Error("expected a Hetzner or DigitalOcean target");
   }
   return target;
@@ -1181,7 +1186,13 @@ describe("DeployPlan target on an existing Portainer", () => {
     expect(RequirementsSchema.parse({ ...noRegion, provider: "portainer" }).provider).toBe(
       "portainer",
     );
-    expect(DeployProviderSchema.options).toEqual(["hetzner", "digitalocean", "own", "portainer"]);
+    expect(DeployProviderSchema.options).toEqual([
+      "hetzner",
+      "digitalocean",
+      "own",
+      "portainer",
+      "localhost",
+    ]);
     expect(DesignOptionSchema.shape.target.shape.provider.options).toEqual(
       DeployProviderSchema.options,
     );
@@ -1189,6 +1200,321 @@ describe("DeployPlan target on an existing Portainer", () => {
     expect(VpsProviderSchema.options).not.toContain("portainer");
     expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean"]);
     expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean"]);
+  });
+});
+
+describe("DeployPlan target on the localhost target", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  const target = (overrides: Record<string, unknown> = {}) => ({
+    provider: "localhost",
+    mode: "local-compose",
+    arch: "arm64",
+    ports: { https: 443, http: 80 },
+    image: "local-build",
+    ...overrides,
+  });
+  const noDns = { provider: "none", proxied: false, www: false } as const;
+  const noCost = {
+    monthly: { amount: 0, currency: "EUR" },
+    breakdown: [],
+    pricesIncludeVat: false,
+    source: "static",
+    asOf: "2026-10-21T00:00:00.000Z",
+  } as const;
+  async function localPlan(overrides: Record<string, unknown> = {}) {
+    const { url: _url, ...deployment } = (await validPlan()).deployment;
+    return {
+      ...(await validPlan()),
+      target: target(),
+      dns: noDns,
+      cost: noCost,
+      deployment,
+      ...overrides,
+    };
+  }
+
+  it("records the architecture, ports, image source and edge, and nothing about a server", async () => {
+    const parsed = DeployPlanSchema.parse(await localPlan());
+    expect(parsed.target).toEqual({ ...target(), edge: "caddy" });
+    expectTypeOf<LocalhostDeployTarget>().toEqualTypeOf<{
+      provider: "localhost";
+      mode: "local-compose";
+      arch: "amd64" | "arm64";
+      ports: { https: 443 | 8443; http: 80 | 8080 };
+      image: "registry" | "local-build";
+      edge: "caddy" | "nginx";
+    }>();
+    for (const variant of [
+      target({ arch: "amd64", image: "registry", edge: "nginx" }),
+      target({ ports: { https: 8443, http: 8080 } }),
+      target({ ports: { https: 443, http: 8080 }, edge: "caddy" }),
+    ]) {
+      const plan = DeployPlanSchema.parse(await localPlan({ target: variant }));
+      expect(plan.target).toEqual({ edge: "caddy", ...variant });
+    }
+  });
+
+  it("round-trips through plan.yaml unchanged", async () => {
+    const plan = DeployPlanSchema.parse(await localPlan());
+    const text = serializeArtifact("plan", plan);
+    expect(text).toContain("provider: localhost");
+    expect(parseArtifact("plan", text, "plan.yaml")).toEqual(plan);
+  });
+
+  it("rejects server fields, other ports, unknown modes and bad values", async () => {
+    for (const extra of [
+      { location: "nbg1" },
+      { serverType: "cpx22" },
+      { backups: true },
+      { access: "public" },
+      { environmentId: 3 },
+    ]) {
+      const result = DeployPlanSchema.safeParse(await localPlan({ target: target(extra) }));
+      expect(pathsOf(result), JSON.stringify(extra)).toEqual(["target"]);
+    }
+    for (const [field, value, path] of [
+      ["mode", "vps-compose", "target.mode"],
+      ["arch", "x86", "target.arch"],
+      ["arch", undefined, "target.arch"],
+      ["image", "ubuntu-24.04", "target.image"],
+      ["image", undefined, "target.image"],
+      ["edge", "traefik", "target.edge"],
+      ["ports", { https: 8444, http: 80 }, "target.ports.https"],
+      ["ports", { https: 443, http: 8081 }, "target.ports.http"],
+      ["ports", { https: 443 }, "target.ports.http"],
+      ["ports", undefined, "target.ports"],
+    ] as const) {
+      const result = DeployPlanSchema.safeParse(
+        await localPlan({ target: target({ [field]: value }) }),
+      );
+      expect(pathsOf(result), `${field} ${JSON.stringify(value)}`).toEqual([path]);
+    }
+  });
+
+  it("has no DNS record: dns.provider is none", async () => {
+    const dns = { provider: "cloudflare", domain: "app.example.com", zone: "example.com" };
+    const result = DeployPlanSchema.safeParse(await localPlan({ dns }));
+    expect(pathsOf(result)).toEqual(["dns.provider"]);
+    expect(result.error?.issues[0]?.message).toBe(
+      'must be "none" with the localhost target: the app is served at <app>.localhost on this computer, with no DNS record',
+    );
+  });
+
+  it("refuses a move to or from the localhost target", async () => {
+    const plan = await validPlan();
+    const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };
+    const to = DeployPlanSchema.safeParse(await localPlan({ retarget: move }));
+    expect(pathsOf(to)).toEqual(["retarget"]);
+    expect(to.error?.issues[0]?.message).toBe(
+      "moving an app to or from the localhost target is not available",
+    );
+    const fromLocal = { ...move, from: { target: target() } };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromLocal }))).toContain(
+      "retarget.from.target.provider",
+    );
+  });
+
+  it("is a deploy provider, not a server provider, and needs no region", async () => {
+    const requirements = parseArtifact(
+      "requirements",
+      await fixture("requirements.yaml"),
+      "fixture",
+    );
+    const { region: _region, domain: _domain, ...noRegion } = requirements;
+    const local = { ...noRegion, provider: "localhost", dnsProvider: "none" };
+    expect(RequirementsSchema.parse(local).provider).toBe("localhost");
+    expect(DeployProviderSchema.options).toContain("localhost");
+    expect(VpsProviderSchema.options).not.toContain("localhost");
+    expect(CloudProviderSchema.options).not.toContain("localhost");
+  });
+});
+
+describe("DeployPlan environment", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  async function staging(environment: Record<string, unknown> = {}) {
+    const plan = await validPlan();
+    return {
+      ...plan,
+      app: { ...plan.app, name: "acme-web-staging" },
+      environment: { name: "staging", ...environment },
+    };
+  }
+  const local = {
+    provider: "localhost",
+    mode: "local-compose",
+    arch: "amd64",
+    ports: { https: 443, http: 80 },
+    image: "registry",
+  } as const;
+  const portainer = {
+    provider: "portainer",
+    mode: "portainer-stack",
+    environmentId: 3,
+    arch: "amd64",
+    redeploy: "updater",
+    web: { mode: "proxy", port: 8080 },
+  } as const;
+  const own = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" } as const;
+  const noDns = { provider: "none", proxied: false, www: false } as const;
+  function issue(result: ReturnType<typeof DeployPlanSchema.safeParse>) {
+    expect(result.success).toBe(false);
+    return result.error?.issues.map((i) => ({ path: i.path.join("."), message: i.message }));
+  }
+
+  it("is absent for prod: a plan without it parses and serialises unchanged", async () => {
+    const text = await fixture("plan.yaml");
+    const plan = parseArtifact("plan", text, "fixture");
+    expect(plan.environment).toBeUndefined();
+    expect(serializeArtifact("plan", plan)).not.toContain("environment:");
+  });
+
+  it("names the environment, its deploy source, runner and secret store, and round-trips", async () => {
+    const value = await staging({
+      deploySource: { from: "promote", source: "dev" },
+      runner: "server",
+      secrets: "prefixed",
+    });
+    const plan = DeployPlanSchema.parse(value);
+    expect(plan.environment).toEqual({
+      name: "staging",
+      deploySource: { from: "promote", source: "dev" },
+      runner: "server",
+      secrets: "prefixed",
+    });
+    const text = serializeArtifact("plan", plan);
+    expect(text).toContain("environment:\n  name: staging\n");
+    expect(parseArtifact("plan", text, "plan.yaml")).toEqual(plan);
+  });
+
+  it("follows main on GitHub's machines by default, with the secret store left to provision", async () => {
+    expect(DeployPlanSchema.parse(await staging()).environment).toEqual({
+      name: "staging",
+      deploySource: { from: "main" },
+      runner: "github",
+    });
+  });
+
+  it("is prod without a name: prod's own deploy source and runner", async () => {
+    const plan = await validPlan();
+    const environment = {
+      deploySource: { from: "promote", source: "staging" },
+      runner: "server",
+      secrets: "environment",
+    };
+    expect(DeployPlanSchema.parse({ ...plan, environment }).environment).toEqual(environment);
+    const self = { deploySource: { from: "promote", source: "prod" } };
+    expect(issue(DeployPlanSchema.safeParse({ ...plan, environment: self }))).toEqual([
+      {
+        path: "environment.deploySource.source",
+        message: 'must name another environment: "prod" cannot be promoted from itself',
+      },
+    ]);
+  });
+
+  it("accepts names of lower-case letters, digits and hyphens, starting with a letter, up to 16", async () => {
+    const plan = await validPlan();
+    for (const name of ["dev", "staging", "qa-2", "a", "e".repeat(16)]) {
+      const app = { ...plan.app, name: `acme-${name}` };
+      const parsed = DeployPlanSchema.parse({ ...plan, app, environment: { name } });
+      expect(parsed.environment?.name, name).toBe(name);
+    }
+    const message = "must be 1-16 lower-case letters, digits or hyphens and start with a letter";
+    for (const name of ["", "Staging", "2dev", "-dev", "dev_1", "dev.1", "e".repeat(17)]) {
+      const app = { ...plan.app, name: `acme-${name}` };
+      const result = DeployPlanSchema.safeParse({ ...plan, app, environment: { name } });
+      expect(issue(result), name).toContainEqual({ path: "environment.name", message });
+    }
+  });
+
+  it("never names prod: prod is the plan without a name", async () => {
+    const plan = await validPlan();
+    const app = { ...plan.app, name: "acme-web-prod" };
+    expect(
+      issue(DeployPlanSchema.safeParse({ ...plan, app, environment: { name: "prod" } })),
+    ).toEqual([
+      {
+        path: "environment.name",
+        message:
+          'must not be "prod": the prod environment is the plan without a name (opscrew/plan.yaml)',
+      },
+    ]);
+  });
+
+  it("is never promoted from itself, and only from a valid environment name", async () => {
+    const self = await staging({ deploySource: { from: "promote", source: "staging" } });
+    expect(issue(DeployPlanSchema.safeParse(self))).toEqual([
+      {
+        path: "environment.deploySource.source",
+        message: 'must name another environment: "staging" cannot be promoted from itself',
+      },
+    ]);
+    for (const deploySource of [
+      { from: "promote", source: "Prod" },
+      { from: "promote" },
+      { from: "main", source: "dev" },
+      { from: "tag" },
+    ]) {
+      const result = DeployPlanSchema.safeParse(await staging({ deploySource }));
+      expect(pathsOf(result)[0], JSON.stringify(deploySource)).toMatch(
+        /^environment\.deploySource/,
+      );
+    }
+  });
+
+  it('runs the deploy job on the server only on a cloud or own server ("server")', async () => {
+    const message =
+      'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own); use "github" here';
+    const plan = await staging({ runner: "server" });
+    for (const target of [plan.target, own]) {
+      expect(DeployPlanSchema.safeParse({ ...plan, target }).success, target.provider).toBe(true);
+    }
+    for (const target of [portainer, local]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, target, dns: noDns });
+      expect(issue(result), target.provider).toEqual([{ path: "environment.runner", message }]);
+    }
+  });
+
+  it('runs the deploy job on this computer only with the localhost target ("local")', async () => {
+    const message =
+      'can be "local" only with the localhost target (the runner deploys to this computer\'s Docker); use "github" or "server" here';
+    const plan = await staging({ runner: "local" });
+    expect(DeployPlanSchema.safeParse({ ...plan, target: local, dns: noDns }).success).toBe(true);
+    for (const target of [plan.target, own, portainer]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, target, dns: noDns });
+      expect(issue(result), target.provider).toEqual([{ path: "environment.runner", message }]);
+    }
+    const github = await staging({ runner: "github" });
+    for (const target of [github.target, own, portainer, local]) {
+      const result = DeployPlanSchema.safeParse({ ...github, target, dns: noDns });
+      expect(result.success, target.provider).toBe(true);
+    }
+  });
+
+  it("names the app <app>-<env> outside prod", async () => {
+    const plan = await staging();
+    const app = { ...plan.app, name: "acme-web" };
+    expect(issue(DeployPlanSchema.safeParse({ ...plan, app }))).toEqual([
+      {
+        path: "app.name",
+        message:
+          "must end with \"-staging\" in the staging environment's plan: the app's name, then the environment's",
+      },
+    ]);
+  });
+
+  it("rejects unknown fields and values", async () => {
+    for (const [environment, path] of [
+      [{ runner: "self-hosted" }, "environment.runner"],
+      [{ secrets: "repository" }, "environment.secrets"],
+      [{ order: 1 }, "environment"],
+    ] as const) {
+      const result = DeployPlanSchema.safeParse(await staging(environment));
+      expect(pathsOf(result), JSON.stringify(environment)).toEqual([path]);
+    }
   });
 });
 

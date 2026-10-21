@@ -99,6 +99,26 @@ describe("resolveProjectPaths", () => {
     });
     expect(p.homeDir).toBe(path.join(tmp, ".opscrew"));
   });
+
+  it("resolves prod, with or without its name, to today's paths", () => {
+    const root = path.join(tmp, "app");
+    const today = resolveProjectPaths(root, { env: {}, homedir: tmp });
+    expect(today.environment).toBe("prod");
+    expect(resolveProjectPaths(root, { env: {}, homedir: tmp, environment: "prod" })).toEqual(
+      today,
+    );
+  });
+
+  it("refuses any other environment until environments have paths of their own", () => {
+    const resolve = () =>
+      resolveProjectPaths(path.join(tmp, "app"), { env: {}, homedir: tmp, environment: "staging" });
+    expect(resolve).toThrow(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message: 'The environment "staging" is not supported yet: OpsCrew deploys only prod.',
+      }),
+    );
+  });
 });
 
 describe("projectIdFor", () => {

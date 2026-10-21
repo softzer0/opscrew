@@ -5,6 +5,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { pathWord, shellWord } from "../shared/apply-command";
+import { localhostNotSupported } from "../shared/vps-target";
 import {
   auditDomain,
   errorText,
@@ -194,6 +195,9 @@ export async function connectDomain(
   requireCloudflareToken(deps, `OpsCrew moves the DNS of ${domain} into a Cloudflare zone`);
   const services = resolveDomainServices(deps, options.services);
   const files = await readProjectFiles(deps);
+  if (files.plan?.target.provider === "localhost") {
+    throw localhostNotSupported("`opscrew domain connect`");
+  }
   if (files.plan !== undefined) requireNoMoveInProgress(files.plan);
   const stateFile = connectStatePath(deps.paths);
   const state = await readConnectState(stateFile);

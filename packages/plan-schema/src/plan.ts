@@ -106,14 +106,70 @@ export const PortainerTargetSchema = z.strictObject({
 });
 
 /**
- * Where the app runs: a server OpsCrew creates (Hetzner, DigitalOcean), the user's own server, or
- * the user's existing Portainer.
+ * The user's own computer: the app's production stack runs in its Docker, served at
+ * `https://<app>.localhost` on 127.0.0.1 only. It has no location, server type, price or DNS
+ * record (`dns.provider` is `none`).
+ */
+export const LocalhostTargetSchema = z.strictObject({
+  provider: z.literal("localhost"),
+  mode: z.literal("local-compose"),
+  /** The computer's CPU architecture, read at design. */
+  arch: z.enum(["amd64", "arm64"]),
+  /** The ports the edge listens on: 443 and 80 when free, else 8443 and 8080. */
+  ports: z.strictObject({ https: z.literal([443, 8443]), http: z.literal([80, 8080]) }),
+  /** `registry`: the production image. `local-build`: built on the computer for its architecture. */
+  image: z.enum(["registry", "local-build"]),
+  edge: EdgeSchema,
+});
+
+/**
+ * Where the app runs: a server OpsCrew creates (Hetzner, DigitalOcean), the user's own server, the
+ * user's existing Portainer, or the user's own computer.
  */
 export const DeployTargetSchema = z.discriminatedUnion("provider", [
   CloudTargetSchema,
   OwnTargetSchema,
   PortainerTargetSchema,
+  LocalhostTargetSchema,
 ]);
+
+/** An environment's name: lower-case letters, digits and hyphens, starting with a letter. */
+export const EnvironmentNameSchema = z.string().regex(/^[a-z][a-z0-9-]{0,15}$/, {
+  message: "must be 1-16 lower-case letters, digits or hyphens and start with a letter",
+});
+
+/**
+ * `plan.environment`: which of the app's environments this plan deploys, and how. Absent, or
+ * without a `name`, the plan is the app's `prod` environment (`opscrew/plan.yaml`); every other
+ * environment's plan names it (`opscrew/environments/<name>/plan.yaml`).
+ */
+export const EnvironmentSchema = z.strictObject({
+  /** Absent for prod, which is never written by name. */
+  name: EnvironmentNameSchema.refine((name) => name !== "prod", {
+    message:
+      'must not be "prod": the prod environment is the plan without a name (opscrew/plan.yaml)',
+  }).optional(),
+  /**
+   * `main`: built and deployed on each push to `cicd.branch`. `promote`: deployed only by
+   * `opscrew promote`, with the image the `source` environment runs.
+   */
+  deploySource: z
+    .discriminatedUnion("from", [
+      z.strictObject({ from: z.literal("main") }),
+      z.strictObject({ from: z.literal("promote"), source: EnvironmentNameSchema }),
+    ])
+    .default(() => ({ from: "main" as const })),
+  /**
+   * Where the deploy job runs: `github` (GitHub's machines), `server` (a runner OpsCrew installs on
+   * the server) or `local` (a runner on the user's computer, for the localhost target).
+   */
+  runner: z.enum(["github", "server", "local"]).default("github"),
+  /**
+   * Where the deploy secrets live, written by provision after it checked what the repository's
+   * GitHub plan supports: a GitHub environment of this name, or repository secrets prefixed with it.
+   */
+  secrets: z.enum(["environment", "prefixed"]).optional(),
+});
 
 /**
  * A pinned release version such as `2.33.1` (optionally with a suffix such as `2.33.1-alpine`);
@@ -376,6 +432,72 @@ function checkPortainerTarget(
   }
 }
 
+/**
+ * The rules of the localhost target: the app is served at `<app>.localhost` on the computer itself,
+ * with no DNS record, and it never moves to or from a server.
+ */
+function checkLocalhostTarget(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  if (plan.dns.provider !== "none") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "provider"],
+      message:
+        'must be "none" with the localhost target: the app is served at <app>.localhost on this computer, with no DNS record',
+    });
+  }
+  if (plan.retarget !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["retarget"],
+      message: "moving an app to or from the localhost target is not available",
+    });
+  }
+}
+
+/**
+ * The rules of `plan.environment`: an environment is never promoted from itself, its runner fits
+ * its target, and a named environment's app name ends with `-<name>`.
+ */
+function checkEnvironment(
+  environment: NonNullable<DeployPlanFields["environment"]>,
+  plan: DeployPlanFields,
+  ctx: z.RefinementCtx,
+): void {
+  const name = environment.name ?? "prod";
+  const { deploySource, runner } = environment;
+  if (deploySource.from === "promote" && deploySource.source === name) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["environment", "deploySource", "source"],
+      message: `must name another environment: "${name}" cannot be promoted from itself`,
+    });
+  }
+  const { provider } = plan.target;
+  if (runner === "server" && (provider === "portainer" || provider === "localhost")) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["environment", "runner"],
+      message:
+        'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own); use "github" here',
+    });
+  }
+  if (runner === "local" && provider !== "localhost") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["environment", "runner"],
+      message:
+        'can be "local" only with the localhost target (the runner deploys to this computer\'s Docker); use "github" or "server" here',
+    });
+  }
+  if (environment.name !== undefined && !plan.app.name.endsWith(`-${environment.name}`)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["app", "name"],
+      message: `must end with "-${environment.name}" in the ${environment.name} environment's plan: the app's name, then the environment's`,
+    });
+  }
+}
+
 /** True when `host` (a URL's hostname) is an IPv4 or bracketed IPv6 address, not a name. */
 function isIpHost(host: string): boolean {
   return (
@@ -489,6 +611,8 @@ const DeployPlanFieldsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
+  /** The environment this plan deploys; absent for prod. */
+  environment: EnvironmentSchema.optional(),
   app: z.strictObject({
     /** DNS-label safe; used for resource names. */
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
@@ -706,6 +830,8 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     });
   }
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
+  if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
+  if (plan.environment !== undefined) checkEnvironment(plan.environment, plan, ctx);
   checkPortainerSubdomain(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
   checkComponents(plan, ctx);
@@ -781,9 +907,13 @@ function withImage(target: z.output<typeof CloudTargetSchema>) {
   return { ...target, image: target.image ?? DEFAULT_IMAGES[target.provider] };
 }
 
-/** The target with a cloud target's image filled in; an own-server or Portainer target as it is. */
+/** The target with a cloud target's image filled in; any other target as it is. */
 function withTargetDefaults(target: z.output<typeof DeployTargetSchema>) {
-  return target.provider === "own" || target.provider === "portainer" ? target : withImage(target);
+  return target.provider === "own" ||
+    target.provider === "portainer" ||
+    target.provider === "localhost"
+    ? target
+    : withImage(target);
 }
 
 /**
@@ -820,6 +950,8 @@ export type CloudDeployTarget = Extract<DeployTarget, { provider: CloudProvider 
 export type OwnDeployTarget = Extract<DeployTarget, { provider: "own" }>;
 /** A Portainer the user already runs. */
 export type PortainerDeployTarget = Extract<DeployTarget, { provider: "portainer" }>;
+/** The user's own computer. */
+export type LocalhostDeployTarget = Extract<DeployTarget, { provider: "localhost" }>;
 /**
  * The plain refusal (code `PHASE_PRECONDITION`) of `opscrew retarget` for a Portainer target,
  * which never moves to or from another target. Callers throw it as an `OpsCrewError`.

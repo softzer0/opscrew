@@ -479,29 +479,35 @@ function checkSsh(which: (name: string) => string | undefined): CheckResult {
 /** Which provider's token the provider check looks at, and why. */
 interface ProviderChoice {
   /** Undefined before a provider is chosen when zero or both tokens are set. */
-  provider?: VpsProviderId | "portainer";
+  provider?: VpsProviderId | "portainer" | "localhost";
   /** The plan, the interview answers, or the only token that is set. */
   source: "plan" | "requirements" | "token" | "none";
 }
 
 /**
  * The planned target, else the requested one, else the provider whose token alone is set. A
- * Portainer target (`portainer`) is recognised in the plan and in the answers.
+ * Portainer target (`portainer`) and the localhost target (`localhost`) are recognised in the
+ * plan and in the answers.
  */
 function providerChoice(
   { plan, requirements }: ProjectArtifacts,
   env: Record<string, string | undefined>,
 ): ProviderChoice {
   if (plan !== undefined) {
+    const { provider } = plan.target;
     return {
-      provider: plan.target.provider === "portainer" ? "portainer" : planProvider(plan),
+      provider:
+        provider === "portainer" || provider === "localhost" ? provider : planProvider(plan),
       source: "plan",
     };
   }
   if (requirements !== undefined) {
+    const { provider } = requirements;
     return {
       provider:
-        requirements.provider === "portainer" ? "portainer" : requestedProvider(requirements),
+        provider === "portainer" || provider === "localhost"
+          ? provider
+          : requestedProvider(requirements),
       source: "requirements",
     };
   }
@@ -516,6 +522,7 @@ function providerChoice(
 function providerTitle(choice: ProviderChoice): string {
   if (choice.provider === "own") return "Your own server (SSH login)";
   if (choice.provider === "portainer") return "Your Portainer";
+  if (choice.provider === "localhost") return "This computer";
   return choice.provider
     ? `${providerProfile(choice.provider).displayName} token`
     : "Cloud provider token";
@@ -524,6 +531,7 @@ function providerTitle(choice: ProviderChoice): string {
 /** What the provider check's timeout message calls the service. */
 function providerService(choice: ProviderChoice): string {
   if (choice.provider === "portainer") return "Your Portainer";
+  if (choice.provider === "localhost") return "This computer";
   return choice.provider ? providerProfile(choice.provider).displayName : "The cloud provider";
 }
 
@@ -623,6 +631,12 @@ async function checkProviderToken(
     };
   }
   if (provider === "own") return checkOwnServerLogin(deps, choice);
+  if (provider === "localhost") {
+    return {
+      status: "skip",
+      message: "Not needed: the app runs on this computer (the localhost target), with no token.",
+    };
+  }
   if (provider === "portainer") {
     return checkPortainer(
       deps,

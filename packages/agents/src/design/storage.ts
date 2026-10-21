@@ -107,7 +107,7 @@ export function storageOffers(
   expected: ObjectStorage["expected"],
 ): StorageOffer[] {
   const provider: DeployProvider = requirements.provider ?? "hetzner";
-  const cloud = provider !== "own" && provider !== "portainer";
+  const cloud = provider === "hetzner" || provider === "digitalocean";
   const offers: Omit<StorageOffer, "price">[] = [
     { provider: "garage", region: "garage", ...(cloud ? { optIn: true as const } : {}) },
   ];

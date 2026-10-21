@@ -9,6 +9,7 @@ import { checkProvider, deploySecretNames, providerBucket } from "../provision";
 import {
   describeChanges,
   hasDeployment,
+  localhostNotSupported,
   planStop,
   refusalReason,
   serverAddress,
@@ -479,6 +480,7 @@ export async function runDestroy(
   const plan = await readArtifact("plan", deps.paths.files.plan);
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
+  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew destroy`");
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
   if (plan.target.provider === "portainer") return destroyPortainer(deps, plan, options);
   const name = plan.app.name;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ComponentNameSchema, StorageSchema } from "./components";
 import {
+  CloudProviderSchema,
   CommandLineSchema,
   CurrencySchema,
   DataCriticalitySchema,
@@ -27,9 +28,9 @@ export const RequirementsSchema = z
     /** Where to run the app. */
     provider: DeployProviderSchema,
     /**
-     * Where most users are; picks the provider's location. Required unless `provider` is `own` or
-     * `portainer` (a server the user owns or runs Portainer on stays where it is, so a region given
-     * for it is ignored).
+     * Where most users are; picks the provider's location. Required unless `provider` is `own`,
+     * `portainer` or `localhost` (a server the user owns or runs Portainer on, and the user's own
+     * computer, stay where they are, so a region given for them is ignored).
      */
     region: RegionSchema.optional(),
     uptime: UptimeSchema,
@@ -72,7 +73,7 @@ export const RequirementsSchema = z
     notes: z.string().optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.provider !== "own" && value.provider !== "portainer" && value.region === undefined) {
+    if (CloudProviderSchema.safeParse(value.provider).success && value.region === undefined) {
       ctx.addIssue({
         code: "custom",
         path: ["region"],

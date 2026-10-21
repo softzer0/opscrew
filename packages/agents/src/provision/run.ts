@@ -20,6 +20,7 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  localhostNotSupported,
   type PlanApproval,
   readyNewServer,
   recordOwnServer,
@@ -250,9 +251,10 @@ async function provisionFlow(
   const services = options.services ?? {};
   const root = deps.paths.root;
   let plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
+  const command = `opscrew ${phase}`;
+  if (plan.target.provider === "localhost") throw localhostNotSupported(`\`${command}\``);
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
-  const command = `opscrew ${phase}`;
 
   // 1–2. Preconditions and credentials. A recovery copy another computer updated stops the run
   // before any plan or change (FR-1417).

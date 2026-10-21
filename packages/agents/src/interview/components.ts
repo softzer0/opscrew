@@ -241,8 +241,13 @@ export async function hostedAdditions(
   const choices = hostedChoices(facts);
   if (choices.length === 0) return additions;
   const { provider } = requirements;
-  if (provider === "own" || provider === "portainer") {
-    const where = provider === "portainer" ? "your Portainer host" : "your server";
+  if (provider === "own" || provider === "portainer" || provider === "localhost") {
+    const where =
+      provider === "portainer"
+        ? "your Portainer host"
+        : provider === "localhost"
+          ? "this computer"
+          : "your server";
     for (const choice of choices) additions.set(choice.kind, `, which ${where} must have room for`);
     return additions;
   }

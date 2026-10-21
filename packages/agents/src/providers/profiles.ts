@@ -242,11 +242,14 @@ export function providerProfile(
   return profile;
 }
 
-/** `provider` when the app runs on one server; a Portainer target here is a bug in OpsCrew. */
+/**
+ * `provider` when the app runs on one server; a Portainer or localhost target here is a bug in
+ * OpsCrew.
+ */
 function serverProvider(provider: DeployProvider): VpsProviderId {
-  if (provider === "portainer") {
+  if (provider === "portainer" || provider === "localhost") {
     throw wrongTarget(
-      "This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to an app in your existing Portainer.",
+      `This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to ${provider === "portainer" ? "an app in your existing Portainer" : "an app on this computer (the localhost target)"}.`,
     );
   }
   return provider;

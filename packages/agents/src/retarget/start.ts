@@ -18,7 +18,11 @@ import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { providerBucket, readRequirements, requireStorageKey } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
-import { ownServerNoMove, portainerTargetNoMove } from "../shared/vps-target";
+import {
+  localhostTargetNoMove,
+  ownServerNoMove,
+  portainerTargetNoMove,
+} from "../shared/vps-target";
 import { databaseSize, serverOps } from "./server-ops";
 import { recordMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, pinHost, remoteFor, saveMove } from "./session";
@@ -101,6 +105,7 @@ function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudD
   const { provider } = option.target;
   if (provider === "own") throw ownServerNoMove();
   if (provider === "portainer") throw portainerTargetNoMove();
+  if (provider === "localhost") throw localhostTargetNoMove();
   return {
     provider,
     mode: "vps-compose",
@@ -271,6 +276,8 @@ export async function startMove(
 ): Promise<MoveSession> {
   // A Portainer target never moves (feature 010): it is destroyed and provisioned again instead.
   if (plan.target.provider === "portainer") throw portainerTargetNoMove();
+  // Nor does an app on this computer (feature 015).
+  if (plan.target.provider === "localhost") throw localhostTargetNoMove();
   const address =
     plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
       ? await serverAddress(deps, plan, {
@@ -299,6 +306,9 @@ export async function startMove(
   const from = cloudTarget(plan.target);
   if (options.to === undefined && requirements.provider === "portainer") {
     throw portainerTargetNoMove();
+  }
+  if (options.to === undefined && requirements.provider === "localhost") {
+    throw localhostTargetNoMove();
   }
   const to = options.to ?? requestedProvider(requirements);
   if (to === "own") throw ownServerNoMove();

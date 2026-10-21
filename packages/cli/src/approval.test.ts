@@ -224,11 +224,60 @@ describe("NonInteractiveApprovalHandler with a Cloudflare plan (OpsCrew's shared
   });
 });
 
+describe("NonInteractiveApprovalHandler with a promotion", () => {
+  const PROMOTION = "56".repeat(32);
+  const promote = (overrides: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+    kind: "promote",
+    title: "Promote the image staging runs to prod",
+    details: `Promotion hash: ${PROMOTION}`,
+    planHash: PROMOTION,
+    ...overrides,
+  });
+
+  it("grants a promotion only when its hash is listed with --approve", async () => {
+    const listed = new NonInteractiveApprovalHandler({
+      approvePlanHashes: [HASH, PROMOTION.toUpperCase()],
+      approver: "--approve flag",
+      clock,
+    });
+    expect((await listed.request(promote())).approved).toBe(true);
+    const unlisted = new NonInteractiveApprovalHandler({
+      approvePlanHashes: [HASH],
+      approver: "--approve flag",
+      clock,
+    });
+    const refused = await unlisted.request(promote());
+    expect(refused.approved).toBe(false);
+    expect(refused.reason).toContain("The promotion's hash does not match --approve");
+  });
+
+  it("never grants a promotion through --yes, with or without other hashes", async () => {
+    for (const approvePlanHashes of [[], [HASH]]) {
+      const yes = new NonInteractiveApprovalHandler({
+        assumeYes: true,
+        approvePlanHashes,
+        approver: "--yes flag",
+        clock,
+      });
+      expect((await yes.request(promote())).approved).toBe(false);
+    }
+  });
+});
+
 describe("NonInteractiveApprovalHandler with --yes", () => {
   const handler = new NonInteractiveApprovalHandler({
     assumeYes: true,
     approver: "--yes flag",
     clock,
+  });
+
+  it("approves changing GitHub settings, like storing GitHub secrets", async () => {
+    const request = { kind: "github-settings", title: "Create staging", details: "" } as const;
+    expect(await handler.request(request)).toMatchObject({ approved: true });
+    const without = new NonInteractiveApprovalHandler({ approver: "--approve flag", clock });
+    const refused = await without.request(request);
+    expect(refused.approved).toBe(false);
+    expect(refused.reason).toMatch(/interactive terminal/);
   });
 
   it("approves writing files, storing secrets, pushing and opening a pull request", async () => {

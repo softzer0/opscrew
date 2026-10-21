@@ -9,7 +9,7 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
-import { hasDeployment, stateFile, stringOutput } from "../shared";
+import { hasDeployment, localhostNotSupported, stateFile, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
@@ -62,6 +62,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   const ownServer = plan.target.provider === "own";
 
   // 1. Preconditions: no move in progress, a deployment and its state (no network yet)
+  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew drift`");
   requireNoMoveInProgress(plan);
   if (!hasDeployment(plan)) {
     throw new OpsCrewError(

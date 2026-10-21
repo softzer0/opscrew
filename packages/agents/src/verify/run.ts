@@ -24,6 +24,7 @@ import {
   githubClientFromToken,
   hasDeployment,
   hidesServerAddress,
+  localhostNotSupported,
   lookupPublicAddresses,
   type ServerAddress,
   serverAddress,
@@ -132,6 +133,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   reporter.step("Verifying the deployment");
 
   const plan = await readArtifact("plan", paths.files.plan);
+  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew verify`");
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
   if (!ownProxy && options.url !== undefined) {

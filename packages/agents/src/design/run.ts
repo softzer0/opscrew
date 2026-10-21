@@ -36,6 +36,7 @@ import {
   designOptionLine,
   hasDeployment,
   hasState,
+  localhostNotSupported,
   memoryHeadroom,
   readOwnServer,
   readPortainerConnection,
@@ -377,6 +378,7 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   const resolvedFacts =
     facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const requirements = await readArtifact("requirements", paths.files.requirements);
+  if (requirements.provider === "localhost") throw localhostNotSupported("`opscrew design`");
   await requireChosenApp(paths.root, resolvedFacts, requirements);
   return { facts: resolvedFacts, requirements };
 }
@@ -739,6 +741,7 @@ async function knowsDeployment(deps: PhaseDeps, previous: DeployPlan): Promise<b
 function providerName(id: DeployProvider): string {
   if (id === "own") return "your own server";
   if (id === "portainer") return "your Portainer";
+  if (id === "localhost") return "this computer";
   return providerProfile(id).displayName;
 }
 
@@ -764,17 +767,23 @@ function providerSwitchBlock(
   const from = providerName(current);
   const to = providerName(requested);
   const deployed = hasServer || hasDeployment(previous);
-  const owned = current === "own" || current === "portainer";
+  const owned = current === "own" || current === "portainer" || current === "localhost";
   const where = deployed
     ? `Your app is deployed ${current === "portainer" ? "in" : "on"} ${from}`
     : `An earlier apply may have created resources ${owned ? "for" : "at"} ${from}`;
   const retarget = `\`opscrew retarget --to ${requested}\``;
   const keep = `or keep ${from} by answering \`opscrew interview\` again.`;
   const portainer = current === "portainer" || requested === "portainer";
+  const localhost = current === "localhost";
   let hint: string;
-  if (portainer || current === "own" || requested === "own") {
-    // `opscrew retarget` does not move an app to or from a Portainer or a server the user owns.
-    const what = portainer ? "your Portainer" : "a server you already own";
+  if (portainer || localhost || current === "own" || requested === "own") {
+    // `opscrew retarget` does not move an app to or from a Portainer, a server the user owns or
+    // this computer.
+    const what = portainer
+      ? "your Portainer"
+      : localhost
+        ? "this computer"
+        : "a server you already own";
     const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
     hint = `OpsCrew cannot move an app to or from ${what}. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
   } else if (hasServer) {
@@ -973,9 +982,10 @@ function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] 
   const before = previous.target;
   const after = plan.target;
   if (before.provider !== after.provider) return [];
-  // A server the user owns (or a Portainer) is never moved or resized by OpsCrew.
+  // A server the user owns (or a Portainer, or this computer) is never moved or resized by OpsCrew.
   if (before.provider === "own" || after.provider === "own") return [];
   if (before.provider === "portainer" || after.provider === "portainer") return [];
+  if (before.provider === "localhost" || after.provider === "localhost") return [];
   const server = providerProfile(after.provider).serverNoun;
   if (before.location !== after.location) {
     return [

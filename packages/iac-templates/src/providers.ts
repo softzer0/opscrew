@@ -15,18 +15,29 @@ export function wrongTarget(message: string): OpsCrewError {
 /**
  * `target` when OpsCrew creates the server (Hetzner Cloud, DigitalOcean): a plan's target, a
  * server of a move layout, or just `{ provider }`. Throws {@link wrongTarget} for a server the
- * user owns and a Portainer target.
+ * user owns, a Portainer target and the localhost target.
  */
 export function cloudTarget<T extends Pick<DeployTarget, "provider">>(
   target: T,
 ): T & { provider: CloudProvider } {
-  if (target.provider === "own" || target.provider === "portainer") {
+  if (
+    target.provider === "own" ||
+    target.provider === "portainer" ||
+    target.provider === "localhost"
+  ) {
     throw wrongTarget(
-      `This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to ${target.provider === "own" ? "a server you already own" : "an app in your existing Portainer"}.`,
+      `This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to ${NOT_CLOUD[target.provider]}.`,
     );
   }
   return target as T & { provider: CloudProvider };
 }
+
+/** How {@link cloudTarget} names a target that is not a cloud server. */
+const NOT_CLOUD = {
+  own: "a server you already own",
+  portainer: "an app in your existing Portainer",
+  localhost: "an app on this computer (the localhost target)",
+} as const;
 
 /** `target` when the app runs in the user's existing Portainer; throws {@link wrongTarget} otherwise. */
 export function portainerTarget(target: DeployTarget): PortainerDeployTarget {

@@ -34,7 +34,7 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["hetzner", "digitalocean", "own", "portainer"]
+      "enum": ["hetzner", "digitalocean", "own", "portainer", "localhost"]
     },
     "region": {
       "type": "string",

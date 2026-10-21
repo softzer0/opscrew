@@ -169,9 +169,13 @@ function applyFailureHint(
     return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${neededScopes(requirement)}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
   const target = deployPlan.target;
-  // A server the user owns is never created, so no size can be unavailable (a Portainer target
+  // Only a server OpsCrew creates can have a size that is unavailable (a Portainer target
   // returned above).
-  if (target.provider !== "own" && profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
+  if (
+    (target.provider === "hetzner" || target.provider === "digitalocean") &&
+    profile.unavailable.test(errors) &&
+    !SERVICE_DOWN.test(errors)
+  ) {
     const size = provider === "hetzner" ? "server type" : "size";
     const { serverType, location } = target;
     const next =

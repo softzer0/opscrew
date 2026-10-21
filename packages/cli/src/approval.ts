@@ -139,8 +139,9 @@ export interface NonInteractiveApprovalHandlerOptions {
   approvePlanHashes?: readonly string[];
   /**
    * `--yes`: also approve the non-infrastructure steps of a run (writing generated files, storing
-   * GitHub secrets, pushing, opening a pull request). Never infrastructure applies (those need
-   * `--approve <hash>`), destroys, changed host keys or agent tool calls.
+   * GitHub secrets, changing GitHub settings, pushing, opening a pull request). Never
+   * infrastructure applies or promotions (those need `--approve <hash>`), destroys, changed host
+   * keys or agent tool calls.
    */
   assumeYes?: boolean;
   /** Recorded as the approver, for example `--approve flag`. */
@@ -152,20 +153,22 @@ export interface NonInteractiveApprovalHandlerOptions {
 const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
   "repo-write",
   "github-secrets",
+  "github-settings",
   "git-push",
   "pull-request",
 ];
 
 /**
- * Request kinds `--approve <hash>` may grant, each only for its exact plan hash: infrastructure,
- * the host plan of the user's own server, the stack plan of the user's Portainer and the Cloudflare
- * plan of OpsCrew's shared Cloudflare resources.
+ * Request kinds `--approve <hash>` may grant, each only for its exact hash: infrastructure, the
+ * host plan of the user's own server, the stack plan of the user's Portainer, the Cloudflare plan
+ * of OpsCrew's shared Cloudflare resources and a promotion.
  */
 export const APPROVE_BY_HASH_KINDS: readonly ApprovalRequest["kind"][] = [
   "iac-apply",
   "host-apply",
   "stack-apply",
   "cloudflare-apply",
+  "promote",
 ];
 
 const RUN_INTERACTIVELY =
@@ -174,8 +177,8 @@ const RUN_INTERACTIVELY =
 /**
  * Approves without a human only when the user named the exact plan: an `iac-apply`
  * (infrastructure), `host-apply` (the host plan of the user's own server), `stack-apply` (the
- * stack plan of the user's Portainer) or `cloudflare-apply` (the Cloudflare plan of OpsCrew's
- * shared Cloudflare resources) whose `planHash` equals one of the `--approve <hash>` values
+ * stack plan of the user's Portainer), `cloudflare-apply` (the Cloudflare plan of OpsCrew's
+ * shared Cloudflare resources) or `promote` (a promotion) whose `planHash` equals one of the `--approve <hash>` values
  * (case-insensitive) and that destroys nothing and needs no typed confirmation. `--yes` never
  * grants any of these kinds. Everything else is refused with a reason that says how to approve it.
  */
@@ -227,7 +230,9 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
             ? "The stack plan's hash"
             : request.kind === "cloudflare-apply"
               ? "The Cloudflare plan's hash"
-              : "The plan hash";
+              : request.kind === "promote"
+                ? "The promotion's hash"
+                : "The plan hash";
       return `${what} does not match --approve ${hashes.join(" / ")}; the plan changed since you reviewed it, or it was not approved. ${RUN_INTERACTIVELY}`;
     }
     return undefined;

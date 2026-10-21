@@ -34,6 +34,8 @@ const APPROVAL_KINDS = [
   "host-apply",
   "stack-apply",
   "cloudflare-apply",
+  "promote",
+  "github-settings",
 ] as const satisfies readonly ApprovalKind[];
 
 const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
@@ -48,8 +50,10 @@ const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
   reason: z.string().optional(),
 });
 
-/** Approval kinds bound to a plan's SHA-256 hash. */
-type HashBoundKind = "iac-apply" | "host-apply" | "stack-apply" | "cloudflare-apply";
+/** Approval kinds bound to a SHA-256 hash: a plan's, or a promotion's (`promote`). */
+type HashBoundKind = "iac-apply" | "host-apply" | "stack-apply" | "cloudflare-apply" | "promote";
+/** Hash-bound kinds whose approval may also allow deleting; a promotion deletes nothing. */
+type DestroyingKind = Exclude<HashBoundKind, "promote">;
 
 interface Refusal {
   message: string;
@@ -59,14 +63,12 @@ interface Refusal {
 }
 
 /** What each hash-bound kind says when a request has no hash or an apply is not approved. */
-const HASH_BOUND: Record<
-  HashBoundKind,
-  {
+const HASH_BOUND: {
+  [K in HashBoundKind]: {
     noHash: { message: string; hint: string };
     notApproved(planHash: string): Refusal;
-    destroyNotApproved: Refusal;
-  }
-> = {
+  } & (K extends DestroyingKind ? { destroyNotApproved: Refusal } : unknown);
+} = {
   "iac-apply": {
     noHash: {
       message:
@@ -141,6 +143,18 @@ const HASH_BOUND: Record<
       audit: "Cloudflare plan deletes OpsCrew's rules; deleting them was not approved",
     },
   },
+  promote: {
+    noHash: {
+      message:
+        "A promotion can only be approved for a specific image and target plan, but no valid promotion hash was given.",
+      hint: "Pass the promotion's SHA-256 hash (64 hexadecimal characters) with the request.",
+    },
+    notApproved: (planHash) => ({
+      message: "This promotion has not been approved, so OpsCrew will not deploy the image.",
+      hint: `Review the image and the target environment's plan, then approve the promotion when asked or re-run with --approve ${planHash}.`,
+      audit: "no approval recorded for this promotion",
+    }),
+  },
 };
 
 function isHashBound(kind: ApprovalKind): kind is HashBoundKind {
@@ -207,8 +221,9 @@ export function approvalDecision(
 /**
  * The single place where humans approve mutations (constitution I). Every decision, approved or
  * not, is written to the approval store and the audit log; `iac-apply`, `host-apply`,
- * `stack-apply` and `cloudflare-apply` approvals are bound to the plan's SHA-256 hash and destroys
- * need `allowDestroy` plus the exact typed confirmation phrase.
+ * `stack-apply` and `cloudflare-apply` approvals are bound to the plan's SHA-256 hash, `promote`
+ * approvals to the promotion's, and destroys need `allowDestroy` plus the exact typed confirmation
+ * phrase.
  */
 export class ApprovalGate {
   private readonly handler: ApprovalHandler;
@@ -227,9 +242,9 @@ export class ApprovalGate {
 
   /**
    * Validates the request, asks the handler and records the decision. Throws
-   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply`, `host-apply`, `stack-apply` or
-   * `cloudflare-apply` without a valid plan hash, an `allowDestroy`, `domain-purchase` or `domain-settings` request without a
-   * confirmation phrase. A refusal is returned, not thrown.
+   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply`, `host-apply`, `stack-apply`,
+   * `cloudflare-apply` or `promote` without a valid hash, an `allowDestroy`, `domain-purchase` or
+   * `domain-settings` request without a confirmation phrase. A refusal is returned, not thrown.
    */
   async request(request: ApprovalRequest): Promise<ApprovalRecord> {
     validateRequest(request);
@@ -315,23 +330,39 @@ export class ApprovalGate {
     return this.assertApproved("cloudflare-apply", planHash, options);
   }
 
+  /**
+   * {@link assertApprovedPlan} for the `promote` approval of a promotion, by the promotion's hash
+   * (the target plan's hash, the image digest and both environments). Call before every
+   * promotion's deploy.
+   */
+  assertApprovedPromotion(promotionHash: string): Promise<ApprovalRecord> {
+    return this.approvedRecord("promote", promotionHash);
+  }
+
   private async assertApproved(
-    kind: HashBoundKind,
+    kind: DestroyingKind,
     planHash: string,
     options: { allowDestroy?: boolean },
   ): Promise<ApprovalRecord> {
+    const record = await this.approvedRecord(kind, planHash);
+    if (options.allowDestroy === true && record.allowDestroy !== true) {
+      const refusal = HASH_BOUND[kind].destroyNotApproved;
+      throw await this.refusal("DESTROY_NOT_APPROVED", kind, planHash, refusal);
+    }
+    return record;
+  }
+
+  /** The latest approved record of `kind` for `planHash`, or audits the refusal and throws. */
+  private async approvedRecord(kind: HashBoundKind, planHash: string): Promise<ApprovalRecord> {
     const wanted = planHash.toLowerCase();
     const record = isPlanHash(planHash)
       ? (await this.store.list()).findLast(
           (r) => r.approved && r.kind === kind && r.planHash?.toLowerCase() === wanted,
         )
       : undefined;
-    const rules = HASH_BOUND[kind];
     if (record === undefined) {
-      throw await this.refusal("PLAN_NOT_APPROVED", kind, planHash, rules.notApproved(planHash));
-    }
-    if (options.allowDestroy === true && record.allowDestroy !== true) {
-      throw await this.refusal("DESTROY_NOT_APPROVED", kind, planHash, rules.destroyNotApproved);
+      const refusal = HASH_BOUND[kind].notApproved(planHash);
+      throw await this.refusal("PLAN_NOT_APPROVED", kind, planHash, refusal);
     }
     return record;
   }

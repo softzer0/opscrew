@@ -39,7 +39,13 @@ import { originTlsHostnames } from "../provision/origin-tls";
 import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { PortainerServices } from "../provision/types";
-import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
+import {
+  hidesServerAddress,
+  localhostNotSupported,
+  SshRemoteExec,
+  serverAddress,
+  withoutServerAddress,
+} from "../shared";
 import { runPhase } from "../shared/phase-status";
 import {
   proxyCertificateHosts,
@@ -366,6 +372,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
+  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew secure`");
   // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the
   // user's Portainer through its API (see `portainerSecurityChecks`), never its host.
   const portainer = plan.target.provider === "portainer";

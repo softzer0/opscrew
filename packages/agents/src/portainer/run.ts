@@ -52,6 +52,7 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  localhostNotSupported,
   PlanRefusedError,
   projectEngine,
   readServerAddresses,
@@ -1002,6 +1003,9 @@ export function portainerDisable(
 
 async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise<PortainerResult> {
   const before = await readArtifact("plan", deps.paths.files.plan);
+  if (before.target.provider === "localhost") {
+    throw localhostNotSupported("`opscrew portainer enable`");
+  }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("enable");
   const approving = (options.approvePlanHashes ?? []).length > 0;
@@ -1029,6 +1033,9 @@ async function disable(
   options: PortainerDisableOptions,
 ): Promise<PortainerResult> {
   const before = await readArtifact("plan", deps.paths.files.plan);
+  if (before.target.provider === "localhost") {
+    throw localhostNotSupported("`opscrew portainer disable`");
+  }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("disable");
   const approving = (options.approvePlanHashes ?? []).length > 0;

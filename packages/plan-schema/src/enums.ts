@@ -148,10 +148,15 @@ export type CloudProvider = z.infer<typeof CloudProviderSchema>;
 
 /**
  * Every place OpsCrew can deploy to, as `opscrew/requirements.yaml` and design options name it: a
- * single server ({@link VpsProviderSchema}) or a Portainer the user already runs (`portainer`,
- * which has no server for OpsCrew to create, size or price).
+ * single server ({@link VpsProviderSchema}), a Portainer the user already runs (`portainer`), or
+ * the user's own computer (`localhost`, its Docker). Neither of the last two has a server for
+ * OpsCrew to create, size or price.
  */
-export const DeployProviderSchema = z.enum([...VpsProviderSchema.options, "portainer"]);
+export const DeployProviderSchema = z.enum([
+  ...VpsProviderSchema.options,
+  "portainer",
+  "localhost",
+]);
 export type DeployProvider = z.infer<typeof DeployProviderSchema>;
 
 /** Registrars OpsCrew can buy domains with. */

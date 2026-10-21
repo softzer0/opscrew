@@ -814,3 +814,140 @@ describe("cloudflare-apply approvals", () => {
     expect(approved.allowDestroy).toBe(true);
   });
 });
+
+// Feature 015: a promotion's approval is its own kind, bound to the promotion's hash (the target
+// plan's hash, the image digest and both environments).
+describe("promote approvals", () => {
+  const promoteRequest: ApprovalRequest = {
+    kind: "promote",
+    title: "Promote sha256:… from staging to prod",
+    details: "image ghcr.io/acme/web@sha256:…",
+    planHash: HASH_C_UPPER,
+  };
+
+  it("records an approved promotion, lower-casing the hash", async () => {
+    const { gate, store, audit } = makeGate();
+    const result = await gate.request(promoteRequest);
+    expect(result).toMatchObject({
+      kind: "promote",
+      approved: true,
+      planHash: HASH_C_UPPER.toLowerCase(),
+    });
+    expect(await store.list()).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({ action: "promote", decision: "approved" });
+  });
+
+  it("rejects a promote request without a valid hash, in plain words", async () => {
+    const { gate, handler } = makeGate();
+    for (const planHash of [undefined, "", "abc", `${"a".repeat(63)}z`]) {
+      const error = await gate.request({ ...promoteRequest, planHash }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    }
+    const missing = await gate
+      .request({ ...promoteRequest, planHash: undefined })
+      .catch((e: unknown) => e);
+    expect(missing).toMatchObject({
+      message:
+        "A promotion can only be approved for a specific image and target plan, but no valid promotion hash was given.",
+      hint: "Pass the promotion's SHA-256 hash (64 hexadecimal characters) with the request.",
+    });
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("reads promote and github-settings records back from the JSONL store", async () => {
+    const store = new JsonlApprovalStore(join(root, "environments", "approvals.jsonl"));
+    await store.append(record({ id: "p", kind: "promote" }));
+    const { planHash: _planHash, ...settings } = record({ id: "g", kind: "github-settings" });
+    await store.append(settings);
+    expect((await store.list()).map((r) => r.kind)).toEqual(["promote", "github-settings"]);
+  });
+
+  describe.each([
+    ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+    ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, "approvals.jsonl"))],
+  ])("assertApprovedPromotion with %s", (_name, makeStore) => {
+    it("returns the latest approved promote record, matching the hash in any case", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "1", kind: "promote", planHash: HASH_A }));
+      await store.append(record({ id: "2", kind: "promote", planHash: HASH_A }));
+      await store.append(record({ id: "3", kind: "promote", planHash: HASH_B }));
+      expect((await gateOver(store).assertApprovedPromotion(HASH_A.toUpperCase())).id).toBe("2");
+    });
+
+    it("refuses another hash in plain words and tells the user about --approve", async () => {
+      const store = makeStore();
+      await store.append(record({ kind: "promote", planHash: HASH_A }));
+      const error = await gateOver(store)
+        .assertApprovedPromotion(HASH_B)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({
+        code: "PLAN_NOT_APPROVED",
+        message: "This promotion has not been approved, so OpsCrew will not deploy the image.",
+        hint: `Review the image and the target environment's plan, then approve the promotion when asked or re-run with --approve ${HASH_B}.`,
+      });
+    });
+
+    it("refuses a refused approval, every other kind's approval and an invalid hash", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "r", kind: "promote", planHash: HASH_A, approved: false }));
+      await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
+      await store.append(record({ id: "h", kind: "host-apply", planHash: HASH_C_UPPER }));
+      await store.append(record({ id: "s", kind: "stack-apply", planHash: HASH_D }));
+      const HASH_E = "e".repeat(64);
+      await store.append(record({ id: "c", kind: "cloudflare-apply", planHash: HASH_E }));
+      for (const hash of [HASH_A, HASH_B, HASH_C_UPPER, HASH_D, HASH_E, "not-a-hash"]) {
+        await expect(gateOver(store).assertApprovedPromotion(hash)).rejects.toMatchObject({
+          code: "PLAN_NOT_APPROVED",
+        });
+      }
+    });
+  });
+
+  it("never lets a promote approval authorise any plan's apply", async () => {
+    const { gate } = makeGate();
+    await gate.request({ ...promoteRequest, planHash: HASH_A });
+    await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedHostPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedStackPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedCloudflarePlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("audits a refused promotion", async () => {
+    const { gate, audit } = makeGate();
+    await expect(gate.assertApprovedPromotion(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    expect(audit.entries.at(-1)).toMatchObject({
+      kind: "approval",
+      action: "promote",
+      target: HASH_B,
+      decision: "refused",
+      detail: "no approval recorded for this promotion",
+    });
+  });
+});
+
+// Feature 015: GitHub repository settings (an environment, its rules, the fork-PR policy) are
+// approved like GitHub secrets, without a plan hash.
+describe("github-settings approvals", () => {
+  it("passes through without a plan hash, like github-secrets", async () => {
+    const { gate, audit } = makeGate();
+    const result = await gate.request({
+      kind: "github-settings",
+      title: "Create the GitHub environment staging",
+      details: "",
+    });
+    expect(result).toMatchObject({ kind: "github-settings", approved: true });
+    expect(result.planHash).toBeUndefined();
+    expect(audit.entries[0]).toMatchObject({ action: "github-settings", decision: "approved" });
+  });
+});

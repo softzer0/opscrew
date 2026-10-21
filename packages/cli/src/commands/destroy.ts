@@ -3,6 +3,7 @@ import {
   type DestroyPreview,
   type DestroyResult,
   destroyConfirmPrompt,
+  localhostNotSupported,
   type PhaseDeps,
   providerBucket,
   runDestroy,
@@ -199,6 +200,7 @@ export async function runDestroyCommand(
     const plan = await readArtifact("plan", deps0.paths.files.plan);
     const name = plan.app.name;
     provider = plan.target.provider;
+    if (provider === "localhost") throw localhostNotSupported("`opscrew destroy`");
     const own = provider === "own";
     const portainer = provider === "portainer";
     const what = own || portainer ? "the app's name" : "the server name";
