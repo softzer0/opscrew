@@ -346,7 +346,7 @@ Effort`.
   - Depends: T1409a, T1405
   - Accept:
     - **drift:** a per-hostname setting disabled, or using another certificate, and a missing origin certificate at Cloudflare are reported, with "run provision".
-    - **drift's site comparison** (`drift/host.ts` hashes `renderCaddyfile(plan, ctx)`) passes the same `originTls` and `additions` as provision, so an unchanged site never shows as drift (T1406). It hashes `renderEdgeSite` for the server's proxy (T1407).
+    - **drift's site comparison** is done in T1409a, which renders it exactly as provision does.
     - **secure's origin check:** on nginx, a missing client certificate completes the handshake and answers HTTP 400; on Caddy, the handshake is refused. Both count as refused (T1407).
     - **status:**
       - each certificate's expiry (origin and client from the record, DNS-only hostnames from a TLS handshake through an injected connector);
@@ -380,6 +380,7 @@ Effort`.
     - **MCP:** the same tools. A new key goes only to the required `keyOut` file, restore takes only `keyFile`, and no response contains a key.
     - **The plugin's skills** describe the copy, the deeper check and the proxy choice.
     - **The runbook** covers the proxy, the certificates and their renewal, and the copy with restore steps.
+    - **`origin-protection.md` says** that an app moving to another Cloudflare zone leaves its origin and client certificates in the old zone, to be revoked there by hand, and that user additions are not yet used in a Portainer stack (provision warns) (T1409a).
     - **`reverse-proxy.md` says** what the `vercel.json` translation leaves out, and that only one fallback applies per request: with `cleanUrls` and an SPA catch-all together, an unknown path tries `<path>.html`, then gets the app's 404 (T1417b).
     - **The guide:** `origin-protection.md`, `secrets-recovery.md`, `deeper-checks.md`, `tls-and-caa.md` and `reverse-proxy.md`, plus updates to `security.md` and `own-server.md`. Each is written for users, one topic per page, linked from the guide's index. The README links to them and gains no detail.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, `node plugin/validate.mjs` and `pnpm lint`
