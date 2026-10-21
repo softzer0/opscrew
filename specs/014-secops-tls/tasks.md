@@ -110,7 +110,7 @@ Effort`.
 
 ## Phase 3: Packages (parallel)
 
-- [ ] T1403 [P] [US1] [US4] The Cloudflare adapter: certificates, per-hostname origin pulls, the zone's minimum TLS, and their plan and apply, in `packages/connectors/cloudflare/**`
+- [X] T1403 [P] [US1] [US4] The Cloudflare adapter: certificates, per-hostname origin pulls, the zone's minimum TLS, and their plan and apply, in `packages/connectors/cloudflare/**`
   - Owns: `packages/connectors/cloudflare/src/**` (+ tests, `testing/` fakes)
   - Reads: contracts/cloudflare-tls.md; research.md R3, R4, "Spike results" 1–4 and 11; plan.md "4."
   - Depends: T1401a, T1402
@@ -178,7 +178,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1405 [P] [US3] The deeper checks, in `packages/secops/src/deep/**` (new), and `secure --deep` in `packages/agents/src/secure/{run.ts,report.ts}`
+- [X] T1405 [P] [US3] The deeper checks, in `packages/secops/src/deep/**` (new), and `secure --deep` in `packages/agents/src/secure/{run.ts,report.ts}`
   - Owns: those paths (+ tests, fixtures, report snapshots); `packages/secops/src/index.ts` for the new exports only
   - Reads: contracts/edge-and-checks.md "CheckResult", "Deeper checks"; research.md R1, "Spike results" 7 and 10; plan.md "6."; spec US3, FR-1420–FR-1425
   - Depends: T1401a, T1401b, T1402 (its fixtures)
@@ -553,6 +553,7 @@ Each wave is merged, gated and pushed before the next starts.
     - **The items listed below.**
       - The zone fill written out by hand in `provision/steps.ts`, `portainer/run.ts` and `drift/portainer.ts` calls T1410's `withCloudflareZone` instead, and agents' index re-exports it (T1410's report).
       - `SharedDesired.tls.retiring` goes, because T1403 doesn't use it (T1403's report).
+      - Verify Docker's error text when it cannot mount the host recursively read-only (T1405 recognises exit 125 with "recursive" in stderr, a guess), on a server with an old kernel or Docker if one is ever available; otherwise keep the guess documented.
       - Refresh the older pins that moved upstream (the curl and mysql 8.4 digests, uv), found by T1401b's run of `update-pins.mjs`, then run the gate.
     - **A duplication sweep over 014's whole change:** merge repeated helpers where the code gets smaller and no less clear. List what was merged, and what was left and why.
     - **No behaviour change.**
