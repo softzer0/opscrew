@@ -31,10 +31,10 @@ tests that need real accounts, Docker or the infrastructure engines.
 | The bucket on Hetzner Object Storage (`s3-uploads`) | + `OPSCREW_E2E_STORAGE=hetzner`, `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | Passed (run 5, after T1315a–T1315c; Hetzner can show a new bucket late, which OpsCrew now handles) | 2026-10-20 | — |
 | Your own server with two apps on one server behind one edge (feature 013, steps 6b–7b): `s3-uploads` with Garage next to the first app, a change to each under 20 requests per second each, the first app's destroy under load, the edge gone with the last app | `OPSCREW_E2E_OWN_SERVER=1`, `OPSCREW_E2E_GITHUB_REPO_B` (now required) | Passed (11 tests) | 2026-10-20 | — |
 | Your existing Portainer, components in stacks and the host-setting refusal (feature 013, step 7b with `node-mongo`) | `OPSCREW_E2E_PORTAINER=1`, `OPSCREW_E2E_GITHUB_REPO_B` (now required) | Passed (10 tests) | 2026-10-20 | — |
-| Hetzner, proxied, with origin TLS (feature 014): Cloudflare's side, the origin check from the server, `secure --deep`, the zone after destroy ([details below](#secops-and-tls-feature-014)) | `OPSCREW_E2E_TLS=proxied`, a Cloudflare domain, Docker here | **Not run yet** | — | The e2e Cloudflare token with SSL and Certificates Edit and Zone Settings Edit |
-| Hetzner, origin protection turned on for an app already live, under load | `OPSCREW_E2E_TLS=live`, + `OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS` | **Not run yet** | — | A second token for the zone without the two TLS permissions |
-| Hetzner, DNS only: CAA at the hostname, not at the apex; the minimum TLS decision | `OPSCREW_E2E_TLS=dns-only` | **Not run yet** | — | — |
-| Hetzner, the recovery copy restored on a fresh clone | `OPSCREW_E2E_TLS=recovery`, the default app | **Not run yet** | — | — |
+| Hetzner, proxied, with origin TLS (feature 014): Cloudflare's side, the origin check from the server, `secure --deep`, the zone after destroy ([details below](#secops-and-tls-feature-014)) | `OPSCREW_E2E_TLS=proxied`, a Cloudflare domain, Docker here | Passed (run 5; runs 2 and 4 found T1414a and T1414b) | 2026-10-21 | — |
+| Hetzner, origin protection turned on for an app already live, under load | `OPSCREW_E2E_TLS=live`, + `OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS` | Passed (5,251 requests, 0 failed) | 2026-10-21 | — |
+| Hetzner, DNS only: CAA at the hostname, not at the apex; the minimum TLS decision | `OPSCREW_E2E_TLS=dns-only` | Passed | 2026-10-21 | — |
+| Hetzner, the recovery copy restored on a fresh clone | `OPSCREW_E2E_TLS=recovery`, the default app | **Failed** (run 2: the restore passed, but the provision after it opened a needless pull request, T1414c) | — | A rerun after T1414c |
 | Your own server with nginx (`own-nginx.test.ts`): certbot, an addition, a forced renewal under load, testssl.sh, two apps on one edge, origin TLS on nginx, a switch to Caddy and back | `OPSCREW_E2E_OWN_NGINX=1`, + `OPSCREW_E2E_GITHUB_REPO_B`, Docker here | **Not run yet** | — | — |
 | Your existing Portainer, step 5b: the stack's Caddy with origin TLS, `secure --deep` with only testssl.sh, a redeploy under load | `OPSCREW_E2E_PORTAINER_STEPS=5b` (or `full`), Docker here | **Not run yet** | — | — |
 
@@ -138,8 +138,10 @@ Not covered by any live test:
   slow route.
 - **Railpack with a secret build value that is empty at `prepare`**: no example has a secret build
   value.
-- **The `recreate` strategy** (servers under 1 GiB) and its rollback: unit tests only; every live
-  server had more memory.
+- **The `recreate` strategy** (servers under 1 GiB, and SQLite apps) and its rollback on a real
+  server: every live server had more memory, and no live pass deploys an SQLite app. kamal-proxy
+  holding requests during the recreate (T1416b) runs only in the local Docker pass
+  (`recreate-hold.test.ts`).
 - **Rails, Laravel, Spring Boot and .NET on a real server**: only the local Docker pass builds and
   starts them. The framework matrix on Hetzner (19 apps) last ran on 2026-10-14, before 012's
   builders.
@@ -203,20 +205,20 @@ Not covered by any live test:
 
 ## SecOps and TLS (feature 014)
 
-The passes are in [e2e.md](e2e.md#origin-tls-the-recovery-copy-and-the-deeper-checks). None has
-run live yet; tick each check once it has passed. Every pass ends with the leak search and the
+The passes are in [e2e.md](e2e.md#origin-tls-the-recovery-copy-and-the-deeper-checks). Tick each
+check once it has passed everywhere its row lists; a partial pass names where it ran. Every pass ends with the leak search and the
 zone check after the teardown.
 
 | Check | Where | Passed live |
 |---|---|---|
-| The site works through Cloudflare with origin TLS; the record's origin certificate covers exactly the app's hostnames and each origin pull setting is on with the app's client certificate | Hetzner `proxied`, `live`; own server step 8; Portainer 5b | [ ] |
-| From the server, `openssl s_client` to 127.0.0.1:443 without the client certificate is refused (Caddy: the alert; nginx: HTTP 400), the issuer is Cloudflare's Origin CA, an unknown hostname is refused | Hetzner `proxied`, `live` (Caddy); own server step 8 (nginx, under the web filter); Portainer 5b | [ ] |
+| The site works through Cloudflare with origin TLS; the record's origin certificate covers exactly the app's hostnames and each origin pull setting is on with the app's client certificate | Hetzner `proxied`, `live`; own server step 8; Portainer 5b | Hetzner `proxied`, `live` (2026-10-21); the rest not yet |
+| From the server, `openssl s_client` to 127.0.0.1:443 without the client certificate is refused (Caddy: the alert; nginx: HTTP 400), the issuer is Cloudflare's Origin CA, an unknown hostname is refused | Hetzner `proxied`, `live` (Caddy); own server step 8 (nginx, under the web filter); Portainer 5b | Hetzner `proxied`, `live` (Caddy, 2026-10-21); the rest not yet |
 | The origin check reaches 127.0.0.1:443 under OpsCrew's web filter (else the edge-network fallback runs and a finding asks for it in `secure`; research "Spike results" 14) | own server step 8 | [ ] |
-| `secure --deep` within 5 minutes, no high finding from testssl.sh, ssh-audit's policy passing apart from the noise (T1418), Lynis's hardening index | Hetzner `proxied` (Caddy); own server step 5 (nginx) | [ ] |
+| `secure --deep` within 5 minutes, no high finding from testssl.sh, ssh-audit's policy passing apart from the noise (T1418), Lynis's hardening index | Hetzner `proxied` (Caddy); own server step 5 (nginx) | Hetzner `proxied` (Caddy, 104 s, 2026-10-21); nginx not yet |
 | `secure --deep` in a Portainer: only testssl.sh, Lynis and ssh-audit skipped with their reason | Portainer 5b | [ ] |
-| Origin protection turned on for an app already live, with no failed request under 20 requests per second (SC-1408); the permission gap recorded before (FR-1405) | Hetzner `live` | [ ] |
-| CAA records at the app's DNS-only hostname (Caddy: `letsencrypt.org`, `sectigo.com`; nginx: `letsencrypt.org`), none added at the apex, none left after destroy | Hetzner `dns-only`; own server steps 2, 6, 10 | [ ] |
-| The zone's minimum TLS raised to 1.2 only when every proxied record is OpsCrew's, otherwise unchanged | every Hetzner pass | [ ] |
+| Origin protection turned on for an app already live, with no failed request under 20 requests per second (SC-1408); the permission gap recorded before (FR-1405) | Hetzner `live` | [x] 2026-10-21: 5,251 requests in 263 s, 0 failed |
+| CAA records at the app's DNS-only hostname (Caddy: `letsencrypt.org`, `sectigo.com`; nginx: `letsencrypt.org`), none added at the apex, none left after destroy | Hetzner `dns-only`; own server steps 2, 6, 10 | Hetzner `dns-only` (Caddy, 2026-10-21); nginx not yet |
+| The zone's minimum TLS raised to 1.2 only when every proxied record is OpsCrew's, otherwise unchanged | every Hetzner pass | Raised from 1.0 in the second `proxied` run and left at 1.2 by every later pass (2026-10-21); a zone with someone else's proxied record not yet |
 | The recovery copy: a fresh clone, `secrets restore --key-file`, nothing to apply, nothing regenerated, the data intact, within 5 minutes (SC-1402) | Hetzner `recovery` | [ ] |
 | certbot's first certificate during the first deploy (Let's Encrypt), for two apps on one nginx edge | own server steps 2, 6 | [ ] |
 | An addition served on nginx, with OpsCrew's headers kept | own server step 3 | [ ] |
@@ -224,8 +226,8 @@ zone check after the teardown.
 | Another proxy refused while two apps share the edge | own server step 6 | [ ] |
 | A switch to Caddy and back with one app left, each within the stated interruption (15 seconds at most for a proxied hostname) | own server step 9 | [ ] |
 | A Portainer redeploy under load shows a pause, not an error (T1416) | Portainer 5b | [ ] |
-| Destroy revokes the origin certificate and removes the client certificate and the origin pull settings; nothing else in the zone changes (records, other certificates, the minimum TLS) | every Hetzner pass (the zone check after the teardown); own server step 10; the cleanup of every own-server and Portainer run | [ ] |
-| The leak search (SC-1406): no generated key, client key or age identity in the run's outputs, commits, pull requests, audit entries, saved plans, reports, record, state or folder copy | every pass | [ ] |
+| Destroy revokes the origin certificate and removes the client certificate and the origin pull settings; nothing else in the zone changes (records, other certificates, the minimum TLS) | every Hetzner pass (the zone check after the teardown); own server step 10; the cleanup of every own-server and Portainer run | Hetzner `proxied`, `dns-only`, `live`, `recovery` (2026-10-21); the rest not yet |
+| The leak search (SC-1406): no generated key, client key or age identity in the run's outputs, commits, pull requests, audit entries, saved plans, reports, record, state or folder copy | every pass | Hetzner `proxied` (21 values), `dns-only` (12), `live` (22), `recovery` (22) (2026-10-21); the rest not yet |
 
 Not covered by any live test:
 
