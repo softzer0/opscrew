@@ -201,8 +201,9 @@ Sonnet research of 2026-10-21 on vercel.com/docs, caddyserver.com/docs and nginx
   - path-to-regexp forms `:param`, `:path*` and `(.*)`, and custom groups such as
     `/:path((?!uk/).*)`;
   - a regex form (`^/articles/(\d{4})/(.+)$` with `$1`, and named groups as `$name`);
-  - destinations use `:name`, and parameters the destination does not use are appended to the
-    query string;
+  - destinations use `:name`. Following Vercel's routing code (routing-utils `replaceSegments`, as
+    in Next.js; T1417b's review), redirects never append unused parameters, and rewrites append
+    them to the query only when the destination uses none;
   - matching is case-sensitive and on the path only, without the query string.
 - **`has` and `missing`:** header, cookie, host and query, with regex or operator values and named
   captures usable in the destination. Skipped in v1 and listed.

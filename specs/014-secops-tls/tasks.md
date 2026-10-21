@@ -486,7 +486,7 @@ Effort`.
 
 ## Follow-up from 010 (founder, 2026-10-21)
 
-- [ ] T1416 [P] Portainer: Caddy holds requests during a redeploy, in `packages/iac-templates/src/portainer-target/**`, `packages/iac-templates/src/workflow/portainer.ts`, `docs/guide/zero-downtime.md`
+- [X] T1416 [P] Portainer: Caddy holds requests during a redeploy, in `packages/iac-templates/src/portainer-target/**`, `packages/iac-templates/src/workflow/portainer.ts`, `docs/guide/zero-downtime.md`
   - Owns: those paths (+ tests, snapshots)
   - Reads: research.md "Spike results" 16; plan.md "15."; `docs/guide/zero-downtime.md` "In your Portainer"
   - Depends: T1402, T1407 (the same workflow files)
