@@ -438,7 +438,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
         { id: updater?.Id, name: "opscrew-shop-updater", role: "updater" },
       ],
       registryId: s.fake.registries[0]?.Id,
-      volumes: ["opscrew-shop_db_data"],
+      volumes: ["opscrew-shop_db_data", "opscrew-shop_version"],
     });
 
     // The value key: 32 random bytes, created once, readable only by the user.

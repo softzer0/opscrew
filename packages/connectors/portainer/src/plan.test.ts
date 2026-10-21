@@ -414,6 +414,40 @@ describe("planStackTeardown", () => {
     expect(plan.changes[1]?.title).toMatch(/cannot be undone/);
   });
 
+  it("deletes the version volume with the data volumes, never calling it data", async () => {
+    const facts = setUp(await world().inspect());
+    const VERSION = "opscrew-shop_version";
+    const opts = { app: "shop", versionVolume: VERSION };
+    const withData = { ...record, volumes: ["opscrew-shop_db-data", VERSION] };
+    const both = planStackTeardown(facts, withData, { ...opts, deleteData: true });
+    expect(both.changes[1]).toMatchObject({
+      id: "volumes",
+      state: "change",
+      title:
+        "Delete the app's data volumes opscrew-shop_db-data (this cannot be undone; OpsCrew does not back them up)",
+      reason: `Delete the volume ${VERSION} (the version the site serves), too.`,
+      params: { action: "remove", names: ["opscrew-shop_db-data", VERSION], stopStackId: 101 },
+    });
+    const kept = planStackTeardown(facts, withData, { ...opts, deleteData: false });
+    expect(kept.changes.find((c) => c.id === "app-stack")?.reason).toBe(
+      "Its named volumes (the app's data) are kept: opscrew-shop_db-data.",
+    );
+
+    // A stateless app: only the plain line, and no word of data.
+    const stateless = { ...record, volumes: [VERSION] };
+    facts.volumes = [{ name: VERSION, project: "opscrew-shop" }];
+    const alone = planStackTeardown(facts, stateless, { ...opts, deleteData: true });
+    expect(alone.changes[1]).toEqual({
+      id: "volumes",
+      title: `Delete the volume ${VERSION} (the version the site serves)`,
+      state: "change",
+      params: { action: "remove", names: [VERSION], stopStackId: 101 },
+    });
+    expect(JSON.stringify(alone)).not.toMatch(/data volumes|cannot be undone/);
+    const keptAlone = planStackTeardown(facts, stateless, { ...opts, deleteData: false });
+    expect(keptAlone.changes.find((c) => c.id === "app-stack")?.reason).toBeUndefined();
+  });
+
   it("mentions volumes of the app's project that are not in the record, and keeps them", async () => {
     const facts = setUp(await world().inspect());
     facts.volumes = [

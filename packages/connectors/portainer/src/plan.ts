@@ -1106,7 +1106,15 @@ const TEARDOWN_BLOCKERS = new Set(["token-rejected", "access-denied", "environme
 export function planStackTeardown(
   facts: PortainerFacts,
   record: CreatedRecord,
-  opts: { deleteData: boolean; app: string },
+  opts: {
+    deleteData: boolean;
+    app: string;
+    /**
+     * The recorded volume that holds no data (the version the site serves): deleted with the data
+     * volumes, but never named or kept as the app's data.
+     */
+    versionVolume?: string;
+  },
 ): StackPlan {
   const env = facts.environment;
   if (env === undefined) {
@@ -1152,7 +1160,11 @@ export function planStackTeardown(
       const seen = facts.volumes?.find((volume) => volume.name === name);
       return seen !== undefined && seen.project?.toLowerCase() !== names.app;
     });
-    const title = `Delete the app's data volumes ${valid.volumes.join(", ")}`;
+    // The version volume holds no data: it is deleted with the data volumes, but not called data.
+    const data = valid.volumes.filter((name) => name !== opts.versionVolume);
+    const versionLine = `Delete the volume ${opts.versionVolume} (the version the site serves)`;
+    const title =
+      data.length > 0 ? `Delete the app's data volumes ${data.join(", ")}` : versionLine;
     if (valid.volumes.length === 0) {
       changes.push({
         id: "volumes",
@@ -1177,11 +1189,16 @@ export function planStackTeardown(
         params: { action: "remove", names: valid.volumes },
       });
     } else {
+      const withVersion = data.length < valid.volumes.length && data.length > 0;
+      const reason = `${withVersion ? `${versionLine}, too.` : ""}${kept}`.trim();
       changes.push({
         id: "volumes",
-        title: `${title} (this cannot be undone; OpsCrew does not back them up)`,
+        title:
+          data.length > 0
+            ? `${title} (this cannot be undone; OpsCrew does not back them up)`
+            : title,
         state: "change",
-        ...(kept !== "" && { reason: kept.trim() }),
+        ...(reason !== "" && { reason }),
         params: {
           action: "remove",
           names: valid.volumes,
@@ -1194,7 +1211,9 @@ export function planStackTeardown(
   if (appRecorded !== undefined) {
     const change = removeStackChange(facts, appRecorded, "app");
     if (!opts.deleteData && change.state === "change") {
-      const volumes = [...new Set([...valid.volumes, ...projectVolumes])].sort();
+      const volumes = [...new Set([...valid.volumes, ...projectVolumes])]
+        .filter((name) => name !== opts.versionVolume)
+        .sort();
       if (volumes.length > 0) {
         change.reason = `Its named volumes (the app's data) are kept: ${volumes.join(", ")}.`;
       }

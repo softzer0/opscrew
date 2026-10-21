@@ -77,7 +77,7 @@ opscrew provision                                        # reuses the restored f
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. This app's volumes: \`opscrew-shop_caddy_data\`, \`opscrew-shop_caddy_config\`.
+- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. This app's volumes: \`opscrew-shop_caddy_data\`, \`opscrew-shop_caddy_config\`. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app
@@ -163,7 +163,7 @@ opscrew provision                                        # reuses the restored f
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host.
+- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app
@@ -246,7 +246,7 @@ opscrew provision                                        # reuses the restored f
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. This app's volumes: \`opscrew-shop_db_data\`.
+- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. This app's volumes: \`opscrew-shop_db_data\`. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app
@@ -343,7 +343,7 @@ opscrew provision                                        # reuses the restored f
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. This app's volumes: \`opscrew-shop_db_data\`.
+- Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host. This app's volumes: \`opscrew-shop_db_data\`. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app

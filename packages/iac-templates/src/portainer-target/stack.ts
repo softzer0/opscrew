@@ -427,22 +427,31 @@ export function portainerStackEnvKeys(
   return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
 }
 
-/** Named data volumes of the app stack, in the order the stack declares them. */
+/** Named volumes of the app stack, in the order the stack declares them: the stamp's is last. */
 function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
-  return [...services.volumes, ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : [])];
+  return [
+    ...services.volumes,
+    ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : []),
+    VERSION_VOLUME,
+  ];
 }
 
 /**
  * The Docker volumes the app stack creates (`<stack>_<volume>`): each service's data
- * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), and Caddy's
- * certificates in `caddy` mode. Stack deletion keeps them; they go only with data deletion. The
- * stamp's version volume, which holds no data, is not among them.
+ * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), Caddy's certificates
+ * in `caddy` mode, and last the stamp's {@link portainerVersionVolume}. Stack deletion keeps
+ * them; they go only with data deletion.
  */
 export function portainerStackVolumes(plan: DeployPlan): string[] {
   const { web } = portainerTarget(plan.target);
   return volumeNames(stackServices(plan), web).map(
     (volume) => `${portainerStackName(plan)}_${volume}`,
   );
+}
+
+/** The stamp's volume (`<stack>_version`): only the version the site serves, no data. */
+export function portainerVersionVolume(plan: DeployPlan): string {
+  return `${portainerStackName(plan)}_${VERSION_VOLUME}`;
 }
 
 /**
@@ -611,7 +620,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     );
   }
 
-  const volumes = [...volumeNames(backing, web), VERSION_VOLUME];
+  const volumes = volumeNames(backing, web);
   const document = {
     name: portainerStackName(plan),
     services,

@@ -31,6 +31,7 @@ import {
   portainerStackName,
   portainerStackVolumes,
   portainerUpdaterStackName,
+  portainerVersionVolume,
   renderPlaceholderStack,
   renderPortainerConnectorStack,
   renderPortainerStack,
@@ -253,10 +254,13 @@ describe("renderPortainerStack", () => {
     expect(fullStack.services.db?.volumes).toEqual(["db_data:/var/lib/postgresql/data"]);
     expect(fullStack.services.cache?.volumes).toEqual(["cache_data:/data"]);
     expect(Object.keys(fullStack.volumes ?? {})).toEqual(["db_data", "cache_data", "version"]);
+    // Data deletion removes the stamp's volume with the data volumes.
     expect(portainerStackVolumes(full)).toEqual([
       "opscrew-shop_db_data",
       "opscrew-shop_cache_data",
+      "opscrew-shop_version",
     ]);
+    expect(portainerVersionVolume(full)).toBe("opscrew-shop_version");
     for (const service of Object.values(fullStack.services)) {
       for (const volume of service.volumes ?? []) expect(volume).not.toMatch(/^[./~]/);
       expect(service).not.toHaveProperty("env_file");
@@ -355,6 +359,7 @@ describe("renderPortainerStack", () => {
     expect(portainerStackVolumes(plan)).toEqual([
       "opscrew-shop_caddy_data",
       "opscrew-shop_caddy_config",
+      "opscrew-shop_version",
     ]);
     const caddyfile = doc.configs?.caddyfile?.content ?? "";
     expect(caddyfile).toContain("{\n\temail ops@example.com\n}\n");
@@ -646,6 +651,7 @@ describe("the components in a stack", () => {
       "opscrew-shop_kafka_data",
       "opscrew-shop_kafka_secrets",
       "opscrew-shop_kafka_config",
+      "opscrew-shop_version",
     ]);
   });
 
@@ -727,6 +733,7 @@ describe("the components in a stack", () => {
       "opscrew-shop_kafka_secrets",
       "opscrew-shop_kafka_config",
       "opscrew-shop_sqlite",
+      "opscrew-shop_version",
     ]);
     expect(componentsStack.services.app?.volumes).toBeUndefined();
   });

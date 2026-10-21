@@ -19,6 +19,7 @@ export {
   portainerStackName,
   portainerStackVolumes,
   portainerUpdaterStackName,
+  portainerVersionVolume,
   renderPlaceholderStack,
   renderPortainerConnectorStack,
   renderPortainerStack,

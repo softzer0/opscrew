@@ -9,6 +9,7 @@ import {
   portainerStackName,
   portainerStackVolumes,
   portainerUpdaterStackName,
+  portainerVersionVolume,
   providerBucket,
   type RenderedFile,
   recoverySection,
@@ -164,7 +165,8 @@ export function renderPortainerRunbook(
   const target = plan.target;
   const app = portainerStackName(plan);
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
-  const volumes = portainerStackVolumes(plan);
+  const version = portainerVersionVolume(plan);
+  const volumes = portainerStackVolumes(plan).filter((name) => name !== version);
   const url =
     plan.dns.domain !== undefined
       ? `https://${plan.dns.domain}`
@@ -209,7 +211,7 @@ export function renderPortainerRunbook(
     "## What OpsCrew does not do here",
     "",
     `- ${PORTAINER_HOST_NOTE}`,
-    `- ${PORTAINER_BACKUPS_NOTE}${volumes.length > 0 ? ` This app's volumes: ${volumes.map((name) => `\`${name}\``).join(", ")}.` : ""}`,
+    `- ${PORTAINER_BACKUPS_NOTE}${volumes.length > 0 ? ` This app's volumes: ${volumes.map((name) => `\`${name}\``).join(", ")}.` : ""} \`${version}\` holds only the version the site serves: nothing to back up.`,
     "- OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.",
     "",
     "## Removing the app",

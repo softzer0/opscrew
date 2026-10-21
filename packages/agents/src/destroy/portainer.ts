@@ -10,7 +10,12 @@ import {
 } from "@opscrew/connector-portainer";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
-import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opscrew/iac-templates";
+import {
+  DEPLOY_SECRETS,
+  PORTAINER_DEPLOY_SECRETS,
+  portainerTarget,
+  portainerVersionVolume,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
@@ -435,7 +440,13 @@ export async function destroyPortainer(
   });
 
   // 4. What the teardown removes: checked before anything changes, shown, confirmed once
-  const teardown = planStackTeardown(facts, record, { deleteData, app: name });
+  // The stamp's version volume goes with the data volumes, but holds no data to warn about.
+  const version = portainerVersionVolume(plan);
+  const teardown = planStackTeardown(facts, record, {
+    deleteData,
+    app: name,
+    versionVolume: version,
+  });
   requireNoStackBlockers(teardown, name);
   const stackWork = teardown.changes.filter((change) => change.state === "change");
   let session: DeletionSession | undefined;
@@ -463,16 +474,20 @@ export async function destroyPortainer(
       )
     : undefined;
   const volumes = teardown.changes.find((change) => change.id === "volumes");
-  const deletesData = volumes?.state === "change";
+  const dataOf = (names: readonly string[]) => names.filter((name) => name !== version);
   const dataNames =
-    deletesData && Array.isArray(volumes?.params.names) ? [...volumes.params.names] : [];
+    volumes?.state === "change" && Array.isArray(volumes.params.names)
+      ? dataOf(volumes.params.names)
+      : [];
+  const deletesData = dataNames.length > 0;
+  const keptData = dataOf(record.volumes);
   const kinds = serverData(plan);
   const dataWarning = deletesData
     ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${kinds.length > 0 ? ` (with ${listText(kinds)})` : ""}. OpsCrew takes no backup of your Portainer host, so this cannot be undone unless you have your own backup.`
     : undefined;
   if (deleteData && !deletesData) {
     deps.reporter.info(
-      "OpsCrew recorded no data volumes of this app in your Portainer, so `--delete-data` has nothing to delete.",
+      "OpsCrew recorded no data volumes of this app in your Portainer, so `--delete-data` deletes no data.",
     );
   }
   // Said where the user confirms and in the approval that covers it (the teardown's, or the
@@ -495,9 +510,9 @@ export async function destroyPortainer(
   );
   if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
   if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
-  else if (!deleteData && record.volumes.length > 0) {
+  else if (!deleteData && keptData.length > 0) {
     deps.reporter.info(
-      `The app's data in your Portainer (the volume${record.volumes.length === 1 ? "" : "s"} ${listText(record.volumes)}) is kept. To delete it as well, cancel now and run \`opscrew destroy --delete-data\`.`,
+      `The app's data in your Portainer (the volume${keptData.length === 1 ? "" : "s"} ${listText(keptData)}) is kept. To delete it as well, cancel now and run \`opscrew destroy --delete-data\`.`,
     );
   }
   if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
@@ -655,7 +670,7 @@ export async function destroyPortainer(
     plan,
     github,
     secretsRemoved,
-    keptVolumes: connection.created.volumes,
+    keptVolumes: dataOf(connection.created.volumes),
     bucketDeleted: deletesBucket,
     removedApp: removeApp,
     branchDeleted,

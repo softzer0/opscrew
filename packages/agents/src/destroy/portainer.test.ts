@@ -68,12 +68,13 @@ async function deployed(o: PortainerProjectOptions = {}) {
   });
   await provisionPortainerProject(s);
   await deployImage(s);
-  // The app stack's database volume (Compose made it at the first deploy) and the decoy's.
+  // The app stack's database and version volumes (Compose made them at the first deploy) and the
+  // decoy's.
   s.fake.volumes.push(
-    {
-      Name: "opscrew-shop_db_data",
+    ...["opscrew-shop_db_data", "opscrew-shop_version"].map((Name) => ({
+      Name,
       Labels: { "com.docker.compose.project": "opscrew-shop" },
-    },
+    })),
     { Name: "media_data", Labels: { "com.docker.compose.project": "media" } },
   );
   // Portainer's mutations go into `events` in order (clients read `fake.request` when made).
@@ -197,15 +198,16 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       "Remove the registry entry opscrew-shop OpsCrew added",
     ]);
 
-    // Only OpsCrew's stacks went; the decoy, its volume and the app's data volume stay.
+    // Only OpsCrew's stacks went; the decoy, its volume and the app's volumes stay.
     expect(s.fake.stacks.map((stack) => stack.Name)).toEqual(["media"]);
     expect(s.fake.stacks[0]).toEqual(decoy);
     expect(s.fake.registries).toEqual([]);
     expect(s.fake.volumes.map((volume) => volume.Name).sort()).toEqual([
       "media_data",
       "opscrew-shop_db_data",
+      "opscrew-shop_version",
     ]);
-    expect(app).toEqual({ stacks: [], volumes: ["opscrew-shop_db_data"] });
+    expect(app).toEqual({ stacks: [], volumes: ["opscrew-shop_db_data", "opscrew-shop_version"] });
 
     // The webhook, the value key and the saved stack plans leave this computer.
     expect(await exists(s.deps.paths.projectHomeDir, "portainer-webhook")).toBe(false);
@@ -314,7 +316,17 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       stacks: [],
       volumes: [],
     });
-    expect(s.deps.reporter.text()).toContain("cannot be undone unless you have your own backup");
+    const text = s.deps.reporter.text();
+    expect(text).toContain("cannot be undone unless you have your own backup");
+    // The data title lists only the data volume; the version volume goes on a plain line.
+    expect(text).toContain(
+      "Delete the app's data volumes opscrew-shop_db_data (this cannot be undone",
+    );
+    expect(text).toContain("Delete the volume opscrew-shop_version (the version the site serves)");
+    expect(text).toContain("the volume opscrew-shop_db_data (with the PostgreSQL database)");
+    expect(s.events).toContain(
+      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_version",
+    );
     expect(result.remaining.join("\n")).not.toContain("--delete-data");
   });
 
@@ -346,7 +358,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       ...names.map((Name) => ({ Name, Labels: { "com.docker.compose.project": "opscrew-shop" } })),
     );
     expect((await readPortainerConnection(s.deps.paths))?.created.volumes?.sort()).toEqual(
-      ["opscrew-shop_db_data", ...names].sort(),
+      ["opscrew-shop_db_data", "opscrew-shop_version", ...names].sort(),
     );
     await destroy(s);
     expect(s.fake.stacks.map((stack) => stack.Name)).toEqual(["media"]);
@@ -458,6 +470,43 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.fake.stacks.map((stack) => stack.Name)).toEqual(["media"]);
   });
 
+  it("a stateless app's version volume is not called data, and goes with --delete-data", async () => {
+    const stateless = portainerPlan({ postgres: false, web: { mode: "proxy", port: 8080 } });
+    // Without the Postgres container nothing derives DATABASE_URL.
+    const env = stateless.app.env.filter((v) => v.name !== "DATABASE_URL");
+    const s = await deployed({
+      plan: DeployPlanSchema.parse({ ...stateless, app: { ...stateless.app, env } }),
+    });
+    expect((await readPortainerConnection(s.deps.paths))?.created.volumes).toEqual([
+      "opscrew-shop_version",
+    ]);
+    // Compose made no database volume for this app.
+    s.fake.volumes.splice(
+      s.fake.volumes.findIndex((volume) => volume.Name === "opscrew-shop_db_data"),
+      1,
+    );
+    await destroy(s);
+    expect(s.deps.reporter.text()).not.toContain("The app's data in your Portainer");
+    expect(s.deps.reporter.text()).not.toContain("(the app's data) are kept");
+
+    s.deps.reporter.lines.length = 0;
+    s.events.length = 0;
+    await destroy(s, { deleteData: true });
+    expect(s.events).toContain(
+      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_version",
+    );
+    const text = s.deps.reporter.text();
+    // No data warning and no kept data: the only volume holds the version the site serves.
+    expect(text).not.toContain("also deletes its data");
+    expect(text).not.toContain("unless you have your own backup");
+    expect(text).not.toContain("The app's data in your Portainer");
+    expect(text).not.toMatch(/data volumes opscrew-shop_version|cannot be undone/);
+    expect(text).toContain("Delete the volume opscrew-shop_version (the version the site serves)");
+    expect(text).toContain("OpsCrew recorded no data volumes of this app in your Portainer");
+    // The same typed confirmation and plan-hash approval as any teardown.
+    expect(s.events).toContain("approve:stack-apply");
+  });
+
   it("a proxy setup has no Cloudflare part; a later --delete-data deletes the kept volumes", async () => {
     const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
     await destroy(s);
@@ -471,6 +520,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.events).toEqual([
       "approve:stack-apply",
       "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_db_data",
+      "portainer:DELETE /api/endpoints/3/docker/volumes/opscrew-shop_version",
     ]);
     expect(s.fake.volumes.map((volume) => volume.Name)).toEqual(["media_data"]);
 
