@@ -442,7 +442,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/detect` and `pnpm lint`
   - Effort: high
 
-- [ ] T1417b [US5] The translation into the app's additions, in `packages/iac-templates/src/edge/vercel-routing.ts` (new), and the file written by design, in `packages/agents/src/design/**`
+- [X] T1417b [US5] The translation into the app's additions, in `packages/iac-templates/src/edge/vercel-routing.ts` (new), and the file written by design, in `packages/agents/src/design/**`
   - Owns: those paths (+ tests, snapshots); `packages/iac-templates/src/index.ts` for the new export only
   - Reads: contracts/edge-and-checks.md "`vercel.json` translation"; research.md R7; plan.md "16."; spec US5 scenario 8, FR-1446
   - Depends: T1417a, T1407, T1408
