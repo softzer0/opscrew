@@ -1,6 +1,7 @@
 /**
  * Every version OpsCrew pins: images by the digest of their multi-arch index, tools by version and
- * SHA-256 (sops, for the user's machine, per platform), GitHub Actions by commit, the Python
+ * SHA-256 (sops, for the user's machine, and the GitHub Actions runner per platform), GitHub
+ * Actions by commit, the Python
  * packages and package managers the generated Dockerfiles install by version, the runtime defaults
  * and what the pinned Buildpacks builder offers. `scripts/update-pins.mjs` refreshes the digests, checksums and commits (change a tag or
  * version here first) and moves the packages to their newest releases; with `--offers` it
@@ -178,6 +179,38 @@ export const IMAGES = {
   },
 } as const satisfies Record<string, ImagePin>;
 
+/** A platform the GitHub Actions runner is released for, as its release assets name it. */
+export type RunnerPlatform = "linux-x64" | "linux-arm64" | "win-x64" | "osx-x64" | "osx-arm64";
+
+/** The GitHub Actions runner: its version, and per platform the release archive and its SHA-256. */
+export interface RunnerPin {
+  version: string;
+  assets: Record<RunnerPlatform, { url: string; sha256: string }>;
+}
+
+/**
+ * Where the GitHub Actions runner releases: a `.zip` on Windows, a tarball elsewhere. The release
+ * body gives each archive's SHA-256 between `<!-- BEGIN SHA <platform> -->` and
+ * `<!-- END SHA <platform> -->`, which the pin script reads.
+ */
+export const GITHUB_RUNNER_RELEASE = {
+  repo: "actions/runner",
+  tag: (v: string) => `v${v}`,
+  asset: (platform: RunnerPlatform, v: string) =>
+    `actions-runner-${platform}-${v}.${platform === "win-x64" ? "zip" : "tar.gz"}`,
+};
+
+const GITHUB_RUNNER_VERSION = "2.338.0";
+
+/** The pinned runner release archive for `platform`, with its SHA-256. */
+function runnerAsset(platform: RunnerPlatform, sha256: string): { url: string; sha256: string } {
+  const { repo, tag, asset } = GITHUB_RUNNER_RELEASE;
+  return {
+    url: `https://github.com/${repo}/releases/download/${tag(GITHUB_RUNNER_VERSION)}/${asset(platform, GITHUB_RUNNER_VERSION)}`,
+    sha256,
+  };
+}
+
 export const TOOLS = {
   /** The Cloud Native Buildpacks CLI. */
   pack: {
@@ -234,14 +267,43 @@ export const TOOLS = {
     url: "https://downloads.cisofy.com/lynis/lynis-3.1.7.tar.gz",
     sha256: "b5314a07fd85fa3ffc7da57b508f0108ec3280d84e4af823f805d95cbbc2428c",
   },
-} as const satisfies Record<string, ToolPin | ArchiveToolPin>;
+  /**
+   * The GitHub Actions runner for self-hosted runners, on the server and on the user's machine
+   * ({@link GITHUB_RUNNER_RELEASE}); change the version in `GITHUB_RUNNER_VERSION`.
+   */
+  githubRunner: {
+    version: GITHUB_RUNNER_VERSION,
+    assets: {
+      "linux-x64": runnerAsset(
+        "linux-x64",
+        "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32",
+      ),
+      "linux-arm64": runnerAsset(
+        "linux-arm64",
+        "628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b",
+      ),
+      "win-x64": runnerAsset(
+        "win-x64",
+        "f48e0750a21812bca5f82de5f7f5aeae71abee647fab5a582f1742d07eba455f",
+      ),
+      "osx-x64": runnerAsset(
+        "osx-x64",
+        "dea7a58796ce215fc424a8b27c0fdd9b813fa5fc03d109a4a1d38131d6bfa1a3",
+      ),
+      "osx-arm64": runnerAsset(
+        "osx-arm64",
+        "df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2",
+      ),
+    },
+  },
+} as const satisfies Record<string, ToolPin | ArchiveToolPin | RunnerPin>;
 export type ToolKey = keyof typeof TOOLS;
 
 /** The page where CISOfy publishes the current Lynis release and its SHA-256. */
 export const LYNIS_DOWNLOADS_PAGE = "https://cisofy.com/downloads/lynis/";
 
 /** A tool {@link TOOL_RELEASES} lists: every tool with a checksum per architecture. */
-export type ReleasedTool = Exclude<ToolKey, "cosign" | "lynis">;
+export type ReleasedTool = Exclude<ToolKey, "cosign" | "lynis" | "githubRunner">;
 
 /**
  * Where each tool with a checksum releases: the GitHub repository, its tag and archive per

@@ -16,11 +16,12 @@ import {
   parseImageRef,
   platformManifest,
   readBuilderConfig,
+  releaseBodySha256,
   releaseNotesSha1,
   replaceOffers,
   replacePin,
+  setAssetChecksum,
   setPackageVersion,
-  setSopsChecksum,
   setToolChecksum,
   verifiedSha256,
 } from "../scripts/update-pins-lib";
@@ -28,6 +29,7 @@ import {
   ACTIONS,
   BUILDPACKS_OFFERS,
   detectStack,
+  GITHUB_RUNNER_RELEASE,
   IMAGES,
   LOCAL_TOOLS,
   LYNIS_DOWNLOADS_PAGE,
@@ -153,7 +155,35 @@ describe("pins.ts", () => {
     }
     const lines = (await SOURCE).split("\n");
     expect(lines.filter((line) => /^\s+(amd64|arm64|version|sha256): ""/.test(line))).toEqual([]);
-    expect(lines.filter((line) => /^\s+"",?$|sopsAsset\("[\w-]+", ""\)/.test(line))).toEqual([]);
+    expect(
+      lines.filter((line) => /^\s+"",?$|(sops|runner)Asset\("[\w-]+", ""\)/.test(line)),
+    ).toEqual([]);
+  });
+
+  it("pins the GitHub Actions runner 2.338.0: each platform's release archive and its SHA-256", () => {
+    const runner = TOOLS.githubRunner;
+    expect(runner.version).toBe("2.338.0");
+    expect(Object.keys(runner.assets).sort()).toEqual([
+      "linux-arm64",
+      "linux-x64",
+      "osx-arm64",
+      "osx-x64",
+      "win-x64",
+    ]);
+    const base = "https://github.com/actions/runner/releases/download/v2.338.0/";
+    expect(runner.assets["linux-x64"].url).toBe(`${base}actions-runner-linux-x64-2.338.0.tar.gz`);
+    expect(runner.assets["linux-arm64"].url).toBe(
+      `${base}actions-runner-linux-arm64-2.338.0.tar.gz`,
+    );
+    expect(runner.assets["win-x64"].url).toBe(`${base}actions-runner-win-x64-2.338.0.zip`);
+    expect(runner.assets["osx-x64"].url).toBe(`${base}actions-runner-osx-x64-2.338.0.tar.gz`);
+    expect(runner.assets["osx-arm64"].url).toBe(`${base}actions-runner-osx-arm64-2.338.0.tar.gz`);
+    for (const [platform, asset] of Object.entries(runner.assets)) {
+      expect(asset.sha256, platform).toMatch(HEX64);
+    }
+    expect(new Set(Object.values(runner.assets).map((asset) => asset.sha256)).size).toBe(5);
+    expect(GITHUB_RUNNER_RELEASE.repo).toBe("actions/runner");
+    expect(GITHUB_RUNNER_RELEASE.tag("2.338.0")).toBe("v2.338.0");
   });
 
   it("pins Lynis by its tarball and SHA-256", () => {
@@ -520,12 +550,47 @@ describe("the pin script's helpers", () => {
     ]);
     expect(() => setToolChecksum(source, "pack", "sha256", sha)).toThrow(/pack sha256/);
 
-    const sops = setSopsChecksum(source, "darwin-arm64", sha);
+    const sops = setAssetChecksum(source, "sopsAsset", "darwin-arm64", sha);
     const changed = sops.split("\n").filter((line, i) => line !== before[i]);
     expect(changed).toEqual([
       before
         .find((line) => line.includes(LOCAL_TOOLS.sops.assets["darwin-arm64"].sha256))
         ?.replace(LOCAL_TOOLS.sops.assets["darwin-arm64"].sha256, sha),
     ]);
+  });
+
+  it("sets one runner checksum in TOOLS and leaves the rest alone", async () => {
+    const source = await SOURCE;
+    const sha = "a".repeat(64);
+    const before = source.split("\n");
+    const { sha256 } = TOOLS.githubRunner.assets["osx-arm64"];
+    const next = setAssetChecksum(source, "runnerAsset", "osx-arm64", sha);
+    expect(next.split("\n").filter((line, i) => line !== before[i])).toEqual([
+      before.find((line) => line.includes(sha256))?.replace(sha256, sha),
+    ]);
+    expect(() => setAssetChecksum(source, "runnerAsset", "linux-amd64", sha)).toThrow(
+      /no runnerAsset linux-amd64 checksum/,
+    );
+  });
+
+  it("reads each runner platform's SHA-256 between the release body's BEGIN SHA and END SHA markers", () => {
+    const [x64, arm, arm64] = ["1".repeat(64), "2".repeat(64), "3".repeat(64)];
+    const body = [
+      "## SHA-256 Checksums",
+      "",
+      `- actions-runner-linux-x64-2.338.0.tar.gz <!-- BEGIN SHA linux-x64 -->${x64}<!-- END SHA linux-x64 -->`,
+      `- actions-runner-linux-arm-2.338.0.tar.gz <!-- BEGIN SHA linux-arm -->${arm}<!-- END SHA linux-arm -->`,
+      `- actions-runner-linux-arm64-2.338.0.tar.gz <!-- BEGIN SHA linux-arm64 -->${arm64}<!-- END SHA linux-arm64 -->`,
+    ].join("\r\n");
+    expect(releaseBodySha256(body, "linux-x64")).toBe(x64);
+    // linux-arm's marker is a prefix of linux-arm64's, and has its own checksum.
+    expect(releaseBodySha256(body, "linux-arm64")).toBe(arm64);
+    expect(() => releaseBodySha256(body, "osx-arm64")).toThrow(
+      /release body gives no SHA-256 for osx-arm64/,
+    );
+    const unclosed = `<!-- BEGIN SHA win-x64 -->${x64}`;
+    expect(() => releaseBodySha256(unclosed, "win-x64")).toThrow(/win-x64/);
+    const short = `<!-- BEGIN SHA win-x64 -->${x64.slice(1)}<!-- END SHA win-x64 -->`;
+    expect(() => releaseBodySha256(short, "win-x64")).toThrow(/win-x64/);
   });
 });

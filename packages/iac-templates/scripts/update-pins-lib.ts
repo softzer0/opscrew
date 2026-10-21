@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import type { LocalPlatform } from "@opscrew/core";
-import type { BUILDPACKS_OFFERS, PinArch } from "../src/pins";
+import type { BUILDPACKS_OFFERS, PinArch, RunnerPlatform } from "../src/pins";
 
 type OfferLanguage = keyof typeof BUILDPACKS_OFFERS;
 
@@ -285,11 +285,36 @@ export function setToolChecksum(
   });
 }
 
-/** Sets the SHA-256 of `LOCAL_TOOLS.sops`'s asset for `platform` in the source of pins.ts. */
-export function setSopsChecksum(source: string, platform: LocalPlatform, sha256: string): string {
-  const pattern = new RegExp(`(sopsAsset\\(\\s*"${platform}",\\s*)"[0-9a-f]*"`);
-  return inTable(source, "LOCAL_TOOLS", (table) => {
-    if (!pattern.test(table)) throw new Error(`pins.ts has no sops ${platform} checksum.`);
+/**
+ * The SHA-256 a GitHub Actions runner release's body gives for `platform`, between
+ * `<!-- BEGIN SHA <platform> -->` and `<!-- END SHA <platform> -->`; throws when it gives none.
+ */
+export function releaseBodySha256(body: string, platform: RunnerPlatform): string {
+  const name = escapeRegExp(platform);
+  const found = new RegExp(
+    `<!-- BEGIN SHA ${name} -->\\s*([0-9a-f]{64})\\s*<!-- END SHA ${name} -->`,
+  ).exec(body);
+  if (!found) throw new Error(`The release body gives no SHA-256 for ${platform}.`);
+  return found[1] as string;
+}
+
+/** The table of pins.ts each per-platform asset helper is called in. */
+const ASSET_TABLES = { sopsAsset: "LOCAL_TOOLS", runnerAsset: "TOOLS" } as const;
+
+/**
+ * Sets the SHA-256 of one per-platform asset in the source of pins.ts: sops's
+ * (`sopsAsset("<platform>", …)` in LOCAL_TOOLS) or the GitHub Actions runner's (`runnerAsset` in
+ * TOOLS).
+ */
+export function setAssetChecksum(
+  source: string,
+  helper: keyof typeof ASSET_TABLES,
+  platform: LocalPlatform | RunnerPlatform,
+  sha256: string,
+): string {
+  const pattern = new RegExp(`(${helper}\\(\\s*"${platform}",\\s*)"[0-9a-f]*"`);
+  return inTable(source, ASSET_TABLES[helper], (table) => {
+    if (!pattern.test(table)) throw new Error(`pins.ts has no ${helper} ${platform} checksum.`);
     return table.replace(pattern, `$1"${sha256}"`);
   });
 }

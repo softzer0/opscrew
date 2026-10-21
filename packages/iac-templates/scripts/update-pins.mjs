@@ -5,9 +5,11 @@
 // index), tool checksums from the GitHub releases (each asset's SHA-256 digest; for a release whose
 // notes give only a SHA-1, the asset is downloaded, checked against it and hashed), action commits
 // from the GitHub tags, sops's checksums from its GitHub release (each one checked against the
-// release's checksums file) and Lynis's from CISOfy's downloads page (checked against the
-// downloaded tarball; a newer release there is only reported). Tags and versions stay as written
-// in pins.ts: change one there first, then run this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
+// release's checksums file), the GitHub Actions runner's from its release body (the
+// `BEGIN SHA <platform>` markers; a release without one is refused) and Lynis's from CISOfy's
+// downloads page (checked against the downloaded tarball; a newer release there is only
+// reported). Tags and versions stay as written in pins.ts: change one there first, then run
+// this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
 // their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
 //
 // With --offers it refreshes only BUILDPACKS_OFFERS: it reads the pinned Paketo builder's metadata
@@ -23,6 +25,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   ACTIONS,
+  GITHUB_RUNNER_RELEASE,
   IMAGES,
   LOCAL_TOOLS,
   LYNIS_DOWNLOADS_PAGE,
@@ -49,11 +52,12 @@ import {
   parseImageRef,
   platformManifest,
   readBuilderConfig,
+  releaseBodySha256,
   releaseNotesSha1,
   replaceOffers,
   replacePin,
+  setAssetChecksum,
   setPackageVersion,
-  setSopsChecksum,
   setToolChecksum,
   verifiedSha256,
 } from "./update-pins-lib.ts";
@@ -141,8 +145,18 @@ async function updatePins(source) {
   for (const [platform, asset] of Object.entries(SOPS_RELEASE.asset)) {
     const sha256 = checkedAssetSha256(sopsRelease, checksums, asset(sops.version));
     if (sha256 === sops.assets[platform].sha256) continue;
-    source = setSopsChecksum(source, platform, sha256);
+    source = setAssetChecksum(source, "sopsAsset", platform, sha256);
     changes.push(`LOCAL_TOOLS.sops.${platform}: ${sha256}`);
+  }
+  const runner = TOOLS.githubRunner;
+  const runnerRelease = await github(
+    `/repos/${GITHUB_RUNNER_RELEASE.repo}/releases/tags/${GITHUB_RUNNER_RELEASE.tag(runner.version)}`,
+  );
+  for (const [platform, { sha256: pinned }] of Object.entries(runner.assets)) {
+    const sha256 = releaseBodySha256(runnerRelease.body, platform);
+    if (sha256 === pinned) continue;
+    source = setAssetChecksum(source, "runnerAsset", platform, sha256);
+    changes.push(`TOOLS.githubRunner.${platform}: ${sha256}`);
   }
   const lynis = TOOLS.lynis;
   const published = lynisPublished(await fetchText(LYNIS_DOWNLOADS_PAGE));
