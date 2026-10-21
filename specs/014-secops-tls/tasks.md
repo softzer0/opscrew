@@ -461,6 +461,21 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2`, `pnpm lint`
   - Effort: high
 
+- [ ] T1414d [US2] No `plan.yaml` churn from verify and the other phases (found with T1414c, 2026-10-21), in `packages/plan-schema/src/plan.ts` (+ the generated JSON schema), `packages/agents/src/**` (the readers and writers named below), `packages/mcp-server/src/tools/deploy.ts`, `packages/cli/src/commands/provision.ts` (+ tests, fixtures, snapshots)
+  - Why: T1414c made a provision with nothing to change publish nothing. But `verify` rewrites `plan.yaml` after every passing check: it stamps `updatedAt`, sets `deployment.lastCompletedPhase` to `verify` (which provision sets back), and refreshes `deployment.lastDeployAt`. So provision, merge, verify and provision again still opens a pull request with nothing in it. Nothing reads `lastCompletedPhase`, and every reader of `lastDeployAt` only asks whether the app was ever deployed.
+  - Depends: T1414c (its `writePlanIfChanged`)
+  - Accept:
+    - **`deployment.lastCompletedPhase` goes:** from the schema, from provision's and verify's writes, from destroy's strip, and from the tests and fixtures.
+    - **`deployment.lastDeployAt` becomes `firstDeployAt`:** verify sets it only when it is absent, and every reader reads the new name. If some output shows the time to the user, say so in the report and keep that output correct.
+    - **One rule for every phase:** `writePlanIfChanged` moves to `packages/agents/src/shared/`. Besides provision, verify, `opscrew portainer enable|disable` (`portainer/run.ts`) and `recordDomain` (`domain/project.ts`) use it, so a run that changes nothing leaves `plan.yaml` byte-identical.
+    - **When nothing was published,** the CLI and the MCP tool say so plainly: the deployment files did not change, so nothing was committed and no pull request was opened. They no longer say "committed on branch main" or "merge the pull request". When a pull request from earlier is still open, both still show it.
+    - **Tests:**
+      - provision, then merge, verify, and provision again: `plan.yaml` is unchanged after the second provision, and no pull request or branch is created;
+      - a second verify after another deploy leaves `plan.yaml` unchanged;
+      - the CLI and MCP wording when nothing was published.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew --concurrency=2`, `pnpm lint`
+  - Effort: high
+
 - [ ] T1414 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`.
 
 ## `vercel.json` routing (founder, 2026-10-21)
