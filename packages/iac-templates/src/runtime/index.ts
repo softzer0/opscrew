@@ -62,14 +62,6 @@ export interface RuntimeContext extends RenderContext {
    * `additions.nginx`), which its site includes.
    */
   additions?: boolean | undefined;
-  /**
-   * Cloudflare's IP ranges (IPv4 and IPv6, from Cloudflare's API). With them, requests from these
-   * ranges to a hostname Cloudflare's proxy serves carry the visitor's address in
-   * `CF-Connecting-IP`, which the server's proxy then uses as the client's address: nginx in the
-   * app's site, Caddy in the edge's main configuration and the app's site. Every app on a server
-   * should get the same ranges, since the edge's file is shared.
-   */
-  cloudflareRanges?: readonly string[] | undefined;
 }
 
 /** A Portainer target's stack holds both files: reaching these renderers with one is a bug. */

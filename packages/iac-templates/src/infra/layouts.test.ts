@@ -2,7 +2,7 @@ import { checkDialect } from "@opscrew/iac-engine";
 import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
-import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
+import { CF_RANGES, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { renderDeployment } from "../render";
 import type { InfraLayout, RenderedFile, ServerModule } from "../types";
 import {
@@ -39,7 +39,7 @@ function render(name: LayoutName, from: CloudProvider, to: CloudProvider, domain
   return renderInfra(
     movePlan(to, domain),
     testContext({
-      ...(domain ? { cloudflare: testCloudflare() } : {}),
+      ...(domain ? { cloudflare: testCloudflare(), cloudflareRanges: CF_RANGES } : {}),
       layout: layoutFor(name, from, to),
     }),
   );

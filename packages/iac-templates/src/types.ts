@@ -28,8 +28,6 @@ export interface RenderContext {
   acmeEmail?: string;
   cloudflare?: {
     zoneId: string;
-    /** Cloudflare edge ranges used to restrict ports 80/443 when proxied. */
-    ipRanges?: { ipv4: string[]; ipv6: string[] };
     /**
      * Cloudflare account id. Required when the plan uses a Cloudflare Tunnel (an own server in
      * tunnel mode, or a Portainer subdomain): tunnels and Access belong to the account.
@@ -42,6 +40,14 @@ export interface RenderContext {
      */
     oneTimePinIdentityProviderId?: string;
   };
+  /**
+   * Cloudflare's IP ranges (IPv4, then IPv6, from Cloudflare's API). When Cloudflare's proxy
+   * serves the app's hostnames, a cloud firewall opens ports 80/443 only to them, and requests from
+   * them carry the visitor's address in `CF-Connecting-IP`, which the server's proxy then uses as
+   * the client's address: nginx in the app's site, Caddy in the edge's main configuration and the
+   * app's site. Every app on a server should get the same ranges, since the edge's file is shared.
+   */
+  cloudflareRanges?: readonly string[] | undefined;
   /**
    * The SSH port on a server the user owns: the login port in public mode (the port this computer
    * and GitHub Actions connect to, which differs from sshd's when a router forwards it), sshd's

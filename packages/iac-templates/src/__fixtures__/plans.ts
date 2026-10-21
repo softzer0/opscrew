@@ -26,11 +26,8 @@ export function designProbe(
   }
 }
 
-/** Cloudflare edge ranges used by the tests (a short, fixed subset). */
-export const CF_RANGES = {
-  ipv4: ["173.245.48.0/20", "103.21.244.0/22"],
-  ipv6: ["2400:cb00::/32"],
-};
+/** Cloudflare edge ranges used by the tests (a short, fixed subset, IPv4 then IPv6). */
+export const CF_RANGES = ["173.245.48.0/20", "103.21.244.0/22", "2400:cb00::/32"];
 
 export const PUBLIC_KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy";
@@ -158,7 +155,7 @@ export function testContext(overrides: Partial<RenderContext> = {}): RenderConte
 
 /** Cloudflare render context for a zone. */
 export function testCloudflare(): NonNullable<RenderContext["cloudflare"]> {
-  return { zoneId: "0123456789abcdef0123456789abcdef", ipRanges: CF_RANGES };
+  return { zoneId: "0123456789abcdef0123456789abcdef" };
 }
 
 /** Cloudflare account id used by the tunnel and Access tests. */

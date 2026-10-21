@@ -61,7 +61,7 @@ describe("renderInfra for DigitalOcean", () => {
   it("adds Cloudflare DNS next to the Droplet and restricts web ports to Cloudflare", () => {
     const files = renderInfra(
       doPlan({ domain: "example.com", www: true }),
-      testContext({ cloudflare: testCloudflare() }),
+      testContext({ cloudflare: testCloudflare(), cloudflareRanges: CF_RANGES }),
     );
     const vendored = files.filter((f) => f.path.startsWith("opscrew/infra/modules/"));
     expect(new Set(vendored.map((f) => f.path.split("/")[3]))).toEqual(
@@ -75,7 +75,7 @@ describe("renderInfra for DigitalOcean", () => {
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
-      http_allowed_cidrs: [...CF_RANGES.ipv4, ...CF_RANGES.ipv6],
+      http_allowed_cidrs: CF_RANGES,
     });
   });
 

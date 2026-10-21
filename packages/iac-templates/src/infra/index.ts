@@ -40,11 +40,8 @@ const MOVE_NOTE = [
 
 /** CIDRs allowed to reach ports 80/443: Cloudflare's ranges when proxied and restricted. */
 function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
-  const ranges = ctx.cloudflare?.ipRanges;
-  if (webOnlyFromCloudflare(plan) && ranges) {
-    const all = [...ranges.ipv4, ...ranges.ipv6];
-    if (all.length > 0) return all;
-  }
+  const ranges = ctx.cloudflareRanges;
+  if (webOnlyFromCloudflare(plan) && ranges && ranges.length > 0) return [...ranges];
   return OPEN_TO_ALL;
 }
 

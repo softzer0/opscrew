@@ -112,7 +112,6 @@ export function deploymentRenderContext(
       ? {
           cloudflare: {
             zoneId: cloudflare.zoneId,
-            ...(cloudflare.ipRanges ? { ipRanges: cloudflare.ipRanges } : {}),
             accountId: cloudflare.accountId,
             ...(own?.oneTimePinIdentityProviderId !== undefined
               ? { oneTimePinIdentityProviderId: own.oneTimePinIdentityProviderId }

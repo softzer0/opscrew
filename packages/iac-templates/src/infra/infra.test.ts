@@ -36,7 +36,7 @@ describe("renderInfra on a Portainer target", () => {
   });
 });
 
-const CF = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"], ipv6: ["2400:cb00::/32"] };
+const CF = ["173.245.48.0/20", "103.21.244.0/22", "2400:cb00::/32"];
 const PUBLIC_KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy";
 
@@ -92,7 +92,6 @@ function ctx(overrides: Partial<RenderContext> = {}): RenderContext {
 
 const cloudflare = () => ({
   zoneId: "0123456789abcdef0123456789abcdef",
-  ipRanges: CF,
   // Only the tunnel and Access use the account id; cloud roots without them ignore it.
   accountId: "fedcba9876543210fedcba9876543210",
 });
@@ -131,7 +130,7 @@ describe("renderInfra", () => {
   it("adds Cloudflare DNS and restricts web ports to Cloudflare when proxied", () => {
     const files = renderInfra(
       plan({ domain: "example.com", www: true }),
-      ctx({ cloudflare: cloudflare() }),
+      ctx({ cloudflare: cloudflare(), cloudflareRanges: CF }),
     );
     expect(files.some((f) => f.path === "opscrew/infra/modules/cloudflare-dns/main.tf")).toBe(true);
     expect(files.find((f) => f.path.endsWith("prod/main.tf"))?.content).toMatchSnapshot();
@@ -141,7 +140,7 @@ describe("renderInfra", () => {
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
-      http_allowed_cidrs: [...CF.ipv4, ...CF.ipv6],
+      http_allowed_cidrs: CF,
     });
   });
 
@@ -175,7 +174,7 @@ describe("renderInfra", () => {
     expect(
       tfvars(
         plan({ domain: "shop.example.com" }),
-        ctx({ cloudflare: { ...cloudflare(), ipRanges: { ipv4: [], ipv6: [] } } }),
+        ctx({ cloudflare: cloudflare(), cloudflareRanges: [] }),
       ).http_allowed_cidrs,
     ).toEqual(["0.0.0.0/0", "::/0"]);
   });
