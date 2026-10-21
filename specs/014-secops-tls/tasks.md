@@ -437,7 +437,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1414b [US1] [US5] HTTP to HTTPS for origin-protected hostnames (found live, 2026-10-21), in `packages/iac-templates/src/{edge,runtime,portainer-target}/**` (+ tests, snapshots)
+- [X] T1414b [US1] [US5] HTTP to HTTPS for origin-protected hostnames (found live, 2026-10-21), in `packages/iac-templates/src/{edge,runtime,portainer-target}/**` (+ tests, snapshots)
   - Why: the `proxied` live pass got Cloudflare's 520 for `http://<host>/`. Cloudflare forwards a visitor's plain HTTP request to the origin's port 80, and for a hostname served with OpsCrew's origin certificate the edge has no HTTP site there, so the catch-all `http:// { abort }` takes it.
   - Accept:
     - **Caddy, server edge and Portainer stack:** for the hostnames served with origin TLS, an explicit `http://<hosts> { redir https://{host}{uri} 308 }` site, before the catch-all. DNS-only sites keep Caddy's automatic redirect and ACME's HTTP-01.
