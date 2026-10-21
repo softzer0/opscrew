@@ -55,7 +55,7 @@ export async function planSharedRemoval(
     zone: plan.dns.domain === undefined ? "the app's zone" : `the zone of ${plan.dns.domain}`,
     desired: {
       hostnames: {},
-      ...(tls ? { tls: { proxied: [], retiring: [], served: { requiring: [] } } } : {}),
+      ...(tls ? { tls: { proxied: [], served: { requiring: [] } } } : {}),
     },
     record,
     command: COMMAND,

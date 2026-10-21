@@ -236,7 +236,7 @@ describe("planOriginTls and the origin TLS values", () => {
       record,
       served: { requiring: [] },
     });
-    expect(second?.desired).toEqual({ proxied: [], retiring: [], served: { requiring: [] } });
+    expect(second?.desired).toEqual({ proxied: [], served: { requiring: [] } });
     expect(second?.holdsProxy).toBe(false);
     // Without anything recorded or wanted there is no origin TLS to plan.
     expect(

@@ -232,7 +232,6 @@ export async function planOriginTls(
   return {
     desired: {
       proxied,
-      retiring: [],
       ...(served !== undefined ? { served } : {}),
       ...(request !== undefined && keys !== undefined
         ? {

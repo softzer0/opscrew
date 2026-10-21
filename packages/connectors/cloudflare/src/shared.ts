@@ -186,14 +186,12 @@ export interface SharedDesired {
   access?: { authDomain: string; oneTimePin: boolean };
   /** Origin TLS for the app's proxied hostnames (feature 014); absent: none is planned. */
   tls?: {
-    /** The app's proxied hostnames (empty on destroy). */
-    proxied: string[];
     /**
-     * Hostnames that left the proxy, kept until the server shows it. The plan turns off every
-     * hostname this app's record turned on that is not in `proxied` and whose setting is still on
-     * with the app's client certificate, and no other.
+     * The app's proxied hostnames (empty on destroy). The plan turns off every hostname this app's
+     * record turned on that is not in `proxied` and whose setting is still on with the app's
+     * client certificate, and no other, once `served` shows the server no longer requires it.
      */
-    retiring: string[];
+    proxied: string[];
     /** What the origin uses now, read from the server; absent when it could not be read. */
     served?: { originSha256?: string; requiring: string[] };
     /** Present only when a new origin certificate is wanted: its CSR (PEM). */

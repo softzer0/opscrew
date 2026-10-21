@@ -1158,12 +1158,12 @@ describe("origin TLS and the zone's minimum TLS", () => {
   /** A provision that wants origin TLS for `proxied` (and 011's rules for A). */
   const wanted = (m: Material, proxied = A, extra: Partial<DesiredTls> = {}): SharedDesired => ({
     hostnames: both(A),
-    tls: { proxied, retiring: [], origin: { csr: m.csr }, client: { sha256: m.sha256 }, ...extra },
+    tls: { proxied, origin: { csr: m.csr }, client: { sha256: m.sha256 }, ...extra },
   });
   /** A destroy: no hostnames, nothing proxied. */
   const gone = (served?: DesiredTls["served"]): SharedDesired => ({
     hostnames: {},
-    tls: { proxied: [], retiring: [], ...(served ? { served } : {}) },
+    tls: { proxied: [], ...(served ? { served } : {}) },
   });
 
   async function tlsPlan(
@@ -1610,7 +1610,7 @@ describe("origin TLS and the zone's minimum TLS", () => {
     const old = first.record.tls?.origin as { id: string; sha256: string };
     const { csr } = material([SHOP]);
     const leaving = (served: { originSha256: string; requiring: string[] }) =>
-      wanted(m, [SHOP], { retiring: [WWW], origin: { csr }, served });
+      wanted(m, [SHOP], { origin: { csr }, served });
 
     // The first run: a certificate for what stays proxied; www keeps its requirement for now.
     const one = await tlsPlan(
@@ -1714,7 +1714,6 @@ describe("origin TLS and the zone's minimum TLS", () => {
     const other = material(B);
     const theirs: DesiredTls = {
       proxied: B,
-      retiring: [],
       origin: { csr: other.csr },
       client: { sha256: other.sha256 },
     };
