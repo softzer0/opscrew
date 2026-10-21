@@ -305,7 +305,7 @@ Effort`.
 
 ## Phase 5: The agents
 
-- [ ] T1409a [US1] [US4] [US5] Origin TLS, CAA, minimum TLS and the proxy in provision, destroy and retarget, in `packages/agents/src/{provision,destroy,retarget}/**` (not the files T1404 owns)
+- [X] T1409a [US1] [US4] [US5] Origin TLS, CAA, minimum TLS and the proxy in provision, destroy and retarget, in `packages/agents/src/{provision,destroy,retarget}/**` (not the files T1404 owns)
   - Owns: those paths (+ tests), except `provision/publish.ts` and `retarget/finish.ts` beyond the calls this task adds
   - Reads: contracts/cloudflare-tls.md; data-model.md; research.md R3, R4, R5; plan.md "10."; spec US1, US4, US5
   - Depends: T1403, T1404, T1406, T1407, T1408, T1410
