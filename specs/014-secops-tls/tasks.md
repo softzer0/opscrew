@@ -321,6 +321,7 @@ Effort`.
     - **A hostname leaving the proxy** takes two runs: the first keeps the record proxied and drops the requirement, and says to run again (R3).
     - **CAA:** the `caa_issuers` for the DNS module per `target.edge`. Existing non-OpsCrew CAA records at the app's names are reported, not replaced.
     - **The minimum TLS** decision is planned inside the same shared plan.
+    - **The recovery copy in provision** (T1404's interface): the first provision asks for the key file's path interactively, or takes `--key-out` (T1411), or an existing recipient. It passes `recovery` to `publishDeploySetup`. `SECRETS_COPY_CHANGED_ELSEWHERE` is checked at the start of provision, before any plan or change, not only at the publish step.
     - **The additions:** `scanProxyAdditions` always, the proxy's checker locally when Docker is present, and gixy-ng when it is installed. Any refusal stops before any change. A file for the other proxy is refused with how to convert it.
     - **A renewed certificate or a changed secret alone** starts the deploy (`dispatchWorkflow`), and the plan's approval text names that deploy before it is approved.
     - **destroy**, after the app's site is gone: revokes the origin certificate and every `superseded` one, disables and deletes the client certificate, and removes the CAA records with the DNS module. The minimum TLS stays.

@@ -241,7 +241,8 @@ research.md, and the tasks after it read them.
   - From `projectHomeDir`: `generated_values.json`, `deploy_key`, `deploy_key.pub`,
     `known_hosts`, `state_passphrase`, `deploy_secrets.json`, `portainer-env.key`,
     `portainer-webhook` and `portainer_password`.
-  - From `.opscrew`: `tfstate/*.tfstate`, `server.json`, `cloudflare.json` and `state.json`.
+  - From `.opscrew`: `tfstate/*.tfstate`, `server.json` and `cloudflare.json`. Not `state.json`,
+    which only records phase outcomes and would change the copy on every run.
 
   Each file becomes one string value under its relative path (`home/deploy_key`,
   `state/tfstate/prod.tfstate`).
