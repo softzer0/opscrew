@@ -6,17 +6,27 @@ import type {
   ScanReport,
 } from "@opscrew/contracts";
 import { exists, plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
+import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
+  type DeepPins,
+  type DeepToolResult,
   defaultTcpConnect,
   evaluatePlanPolicies,
   HOST_CHECKS,
+  type LocalDocker,
+  localDocker,
+  localDockerProblem,
   ownServerHostChecks,
   probePorts,
   probeSshPasswordAuth,
   runHostChecks,
+  runLynis,
   runScan,
+  runSshAudit,
+  runTestssl,
   serviceHostChecks,
+  skippedTool,
   type TcpConnect,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -25,6 +35,7 @@ import { findSavedPlan } from "../provision/plan-apply";
 import type { PortainerServices } from "../provision/types";
 import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import { verifyHosts } from "../verify/checks";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
@@ -60,6 +71,10 @@ export interface RunSecureOptions {
   ipv6Route?: () => Promise<boolean>;
   /** The user's Portainer: its client (default: the pinned `portainerClient`; a fake in tests). */
   portainer?: Pick<PortainerServices, "client">;
+  /** Also run the deeper checks, Lynis, ssh-audit and testssl.sh (`--deep`). Default false. */
+  deep?: boolean;
+  /** Docker on this computer, for ssh-audit and testssl.sh (default: `docker` through `deps.runner`). */
+  docker?: LocalDocker;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -69,6 +84,8 @@ export interface SecureResult {
   policies?: PolicyResult[];
   hostChecks: CheckResult[];
   probes: CheckResult[];
+  /** The deeper checks, one per tool; undefined without `deep`. */
+  deep?: DeepToolResult[];
   /** Every failure and warning, most severe first. */
   problems: SecurityProblem[];
   /** True when nothing failed (warnings allowed). */
@@ -111,7 +128,12 @@ async function checkServer(
   host: string,
   own: OwnSecureTarget | undefined,
   options: RunSecureOptions,
-): Promise<{ hostChecks: CheckResult[]; probes: CheckResult[]; skipped?: string }> {
+): Promise<{
+  hostChecks: CheckResult[];
+  probes: CheckResult[];
+  skipped?: string;
+  remote?: RemoteExec;
+}> {
   const { paths, reporter } = deps;
   const remote =
     options.remote ??
@@ -171,13 +193,125 @@ async function checkServer(
         : {}),
     }),
   ];
-  return { hostChecks, probes, ...(skipped !== undefined ? { skipped } : {}) };
+  return {
+    hostChecks,
+    probes,
+    ...(skipped !== undefined ? { skipped } : {}),
+    ...(remote !== undefined ? { remote } : {}),
+  };
+}
+
+/** The pins the deeper checks run from: Lynis's container is the pinned Alpine curl image. */
+const DEEP_PINS: DeepPins = {
+  lynisImage: IMAGES.curl.ref,
+  lynis: TOOLS.lynis,
+  sshAudit: IMAGES.sshAudit.ref,
+  testssl: IMAGES.testssl.ref,
+};
+
+/** True when visitors reach the app at Cloudflare's edge: proxied DNS or a Cloudflare Tunnel. */
+function behindCloudflare(plan: DeployPlan): boolean {
+  const { dns, target } = plan;
+  return (
+    (dns.provider === "cloudflare" && dns.proxied) ||
+    (target.provider === "own" && target.access === "tunnel") ||
+    (target.provider === "portainer" && target.web.mode === "tunnel")
+  );
+}
+
+/** How the deeper checks reach the server; undefined in the user's Portainer (no SSH). */
+interface DeepServer {
+  /** The SSH session as `deploy`; undefined when the server checks were skipped. */
+  remote?: RemoteExec;
+  /** Why the server checks were skipped. */
+  skipped?: string;
+  sshHost?: string;
+  sshPort: number;
+}
+
+const PORTAINER_DEEP_SKIPPED =
+  "OpsCrew reaches your Portainer only through its API, never over SSH, so the server audit and the SSH audit do not run there. The TLS audit still runs.";
+const PORTAINER_DEEP_HINT =
+  "Run Lynis and ssh-audit on the Portainer host yourself if you manage it.";
+
+/**
+ * The deeper checks (FR-1420–FR-1424), after today's checks: Lynis on the server over SSH,
+ * ssh-audit and testssl.sh (per public hostname, labelled Cloudflare's edge when proxied) from this
+ * computer's Docker. A tool that cannot run gives one `skip` with how to enable it, and the others
+ * still run. In the user's Portainer only testssl.sh runs.
+ */
+async function deepChecks(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  server: DeepServer | undefined,
+  docker: LocalDocker,
+): Promise<DeepToolResult[]> {
+  const { reporter } = deps;
+  const unreachable = (tool: "lynis" | "ssh-audit") =>
+    server === undefined
+      ? skippedTool(tool, DEEP_PINS, PORTAINER_DEEP_SKIPPED, PORTAINER_DEEP_HINT)
+      : skippedTool(
+          tool,
+          DEEP_PINS,
+          `The server could not be reached: ${server.skipped ?? UNKNOWN_SERVER_ADDRESS}`,
+          "Run `opscrew secure --deep` on the computer that provisioned the server.",
+        );
+
+  let lynis: DeepToolResult;
+  if (server?.remote === undefined) {
+    lynis = unreachable("lynis");
+  } else {
+    reporter.step("Auditing the server with Lynis, read-only (up to 4 minutes)");
+    lynis = await runLynis(server.remote, DEEP_PINS, deps.fetch);
+  }
+
+  const noDocker = await localDockerProblem(docker);
+  let sshAudit: DeepToolResult;
+  if (server?.sshHost === undefined) {
+    sshAudit = unreachable("ssh-audit");
+  } else if (noDocker !== undefined) {
+    sshAudit = skippedTool("ssh-audit", DEEP_PINS, noDocker.message, noDocker.remediation);
+  } else {
+    reporter.step("Auditing the server's SSH with ssh-audit");
+    sshAudit = await runSshAudit(docker, server.sshHost, server.sshPort, DEEP_PINS);
+  }
+
+  const hostnames = verifyHosts(plan);
+  let testssl: DeepToolResult;
+  if (hostnames.length === 0) {
+    testssl = skippedTool(
+      "testssl",
+      DEEP_PINS,
+      "The app has no domain, so there is no TLS to audit: testssl.sh tests hostnames only.",
+      "Give the app a domain, provision it, then run `opscrew secure --deep` again.",
+    );
+  } else if (noDocker !== undefined) {
+    testssl = skippedTool("testssl", DEEP_PINS, noDocker.message, noDocker.remediation);
+  } else {
+    // One result for all hostnames, with the version testssl.sh reported where it could scan.
+    const edge = behindCloudflare(plan);
+    const runs: DeepToolResult[] = [];
+    for (const hostname of hostnames) {
+      reporter.step(
+        `Auditing the TLS of ${hostname} with testssl.sh${edge ? " (at Cloudflare's edge)" : ""}`,
+      );
+      runs.push(await runTestssl(docker, hostname, DEEP_PINS, { edge }));
+    }
+    const scanned = (run: DeepToolResult) => run.results.some((r) => r.status !== "skip");
+    testssl = {
+      tool: "testssl",
+      version: (runs.find(scanned) ?? (runs[0] as DeepToolResult)).version,
+      results: runs.flatMap((run) => run.results),
+    };
+  }
+  return [lynis, sshAudit, testssl];
 }
 
 /**
  * The secure phase: re-runs the repository scan, evaluates the plan policies (when an engine plan
  * is given), runs the hardening checks on the server over SSH as `deploy`, probes from outside that
- * only the expected ports answer and that SSH refuses passwords, then writes
+ * only the expected ports answer and that SSH refuses passwords, with `deep` also runs the deeper
+ * checks (see `deepChecks`), then writes
  * `opscrew/SECURITY_REPORT.md` and prints a summary. Marks `secure` (`failed` when anything fails).
  */
 export async function runSecure(
@@ -219,6 +353,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let hostChecks: CheckResult[] = [];
   let probes: CheckResult[] = [];
   let hostChecksSkipped: string | undefined;
+  let remote: RemoteExec | undefined;
   const own = plan.target.provider === "own" ? await ownSecureTarget(deps, plan) : undefined;
   const sshHost = own?.sshHost ?? host;
   if (portainer) {
@@ -235,7 +370,24 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     hostChecks = checked.hostChecks;
     probes = checked.probes;
     hostChecksSkipped = checked.skipped;
+    remote = checked.remote;
   }
+
+  const deep = options.deep
+    ? await deepChecks(
+        deps,
+        plan,
+        portainer
+          ? undefined
+          : {
+              ...(remote !== undefined ? { remote } : {}),
+              ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
+              ...(sshHost !== undefined ? { sshHost } : {}),
+              sshPort: own?.sshPort ?? 22,
+            },
+        options.docker ?? localDocker(deps.runner),
+      )
+    : undefined;
 
   const shownHost = plan.target.provider === "own" ? own?.probeHost : host;
   const input: SecurityReportInput = {
@@ -248,6 +400,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(shownHost !== undefined ? { host: shownHost } : {}),
     ...(policies !== undefined ? { policies } : {}),
     ...(hostChecksSkipped !== undefined ? { hostChecksSkipped } : {}),
+    ...(deep !== undefined ? { deep } : {}),
     ...(portainer
       ? { portainer: { notes: PORTAINER_SECURE_NOTES, probesSkipped: PORTAINER_PROBES_SKIPPED } }
       : {}),
@@ -303,6 +456,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(policies !== undefined ? { policies } : {}),
     hostChecks,
     probes,
+    ...(deep !== undefined ? { deep } : {}),
     problems,
     passed,
     reportPath,

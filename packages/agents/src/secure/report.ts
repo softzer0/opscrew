@@ -7,6 +7,8 @@ import {
 } from "@opscrew/contracts";
 import { plural } from "@opscrew/core";
 import {
+  DEEP_TOOL_NAME,
+  type DeepToolResult,
   findingLocation,
   formatCounts,
   formatUtc,
@@ -46,13 +48,21 @@ export interface SecurityReportInput {
    * (the host, backups).
    */
   portainer?: { notes: readonly string[]; probesSkipped: string };
+  /** The deeper checks (`--deep`), one per tool; absent without it. */
+  deep?: readonly DeepToolResult[];
 }
 
 /** One item that needs attention, from any section of the report. */
 export interface SecurityProblem {
   severity: Severity;
   status: "fail" | "warn";
-  area: "Code scan" | "Infrastructure policy" | "Server" | "Portainer stacks" | "Outside probe";
+  area:
+    | "Code scan"
+    | "Infrastructure policy"
+    | "Server"
+    | "Portainer stacks"
+    | "Outside probe"
+    | "Deeper checks";
   /** What is wrong, in one line. */
   title: string;
   /** More detail: the finding's description, the policy message or what the check expects. */
@@ -73,6 +83,11 @@ const STATUS: Record<CheckResult["status"], string> = {
   warn: "Warn",
   skip: "Skip",
 };
+
+/** The results that count: known noise is listed apart. */
+function counted(results: readonly CheckResult[]): CheckResult[] {
+  return results.filter((check) => check.noise === undefined);
+}
 
 function checkProblems(
   checks: readonly CheckResult[],
@@ -128,6 +143,21 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
       input.portainer !== undefined ? "Portainer stacks" : "Server",
     ),
     ...checkProblems(input.probes, "Outside probe"),
+    ...(input.deep ?? []).flatMap((run) =>
+      counted(run.results)
+        .filter((check) => check.status === "fail" || check.status === "warn")
+        .map(
+          (check): SecurityProblem => ({
+            severity: check.severity,
+            status: check.status as "fail" | "warn",
+            area: "Deeper checks",
+            title: check.message,
+            detail: `${DEEP_TOOL_NAME[run.tool]}: ${check.title}.`,
+            ...(check.remediation !== undefined ? { fix: check.remediation } : {}),
+            ...(check.target !== undefined ? { where: check.target } : {}),
+          }),
+        ),
+    ),
   ];
   return all
     .map((problem, index) => ({ problem, index }))
@@ -159,6 +189,61 @@ function checkTable(checks: readonly CheckResult[]): string[] {
         `| ${STATUS[check.status]} | ${SEVERITY_LABEL[check.severity]} | ${tableCell(check.title)} | ${tableCell(prose(check.message))} |`,
     ),
   ];
+}
+
+const DEEP_TOOL_ROLE: Readonly<Record<DeepToolResult["tool"], string>> = {
+  lynis: "The server's own audit, run in a read-only container that leaves nothing behind.",
+  "ssh-audit": "The SSH service, audited from this computer.",
+  testssl: "The TLS visitors see, audited from this computer.",
+};
+
+/**
+ * "Deeper checks": per tool its version, the hardening index (Lynis), the results that count (a
+ * skip with how to enable it) and the known noise apart, with why.
+ */
+function deepSection(deep: readonly DeepToolResult[]): string[] {
+  const out = [
+    "## Deeper checks",
+    "",
+    "Run with `opscrew secure --deep`. They change nothing on the server.",
+    "",
+  ];
+  for (const run of deep) {
+    out.push(`### ${DEEP_TOOL_NAME[run.tool]} ${run.version}`, "", DEEP_TOOL_ROLE[run.tool], "");
+    if (run.hardeningIndex !== undefined) {
+      out.push(`Hardening index: **${run.hardeningIndex}** of 100.`, "");
+    }
+    const results = counted(run.results);
+    if (results.length > 0) {
+      out.push(
+        "| Result | Severity | Check | Where | Details |",
+        "|---|---|---|---|---|",
+        ...results.map((check) => {
+          const details =
+            check.status === "skip" && check.remediation !== undefined
+              ? `${check.message} ${check.remediation}`
+              : check.message;
+          return `| ${STATUS[check.status]} | ${SEVERITY_LABEL[check.severity]} | ${tableCell(check.title)} | ${tableCell(check.target ?? "")} | ${tableCell(prose(details))} |`;
+        }),
+        "",
+      );
+    }
+    const noise = run.results.filter((check) => check.noise !== undefined);
+    if (noise.length > 0) {
+      out.push(
+        "Known noise, set apart and not counted:",
+        "",
+        "| Check | Where | Details | Why it is set apart |",
+        "|---|---|---|---|",
+        ...noise.map(
+          (check) =>
+            `| ${tableCell(check.title)} | ${tableCell(check.target ?? "")} | ${tableCell(prose(check.message))} | ${tableCell(prose(check.noise ?? ""))} |`,
+        ),
+        "",
+      );
+    }
+  }
+  return out;
 }
 
 /**
@@ -193,6 +278,11 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     } |`,
     `| ${input.portainer !== undefined ? "Stacks in your Portainer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
     `| Outside probes | ${input.probes.length === 0 ? "skipped" : summarizeChecks(input.probes)} |`,
+    ...(input.deep !== undefined
+      ? [
+          `| Deeper checks | ${summarizeChecks(input.deep.flatMap((run) => counted(run.results)))} |`,
+        ]
+      : []),
     "",
     "## What to fix",
     "",
@@ -296,6 +386,8 @@ export function renderSecurityReport(input: SecurityReportInput): string {
       "",
     );
   }
+
+  if (input.deep !== undefined) out.push(...deepSection(input.deep));
 
   out.push(
     "---",

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { findExecutable } from "@opscrew/core";
 import { serviceSpec } from "@opscrew/iac-templates";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
+import type { LocalDocker } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
 import {
   deployImage,
@@ -35,6 +36,55 @@ const secure = (s: PortainerProject) =>
   });
 
 describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer", () => {
+  it("with --deep runs only testssl.sh, at Cloudflare's edge, and says why the other two do not run", async () => {
+    const s = await deployed();
+    const calls: (readonly string[])[] = [];
+    const docker: LocalDocker = {
+      async run(args) {
+        calls.push(args);
+        if (args[0] === "version") return { exitCode: 0, stdout: "29.8.2\n", stderr: "" };
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            version: "3.2.4 ",
+            scanResult: [{ targetHost: "shop.example.com", protocols: [] }],
+          }),
+          stderr: "",
+        };
+      },
+    };
+    const result = await runSecure(s.deps, {
+      scanners: [],
+      offline: true,
+      tcpConnect: async () => {
+        throw new Error("secure probes no port of a Portainer host");
+      },
+      deep: true,
+      docker,
+      ...(s.services.portainer?.client !== undefined
+        ? { portainer: { client: s.services.portainer.client } }
+        : {}),
+    });
+    const [lynis, sshAudit, testssl] = result.deep ?? [];
+    for (const run of [lynis, sshAudit]) {
+      expect(run?.results).toEqual([
+        expect.objectContaining({
+          status: "skip",
+          message: expect.stringContaining(
+            "OpsCrew reaches your Portainer only through its API, never over SSH",
+          ),
+        }),
+      ]);
+    }
+    expect(testssl?.results).toEqual([
+      expect.objectContaining({ status: "pass", target: "shop.example.com (Cloudflare's edge)" }),
+    ]);
+    expect(calls.filter((args) => args[0] === "run").map((args) => args.at(-1))).toEqual([
+      "shop.example.com:443",
+    ]);
+    expect(result.report).toContain("### testssl.sh 3.2.4");
+  });
+
   it("without the token or the connection skips the Portainer checks plainly and still writes the report", async () => {
     const s = await portainerProject();
     delete s.deps.env.PORTAINER_API_KEY;

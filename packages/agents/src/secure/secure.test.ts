@@ -5,12 +5,19 @@ import type {
   CheckResult,
   CommandOptions,
   CommandResult,
+  FetchLike,
   Scanner,
   ScanReport,
 } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
+import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
-import { createSecretsScanner, type TcpConnect } from "@opscrew/secops";
+import {
+  createSecretsScanner,
+  type DeepToolResult,
+  type LocalDocker,
+  type TcpConnect,
+} from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
 import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../testing";
@@ -42,6 +49,90 @@ const SS_OUTPUT = [
   "LISTEN 0      4096   127.0.0.53%lo:53  0.0.0.0:*",
   "LISTEN 0      4096   [::]:22           [::]:*",
 ].join("\n");
+
+/** A short Lynis report in the layout of the 014 spike's (`--deep`). */
+const LYNIS_REPORT = [
+  "lynis_version=3.1.7",
+  "warning[]=PKGS-7388|Can't find any security repository in /etc/apt/sources.list or sources.list.d directory|-|-|",
+  "warning[]=PKGS-7392|Found one or more vulnerable packages.|-|-|",
+  "suggestion[]=PKGS-7392|Update your system with apt-get update, apt-get upgrade, apt-get dist-upgrade and/or unattended-upgrades|-|-|",
+  "suggestion[]=FILE-6310|To decrease the impact of a full /home file system, place /home on a separate partition|-|-|",
+  "hardening_index=62",
+].join("\n");
+
+const SSH_AUDIT_JSON = JSON.stringify({
+  banner: { software: "OpenSSH_9.6p1" },
+  kex: [
+    { algorithm: "sntrup761x25519-sha512@openssh.com", notes: { info: ["default"] } },
+    {
+      algorithm: "ecdh-sha2-nistp256",
+      notes: {
+        fail: [
+          "using elliptic curves that are suspected as being backdoored by the U.S. National Security Agency",
+        ],
+      },
+    },
+  ],
+  key: [{ algorithm: "ssh-ed25519", notes: { info: ["available since OpenSSH 6.5"] } }],
+  enc: [{ algorithm: "chacha20-poly1305@openssh.com", notes: {} }],
+  mac: [{ algorithm: "hmac-sha1", notes: { fail: ["using broken SHA-1 hash algorithm"] } }],
+});
+
+const SSH_POLICY_JSON = JSON.stringify({
+  errors: [
+    {
+      actual: ["hmac-sha1"],
+      expected_optional: [""],
+      expected_required: ["hmac-sha2-512-etm@openssh.com"],
+      mismatched_field: "MACs",
+    },
+  ],
+  host: SERVER_IPV4,
+  passed: false,
+  policy: "Hardened Ubuntu Server 24.04 LTS (version 2)",
+  port: 22,
+  warnings: [],
+});
+
+const TESTSSL_JSON = JSON.stringify({
+  version: "3.2.4 ",
+  scanResult: [
+    {
+      targetHost: "shop.example.com",
+      protocols: [{ id: "TLS1_3", severity: "OK", finding: "offered with final" }],
+      serverDefaults: [
+        { id: "OCSP_stapling", severity: "LOW", finding: "not offered" },
+        { id: "cert_trust", severity: "INFO", finding: "Ok via SAN" },
+      ],
+      headerResponse: [{ id: "security_headers", severity: "MEDIUM", finding: "--" }],
+    },
+  ],
+});
+
+/** Docker on this computer: ssh-audit's audit and policy, testssl.sh's JSON (exit 3 as ssh-audit does). */
+function fakeLocalDocker() {
+  const calls: (readonly string[])[] = [];
+  const docker: LocalDocker = {
+    async run(args) {
+      calls.push(args);
+      if (args[0] === "version") return { exitCode: 0, stdout: "29.8.2\n", stderr: "" };
+      if (args.includes(IMAGES.sshAudit.ref)) {
+        return {
+          exitCode: 3,
+          stdout: args.includes("-P") ? SSH_POLICY_JSON : SSH_AUDIT_JSON,
+          stderr: "",
+        };
+      }
+      return { exitCode: 0, stdout: TESTSSL_JSON, stderr: "" };
+    },
+  };
+  return { docker, calls };
+}
+
+const lynisFetch: FetchLike = async (url) => {
+  if (String(url) !== TOOLS.lynis.url) throw new Error(`unexpected fetch ${String(url)}`);
+  return new Response(new Uint8Array([31, 139, 8, 0]));
+};
 
 interface ServerOptions {
   /** Password login left on (sshd drop-in and the outside probe). */
@@ -94,6 +185,10 @@ function serverScript(o: ServerOptions = {}) {
       case "apt list --upgradable 2>/dev/null | grep -ci security || true":
         return ok("0");
       default:
+        // `--deep`: Lynis's image is not on the server, its container prints the report.
+        if (remote?.startsWith("docker image inspect")) return ok("no");
+        if (remote?.startsWith("docker run")) return ok(LYNIS_REPORT);
+        if (remote?.startsWith("if docker image inspect")) return ok("");
         // The app's Postgres (`db`): its ports and the login variables that are set.
         if (remote?.includes("{{.Ports}}")) return ok(o.dbPorts ?? "5432/tcp");
         if (remote?.includes("docker inspect")) return ok(o.dbLogin ?? "POSTGRES_PASSWORD");
@@ -112,7 +207,7 @@ const noScanners: Scanner[] = [];
 async function setup(
   plan: TestPlanOptions = {},
   server: ServerOptions = {},
-  options: { deployKey?: boolean } = {},
+  options: { deployKey?: boolean; fetch?: FetchLike } = {},
 ): Promise<TestPhaseDeps & { runner: ScriptedRunner }> {
   const root = await mkdtemp(join(tmpdir(), "opscrew-secure-"));
   const runner = new ScriptedRunner(serverScript(server));
@@ -120,6 +215,7 @@ async function setup(
     root,
     runner,
     clock: { now: () => new Date(NOW) },
+    ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
   });
   await writeArtifact("plan", deps.paths.files.plan, testPlan(plan));
   if (plan.ip !== false) await recordServerAddress(deps.paths, SERVER);
@@ -440,6 +536,189 @@ describe("runSecure", () => {
       code: "ARTIFACT_MISSING",
     });
     expect((await deps.state.read()).phases.secure?.status).toBe("failed");
+  });
+});
+
+describe("runSecure --deep", () => {
+  const lynisCalls = (deps: TestPhaseDeps & { runner: ScriptedRunner }) =>
+    deps.runner.calls.filter((c) => (c.args.at(-1) ?? "").includes("docker image"));
+
+  it("without --deep runs and reports exactly as before (FR-1425)", async () => {
+    const deps = await setup({ httpAllowedFrom: "any" });
+    const local = fakeLocalDocker();
+    const result = await runSecure(deps, {
+      scanners: noScanners,
+      tcpConnect: ports(),
+      docker: local.docker,
+    });
+    expect(local.calls).toEqual([]);
+    expect(lynisCalls(deps)).toEqual([]);
+    expect(result.deep).toBeUndefined();
+    expect(result.report).not.toContain("Deeper checks");
+    expect(result.report).toMatchSnapshot();
+  });
+
+  it("runs Lynis over SSH, then ssh-audit and testssl.sh from this computer, and reports them", async () => {
+    const deps = await setup({ httpAllowedFrom: "any" }, {}, { fetch: lynisFetch });
+    const local = fakeLocalDocker();
+    const result = await runSecure(deps, {
+      scanners: noScanners,
+      tcpConnect: ports(),
+      deep: true,
+      docker: local.docker,
+    });
+
+    expect(result.deep?.map((run) => [run.tool, run.version])).toEqual([
+      ["lynis", "3.1.7"],
+      ["ssh-audit", "3.9.0"],
+      ["testssl", "3.2.4"],
+    ]);
+    // Lynis: one container from the pinned image over the deploy user's SSH, then the image goes.
+    const run = deps.runner.calls.find((c) => (c.args.at(-1) ?? "").startsWith("docker run"));
+    expect(run?.args).toContain(`deploy@${SERVER_IPV4}`);
+    expect(run?.args.at(-1)).toContain(IMAGES.curl.ref);
+    expect(run?.options?.timeoutMs).toBe(240_000);
+    expect(lynisCalls(deps).at(-1)?.args.at(-1)).toContain(`docker image rm ${IMAGES.curl.ref}`);
+    // ssh-audit against the server's SSH port; testssl.sh against the hostname.
+    expect(local.calls.filter((args) => args.includes(IMAGES.sshAudit.ref))[0]?.slice(-3)).toEqual([
+      "-p",
+      "22",
+      SERVER_IPV4,
+    ]);
+    expect(local.calls.at(-1)?.at(-1)).toBe("shop.example.com:443");
+
+    expect(result.deep?.[0]?.hardeningIndex).toBe(62);
+    expect(result.problems.filter((p) => p.area === "Deeper checks").map((p) => p.title)).toEqual([
+      expect.stringContaining("does not meet the policy: MACs differ"),
+      "The Lynis hardening index is 62 of 100.",
+      "Found one or more vulnerable packages.",
+      "security_headers: none",
+      "Update your system with apt-get update, apt-get upgrade, apt-get dist-upgrade and/or unattended-upgrades",
+      "hmac-sha1: using broken SHA-1 hash algorithm.",
+    ]);
+    expect(result.passed).toBe(false);
+
+    const report = result.report;
+    expect(report).toContain("| Deeper checks | 0 passed, 1 failed, 5 warnings, 0 skipped |");
+    expect(report).toContain("## Deeper checks");
+    expect(report).toContain("### Lynis 3.1.7");
+    expect(report).toContain("Hardening index: **62** of 100.");
+    expect(report).toContain("### ssh-audit 3.9.0");
+    expect(report).toContain("### testssl.sh 3.2.4");
+    expect(report).toContain("shop.example.com (Cloudflare's edge)");
+    expect(report).toContain("Known noise, set apart and not counted:");
+    expect(report).toContain("deb822");
+    // Proxied: the server's address stays out of the committed report.
+    expect(report).not.toContain(SERVER_IPV4);
+    expect(report.slice(report.indexOf("## Deeper checks"))).toMatchSnapshot();
+  });
+
+  it("skips ssh-audit and testssl.sh without Docker, and Lynis still runs", async () => {
+    const deps = await setup({ httpAllowedFrom: "any" }, {}, { fetch: lynisFetch });
+    const docker: LocalDocker = {
+      run: async () => {
+        throw new Error("Could not run docker: it is not installed or not on PATH.");
+      },
+    };
+    const result = await runSecure(deps, {
+      scanners: noScanners,
+      tcpConnect: ports(),
+      deep: true,
+      docker,
+    });
+    const [lynis, sshAudit, testssl] = result.deep ?? [];
+    expect(lynis?.results.some((r) => r.id === "PKGS-7392")).toBe(true);
+    for (const run of [sshAudit, testssl]) {
+      expect(run?.results).toEqual([
+        expect.objectContaining({
+          status: "skip",
+          message: expect.stringContaining("Docker is not installed on this computer"),
+          remediation: expect.stringContaining("Install Docker Desktop"),
+        }),
+      ]);
+    }
+    expect(result.report).toContain("| Deeper checks |");
+    expect(result.report).toContain("2 skipped");
+  });
+
+  it("skips Lynis when the server cannot be reached over SSH, never passing it", async () => {
+    const deps = await setup({ httpAllowedFrom: "any" }, {}, { deployKey: false });
+    const result = await runSecure(deps, {
+      scanners: noScanners,
+      tcpConnect: ports(),
+      deep: true,
+      docker: fakeLocalDocker().docker,
+    });
+    expect(result.deep?.[0]?.results).toEqual([
+      expect.objectContaining({
+        status: "skip",
+        message: expect.stringContaining("the deploy key is not on this machine"),
+      }),
+    ]);
+  });
+});
+
+function deepRuns(): DeepToolResult[] {
+  return [
+    {
+      tool: "lynis",
+      version: "3.1.7",
+      hardeningIndex: 70,
+      results: [
+        {
+          id: "hardening-index",
+          title: "Lynis hardening index is 65 or more",
+          status: "pass",
+          severity: "medium",
+          message: "The Lynis hardening index is 70 of 100.",
+          source: "lynis",
+        },
+        {
+          id: "BOOT-5122",
+          title: "Lynis suggestion BOOT-5122",
+          status: "warn",
+          severity: "low",
+          message: "Set a password on GRUB boot loader",
+          source: "lynis",
+          noise: "A GRUB password guards the boot menu at the console.",
+        },
+      ],
+    },
+    {
+      tool: "ssh-audit",
+      version: "3.9.0",
+      results: [
+        {
+          id: "ssh-audit-skipped",
+          title: "ssh-audit ran",
+          status: "skip",
+          severity: "info",
+          message: "Docker is not installed on this computer.",
+          remediation: "Install Docker Desktop.",
+          source: "ssh-audit",
+        },
+      ],
+    },
+  ];
+}
+
+describe("renderSecurityReport with the deeper checks", () => {
+  it("adds the section per tool with its version, results and noise apart, and counts no noise", () => {
+    const input = { ...fixedInput(), deep: deepRuns() };
+    const report = renderSecurityReport(input);
+    // Everything before the new section is today's report, apart from the summary row.
+    const today = renderSecurityReport(fixedInput());
+    expect(report.slice(0, report.indexOf("## Deeper checks"))).toBe(
+      today
+        .slice(0, today.indexOf("---\n"))
+        .replace(
+          "| Outside probes | 0 passed, 1 failed, 0 warnings, 0 skipped |",
+          "| Outside probes | 0 passed, 1 failed, 0 warnings, 0 skipped |\n| Deeper checks | 1 passed, 0 failed, 0 warnings, 1 skipped |",
+        ),
+    );
+    expect(securityProblems(input).some((p) => p.area === "Deeper checks")).toBe(false);
+    expect(report).toContain("Docker is not installed on this computer. Install Docker Desktop.");
+    expect(report.slice(report.indexOf("## Deeper checks"))).toMatchSnapshot();
   });
 });
 
