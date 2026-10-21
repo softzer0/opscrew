@@ -1,3 +1,4 @@
+import { edgeMemoryMb } from "@opscrew/iac-templates";
 import { serviceOf } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, nextPostgresFacts, staticSpaFacts } from "../testing";
@@ -9,6 +10,8 @@ import {
   sizeFor,
   smallServerWarnings,
 } from "./sizing";
+
+const CADDY_EDGE = edgeMemoryMb("caddy");
 
 describe("smallServerWarnings", () => {
   const { services } = designComponents({
@@ -45,15 +48,17 @@ describe("ownServerMemory", () => {
 
   it("fits this app next to the other apps' recorded limits, the edge and the system", () => {
     // 4096 MB - 384 (system) - 128 (edge) - 1024 (blog) leaves 2560 MB, 1536 of them still free.
-    expect(ownServerMemory(4096, 1024, [blog])).toBeUndefined();
-    expect(ownServerMemory(4096, 2560, [])).toBeUndefined();
+    expect(ownServerMemory(4096, 1024, [blog], CADDY_EDGE)).toBeUndefined();
+    expect(ownServerMemory(4096, 2560, [], CADDY_EDGE)).toBeUndefined();
   });
 
   it("refuses limits that do not fit, saying how much the other apps take", () => {
-    const result = ownServerMemory(2048, 1024, [
-      blog,
-      { name: "news", memoryMb: 256, tunnel: false },
-    ]);
+    const result = ownServerMemory(
+      2048,
+      1024,
+      [blog, { name: "news", memoryMb: 256, tunnel: false }],
+      CADDY_EDGE,
+    );
     expect(result?.refused?.message).toBe(
       'Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew\'s edge, the other OpsCrew apps on it take 1280 MB of memory limits ("blog" 1024 MB and "news" 256 MB), which leaves 256 MB, and this app\'s containers have 1024 MB of memory limits. Nothing was written.',
     );
@@ -61,14 +66,14 @@ describe("ownServerMemory", () => {
       "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again.",
     );
     // Alone on a server too small for its limits.
-    expect(ownServerMemory(1024, 640, [])?.refused?.message).toBe(
+    expect(ownServerMemory(1024, 640, [], CADDY_EDGE)?.refused?.message).toBe(
       "Your server has 1024 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, 512 MB are left, and this app's containers have 640 MB of memory limits. Nothing was written.",
     );
   });
 
   it("warns below 15% free, with how much the other apps take", () => {
     // 4096 - 384 = 3712 MB usable; 1024 + 2048 + 128 leaves 512 MB, 13.8% of it.
-    expect(ownServerMemory(4096, 2048, [blog])?.warning).toBe(
+    expect(ownServerMemory(4096, 2048, [blog], CADDY_EDGE)?.warning).toBe(
       'Your server keeps only 14% of its memory free after the memory limits of this app (2048 MB) and of the other OpsCrew app on it (1024 MB: "blog" 1024 MB), OpsCrew\'s edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.',
     );
   });
@@ -76,14 +81,22 @@ describe("ownServerMemory", () => {
   it("counts the tunnel connector of each other tunnelled app (the edge's figure holds one)", () => {
     // 2048 - 384 - 128 leaves 1536 MB; blog's 1024 MB and its connector's 32 leave 480 MB.
     const tunnelled = { name: "blog", memoryMb: 1024, tunnel: true };
-    expect(ownServerMemory(2048, 480, [tunnelled])?.refused).toBeUndefined();
-    expect(ownServerMemory(2048, 512, [tunnelled])?.refused?.message).toBe(
+    expect(ownServerMemory(2048, 480, [tunnelled], CADDY_EDGE)?.refused).toBeUndefined();
+    expect(ownServerMemory(2048, 512, [tunnelled], CADDY_EDGE)?.refused?.message).toBe(
       "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1056 MB of memory limits (\"blog\" 1024 MB and 32 MB for its tunnel connector), which leaves 480 MB, and this app's containers have 512 MB of memory limits. Nothing was written.",
     );
   });
 
   it("checks nothing when inspection could not read the server's memory", () => {
-    expect(ownServerMemory(0, 1024, [blog])).toBeUndefined();
+    expect(ownServerMemory(0, 1024, [blog], CADDY_EDGE)).toBeUndefined();
+  });
+
+  it("counts the nginx edge's memory when the server runs nginx", () => {
+    // 1024 - 384 - 192 leaves 448 MB.
+    expect(ownServerMemory(1024, 448, [], edgeMemoryMb("nginx"))?.refused).toBeUndefined();
+    expect(ownServerMemory(1024, 480, [], edgeMemoryMb("nginx"))?.refused?.message).toBe(
+      "Your server has 1024 MB of memory. After 384 MB for the system and 192 MB for OpsCrew's edge, 448 MB are left, and this app's containers have 480 MB of memory limits. Nothing was written.",
+    );
   });
 });
 
@@ -215,6 +228,10 @@ describe("sizeFor", () => {
     const busy = sizeFor(kafka, makeRequirements(), components);
     expect(busy.limitsMb).toBe(512 + 512 + 512 + 1024);
     expect(busy.memoryGb).toBe(3);
+    // The nginx edge's 192 MB: 2560 + 192 + 384 = 3136 MB.
+    const nginx = sizeFor(kafka, makeRequirements(), components, "nginx");
+    expect(nginx).toMatchObject({ edge: "nginx", edgeMb: 192, memoryGb: 3136 / 1024 });
+    expect(busy.edgeMb).toBe(128);
     // Redpanda's smallest server is 2 GB, above what its limits need on a static site.
     const redpanda = sizeFor(staticSpaFacts(), makeRequirements(), {
       ...sizing.components,

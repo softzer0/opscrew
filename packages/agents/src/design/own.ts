@@ -1,5 +1,6 @@
 import type { ComputeCatalog, ComputeOffer, Currency } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { EDGE_PROXIES, type EdgeProxy } from "@opscrew/iac-templates";
 import {
   type CostEstimate,
   CostEstimateSchema,
@@ -120,6 +121,8 @@ export interface OwnServerOptionInput {
   serving?: OwnServerServing;
   /** What runs next to the app (`designComponents`); by default designed from the facts. */
   components?: Components;
+  /** The server's proxy (`target.edge`), whose memory the sizing counts; Caddy by default. */
+  edge?: EdgeProxy;
 }
 
 export interface OwnServerDesign {
@@ -189,7 +192,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
       },
     );
   }
-  const sizing = sizeFor(facts, requirements, input.components);
+  const sizing = sizeFor(facts, requirements, input.components, input.edge);
   const containers = containersText(sizing);
   const arch = server.architecture === "arm" ? "arm64" : "amd64";
 
@@ -227,8 +230,8 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
         ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
         : "";
   const summary = [
-    `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind Caddy.${served}`,
-    memoryText(sizing.components, server.memoryGb * 1024),
+    `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.${served}`,
+    memoryText(sizing.components, server.memoryGb * 1024, sizing.edgeMb),
     OWN_SERVER_PRICE_NOTE,
     OWN_SERVER_BACKUPS_NOTE,
   ].join(" ");

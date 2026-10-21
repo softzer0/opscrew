@@ -948,11 +948,15 @@ describe("designComponents: the user's edits to the previous plan (FR-1304)", ()
 describe("memoryText", () => {
   it("shows each container's memory and its share of the server's price (SC-1308)", () => {
     const { components } = designed({ services: [service("mysql", "dependency:mysql2")] });
-    expect(memoryText(components, 4096, { amount: 8, currency: "EUR" })).toBe(
+    expect(memoryText(components, 4096, 128, { amount: 8, currency: "EUR" })).toBe(
       "Memory limits: the app 512 MB (€1.00/month), mysql 512 MB (€1.00/month); OpsCrew's edge and the system 512 MB; 2.5 GB of 4.0 GB free.",
     );
-    expect(memoryText(components, 4096)).toBe(
+    expect(memoryText(components, 4096, 128)).toBe(
       "Memory limits: the app 512 MB, mysql 512 MB; OpsCrew's edge and the system 512 MB; 2.5 GB of 4.0 GB free.",
+    );
+    // The nginx edge's 192 MB.
+    expect(memoryText(components, 4096, 192)).toBe(
+      "Memory limits: the app 512 MB, mysql 512 MB; OpsCrew's edge and the system 576 MB; 2.4 GB of 4.0 GB free.",
     );
   });
 });

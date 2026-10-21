@@ -1,0 +1,185 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`translateVercelRouting on caddy > translates a static site's headers, redirects, cleanUrls and trailingSlash in Vercel's order 1`] = `
+"# headers[0]: /assets/(.*)
+@header0 path_regexp header0 "^/assets/(.*)$"
+header @header0 >Cache-Control "public, max-age=31536000, immutable"
+
+# cleanUrls: ^/((?:.+/)?)index\\.html$ to /$1 (308)
+@redirect0 {
+	path_regexp redirect0 "^/((?:.+/)?)index\\.html$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect0 /{re.redirect0.1} 308
+
+# cleanUrls: ^/(.+)\\.html$ to /$1 (308)
+@redirect1 {
+	path_regexp redirect1 "^/(.+)\\.html$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect1 /{re.redirect1.1} 308
+
+# trailingSlash: ^/(.+)/$ to /$1 (308)
+@redirect2 {
+	path_regexp redirect2 "^/(.+)/$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect2 /{re.redirect2.1} 308
+
+# redirects[0]: /old-blog/:slug to /blog/:slug (308)
+@redirect3 {
+	path_regexp redirect3 "^/old-blog/([^/]+)$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect3 /blog/{re.redirect3.1} 308
+
+# redirects[1]: /beta to / (307)
+@redirect4 {
+	path_regexp redirect4 "^/beta$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect4 / 307
+
+# redirects[2]: ^/articles/(\\d{4})/(.+)$ to /posts/$1/$2 (301)
+@redirect5 {
+	path_regexp redirect5 "^/articles/(\\d{4})/(.+)$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect5 /posts/{re.redirect5.1}/{re.redirect5.2} 301
+
+# redirects[4]: /docs/:path* to https://docs.example.com/:path* (302)
+@redirect6 {
+	path_regexp redirect6 "^/docs(?:/((?:[^/]+)(?:/(?:[^/]+))*))?$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect6 https://docs.example.com/{re.redirect6.1} 302
+
+# redirects[5]: /pricing to /plans (308)
+@redirect7 {
+	path_regexp redirect7 "^/pricing$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+redir @redirect7 /plans 308
+
+# cleanUrls: ^/((?:[^/]+/)*[^/.]+)$ to /$1.html, when the app answers 404
+@rewrite0 {
+	path_regexp rewrite0 "^/((?:[^/]+/)*[^/.]+)$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+handle @rewrite0 {
+	reverse_proxy kamal-proxy:80 {
+		header_up X-Forwarded-For {client_ip}
+		@rewrite0_404 status 404
+		handle_response @rewrite0_404 {
+			rewrite * /{re.rewrite0.1}.html
+			reverse_proxy kamal-proxy:80 {
+				header_up X-Forwarded-For {client_ip}
+			}
+		}
+	}
+}
+"
+`;
+
+exports[`translateVercelRouting on caddy > turns a Vite SPA's catch-all rewrite into a fallback after the app's 404 1`] = `
+"# rewrites[0]: /(.*) to /index.html, when the app answers 404
+@rewrite0 {
+	path_regexp rewrite0 "^/(.*)$"
+	not path /.well-known/*
+	not path_regexp "[\\r\\n]"
+}
+handle @rewrite0 {
+	reverse_proxy kamal-proxy:80 {
+		header_up X-Forwarded-For {client_ip}
+		@rewrite0_404 status 404
+		handle_response @rewrite0_404 {
+			rewrite * /index.html
+			reverse_proxy kamal-proxy:80 {
+				header_up X-Forwarded-For {client_ip}
+			}
+		}
+	}
+}
+"
+`;
+
+exports[`translateVercelRouting on nginx > translates a static site's headers, redirects, cleanUrls and trailingSlash in Vercel's order 1`] = `
+"# cleanUrls: ^/((?:.+/)?)index\\.html$ to /$1 (308)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/((?:.+/)?)index\\.html$)") {
+	return 308 "$scheme://$host/$1";
+}
+
+# cleanUrls: ^/(.+)\\.html$ to /$1 (308)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/(.+)\\.html$)") {
+	return 308 "$scheme://$host/$1";
+}
+
+# trailingSlash: ^/(.+)/$ to /$1 (308)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/(.+)/$)") {
+	return 308 "$scheme://$host/$1";
+}
+
+# redirects[0]: /old-blog/:slug to /blog/:slug (308)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/old-blog/([^/]+)$)") {
+	return 308 "$scheme://$host/blog/$1";
+}
+
+# redirects[1]: /beta to / (307)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/beta$)") {
+	return 307 "$scheme://$host/";
+}
+
+# redirects[2]: ^/articles/(\\d{4})/(.+)$ to /posts/$1/$2 (301)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/articles/(\\d{4})/(.+)$)") {
+	return 301 "$scheme://$host/posts/$1/$2";
+}
+
+# redirects[4]: /docs/:path* to https://docs.example.com/:path* (302)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/docs(?:/((?:[^/]+)(?:/(?:[^/]+))*))?$)") {
+	return 302 "https://docs.example.com/$1";
+}
+
+# redirects[5]: /pricing to /plans (308)
+if ($uri ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/pricing$)") {
+	return 308 "$scheme://$host/plans";
+}
+
+# The rewrites apply when the app answers 404 for one of their paths, as Vercel serves the
+# app's files first.
+location ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:(?:/((?:[^/]+/)*[^/.]+)$))" {
+	proxy_intercept_errors on;
+	error_page 404 = @vercel_rewrites;
+	proxy_pass http://kamal-proxy;
+}
+location @vercel_rewrites {
+	# cleanUrls: ^/((?:[^/]+/)*[^/.]+)$ to /$1.html
+	rewrite "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/((?:[^/]+/)*[^/.]+)$)" "/$1.html" break;
+	proxy_pass http://kamal-proxy;
+}
+"
+`;
+
+exports[`translateVercelRouting on nginx > turns a Vite SPA's catch-all rewrite into a fallback after the app's 404 1`] = `
+"# The rewrites apply when the app answers 404 for one of their paths, as Vercel serves the
+# app's files first.
+location ~ "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:(?:/(.*)$))" {
+	proxy_intercept_errors on;
+	error_page 404 = @vercel_rewrites;
+	proxy_pass http://kamal-proxy;
+}
+location @vercel_rewrites {
+	# rewrites[0]: /(.*) to /index.html
+	rewrite "^(?!/\\.well-known/)(?!.*[\\r\\n])(?:/(.*)$)" "/index.html" break;
+	proxy_pass http://kamal-proxy;
+}
+"
+`;

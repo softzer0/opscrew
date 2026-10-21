@@ -400,6 +400,39 @@ describe("runDesign", () => {
     expect(result.plan.updatedAt).toBe("2026-10-12T08:00:00.000Z");
   });
 
+  it("FR-1446: writes vercel.json's rules as the additions of the plan's proxy, and counts that edge's memory", async () => {
+    const platformRouting = {
+      source: "vercel.json" as const,
+      sha256: "a".repeat(64),
+      redirects: [],
+      rewrites: [{ index: 0, source: "/(.*)", destination: "/index.html" }],
+      headers: [],
+      unsupported: [],
+    };
+    const deps = await setup({ ...staticSpaFacts(), platformRouting });
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.lines).toContain(
+      "Wrote opscrew/proxy/additions.caddy: vercel.json's routing rules for Caddy, in Vercel's order. The file is yours to edit from now on.",
+    );
+    const caddy = await readFile(join(deps.paths.root, "opscrew/proxy/additions.caddy"), "utf8");
+    expect(caddy).toContain("handle @rewrite0 {");
+    expect(first.lines.join("\n")).toContain("OpsCrew's edge and the system 512 MB");
+    // The user moves the server to nginx: design writes nginx's additions and counts its 192 MB.
+    const nginx = { ...first.plan, target: { ...first.plan.target, edge: "nginx" } } as DeployPlan;
+    await writeArtifact("plan", deps.paths.files.plan, nginx);
+    const second = await runDesign(deps, { catalog: euCatalog() });
+    expect(second.plan.target).toMatchObject({ edge: "nginx" });
+    expect(second.lines).toContain(
+      "Wrote opscrew/proxy/additions.nginx: vercel.json's routing rules for nginx, in Vercel's order. The file is yours to edit from now on.",
+    );
+    expect(second.lines.join("\n")).toContain("OpsCrew's edge and the system 576 MB");
+    expect(first.chosen.summary).toContain("with Docker Compose behind Caddy.");
+    expect(second.chosen.summary).toContain("with Docker Compose behind nginx.");
+    expect(await readFile(join(deps.paths.root, "opscrew/proxy/additions.caddy"), "utf8")).toBe(
+      caddy,
+    );
+  });
+
   it("stops when a monorepo has several deployable apps and none was chosen", async () => {
     const deps = await setup(nextPostgresFacts());
     await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);

@@ -3,7 +3,8 @@ import { listText, plural } from "@opscrew/core";
 import {
   CONNECTOR_MEMORY_MB,
   DRAGONFLY_MIN_VCPUS,
-  EDGE_MEMORY_MB,
+  type EdgeProxy,
+  edgeMemoryMb,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import type {
@@ -37,6 +38,10 @@ export interface Sizing {
   diskGb: number;
   /** The containers' memory limits added up (web, workers, cron, services), in MB. */
   limitsMb: number;
+  /** The server's proxy (`target.edge`). */
+  edge: EdgeProxy;
+  /** The memory of the server's edge, in MB (`edgeMemoryMb`). */
+  edgeMb: number;
   /** What runs next to the app. */
   components: Components;
   /** Containers that run next to the app on the server. */
@@ -160,8 +165,8 @@ function serverAppMb(app: ServerApp): number {
 /**
  * Whether a server the user owns, with `serverMb` of inspected memory, holds this app's containers
  * (`appMb` of memory limits) next to the other OpsCrew apps' recorded limits (and their tunnel
- * connectors: the edge's figure includes one), OpsCrew's edge and the system's reserve (FR-1325,
- * the same figures as on cloud servers): `refused` when they do not fit, a `warning` when less
+ * connectors: the edge's figure includes one), OpsCrew's edge (`edgeMb`) and the system's reserve
+ * (FR-1325, the same figures as on cloud servers): `refused` when they do not fit, a `warning` when less
  * than 15% stays free, each saying how much the other apps take; `undefined` when it fits, or
  * when inspection could not read the memory (the own-server option then records a placeholder
  * under 100 MB, and design warns about the server's size already).
@@ -170,10 +175,11 @@ export function ownServerMemory(
   serverMb: number,
   appMb: number,
   others: readonly ServerApp[],
+  edgeMb: number,
 ): { refused?: { message: string; hint: string }; warning?: string } | undefined {
   if (serverMb < 100) return undefined;
   const othersMb = others.reduce((sum, app) => sum + serverAppMb(app), 0);
-  const headroom = memoryHeadroom(serverMb, appMb + othersMb);
+  const headroom = memoryHeadroom(serverMb, appMb + othersMb, edgeMb);
   if (!headroom.low) return undefined;
   const each = listText(
     others.map(
@@ -183,14 +189,14 @@ export function ownServerMemory(
   );
   const server = Math.round(serverMb);
   if (!headroom.fits) {
-    const left = server - SYSTEM_RESERVE_MB - EDGE_MEMORY_MB;
+    const left = server - SYSTEM_RESERVE_MB - edgeMb;
     const taken =
       others.length === 0
         ? `${Math.max(0, left)} MB are left`
         : `the other OpsCrew ${others.length === 1 ? "app on it takes" : "apps on it take"} ${othersMb} MB of memory limits (${each}), which leaves ${Math.max(0, left - othersMb)} MB`;
     return {
       refused: {
-        message: `Your server has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${EDGE_MEMORY_MB} MB for OpsCrew's edge, ${taken}, and this app's containers have ${appMb} MB of memory limits. Nothing was written.`,
+        message: `Your server has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, ${taken}, and this app's containers have ${appMb} MB of memory limits. Nothing was written.`,
         hint: "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again.",
       },
     };
@@ -235,14 +241,15 @@ export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
 /**
  * Minimum server size for the app and what runs next to it (`components`, by default designed
  * from the facts and requirements alone): the plan.md sizing table by expected users (more with
- * Postgres and Redis), and at least the containers' memory limits plus OpsCrew's edge (128 MB) and
- * the system's reserve (384 MB) (FR-1325), and at least the smallest server of each service; with
- * Dragonfly, at least 2 vCPUs.
+ * Postgres and Redis), and at least the containers' memory limits plus OpsCrew's edge (`edge`'s
+ * `edgeMemoryMb`) and the system's reserve (384 MB) (FR-1325), and at least the smallest
+ * server of each service; with Dragonfly, at least 2 vCPUs.
  */
 export function sizeFor(
   facts: ProjectFacts,
   requirements: Requirements,
   components: Components = designComponents({ facts, requirements }).components,
+  edge: EdgeProxy = "caddy",
 ): Sizing {
   const { services } = components;
   const postgres = serviceOf(components, "postgres") !== undefined;
@@ -266,6 +273,7 @@ export function sizeFor(
   // Dragonfly is offered on 2 vCPUs or more (FR-1321a).
   if (dragonfly) vcpus = Math.max(vcpus, DRAGONFLY_MIN_VCPUS);
   const limitsMb = appMemoryMb(components);
+  const edgeMb = edgeMemoryMb(edge);
   const smallestServerMb = Math.max(
     0,
     ...services
@@ -274,7 +282,7 @@ export function sizeFor(
   );
   memoryGb = Math.max(
     memoryGb,
-    (limitsMb + EDGE_MEMORY_MB + SYSTEM_RESERVE_MB) / 1024,
+    (limitsMb + edgeMb + SYSTEM_RESERVE_MB) / 1024,
     smallestServerMb / 1024,
   );
 
@@ -283,6 +291,8 @@ export function sizeFor(
     memoryGb,
     diskGb,
     limitsMb,
+    edge,
+    edgeMb,
     components,
     services: [...services],
     externalServices: [...components.externalServices],

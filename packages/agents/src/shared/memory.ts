@@ -1,4 +1,4 @@
-import { cronMemoryMb, EDGE_MEMORY_MB } from "@opscrew/iac-templates";
+import { cronMemoryMb } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 
 /** Memory left to the operating system, Docker and the shell on every server. */
@@ -37,15 +37,16 @@ export function appMemoryMb(plan: AppMemoryInput): number {
 }
 
 /**
- * How a server of `serverMb` holds containers with `limitsMb` of limits next to the edge: the
- * share of its memory after the system's reserve that is left free (negative when they do not
- * fit), and whether that is below {@link MIN_HEADROOM}.
+ * How a server of `serverMb` holds containers with `limitsMb` of limits next to the edge's
+ * `edgeMb`: the share of its memory after the system's reserve that is left free (negative when
+ * they do not fit), and whether that is below {@link MIN_HEADROOM}.
  */
 export function memoryHeadroom(
   serverMb: number,
   limitsMb: number,
+  edgeMb: number,
 ): { free: number; low: boolean; fits: boolean } {
   const usable = serverMb - SYSTEM_RESERVE_MB;
-  const free = usable <= 0 ? -1 : (usable - limitsMb - EDGE_MEMORY_MB) / usable;
+  const free = usable <= 0 ? -1 : (usable - limitsMb - edgeMb) / usable;
   return { free, fits: free >= 0, low: free < MIN_HEADROOM };
 }

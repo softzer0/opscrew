@@ -2,7 +2,7 @@ import type { DeployPlan, DesignOption } from "@opscrew/plan-schema";
 
 /** FR-1217: what a redeploy in the user's Portainer does. */
 export const PORTAINER_RECREATE_NOTE =
-  "Portainer recreates the stack on each redeploy, so the app is unreachable for a few seconds while the new version starts.";
+  "Portainer recreates the app on each redeploy; Caddy holds requests while the new version starts, so visitors see a short pause, not an error.";
 
 /** What design says about a rolling deploy (the plan records no reason for it). */
 export const ROLLING_NOTE =

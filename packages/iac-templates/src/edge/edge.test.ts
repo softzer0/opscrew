@@ -11,9 +11,16 @@ import {
   renderCompose,
   renderRuntimeFiles,
 } from "../runtime";
-import { TUNNEL_ORIGIN_PORT } from "../tunnel";
+import { CONNECTOR_MEMORY_MB, TUNNEL_ORIGIN_PORT } from "../tunnel";
 import type { RenderedFile } from "../types";
-import { EDGE_UPSTREAM, EDGE_VERSION, EDGE_VERSION_KEY, renderEdgeCompose } from "./index";
+import {
+  EDGE_MEMORY_MB,
+  EDGE_UPSTREAM,
+  EDGE_VERSION,
+  EDGE_VERSION_KEY,
+  edgeMemoryMb,
+  renderEdgeCompose,
+} from "./index";
 
 const ctx = testContext({ acmeEmail: "ops@example.com" });
 
@@ -167,6 +174,26 @@ describe("the edge's Compose project", () => {
       version: 2026102102,
       sha256: "9c4a40f38a22b927395385f4b6928d3adc82604e9a20447cc0f17c2b1c80da5c",
     });
+  });
+});
+
+describe("edgeMemoryMb", () => {
+  it("adds up the edge's memory limits by proxy, with one tunnel connector", () => {
+    for (const proxy of ["caddy", "nginx"] as const) {
+      const plan = testPlan();
+      const edge = DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: proxy } });
+      const services = parse(renderEdgeCompose(edge).content).services as Record<
+        string,
+        { mem_limit: string }
+      >;
+      const limits = Object.values(services).reduce(
+        (sum, s) => sum + Number.parseInt(s.mem_limit, 10),
+        0,
+      );
+      expect(edgeMemoryMb(proxy)).toBe(limits + CONNECTOR_MEMORY_MB);
+    }
+    expect(edgeMemoryMb("caddy")).toBe(EDGE_MEMORY_MB);
+    expect(edgeMemoryMb("nginx")).toBe(192);
   });
 });
 

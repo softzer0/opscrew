@@ -6,7 +6,6 @@
 import { canonicalJson, formatMoney, isUserFacingError, listText } from "@opscrew/core";
 import {
   DRAGONFLY_MIN_VCPUS,
-  EDGE_MEMORY_MB,
   portainerHostSettingProblem,
   renderPortainerStack,
   renderRuntimeFiles,
@@ -1197,13 +1196,15 @@ export function appNameFor(facts: ProjectFacts): string {
 }
 
 /**
- * The containers' memory on a server of `serverMb`, each with its share of the server's monthly
- * price when there is one (SC-1308): `Memory: the app 512 MB (€1.37/month), mysql 512 MB
- * (€1.37/month); OpsCrew's edge and the system 512 MB; 1.0 GB of 2 GB free.`
+ * The containers' memory on a server of `serverMb`, next to the edge's `edgeMb`, each with its
+ * share of the server's monthly price when there is one (SC-1308): `Memory: the app 512 MB
+ * (€1.37/month), mysql 512 MB (€1.37/month); OpsCrew's edge and the system 512 MB; 1.0 GB of 2 GB
+ * free.`
  */
 export function memoryText(
   components: Pick<Components, "app" | "processes" | "services">,
   serverMb: number,
+  edgeMb: number,
   monthly?: Money,
 ): string {
   const limits = appMemoryLimits(components);
@@ -1211,7 +1212,7 @@ export function memoryText(
     monthly === undefined
       ? ""
       : ` (${formatMoney({ amount: (monthly.amount * mb) / serverMb, currency: monthly.currency })}/month)`;
-  const shared = EDGE_MEMORY_MB + SYSTEM_RESERVE_MB;
+  const shared = edgeMb + SYSTEM_RESERVE_MB;
   const used = appMemoryMb(components);
   const free = Math.max(0, serverMb - used - shared);
   const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;

@@ -19,6 +19,11 @@ export type {
 export * from "./dependabot";
 export * from "./docker";
 export * from "./edge";
+export {
+  translateVercelRouting,
+  type VercelRoutingContext,
+  type VercelRoutingTranslation,
+} from "./edge/vercel-routing";
 export * from "./infra";
 export * from "./pins";
 export { keepNewerPins } from "./pins-carry";

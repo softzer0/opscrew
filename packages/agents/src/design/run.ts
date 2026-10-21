@@ -9,6 +9,7 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
+import { type EdgeProxy, edgeMemoryMb, edgeProxy } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -42,6 +43,7 @@ import {
   serviceFilledNames,
 } from "../shared";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
+import { vercelAdditions } from "./additions";
 import { backgroundJobsWarning } from "./background-jobs";
 import { chooseBuilder } from "./builder";
 import {
@@ -138,8 +140,8 @@ export interface DesignResult {
   /** Plain-English warnings that were also sent to the reporter. */
   warnings: string[];
   /**
-   * The image builder, deploy strategy and supply-chain lines, each with its reason, as design
-   * reported them.
+   * The image builder, deploy strategy and supply-chain lines, each with its reason, and the
+   * additions written from `vercel.json` with the rules left out, as design reported them.
    */
   lines: string[];
 }
@@ -297,6 +299,7 @@ async function priceOwnServer(
   warnings: string[],
   input: OwnServerDesignInput | undefined,
   designed: Designed,
+  edge: EdgeProxy,
 ): Promise<DesignPreview> {
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
@@ -309,6 +312,7 @@ async function priceOwnServer(
     access,
     serving,
     components: designed.components,
+    edge,
   });
   for (const warning of own.warnings) warn(warning);
   const { option } = own;
@@ -420,8 +424,10 @@ async function priceOptions(
   if (requirements.provider === "portainer") {
     return pricePortainer(deps, inputs, warnings, designed);
   }
+  // The server's proxy carries over from the earlier plan (`keepPlanSettings`).
+  const edge = previous === undefined ? "caddy" : edgeProxy(previous);
   if (ownCatalog !== undefined) {
-    return priceOwnServer(deps, inputs, ownCatalog, warnings, ownServer, designed);
+    return priceOwnServer(deps, inputs, ownCatalog, warnings, ownServer, designed, edge);
   }
   const provider = requestedProvider(requirements);
   const { components } = designed;
@@ -443,7 +449,14 @@ async function priceOptions(
   }
   let designOptions: DesignOption[];
   try {
-    designOptions = await buildDesignOptions({ facts, requirements, catalog, now, components });
+    designOptions = await buildDesignOptions({
+      facts,
+      requirements,
+      catalog,
+      now,
+      components,
+      edge,
+    });
   } catch (error) {
     // A live catalogue that fails half-way falls back to the static table; sizing errors do not.
     if (override !== undefined || isStatic) throw error;
@@ -454,7 +467,14 @@ async function priceOptions(
     warn(
       `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
     );
-    designOptions = await buildDesignOptions({ facts, requirements, catalog, now, components });
+    designOptions = await buildDesignOptions({
+      facts,
+      requirements,
+      catalog,
+      now,
+      components,
+      edge,
+    });
   }
   const priceSource = designOptions.every((option) => option.cost.source === "live")
     ? "live"
@@ -579,6 +599,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       chosen.target.memoryGb * 1024,
       appMemoryMb(plan),
       (ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
+      edgeMemoryMb(edgeProxy(plan)),
     );
     if (memory?.refused !== undefined) {
       throw new OpsCrewError("PHASE_PRECONDITION", memory.refused.message, {
@@ -617,20 +638,26 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   for (const line of buildLines) reporter.info(line);
   // The components, with each one's memory on the chosen server (SC-1308).
   const serverMb = chosen.target.memoryGb * 1024;
+  const edgeMb = edgeMemoryMb(edgeProxy(plan));
   const componentLines = [
     ...preview.lines.filter((line) => !off.some((name) => line.startsWith(`Cron job ${name} (`))),
     ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
     ...(inPortainer
       ? []
-      : [memoryText(plan, serverMb, ownsServer ? undefined : chosen.cost.monthly)]),
+      : [memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
-  const headroom = memoryHeadroom(serverMb, appMemoryMb(plan));
+  const headroom = memoryHeadroom(serverMb, appMemoryMb(plan), edgeMb);
   if (!ownsServer && headroom.low) warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   const migrations = releaseCommandNote(plan, facts);
   if (migrations?.warning) warn(migrations.text);
   else if (migrations !== undefined) reporter.info(say(migrations.text));
   for (const line of supplyLines) reporter.info(line);
+  // vercel.json's routing rules become the app's additions for the server's proxy (FR-1446).
+  const additions = await vercelAdditions(paths.root, plan, facts);
+  const additionLines = additions.lines.map(say);
+  for (const line of additionLines) reporter.info(line);
+  for (const warning of additions.warnings) warn(warning);
   reporter.info("Next: run `opscrew adapt` to prepare the code in a pull request.");
   await deps.state.markPhase(
     "design",
@@ -647,7 +674,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     plan,
     priceSource,
     warnings,
-    lines: [...buildLines, ...componentLines, ...supplyLines],
+    lines: [...buildLines, ...componentLines, ...supplyLines, ...additionLines],
   };
 }
 

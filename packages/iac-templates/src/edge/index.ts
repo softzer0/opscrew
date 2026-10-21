@@ -105,6 +105,18 @@ const CERTBOT_MEMORY_MB = 64;
  */
 export const EDGE_MEMORY_MB = CADDY_MEMORY_MB + KAMAL_PROXY_MEMORY_MB + CONNECTOR_MEMORY_MB;
 
+/**
+ * The edge's memory design counts for `proxy`, in MB: {@link EDGE_MEMORY_MB} for Caddy, and for
+ * nginx the same with nginx and certbot in Caddy's place (192 MB).
+ */
+export function edgeMemoryMb(proxy: EdgeProxy): number {
+  return (
+    KAMAL_PROXY_MEMORY_MB +
+    CONNECTOR_MEMORY_MB +
+    (proxy === "nginx" ? NGINX_MEMORY_MB + CERTBOT_MEMORY_MB : CADDY_MEMORY_MB)
+  );
+}
+
 /** The folder of the apps' site files in the Caddy container (the server's `/srv/edge/sites`). */
 const CADDY_SITES = "/etc/caddy/sites";
 

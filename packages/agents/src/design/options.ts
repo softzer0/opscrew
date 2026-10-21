@@ -6,7 +6,7 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { EDGE_MEMORY_MB } from "@opscrew/iac-templates";
+import { EDGE_PROXIES, type EdgeProxy } from "@opscrew/iac-templates";
 import {
   type CostEstimate,
   type DesignOption,
@@ -36,6 +36,8 @@ export interface BuildDesignOptionsInput {
   now?: Date;
   /** What runs next to the app (`designComponents`); by default designed from the facts. */
   components?: Components;
+  /** The server's proxy (`target.edge`), whose memory the sizing counts; Caddy by default. */
+  edge?: EdgeProxy;
 }
 
 /** Option tiers, in display order. */
@@ -75,7 +77,7 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   const { profile } = wording;
   const region = requestedRegion(requirements);
   if (region === undefined) throw new Error(`${provider} requirements need a region.`);
-  const sizing = sizeFor(facts, requirements, input.components);
+  const sizing = sizeFor(facts, requirements, input.components, input.edge);
   const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";
 
@@ -138,7 +140,7 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
     const memory = Math.round(sizing.memoryGb * 10) / 10;
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `No available x86 ${wording.name} ${profile.serverNoun} in ${where} has the ${sizing.vcpus} vCPU, ${memory} GB memory and ${sizing.diskGb} GB disk this app needs (its containers' memory limits add up to ${sizing.limitsMb} MB, plus ${EDGE_MEMORY_MB + SYSTEM_RESERVE_MB} MB for OpsCrew's edge and the system).`,
+      `No available x86 ${wording.name} ${profile.serverNoun} in ${where} has the ${sizing.vcpus} vCPU, ${memory} GB memory and ${sizing.diskGb} GB disk this app needs (its containers' memory limits add up to ${sizing.limitsMb} MB, plus ${sizing.edgeMb + SYSTEM_RESERVE_MB} MB for OpsCrew's edge and the system).`,
       {
         hint: "Run `opscrew interview` again and choose another region or a smaller expected number of users, or lower the memory limits in opscrew/plan.yaml, then run `opscrew design` again.",
       },
@@ -253,14 +255,14 @@ function toOption(
   const price = `${formatMoney(cost.monthly)}/month (${label}, ${cost.pricesIncludeVat ? "including" : "excluding"} ${tax})`;
   const serverMb = offer.memoryGb * 1024;
   const summary = [
-    `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind Caddy.`,
+    `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.`,
     `${price}.`,
     backups ? "Automated backups are on." : "Automated backups are off.",
-    memoryText(sizing.components, serverMb, cost.monthly),
+    memoryText(sizing.components, serverMb, sizing.edgeMb, cost.monthly),
   ].join(" ");
 
   const tradeoffs = [...TIER_TRADEOFFS[tier]];
-  const headroom = memoryHeadroom(serverMb, sizing.limitsMb);
+  const headroom = memoryHeadroom(serverMb, sizing.limitsMb, sizing.edgeMb);
   if (headroom.low) tradeoffs.push(lowHeadroomText(offer.id, headroom.free));
   if (context.regionNote !== undefined) tradeoffs.push(context.regionNote);
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");

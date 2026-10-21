@@ -58,10 +58,10 @@ describe("appMemoryMb", () => {
 describe("memoryHeadroom", () => {
   it("leaves the system's 384 MB and the edge's 128 MB, then measures what is free", () => {
     // 2048 − 384 = 1664 usable; 1024 + 128 used leaves 512, about 31%.
-    expect(memoryHeadroom(2048, 1024)).toEqual({ free: 512 / 1664, fits: true, low: false });
+    expect(memoryHeadroom(2048, 1024, 128)).toEqual({ free: 512 / 1664, fits: true, low: false });
     // 1664 − 1400 − 128 = 136 free, about 8%: it fits, but with little room.
-    expect(memoryHeadroom(2048, 1400)).toMatchObject({ fits: true, low: true });
-    expect(memoryHeadroom(2048, 1600)).toMatchObject({ fits: false, low: true });
-    expect(memoryHeadroom(256, 0)).toMatchObject({ fits: false });
+    expect(memoryHeadroom(2048, 1400, 128)).toMatchObject({ fits: true, low: true });
+    expect(memoryHeadroom(2048, 1600, 128)).toMatchObject({ fits: false, low: true });
+    expect(memoryHeadroom(256, 0, 128)).toMatchObject({ fits: false });
   });
 });
