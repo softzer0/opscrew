@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bitString,
   boolean,
+  children,
   explicitTag,
   generalizedTime,
   implicitTag,
@@ -76,5 +77,16 @@ describe("the DER writer", () => {
     expect(hex(implicitTag(2, new TextEncoder().encode("a.b")))).toBe("8203612e62");
     expect(hex(implicitTag(0, Uint8Array.of(0x30, 0x00), true))).toBe("a0023000");
     expect(() => explicitTag(31, sequence())).toThrow(/long form/);
+  });
+});
+
+describe("the DER reader", () => {
+  it("splits a sequence into its elements' complete encodings, long lengths included", () => {
+    const long = octetString(new Uint8Array(300));
+    const items = children(sequence(integer(2), long, sequence(boolean(true))));
+    expect(items.map(hex)).toEqual(["020102", hex(long), "30030101ff"]);
+    expect(children(sequence())).toEqual([]);
+    expect(() => children(Uint8Array.of(0x30, 0x05, 0x02, 0x01))).toThrow(/ends early/);
+    expect(() => children(Uint8Array.of(0x30))).toThrow(/ends early/);
   });
 });

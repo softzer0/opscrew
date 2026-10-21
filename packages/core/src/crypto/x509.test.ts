@@ -1,18 +1,32 @@
 import { spawnSync } from "node:child_process";
-import { createHash, createPublicKey, generateKeyPairSync, X509Certificate } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  type KeyObject,
+  X509Certificate,
+} from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findExecutable } from "../exec";
 import {
   buildCsr,
   fingerprintSha256,
   generateP256,
+  localCaCertificate,
   MAX_CSR_HOSTNAMES,
   selfSignedClientCertificate,
+  signedLeafCertificate,
 } from "./x509";
 
 const OPENSSL = findExecutable("openssl");
 if (OPENSSL === undefined) {
-  console.warn("openssl is not on PATH: skipping the openssl checks of the certificate request.");
+  console.warn(
+    "openssl is not on PATH: skipping the openssl checks of the certificate request and certificates.",
+  );
 }
 
 function openssl(args: string[], input: string): { status: number | null; out: string } {
@@ -100,6 +114,185 @@ describe("selfSignedClientCertificate", () => {
     expect(cert.fingerprint256.replaceAll(":", "").toLowerCase()).toBe(expected);
     expect(() => fingerprintSha256("no pem here")).toThrow(/no PEM block/);
   });
+});
+
+/** The 20-byte key identifier that follows `prefixHex` (an extension's OID and wrapping) in `der`. */
+function keyIdAfter(der: Buffer, prefixHex: string): string {
+  const prefix = Buffer.from(prefixHex, "hex");
+  const at = der.indexOf(prefix);
+  expect(at, prefixHex).toBeGreaterThanOrEqual(0);
+  return der.subarray(at + prefix.length, at + prefix.length + 20).toString("hex");
+}
+// subjectKeyIdentifier: OCTET STRING (22) around OCTET STRING (20).
+const SKI = "0603551d0e04160414";
+// authorityKeyIdentifier: OCTET STRING (24) around SEQUENCE (22) around [0] (20).
+const AKI = "0603551d23041830168014";
+
+/** The private scalar of a P-256 key, which no certificate may hold. */
+const privateScalar = (key: KeyObject) =>
+  Buffer.from(key.export({ format: "jwk" }).d as string, "base64url");
+
+describe("localCaCertificate and signedLeafCertificate", () => {
+  const now = new Date("2026-10-22T08:09:10.789Z");
+  const caKey = createPrivateKey(generateP256().privateKey);
+  const caPem = localCaCertificate(caKey, { commonName: "OpsCrew local CA", days: 3650, now });
+  const ca = new X509Certificate(caPem);
+  const caDer = derOf(caPem);
+  const leafKey = createPrivateKey(generateP256().privateKey);
+  const hostnames = ["a.localhost", "staging.a.localhost"];
+  const leafPem = signedLeafCertificate({
+    caKey,
+    caCertificate: caPem,
+    key: leafKey,
+    hostnames,
+    days: 825,
+    now,
+  });
+  const leaf = new X509Certificate(leafPem);
+  const leafDer = derOf(leafPem);
+
+  it("makes a self-signed CA certificate for the common name, valid for the days asked", () => {
+    expect(caPem).toMatch(/^-----BEGIN CERTIFICATE-----\n[\s\S]+-----END CERTIFICATE-----\n$/);
+    expect(ca.subject).toBe("CN=OpsCrew local CA");
+    expect(ca.issuer).toBe("CN=OpsCrew local CA");
+    expect(ca.ca).toBe(true);
+    expect(ca.verify(createPublicKey(caKey))).toBe(true);
+    expect(ca.checkIssued(ca)).toBe(true);
+    expect(new Date(ca.validFrom).toISOString()).toBe("2026-10-22T08:09:10.000Z");
+    expect(new Date(ca.validTo).toISOString()).toBe("2036-10-19T08:09:10.000Z");
+    expect(ca.serialNumber).toMatch(/^[0-9A-F]{32}$/);
+  });
+
+  it("gives the CA basicConstraints CA:TRUE pathlen 0 and keyUsage keyCertSign and cRLSign, critical", () => {
+    // basicConstraints, critical, SEQUENCE { BOOLEAN TRUE, INTEGER 0 }.
+    expect(caDer.includes(Buffer.from("30120603551d130101ff040830060101ff020100", "hex"))).toBe(
+      true,
+    );
+    // keyUsage, critical, bits 5 and 6 (0x06, one unused bit).
+    expect(caDer.includes(Buffer.from("300e0603551d0f0101ff040403020106", "hex"))).toBe(true);
+    // The subject key identifier is the SHA-1 of the public key's point.
+    const point = createPublicKey(caKey).export({ format: "der", type: "spki" }).subarray(-65);
+    expect(keyIdAfter(caDer, SKI)).toBe(createHash("sha1").update(point).digest("hex"));
+  });
+
+  it("signs a leaf for a.localhost and staging.a.localhost that the CA issued", () => {
+    expect(leafPem).toMatch(/^-----BEGIN CERTIFICATE-----\n[\s\S]+-----END CERTIFICATE-----\n$/);
+    expect(leaf.issuer).toBe("CN=OpsCrew local CA");
+    expect(leaf.subject).toBe("CN=a.localhost");
+    expect(leaf.subjectAltName).toBe("DNS:a.localhost, DNS:staging.a.localhost");
+    expect(leaf.checkIssued(ca)).toBe(true);
+    expect(leaf.verify(ca.publicKey)).toBe(true);
+    expect(leaf.verify(createPublicKey(leafKey))).toBe(false);
+    expect(leaf.publicKey.export({ format: "der", type: "spki" })).toEqual(
+      createPublicKey(leafKey).export({ format: "der", type: "spki" }),
+    );
+    expect(leaf.ca).toBe(false);
+    expect(leaf.checkHost("staging.a.localhost")).toBe("staging.a.localhost");
+    expect(leaf.serialNumber).not.toBe(ca.serialNumber);
+  });
+
+  it("gives the leaf digitalSignature, serverAuth and the CA's key identifier", () => {
+    expect(leaf.keyUsage).toEqual(["1.3.6.1.5.5.7.3.1"]);
+    // basicConstraints CA:false and keyUsage digitalSignature, both critical.
+    expect(leafDer.includes(Buffer.from("300c0603551d130101ff04023000", "hex"))).toBe(true);
+    expect(leafDer.includes(Buffer.from("300e0603551d0f0101ff040403020780", "hex"))).toBe(true);
+    expect(keyIdAfter(leafDer, AKI)).toBe(keyIdAfter(caDer, SKI));
+    expect(keyIdAfter(leafDer, SKI)).not.toBe(keyIdAfter(caDer, SKI));
+  });
+
+  it("is valid for the days asked, but never past the CA", () => {
+    expect(new Date(leaf.validFrom).toISOString()).toBe("2026-10-22T08:09:10.000Z");
+    expect(new Date(leaf.validTo).toISOString()).toBe("2029-01-24T08:09:10.000Z");
+    const long = new X509Certificate(
+      signedLeafCertificate({
+        caKey,
+        caCertificate: caPem,
+        key: leafKey,
+        hostnames,
+        days: 99_999,
+        now,
+      }),
+    );
+    expect(long.validTo).toBe(ca.validTo);
+    const later = new Date("2037-01-01T00:00:00Z");
+    expect(() =>
+      signedLeafCertificate({
+        caKey,
+        caCertificate: caPem,
+        key: leafKey,
+        hostnames,
+        days: 1,
+        now: later,
+      }),
+    ).toThrow(/local CA expired on 2036-10-19T08:09:10\.000Z/);
+  });
+
+  it("refuses a CA key that is not the certificate's, no hostname, and a bad hostname", () => {
+    const sign = (o: { caKey?: KeyObject; hostnames?: string[] }) => () =>
+      signedLeafCertificate({
+        caKey: o.caKey ?? caKey,
+        caCertificate: caPem,
+        key: leafKey,
+        hostnames: o.hostnames ?? hostnames,
+        days: 1,
+        now,
+      });
+    expect(sign({ caKey: leafKey })).toThrow(/CA key does not match the CA certificate/);
+    expect(sign({ hostnames: [] })).toThrow(/at least one hostname/);
+    expect(sign({ hostnames: ["a.localhost", "A.localhost"] })).toThrow(
+      /"A\.localhost" is not a lower-case hostname, so it cannot go in a certificate\./,
+    );
+    expect(() =>
+      localCaCertificate(createPublicKey(caKey), { commonName: "x", days: 1, now }),
+    ).toThrow(/not an ECDSA P-256 private key/);
+  });
+
+  it("puts no private key in either certificate", () => {
+    for (const pem of [caPem, leafPem]) {
+      expect(pem).not.toMatch(/PRIVATE/);
+      expect(pem.match(/-----BEGIN /g)).toHaveLength(1);
+      const der = derOf(pem);
+      expect(der.includes(privateScalar(caKey))).toBe(false);
+      expect(der.includes(privateScalar(leafKey))).toBe(false);
+    }
+  });
+
+  it.skipIf(OPENSSL === undefined)(
+    "passes openssl verify -CAfile, with the extensions openssl reads",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "opscrew-local-ca-"));
+      try {
+        await writeFile(join(dir, "ca.pem"), caPem);
+        await writeFile(join(dir, "leaf.pem"), leafPem);
+        const verify = openssl(
+          [
+            "verify",
+            "-x509_strict",
+            "-purpose",
+            "sslserver",
+            "-CAfile",
+            join(dir, "ca.pem"),
+            "-attime",
+            String(Math.floor(now.getTime() / 1000) + 60),
+            join(dir, "leaf.pem"),
+          ],
+          "",
+        );
+        expect(verify.status, verify.out).toBe(0);
+        expect(verify.out).toMatch(/leaf\.pem: OK/);
+        const caText = openssl(["x509", "-noout", "-text"], caPem);
+        expect(caText.out).toMatch(/X509v3 Basic Constraints: critical\s+CA:TRUE, pathlen:0/);
+        expect(caText.out).toMatch(/X509v3 Key Usage: critical\s+Certificate Sign, CRL Sign\s*\n/);
+        const leafText = openssl(["x509", "-noout", "-text"], leafPem);
+        expect(leafText.out).toMatch(/X509v3 Key Usage: critical\s+Digital Signature\s*\n/);
+        expect(leafText.out).toMatch(/X509v3 Extended Key Usage:\s+TLS Web Server Authentication/);
+        expect(leafText.out).toContain("DNS:a.localhost, DNS:staging.a.localhost");
+        expect(leafText.out).toMatch(/X509v3 Authority Key Identifier:/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("buildCsr", () => {

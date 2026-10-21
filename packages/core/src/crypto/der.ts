@@ -1,6 +1,6 @@
 /**
- * A minimal DER writer: just the ASN.1 types OpsCrew's CSR and client certificate need. Every
- * function returns the complete encoding (tag, length, content).
+ * A minimal DER writer: just the ASN.1 types OpsCrew's CSR and certificates need. Every writing
+ * function returns the complete encoding (tag, length, content); {@link children} reads one level.
  */
 
 function encodeLength(length: number): Uint8Array {
@@ -143,4 +143,32 @@ export function explicitTag(n: number, value: Uint8Array): Uint8Array {
  */
 export function implicitTag(n: number, content: Uint8Array, constructed = false): Uint8Array {
   return contextTag(n, constructed, content);
+}
+
+/**
+ * The complete encodings of the elements inside the constructed value (a SEQUENCE) that `der`
+ * begins with: the one reading OpsCrew needs, to copy the issuer's name from a CA certificate.
+ */
+export function children(der: Uint8Array): Uint8Array[] {
+  const element = (at: number): { start: number; end: number } => {
+    const first = der[at + 1];
+    if (first === undefined) throw new Error("The DER value ends early.");
+    let start = at + 2;
+    let length = first;
+    if (first & 0x80) {
+      length = 0;
+      for (const byte of der.subarray(start, start + (first & 0x7f))) length = length * 256 + byte;
+      start += first & 0x7f;
+    }
+    if (start + length > der.length) throw new Error("The DER value ends early.");
+    return { start, end: start + length };
+  };
+  const outer = element(0);
+  const items: Uint8Array[] = [];
+  for (let at = outer.start; at < outer.end; ) {
+    const { end } = element(at);
+    items.push(der.subarray(at, end));
+    at = end;
+  }
+  return items;
 }
