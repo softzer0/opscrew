@@ -10,6 +10,7 @@ import {
   readTextIfExists,
   resolveProjectPaths,
   stripBom,
+  tfstateFile,
   toPosixRelative,
 } from "./paths";
 
@@ -63,12 +64,21 @@ describe("resolveProjectPaths", () => {
       knownHosts: path.join(p.projectHomeDir, "known_hosts"),
       statePassphrase: path.join(p.projectHomeDir, "state_passphrase"),
       deploySecrets: path.join(p.projectHomeDir, "deploy_secrets.json"),
+      shared: {
+        architecture: path.join(root, "opscrew", "architecture.json"),
+        architectureMd: path.join(root, "opscrew", "ARCHITECTURE.md"),
+        scanReportMd: path.join(root, "opscrew", "SECURITY_SCAN.md"),
+        scanReportJson: path.join(root, ".opscrew", "scan.json"),
+        proxyDir: path.join(root, "opscrew", "proxy"),
+        requirementsBase: path.join(root, "opscrew", "requirements.yaml"),
+      },
     });
   });
 
   it("returns only absolute paths, even for a relative root", () => {
     const p = resolveProjectPaths(".", { env: {}, homedir: tmp });
     expect(p.root).toBe(path.resolve("."));
+    const { shared, ...own } = p.files;
     const all = [
       p.root,
       p.artefactsDir,
@@ -76,7 +86,8 @@ describe("resolveProjectPaths", () => {
       p.homeDir,
       p.projectHomeDir,
       p.auditDir,
-      ...Object.values(p.files),
+      ...Object.values(own),
+      ...Object.values(shared),
     ];
     for (const value of all) expect(path.isAbsolute(value), value).toBe(true);
   });
@@ -109,14 +120,126 @@ describe("resolveProjectPaths", () => {
     );
   });
 
-  it("refuses any other environment until environments have paths of their own", () => {
-    const resolve = () =>
-      resolveProjectPaths(path.join(tmp, "app"), { env: {}, homedir: tmp, environment: "staging" });
-    expect(resolve).toThrow(
-      expect.objectContaining({
-        code: "INVALID_INPUT",
-        message: 'The environment "staging" is not supported yet: OpsCrew deploys only prod.',
-      }),
+  it("gives another environment its own artefacts, state and project-home folders", () => {
+    const root = path.join(tmp, "app");
+    const prod = resolveProjectPaths(root, { env: {}, homedir: tmp });
+    const p = resolveProjectPaths(root, { env: {}, homedir: tmp, environment: "staging" });
+    const own = (dir: string) => path.join(dir, "environments", "staging");
+
+    expect(p.environment).toBe("staging");
+    expect(p.root).toBe(prod.root);
+    expect(p.projectId).toBe(prod.projectId);
+    expect(p.homeDir).toBe(prod.homeDir);
+    expect(p.auditDir).toBe(prod.auditDir);
+    expect(p.artefactsDir).toBe(own(prod.artefactsDir));
+    expect(p.stateDir).toBe(own(prod.stateDir));
+    expect(p.projectHomeDir).toBe(own(prod.projectHomeDir));
+
+    const artefacts = own(path.join(root, "opscrew"));
+    const state = own(path.join(root, ".opscrew"));
+    const home = own(prod.projectHomeDir);
+    expect(p.files).toEqual({
+      architecture: path.join(root, "opscrew", "architecture.json"),
+      architectureMd: path.join(root, "opscrew", "ARCHITECTURE.md"),
+      requirements: path.join(artefacts, "requirements.yaml"),
+      plan: path.join(artefacts, "plan.yaml"),
+      scanReportMd: path.join(root, "opscrew", "SECURITY_SCAN.md"),
+      scanReportJson: path.join(root, ".opscrew", "scan.json"),
+      securityReport: path.join(artefacts, "SECURITY_REPORT.md"),
+      runbook: path.join(artefacts, "RUNBOOK.md"),
+      state: path.join(state, "state.json"),
+      approvals: path.join(state, "approvals.jsonl"),
+      costs: path.join(state, "costs.jsonl"),
+      plansDir: path.join(state, "plans"),
+      tfstateDir: path.join(state, "tfstate"),
+      cloudflareRecord: path.join(state, "cloudflare.json"),
+      deployKey: path.join(home, "deploy_key"),
+      deployKeyPub: path.join(home, "deploy_key.pub"),
+      knownHosts: path.join(home, "known_hosts"),
+      statePassphrase: path.join(home, "state_passphrase"),
+      deploySecrets: path.join(home, "deploy_secrets.json"),
+      shared: prod.files.shared,
+    });
+  });
+
+  it("keeps two environments apart and shares prod's common files with both", () => {
+    const root = path.join(tmp, "app");
+    const prod = resolveProjectPaths(root, { env: {}, homedir: tmp });
+    const staging = resolveProjectPaths(root, { env: {}, homedir: tmp, environment: "staging" });
+    const preview = resolveProjectPaths(root, { env: {}, homedir: tmp, environment: "preview-2" });
+
+    const { shared: _prodShared, ...prodOwn } = prod.files;
+    const { shared: _stagingShared, ...stagingOwn } = staging.files;
+    const { shared: _previewShared, ...previewOwn } = preview.files;
+    const sharedNames = ["architecture", "architectureMd", "scanReportMd", "scanReportJson"];
+    for (const [name, file] of Object.entries(stagingOwn)) {
+      const others = [
+        prodOwn[name as keyof typeof prodOwn],
+        previewOwn[name as keyof typeof previewOwn],
+      ];
+      if (sharedNames.includes(name)) expect(others, name).toEqual([file, file]);
+      else expect(others, name).not.toContain(file);
+    }
+    expect(staging.files.shared).toEqual(prod.files.shared);
+    expect(preview.files.shared).toEqual(prod.files.shared);
+  });
+
+  it("refuses a name that is not an environment name", () => {
+    for (const environment of ["Staging", "../prod", "staging/x", "", "a-name-longer-than-16"]) {
+      const resolve = () =>
+        resolveProjectPaths(path.join(tmp, "app"), { env: {}, homedir: tmp, environment });
+      expect(resolve, environment).toThrow(
+        expect.objectContaining({
+          code: "INVALID_INPUT",
+          message: `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter.`,
+        }),
+      );
+    }
+  });
+
+  it.runIf(isWindows)("lays out an environment under a Windows drive root", () => {
+    const p = resolveProjectPaths("D:\\work\\app", {
+      env: {},
+      homedir: "C:\\Users\\me",
+      environment: "staging",
+    });
+    expect(p.artefactsDir).toBe("D:\\work\\app\\opscrew\\environments\\staging");
+    expect(p.stateDir).toBe("D:\\work\\app\\.opscrew\\environments\\staging");
+    expect(p.projectHomeDir).toBe(
+      `C:\\Users\\me\\.opscrew\\projects\\${p.projectId}\\environments\\staging`,
+    );
+    expect(p.files.shared.proxyDir).toBe("D:\\work\\app\\opscrew\\proxy");
+    expect(tfstateFile(p)).toBe(
+      "D:\\work\\app\\.opscrew\\environments\\staging\\tfstate\\staging.tfstate",
+    );
+  });
+
+  it.runIf(!isWindows)("lays out an environment under a POSIX root", () => {
+    const p = resolveProjectPaths("/srv/app", {
+      env: {},
+      homedir: "/home/me",
+      environment: "staging",
+    });
+    expect(p.artefactsDir).toBe("/srv/app/opscrew/environments/staging");
+    expect(p.stateDir).toBe("/srv/app/.opscrew/environments/staging");
+    expect(p.projectHomeDir).toBe(`/home/me/.opscrew/projects/${p.projectId}/environments/staging`);
+    expect(p.files.shared.proxyDir).toBe("/srv/app/opscrew/proxy");
+    expect(tfstateFile(p)).toBe("/srv/app/.opscrew/environments/staging/tfstate/staging.tfstate");
+  });
+});
+
+describe("tfstateFile", () => {
+  it("is prod.tfstate in today's tfstate folder for prod", () => {
+    const root = path.join(tmp, "app");
+    const p = resolveProjectPaths(root, { env: {}, homedir: tmp });
+    expect(tfstateFile(p)).toBe(path.join(root, ".opscrew", "tfstate", "prod.tfstate"));
+  });
+
+  it("is <env>.tfstate in the environment's own tfstate folder", () => {
+    const root = path.join(tmp, "app");
+    const p = resolveProjectPaths(root, { env: {}, homedir: tmp, environment: "staging" });
+    expect(toPosixRelative(root, tfstateFile(p))).toBe(
+      ".opscrew/environments/staging/tfstate/staging.tfstate",
     );
   });
 });

@@ -27,6 +27,20 @@ export interface ProjectFiles {
   statePassphrase: string;
   /** Private record of the server and repository the deploy secrets were last stored for. */
   deploySecrets: string;
+  /** The files every environment shares, at prod's paths. */
+  shared: SharedProjectFiles;
+}
+
+/** The files every environment of an app shares; they keep prod's paths. */
+export interface SharedProjectFiles {
+  architecture: string;
+  architectureMd: string;
+  scanReportMd: string;
+  scanReportJson: string;
+  /** `opscrew/proxy/`: the user's additions to the proxy's configuration. */
+  proxyDir: string;
+  /** `opscrew/requirements.yaml`: the answers every environment starts from. */
+  requirementsBase: string;
 }
 
 /** Resolved locations for a project: committed artefacts, local state and user-level data. */
@@ -37,13 +51,16 @@ export interface ProjectPaths {
   environment: string;
   /** Stable id: `<slug(basename)>-<first 12 hex of sha256(normalised root)>`. */
   projectId: string;
-  /** `<root>/opscrew` — committed artefacts. */
+  /** `<root>/opscrew` (another environment: `<root>/opscrew/environments/<env>`) — committed artefacts. */
   artefactsDir: string;
-  /** `<root>/.opscrew` — machine-local state (gitignored). */
+  /** `<root>/.opscrew` (another environment: `.opscrew/environments/<env>`) — local state (gitignored). */
   stateDir: string;
   /** `OPSCREW_HOME` or `<homedir>/.opscrew` — user-level data. */
   homeDir: string;
-  /** `<homeDir>/projects/<projectId>` — per-project secrets (deploy key, passphrase). */
+  /**
+   * `<homeDir>/projects/<projectId>` (another environment: `…/environments/<env>`) — per-project
+   * secrets (deploy key, passphrase).
+   */
   projectHomeDir: string;
   /** `<homeDir>/audit` — audit log directory. */
   auditDir: string;
@@ -59,20 +76,25 @@ export interface ResolveProjectPathsOptions {
   environment?: string;
 }
 
+/** An environment's name, as plan-schema's `EnvironmentNameSchema` allows it. */
+const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,15}$/;
+
 /**
  * Resolves all OpsCrew paths for the project at `root` (relative roots resolve against cwd).
- * Throws `INVALID_INPUT` for an environment other than prod, which has no paths yet.
+ * Prod (or no environment) gets today's paths; another environment gets its own artefacts, state
+ * and project-home folders, and shares `files.shared` with prod. Reads no files, so it does not
+ * check that the environment exists; a name the schema refuses is `INVALID_INPUT`.
  */
 export function resolveProjectPaths(
   root: string,
   options: ResolveProjectPathsOptions = {},
 ): ProjectPaths {
   const environment = options.environment ?? "prod";
-  if (environment !== "prod") {
+  if (!ENVIRONMENT_NAME.test(environment)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The environment "${environment}" is not supported yet: OpsCrew deploys only prod.`,
-      { hint: "Leave out the environment to use prod." },
+      `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter.`,
+      { hint: "Run `opscrew env list` to see the app's environments." },
     );
   }
   const absRoot = path.resolve(root);
@@ -83,9 +105,22 @@ export function resolveProjectPaths(
       ? path.resolve(override)
       : path.join(path.resolve(options.homedir ?? osHomedir()), ".opscrew");
   const projectId = projectIdFor(absRoot);
-  const projectHomeDir = path.join(homeDir, "projects", projectId);
-  const artefactsDir = path.join(absRoot, "opscrew");
-  const stateDir = path.join(absRoot, ".opscrew");
+  const prodArtefactsDir = path.join(absRoot, "opscrew");
+  const prodStateDir = path.join(absRoot, ".opscrew");
+  const prodProjectHomeDir = path.join(homeDir, "projects", projectId);
+  const own = (dir: string) =>
+    environment === "prod" ? dir : path.join(dir, "environments", environment);
+  const artefactsDir = own(prodArtefactsDir);
+  const stateDir = own(prodStateDir);
+  const projectHomeDir = own(prodProjectHomeDir);
+  const shared: SharedProjectFiles = {
+    architecture: path.join(prodArtefactsDir, "architecture.json"),
+    architectureMd: path.join(prodArtefactsDir, "ARCHITECTURE.md"),
+    scanReportMd: path.join(prodArtefactsDir, "SECURITY_SCAN.md"),
+    scanReportJson: path.join(prodStateDir, "scan.json"),
+    proxyDir: path.join(prodArtefactsDir, "proxy"),
+    requirementsBase: path.join(prodArtefactsDir, "requirements.yaml"),
+  };
 
   return {
     root: absRoot,
@@ -97,12 +132,12 @@ export function resolveProjectPaths(
     projectHomeDir,
     auditDir: path.join(homeDir, "audit"),
     files: {
-      architecture: path.join(artefactsDir, "architecture.json"),
-      architectureMd: path.join(artefactsDir, "ARCHITECTURE.md"),
+      architecture: shared.architecture,
+      architectureMd: shared.architectureMd,
       requirements: path.join(artefactsDir, "requirements.yaml"),
       plan: path.join(artefactsDir, "plan.yaml"),
-      scanReportMd: path.join(artefactsDir, "SECURITY_SCAN.md"),
-      scanReportJson: path.join(stateDir, "scan.json"),
+      scanReportMd: shared.scanReportMd,
+      scanReportJson: shared.scanReportJson,
       securityReport: path.join(artefactsDir, "SECURITY_REPORT.md"),
       runbook: path.join(artefactsDir, "RUNBOOK.md"),
       state: path.join(stateDir, "state.json"),
@@ -116,8 +151,14 @@ export function resolveProjectPaths(
       knownHosts: path.join(projectHomeDir, "known_hosts"),
       statePassphrase: path.join(projectHomeDir, "state_passphrase"),
       deploySecrets: path.join(projectHomeDir, "deploy_secrets.json"),
+      shared,
     },
   };
+}
+
+/** The environment's infrastructure state file: `<tfstateDir>/<env>.tfstate` (`prod.tfstate` for prod). */
+export function tfstateFile(paths: ProjectPaths): string {
+  return path.join(paths.files.tfstateDir, `${paths.environment}.tfstate`);
 }
 
 /**
