@@ -258,6 +258,7 @@ Effort`.
       - `opscrew_env_add`, `opscrew_env_list` and `opscrew_env_remove`;
       - `opscrew_promote`, with the approval dialog. The `promote` approval is never granted without the user.
     - **The guide:** new pages `environments.md`, `localhost.md` (with Docker Desktop's licence note and the trust command per OS) and `runners.md`. Environment sections where pages need them. The runbook per environment.
+    - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
     - **The plugin's deploy skill** learns environments and promotion. `node plugin/validate.mjs` passes.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
