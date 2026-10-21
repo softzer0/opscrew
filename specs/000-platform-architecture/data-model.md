@@ -149,7 +149,7 @@ amounts equals `monthly.amount` (rounded to 2 decimals); all currencies equal.
 | `security.wafCustomRules` | boolean, default `true` | |
 | `security.imageScan` | boolean, default `true` | |
 | `approvals` | `{ planHash: string (64 hex); approver: string; at: datetime; kind: string }[]`, default `[]` | informational copy |
-| `deployment` | `{ lastCompletedPhase?: PhaseName; url?: string (domain URLs only); lastPlanHash?: string; lastApplyAt?: datetime; lastDeployAt?: datetime }`, default `{}` | the server address is not here: `.opscrew/server.json` (feature 008, ADR 0010) |
+| `deployment` | `{ url?: string (domain URLs only); lastPlanHash?: string; lastApplyAt?: datetime; firstDeployAt?: datetime }`, default `{}` | the server address is not here: `.opscrew/server.json` (feature 008, ADR 0010); `firstDeployAt` is set once, by the first passing verify (014, T1414d) |
 
 Cross-field rules (`superRefine`):
 - `dns.provider === "cloudflare"` ⇒ `dns.domain` present.
