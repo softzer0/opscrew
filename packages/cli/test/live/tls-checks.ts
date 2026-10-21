@@ -94,8 +94,10 @@ export async function originCheck(
         `${check.title}: the server could not connect to 127.0.0.1:443 under OpsCrew's web filter; from a container on the edge's network the check gave "${result.status}", so opscrew secure needs that fallback (research "Spike results" 14)`,
       );
     }
-    if (result.status !== "pass") problems.push(`${check.title}: ${result.message}`);
-    else log(`from the server: ${result.message}`);
+    if (result.status !== "pass") {
+      problems.push(`${check.title}: ${result.message}`);
+      log(`from the server, ${result.status}: ${result.message}`);
+    } else log(`from the server: ${result.message}`);
   }
   return { problems, findings };
 }
