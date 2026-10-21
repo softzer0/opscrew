@@ -568,6 +568,7 @@ Each wave is merged, gated and pushed before the next starts.
       - Verify Docker's error text when it cannot mount the host recursively read-only (T1405 recognises exit 125 with "recursive" in stderr, a guess), on a server with an old kernel or Docker if one is ever available; otherwise keep the guess documented.
       - Merge `RuntimeContext.cloudflareRanges` with `ctx.cloudflare.ipRanges` into one field (T1407's report).
       - Portainer's `opscrew-<app>_version` volume (T1416's stamp) is removed with the stack, not left behind by `destroy --delete-data`: add it to `portainerStackVolumes` (or remove it with the stack), with the agents tests and the runbook's backup note.
+      - gixy-ng gives HIGH `regex_redos` and `http_splitting` advice on OpsCrew's own nginx translation of `vercel.json` (false positives: the CR/LF guard is ignored). Adjust the generated regexes, or list those two plugins as noise for lines OpsCrew wrote, so provision doesn't warn about its own file (T1412).
       - Refresh the older pins that moved upstream (the curl and mysql 8.4 digests, uv), found by T1401b's run of `update-pins.mjs`, then run the gate.
     - **A duplication sweep over 014's whole change:** merge repeated helpers where the code gets smaller and no less clear. List what was merged, and what was left and why.
     - **No behaviour change.**
