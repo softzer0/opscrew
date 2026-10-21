@@ -8,16 +8,22 @@ Owners:
 
 Consumers: `packages/cli`, `packages/mcp-server` (T1512).
 
-## Paths (`@opscrew/core`)
+## Paths (`@opscrew/core`) and environments (`@opscrew/plan-schema`)
 
 ```ts
+// @opscrew/core: pure, reads no file
 interface ResolveProjectPathsOptions {
   env?: NodeJS.ProcessEnv;
   homedir?: string;
   environment?: string;            // absent or "prod": today's paths
 }
-resolveProjectPaths(root, options): ProjectPaths;   // + environment: string (resolved name)
-environmentsOf(root, deps): Promise<string[]>;      // "prod" first when deployed or planned, then by order
+resolveProjectPaths(root, options): ProjectPaths;   // + environment: string, files.shared
+tfstateFile(paths): string;                          // <tfstateDir>/<env>.tfstate
+ENVIRONMENT_NAME_PATTERN;                            // the one name rule
+
+// @opscrew/plan-schema: reads the plan files (core has no YAML parser, and plan-schema depends on core)
+environmentsOf(root, deps): Promise<string[]>;      // "prod" first when its plan exists, then each after its source
+resolveEnvironmentPaths(root, environment, deps): Promise<ProjectPaths>;   // an unknown name: INVALID_INPUT with the list
 ```
 
 - For an environment other than prod, `artefactsDir` is `opscrew/environments/<env>`, `stateDir`
