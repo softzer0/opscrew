@@ -347,6 +347,7 @@ Effort`.
   - Accept:
     - **drift:** a per-hostname setting disabled, or using another certificate, and a missing origin certificate at Cloudflare are reported, with "run provision".
     - **drift's site comparison** is done in T1409a, which renders it exactly as provision does.
+    - **The ssh-host inspection** (`packages/connectors/ssh-host/src/**`, the inspection only) hashes the app's site for the server's proxy, `<app>.conf` on nginx as well as `<app>.caddy` on Caddy, so drift on an nginx server doesn't report its site as missing (T1409a's report).
     - **secure's origin check:** on nginx, a missing client certificate completes the handshake and answers HTTP 400; on Caddy, the handshake is refused. Both count as refused (T1407).
     - **status:**
       - each certificate's expiry (origin and client from the record, DNS-only hostnames from a TLS handshake through an injected connector);
