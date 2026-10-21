@@ -460,7 +460,7 @@ Effort`.
 
 ## SSH algorithm hardening (lead, 2026-10-21, after T1405)
 
-- [ ] T1418 [P] [US3] Modern-only SSH algorithms on OpsCrew's servers, in `packages/iac-templates/modules/{hetzner-vps,digitalocean-droplet}/**`, `packages/iac-templates/src/generated/**`, `packages/connectors/ssh-host/src/**`, `packages/secops/src/deep/noise.ts`
+- [X] T1418 [P] [US3] Modern-only SSH algorithms on OpsCrew's servers, in `packages/iac-templates/modules/{hetzner-vps,digitalocean-droplet}/**`, `packages/iac-templates/src/generated/**`, `packages/connectors/ssh-host/src/**`, `packages/secops/src/deep/noise.ts`
   - Owns: those paths (+ tests, snapshots)
   - Reads: research.md R8; `packages/secops/src/deep/__fixtures__/ssh-audit-policy.json` (what the policy expects); spec FR-1426
   - Depends: T1405 (noise.ts), T1410 (the generated modules)
