@@ -461,7 +461,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2`, `pnpm lint`
   - Effort: high
 
-- [ ] T1414d [US2] No `plan.yaml` churn from verify and the other phases (found with T1414c, 2026-10-21), in `packages/plan-schema/src/plan.ts` (+ the generated JSON schema), `packages/agents/src/**` (the readers and writers named below), `packages/mcp-server/src/tools/deploy.ts`, `packages/cli/src/commands/provision.ts` (+ tests, fixtures, snapshots)
+- [X] T1414d [US2] No `plan.yaml` churn from verify and the other phases (found with T1414c, 2026-10-21), in `packages/plan-schema/src/plan.ts` (+ the generated JSON schema), `packages/agents/src/**` (the readers and writers named below), `packages/mcp-server/src/tools/deploy.ts`, `packages/cli/src/commands/provision.ts` (+ tests, fixtures, snapshots)
   - Why: T1414c made a provision with nothing to change publish nothing. But `verify` rewrites `plan.yaml` after every passing check: it stamps `updatedAt`, sets `deployment.lastCompletedPhase` to `verify` (which provision sets back), and refreshes `deployment.lastDeployAt`. So provision, merge, verify and provision again still opens a pull request with nothing in it. Nothing reads `lastCompletedPhase`, and every reader of `lastDeployAt` only asks whether the app was ever deployed.
   - Depends: T1414c (its `writePlanIfChanged`)
   - Accept:
