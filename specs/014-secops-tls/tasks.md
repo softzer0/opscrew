@@ -476,6 +476,25 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/mcp-server --filter=opscrew --concurrency=2`, `pnpm lint`
   - Effort: high
 
+- [ ] T1414e [US1] Portainer: a scripted provision brings origin TLS to the stack in the same run, or stops at the stack plan (found live, 2026-10-21), in `packages/agents/src/provision/portainer-flow.ts` (+ tests), `docs/guide/origin-protection.md`, `docs/guide/portainer-target.md`
+  - Why: in Portainer step 5b, `provision --plan-only` showed only the Cloudflare plan. `provision --approve <its hash>` applied it: the origin certificate, the client certificate and the origin pull setting. But the approving run keeps the stack Caddy's site as it was before (`siteBefore`, so an approved stack hash stays valid), and it finished with success.
+    - The deploy then ran with the old site. The stack's Caddy answered HTTP 200 on the host without Cloudflare's client certificate, while Cloudflare showed origin protection on.
+    - Nothing told the user that origin protection needs another run. Scripts, MCP's `opscrew_apply` and the plugin all go through this approving path.
+  - Accept:
+    - **After the Cloudflare apply in an approving run**, provision renders the stack Caddy's site with the origin TLS as Cloudflare now has it, as an interactive run does.
+      - If the stack plan this gives was approved in this run (its hash given), it is applied.
+      - Otherwise the run stops at the new stack plan before changing the stack, as the bucket and tunnel cases do. It prints the plan and its hash, with the plain line for scripts ("run again with `--approve` and the stack plan's hash"), exits as those cases do, and changes nothing in the user's Portainer.
+      - An unapproved stack plan is never applied (constitution I).
+    - **The deployment files** committed in this run (the stack template, the workflow) match the stack plan that is applied. When the run stops at the stack plan, they match the shown plan, so the next run's approval gives a stack and a template that agree.
+    - **Interactive runs are unchanged.**
+    - **Tests, with the agents fakes:**
+      - a scripted first origin TLS on Portainer: `--plan-only` shows the Cloudflare plan; `--approve` applies it and stops at the stack plan with the origin TLS site and its hash; a second `--approve` with that hash applies it. The stack's Caddyfile then requires the client certificate, and `stackServed` reports the hostnames as requiring;
+      - an approving run with no origin TLS change keeps today's behaviour;
+      - the MCP apply path gives the same stop.
+    - **The guide's origin protection page and Portainer page** say that in scripts the stack plan follows the Cloudflare plan, approved by its own hash.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/mcp-server --concurrency=2`, `pnpm lint`
+  - Effort: xhigh (the hash-bound stack approval)
+
 - [ ] T1414 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`.
 
 ## `vercel.json` routing (founder, 2026-10-21)
