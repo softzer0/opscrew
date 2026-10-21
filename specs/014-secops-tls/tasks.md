@@ -491,6 +491,7 @@ Effort`.
 
       It works for `redeploy: updater` and `redeploy: cloudflare`, and in every web mode.
     - **Caddy's `reverse_proxy`** to the app gets `lb_try_duration 30s` and `lb_try_interval 250ms`, so requests during the app's restart wait and pass, instead of failing. This applies in every web mode where the stack runs Caddy (`caddy`, `tunnel`, `proxy`).
+    - **The stack Caddy refuses unknown hostnames** (FR-1404), with the same catch-all as the server edge (`http:// { abort }` and `https:// { abort }`, after the app's site; T1406).
     - **If the spike found that Portainer recreates unchanged services anyway,** this task stops at the finding and reports it, and the guide keeps today's sentence.
     - **The guide:** "In your Portainer" says visitors see a short pause instead of an error, and that a Docker Swarm environment (later work) would give true rolling updates.
     - **Tests:** the stack's snapshot (Caddy's service identical across two image versions), the version check, and the retry settings.
