@@ -45,7 +45,7 @@ export function appDir(plan: DeployPlan): string {
  * A deploy replaces the server's edge only with a larger one, or with the other proxy. Change it
  * with every change of the edge's Compose file; a test fails until it is changed.
  */
-export const EDGE_VERSION = 2026102102;
+export const EDGE_VERSION = 2026102103;
 
 /** The key of {@link EDGE_VERSION} in the edge's Compose file (a Compose extension field). */
 export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
@@ -169,6 +169,20 @@ function edgePorts(plan: DeployPlan, http: number, https: number): string[] {
 }
 
 /**
+ * Caddy is healthy once its admin API answers (busybox `wget` in the pinned image), so the deploy's
+ * `edge up -d --wait` waits for it before `caddy reload`, which would otherwise find it not yet
+ * listening on a first start.
+ */
+const CADDY_HEALTHCHECK = {
+  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"],
+  interval: "30s",
+  timeout: "5s",
+  retries: 3,
+  start_period: "30s",
+  start_interval: "1s",
+};
+
+/**
  * Caddy, reading each app's site file from `/srv/edge/sites` and its origin certificate from
  * `/srv/edge/tls/<app>`, and trusting Cloudflare's `ranges` for the visitor's address.
  */
@@ -188,6 +202,7 @@ function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
           "caddy_data:/data",
           "caddy_config:/config",
         ],
+        healthcheck: CADDY_HEALTHCHECK,
         // A changed main configuration changes this label, so Compose recreates Caddy with it.
         labels: { "dev.opscrew.caddyfile-sha256": sha256Hex(main) },
         depends_on: ["kamal-proxy"],
