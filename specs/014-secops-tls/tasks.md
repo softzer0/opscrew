@@ -376,6 +376,7 @@ Effort`.
       - `opscrew secrets status|restore|rotate|folder` with the contract's flags;
       - `restore` without `--key-file` asks with a hidden prompt (CLI only);
       - the first provision and `rotate` write a new key to `--key-out`, or ask for the path, and never print it;
+      - `opscrew status` and MCP `opscrew_status` show `tlsStatusReport(deps, plan)` (T1409b): the proxy, each certificate's expiry, and the recovery copy's update time, key count and whether it is behind;
       - `opscrew secure --deep`;
       - `init` lists the Cloudflare token's new permissions.
     - **MCP:** the same tools. A new key goes only to the required `keyOut` file, restore takes only `keyFile`, and no response contains a key.
@@ -399,6 +400,7 @@ Effort`.
       - the deeper check against a container server, with the files unchanged;
       - Valkey's password.
     - **Portainer redeploy under load (T1416's check), gated:** a local Portainer CE (`IMAGES.portainer`), a local registry and Git server bound to loopback, the stack in proxy mode; two webhook redeploys under a request loop give no failed request, and Caddy's container is the same before and after.
+    - **certbot's renewal-failure log** (T1409b's parser in `secops/src/hardening/tls.ts`): a renewal that fails against Pebble writes what the parser expects ("Processing …/renewal/<app>.conf", "Failed to renew certificate <app> with error: …"), and `status` shows the reason; fix the parser if the real lines differ.
     - **Cleanup:** each test removes its own containers, networks, volumes and images, by id or label.
     - **gixy-ng once:** install it in a throwaway Python container (`pip install gixy-ng`) and run T1408's `runGixy` against a generated nginx additions file. Confirm the binary name, `-f json`, the report's fields and its exit code, and fix `runGixy` if they differ (T1408 took them from the original gixy).
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new files>` and `pnpm lint`
@@ -421,6 +423,7 @@ Effort`.
     - **The leak search** ends every pass: the run's logs, commits, plans, reports and audit entries contain none of the generated keys, the client key or the age identity (SC-1406).
     - **Teardown** revokes and removes every certificate, setting and record the run created, with a fallback through the API when destroy fails.
     - **`docs/e2e.md`** no longer mentions `X-OpsCrew-Image`; the Portainer check reads `/.well-known/opscrew-version` (T1416).
+    - **The origin check from the server** (T1409b: `openssl s_client` to 127.0.0.1:443) works under OpsCrew's web filter on a real server; if it does not, add the fallback from a container on the edge's network (research "Spike results" 14).
     - **The coverage page** names every new scenario as not yet run live.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint` (the live runs are T1414)
   - Effort: high
