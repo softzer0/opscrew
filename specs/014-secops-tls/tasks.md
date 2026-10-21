@@ -434,7 +434,7 @@ Effort`.
       - skipped, each with its reason: rewrites to another site, `has` and `missing`, patterns the proxy cannot express, and everything in `unsupported`.
     - **Design:**
       - when the facts carry routing rules and `opscrew/proxy/additions.<proxy>` does not exist, it writes the file with the header comment of plan.md "16." and shows the skipped list;
-      - an existing file is never overwritten. When `vercel.json`'s SHA-256 differs from the one in the header, design says so.
+      - an existing file is never overwritten. When `vercel.json`'s SHA-256 differs from the one in the header, design says so. The comparison uses a fresh detect's `platformRouting.sha256` (detect hashes the text without a BOM), never the raw file bytes.
     - **Tests:**
       - the fixtures of T1417a, for both proxies;
       - every output passes `scanProxyAdditions`;
