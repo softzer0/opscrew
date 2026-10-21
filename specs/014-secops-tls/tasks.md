@@ -235,7 +235,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops` and `pnpm lint`
   - Effort: high
 
-- [ ] T1410 [P] [US6] [US4] Valkey's password, and CAA records in the DNS module, in `packages/iac-templates/src/catalog/**`, `packages/iac-templates/modules/cloudflare-dns/**`, `packages/iac-templates/src/infra/**`, `packages/iac-templates/src/generated/**`
+- [X] T1410 [P] [US6] [US4] Valkey's password, and CAA records in the DNS module, in `packages/iac-templates/src/catalog/**`, `packages/iac-templates/modules/cloudflare-dns/**`, `packages/iac-templates/src/infra/**`, `packages/iac-templates/src/generated/**`
   - Owns: those paths (+ tests, snapshots)
   - Reads: research.md R4, R6; plan.md "12."; spec FR-1430, FR-1431, FR-1450
   - Depends: T1401a
@@ -298,7 +298,7 @@ Effort`.
     - **From T1406:**
       - `renderDeployment`'s context in `packages/iac-templates/src/render.ts` is typed `RuntimeContext`;
       - nginx sends `X-Frame-Options: SAMEORIGIN` as Caddy does;
-      - a deploy without additions removes the app's `/srv/edge/sites/<app>.additions` from the server;
+      - a deploy without additions removes the app's `/srv/edge/sites/<app>.additions` from the server, and a deploy without origin TLS removes `/srv/edge/tls/<app>/` (T1406's review);
       - the edge version number is after T1406's 2026102101.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
@@ -491,7 +491,6 @@ Effort`.
 
       It works for `redeploy: updater` and `redeploy: cloudflare`, and in every web mode.
     - **Caddy's `reverse_proxy`** to the app gets `lb_try_duration 30s` and `lb_try_interval 250ms`, so requests during the app's restart wait and pass, instead of failing. This applies in every web mode where the stack runs Caddy (`caddy`, `tunnel`, `proxy`).
-    - **The stack Caddy refuses unknown hostnames** (FR-1404), with the same catch-all as the server edge (`http:// { abort }` and `https:// { abort }`, after the app's site; T1406).
     - **If the spike found that Portainer recreates unchanged services anyway,** this task stops at the finding and reports it, and the guide keeps today's sentence.
     - **The guide:** "In your Portainer" says visitors see a short pause instead of an error, and that a Docker Swarm environment (later work) would give true rolling updates.
     - **Tests:** the stack's snapshot (Caddy's service identical across two image versions), the version check, and the retry settings.
