@@ -599,7 +599,7 @@ Each wave is merged, gated and pushed before the next starts.
 
 ## End-of-feature simplify pass (after T1414)
 
-- [ ] T1415 The end-of-feature simplify pass: duplication across 014's changes, and the items
+- [X] T1415 The end-of-feature simplify pass: duplication across 014's changes, and the items
   collected below during the waves
   - Owns: the files each item names (+ tests and snapshots), and any 014 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
   - Accept:
