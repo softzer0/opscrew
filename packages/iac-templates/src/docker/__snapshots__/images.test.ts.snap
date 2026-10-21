@@ -10,7 +10,7 @@ exports[`Next.js with a release command > keeps the migration tool and the app's
 # \`next start\`. The build stage gathers what runs into /out, with /out/opscrew-start.sh as
 # the entry point.
 
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM node:24-alpine@sha256:6a1c190e17215d844926b0677f4bf87273ff7d5e54db06d3b5b5863ab0b09a3d AS build
 WORKDIR /app
 COPY . .
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
@@ -85,7 +85,7 @@ RUN tools="$(node /tmp/opscrew-release-tools.cjs versions . - prisma)" \\
   && mkdir -p /out && cd /app \\
   && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name .next -exec cp -an {} /out/ \\;
 
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS runtime
+FROM node:24-alpine@sha256:6a1c190e17215d844926b0677f4bf87273ff7d5e54db06d3b5b5863ab0b09a3d AS runtime
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 COPY --from=build --chown=node:node /out ./

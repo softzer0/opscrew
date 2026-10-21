@@ -6,7 +6,7 @@ exports[`renderPlaceholderStack > is the deploy branch's first compose.yaml: one
 name: opscrew-shop
 services:
   app:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: unless-stopped
     entrypoint:
       - /bin/sh
@@ -56,7 +56,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: no
     user: 0:0
     network_mode: none
@@ -191,7 +191,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: no
     user: 0:0
     network_mode: none
@@ -415,7 +415,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: no
     user: 0:0
     network_mode: none
@@ -543,7 +543,7 @@ exports[`renderUpdaterStack > POSTs to the webhook every 60 seconds with Portain
 name: opscrew-shop-updater
 services:
   updater:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: unless-stopped
     entrypoint:
       - /bin/sh
@@ -753,7 +753,7 @@ services:
       release:
         condition: service_completed_successfully
   mysql:
-    image: mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70
+    image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: app
@@ -869,7 +869,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: no
     user: 0:0
     network_mode: none
@@ -1187,7 +1187,7 @@ services:
       release:
         condition: service_completed_successfully
   mysql:
-    image: mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70
+    image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: app
@@ -1303,7 +1303,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06
+    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
     restart: no
     user: 0:0
     network_mode: none

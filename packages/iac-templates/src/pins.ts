@@ -39,11 +39,11 @@ export interface ArchiveToolPin {
 export const IMAGES = {
   /** Base of the generated Node Dockerfiles. */
   nodeAlpine: {
-    ref: "node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f",
+    ref: "node:24-alpine@sha256:6a1c190e17215d844926b0677f4bf87273ff7d5e54db06d3b5b5863ab0b09a3d",
   },
   /** Base of the generated Python Dockerfiles. */
   python: {
-    ref: "python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170",
+    ref: "python:3.14-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a",
   },
   caddy: {
     ref: "caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f",
@@ -66,7 +66,7 @@ export const IMAGES = {
     ref: "aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa",
   },
   curl: {
-    ref: "curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06",
+    ref: "curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac",
   },
   /** Paketo's Ubuntu 24.04 builder (lifecycle 0.21.22), amd64 and arm64. */
   paketoBuilder: {
@@ -93,7 +93,7 @@ export const IMAGES = {
   // `latest` (research.md R2, R3, R4 and R8).
   /** MySQL 8.4 LTS (Docker's `latest` is an Innovation release). */
   mysql: {
-    ref: "mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70",
+    ref: "mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364",
   },
   /** MariaDB's current LTS line, the one its `lts` tag points to. */
   mariadb: {
@@ -376,9 +376,9 @@ export const ACTIONS = {
  */
 export const PYPI_PACKAGES = {
   gunicorn: "26.2.0",
-  pipenv: "2026.10.1",
+  pipenv: "2026.10.2",
   poetry: "2.5.1",
-  uv: "0.13.1",
+  uv: "0.13.4",
   uvicorn: "0.54.0",
 } as const satisfies Record<string, string>;
 
