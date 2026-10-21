@@ -36,7 +36,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Hetzner, DNS only: CAA at the hostname, not at the apex; the minimum TLS decision | `OPSCREW_E2E_TLS=dns-only` | Passed | 2026-10-21 | — |
 | Hetzner, the recovery copy restored on a fresh clone | `OPSCREW_E2E_TLS=recovery`, the default app | Passed (run 4, after T1414c; run 2 found T1414c) | 2026-10-21 | — |
 | Your own server with nginx (`own-nginx.test.ts`): certbot, an addition, a forced renewal under load, testssl.sh, two apps on one edge, origin TLS on nginx, a switch to Caddy and back | `OPSCREW_E2E_OWN_NGINX=1`, + `OPSCREW_E2E_GITHUB_REPO_B`, Docker here | **Not run yet** | — | — |
-| Your existing Portainer, step 5b: the stack's Caddy with origin TLS, `secure --deep` with only testssl.sh, a redeploy under load | `OPSCREW_E2E_PORTAINER_STEPS=5b` (or `full`), Docker here | **Not run yet** | — | — |
+| Your existing Portainer, step 5b: the stack's Caddy with origin TLS, `secure --deep` with only testssl.sh, a redeploy under load | `OPSCREW_E2E_PORTAINER_STEPS=5b` (or `full`), Docker here | **Failed** (runs 1–2: origin protection not on the stack after a scripted provision, T1414e) | — | A rerun after T1414e |
 
 Run in development, not tracked by date:
 
