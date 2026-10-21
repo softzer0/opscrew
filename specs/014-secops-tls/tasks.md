@@ -333,6 +333,10 @@ Effort`.
     - **A renewed certificate or a changed secret alone** starts the deploy (`dispatchWorkflow`), and the plan's approval text names that deploy before it is approved.
     - **destroy**, after the app's site is gone: revokes the origin certificate and every `superseded` one, disables and deletes the client certificate, and removes the CAA records with the DNS module. The minimum TLS stays.
     - **retarget:** the certificates follow (same generated values and deploy secret), and `target.edge` carries over.
+    - **From T1407:**
+      - the ssh-host teardown (`packages/connectors/ssh-host/src/**`, the app-removal path only) removes the app's nginx site `<app>.conf` and `<app>.additions` and reloads nginx when the edge is nginx;
+      - design counts the edge per proxy: Caddy 128 MB, nginx 160 MB (nginx 64, certbot 64, kamal-proxy 32), plus the connector (`EDGE_MEMORY_MB`, wherever it lives);
+      - provision passes Cloudflare's IP ranges (already read for the web filter) into the runtime context for the real-IP settings.
     - **Tests:** first provision, idempotent rerun (no new certificate), renewal at 29 days, a changed hostname set, permission missing, a hostname leaving the proxy, the edge conflict, Portainer, destroy and retarget. No key in any output, plan, audit entry or snapshot.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
@@ -343,7 +347,8 @@ Effort`.
   - Depends: T1409a, T1405
   - Accept:
     - **drift:** a per-hostname setting disabled, or using another certificate, and a missing origin certificate at Cloudflare are reported, with "run provision".
-    - **drift's site comparison** (`drift/host.ts` hashes `renderCaddyfile(plan, ctx)`) passes the same `originTls` and `additions` as provision, so an unchanged site never shows as drift (T1406).
+    - **drift's site comparison** (`drift/host.ts` hashes `renderCaddyfile(plan, ctx)`) passes the same `originTls` and `additions` as provision, so an unchanged site never shows as drift (T1406). It hashes `renderEdgeSite` for the server's proxy (T1407).
+    - **secure's origin check:** on nginx, a missing client certificate completes the handshake and answers HTTP 400; on Caddy, the handshake is refused. Both count as refused (T1407).
     - **status:**
       - each certificate's expiry (origin and client from the record, DNS-only hostnames from a TLS handshake through an injected connector);
       - the server's proxy;
