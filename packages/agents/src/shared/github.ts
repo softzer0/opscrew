@@ -58,7 +58,12 @@ export async function githubClientFromToken(
   const token = await resolveGitHubToken(deps.env, deps.runner);
   if (!token) return undefined;
   deps.redactor.addLiteral(token, "github-token");
-  return new GitHubClient({ token, fetch: deps.fetch, version: deps.version });
+  return new GitHubClient({
+    token,
+    fetch: deps.fetch,
+    version: deps.version,
+    redactor: deps.redactor,
+  });
 }
 
 /**

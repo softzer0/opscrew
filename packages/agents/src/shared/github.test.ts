@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createTestPhaseDeps, ScriptedRunner } from "../testing";
@@ -45,6 +45,23 @@ describe("githubClientFromToken", () => {
     const deps = await createTestPhaseDeps({ env: { GITHUB_TOKEN: token } });
     expect(await githubClientFromToken(deps)).toBeDefined();
     expect(deps.redactor.redact(`token ${token}`)).not.toContain(token);
+  });
+
+  it("gives the client the phase's redactor, so runner tokens are masked everywhere", async () => {
+    const runnerToken = fakeSecret("generic-password", "runner");
+    const { fetch } = fakeFetch({
+      "POST https://api.github.com/repos/acme/shop/actions/runners/registration-token": {
+        status: 201,
+        body: { token: runnerToken },
+      },
+    });
+    const deps = await createTestPhaseDeps({
+      env: { GITHUB_TOKEN: fakeSecret("github-pat") },
+      fetch,
+    });
+    const client = await githubClientFromToken(deps);
+    expect(await client?.runnerRegistrationToken("acme", "shop")).toBe(runnerToken);
+    expect(deps.redactor.redact(`config.sh --token ${runnerToken}`)).not.toContain(runnerToken);
   });
 
   it("is undefined without a token", async () => {

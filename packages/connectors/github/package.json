@@ -2,7 +2,7 @@
   "name": "@opscrew/connector-github",
   "version": "0.1.0",
   "private": true,
-  "description": "GitHub adapter: git operations, pull requests, Actions secrets.",
+  "description": "GitHub adapter: git operations, pull requests, Actions and environment secrets, environments, runners, workflow dispatch, GHCR tags and provenance.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {

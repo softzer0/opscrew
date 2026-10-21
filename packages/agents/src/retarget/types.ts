@@ -13,13 +13,6 @@ import type { GitHubApi, ProvisionServices } from "../provision";
 
 /** The GitHub calls a move needs: the deploy secrets plus running the deploy workflow. */
 export interface RetargetGitHubApi extends GitHubApi {
-  /** Starts a `workflow_dispatch` run; the run id when GitHub returns it. */
-  dispatchWorkflow(
-    owner: string,
-    repo: string,
-    workflowFile: string,
-    ref: string,
-  ): Promise<{ runId?: number }>;
   /** Waits for the dispatched run (by id, else the newest dispatch run on `ref` since `since`). */
   waitForWorkflowRun(
     owner: string,

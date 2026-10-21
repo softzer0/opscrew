@@ -703,10 +703,13 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
     _repo: string,
     workflowFile: string,
     ref: string,
+    _inputs?: Record<string, string>,
+    onAccepted?: () => Promise<void>,
   ) {
     this.runs.push({ workflowFile, ref });
     this.events.push({ type: "dispatch", ref });
-    return { runId: 99 };
+    await onAccepted?.();
+    return { runId: 99, url: "https://github.com/acme/shop/actions/runs/99" };
   }
 
   async waitForWorkflowRun(_owner: string, _repo: string, options: { runId?: number }) {

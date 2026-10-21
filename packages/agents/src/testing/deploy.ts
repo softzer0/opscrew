@@ -581,9 +581,17 @@ export class FakeGitHub implements GitHubApi {
   }
   /** Workflow runs started with `dispatchWorkflow`: the workflow file and the branch. */
   readonly dispatches: { workflowFile: string; ref: string }[] = [];
-  async dispatchWorkflow(_owner: string, _repo: string, workflowFile: string, ref: string) {
+  async dispatchWorkflow(
+    _owner: string,
+    _repo: string,
+    workflowFile: string,
+    ref: string,
+    _inputs?: Record<string, string>,
+    onAccepted?: () => Promise<void>,
+  ) {
     this.dispatches.push({ workflowFile, ref });
-    return { runId: 42 };
+    await onAccepted?.();
+    return { runId: 42, url: "https://github.com/acme/shop/actions/runs/42" };
   }
   /** What OpsCrew wrote as a branch's only file (the branch holds nothing else then). */
   readonly holds = new Map<string, { path: string; content: string }>();

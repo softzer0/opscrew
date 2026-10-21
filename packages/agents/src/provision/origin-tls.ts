@@ -588,8 +588,19 @@ export async function deployRenewedCertificate(
   const workflow = posix.basename(plan.cicd.workflowPath);
   const { branch } = plan.cicd;
   const { owner, repo } = github;
+  // Recorded as soon as GitHub accepts the dispatch, so a wait for its run that times out keeps it.
+  const accepted = () =>
+    deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: "dispatch workflow",
+      phase,
+      target: `${owner}/${repo}`,
+      decision: "approved",
+      detail: `${workflow} on ${branch}: the renewed origin certificate`,
+    });
   try {
-    await github.api.dispatchWorkflow(owner, repo, workflow, branch);
+    await github.api.dispatchWorkflow(owner, repo, workflow, branch, {}, accepted);
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     deps.reporter.warn(
@@ -599,15 +610,6 @@ export async function deployRenewedCertificate(
     );
     return;
   }
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "dispatch workflow",
-    phase,
-    target: `${owner}/${repo}`,
-    decision: "approved",
-    detail: `${workflow} on ${branch}: the renewed origin certificate`,
-  });
   deps.reporter.success(
     `Started the deploy workflow (${workflow} on ${branch}), which brings the renewed origin certificate to the server.`,
   );

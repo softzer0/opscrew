@@ -288,13 +288,15 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
   const since = deps.clock.now().toISOString();
   let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
   try {
-    const { runId } = await githubApi.dispatchWorkflow(owner, repo, workflowFile, branch);
-    await auditMove(session, {
-      kind: "provider-call",
-      action: "dispatch workflow",
-      target: `${owner}/${repo}`,
-      detail: `${workflowFile} on ${branch}`,
-    });
+    // Recorded as soon as GitHub accepts the dispatch, before any wait for its run.
+    const { runId } = await githubApi.dispatchWorkflow(owner, repo, workflowFile, branch, {}, () =>
+      auditMove(session, {
+        kind: "provider-call",
+        action: "dispatch workflow",
+        target: `${owner}/${repo}`,
+        detail: `${workflowFile} on ${branch}`,
+      }),
+    );
     run = await githubApi.waitForWorkflowRun(owner, repo, {
       workflowFile,
       ref: branch,

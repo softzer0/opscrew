@@ -42,6 +42,7 @@ export function githubConnector(options: GitHubConnectorOptions): GitHubConnecto
     ? new GitHubClient({
         token: options.token,
         fetch: options.fetch,
+        redactor,
         ...(options.version ? { version: options.version } : {}),
       })
     : undefined;
