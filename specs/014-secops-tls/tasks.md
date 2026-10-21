@@ -335,7 +335,6 @@ Effort`.
     - **retarget:** the certificates follow (same generated values and deploy secret), and `target.edge` carries over.
     - **From T1407:**
       - the ssh-host teardown (`packages/connectors/ssh-host/src/**`, the app-removal path only) removes the app's nginx site `<app>.conf` and `<app>.additions` and reloads nginx when the edge is nginx;
-      - design counts the edge per proxy: Caddy 128 MB, nginx 160 MB (nginx 64, certbot 64, kamal-proxy 32), plus the connector (`EDGE_MEMORY_MB`, wherever it lives);
       - provision passes Cloudflare's IP ranges into the runtime context's `cloudflareRanges` for the real-IP settings, from the same `ctx.cloudflare.ipRanges` it reads for the web filter, so every app on a server passes the same ranges and the shared edge doesn't change between apps (T1407).
     - **Tests:** first provision, idempotent rerun (no new certificate), renewal at 29 days, a changed hostname set, permission missing, a hostname leaving the proxy, the edge conflict, Portainer, destroy and retarget. No key in any output, plan, audit entry or snapshot.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
@@ -452,6 +451,7 @@ Effort`.
       - on nginx, the locations it writes do **not** repeat OpsCrew's baseline headers: the edge sets `add_header_inherit merge;`, so they are inherited, and repeating them would send them twice (T1407);
       - `proxy_pass` and `reverse_proxy` name exactly the app's upstream with no variable after it (T1408's rules refuse `http://app:3000$request_uri`), and sources are checked with plan-schema's `VercelSourceSchema`;
       - skipped, each with its reason: rewrites to another site, `has` and `missing`, patterns the proxy cannot express, and everything in `unsupported`.
+    - **The edge's memory per proxy** (from T1407; `EDGE_MEMORY_MB` is used in `design/{components,options,sizing}.ts`): sizing counts Caddy at 128 MB and nginx at 160 MB (nginx 64, certbot 64, kamal-proxy 32), following `target.edge`, in every place that uses it today.
     - **Design:**
       - when the facts carry routing rules and `opscrew/proxy/additions.<proxy>` does not exist, it writes the file with the header comment of plan.md "16." and shows the skipped list;
       - an existing file is never overwritten. When `vercel.json`'s SHA-256 differs from the one in the header, design says so. The comparison uses a fresh detect's `platformRouting.sha256` (detect hashes the text without a BOM), never the raw file bytes.
