@@ -11,7 +11,7 @@ import {
   ElicitRequestSchema,
   type ElicitResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { ProvisionServices } from "@opscrew/agents";
+import { type ProvisionServices, runProvision } from "@opscrew/agents";
 import {
   createProject as createGitProject,
   FAKE_SOPS,
@@ -348,6 +348,60 @@ describe.skipIf(!findExecutable("git"))(
       expect(dataOf(result)).toMatchObject({ secretsStored: false, nextStep: "opscrew provision" });
       expect(textOf(result)).toContain("run `opscrew provision` in a terminal");
       expectNoSecrets(h);
+    });
+
+    it("opscrew_apply says plainly when the deployment files did not change or still need a push", async () => {
+      const branch = "opscrew/deploy-setup";
+      const outcomes = [
+        { applied: false, outputs: {}, branch: "main", published: false },
+        { applied: false, outputs: {}, branch: "main", published: false, prUrl: PR_URL },
+        { applied: false, outputs: {}, branch, published: false },
+        { applied: false, outputs: {}, branch, published: true, pushed: false },
+      ];
+      const h = await connect({
+        elicit: approveAll,
+        env: { OPSCREW_APP_ENV_FILE: "production.env" },
+        // opscrew_plan plans for real; each opscrew_apply gets the next outcome.
+        tools: {
+          runProvision: async (phase, options) =>
+            options?.planOnly === true
+              ? runProvision(phase, options)
+              : (outcomes.shift() ?? { applied: false, outputs: {} }),
+        },
+      });
+      const planHash = dataOf(await h.call("opscrew_plan")).planHash as string;
+
+      const nothing = textOf(await h.call("opscrew_apply", { planHash }));
+      expect(nothing).toContain(
+        "The deployment files did not change, so nothing was committed and no pull request was opened.",
+      );
+      expect(nothing).toContain("Next: call opscrew_verify to check the live site.");
+      expect(nothing).not.toContain("committed on branch");
+      expect(nothing).not.toContain("merge the pull request");
+
+      // A pull request from earlier that is still open is still shown, with its merge.
+      const open = textOf(await h.call("opscrew_apply", { planHash }));
+      expect(open).toContain(
+        `The deployment files did not change, so nothing was committed. The pull request from earlier is still open: ${PR_URL}`,
+      );
+      expect(open).toContain("Next: merge the pull request to deploy, then call opscrew_verify.");
+
+      // Still on the deploy branch, whose files are on main: how to switch back.
+      const merged = textOf(await h.call("opscrew_apply", { planHash }));
+      expect(merged).toContain(
+        `They are already on main on GitHub, but this clone is still on ${branch}: switch to main and pull (\`git switch main && git pull\`).`,
+      );
+      expect(merged).toContain("Next: call opscrew_verify to check the live site.");
+
+      // An earlier commit whose push was refused again: the branch still needs pushing.
+      const unpushed = textOf(await h.call("opscrew_apply", { planHash }));
+      expect(unpushed).toContain(
+        `The deployment files are committed on branch ${branch}, which still needs pushing: push it (\`git push -u origin ${branch}\`) and open a pull request into main.`,
+      );
+      expect(unpushed).toContain(
+        "Next: once the branch is pushed, merge its pull request to deploy, then call opscrew_verify.",
+      );
+      expect(unpushed).not.toContain("nothing was committed");
     });
 
     it("refuses when the user declines and names the terminal command", async () => {

@@ -30,7 +30,7 @@ export interface ComponentStatusOptions {
  * `opscrew verify` saw it, so the server holds the app's containers.
  */
 export function appDeployed(plan: Pick<DeployPlan, "deployment">): boolean {
-  return plan.deployment.lastDeployAt !== undefined && plan.deployment.destroyedAt === undefined;
+  return plan.deployment.firstDeployAt !== undefined && plan.deployment.destroyedAt === undefined;
 }
 
 /**

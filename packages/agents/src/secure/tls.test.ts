@@ -119,7 +119,7 @@ function deployedPlan(o: { proxied?: boolean; edge?: "caddy" | "nginx"; valkey?:
           ]
         : []),
     ],
-    deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+    deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
   });
 }
 

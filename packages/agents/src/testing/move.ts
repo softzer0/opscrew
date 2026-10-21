@@ -813,7 +813,6 @@ export function movePlan(options: MoveHarnessOptions = {}): DeployPlan {
     deployment: {
       ...base.deployment,
       ...(dns === "cloudflare" ? { url: `https://${DOMAIN}` } : {}),
-      lastCompletedPhase: "provision",
     },
   });
 }

@@ -35,7 +35,8 @@ type StorageProvider = ObjectStorage["provider"];
  */
 export function sqliteOwnerWarning(previous: DeployPlan, plan: DeployPlan): string | undefined {
   const deployed =
-    previous.deployment.lastDeployAt !== undefined && previous.deployment.destroyedAt === undefined;
+    previous.deployment.firstDeployAt !== undefined &&
+    previous.deployment.destroyedAt === undefined;
   const before = previous.app.build?.builder;
   const after = plan.app.build?.builder;
   if (!deployed || previous.storage?.sqlite === undefined || plan.storage?.sqlite === undefined) {

@@ -246,6 +246,52 @@ class CloudflarePlanGate implements ApprovalHandler {
   }
 }
 
+/**
+ * Where the deployment files are after `opscrew_apply`: a pull request, a branch (pushed or still
+ * to push), or unchanged; `base` is the branch the deploy pull request goes into.
+ */
+function publishedLines(result: ProvisionResult, base: string): string[] {
+  if (result.published === false) {
+    if (result.prUrl) {
+      return [
+        `The deployment files did not change, so nothing was committed. The pull request from earlier is still open: ${result.prUrl}`,
+      ];
+    }
+    return [
+      "The deployment files did not change, so nothing was committed and no pull request was opened.",
+      ...(result.branch !== undefined && result.branch !== base
+        ? [
+            `They are already on ${base} on GitHub, but this clone is still on ${result.branch}: switch to ${base} and pull (\`git switch ${base} && git pull\`).`,
+          ]
+        : []),
+    ];
+  }
+  if (result.prUrl) return [`Pull request with the deployment files: ${result.prUrl}`];
+  if (result.pushed === false && result.branch) {
+    return [
+      `The deployment files are committed on branch ${result.branch}, which still needs pushing: push it (\`git push -u origin ${result.branch}\`) and open a pull request into ${base}.`,
+    ];
+  }
+  return result.branch ? [`Deployment files committed on branch ${result.branch}.`] : [];
+}
+
+/** The next step after `opscrew_apply`; `secrets` says whether this call stored the deploy secrets. */
+function nextLine(result: ProvisionResult, secrets: boolean): string {
+  if (result.published === false && !result.prUrl) {
+    return secrets
+      ? "Next: call opscrew_verify to check the live site."
+      : "Then call opscrew_verify to check the live site.";
+  }
+  if (result.pushed === false && !result.prUrl) {
+    return secrets
+      ? "Next: once the branch is pushed, merge its pull request to deploy, then call opscrew_verify."
+      : "Then, once the branch is pushed, merge its pull request to deploy and call opscrew_verify.";
+  }
+  return secrets
+    ? "Next: merge the pull request to deploy, then call opscrew_verify."
+    : "Then merge the pull request to deploy and call opscrew_verify.";
+}
+
 function outputsLines(result: ProvisionResult, own: boolean): string[] {
   // A server the user owns or their Portainer: no address leaves OpsCrew's local state.
   if (own) return [];
@@ -709,16 +755,10 @@ export function registerDeployTools(
               ]
             : []),
           ...outputsLines(result, own || portainer),
-          ...(result.prUrl
-            ? [`Pull request with the deployment files: ${result.prUrl}`]
-            : result.branch
-              ? [`Deployment files committed on branch ${result.branch}.`]
-              : []),
+          ...publishedLines(result, plan.cicd.branch),
           ...secretsNote,
           "",
-          secrets
-            ? "Next: merge the pull request to deploy, then call opscrew_verify."
-            : "Then merge the pull request to deploy and call opscrew_verify.",
+          nextLine(result, secrets),
         ].join("\n");
         return {
           text,

@@ -539,7 +539,7 @@ export async function recordTeardown(
   opts: { summary: string; forgetAddress: boolean },
 ): Promise<DeployPlan> {
   const at = deps.clock.now().toISOString();
-  const { url, lastCompletedPhase, ...kept } = plan.deployment;
+  const { url, ...kept } = plan.deployment;
   const recorded = approvals.flatMap((record) =>
     record?.planHash === undefined ? [] : [approvalEntry(record)],
   );

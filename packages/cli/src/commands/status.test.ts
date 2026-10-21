@@ -123,7 +123,7 @@ describe("opscrew status and the server's address", () => {
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
       dns: { ...plan.dns, proxied: false },
-      deployment: { ...plan.deployment, lastDeployAt: "2026-10-11T12:00:00.000Z" },
+      deployment: { ...plan.deployment, firstDeployAt: "2026-10-11T12:00:00.000Z" },
     });
     const ctx = createTestContext({ cwd: dir });
     withServices(ctx, {
@@ -156,7 +156,7 @@ describe("opscrew status and the server's address", () => {
         paths.files.plan,
         DeployPlanSchema.parse({
           ...base,
-          deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+          deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
           processes: {
             workers: [{ name: "worker", command: "node worker.js", source: "procfile" }],
           },

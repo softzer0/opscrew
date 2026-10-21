@@ -16,7 +16,7 @@ import {
   renderTunnelConnectorCompose,
   usesTunnel,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type CloudflareSetup, setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
@@ -58,6 +58,7 @@ import {
   requireGitRepo,
   SshRemoteExec,
   stringOutput,
+  writePlanIfChanged,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
@@ -232,7 +233,6 @@ function recorded(
   const now = deps.clock.now().toISOString();
   return {
     ...plan,
-    updatedAt: now,
     approvals: [...plan.approvals, ...approvals.map(approvalEntry)],
     deployment: {
       ...plan.deployment,
@@ -515,9 +515,8 @@ async function runChange(
     // The server did not get the change: plan.yaml keeps the earlier settings, and only an
     // infrastructure apply that already happened is recorded (so its hash is not applied again).
     if (iacApplied && planHash !== undefined) {
-      await writeArtifact(
-        "plan",
-        deps.paths.files.plan,
+      await writePlanIfChanged(
+        deps,
         recorded(deps, change.before, approvals, { iacHash: planHash, any: true }),
       );
       // `--approve <host plan hash>` without options then finishes exactly this change.
@@ -553,7 +552,7 @@ async function runChange(
     ...(iacApplied && planHash !== undefined ? { iacHash: planHash } : {}),
     any: iacApplied || hostApplied,
   });
-  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await writePlanIfChanged(deps, plan);
   await clearPendingPortainer(deps.paths);
   const status = await portainerStatusOf(deps, plan);
   if (change.command === "enable") {

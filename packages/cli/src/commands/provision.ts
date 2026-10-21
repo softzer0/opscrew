@@ -119,6 +119,9 @@ export const DEPLOY_AGAIN_STEP =
 const VERIFY_STEP =
   "when the deploy run in GitHub Actions has finished, run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.";
 
+/** The next step when this run published nothing, so no deploy run follows from it. */
+const VERIFY_NOW_STEP = "run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.";
+
 /** The next step for a server: check its hardening. */
 export const SECURE_SERVER_STEP =
   "run `opscrew secure` to check the server's hardening and write opscrew/SECURITY_REPORT.md.";
@@ -391,9 +394,20 @@ export async function runInfraCommand(
     return;
   }
 
+  // Nothing was committed (the files did not change, as the phase said): no deploy run follows
+  // from this run, unless a pull request from earlier is still open. A branch whose push was
+  // refused still needs it first.
+  const { published, pushed, prUrl, branch } = result.result;
+  const deploys = published !== false || prUrl !== undefined;
+  const push =
+    published === true && pushed === false && branch !== undefined
+      ? [
+          `push ${branch} (\`git push -u origin ${branch}\`) and open a pull request into ${result.plan?.cicd.branch ?? "main"}; merging it deploys the app.`,
+        ]
+      : [];
   if (result.portainer) {
     printPortainerOutcome(ctx, result.result);
-    printNextSteps(ctx, portainerNextSteps(result.plan));
+    printNextSteps(ctx, [...push, ...portainerNextSteps(result.plan, deploys)]);
     return;
   }
 
@@ -403,7 +417,8 @@ export async function runInfraCommand(
     ctx.stdout(`\n${applied ? "Created or updated" : "Using"} the server at ${ipv4}.\n`);
   }
   printNextSteps(ctx, [
-    VERIFY_STEP,
+    ...push,
+    deploys ? VERIFY_STEP : VERIFY_NOW_STEP,
     SECURE_SERVER_STEP,
     ...(result.own
       ? [
@@ -433,13 +448,18 @@ function printPortainerOutcome(ctx: CliContext, result: ProvisionResult): void {
   if (lines.length > 0) ctx.stdout(`\n${lines.join("\n")}\n`);
 }
 
-/** The next steps after provisioning into the user's Portainer, by how visitors reach the app. */
-function portainerNextSteps(plan: DeployPlan | undefined): string[] {
+/**
+ * The next steps after provisioning into the user's Portainer, by how visitors reach the app and
+ * whether a deploy run follows (`deploys`).
+ */
+function portainerNextSteps(plan: DeployPlan | undefined, deploys: boolean): string[] {
   const proxy = plan?.target.provider === "portainer" && plan.target.web.mode === "proxy";
   return [
     proxy
-      ? "when the deploy run in GitHub Actions has finished and your reverse proxy routes to the app, run `opscrew verify` (add `--url <address>` to check the address your proxy serves it on) to check the live site and write opscrew/RUNBOOK.md."
-      : VERIFY_STEP,
+      ? `${deploys ? "when the deploy run in GitHub Actions has finished and" : "when"} your reverse proxy routes to the app, run \`opscrew verify\` (add \`--url <address>\` to check the address your proxy serves it on) to check the live site and write opscrew/RUNBOOK.md.`
+      : deploys
+        ? VERIFY_STEP
+        : VERIFY_NOW_STEP,
     "run `opscrew secure` to check the app's stack and write opscrew/SECURITY_REPORT.md (the host, its firewall, SSH and Portainer's own security stay yours).",
     "back up the app's data volumes yourself: OpsCrew cannot back up a Portainer host.",
   ];

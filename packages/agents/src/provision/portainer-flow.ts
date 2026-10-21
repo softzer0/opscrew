@@ -44,6 +44,7 @@ import {
   stateContents,
   stateFile,
   stringOutput,
+  writePlanIfChanged,
 } from "../shared";
 import { connectorFirst, tunnelChange } from "../shared/tunnel-connections";
 import { portainerAdditionsNote } from "./additions";
@@ -110,7 +111,6 @@ import {
   publishDeployment,
   type SavedInfrastructureHashes,
   withLearnedZone,
-  writePlanIfChanged,
 } from "./steps";
 import {
   applyStorage,
@@ -912,5 +912,7 @@ export async function provisionPortainer(
     outputs: publicOutputs(outputs),
     branch: published.published.branch,
     ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
+    published: published.published.published,
+    pushed: published.published.pushed,
   };
 }

@@ -38,7 +38,6 @@ function deployed(plan: DeployPlan): DeployPlan {
   return {
     ...plan,
     deployment: {
-      lastCompletedPhase: "provision",
       lastPlanHash: "a".repeat(64),
       lastApplyAt: "2026-10-10T09:00:00.000Z",
     },

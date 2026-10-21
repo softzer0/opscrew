@@ -119,7 +119,7 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
     const base = testPlan({ deployed: true, userSecret: false });
     return DeployPlanSchema.parse({
       ...base,
-      deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+      deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
       processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
     });
   }
@@ -210,7 +210,7 @@ describe("opscrew_status on a server the user owns", () => {
       path.join(dir, "opscrew", "plan.yaml"),
       DeployPlanSchema.parse({
         ...base,
-        deployment: { ...base.deployment, lastDeployAt: "2026-10-14T12:00:00.000Z" },
+        deployment: { ...base.deployment, firstDeployAt: "2026-10-14T12:00:00.000Z" },
       }),
     );
     const env = { OPSCREW_HOME: path.join(dir, "home") };
@@ -321,7 +321,7 @@ describe("opscrew_status: the proxy, the certificates and the recovery copy (FR-
     await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), {
       ...base,
       dns: { ...base.dns, proxied: false },
-      deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+      deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
     });
     const deps = resolveMcpDeps({
       version: "0.0.0-test",

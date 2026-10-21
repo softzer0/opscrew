@@ -531,7 +531,6 @@ describe("runDesign", () => {
         { planHash: HASH, approver: "dev", at: "2026-10-11T12:30:00.000Z", kind: "apply" },
       ],
       deployment: {
-        lastCompletedPhase: "provision",
         lastPlanHash: HASH,
         lastApplyAt: "2026-10-11T12:30:00.000Z",
       },
@@ -890,7 +889,6 @@ describe("runDesign", () => {
       it("US3-2: stops without touching plan.yaml when the deployment is live", async () => {
         const { deps, before } = await hetznerDeployment(
           {
-            lastCompletedPhase: "provision",
             lastApplyAt: "2026-10-11T12:30:00.000Z",
           },
           true,
@@ -918,7 +916,6 @@ describe("runDesign", () => {
 
       it("lets a destroyed deployment switch providers", async () => {
         const { deps } = await hetznerDeployment({
-          lastCompletedPhase: "provision",
           lastApplyAt: "2026-10-11T12:30:00.000Z",
           destroyedAt: "2026-10-12T09:00:00.000Z",
         });
@@ -1014,7 +1011,6 @@ describe("runDesign", () => {
       it("the preview still lists the options and warns that design would stop", async () => {
         const { deps, before } = await hetznerDeployment(
           {
-            lastCompletedPhase: "provision",
             lastApplyAt: "2026-10-11T12:30:00.000Z",
           },
           true,
@@ -1770,7 +1766,7 @@ describe("runDesign: components", () => {
     await writeArtifact("plan", deps.paths.files.plan, {
       ...plan,
       app: { ...plan.app, build: { ...plan.app.build, builder: "buildpacks" } },
-      deployment: { ...plan.deployment, lastDeployAt: "2026-10-12T10:00:00.000Z" },
+      deployment: { ...plan.deployment, firstDeployAt: "2026-10-12T10:00:00.000Z" },
     } as DeployPlan);
     const result = await runDesign(deps, { catalog: euCatalog() });
     expect(result.plan.app.build?.builder).toBe(builder);

@@ -31,6 +31,12 @@ export interface PublishResult {
   /** This run's commit, when it committed anything. */
   commit?: string;
   prUrl?: string;
+  /**
+   * False when there was nothing to publish: the files did not change and GitHub has them as this
+   * clone does. True when this run committed them or the branch holds them unpushed; `pushed`
+   * then says whether they reached GitHub.
+   */
+  published: boolean;
   pushed: boolean;
 }
 
@@ -533,20 +539,39 @@ export async function publishDeploySetup(
 }
 
 /**
- * True when the deploy branch this clone is on has commits GitHub lacks (an earlier run's commit
- * whose push was refused): HEAD is not in the branch on GitHub, or, before its first push, not in
- * `base` there.
+ * True when GitHub lacks `paths` as HEAD has them (an earlier run's commit whose push was
+ * refused): they differ from `branch` on GitHub or, when GitHub has no such branch (before its
+ * first push, or deleted after its pull request was merged, squashed or rebased), from `base`
+ * there. Only `paths` are compared, since `base` may have moved on with other commits. A commit
+ * this clone does not have counts as different.
  */
-async function hasUnpushedCommits(git: GitClient, branch: string, base: string): Promise<boolean> {
-  const pushed = (await git.remoteBranchSha(branch)) ?? (await git.remoteBranchSha(base));
-  return pushed === undefined || !(await git.isAncestor("HEAD", pushed));
+async function hasUnpublishedFiles(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  git: GitClient,
+  input: { branch: string; base: string; paths: readonly string[] },
+): Promise<boolean> {
+  const onGitHub =
+    (await git.remoteBranchSha(input.branch)) ?? (await git.remoteBranchSha(input.base));
+  if (onGitHub === undefined) return true;
+  const diff = await deps.runner.run("git", [
+    "-C",
+    deps.paths.root,
+    "diff",
+    "--quiet",
+    onGitHub,
+    "HEAD",
+    "--",
+    ...input.paths,
+  ]);
+  return diff.exitCode !== 0;
 }
 
 /**
  * The commit, push and pull request every OpsCrew pull request shares: writes `files` and stages
- * `paths`; when nothing is staged, and the deploy branch this clone is on has no commits GitHub
- * lacks, it stops there (no branch, push or pull request, and the current branch's open pull
- * request is named). Otherwise it switches to `chosen.branch`, commits what is staged, then (when
+ * `paths`; when nothing is staged, and GitHub has `paths` as the deploy branch this clone is on
+ * has them, it stops there (no branch, push or pull request; the current branch's open pull
+ * request is named, or else, on a deploy branch whose files are already on the base branch, how
+ * to switch back). Otherwise it switches to `chosen.branch`, commits what is staged, then (when
  * `push`) pushes and opens the pull request `title` with `body`, or adds to the open one, each
  * after its own approval. A refused push or pull request is not an error: the commit stays local
  * and the user is told how to continue. `what` names the files in the messages.
@@ -583,17 +608,22 @@ export async function commitAndPropose(
     !staged &&
     input.push &&
     current === branch &&
-    (await hasUnpushedCommits(git, branch, plan.cicd.branch));
+    (await hasUnpublishedFiles(deps, git, { branch, base: plan.cicd.branch, paths }));
   if (!staged && !unpushed) {
+    const open = branch === current ? chosen.pullRequest?.url : undefined;
+    const base = plan.cicd.branch;
     deps.reporter.info(
-      `${upperFirst(input.what)} did not change, so OpsCrew committed nothing and opened no pull request.`,
+      open !== undefined
+        ? `${upperFirst(input.what)} did not change, so OpsCrew committed nothing. The pull request from earlier is still open: ${open}`
+        : input.push && current !== base
+          ? `${upperFirst(input.what)} did not change and are already on ${base} on GitHub, so OpsCrew committed nothing and opened no pull request. Your deploy pull request is merged: switch to ${base} and pull (\`git switch ${base} && git pull\`).`
+          : `${upperFirst(input.what)} did not change, so OpsCrew committed nothing and opened no pull request.`,
     );
     return {
       branch: current,
+      published: false,
       pushed: false,
-      ...(chosen.pullRequest !== undefined && branch === current
-        ? { prUrl: chosen.pullRequest.url }
-        : {}),
+      ...(open !== undefined ? { prUrl: open } : {}),
     };
   }
   if (current !== branch) {
@@ -613,7 +643,12 @@ export async function commitAndPropose(
     });
     deps.reporter.success(`Committed ${input.what} on branch ${branch}.`);
   }
-  const result: PublishResult = { branch, pushed: false, ...(commit ? { commit } : {}) };
+  const result: PublishResult = {
+    branch,
+    published: true,
+    pushed: false,
+    ...(commit ? { commit } : {}),
+  };
   if (!input.push) {
     deps.reporter.info(
       `The files are committed on ${branch}. Push it and open a pull request into ${plan.cicd.branch} when you are ready.`,

@@ -10,7 +10,7 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
@@ -28,6 +28,7 @@ import {
   type ServerAddress,
   serverAddress,
   summarizeChecks,
+  writePlanIfChanged,
   writeRenderedFiles,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
@@ -106,7 +107,7 @@ export interface VerifyResult {
   url: string;
   /** Repo-relative path of the runbook that was written. */
   runbookPath: string;
-  /** The plan after verification (with `deployment.url`/`lastDeployAt` when passed). */
+  /** The plan after verification (with `deployment.url`/`firstDeployAt` when passed). */
   plan: DeployPlan;
 }
 
@@ -115,8 +116,9 @@ export interface VerifyResult {
  * endpoint, security headers, that `.env`/`.git` are not served, that the origin cannot be reached
  * around Cloudflare, and the latest deploy run. The server's address comes from OpsCrew's local
  * state (`serverAddress`). Writes `opscrew/RUNBOOK.md` (without the address behind Cloudflare's
- * proxy); when nothing fails, records `deployment.lastDeployAt` and, with a domain,
- * `deployment.url` in `opscrew/plan.yaml`. Marks `verify`.
+ * proxy); when nothing fails, records `deployment.firstDeployAt` (once) and, with a domain,
+ * `deployment.url` in `opscrew/plan.yaml`, which stays as it is when neither changes. Marks
+ * `verify`.
  */
 export async function runVerify(
   deps: PhaseDeps,
@@ -176,7 +178,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const fetch = options.fetch ?? deps.fetch;
   const github = await githubContext(deps, fetch);
 
-  const { checks: checked, lastDeployAt } = await runVerifyChecks({
+  const { checks: checked, latestDeployAt } = await runVerifyChecks({
     plan,
     ...(server !== undefined ? { server } : {}),
     resolver: options.resolver ?? defaultDnsResolver,
@@ -264,7 +266,6 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   let current = plan;
   if (passed) {
-    const now = deps.clock.now().toISOString();
     // Only a domain URL is committed; without a domain the URL is the server's IP address (or, in
     // the user's Portainer, their own route, which is never committed).
     const { url: _url, ...deployment } = plan.deployment;
@@ -273,17 +274,16 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
         ? `https://${plan.dns.domain}`
         : undefined
       : committableUrl(url);
+    const firstDeployAt = deployment.firstDeployAt ?? latestDeployAt;
     current = {
       ...plan,
-      updatedAt: now,
       deployment: {
         ...deployment,
         ...(committed !== undefined ? { url: committed } : {}),
-        lastCompletedPhase: "verify",
-        ...(lastDeployAt !== undefined ? { lastDeployAt } : {}),
+        ...(firstDeployAt !== undefined ? { firstDeployAt } : {}),
       },
     };
-    await writeArtifact("plan", paths.files.plan, current);
+    await writePlanIfChanged(deps, current);
   }
 
   // The runbook is committed: it shows the address only when the domain is not behind

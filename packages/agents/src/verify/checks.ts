@@ -987,7 +987,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
 /** The latest run of the deploy workflow on the deploy branch succeeded. */
 export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
   check: CheckResult;
-  lastDeployAt?: string;
+  latestDeployAt?: string;
 }> {
   const id = "deploy-run";
   const { workflowPath, branch } = ctx.plan.cicd;
@@ -1058,7 +1058,7 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
         target: latest.htmlUrl,
       },
     ),
-    ...(Number.isNaN(at.getTime()) ? {} : { lastDeployAt: at.toISOString() }),
+    ...(Number.isNaN(at.getTime()) ? {} : { latestDeployAt: at.toISOString() }),
   };
 }
 
@@ -1066,7 +1066,7 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
 export interface VerifyChecksOutcome {
   checks: CheckResult[];
   /** When the latest deploy run succeeded, the time it started. */
-  lastDeployAt?: string;
+  latestDeployAt?: string;
 }
 
 /**
@@ -1229,6 +1229,6 @@ export async function runVerifyChecks(base: VerifyCheckContext): Promise<VerifyC
   checks.push(deploy.check);
   return {
     checks,
-    ...(deploy.lastDeployAt !== undefined ? { lastDeployAt: deploy.lastDeployAt } : {}),
+    ...(deploy.latestDeployAt !== undefined ? { latestDeployAt: deploy.latestDeployAt } : {}),
   };
 }

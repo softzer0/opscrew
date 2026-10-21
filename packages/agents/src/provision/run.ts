@@ -29,6 +29,7 @@ import {
   serverAddress,
   stringOutput,
   trackedFiles,
+  writePlanIfChanged,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
@@ -88,7 +89,6 @@ import {
   publishDeployment,
   type SavedInfrastructureHashes,
   withLearnedZone,
-  writePlanIfChanged,
 } from "./steps";
 import {
   applyStorage,
@@ -821,6 +821,8 @@ async function provisionFlow(
     outputs: publicOutputs(applied.outputs),
     branch: published.published.branch,
     ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
+    published: published.published.published,
+    pushed: published.published.pushed,
   };
 }
 

@@ -848,7 +848,7 @@ export async function ownHostDrift(
       planHost(facts, desired, "opscrew provision"),
       {
         name: plan.app.name,
-        deployed: plan.deployment.lastDeployAt !== undefined,
+        deployed: plan.deployment.firstDeployAt !== undefined,
         runtimeFiles,
         plan,
       },

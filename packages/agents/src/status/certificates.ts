@@ -204,7 +204,7 @@ export async function tlsStatusReport(
       `  Client certificate for Cloudflare's origin pulls: expires ${client.expiresAt.slice(0, 10)}`,
     );
   }
-  const hosts = plan.deployment.lastDeployAt === undefined ? [] : proxyCertificateHosts(plan);
+  const hosts = plan.deployment.firstDeployAt === undefined ? [] : proxyCertificateHosts(plan);
   let renewing = false;
   for (const host of hosts) {
     try {

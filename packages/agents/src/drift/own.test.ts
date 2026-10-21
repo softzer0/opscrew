@@ -463,7 +463,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       const plan = await readArtifact("plan", s.deps.paths.files.plan);
       await writeArtifact("plan", s.deps.paths.files.plan, {
         ...plan,
-        deployment: { ...plan.deployment, lastDeployAt: "2026-10-15T09:00:00.000Z" },
+        deployment: { ...plan.deployment, firstDeployAt: "2026-10-15T09:00:00.000Z" },
       });
       const sums = await repoSums(s);
       const file = (mode: string, sha256: string | null = null) => ({

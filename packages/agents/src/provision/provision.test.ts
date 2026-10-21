@@ -134,7 +134,6 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(plan.deployment).toEqual({
       lastPlanHash: result.planHash,
       lastApplyAt: "2026-10-11T12:00:00.000Z",
-      lastCompletedPhase: "provision",
     });
     // The apply changed the plan, so it says when.
     expect(plan.updatedAt).toBe("2026-10-11T12:00:00.000Z");
@@ -1179,6 +1178,108 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(again).toMatchObject({ branch: DEPLOY_SETUP_BRANCH, prUrl: OPEN_PULL.url });
   });
 
+  it("a rerun whose push of the earlier commit is refused again still needs the push", async () => {
+    const { deps, services, git, root, engine } = await setup({
+      answer: (request) => request.kind !== "git-push",
+    });
+    await runProvision(deps, { services });
+    engine.scenario.changes = [];
+    const said = deps.reporter.text().length;
+
+    const again = await runProvision(deps, { services });
+
+    expect(again).toMatchObject({ branch: DEPLOY_SETUP_BRANCH, published: true, pushed: false });
+    expect(await git(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe(DEPLOY_SETUP_BRANCH);
+    const text = deps.reporter.text().slice(said);
+    expect(text).toContain(
+      `Not pushed. The commit stays on the local branch ${DEPLOY_SETUP_BRANCH}`,
+    );
+    expect(text).not.toContain("did not change");
+  });
+
+  describe("after the deploy pull request was merged on GitHub, on the deploy branch still", () => {
+    /**
+     * The first provision's pull request merged on GitHub `how` (its branch deleted there) while
+     * this clone stays on the deploy branch; the next plan has nothing to change.
+     */
+    async function mergedOnGitHub(how: "squash" | "merge" | "rebase") {
+      const s = await setup();
+      const { git, root, bare } = s;
+      await git(root, "push", "-q", bare, "main");
+      await runProvision(s.deps, { services: s.services });
+      const head = await git(root, "rev-parse", "HEAD");
+      const base = await git(bare, "rev-parse", "main");
+      const message =
+        how === "rebase" ? await git(root, "log", "-1", "--format=%B") : "Deploy setup (#7)";
+      const merged = await git(
+        bare,
+        ...["-c", "user.name=GitHub", "-c", "user.email=noreply@github.com"],
+        "commit-tree",
+        `${head}^{tree}`,
+        ...(how === "merge" ? ["-p", base, "-p", head] : ["-p", base]),
+        "-m",
+        message,
+      );
+      await git(bare, "update-ref", "refs/heads/main", merged);
+      await git(bare, "update-ref", "-d", `refs/heads/${DEPLOY_SETUP_BRANCH}`);
+      s.engine.scenario.changes = [];
+      s.handler.requests.length = 0;
+      s.engine.calls.length = 0;
+      return s;
+    }
+
+    /** Nothing was pushed, proposed or committed, and the clone is where it was. */
+    async function expectNothingPublished(s: Awaited<ReturnType<typeof mergedOnGitHub>>) {
+      expect(s.handler.requests.map((r) => r.kind)).not.toContain("git-push");
+      expect(s.handler.requests.map((r) => r.kind)).not.toContain("pull-request");
+      expect(s.github.pulls).toHaveLength(1);
+      expect(await s.git(s.bare, "branch", "--list", DEPLOY_SETUP_BRANCH)).toBe("");
+      expect(await s.git(s.root, "rev-parse", "--abbrev-ref", "HEAD")).toBe(DEPLOY_SETUP_BRANCH);
+    }
+
+    for (const how of ["squash", "merge", "rebase"] as const) {
+      it(`${how}: stops before anything changes and says to switch to main and pull`, async () => {
+        const s = await mergedOnGitHub(how);
+        const error = await runProvision(s.deps, { services: s.services }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(OpsCrewError);
+        expect(error).toMatchObject({
+          code: "PHASE_PRECONDITION",
+          message: `This clone is on ${DEPLOY_SETUP_BRANCH}, an earlier OpsCrew branch without the latest main from GitHub (its pull request was probably merged), so OpsCrew did not change anything.`,
+          hint: "Run `git checkout main && git pull`, then run `opscrew provision` again.",
+        });
+        expect(s.engine.calls).toEqual([]);
+        await expectNothingPublished(s);
+      });
+    }
+
+    it("squash, then main (moved on) pulled into it: the files match, so nothing is published", async () => {
+      const s = await mergedOnGitHub("squash");
+      const { git, root, bare } = s;
+      // Another change on main after the squash, then main pulled into the deploy branch.
+      await git(root, "fetch", "-q", bare, "main");
+      await git(root, "checkout", "-q", "-b", "other", "FETCH_HEAD");
+      await writeFile(join(root, "README.md"), "# shop\n");
+      await git(root, "add", "README.md");
+      await git(root, "commit", "-q", "-m", "docs: readme");
+      await git(root, "push", "-q", bare, "other:main");
+      await git(root, "checkout", "-q", DEPLOY_SETUP_BRANCH);
+      await git(root, "branch", "-q", "-D", "other");
+      await git(root, "pull", "-q", "--no-rebase", "--no-edit", bare, "main");
+      const said = s.deps.reporter.text().length;
+
+      const result = await runProvision(s.deps, { services: s.services });
+
+      expect(result).toMatchObject({ published: false, pushed: false });
+      expect(result).not.toHaveProperty("prUrl");
+      await expectNothingPublished(s);
+      const text = s.deps.reporter.text().slice(said);
+      expect(text).toContain(
+        "The deployment files did not change and are already on main on GitHub, so OpsCrew committed nothing and opened no pull request. Your deploy pull request is merged: switch to main and pull (`git switch main && git pull`).",
+      );
+      expect(text).not.toContain("deploys the app.");
+    });
+  });
+
   it("refuses to continue when the server's host key changed", async () => {
     const { deps, services, github, handler } = await setup({
       answer: (request) => request.kind !== "remote-exec",
@@ -1439,7 +1540,6 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
     expect(plan.target.provider).toBe("digitalocean");
     expect(plan.deployment).toMatchObject({
       lastPlanHash: result.planHash,
-      lastCompletedPhase: "provision",
     });
     expect((await readServerAddresses(run.deps.paths)).deployment).toEqual({
       ipv4: SERVER_IPV4,

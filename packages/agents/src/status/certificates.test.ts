@@ -47,7 +47,7 @@ function nginxPlan(): DeployPlan {
   return DeployPlanSchema.parse({
     ...base,
     target: { ...base.target, edge: "nginx" },
-    deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+    deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
   });
 }
 

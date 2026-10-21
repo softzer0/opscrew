@@ -24,7 +24,7 @@ function onSqlite(builder: ImageBuilder, o: { deployed?: boolean } = {}): Deploy
     deploy: { ...base.deploy, strategy: "recreate" },
     deployment: {
       ...base.deployment,
-      ...(o.deployed === false ? {} : { lastDeployAt: "2026-10-12T10:00:00.000Z" }),
+      ...(o.deployed === false ? {} : { firstDeployAt: "2026-10-12T10:00:00.000Z" }),
     },
   });
 }

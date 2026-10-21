@@ -63,12 +63,14 @@ interface Setup {
   zone?: FakeZone;
   /** Answers `OPSCREW_SOPS_BIN=fake-sops` for the recovery copy. */
   sops?: FakeSops;
+  /** GitHub, kept between runs (its pull requests). */
+  github?: FakeGitHub;
 }
 
 /** A non-interactive context (the real `--approve`/`--yes` handler) with deploy fakes attached. */
 function context(p: DeployProject, options: Setup = {}) {
   const engine = options.engine ?? new FakeEngine();
-  const github = new FakeGitHub();
+  const github = options.github ?? new FakeGitHub();
   const runner = new DeployRunner();
   const ctx = projectContext(p, {
     interactive: options.interactive ?? false,
@@ -170,6 +172,84 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       "utf8",
     );
     expect(approvals).toContain(hash);
+  });
+
+  it("says plainly when the deployment files did not change, and still shows an open pull request", async () => {
+    project = await deployProject();
+    const first = context(project);
+    expect(await run(first.ctx, "provision", "--plan-only", "--yes")).toBe(0);
+    const hash = printedHash(first.ctx.output);
+    const github = new FakeGitHub();
+    expect(
+      await run(context(project, { github }).ctx, "provision", "--approve", hash, "--yes"),
+    ).toBe(0);
+    expect(github.pulls).toHaveLength(1);
+    const pull = { number: 7, url: "https://github.com/acme/shop/pull/7" };
+    github.openPulls.set("opscrew/deploy-setup", pull);
+    const nothingToChange = () =>
+      context(project as DeployProject, { github, engine: new FakeEngine({ changes: [] }) });
+    const unchanged =
+      "The deployment files did not change, so OpsCrew committed nothing and opened no pull request.";
+
+    // Again with nothing to change, while the pull request is open.
+    const open = nothingToChange();
+    expect(await run(open.ctx, "provision", "--yes"), open.ctx.errors).toBe(0);
+    expect(open.ctx.output).toContain(
+      `The deployment files did not change, so OpsCrew committed nothing. The pull request from earlier is still open: ${pull.url}`,
+    );
+    expect(open.ctx.output).not.toContain("opened no pull request");
+    expect(open.ctx.output).toContain("when the deploy run in GitHub Actions has finished");
+    expect(github.pulls).toHaveLength(1);
+
+    // Merged on GitHub (its branch deleted there) and pulled into main: nothing to deploy.
+    const merged = await git(project.env, project.root, "rev-parse", "opscrew/deploy-setup");
+    await git(project.env, project.bare, "update-ref", "refs/heads/main", merged);
+    await git(project.env, project.bare, "update-ref", "-d", "refs/heads/opscrew/deploy-setup");
+    github.openPulls.delete("opscrew/deploy-setup");
+
+    // Still on opscrew/deploy-setup: no merge note for it, and how to switch back.
+    const stale = nothingToChange();
+    expect(await run(stale.ctx, "provision", "--yes"), stale.ctx.errors).toBe(0);
+    expect(stale.ctx.output).toContain(
+      "The deployment files did not change and are already on main on GitHub, so OpsCrew committed nothing and opened no pull request. Your deploy pull request is merged: switch to main and pull (`git switch main && git pull`).",
+    );
+    expect(stale.ctx.output).not.toContain("Merging opscrew/deploy-setup into main");
+    expect(stale.ctx.output).toContain("run `opscrew verify` to check the live site");
+    expect(github.pulls).toHaveLength(1);
+    expect(await git(project.env, project.bare, "branch", "--list", "opscrew/deploy-setup")).toBe(
+      "",
+    );
+
+    await git(project.env, project.root, "checkout", "-q", "main");
+    await git(project.env, project.root, "merge", "-q", "--ff-only", "opscrew/deploy-setup");
+    const none = nothingToChange();
+    expect(await run(none.ctx, "provision", "--yes"), none.ctx.errors).toBe(0);
+    expect(none.ctx.output).toContain(unchanged);
+    expect(none.ctx.output).toContain(
+      "run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.",
+    );
+    for (const stale of ["when the deploy run", "still open", "committed on", "Merging", "merge"]) {
+      expect(none.ctx.output).not.toContain(stale);
+    }
+    expect(github.pulls).toHaveLength(1);
+  });
+
+  it("after a refused push, the next step is pushing the branch", async () => {
+    project = await deployProject();
+    const approveAll = new ApproveAll();
+    const refusePush: ApprovalHandler = {
+      request: async (request) =>
+        request.kind === "git-push"
+          ? { approved: false, approver: "test", decidedAt: "2026-10-11T12:00:00.000Z" }
+          : approveAll.request(request),
+    };
+    const { ctx } = context(project, { approvals: refusePush });
+    expect(await run(ctx, "provision"), ctx.errors).toBe(0);
+    expect(ctx.errors).toContain("Not pushed.");
+    expect(ctx.output).toContain(
+      "push opscrew/deploy-setup (`git push -u origin opscrew/deploy-setup`) and open a pull request into main; merging it deploys the app.",
+    );
+    expect(ctx.output).not.toContain("did not change");
   });
 
   it("refuses a hash that matches no saved plan and exits 1 without applying", async () => {

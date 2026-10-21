@@ -34,7 +34,7 @@ interface SiteOptions {
   /** Path → response factory overrides. */
   routes?: Record<string, () => Response>;
   headers?: Record<string, string>;
-  runs?: { status: string; conclusion: string | null }[];
+  runs?: { status: string; conclusion: string | null; createdAt?: string }[];
   base?: string;
 }
 
@@ -63,7 +63,7 @@ function fakeSite(o: SiteOptions = {}) {
           conclusion: run.conclusion,
           html_url: RUN_URL,
           head_sha: "abc123",
-          created_at: "2026-10-11T11:00:00Z",
+          created_at: run.createdAt ?? "2026-10-11T11:00:00Z",
         })),
       });
     }
@@ -104,7 +104,7 @@ const closed: TcpConnect = async () => false;
 
 async function setup(
   plan: TestPlanOptions = {},
-  options: { token?: boolean; remote?: string } = {},
+  options: { token?: boolean; remote?: string; now?: () => Date } = {},
 ): Promise<TestPhaseDeps & { token: string }> {
   const token = fakeSecret("github-token");
   const root = await mkdtemp(join(tmpdir(), "opscrew-verify-"));
@@ -123,7 +123,7 @@ async function setup(
           }
         : { exitCode: 1, stdout: "", stderr: "unexpected command" },
     ),
-    clock: { now: () => new Date(NOW) },
+    clock: { now: options.now ?? (() => new Date(NOW)) },
   });
   await writeArtifact("plan", deps.paths.files.plan, testPlan(plan));
   // What `opscrew provision` left in the local state.
@@ -180,8 +180,7 @@ describe("runVerify", () => {
 
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.deployment.url).toBe("https://shop.example.com");
-    expect(plan.deployment.lastDeployAt).toBe("2026-10-11T11:00:00.000Z");
-    expect(plan.deployment.lastCompletedPhase).toBe("verify");
+    expect(plan.deployment.firstDeployAt).toBe("2026-10-11T11:00:00.000Z");
     expect(plan.updatedAt).toBe(NOW);
 
     const state = await deps.state.read();
@@ -191,6 +190,32 @@ describe("runVerify", () => {
     expect(redirect?.init?.redirect).toBe("manual");
     // The GitHub token never shows up in output.
     expect(deps.reporter.text()).not.toContain(deps.token);
+  });
+
+  it("a second verify after another deploy leaves plan.yaml byte-identical", async () => {
+    let now = Date.parse(NOW);
+    const deps = await setup({}, { now: () => new Date(now) });
+    const verify = (createdAt: string) =>
+      runVerify(deps, {
+        resolver: resolver(),
+        fetch: fakeSite({ runs: [{ status: "completed", conclusion: "success", createdAt }] })
+          .fetch,
+        tlsConnect: cert(),
+        tcpConnect: closed,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+    expect((await verify("2026-10-11T11:00:00Z")).passed).toBe(true);
+    const first = await readFile(deps.paths.files.plan, "utf8");
+
+    // A day later, after another deploy.
+    now += 86_400_000;
+    const second = await verify("2026-10-12T11:00:00Z");
+
+    expect(second.passed).toBe(true);
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(first);
+    // The first deploy's time stays: it says the app was deployed, not when it last was.
+    expect(second.plan.deployment.firstDeployAt).toBe("2026-10-11T11:00:00.000Z");
+    expect(second.plan.updatedAt).toBe(NOW);
   });
 
   it("fails the TLS check with the expiry date of an expired certificate (US4 scenario 4)", async () => {
@@ -398,7 +423,6 @@ describe("runVerify", () => {
     // served on it).
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.deployment.url).toBeUndefined();
-    expect(plan.deployment.lastCompletedPhase).toBe("verify");
     expect(await readFile(deps.paths.files.plan, "utf8")).not.toContain(SERVER_IPV4);
     expect(await readFile(deps.paths.files.runbook, "utf8")).toContain(`deploy@${SERVER_IPV4}`);
     expect(deps.reporter.lines.filter((l) => l.level === "warn")).toHaveLength(2);
@@ -648,7 +672,7 @@ describe("runVerify", () => {
     expect(b.passed).toBe(true);
     const plan: DeployPlan = await readArtifact("plan", running.paths.files.plan);
     expect(plan.deployment.url).toBe("https://shop.example.com");
-    expect(plan.deployment.lastDeployAt).toBeUndefined();
+    expect(plan.deployment.firstDeployAt).toBeUndefined();
   });
 
   it("warns about the deploy run without a GitHub token", async () => {

@@ -230,6 +230,14 @@ export interface ProvisionResult {
   prUrl?: string;
   /** Branch holding the generated files. */
   branch?: string;
+  /**
+   * False when the deployment files did not change and GitHub has them, so nothing was committed
+   * or pushed and no pull request was opened (`prUrl` is then one still open from earlier); absent
+   * when the run stopped before that step.
+   */
+  published?: boolean;
+  /** Whether this run pushed `branch` to GitHub; false with `published` means it still needs a push. */
+  pushed?: boolean;
 }
 
 /** What `--plan-only` saves beside the plan file so `--approve <hash>` can apply it later. */

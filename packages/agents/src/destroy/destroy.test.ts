@@ -88,7 +88,6 @@ function deployedPlan(options: Parameters<typeof testPlan>[0] = {}): DeployPlan 
     deployment: {
       ...plan.deployment,
       ...(options.domain ? { url: `https://${options.domain}` } : {}),
-      lastCompletedPhase: "provision",
       lastPlanHash: "a".repeat(64),
       lastApplyAt: "2026-10-10T09:00:00.000Z",
     },

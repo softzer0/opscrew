@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,9 @@ import { refreshRecoveryCopy, restoreRecoveryCopy } from "../secrets";
 import { FAKE_SOPS, FakeSops } from "../secrets/__fixtures__/fake-sops";
 import { planAndCopyFiles } from "../secrets/__fixtures__/world";
 import {
+  CLOUDFLARE_IPV4,
+  CLOUDFLARE_IPV6,
+  CLOUDFLARE_RANGES,
   createProject,
   createTestPhaseDeps,
   FakeEngine,
@@ -25,6 +29,7 @@ import {
   testPlan,
   writeFakeState,
 } from "../testing";
+import { runVerify } from "../verify";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import type { ProvisionServices } from "./types";
@@ -56,6 +61,8 @@ async function depsFor(
       HCLOUD_TOKEN: fakeSecret("hcloud-token"),
       OPSCREW_APP_ENV_FILE: "production.env",
       OPSCREW_SOPS_BIN: FAKE_SOPS,
+      // `opscrew verify` reads the deploy runs with it.
+      GITHUB_TOKEN: fakeSecret("github-token"),
     },
     runner: shared.sops.runner(projectRunner()),
     approvalHandler: shared.handler,
@@ -180,6 +187,59 @@ async function expectNothingPublished(s: Project, deps: Project["deps"], root: s
   expect(deps.reporter.text().slice(said)).not.toContain("deploys the app.");
 }
 
+/**
+ * `opscrew verify` of the live site at https://shop.example.com behind Cloudflare's proxy, whose
+ * latest deploy run started at `deployedAt`: no check fails.
+ */
+async function verified(deps: Project["deps"], deployedAt: string) {
+  const fetch: FetchLike = async (input) => {
+    const url = new URL(String(input));
+    if (url.host === "api.github.com") {
+      return Response.json({
+        workflow_runs: [
+          {
+            id: 42,
+            status: "completed",
+            conclusion: "success",
+            html_url: "https://github.com/acme/shop/actions/runs/42",
+            head_sha: "abc123",
+            created_at: deployedAt,
+          },
+        ],
+      });
+    }
+    if (url.protocol === "http:") {
+      return new Response(null, { status: 308, headers: { location: `https://${url.host}/` } });
+    }
+    if (url.pathname === "/.env" || url.pathname === "/.git/config") {
+      return new Response("not found", { status: 404 });
+    }
+    return new Response("ok", {
+      headers: {
+        "strict-transport-security": "max-age=31536000; includeSubDomains",
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "SAMEORIGIN",
+        "referrer-policy": "strict-origin-when-cross-origin",
+      },
+    });
+  };
+  const result = await runVerify(deps, {
+    resolver: { resolve4: async () => [CLOUDFLARE_IPV4], resolve6: async () => [CLOUDFLARE_IPV6] },
+    fetch,
+    tlsConnect: async () => ({
+      subjectCommonName: "shop.example.com",
+      subjectAltNames: ["shop.example.com"],
+      validFrom: "2026-10-01T00:00:00.000Z",
+      validTo: "2026-12-30T00:00:00.000Z",
+      issuer: "Let's Encrypt",
+    }),
+    tcpConnect: async () => false,
+    cloudflareRanges: CLOUDFLARE_RANGES,
+  });
+  expect(result.checks.filter((check) => check.status === "fail")).toEqual([]);
+  return result;
+}
+
 describe.skipIf(!findExecutable("git"))("opscrew provision: the recovery copy", () => {
   it("stops before any plan or change when another computer updated the repository's copy", async () => {
     const s = await project();
@@ -218,6 +278,30 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the recovery copy", 
     const s = await project();
     await provisionedAndMerged(s);
     await expectNothingPublished(s, s.deps, s.root);
+  });
+
+  it("provision, merge, verify and provision again: plan.yaml stays and nothing is published", async () => {
+    const s = await project();
+    await provisionedAndMerged(s);
+    // The first verify after the first deploy writes the runbook and records that deploy once;
+    // the user commits both on main.
+    s.later();
+    await verified(s.deps, "2026-10-21T08:30:00Z");
+    expect(await s.git(s.root, "diff", "--", "opscrew/plan.yaml")).toContain(
+      "+  firstDeployAt: 2026-10-21T08:30:00.000Z",
+    );
+    await s.git(s.root, "add", "opscrew/RUNBOOK.md", "opscrew/plan.yaml");
+    await s.git(s.root, "commit", "-q", "-m", "docs: runbook");
+    await s.git(s.root, "push", "-q", s.bare, "main");
+    const plan = await readFile(s.deps.paths.files.plan, "utf8");
+
+    // Another deploy, verify, then provision again: none of them changes plan.yaml.
+    s.later();
+    const again = await verified(s.deps, "2026-10-21T09:30:00Z");
+    expect(again.plan.deployment.firstDeployAt).toBe("2026-10-21T08:30:00.000Z");
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(plan);
+    await expectNothingPublished(s, s.deps, s.root);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(plan);
   });
 
   it("on a fresh computer, a provision right after the restore publishes nothing either", async () => {

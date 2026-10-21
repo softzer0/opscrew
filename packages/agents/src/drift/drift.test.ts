@@ -605,7 +605,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
       const base = testPlan({ deployed: true, provider });
       return DeployPlanSchema.parse({
         ...base,
-        deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+        deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
         processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
         services: [
           ...base.services,

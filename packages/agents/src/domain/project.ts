@@ -7,7 +7,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { hasDeployment } from "../shared";
+import { hasDeployment, writePlanIfChanged } from "../shared";
 import { toIsoDateTime } from "./common";
 
 /** The project's requirements and plan, when present (validated). */
@@ -157,9 +157,8 @@ export async function recordDomain(
   if (files.plan !== undefined) {
     const plan = files.plan;
     const switching = plan.dns.provider !== "cloudflare" || plan.dns.domain !== hostname;
-    await writeArtifact("plan", deps.paths.files.plan, {
+    await writePlanIfChanged(deps, {
       ...plan,
-      updatedAt: deps.clock.now().toISOString(),
       dns: {
         ...plan.dns,
         provider: "cloudflare",

@@ -510,7 +510,7 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
         const validTo = new Date(served.certificate.valid_to);
         const plan: DeployPlan = {
           ...shop,
-          deployment: { ...shop.deployment, lastDeployAt: "2026-10-20T12:00:00.000Z" },
+          deployment: { ...shop.deployment, firstDeployAt: "2026-10-20T12:00:00.000Z" },
         };
         const deps = await createTestPhaseDeps({
           root: path.join(work, "status"),

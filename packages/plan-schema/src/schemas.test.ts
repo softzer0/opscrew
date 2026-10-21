@@ -1243,11 +1243,11 @@ describe("DeployPlan serialisation of existing targets", () => {
   // `deploy`, `supplyChain`, `cicd.deployTags` and `cicd.imageRetention` (with their defaults) to
   // every plan, in 013, which adds `app.memoryMb` and `processes` (with their defaults) and
   // turns `services` into a list, and in 014, which adds `app.maxBodyMb` and `target.edge` (with
-  // their defaults).
+  // their defaults) and drops `deployment.lastCompletedPhase` (T1414d, also from the fixture).
   const BEFORE_010 = {
-    hetzner: "89bdc644d1471de6770e7cd438492716fce5e03b2fbcce211bbdc842f4119501",
-    digitalocean: "963d32d536edc54da07095315d9b31a01426d922020731a4472153af47b9730a",
-    own: "46cd6b9a0d48002e4cd1f637519b440a93f12fbeb87339a34e4336c09d78722e",
+    hetzner: "571bed11fb853ae2fa62e1a2dfadc9cf991fd2fc462adde16720c4e991d92304",
+    digitalocean: "5a1900d25dbe1e0af4101a4713ee249e159c4762efb86b5e09362696889d7ffa",
+    own: "e85e7d0cd7f318bc00b3f3e10d121caf0558c93857b2ba1979b2ef8f943333d3",
   };
 
   it("keeps Hetzner, DigitalOcean and own-server plans byte-identical", async () => {

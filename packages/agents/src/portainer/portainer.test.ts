@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -778,6 +779,37 @@ describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () =
     expect(s.deps.reporter.text()).not.toContain(password);
     expect(JSON.stringify(s.deps.audit.entries)).not.toContain(password);
     expect(result.status.tunnelCommand).toContain(`deploy@${OWN_IPV4}`);
+  });
+
+  it("enable run twice: the second run changes nothing and leaves plan.yaml byte-identical", async () => {
+    const s = await ownSetup();
+    await portainerEnable(s.deps, { services: s.services });
+    const after = await readFile(s.deps.paths.files.plan, "utf8");
+    // What the server reports once Portainer runs with the planned compose file.
+    const step = s.host.applies.at(-1)?.plan.steps.find((item) => item.id === "portainer");
+    s.host.facts = {
+      ...s.host.facts,
+      portainer: {
+        installed: true,
+        composeSha256: createHash("sha256")
+          .update(String(step?.params?.composeFinal))
+          .digest("hex"),
+        running: true,
+        secretFile: false,
+        dataVolume: true,
+        tunnelId: null,
+      },
+    };
+    // An hour later: a plan written again would carry a new updatedAt.
+    const later = new Date(s.deps.clock.now().getTime() + 3_600_000);
+    const deps = { ...s.deps, clock: { now: () => later } };
+    s.handler.requests.length = 0;
+
+    const again = await portainerEnable(deps, { services: s.services });
+
+    expect(kinds(s.handler)).toEqual([]);
+    expect(again.hostApplied).toBe(false);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(after);
   });
 
   it("enable --subdomain in public mode: tunnel and Access, then the connector stays in the host plan", async () => {

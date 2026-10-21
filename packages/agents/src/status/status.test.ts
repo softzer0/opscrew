@@ -31,7 +31,7 @@ import { appDeployed, readComponentStatus } from "./run";
 function componentPlan(base = testPlan({ deployed: true })) {
   return DeployPlanSchema.parse({
     ...base,
-    deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+    deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
     processes: {
       workers: [{ name: "worker", command: "node worker.js", source: "procfile", count: 2 }],
       cron: [{ name: "cleanup", schedule: "0 3 * * *", command: "node cleanup.js" }],
@@ -256,7 +256,7 @@ describe("readComponentStatus in the user's Portainer", () => {
     const base = portainerPlan({ deployed: true });
     const plan = DeployPlanSchema.parse({
       ...base,
-      deployment: { ...base.deployment, lastDeployAt: "2026-10-12T09:00:00.000Z" },
+      deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
       processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
     });
 

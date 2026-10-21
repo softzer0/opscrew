@@ -460,7 +460,6 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     expect(plan.deployment).toMatchObject({
       url: "https://shop.example.com",
       lastPlanHash: result.planHash,
-      lastCompletedPhase: "provision",
     });
     expect(plan.approvals.map((approval) => approval.kind)).toEqual([
       "cloudflare-apply",

@@ -12,7 +12,6 @@ import {
   ImageBuilderSchema,
   IsoDateTimeSchema,
   MemoryMbSchema,
-  PhaseNameSchema,
   PlanHashSchema,
   PortSchema,
   RegistrarSchema,
@@ -646,12 +645,12 @@ const DeployPlanFieldsSchema = z.strictObject({
    */
   deployment: z
     .strictObject({
-      lastCompletedPhase: PhaseNameSchema.optional(),
       /** The app's public URL on its domain; absent without a domain. */
       url: DomainUrlSchema.optional(),
       lastPlanHash: PlanHashSchema.optional(),
       lastApplyAt: IsoDateTimeSchema.optional(),
-      lastDeployAt: IsoDateTimeSchema.optional(),
+      /** When the first deploy `opscrew verify` saw succeed started; set once, never updated. */
+      firstDeployAt: IsoDateTimeSchema.optional(),
       /** When `opscrew destroy` removed the infrastructure. */
       destroyedAt: IsoDateTimeSchema.optional(),
     })
