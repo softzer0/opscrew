@@ -71,7 +71,7 @@ services:
     tmpfs:
       - /etc/caddy/tls/shop:mode=0700
     labels:
-      dev.opscrew.caddyfile-sha256: 1f61a9f8abd9c995609e7a89ec19fc0747f738f1720b69e1131ac5cd540cdb81
+      dev.opscrew.caddyfile-sha256: 12c55cdac33a31c0f1e412b74d20e39a3c939071bceab8a37a948df2c98f071d
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -103,6 +103,10 @@ configs:
     content: |
       {
       	email ops@example.com
+      }
+
+      http://shop.example.com {
+      	redir https://{host}{uri} 308
       }
 
       shop.example.com {

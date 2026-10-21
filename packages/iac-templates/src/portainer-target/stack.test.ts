@@ -451,8 +451,10 @@ describe("renderPortainerStack", () => {
         const www = web.mode === "caddy";
         const plan = portainerTestPlan({ web, www, ...(www ? { proxied: false } : {}) });
         const caddyfile = stack(renderPortainerStack(plan, c).content).configs?.caddyfile?.content;
-        // Every site block of the app (with origin TLS in caddy mode: the certificate's and www's).
+        // Every site block that serves the app (with origin TLS in caddy mode: the certificate's and
+        // www's), without the catch-all and the HTTP block that redirects to HTTPS.
         const sites = (caddyfile ?? "")
+          .replace(/^http:\/\/.* \{\n\tredir https:\/\/\{host\}\{uri\} 308\n\}\n/gm, "")
           .match(/^\S.* \{$/gm)
           ?.filter((line) => !/^https?:\/\/ \{$/.test(line));
         const blocks = web.mode === "caddy" && c !== ctx ? 2 : 1;

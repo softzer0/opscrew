@@ -165,6 +165,15 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     expect(run.stdout).toContain("\nLocation: https://blog.example.com/a?b=1\n");
   }, 120_000);
 
+  // Cloudflare forwards a visitor's plain HTTP to the origin's port 80 (found live: a 520).
+  it("redirects a hostname with origin TLS to HTTPS with 308", () => {
+    const run = curl(
+      "curl -sS -D - -o /dev/null -H 'Host: shop.example.com' 'http://nginx:8080/a?b=1'",
+    );
+    expect(run.stdout).toMatch(/^HTTP\/1\.1 308 /);
+    expect(run.stdout).toContain("\nLocation: https://shop.example.com/a?b=1\n");
+  }, 120_000);
+
   it("sends HSTS, the baseline headers and Alt-Svc on nginx's own 502, and no version", () => {
     const run = curl(https("blog.example.com"));
     const response = run.stdout.toLowerCase();

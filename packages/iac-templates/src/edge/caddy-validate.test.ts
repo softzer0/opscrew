@@ -93,17 +93,14 @@ describe.skipIf(reason !== undefined)("caddy validate (OPSCREW_DOCKER_TESTS=1)",
     expect(run.output).toContain("Valid configuration");
   }, 300_000);
 
-  // Runs Caddy with a tunnelled app's site (plain HTTP) whose kamal-proxy does not exist, and asks
-  // it from a curl container in Caddy's network namespace.
-  it("sends the baseline headers, and no Server, on the 502 Caddy writes while the app is down", () => {
-    const plan = named("shop", { provider: "own", access: "tunnel", domain: "shop.example.com" });
-    const files = {
-      "/etc/caddy/Caddyfile": mainCaddyfile(plan),
-      "/etc/caddy/sites/shop.caddy": renderCaddyfile(plan, ctx).content,
-    };
-    const script = [
-      "mkdir -p /etc/caddy/sites",
+  /**
+   * Runs Caddy with `files` and, from a curl container in its network namespace, `script` once
+   * Caddy answers the request `ready` (curl's arguments).
+   */
+  function probeCaddy(files: Record<string, string>, ready: string, script: string) {
+    const setup = [
       ...Object.entries(files).flatMap(([path, content]) => [
+        `mkdir -p "$(dirname ${path})"`,
         `cat > ${path} <<'OPSCREW_EOF'`,
         content.replace(/\n$/, ""),
         "OPSCREW_EOF",
@@ -113,39 +110,101 @@ describe.skipIf(reason !== undefined)("caddy validate (OPSCREW_DOCKER_TESTS=1)",
     const name = `opscrew-test-caddy-${process.pid}-${Date.now()}`;
     const started = spawnSync(
       "docker",
-      ["run", "-d", "--name", name, IMAGES.caddy.ref, "sh", "-c", script.join("\n")],
+      [
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--label",
+        "opscrew-test=caddy",
+        IMAGES.caddy.ref,
+        "sh",
+        "-c",
+        setup.join("\n"),
+      ],
       { encoding: "utf8", timeout: 240_000 },
     );
     expect(started.status, started.stderr).toBe(0);
     try {
-      const ask = 'curl -sS -o /dev/null -H "Host: shop.example.com" http://127.0.0.1/';
+      const wait = `for i in $(seq 1 30); do if curl -sS -o /dev/null ${ready} 2> /dev/null; then break; fi; sleep 1; done`;
       const probe = spawnSync(
         "docker",
         [
           "run",
           "--rm",
+          "--label",
+          "opscrew-test=caddy",
           "--network",
           `container:${name}`,
           "--entrypoint",
           "sh",
           IMAGES.curl.ref,
           "-c",
-          `for i in $(seq 1 30); do if ${ask} 2> /dev/null; then break; fi; sleep 1; done; ${ask.replace("-o /dev/null", "-D - -o /dev/null")}`,
+          `${wait}; ${script}`,
         ],
         { encoding: "utf8", timeout: 240_000 },
       );
-      expect(probe.status, probe.stderr).toBe(0);
-      const response = probe.stdout.replaceAll("\r", "").toLowerCase();
-      expect(response).toMatch(/^http\/1\.1 502 /);
-      expect(response).toContain(
-        "\nstrict-transport-security: max-age=31536000; includesubdomains\n",
-      );
-      expect(response).toContain("\nx-content-type-options: nosniff\n");
-      expect(response).toContain("\nreferrer-policy: strict-origin-when-cross-origin\n");
-      expect(response).not.toMatch(/\nserver:/);
+      return {
+        status: probe.status,
+        stdout: probe.stdout.replaceAll("\r", ""),
+        stderr: probe.stderr,
+      };
     } finally {
       spawnSync("docker", ["rm", "-f", name], { encoding: "utf8" });
     }
+  }
+
+  // A tunnelled app's site (plain HTTP) whose kamal-proxy does not exist.
+  it("sends the baseline headers, and no Server, on the 502 Caddy writes while the app is down", () => {
+    const plan = named("shop", { provider: "own", access: "tunnel", domain: "shop.example.com" });
+    const ask = '-H "Host: shop.example.com" http://127.0.0.1/';
+    const probe = probeCaddy(
+      {
+        "/etc/caddy/Caddyfile": mainCaddyfile(plan),
+        "/etc/caddy/sites/shop.caddy": renderCaddyfile(plan, ctx).content,
+      },
+      ask,
+      `curl -sS -D - -o /dev/null ${ask}`,
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    const response = probe.stdout.toLowerCase();
+    expect(response).toMatch(/^http\/1\.1 502 /);
+    expect(response).toContain(
+      "\nstrict-transport-security: max-age=31536000; includesubdomains\n",
+    );
+    expect(response).toContain("\nx-content-type-options: nosniff\n");
+    expect(response).toContain("\nreferrer-policy: strict-origin-when-cross-origin\n");
+    expect(response).not.toMatch(/\nserver:/);
+  }, 300_000);
+
+  // Cloudflare forwards a visitor's plain HTTP to the origin's port 80 (found live: a 520).
+  it("redirects HTTP to HTTPS for hostnames with origin TLS, and still refuses an unknown one", () => {
+    const shop = named("shop", { domain: "example.com", www: true });
+    const origin = placeholder("example.com");
+    const ask = (host: string, path: string) =>
+      `curl -sS -D - -o /dev/null -H 'Host: ${host}' 'http://127.0.0.1${path}'`;
+    const probe = probeCaddy(
+      {
+        "/etc/caddy/Caddyfile": mainCaddyfile(shop),
+        "/etc/caddy/sites/shop.caddy": renderCaddyfile(shop, {
+          ...ctx,
+          originTls: { hostnames: ["example.com", "www.example.com"] },
+        }).content,
+        "/etc/caddy/tls/shop/origin.pem": origin.certificate,
+        "/etc/caddy/tls/shop/origin.key": origin.key,
+        "/etc/caddy/tls/shop/pull.pem": placeholder("opscrew-shop").certificate,
+      },
+      "-H 'Host: example.com' http://127.0.0.1/",
+      [
+        ask("example.com", "/a?b=1"),
+        ask("www.example.com", "/c"),
+        `${ask("other.example.com", "/")}; echo "unknown: $?"`,
+      ].join("; "),
+    );
+    expect(probe.stdout).toMatch(/^HTTP\/1\.1 308 /);
+    expect(probe.stdout).toContain("\nLocation: https://example.com/a?b=1\n");
+    expect(probe.stdout).toContain("\nLocation: https://www.example.com/c\n");
+    expect(probe.stdout).toContain("unknown: 52"); // Empty reply: Caddy aborted the request.
   }, 300_000);
 
   it("accepts the edge with a tunnelled app, and with an app without a domain", () => {

@@ -231,9 +231,9 @@ export function caddySite(site: CaddySite & { mode: "tunnel" | "direct" }): stri
 }
 
 /**
- * The site's blocks: in `direct` mode the hostnames with the origin certificate get a block of
- * their own ({@link originTlsLines}) and any others a second one with `tls`; otherwise one block
- * with `tls` for every hostname.
+ * The site's blocks: in `direct` mode the hostnames with the origin certificate get an HTTP block
+ * that redirects to HTTPS and a block of their own ({@link originTlsLines}), and any others a
+ * second one with `tls`; otherwise one block with `tls` for every hostname.
  */
 function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
   const redirects = site.redirects ?? [];
@@ -251,6 +251,12 @@ function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
   const hosts = splitByOrigin(site.hosts, origin?.hostnames);
   if (origin === undefined || hosts.origin.length === 0) return blocks(site.hosts, tls);
   return [
+    // Cloudflare forwards a visitor's plain HTTP to port 80, where the catch-all would abort it:
+    // Caddy's automatic redirect does not answer for hostnames with a certificate of their own.
+    `${hosts.origin.map((host) => `http://${host}`).join(", ")} {`,
+    "\tredir https://{host}{uri} 308",
+    "}",
+    "",
     ...blocks(hosts.origin, originTlsLines(origin.dir)),
     ...(hosts.others.length === 0 ? [] : blocks(hosts.others, tls)),
   ];
