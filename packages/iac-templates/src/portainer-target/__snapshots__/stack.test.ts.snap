@@ -289,22 +289,17 @@ services:
     image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
     restart: unless-stopped
     command:
-      - valkey-server
-      - --save
-      - ""
-      - --appendonly
-      - no
-      - --maxmemory
-      - 96mb
-      - --maxmemory-policy
-      - allkeys-lru
+      - sh
+      - -c
+      - umask 077 && printf 'requirepass %s\\n' "$$VALKEY_PASSWORD" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf --save '' --appendonly no --maxmemory 96mb --maxmemory-policy allkeys-lru
+    environment:
+      VALKEY_PASSWORD: \${OPSCREW_SVC_CACHE_PASSWORD}
     volumes:
       - cache_data:/data
     healthcheck:
       test:
-        - CMD
-        - valkey-cli
-        - ping
+        - CMD-SHELL
+        - REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli ping | grep -q PONG
       interval: 10s
       timeout: 5s
       retries: 6

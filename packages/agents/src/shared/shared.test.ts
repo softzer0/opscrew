@@ -370,7 +370,9 @@ describe("production environment", () => {
       "DATABASE_URL=postgresql://app:P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd@db:5432/app",
     );
     expect(result.appEnv).not.toContain("localhost");
-    expect(result.appEnv).toContain("REDIS_URL=redis://cache:6379");
+    expect(result.appEnv).toContain(
+      "REDIS_URL=redis://:P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd@cache:6379",
+    );
     expect(result.appEnv).toContain(`STRIPE_SECRET_KEY=${stripe}`);
     expect(result.appEnv).toContain("SESSION_SECRET=");
     expect(result.appEnv).not.toContain("VITE_PUBLIC_URL");
@@ -392,7 +394,8 @@ describe("production environment", () => {
     const first = await assembleAppEnv({ plan: plan(env), dotenvText, password });
     expect(first.generated).toEqual({
       dbPassword: "generated-1",
-      env: { SESSION_SECRET: "generated-2" },
+      env: { SESSION_SECRET: "generated-3" },
+      services: { cache: { password: "generated-2" } },
     });
     const second = await assembleAppEnv({
       plan: plan(env),
@@ -402,7 +405,7 @@ describe("production environment", () => {
     });
     expect(second.values.db).toEqual(first.values.db);
     expect(second.appEnv).toBe(first.appEnv);
-    expect(counter).toBe(2);
+    expect(counter).toBe(3);
   });
 
   it("lists missing values in non-interactive mode", async () => {

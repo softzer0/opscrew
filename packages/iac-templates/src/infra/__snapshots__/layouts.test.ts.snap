@@ -35,12 +35,13 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server_previous.ipv4_address
-  ipv6    = module.server_previous.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server_previous.ipv4_address
+  ipv6        = module.server_previous.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -103,7 +104,8 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -171,6 +173,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -214,12 +221,13 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server.ipv4_address
-  ipv6    = module.server.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server.ipv4_address
+  ipv6        = module.server.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -282,7 +290,8 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -350,6 +359,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -403,12 +417,13 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server_previous.ipv4_address
-  ipv6    = module.server_previous.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server_previous.ipv4_address
+  ipv6        = module.server_previous.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -480,7 +495,8 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -574,6 +590,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -611,12 +632,13 @@ module "server" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server.ipv4_address
-  ipv6    = module.server.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server.ipv4_address
+  ipv6        = module.server.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -679,7 +701,8 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -753,6 +776,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -797,12 +825,13 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server_previous.ipv4_address
-  ipv6    = module.server_previous.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server_previous.ipv4_address
+  ipv6        = module.server_previous.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -865,7 +894,8 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -933,6 +963,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -986,12 +1021,13 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server.ipv4_address
-  ipv6    = module.server.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server.ipv4_address
+  ipv6        = module.server.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -1063,7 +1099,8 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -1157,6 +1194,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -1223,12 +1265,13 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server_previous.ipv4_address
-  ipv6    = module.server_previous.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server_previous.ipv4_address
+  ipv6        = module.server_previous.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -1291,7 +1334,8 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -1365,6 +1409,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -1408,12 +1457,13 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server.ipv4_address
-  ipv6    = module.server.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server.ipv4_address
+  ipv6        = module.server.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -1476,7 +1526,8 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -1550,6 +1601,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -1603,12 +1659,13 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server_previous.ipv4_address
-  ipv6    = module.server_previous.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server_previous.ipv4_address
+  ipv6        = module.server_previous.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -1680,7 +1737,8 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -1774,6 +1832,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -1811,12 +1874,13 @@ module "server" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server.ipv4_address
-  ipv6    = module.server.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server.ipv4_address
+  ipv6        = module.server.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -1879,7 +1943,8 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -1947,6 +2012,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -1991,12 +2061,13 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server_previous.ipv4_address
-  ipv6    = module.server_previous.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server_previous.ipv4_address
+  ipv6        = module.server_previous.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -2059,7 +2130,8 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -2133,6 +2205,11 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
+}
 "
 `;
 
@@ -2186,12 +2263,13 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id = var.cloudflare_zone_id
-  domain  = var.domain
-  ipv4    = module.server.ipv4_address
-  ipv6    = module.server.ipv6_address
-  proxied = var.proxied
-  www     = var.www
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = module.server.ipv4_address
+  ipv6        = module.server.ipv6_address
+  proxied     = var.proxied
+  www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -2263,7 +2341,8 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true
+  "www": true,
+  "caa_issuers": []
 }
 "
 `;
@@ -2356,6 +2435,11 @@ variable "proxied" {
 variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
+}
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
 }
 "
 `;

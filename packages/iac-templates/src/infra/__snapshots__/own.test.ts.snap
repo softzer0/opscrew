@@ -23,6 +23,7 @@ module "dns" {
   ipv6_record = var.server_ipv6 != null
   proxied     = var.proxied
   www         = var.www
+  caa_issuers = var.caa_issuers
 }
 "
 `;
@@ -93,6 +94,11 @@ variable "proxied" {
 variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
+}
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain (DNS only)."
+  type        = list(string)
 }
 "
 `;

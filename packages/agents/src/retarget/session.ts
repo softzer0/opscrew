@@ -37,6 +37,7 @@ import {
   setupCloudflare,
   setupGitHub,
 } from "../provision";
+import { withCloudflareZone } from "../provision/render";
 import {
   approvalEntry,
   confirmChangedHostKey,
@@ -297,8 +298,9 @@ export function newServer(session: Pick<MoveSession, "servers" | "command">): Se
 export function renderFiles(
   session: MoveSession,
   layout?: InfraLayout,
-  plan: DeployPlan = session.plan,
+  movePlan: DeployPlan = session.plan,
 ): RenderedFile[] {
+  const plan = withCloudflareZone(movePlan, session.cloudflare);
   const ctx = deploymentRenderContext(session.deps, {
     plan,
     requirements: session.requirements,

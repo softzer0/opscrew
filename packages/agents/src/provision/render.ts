@@ -170,6 +170,17 @@ export interface DeploymentPreview {
 }
 
 /**
+ * `plan` with the zone Cloudflare reported (`dns.zone`), which every render of the deployment
+ * needs (the DNS module's CAA issuers, for one), so provision and retarget render the same files.
+ */
+export function withCloudflareZone(
+  plan: DeployPlan,
+  cloudflare: CloudflareSetup | undefined,
+): DeployPlan {
+  return cloudflare ? { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } } : plan;
+}
+
+/**
  * The files `opscrew provision` would write, compared with the repository, without writing
  * anything to it or recording a phase. Needs the Cloudflare token when the plan uses Cloudflare
  * (the zone id is part of the rendered code). Creates the project's deploy key in the user's
@@ -194,7 +205,7 @@ export async function previewDeploymentFiles(
   const cloudflare = await setupCloudflare(deps, plan, options.services ?? {}, {
     foreignRecords: options.foreignRecords ?? "stop",
   });
-  if (cloudflare) plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
+  plan = withCloudflareZone(plan, cloudflare);
   const deployPublicKey = await deployPublicKeyFor(deps, options.createDeployKey !== false);
   // The local record only (a preview runs no engine), and never a reason for it to fail.
   const server = hidesServerAddress(plan)

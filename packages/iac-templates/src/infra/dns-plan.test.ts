@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { detectEngines } from "@opscrew/iac-engine";
-import { DeployPlanSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, type TestContext } from "vitest";
 import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
-import { renderInfra } from "./index";
+import { renderInfra, tfvars } from "./index";
 
 describe("cloudflare-dns module", () => {
   const main = MODULE_FILES["cloudflare-dns/main.tf"] ?? "";
@@ -19,6 +19,50 @@ describe("cloudflare-dns module", () => {
     expect(main).not.toContain("moved {");
     const variables = MODULE_FILES["cloudflare-dns/variables.tf"] ?? "";
     expect(variables).toMatch(/variable "ipv6_record" \{[^}]*default {5}= true\n\}/);
+  });
+
+  it("writes CAA at the domain, one per issuer, only when not proxied", () => {
+    expect(main).toContain(
+      [
+        'resource "cloudflare_dns_record" "caa" {',
+        "  for_each = var.proxied ? toset([]) : toset(var.caa_issuers)",
+        "  zone_id  = var.zone_id",
+        "  name     = var.domain",
+        '  type     = "CAA"',
+        "  ttl      = 1",
+        "  data = {",
+        "    flags = 0",
+        '    tag   = "issue"',
+        "    value = each.value",
+        "  }",
+        '  comment = "Managed by OpsCrew"',
+        "}",
+      ].join("\n"),
+    );
+    const variables = MODULE_FILES["cloudflare-dns/variables.tf"] ?? "";
+    expect(variables).toMatch(
+      /variable "caa_issuers" \{[^}]*type {8}= list\(string\)\n {2}default {5}= \[\]\n\}/,
+    );
+  });
+
+  it("names the authorities of the plan's edge, and none for an app on the zone apex", () => {
+    const issuers = (plan: DeployPlan) =>
+      tfvars(plan, testContext({ cloudflare: testCloudflare() })).caa_issuers;
+    const withEdge = (plan: DeployPlan, edge: "caddy" | "nginx") =>
+      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge } });
+    for (const provider of ["hetzner", "digitalocean", "own"] as const) {
+      const plan = testPlan({ provider, domain: "shop.example.com" });
+      expect(issuers(plan)).toEqual(["letsencrypt.org", "sectigo.com"]);
+      expect(issuers(withEdge(plan, "nginx"))).toEqual(["letsencrypt.org"]);
+      const apex = testPlan({ provider, domain: "example.com" });
+      expect(issuers(apex)).toEqual([]);
+      expect(issuers(withEdge(apex, "nginx"))).toEqual([]);
+    }
+    const root = renderInfra(
+      testPlan({ domain: "shop.example.com" }),
+      testContext({ cloudflare: testCloudflare() }),
+    ).find((f) => f.path.endsWith("prod/main.tf"))?.content;
+    expect(root).toMatch(/module "dns" \{[^}]*caa_issuers += var\.caa_issuers\n/);
   });
 
   it("is always on for OpsCrew-created servers (their roots do not pass ipv6_record)", () => {
@@ -105,6 +149,19 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
     );
 
     it.skipIf(!engine)(
+      `writes Caddy's CAA records at the DNS-only domain (${name})`,
+      async (test) => {
+        const out = await plan(test, { server_ipv4: "203.0.113.10" });
+        for (const issuer of ["letsencrypt.org", "sectigo.com"]) {
+          expect(out).toContain(
+            `module.dns.cloudflare_dns_record.caa["${issuer}"] will be created`,
+          );
+        }
+      },
+      300_000,
+    );
+
+    it.skipIf(!engine)(
       `creates the AAAA record when the server has IPv6 (${name})`,
       async (test) => {
         const out = await plan(test, { server_ipv4: "203.0.113.10", server_ipv6: "2001:db8::10" });
@@ -123,6 +180,7 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
         );
         expect(out).toContain("module.dns.cloudflare_dns_record.a will be created");
         expect(out).not.toContain("cloudflare_dns_record.aaaa");
+        expect(out).not.toContain("cloudflare_dns_record.caa");
       },
       300_000,
     );

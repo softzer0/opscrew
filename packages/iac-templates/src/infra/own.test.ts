@@ -106,6 +106,8 @@ describe("renderInfra for a server the user owns (public)", () => {
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
+      // The app is on the zone apex, so it gets no CAA records.
+      caa_issuers: [],
     });
     expect(file(files, "terraform.tfvars.json")).not.toMatch(/server_ipv|ipv4|ipv6/);
     expect(tfvars(plan, ownContext({ cloudflare: testCloudflare() }))).toEqual(values);

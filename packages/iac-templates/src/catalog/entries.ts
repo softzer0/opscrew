@@ -51,15 +51,15 @@ function redisVariables(ctx: ServiceContext, url: string): Record<string, string
   return besideQueue ? {} : { REDIS_URL: url };
 }
 
-/** The URL of a Redis 8 or Dragonfly, which require the password of their default user. */
+/** The URL of a Valkey, Redis 8 or Dragonfly, which require the password of their default user. */
 function passwordRedisUrl(ctx: ServiceContext): string {
   return `redis://:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:6379`;
 }
 
 /** A health check that logs in with the password in `variable` and reads the reply. */
-function redisCliCheck(variable: string): ServiceSpec["healthcheck"] {
-  // redis-cli answers NOAUTH with exit code 0, so the check reads the reply.
-  return { test: ["CMD-SHELL", `REDISCLI_AUTH="$${variable}" redis-cli ping | grep -q PONG`] };
+function redisCliCheck(variable: string, cli = "redis-cli"): ServiceSpec["healthcheck"] {
+  // redis-cli (and valkey-cli) answers NOAUTH with exit code 0, so the check reads the reply.
+  return { test: ["CMD-SHELL", `REDISCLI_AUTH="$${variable}" ${cli} ping | grep -q PONG`] };
 }
 
 /** Three quarters of the limit, as Valkey's own memory limit is (research R7). */
@@ -94,20 +94,42 @@ const POSTGRES: ServiceSpec = {
 };
 
 /**
- * Valkey's own limit is 75% of the container's (research R7). A queue never evicts and keeps an
- * append-only file, so a full queue refuses writes; a cache evicts the least recently used keys
- * and keeps nothing on disk.
+ * Valkey's and Redis 8's settings for the service's mode. Their own limit is 75% of the
+ * container's (research R7). A queue never evicts and keeps an append-only file, so a full queue
+ * refuses writes; a cache evicts the least recently used keys and keeps nothing on disk.
  */
-function valkeyCommand(ctx: ServiceContext): string[] {
-  return ["valkey-server", ...redisModeArgs(ctx.service)];
-}
-
-/** Valkey's and Redis 8's settings for the service's mode ({@link valkeyCommand}). */
 function redisModeArgs(service: PlanService): string[] {
   const maxmemory = ["--maxmemory", `${redisMaxmemoryMb(service)}mb`];
   return queueMode(service)
     ? ["--appendonly", "yes", ...maxmemory, "--maxmemory-policy", "noeviction"]
     : ["--save", "", "--appendonly", "no", ...maxmemory, "--maxmemory-policy", "allkeys-lru"];
+}
+
+/** Where Valkey's and Redis 8's containers write the password, readable by the server only. */
+const REDIS_AUTH_FILE = "/tmp/opscrew-auth.conf";
+
+/**
+ * Valkey or Redis 8 (`server`) with its modes ({@link redisModeArgs}) and the password in
+ * `variable`. The shell writes the password from the environment into a settings file inside the
+ * container (never into a repository file, nor the server's command line) and owned by the user
+ * of the same name, the one the image's entrypoint drops to; the entrypoint drops root (and Redis 8's loads its modules:
+ * Search, JSON, Time Series, Bloom) only when the command is the server.
+ */
+function passwordServerCommand(
+  ctx: ServiceContext,
+  server: "valkey" | "redis",
+  variable: string,
+): string[] {
+  const args = redisModeArgs(ctx.service).map((arg) => (arg === "" ? "''" : arg));
+  return [
+    "sh",
+    "-c",
+    [
+      `umask 077 && printf 'requirepass %s\\n' "$${variable}" > ${REDIS_AUTH_FILE}`,
+      `chown ${server}:${server} ${REDIS_AUTH_FILE}`,
+      [`exec docker-entrypoint.sh ${server}-server`, REDIS_AUTH_FILE, ...args].join(" "),
+    ].join(" && "),
+  ];
 }
 
 const VALKEY: ServiceSpec = {
@@ -122,38 +144,15 @@ const VALKEY: ServiceSpec = {
   memory: { defaultMb: 128, minimumMb: 64, smallestServerMb: 512 },
   port: 6379,
   dataDir: "/data",
-  command: valkeyCommand,
-  environment: () => ({}),
-  healthcheck: { test: ["CMD", "valkey-cli", "ping"] },
-  secrets: [],
-  auth: "internal-only",
-  address: (ctx) => `redis://${ctx.service.name}:6379`,
+  command: (ctx) => passwordServerCommand(ctx, "valkey", "VALKEY_PASSWORD"),
+  environment: (ctx) => ({ VALKEY_PASSWORD: ctx.secretRef(PASSWORD.name) }),
+  healthcheck: redisCliCheck("VALKEY_PASSWORD", "valkey-cli"),
+  secrets: [PASSWORD],
+  auth: "password",
+  address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
 };
-
-/** Where Redis 8's container writes its password for redis-server, readable by `redis` only. */
-const REDIS_AUTH_FILE = "/tmp/opscrew-auth.conf";
-
-/**
- * Redis 8 with Valkey's modes ({@link redisModeArgs}) and its password. The shell writes the
- * password from the environment into a settings file inside the container (never into a
- * repository file, nor redis-server's command line) and owned by `redis`, the user the image's
- * entrypoint drops to; the entrypoint loads the modules (Search, JSON, Time Series, Bloom) and
- * drops root only when the command is `redis-server`.
- */
-function redisCommand(ctx: ServiceContext): string[] {
-  const args = redisModeArgs(ctx.service).map((arg) => (arg === "" ? "''" : arg));
-  return [
-    "sh",
-    "-c",
-    [
-      `umask 077 && printf 'requirepass %s\\n' "$REDIS_PASSWORD" > ${REDIS_AUTH_FILE}`,
-      `chown redis:redis ${REDIS_AUTH_FILE}`,
-      ["exec docker-entrypoint.sh redis-server", REDIS_AUTH_FILE, ...args].join(" "),
-    ].join(" && "),
-  ];
-}
 
 const REDIS: ServiceSpec = {
   kind: "redis",
@@ -170,7 +169,7 @@ const REDIS: ServiceSpec = {
   memory: { defaultMb: 128, minimumMb: 64, smallestServerMb: 512 },
   port: 6379,
   dataDir: "/data",
-  command: redisCommand,
+  command: (ctx) => passwordServerCommand(ctx, "redis", "REDIS_PASSWORD"),
   environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name) }),
   healthcheck: redisCliCheck("REDIS_PASSWORD"),
   secrets: [PASSWORD],

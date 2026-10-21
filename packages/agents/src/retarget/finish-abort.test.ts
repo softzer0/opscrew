@@ -510,6 +510,12 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       });
       expect(preview.changed).toEqual([]);
       expect(preview.created.filter((path) => path.startsWith("opscrew/infra/"))).toEqual([]);
+      // The move renders with the zone Cloudflare reports, as provision does: Caddy's CAA issuers stay.
+      const tfvars = await readFile(
+        join(h.root, "opscrew/infra/prod/terraform.tfvars.json"),
+        "utf8",
+      );
+      expect(JSON.parse(tfvars).caa_issuers).toEqual(["letsencrypt.org", "sectigo.com"]);
       expect(await exists(join(h.root, "opscrew/infra/modules/digitalocean-droplet"))).toBe(false);
       expect((await h.deps.state.read()).phases.retarget?.status).toBe("skipped");
       expect(await exists(join(h.paths.stateDir, "retarget-pending.json"))).toBe(false);

@@ -37,6 +37,11 @@ export function zoneVariables(use: ZoneUse): VariableSpec[] {
     specs.push(
       { name: "proxied", type: "bool", description: "Proxy traffic through Cloudflare." },
       { name: "www", type: "bool", description: "Also serve www.<domain>." },
+      {
+        name: "caa_issuers",
+        type: "list(string)",
+        description: "Certificate authorities named in CAA records at the domain (DNS only).",
+      },
     );
   }
   return specs;
@@ -54,8 +59,25 @@ export function zoneTfvars(
   if (use === "records") {
     values.proxied = plan.dns.proxied;
     values.www = plan.dns.www;
+    values.caa_issuers = caaIssuers(plan);
   }
   return values;
+}
+
+/**
+ * The authorities each edge gets certificates from (research R4): Caddy falls back to ZeroSSL,
+ * which issues under Sectigo's CAA name.
+ */
+const CAA_ISSUERS = { caddy: ["letsencrypt.org", "sectigo.com"], nginx: ["letsencrypt.org"] };
+
+/**
+ * The CAA issuers of the app's domain, from the plan's edge. None for an app on the zone apex (or
+ * a zone not yet known), since CAA there would bind every name in the zone (FR-1430).
+ */
+function caaIssuers(plan: DeployPlan): string[] {
+  const { dns, target } = plan;
+  if (dns.zone === undefined || dns.domain === dns.zone || !("edge" in target)) return [];
+  return CAA_ISSUERS[target.edge];
 }
 
 /** `module "dns"` pointing the app's records at `ipv4` and `ipv6` (HCL expressions). */
@@ -71,6 +93,7 @@ export function dnsModule(ipv4: string, ipv6: string, ipv6Record?: string): stri
       ...(ipv6Record === undefined ? [] : [["ipv6_record", ipv6Record] as const]),
       ["proxied", "var.proxied"],
       ["www", "var.www"],
+      ["caa_issuers", "var.caa_issuers"],
     ],
   });
 }

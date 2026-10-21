@@ -299,7 +299,7 @@ describe("optionToPlan", () => {
       build: autoBuild(facts),
     });
     expect(serviceOf(plan, "valkey")).toBeDefined();
-    expect(plan.app.env).toEqual([{ name: "REDIS_URL", secret: false, source: "derived" }]);
+    expect(plan.app.env).toEqual([{ name: "REDIS_URL", secret: true, source: "derived" }]);
     expect(plan.app.port).toBe(8000);
     expect(plan.app.healthPath).toBe("/health");
   });
@@ -369,18 +369,18 @@ describe("connection settings under the app's own names (FR-814)", () => {
     ]);
     expect(plan.services.every((s) => s.enabled && s.reason !== "" && s.licence !== "")).toBe(true);
     expect(plan.app.env).toEqual([
-      { name: "BROKER_URL", secret: false, source: "derived" },
-      { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
-      { name: "CELERY_RESULT_BACKEND", secret: false, source: "derived" },
+      { name: "BROKER_URL", secret: true, source: "derived" },
+      { name: "CELERY_BROKER_URI", secret: true, source: "derived" },
+      { name: "CELERY_RESULT_BACKEND", secret: true, source: "derived" },
       { name: "DATABASE_URI", secret: true, source: "derived" },
       { name: "DATABASE_URL", secret: true, source: "derived" },
       { name: "FLASK_ENV", secret: false, source: "user", optional: true },
       { name: "FLASK_JWT_SECRET_KEY", secret: true, source: "generated" },
       { name: "FLASK_MAIL_PASSWORD", secret: true, source: "user" },
-      { name: "FLASK_REDIS_URL", secret: false, source: "derived" },
+      { name: "FLASK_REDIS_URL", secret: true, source: "derived" },
       { name: "FLASK_SECRET_KEY", secret: true, source: "generated" },
       { name: "MAPBOX_API_KEY", secret: true, source: "user" },
-      { name: "REDIS_URL", secret: false, source: "derived" },
+      { name: "REDIS_URL", secret: true, source: "derived" },
       { name: "SQLALCHEMY_DATABASE_URI", secret: true, source: "derived" },
       // Another provider's secret key is a credential the user supplies.
       { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
@@ -434,8 +434,8 @@ describe("connection settings under the app's own names (FR-814)", () => {
       { name: "CELERY_RESULT_BACKEND", secret: false, source: "user" },
       { name: "DATABASE_URL", secret: true, source: "derived" },
       { name: "DB_URL", secret: false, source: "user" },
-      { name: "FLASK_REDIS_URL", secret: false, source: "derived" },
-      { name: "REDIS_URL", secret: false, source: "derived" },
+      { name: "FLASK_REDIS_URL", secret: true, source: "derived" },
+      { name: "REDIS_URL", secret: true, source: "derived" },
       { name: "SQLALCHEMY_DATABASE_URI", secret: true, source: "derived" },
     ]);
   });
@@ -497,13 +497,13 @@ describe("connection settings under the app's own names (FR-814)", () => {
       });
       expect(plan.services.map((s) => s.kind)).toEqual(["postgres", "valkey"]);
       expect(plan.app.env).toEqual([
-        { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
+        { name: "CELERY_BROKER_URI", secret: true, source: "derived" },
         { name: "DATABASE_URI", secret: true, source: "derived" },
         { name: "DATABASE_URL", secret: true, source: "derived" },
         { name: "FLASK_MAIL_SERVER", secret: false, source: "user" },
-        { name: "FLASK_REDIS_URL", secret: false, source: "derived" },
+        { name: "FLASK_REDIS_URL", secret: true, source: "derived" },
         { name: "FLASK_SECRET_KEY", secret: true, source: "generated" },
-        { name: "REDIS_URL", secret: false, source: "derived" },
+        { name: "REDIS_URL", secret: true, source: "derived" },
       ]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -604,10 +604,10 @@ describe("connection settings under the app's own names (FR-814)", () => {
       { name: "AWS_REGION", secret: false, source: "derived" },
       { name: "AWS_SECRET_ACCESS_KEY", secret: true, source: "derived" },
       { name: "AWS_STORAGE_BUCKET_NAME", secret: false, source: "derived" },
-      { name: "CELERY_BROKER_URL", secret: false, source: "derived" },
+      { name: "CELERY_BROKER_URL", secret: true, source: "derived" },
       { name: "DATABASE_URL", secret: true, source: "derived" },
       { name: "DJANGO_SECRET_KEY", secret: true, source: "generated" },
-      { name: "REDIS_URL", secret: false, source: "derived" },
+      { name: "REDIS_URL", secret: true, source: "derived" },
     ]);
     expect(plan.app.env.map((v) => v.name)).not.toContain("CRON_SECRET");
 
@@ -619,14 +619,15 @@ describe("connection settings under the app's own names (FR-814)", () => {
       storage: { accessKeyId: key, secretAccessKey: fakeSecret("aws-secret-access-key"), endpoint },
     });
     const password = env.generated.services?.mysql?.password;
+    const queue = `redis://:${env.generated.services?.queue?.password}@queue:6379`;
     expect(env.values.app).toMatchObject({
       AWS_ACCESS_KEY_ID: key,
       AWS_ENDPOINT_URL_S3: endpoint,
       AWS_REGION: "auto",
       AWS_STORAGE_BUCKET_NAME: "shop-uploads",
-      CELERY_BROKER_URL: "redis://queue:6379",
+      CELERY_BROKER_URL: queue,
       DATABASE_URL: `mysql://app:${password}@mysql:3306/app`,
-      REDIS_URL: "redis://queue:6379",
+      REDIS_URL: queue,
     });
   });
 

@@ -135,6 +135,7 @@ describe("renderPortainerStack", () => {
         PORTAINER_STACK_VARIABLES.dbName,
         PORTAINER_STACK_VARIABLES.dbPassword,
         PORTAINER_STACK_VARIABLES.dbUser,
+        "OPSCREW_SVC_CACHE_PASSWORD",
         PORTAINER_STACK_VARIABLES.tunnelToken,
       ],
     });
@@ -142,6 +143,7 @@ describe("renderPortainerStack", () => {
       "OPSCREW_DB_NAME",
       "OPSCREW_DB_PASSWORD",
       "OPSCREW_DB_USER",
+      "OPSCREW_SVC_CACHE_PASSWORD",
       "OPSCREW_TUNNEL_TOKEN",
     ]);
     expect([...keys.app, ...keys.opscrew].sort()).toEqual(interpolated(fullFile.content));
@@ -768,6 +770,7 @@ describe("one-time setup and host settings in a stack", () => {
       { service: "db", secret: "password", variable: "OPSCREW_DB_PASSWORD" },
       { service: "mysql", secret: "password", variable: "OPSCREW_SVC_MYSQL_PASSWORD" },
       { service: "mysql", secret: "root-password", variable: "OPSCREW_SVC_MYSQL_ROOT_PASSWORD" },
+      { service: "cache", secret: "password", variable: "OPSCREW_SVC_CACHE_PASSWORD" },
     ]);
   });
 });

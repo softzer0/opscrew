@@ -283,9 +283,9 @@ describe("connection settings under the app's own names (FR-814)", () => {
     expect(values.get("DATABASE_URL")).toBe("postgresql://app:db-password-0123456789@db:5432/app");
     // SQLAlchemy accepts only `postgresql://`; psycopg2 and node-postgres take both schemes.
     expect(values.get("DATABASE_URI")).toBe("postgresql://app:db-password-0123456789@db:5432/app");
-    expect(values.get("REDIS_URL")).toBe("redis://cache:6379");
-    expect(values.get("CELERY_BROKER_URI")).toBe("redis://cache:6379");
-    expect(values.get("FLASK_REDIS_URL")).toBe("redis://cache:6379");
+    expect(values.get("REDIS_URL")).toBe("redis://:db-password-0123456789@cache:6379");
+    expect(values.get("CELERY_BROKER_URI")).toBe("redis://:db-password-0123456789@cache:6379");
+    expect(values.get("FLASK_REDIS_URL")).toBe("redis://:db-password-0123456789@cache:6379");
     expect(values.get("FLASK_SECRET_KEY")).toBe("db-password-0123456789");
     expect(values.get("MAPBOX_API_KEY")).toBe(mapbox);
     expect(result.defaulted).toEqual([]);
@@ -447,6 +447,8 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
     expect(mysql?.password).toMatch(HEX);
     expect(mysql?.["root-password"]).toMatch(HEX);
     expect(rabbitmq?.password).toMatch(HEX);
+    const queue = first.generated.services?.queue;
+    expect(queue?.password).toMatch(HEX);
     const amqp = `amqp://app:${rabbitmq?.password}@rabbitmq:5672/%2F`;
     expect(first.values.app).toEqual({
       AMQP_URL: amqp,
@@ -455,10 +457,10 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092",
       KAFKA_BROKERS: "kafka:9092",
       RABBITMQ_URL: amqp,
-      REDIS_URL: "redis://queue:6379",
+      REDIS_URL: `redis://:${queue?.password}@queue:6379`,
     });
     // For the services' own environment.
-    expect(first.values.services).toEqual({ mysql, rabbitmq });
+    expect(first.values.services).toEqual({ mysql, rabbitmq, queue });
     const again = await assembleAppEnv({
       plan: withComponents(env, components),
       dotenvText: "",

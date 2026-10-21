@@ -158,7 +158,7 @@ describe("the catalog", () => {
   it("logs the app in with a password, a token or a key, or keeps the service internal only", () => {
     expect(Object.fromEntries(SERVICE_SPECS.map((spec) => [spec.kind, spec.auth]))).toEqual({
       postgres: "password",
-      valkey: "internal-only",
+      valkey: "password",
       redis: "password",
       dragonfly: "password",
       mysql: "password",
@@ -234,7 +234,7 @@ describe("the app's variables", () => {
       KAFKA_BROKERS: "redpanda:9092",
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:9092",
     });
-    expect(vars("valkey")).toEqual({ REDIS_URL: "redis://cache:6379" });
+    expect(vars("valkey")).toEqual({ REDIS_URL: "redis://:<password>@cache:6379" });
     expect(vars("redis")).toEqual({ REDIS_URL: "redis://:<password>@cache:6379" });
     expect(vars("dragonfly", { options: { mode: "queue" } })).toEqual({
       REDIS_URL: "redis://:<password>@queue:6379",
@@ -293,9 +293,11 @@ describe("the app's variables", () => {
       { kind: "valkey", options: { mode: "queue" } },
       { kind: "valkey", options: { mode: "cache" } },
     ]);
-    expect(appVariables(ctx(plan, "queue"))).toEqual({ REDIS_URL: "redis://queue:6379" });
+    expect(appVariables(ctx(plan, "queue"))).toEqual({
+      REDIS_URL: "redis://:<password>@queue:6379",
+    });
     expect(appVariables(ctx(plan, "cache", "CACHE_URL"))).toEqual({
-      CACHE_URL: "redis://cache:6379",
+      CACHE_URL: "redis://:<password>@cache:6379",
     });
     const dragonfly = withServices([
       { kind: "dragonfly", options: { mode: "queue" } },
@@ -402,30 +404,29 @@ describe("the services' settings", () => {
     });
   });
 
-  it("Valkey: a queue never evicts and keeps an append-only file; a cache evicts and keeps nothing", () => {
+  it("Valkey: its modes behind its password, read from a settings file it writes at start", () => {
     const valkey = serviceSpec("valkey");
-    expect(valkey.command?.(only("valkey", { options: { mode: "queue" }, memoryMb: 128 }))).toEqual(
-      [
-        "valkey-server",
-        "--appendonly",
-        "yes",
-        "--maxmemory",
-        "96mb",
-        "--maxmemory-policy",
-        "noeviction",
-      ],
-    );
-    expect(valkey.command?.(only("valkey", { memoryMb: 256 }))).toEqual([
-      "valkey-server",
-      "--save",
-      "",
-      "--appendonly",
-      "no",
-      "--maxmemory",
-      "192mb",
-      "--maxmemory-policy",
-      "allkeys-lru",
+    const queue = only("valkey", { options: { mode: "queue" }, memoryMb: 128 });
+    // The password goes into a file valkey-server reads, never onto its command line; the
+    // entrypoint drops root only for a command that is valkey-server.
+    const auth =
+      "umask 077 && printf 'requirepass %s\\n' \"$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf";
+    // A queue never evicts and keeps an append-only file; a cache evicts and keeps nothing.
+    expect(valkey.command?.(queue)).toEqual([
+      "sh",
+      "-c",
+      `${auth} --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction`,
     ]);
+    expect(valkey.command?.(only("valkey", { memoryMb: 256 }))?.[2]).toBe(
+      `${auth} --save '' --appendonly no --maxmemory 192mb --maxmemory-policy allkeys-lru`,
+    );
+    expect(valkey.environment(queue)).toEqual({ VALKEY_PASSWORD: "<password>" });
+    expect(valkey.secrets).toEqual([{ name: "password", format: "hex32" }]);
+    expect(valkey.healthcheck.test).toEqual([
+      "CMD-SHELL",
+      'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping | grep -q PONG',
+    ]);
+    expect(valkey.dataDir).toBe("/data");
   });
 
   it("Redis 8: Valkey's modes behind its password, through the image's own entrypoint", () => {

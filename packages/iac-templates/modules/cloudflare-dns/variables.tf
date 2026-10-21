@@ -36,3 +36,9 @@ variable "www" {
   type        = bool
   default     = false
 }
+
+variable "caa_issuers" {
+  description = "Certificate authorities named in CAA records at the domain when it is not proxied; empty for an app on the zone apex."
+  type        = list(string)
+  default     = []
+}

@@ -146,7 +146,7 @@ describe("renderWorkflow", () => {
     const services = withServices([
       { kind: "mysql", name: "main-db" },
       { kind: "rabbitmq" },
-      { kind: "valkey", name: "cache" },
+      { kind: "kafka" },
       { kind: "nats", enabled: false },
     ]);
     const deploy = parse(renderWorkflow(services, ctx).content).jobs.deploy.steps as Step[];
@@ -163,8 +163,8 @@ describe("renderWorkflow", () => {
     expect(upload?.run).toContain(
       `printf '%s\\n' "\${OPSCREW_SERVICE_MAIN_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/main-db.env'`,
     );
-    // Valkey as a cache has no secret, so it has no env file.
-    expect(upload?.run).not.toContain("cache.env");
+    // Kafka has no secret, so it has no env file.
+    expect(upload?.run).not.toContain("kafka.env");
   });
 
   it("checks health over HTTPS on the domain and rolls back on failure", () => {

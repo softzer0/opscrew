@@ -193,8 +193,11 @@ describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer
         "MySQL (mysql) requires its login: OPSCREW_SVC_MYSQL_PASSWORD and OPSCREW_SVC_MYSQL_ROOT_PASSWORD are set in the app stack's environment.",
     });
     expect(byId()["service-db-login"]?.status).toBe("pass");
-    // Valkey has no login: only the app's containers reach it.
-    expect(byId()["service-cache-login"]).toBeUndefined();
+    expect(byId()["service-cache-login"]).toMatchObject({
+      status: "pass",
+      message:
+        "Valkey (cache) requires its login: OPSCREW_SVC_CACHE_PASSWORD is set in the app stack's environment.",
+    });
 
     // A login removed, and one emptied, in Portainer.
     const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");

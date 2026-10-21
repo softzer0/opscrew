@@ -362,6 +362,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           HOST: \${{ secrets.OPSCREW_HOST }}
           OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
           OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
+          OPSCREW_SERVICE_CACHE_ENV: \${{ secrets.OPSCREW_SERVICE_CACHE_ENV }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -369,6 +370,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/crontab opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/app.env'
           printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/db.env'
+          printf '%s\\n' "\${OPSCREW_SERVICE_CACHE_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/cache.env'
       - id: start
         name: Start the new version
         env:

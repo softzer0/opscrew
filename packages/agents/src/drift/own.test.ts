@@ -688,7 +688,9 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         { ...plan, services: selfHostedServices({ postgres: false, redis: true }) },
         { opscrewVersion: "0.0.0" },
       );
-      expect(none.serviceEnvFiles).toEqual({});
+      expect(none.serviceEnvFiles).toEqual({
+        "cache.env": { title: "Valkey", secret: "OPSCREW_SERVICE_CACHE_ENV" },
+      });
     });
 
     it("reads each service's env file from the catalog: a missing one is reported once deployed", async () => {
@@ -731,9 +733,10 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
           sha256: null,
         });
       });
-      // Valkey has no secrets, so no env file; NATS's token is in nats.env.
+      // NATS's token is in nats.env, Valkey's password in cache.env.
       expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
         "app: /srv/apps/shop/nats.env (the settings of NATS from the GitHub secret OPSCREW_SERVICE_NATS_ENV) is missing. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.",
+        "app: /srv/apps/shop/cache.env (the settings of Valkey from the GitHub secret OPSCREW_SERVICE_CACHE_ENV) is missing. Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.",
       ]);
     });
   });
