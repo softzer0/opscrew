@@ -446,6 +446,21 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --concurrency=2`, the Docker-gated tests (`OPSCREW_DOCKER_TESTS=1`), and `pnpm lint`
   - Effort: medium
 
+- [ ] T1414c [US2] A provision with nothing to change publishes nothing (found live, 2026-10-21), in `packages/agents/src/provision/**`, `packages/agents/src/secrets/**` (+ tests)
+  - Why: in the `recovery` live pass, `provision` on a freshly restored clone planned "Nothing to apply". It still opened a pull request with two changes:
+    - `opscrew/plan.yaml`, where only `updatedAt` changed: `deploymentRecord` in `provision/steps.ts` stamps it on every run;
+    - a re-encrypted recovery copy, because a file in it changed on disk. `deploy_secrets.json` gets a fresh `storedAt` each time the deploy secrets are stored (`provision/secrets.ts`), and nothing reads that field.
+  - Accept:
+    - **`plan.yaml`** changes only when its content does. When the next plan equals the one on disk apart from `updatedAt`, provision keeps the file as it is. A real change (an apply, an approval, the URL, `lastPlanHash`, `lastApplyAt`) still sets `updatedAt`.
+    - **`deploy_secrets.json`** no longer has `storedAt`. Rewriting it with the same host, repo and names gives the same bytes.
+    - **Every other file in the recovery copy** (the list in `secrets/files.ts`) gets the same check. A provision with nothing to change must not rewrite any of them with different bytes; list each one you checked, and fix any that does.
+      - For the infrastructure state: confirm OpsCrew does not run an apply when the plan is empty, or else say what OpenTofu writes.
+    - **Tests, with the agents fakes:**
+      - two provisions in a row, the second with nothing to change: `plan.yaml` is byte-identical after the second, `refreshRecoveryCopy` returns `changed: false`, and no pull request or branch is created;
+      - the fresh-computer case: restore the copy into an empty project folder, then provision. The result is the same: no pull request, and the checkout stays on its branch.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2`, `pnpm lint`
+  - Effort: high
+
 - [ ] T1414 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`.
 
 ## `vercel.json` routing (founder, 2026-10-21)
