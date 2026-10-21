@@ -265,6 +265,7 @@ Each line gives what was run, and what was seen.
   - That Cloudflare really presents the certificate to an origin is checked in the live run (T1413).
 - **3. Minimum TLS:** the zone setting reads `1.0` with `editable: true`, and a same-value `PATCH` gives 200, which proves Zone Settings: Edit. Per-hostname minimum TLS (`PUT /zones/{z}/hostnames/settings/min_tls_version/{host}`) gives 401, code 1450, "available with the Advanced Certificate Manager". So OpsCrew uses only the zone setting under R4's rule.
 - **4. Configuration-rule count:** 014 adds no rule, so 011's count stands.
+- **Listing Origin CA certificates** (`GET /certificates?zone_id=`) needs only Zone Read: a token without SSL and Certificates gets 200 there (2026-10-21, the e2e token for the `live` pass). The per-hostname origin pull endpoints and the zone settings answer 403 to it, and OpsCrew's permission check uses those.
 - **15. 15-year certificates:** both kinds are accepted, origin CA and client certificate, expiring in 2041.
 - **Expiry formats:** Origin CA gives `expires_on` as `2041-10-16 23:53:00 +0000 UTC`, and AOP as `2041-10-16T23:58:23Z`. Both are turned into ISO `Z` times before they go into the record.
 - **5. nginx and kamal-proxy** (local Docker, the pinned images):

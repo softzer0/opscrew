@@ -280,7 +280,8 @@ export function tlsSettings(
 /**
  * Stops before any GitHub or cloud change when the pass could not run: Docker on this computer
  * for the deeper checks (`proxied`), and for `live` a token that really cannot read the zone's
- * origin certificates (else the first deploy would already get origin protection).
+ * per-hostname origin pull certificates, as OpsCrew checks (else the first deploy would already get
+ * origin protection). Listing Origin CA certificates needs only Zone Read, so it proves nothing.
  */
 export async function tlsPreflight(settings: TlsSettings): Promise<void> {
   if (settings.pass === "proxied") await requireDocker("The proxied pass");
@@ -288,11 +289,11 @@ export async function tlsPreflight(settings: TlsSettings): Promise<void> {
     const zone = await new Cloudflare(settings.cloudflareToken).zoneOf(settings.domain);
     const read = await new Cloudflare(settings.noTlsToken ?? "").call(
       "GET",
-      `/certificates?zone_id=${zone.id}`,
+      `/zones/${zone.id}/origin_tls_client_auth/hostnames/certificates`,
     );
     if (read.status === 200) {
       throw new Error(
-        "OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS can read the zone's origin certificates, so the first deploy would get origin protection already: remove SSL and Certificates (and Zone Settings) from that token (docs/e2e.md).",
+        "OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS can read the zone's per-hostname origin pull certificates, so the first deploy would get origin protection already: remove SSL and Certificates (and Zone Settings) from that token (docs/e2e.md).",
       );
     }
   }
