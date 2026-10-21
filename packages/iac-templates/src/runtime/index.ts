@@ -8,8 +8,10 @@ import {
   caddyAdditionsFile,
   EDGE_PROJECT,
   EDGE_UPSTREAM,
+  edgeProxy,
   renderEdgeCompose,
 } from "../edge";
+import { nginxAdditionsFile, nginxSite } from "../edge/nginx";
 import { wrongTarget } from "../providers";
 import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -48,15 +50,26 @@ import {
  */
 export interface RuntimeContext extends RenderContext {
   /**
-   * The app's proxied hostnames that have a Cloudflare origin certificate: OpsCrew's Caddy serves
-   * it for them and requires the client certificate Cloudflare sends for the app. Absent without
-   * origin TLS (DNS-only hostnames, a token without the certificate permissions); ignored behind a
-   * Cloudflare Tunnel, where the server has no public origin, and in a stack behind the user's own
-   * proxy.
+   * The app's proxied hostnames that have a Cloudflare origin certificate: the server's proxy
+   * serves it for them and requires the client certificate Cloudflare sends for the app. Absent
+   * without origin TLS (DNS-only hostnames, a token without the certificate permissions); ignored
+   * behind a Cloudflare Tunnel, where the server has no public origin, and in a stack behind the
+   * user's own proxy.
    */
   originTls?: { hostnames: readonly string[] } | undefined;
-  /** The app has its own additions (`opscrew/proxy/additions.caddy`), which its site imports. */
+  /**
+   * The app has its own additions for the plan's proxy (`opscrew/proxy/additions.caddy` or
+   * `additions.nginx`), which its site includes.
+   */
   additions?: boolean | undefined;
+  /**
+   * Cloudflare's IP ranges (IPv4 and IPv6, from Cloudflare's API). With them, requests from these
+   * ranges to a hostname Cloudflare's proxy serves carry the visitor's address in
+   * `CF-Connecting-IP`, which the server's proxy then uses as the client's address: nginx in the
+   * app's site, Caddy in the edge's main configuration and the app's site. Every app on a server
+   * should get the same ranges, since the edge's file is shared.
+   */
+  cloudflareRanges?: readonly string[] | undefined;
 }
 
 /** A Portainer target's stack holds both files: reaching these renderers with one is a bug. */
@@ -161,20 +174,33 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
  * service's settings files in `opscrew/runtime/services/<name>/` (MySQL's `my.cnf`,
  * `rabbitmq.conf`, `nats.conf`, `garage.toml`), with an enabled cron job
  * `opscrew/runtime/crontab`, and the shared edge's `opscrew/runtime/edge/compose.yaml`
- * ({@link renderEdgeCompose}). None holds a secret. Throws for a Portainer target, whose stack
- * holds them inline.
+ * ({@link renderEdgeCompose}, which trusts `ctx.cloudflareRanges` on Caddy). None holds a secret.
+ * Throws for a Portainer target, whose stack holds them inline.
  * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned, or a cron
  * route the image cannot call.
  */
-export function renderRuntimeFiles(plan: DeployPlan): RenderedFile[] {
+export function renderRuntimeFiles(
+  plan: DeployPlan,
+  ctx: Pick<RuntimeContext, "cloudflareRanges"> = {},
+): RenderedFile[] {
   if (plan.target.provider === "portainer") throw notForPortainer();
   return [
     ...renderServices(plan, { kind: "server" }).files,
     ...(hasCronJobs(plan)
       ? [{ path: SERVER_CRONTAB.path, content: crontab(plan), kind: "runtime" as const }]
       : []),
-    renderEdgeCompose(plan),
+    renderEdgeCompose(plan, ctx.cloudflareRanges),
   ];
+}
+
+/**
+ * `ctx.cloudflareRanges` when Cloudflare's proxy serves the app's hostnames and reaches the server
+ * directly (not through a tunnel): the ranges whose `CF-Connecting-IP` the app's site trusts.
+ */
+function realIpRanges(plan: DeployPlan, ctx: RuntimeContext): readonly string[] | undefined {
+  const ranges = ctx.cloudflareRanges;
+  if (!plan.dns.proxied || tunnelMode(plan) || ranges === undefined) return undefined;
+  return ranges.length > 0 ? ranges : undefined;
 }
 
 /**
@@ -204,6 +230,7 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RuntimeContext): Rendered
           ? undefined
           : { hostnames: ctx.originTls.hostnames, dir: originTlsDir(app) },
       additions: ctx.additions ? caddyAdditionsFile(app) : undefined,
+      realIp: realIpRanges(plan, ctx) !== undefined,
     }),
   ];
   return {
@@ -211,6 +238,55 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RuntimeContext): Rendered
     content: lines.join("\n"),
     kind: "runtime",
   };
+}
+
+/**
+ * The hostnames certbot gets the app's certificate for on the nginx edge: those not served with
+ * the origin certificate, served directly (not behind a tunnel). Empty for Caddy, which gets its
+ * own.
+ */
+export function certbotHosts(plan: DeployPlan, ctx: RuntimeContext): string[] {
+  if (edgeProxy(plan) !== "nginx" || tunnelMode(plan)) return [];
+  return siteHosts(plan).filter((host) => !ctx.originTls?.hostnames.includes(host));
+}
+
+/** The site file of the app on the nginx edge, `before` its first certbot certificate or not. */
+function nginxSiteFile(plan: DeployPlan, ctx: RuntimeContext, before: boolean): RenderedFile {
+  const app = plan.app.name;
+  const lines = [
+    "# Generated by OpsCrew from opscrew/plan.yaml; `opscrew provision` regenerates it.",
+    `# ${app}'s site on the server's shared edge (nginx): the deploy copies it to /srv/edge/sites/${app}.conf.`,
+    ...nginxSite({
+      app,
+      mode: tunnelMode(plan) ? "tunnel" : "direct",
+      hosts: siteHosts(plan),
+      origin: ctx.originTls?.hostnames,
+      maxBodyMb: plan.app.maxBodyMb,
+      additions: ctx.additions ? nginxAdditionsFile(app) : undefined,
+      beforeCertificate: before,
+      realIpFrom: realIpRanges(plan, ctx),
+    }),
+  ];
+  return {
+    path: `opscrew/runtime/edge/sites/${app}.${before ? "http.conf" : "conf"}`,
+    content: lines.join("\n"),
+    kind: "runtime",
+  };
+}
+
+/**
+ * The app's site files for the plan's proxy (the deploy copies them to `/srv/edge/sites`):
+ * {@link renderCaddyfile}, or on nginx `sites/<app>.conf`, the same site as Caddy's with the
+ * hostnames certbot serves ({@link certbotHosts}) on certbot's certificate, and, when there are
+ * such hostnames, `sites/<app>.http.conf`, the site the deploy serves until certbot has the
+ * first certificate. Throws for a Portainer target.
+ */
+export function renderEdgeSite(plan: DeployPlan, ctx: RuntimeContext): RenderedFile[] {
+  if (edgeProxy(plan) === "caddy") return [renderCaddyfile(plan, ctx)];
+  return [
+    nginxSiteFile(plan, ctx, false),
+    ...(certbotHosts(plan, ctx).length > 0 ? [nginxSiteFile(plan, ctx, true)] : []),
+  ];
 }
 
 const CONNECTOR_HEADER = [

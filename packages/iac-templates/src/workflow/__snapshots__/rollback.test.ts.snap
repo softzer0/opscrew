@@ -13,6 +13,17 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
       previous: \${{ steps.start.outputs.previous }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate the edge's configuration with Caddy
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
+          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+          cp opscrew/runtime/edge/sites/shop.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop.caddy
+          if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            exit 1
+          fi
       - name: Configure SSH with the pinned host key
         env:
           SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
@@ -68,23 +79,45 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
             current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
-            if [ "$uploaded" -gt "\${current:-0}" ]; then
+            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            rm -f .edge.previous
+            if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              cp /srv/edge/compose.yaml .edge.previous
+              cp edge/compose.yaml /srv/edge/compose.yaml
+            elif [ "$uploaded" -gt "\${current:-0}" ]; then
               cp edge/compose.yaml /srv/edge/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
             elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
               cp edge/compose.yaml /srv/edge/compose.yaml
-              echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
+              echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
-            rm -f .site.previous
+            for f in origin.pem origin.key pull.pem; do
+              if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+            done
+            rm -f .site.previous .additions.previous
             if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+            if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
             cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
-            if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+            rm -f /srv/edge/sites/shop.additions
+            if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
               if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+              if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+              for f in origin.pem origin.key pull.pem; do
+                if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+              done
+              if [ -f .edge.previous ]; then
+                cp .edge.previous /srv/edge/compose.yaml
+                edge up -d --wait --remove-orphans || true
+                echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
+              fi
               echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
+            rm -f /srv/edge/sites/shop.conf
+            rm -rf /srv/edge/tls/shop
           ) 9> /srv/edge/.lock
           docker compose up -d --no-deps --wait db
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -172,6 +205,17 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
       previous: \${{ steps.start.outputs.previous }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate the edge's configuration with Caddy
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
+          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+          cp opscrew/runtime/edge/sites/shop.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop.caddy
+          if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            exit 1
+          fi
       - name: Configure SSH with the pinned host key
         env:
           SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
@@ -227,23 +271,45 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
             current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
-            if [ "$uploaded" -gt "\${current:-0}" ]; then
+            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            rm -f .edge.previous
+            if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              cp /srv/edge/compose.yaml .edge.previous
+              cp edge/compose.yaml /srv/edge/compose.yaml
+            elif [ "$uploaded" -gt "\${current:-0}" ]; then
               cp edge/compose.yaml /srv/edge/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
             elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
               cp edge/compose.yaml /srv/edge/compose.yaml
-              echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
+              echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
-            rm -f .site.previous
+            for f in origin.pem origin.key pull.pem; do
+              if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+            done
+            rm -f .site.previous .additions.previous
             if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+            if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
             cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
-            if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+            rm -f /srv/edge/sites/shop.additions
+            if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
               if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+              if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+              for f in origin.pem origin.key pull.pem; do
+                if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+              done
+              if [ -f .edge.previous ]; then
+                cp .edge.previous /srv/edge/compose.yaml
+                edge up -d --wait --remove-orphans || true
+                echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
+              fi
               echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
+            rm -f /srv/edge/sites/shop.conf
+            rm -rf /srv/edge/tls/shop
           ) 9> /srv/edge/.lock
           docker compose up -d --no-deps --wait db
           old="$(docker compose ps -aq app | tr '\\n' ' ')"
@@ -347,6 +413,17 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
       previous: \${{ steps.start.outputs.previous }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate the edge's configuration with Caddy
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
+          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+          cp opscrew/runtime/edge/sites/shop.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop.caddy
+          if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            exit 1
+          fi
       - name: Configure SSH with the pinned host key
         env:
           SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
@@ -404,23 +481,45 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
             current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
-            if [ "$uploaded" -gt "\${current:-0}" ]; then
+            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            rm -f .edge.previous
+            if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              cp /srv/edge/compose.yaml .edge.previous
+              cp edge/compose.yaml /srv/edge/compose.yaml
+            elif [ "$uploaded" -gt "\${current:-0}" ]; then
               cp edge/compose.yaml /srv/edge/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
             elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
               cp edge/compose.yaml /srv/edge/compose.yaml
-              echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."
+              echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
-            rm -f .site.previous
+            for f in origin.pem origin.key pull.pem; do
+              if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+            done
+            rm -f .site.previous .additions.previous
             if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+            if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
             cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
-            if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+            rm -f /srv/edge/sites/shop.additions
+            if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
               if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+              if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+              for f in origin.pem origin.key pull.pem; do
+                if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+              done
+              if [ -f .edge.previous ]; then
+                cp .edge.previous /srv/edge/compose.yaml
+                edge up -d --wait --remove-orphans || true
+                echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
+              fi
               echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
+            rm -f /srv/edge/sites/shop.conf
+            rm -rf /srv/edge/tls/shop
           ) 9> /srv/edge/.lock
           docker compose up -d --no-deps --wait db cache
           if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > /srv/apps/shop/release.log 2>&1); then

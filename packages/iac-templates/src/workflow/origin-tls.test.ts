@@ -82,7 +82,21 @@ describe("the deploy with origin TLS", () => {
     expect(ids.indexOf("Upload runtime files and environment")).toBeLessThan(
       ids.indexOf("Start the new version"),
     );
-    expect(start(plan, ctx)).not.toContain("/srv/edge/tls/shop");
+    expect(start(plan, ctx)).not.toContain(".new");
+  });
+
+  it("takes the app's origin files out of /srv/edge/tls when the deploy has no origin TLS", () => {
+    const script = start(plan, ctx);
+    const tls = "/srv/edge/tls/shop";
+    // Kept aside until the edge took the site, put back when it refused it, then removed.
+    expect(script).toContain(
+      `  for f in origin.pem origin.key pull.pem; do\n    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi\n  done\n`,
+    );
+    expect(script).toContain(
+      `      if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi\n`,
+    );
+    expect(script.indexOf(`  rm -rf ${tls}\n`)).toBeGreaterThan(script.indexOf("caddy reload"));
+    expect(start(plan, origin)).not.toContain(`rm -rf ${tls}`);
   });
 
   it("puts the previous certificate files back when Caddy refuses the deploy, and drops them once it took it", () => {
@@ -149,6 +163,18 @@ describe("the deploy with the user's additions", () => {
     expect(script).toContain(
       "s site (opscrew/runtime/edge/sites/shop.caddy) or your additions (opscrew/proxy/additions.caddy), so",
     );
-    expect(start(plan, ctx)).not.toContain("additions");
+    expect(start(plan, ctx)).not.toContain("cp additions.caddy");
+  });
+
+  it("takes the app's additions off the server when the deploy has none, and back when Caddy refuses the site", () => {
+    const script = start(plan, ctx);
+    const at = (text: string) => script.indexOf(text);
+    expect(at("  rm -f /srv/edge/sites/shop.additions\n")).toBeGreaterThan(
+      at("cp /srv/edge/sites/shop.additions .additions.previous"),
+    );
+    expect(at("  rm -f /srv/edge/sites/shop.additions\n")).toBeLessThan(at("caddy reload"));
+    expect(script).toContain(
+      "if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi",
+    );
   });
 });

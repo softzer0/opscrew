@@ -129,6 +129,25 @@ describe("scanProxyAdditions", () => {
     expect(JSON.stringify([nginx, caddy])).not.toContain(token);
   });
 
+  it("refuses proxy_set_header inside a block, where nginx would drop OpsCrew's own, and allows it outside", () => {
+    expect(
+      scanProxyAdditions(
+        "location /api/ {\n    proxy_set_header X-Real-IP $remote_addr;\n}\n",
+        ctx("nginx"),
+      ),
+    ).toEqual([
+      {
+        line: 2,
+        rule: "not-allowed",
+        message:
+          "`proxy_set_header` inside a `location` or `if` block makes nginx drop the headers OpsCrew sends the app there (Host and X-Forwarded-*). Put it at the top of the file, outside any block, where it adds to them.",
+      },
+    ]);
+    expect(scanProxyAdditions("proxy_set_header X-Real-IP $remote_addr;\n", ctx("nginx"))).toEqual(
+      [],
+    );
+  });
+
   it("refuses a directive that is not on the list with the contract's message", () => {
     expect(scanProxyAdditions("sub_filter a b;", ctx("nginx"))).toEqual([
       {

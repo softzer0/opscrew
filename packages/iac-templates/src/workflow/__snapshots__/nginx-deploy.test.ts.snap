@@ -1,0 +1,207 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the deploy on the nginx edge > matches the snapshots of the first certificate and the switch 1`] = `
+{
+  "first certificate (DNS-only)": "mkdir -p /srv/edge/sites /srv/edge/tls
+(
+  flock 9
+  docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > /srv/edge/.env
+  uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
+  current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  rm -f .edge.previous
+  if [ -n "$proxy" ] && [ "$proxy" != nginx ]; then
+    echo '::notice::OpsCrew switches this server'\\''s proxy from Caddy to nginx (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while nginx starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while certbot gets their certificates.'
+    cp /srv/edge/compose.yaml .edge.previous
+    cp edge/compose.yaml /srv/edge/compose.yaml
+  elif [ "$uploaded" -gt "\${current:-0}" ]; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server is now version $uploaded."
+  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
+  elif [ "$uploaded" -lt "\${current:-0}" ]; then
+    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
+  fi
+  for f in origin.pem origin.key pull.pem; do
+    if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+  done
+  edge run --rm --no-deps -T --user 0:0 --cap-add CHOWN --entrypoint chown certbot "$(id -u):$(id -g)" /etc/letsencrypt /var/www/acme /var/www/reload < /dev/null
+  rm -f .site.previous .additions.previous
+  if [ -f /srv/edge/sites/shop.conf ]; then cp /srv/edge/sites/shop.conf .site.previous; fi
+  if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
+  if edge run --rm --no-deps -T --entrypoint test certbot -f /etc/letsencrypt/live/shop/fullchain.pem < /dev/null; then
+    cp edge/sites/shop.conf /srv/edge/sites/shop.conf
+    first=0
+  else
+    cp edge/sites/shop.http.conf /srv/edge/sites/shop.conf
+    first=1
+  fi
+  cp additions.nginx /srv/edge/sites/shop.additions
+  if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then
+    if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.conf; else rm -f /srv/edge/sites/shop.conf; fi
+    if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+    for f in origin.pem origin.key pull.pem; do
+      if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+    done
+    if [ -f .edge.previous ]; then
+      cp .edge.previous /srv/edge/compose.yaml
+      edge up -d --wait --remove-orphans || true
+      echo '::error::The switch to nginx did not work, so the server keeps Caddy as its proxy.'
+    fi
+    echo '::error::OpsCrew'\\''s shared edge on the server (nginx and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.conf) or your additions (opscrew/proxy/additions.nginx), so the new version was not started, the previous version keeps serving and nginx keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+    exit 1
+  fi
+  status=0
+  out="$(edge run --rm --no-deps -T --entrypoint certbot certbot certonly --config-dir /etc/letsencrypt --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs --non-interactive --agree-tos --email 'ops@example.com' --keep-until-expiring --webroot --webroot-path /var/www/acme --cert-name shop --domains shop.example.com --deploy-hook 'touch /var/www/reload/flag' < /dev/null 2>&1)" || status=$?
+  case "$status:$out" in
+    0:*) ;;
+    *'Another instance of Certbot is already running'*)
+      printf '%s\\n' "$out"
+      sleep 10
+      status=0
+      out="$(edge run --rm --no-deps -T --entrypoint certbot certbot certonly --config-dir /etc/letsencrypt --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs --non-interactive --agree-tos --email 'ops@example.com' --keep-until-expiring --webroot --webroot-path /var/www/acme --cert-name shop --domains shop.example.com --deploy-hook 'touch /var/www/reload/flag' < /dev/null 2>&1)" || status=$?
+      ;;
+  esac
+  printf '%s\\n' "$out"
+  if [ "$status" -ne 0 ]; then
+    if [ -f .edge.previous ]; then
+      if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.conf; else rm -f /srv/edge/sites/shop.conf; fi
+      if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+      for f in origin.pem origin.key pull.pem; do
+        if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+      done
+      cp .edge.previous /srv/edge/compose.yaml
+      edge up -d --wait --remove-orphans || true
+      echo '::error::certbot could not get the certificate for shop.example.com, so the server keeps Caddy as its proxy, and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
+    elif [ "$first" -eq 1 ]; then
+      echo '::error::certbot could not get the certificate for shop.example.com, so the site stays on HTTP only, and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
+    else
+      echo '::error::certbot could not get the certificate for shop.example.com, so the site keeps its current certificate (which may not cover every hostname), and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
+    fi
+    exit 1
+  fi
+  edge run --rm --no-deps -T --entrypoint sh certbot -c 'f=/etc/letsencrypt/renewal/shop.conf; if ! grep -q '\\''^renew_before_expiry'\\'' "$f"; then { echo '\\''renew_before_expiry = 45 days'\\''; cat "$f"; } > "$f.new" && mv "$f.new" "$f"; fi' < /dev/null
+  cp edge/sites/shop.conf /srv/edge/sites/shop.conf
+  if ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then
+    if [ -f .edge.previous ]; then
+      if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.conf; else rm -f /srv/edge/sites/shop.conf; fi
+      if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+      for f in origin.pem origin.key pull.pem; do
+        if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+      done
+      cp .edge.previous /srv/edge/compose.yaml
+      edge up -d --wait --remove-orphans || true
+      echo '::error::The switch to nginx did not work, so the server keeps Caddy as its proxy.'
+    elif [ "$first" -eq 0 ] && [ -f .site.previous ]; then
+      cp .site.previous /srv/edge/sites/shop.conf
+      edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null || true
+    else
+      cp edge/sites/shop.http.conf /srv/edge/sites/shop.conf
+      edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null || true
+    fi
+    echo '::error::nginx did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.conf) with certbot'\\''s certificate, so the site it had stays (on HTTP only before its first certificate), and the new version was not started. nginx'\\''s error is above: fix its cause and push again.'
+    exit 1
+  fi
+  rm -f /srv/edge/sites/shop.caddy
+  rm -rf /srv/edge/tls/shop
+",
+  "origin TLS (proxied)": "mkdir -p /srv/edge/sites /srv/edge/tls
+(
+  flock 9
+  docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > /srv/edge/.env
+  uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
+  current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  rm -f .edge.previous
+  if [ -n "$proxy" ] && [ "$proxy" != nginx ]; then
+    echo '::notice::OpsCrew switches this server'\\''s proxy from Caddy to nginx (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while nginx starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while certbot gets their certificates.'
+    cp /srv/edge/compose.yaml .edge.previous
+    cp edge/compose.yaml /srv/edge/compose.yaml
+  elif [ "$uploaded" -gt "\${current:-0}" ]; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server is now version $uploaded."
+  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
+  elif [ "$uploaded" -lt "\${current:-0}" ]; then
+    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
+  fi
+  cp edge/tls/pull.pem /srv/edge/tls/shop/pull.pem.new
+  for f in origin.pem origin.key pull.pem; do
+    if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+    mv -f /srv/edge/tls/shop/$f.new /srv/edge/tls/shop/$f
+  done
+  edge run --rm --no-deps -T --user 0:0 --cap-add CHOWN --entrypoint chown certbot "$(id -u):$(id -g)" /etc/letsencrypt /var/www/acme /var/www/reload < /dev/null
+  rm -f .site.previous .additions.previous
+  if [ -f /srv/edge/sites/shop.conf ]; then cp /srv/edge/sites/shop.conf .site.previous; fi
+  if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
+  cp edge/sites/shop.conf /srv/edge/sites/shop.conf
+  rm -f /srv/edge/sites/shop.additions
+  if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then
+    if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.conf; else rm -f /srv/edge/sites/shop.conf; fi
+    if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+    for f in origin.pem origin.key pull.pem; do
+      if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+    done
+    if [ -f .edge.previous ]; then
+      cp .edge.previous /srv/edge/compose.yaml
+      edge up -d --wait --remove-orphans || true
+      echo '::error::The switch to nginx did not work, so the server keeps Caddy as its proxy.'
+    fi
+    echo '::error::OpsCrew'\\''s shared edge on the server (nginx and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.conf), so the new version was not started, the previous version keeps serving and nginx keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+    exit 1
+  fi
+  rm -f /srv/edge/sites/shop.caddy
+  rm -f /srv/edge/tls/shop/origin.pem.previous /srv/edge/tls/shop/origin.key.previous /srv/edge/tls/shop/pull.pem.previous
+",
+  "switch to Caddy": "mkdir -p /srv/edge/sites /srv/edge/tls
+(
+  flock 9
+  docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+  uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
+  current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+  rm -f .edge.previous
+  if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
+    echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+    cp /srv/edge/compose.yaml .edge.previous
+    cp edge/compose.yaml /srv/edge/compose.yaml
+  elif [ "$uploaded" -gt "\${current:-0}" ]; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server is now version $uploaded."
+  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
+    cp edge/compose.yaml /srv/edge/compose.yaml
+    echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
+  elif [ "$uploaded" -lt "\${current:-0}" ]; then
+    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
+  fi
+  for f in origin.pem origin.key pull.pem; do
+    if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+  done
+  rm -f .site.previous .additions.previous
+  if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
+  if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
+  cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
+  rm -f /srv/edge/sites/shop.additions
+  if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
+    if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
+    if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+    for f in origin.pem origin.key pull.pem; do
+      if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+    done
+    if [ -f .edge.previous ]; then
+      cp .edge.previous /srv/edge/compose.yaml
+      edge up -d --wait --remove-orphans || true
+      echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
+    fi
+    echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+    exit 1
+  fi
+  rm -f /srv/edge/sites/shop.conf
+  rm -rf /srv/edge/tls/shop
+",
+}
+`;

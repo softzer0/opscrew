@@ -1,6 +1,24 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
-import { appDir, CADDY_ADDITIONS, EDGE_DIR, EDGE_PROJECT, EDGE_VERSION_KEY } from "../edge";
+import {
+  appDir,
+  EDGE_DIR,
+  EDGE_PROJECT,
+  EDGE_PROXIES,
+  EDGE_PROXY_KEY,
+  EDGE_VERSION_KEY,
+  type EdgeProxy,
+  edgeProxy,
+} from "../edge";
+import {
+  ACME_WEBROOT,
+  CERTBOT_LOCKED,
+  certbotCertonly,
+  certbotLive,
+  certbotRenewBefore,
+  LETSENCRYPT,
+  RELOAD_DIR,
+} from "../edge/nginx";
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { hasCronJobs, healthPath } from "./shared";
@@ -200,7 +218,7 @@ function startProcesses(plan: DeployPlan, services: readonly string[]): string[]
   ];
 }
 
-/** The edge's Compose project, from any folder: `edge up -d`, `edge exec -T caddy …`. */
+/** The edge's Compose project, from any folder: `edge up -d`, `edge exec -T kamal-proxy …`. */
 const EDGE_FUNCTION = `edge() { docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml "$@"; }`;
 
 /**
@@ -275,14 +293,72 @@ const PREVIOUS_SITE = ".site.previous";
 /** The app's additions as the server had them before this deploy, as {@link PREVIOUS_SITE}. */
 const PREVIOUS_ADDITIONS = ".additions.previous";
 
+/** The server's edge Compose file before this deploy switched its proxy. */
+const PREVIOUS_EDGE = ".edge.previous";
+
+/** The app's site file in the repository, for the messages. */
+function siteFile(plan: DeployPlan): string {
+  return `opscrew/runtime/edge/sites/${plan.app.name}.${EDGE_PROXIES[edgeProxy(plan)].site}`;
+}
+
 /** Shown when the edge did not start or refused the app's site; names no server and no secret. */
 function edgeFailed(plan: DeployPlan, additions: boolean): string {
-  const yours = additions ? ` or your additions (${CADDY_ADDITIONS})` : "";
-  return `::error::OpsCrew's shared edge on the server (Caddy and kamal-proxy, in ${EDGE_DIR}) did not start or did not accept this app's site (opscrew/runtime/edge/sites/${plan.app.name}.caddy)${yours}, so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
+  const { label, additions: file } = EDGE_PROXIES[edgeProxy(plan)];
+  const yours = additions ? ` or your additions (${file})` : "";
+  return `::error::OpsCrew's shared edge on the server (${label} and kamal-proxy, in ${EDGE_DIR}) did not start or did not accept this app's site (${siteFile(plan)})${yours}, so the new version was not started, the previous version keeps serving and ${label} keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
+}
+
+/** The other proxy of {@link EDGE_PROXIES}. */
+function otherProxy(proxy: EdgeProxy): EdgeProxy {
+  return proxy === "caddy" ? "nginx" : "caddy";
+}
+
+/**
+ * Shown when the deploy switches the server's proxy (research.md R5): the interruption, which the
+ * plan stated before its approval.
+ */
+function switchNotice(plan: DeployPlan): string {
+  const to = EDGE_PROXIES[edgeProxy(plan)].label;
+  const from = EDGE_PROXIES[otherProxy(edgeProxy(plan))].label;
+  const issuer = edgeProxy(plan) === "nginx" ? "certbot gets" : "Caddy gets";
+  return `::notice::OpsCrew switches this server's proxy from ${from} to ${to} (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while ${to} starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while ${issuer} their certificates.`;
+}
+
+/** Shown when the switch failed and the server's previous proxy is back. */
+function switchFailed(plan: DeployPlan): string {
+  const to = EDGE_PROXIES[edgeProxy(plan)].label;
+  const from = EDGE_PROXIES[otherProxy(edgeProxy(plan))].label;
+  return `::error::The switch to ${to} did not work, so the server keeps ${from} as its proxy.`;
+}
+
+/**
+ * Let's Encrypt's limits that a failed first certificate can meet (https://letsencrypt.org/docs/rate-limits/,
+ * checked 2026-10-21).
+ */
+const LETS_ENCRYPT_LIMITS =
+  "Let's Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot's reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames' DNS records point to this server and that port 80 reaches it, then push again.";
+
+/**
+ * Shown when certbot did not get the app's certificate; `site` says what visitors get meanwhile.
+ */
+function certbotFailed(hosts: readonly string[], site: string): string {
+  return `::error::certbot could not get the certificate for ${hosts.join(", ")}, so ${site}, and the new version was not started. certbot's reason is above. ${LETS_ENCRYPT_LIMITS}`;
+}
+
+/** Shown when nginx refused the site with certbot's new certificate, after certbot got it. */
+function tlsSiteFailed(plan: DeployPlan): string {
+  return `::error::nginx did not accept this app's site (${siteFile(plan)}) with certbot's certificate, so the site it had stays (on HTTP only before its first certificate), and the new version was not started. nginx's error is above: fix its cause and push again.`;
 }
 
 /** The app's origin TLS files in `/srv/edge/tls/<app>`, as a shell word list. */
 const TLS_FILES = "origin.pem origin.key pull.pem";
+
+/** How the deploy reloads the server's proxy: each keeps its running configuration on an error. */
+const RELOAD: Record<EdgeProxy, string> = {
+  caddy:
+    "edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
+  nginx: "edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
+};
 
 /** What the upload left for the app's edge besides its site. */
 export interface EdgeFiles {
@@ -291,88 +367,200 @@ export interface EdgeFiles {
    * `origin.pem.new` and `origin.key.new`, and `pull.pem` in the app's `edge/tls/`.
    */
   originTls: boolean;
-  /** The upload left the user's additions in the app's folder as `additions.caddy`. */
+  /** The upload left the user's additions in the app's folder (`additions.caddy` or `.nginx`). */
   additions: boolean;
+  /**
+   * nginx: the hostnames certbot gets the app's certificate for, and the account's contact email;
+   * the upload left the app's site before its first certificate as `edge/sites/<app>.http.conf`.
+   */
+  certbot?: { hosts: readonly string[]; email?: string | undefined } | undefined;
 }
 
 /**
- * The shared edge, under a lock other apps' deploys wait for: creates the network `opscrew-edge`
- * when missing; puts the uploaded edge Compose file (`edge/compose.yaml` in the app's folder) in
- * `/srv/edge` only when its {@link EDGE_VERSION_KEY} is larger than the server's, so an app with an
- * older OpsCrew never downgrades the edge, or when it is the same version with other content (the
- * ports of another access mode, which all the server's apps share); with origin TLS puts the app's
- * new origin certificate, its key and `pull.pem` in `/srv/edge/tls/<app>`, so no other app's
- * reload sees a certificate without its key; puts the app's site, and its additions, in
- * `/srv/edge/sites`; then starts the edge (Compose recreates only what changed) and reloads Caddy.
- * When either fails, the app's previous site, additions and origin TLS files go back (or the new
- * ones go, when it had none), so Caddy never keeps a site it refused.
+ * The shared edge, under a lock other apps' deploys wait for:
+ * 1. creates the network `opscrew-edge` when missing; on nginx, writes the deploy user's uid and
+ *    gid to `/srv/edge/.env`, which the edge's Compose file runs nginx and certbot as;
+ * 2. puts the uploaded edge Compose file (`edge/compose.yaml` in the app's folder) in `/srv/edge`
+ *    when the server's runs the other proxy (the switch, offered only while the server holds this
+ *    one OpsCrew app), when its {@link EDGE_VERSION_KEY} is larger than the server's, so an app
+ *    with an older OpsCrew never downgrades the edge, or when it is the same version with other
+ *    content (the ports of another access mode, or Cloudflare's addresses, which all the server's
+ *    apps share);
+ * 3. puts the app's new origin certificate, its key and `pull.pem` in `/srv/edge/tls/<app>`, so no
+ *    other app's reload sees a certificate without its key, or, without origin TLS, takes the
+ *    app's old ones out;
+ * 4. on nginx, gives the deploy user certbot's volumes (Docker creates them owned by root);
+ * 5. puts the app's site and its additions in `/srv/edge/sites`, or takes old additions out; on
+ *    nginx with certbot's hostnames, the site before the first certificate until certbot has it;
+ * 6. starts the edge (Compose recreates only what changed, and removes the other proxy's
+ *    containers after a switch) and reloads the proxy;
+ * 7. on nginx with certbot's hostnames, certbot gets or renews the app's certificate (the first
+ *    one, and hostnames added since; once more when another certbot held its lock), then the HTTPS
+ *    site goes in;
+ * 8. the other proxy's site file of the app goes, and the app's earlier origin TLS files.
+ *
+ * When the start or the reload fails, the app's previous site, additions and origin TLS files go
+ * back (or the new ones go, when it had none), so the proxy never keeps a site it refused. After a
+ * switch, any failure, also certbot's, puts the previous proxy back with its files, so it serves
+ * HTTPS as before.
  */
 function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
+  const proxy = edgeProxy(plan);
+  const { site: ext } = EDGE_PROXIES[proxy];
+  const from = EDGE_PROXIES[otherProxy(proxy)].label;
   const app = plan.app.name;
-  const site = `${EDGE_DIR}/sites/${app}.caddy`;
+  const site = `${EDGE_DIR}/sites/${app}.${ext}`;
   const additions = `${EDGE_DIR}/sites/${app}.additions`;
   const tls = `${EDGE_DIR}/tls/${app}`;
-  const version = (file: string) => `sed -n 's/^${EDGE_VERSION_KEY}: //p' ${file}`;
+  const stamp = (key: string, file: string) => `sed -n 's/^${key}: //p' ${file}`;
   /** Puts `previous` back as `file`, or removes `file` when it had none. */
   const restore = (previous: string, file: string) =>
-    `    if [ -f ${previous} ]; then cp ${previous} ${file}; else rm -f ${file}; fi`;
+    `if [ -f ${previous} ]; then cp ${previous} ${file}; else rm -f ${file}; fi`;
+  /** The app's previous site, additions and origin TLS files back, indented by `pad`. */
+  const restoreFiles = (pad: string) =>
+    [
+      restore(PREVIOUS_SITE, site),
+      restore(PREVIOUS_ADDITIONS, additions),
+      `for f in ${TLS_FILES}; do`,
+      `  if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
+      "done",
+    ].map((line) => `${pad}${line}`);
+  /** After a switch: the server's previous edge file back, which starts its proxy again. */
+  const restoreEdge = (pad: string) =>
+    [
+      `cp ${PREVIOUS_EDGE} ${EDGE_DIR}/compose.yaml`,
+      "edge up -d --wait --remove-orphans || true",
+    ].map((line) => `${pad}${line}`);
+  const certbot = proxy === "nginx" && o.certbot !== undefined && o.certbot.hosts.length > 0;
+  /** A one-off container of the edge's certbot service. */
+  const certbotRun = (args: string) => `edge run --rm --no-deps -T ${args} < /dev/null`;
+  const nginxFiles =
+    proxy === "nginx"
+      ? [
+          `  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > ${EDGE_DIR}/.env`,
+        ]
+      : [];
+  const installSite = certbot
+    ? [
+        `  if ${certbotRun(`--entrypoint test certbot -f ${certbotLive(app)}/fullchain.pem`)}; then`,
+        `    cp edge/sites/${app}.conf ${site}`,
+        "    first=0",
+        "  else",
+        `    cp edge/sites/${app}.http.conf ${site}`,
+        "    first=1",
+        "  fi",
+      ]
+    : [`  cp edge/sites/${app}.${ext} ${site}`];
+  let certificate: string[] = [];
+  if (certbot && o.certbot !== undefined) {
+    const hosts = o.certbot.hosts;
+    // certbot's output is kept to tell its lock apart, and printed: it holds certbot's reason.
+    const certonly = `out="$(${certbotRun(`--entrypoint certbot certbot ${certbotCertonly(app, hosts, o.certbot.email)}`)} 2>&1)" || status=$?`;
+    certificate = [
+      "  status=0",
+      `  ${certonly}`,
+      '  case "$status:$out" in',
+      "    0:*) ;;",
+      `    *${shellQuote(CERTBOT_LOCKED)}*)`,
+      `      printf '%s\\n' "$out"`,
+      "      sleep 10",
+      "      status=0",
+      `      ${certonly}`,
+      "      ;;",
+      "  esac",
+      `  printf '%s\\n' "$out"`,
+      '  if [ "$status" -ne 0 ]; then',
+      `    if [ -f ${PREVIOUS_EDGE} ]; then`,
+      ...restoreFiles("      "),
+      ...restoreEdge("      "),
+      `      echo ${shellQuote(certbotFailed(hosts, `the server keeps ${from} as its proxy`))}`,
+      '    elif [ "$first" -eq 1 ]; then',
+      `      echo ${shellQuote(certbotFailed(hosts, "the site stays on HTTP only"))}`,
+      "    else",
+      `      echo ${shellQuote(certbotFailed(hosts, "the site keeps its current certificate (which may not cover every hostname)"))}`,
+      "    fi",
+      "    exit 1",
+      "  fi",
+      `  ${certbotRun(`--entrypoint sh certbot -c ${shellQuote(certbotRenewBefore(app))}`)}`,
+      `  cp edge/sites/${app}.conf ${site}`,
+      `  if ! ${RELOAD.nginx}; then`,
+      `    if [ -f ${PREVIOUS_EDGE} ]; then`,
+      ...restoreFiles("      "),
+      ...restoreEdge("      "),
+      `      echo ${shellQuote(switchFailed(plan))}`,
+      `    elif [ "$first" -eq 0 ] && [ -f ${PREVIOUS_SITE} ]; then`,
+      `      cp ${PREVIOUS_SITE} ${site}`,
+      `      ${RELOAD.nginx} || true`,
+      "    else",
+      `      cp edge/sites/${app}.http.conf ${site}`,
+      `      ${RELOAD.nginx} || true`,
+      "    fi",
+      `    echo ${shellQuote(tlsSiteFailed(plan))}`,
+      "    exit 1",
+      "  fi",
+    ];
+  }
   return [
     // Before the edge's Compose mounts them: Docker would create them owned by root.
     `mkdir -p ${EDGE_DIR}/sites ${EDGE_DIR}/tls`,
     "(",
     "  flock 9",
     `  docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
-    `  uploaded="$(${version("edge/compose.yaml")})"`,
-    `  current="$(${version(`${EDGE_DIR}/compose.yaml`)} 2> /dev/null || true)"`,
-    '  if [ "$uploaded" -gt "${current:-0}" ]; then',
+    ...nginxFiles,
+    `  uploaded="$(${stamp(EDGE_VERSION_KEY, "edge/compose.yaml")})"`,
+    `  current="$(${stamp(EDGE_VERSION_KEY, `${EDGE_DIR}/compose.yaml`)} 2> /dev/null || true)"`,
+    `  proxy="$(${stamp(EDGE_PROXY_KEY, `${EDGE_DIR}/compose.yaml`)} 2> /dev/null || true)"`,
+    `  rm -f ${PREVIOUS_EDGE}`,
+    `  if [ -n "$proxy" ] && [ "$proxy" != ${proxy} ]; then`,
+    `    echo ${shellQuote(switchNotice(plan))}`,
+    `    cp ${EDGE_DIR}/compose.yaml ${PREVIOUS_EDGE}`,
+    `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
+    '  elif [ "$uploaded" -gt "${current:-0}" ]; then',
     `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
     `    echo "OpsCrew's shared edge on this server is now version $uploaded."`,
-    // The same version with other ports: how the server's apps are served changed (they all are
-    // served the same way, the host plan refuses anything else), so this app's copy is the one.
+    // The same version with other content: how the server's apps are served changed (they all are
+    // served the same way, the host plan refuses anything else), or Cloudflare's addresses did, so
+    // this app's copy is the one.
     `  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml ${EDGE_DIR}/compose.yaml; then`,
     `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
-    `    echo "OpsCrew's shared edge on this server now publishes the ports for how this app is served."`,
+    `    echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."`,
     '  elif [ "$uploaded" -lt "${current:-0}" ]; then',
     `    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."`,
     "  fi",
-    ...(o.originTls
+    // Each file the server has is kept as `<file>.previous` (a stale one goes when it has none),
+    // and the uploaded one, if any, takes its place.
+    ...(o.originTls ? [`  cp edge/tls/pull.pem ${tls}/pull.pem.new`] : []),
+    `  for f in ${TLS_FILES}; do`,
+    `    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
+    ...(o.originTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
+    "  done",
+    ...(proxy === "nginx"
       ? [
-          // Each file the server has is kept as `<file>.previous` (a stale one goes when it has
-          // none), and the uploaded one takes its place.
-          `  cp edge/tls/pull.pem ${tls}/pull.pem.new`,
-          `  for f in ${TLS_FILES}; do`,
-          `    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
-          `    mv -f ${tls}/$f.new ${tls}/$f`,
-          "  done",
+          `  ${certbotRun(`--user 0:0 --cap-add CHOWN --entrypoint chown certbot "$(id -u):$(id -g)" ${LETSENCRYPT} ${ACME_WEBROOT} ${RELOAD_DIR}`)}`,
         ]
       : []),
-    `  rm -f ${PREVIOUS_SITE}${o.additions ? ` ${PREVIOUS_ADDITIONS}` : ""}`,
+    `  rm -f ${PREVIOUS_SITE} ${PREVIOUS_ADDITIONS}`,
     `  if [ -f ${site} ]; then cp ${site} ${PREVIOUS_SITE}; fi`,
-    ...(o.additions
-      ? [`  if [ -f ${additions} ]; then cp ${additions} ${PREVIOUS_ADDITIONS}; fi`]
-      : []),
-    `  cp edge/sites/${app}.caddy ${site}`,
-    ...(o.additions ? [`  cp additions.caddy ${additions}`] : []),
-    "  if ! edge up -d --wait || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then",
-    restore(PREVIOUS_SITE, site),
-    ...(o.additions ? [restore(PREVIOUS_ADDITIONS, additions)] : []),
-    ...(o.originTls
-      ? [
-          `    for f in ${TLS_FILES}; do`,
-          `      if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
-          "    done",
-        ]
-      : []),
+    `  if [ -f ${additions} ]; then cp ${additions} ${PREVIOUS_ADDITIONS}; fi`,
+    ...installSite,
+    o.additions ? `  cp additions.${proxy} ${additions}` : `  rm -f ${additions}`,
+    `  if ! edge up -d --wait --remove-orphans || ! ${RELOAD[proxy]}; then`,
+    ...restoreFiles("    "),
+    `    if [ -f ${PREVIOUS_EDGE} ]; then`,
+    ...restoreEdge("      "),
+    `      echo ${shellQuote(switchFailed(plan))}`,
+    "    fi",
     `    echo ${shellQuote(edgeFailed(plan, o.additions))}`,
     "    exit 1",
     "  fi",
-    ...(o.originTls
-      ? [
-          `  rm -f ${TLS_FILES.split(" ")
-            .map((f) => `${tls}/${f}.previous`)
-            .join(" ")}`,
-        ]
-      : []),
+    ...certificate,
+    // Only now: a switch that failed above puts the previous proxy back with these files.
+    `  rm -f ${EDGE_DIR}/sites/${app}.${EDGE_PROXIES[otherProxy(proxy)].site}`,
+    o.originTls
+      ? `  rm -f ${TLS_FILES.split(" ")
+          .map((f) => `${tls}/${f}.previous`)
+          .join(" ")}`
+      : `  rm -rf ${tls}`,
     `) 9> ${EDGE_DIR}/.lock`,
   ];
 }

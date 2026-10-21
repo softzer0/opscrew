@@ -156,12 +156,16 @@ describe("the edge's Compose project", () => {
     // The edge's files in every access mode, without the stamp. When this hash changes, raise
     // EDGE_VERSION in src/edge/index.ts (today's date and change number) and put the new hash
     // here, so servers take the new edge: a deploy replaces the server's edge only with a newer one.
-    const files = [shop, filtered, tunnelled].map((plan) =>
-      renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
+    // Both proxies' edges count.
+    const nginx = (plan: DeployPlan) =>
+      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "nginx" } });
+    const files = [shop, filtered, tunnelled, ...[shop, filtered, tunnelled].map(nginx)].map(
+      (plan) =>
+        renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
     );
     expect({ version: EDGE_VERSION, sha256: sha256Hex(files.join("\n")) }).toEqual({
-      version: 2026102101,
-      sha256: "346177842afa53dc7b212f80ae12f2657f4cd7c084c9fedbc58a90cc4bdb8030",
+      version: 2026102102,
+      sha256: "9c4a40f38a22b927395385f4b6928d3adc82604e9a20447cc0f17c2b1c80da5c",
     });
   });
 });
@@ -236,6 +240,44 @@ describe("the app's site file", () => {
         );
       }
     }
+  });
+});
+
+describe("the visitor's address behind Cloudflare's proxy, on Caddy", () => {
+  const ranges = ["173.245.48.0/20", "2400:cb00::/32"];
+
+  it("trusts CF-Connecting-IP from Cloudflare's ranges in the edge's global options", () => {
+    const doc = parse(renderEdgeCompose(shop, ranges).content) as ReturnType<typeof edge>;
+    const content = doc.configs.caddyfile.content;
+    expect(content).toContain(
+      "\n# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.\n{\n\tservers {\n\t\ttrusted_proxies static 173.245.48.0/20 2400:cb00::/32\n\t\tclient_ip_headers CF-Connecting-IP\n\t}\n}\n\nimport /etc/caddy/sites/*.caddy\n",
+    );
+    expect(doc.services.caddy?.labels).toEqual({
+      "dev.opscrew.caddyfile-sha256": sha256Hex(content),
+    });
+    // The same for every app on the server, proxied or not.
+    expect(renderEdgeCompose(blog, ranges)).toEqual(renderEdgeCompose(shop, ranges));
+  });
+
+  it("sends a proxied app the visitor's address as X-Forwarded-For", () => {
+    const site = (plan: DeployPlan, c: RuntimeContext) => renderCaddyfile(plan, c).content;
+    const withRanges = { ...ctx, cloudflareRanges: ranges };
+    const content = site(shop, withRanges);
+    expect(content).toContain(
+      "\treverse_proxy kamal-proxy:80 {\n\t\theader_up X-Forwarded-For {client_ip}\n\t}\n",
+    );
+    expect(content).not.toMatch(/\treverse_proxy kamal-proxy:80\n/);
+    // An app Cloudflare does not proxy, or behind a tunnel, keeps today's site.
+    const dnsOnly = DeployPlanSchema.parse({ ...blog, dns: { ...blog.dns, proxied: false } });
+    expect(site(dnsOnly, withRanges)).toBe(site(dnsOnly, ctx));
+    expect(site(tunnelled, withRanges)).toBe(site(tunnelled, ctx));
+  });
+
+  it("renders as before without the ranges", () => {
+    expect(renderEdgeCompose(shop, [])).toEqual(renderEdgeCompose(shop));
+    expect(renderCaddyfile(shop, { ...ctx, cloudflareRanges: [] })).toEqual(
+      renderCaddyfile(shop, ctx),
+    );
   });
 });
 

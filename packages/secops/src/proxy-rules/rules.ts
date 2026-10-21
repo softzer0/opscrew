@@ -200,6 +200,9 @@ const SYNTAX: Record<ProxyAdditionsContext["proxy"], Syntax> = {
     notAllowed(s) {
       const name = nameOf(s);
       if (!NGINX_ALLOWED.has(name)) return name;
+      // In a block, nginx drops every `proxy_set_header` of the server around it: the Host and
+      // X-Forwarded-* headers OpsCrew's site sends the app. nginx has no switch to keep them.
+      if (name === "proxy_set_header" && s.parents.length > 0) return name;
       // The app's own request zone is `opscrew_<app>`, defined by OpsCrew's site template.
       const sharedZone = name === "limit_req" && !args(s).some((a) => /^zone=opscrew_/.test(a));
       return sharedZone ? name : undefined;
@@ -336,6 +339,9 @@ const CONTROL = /[^\P{Cc}\t\r]|\r(?!$)|[^\P{Z} ]|\uFEFF/u;
 function notAllowedMessage(name: string): string {
   if (name === "limit_req") {
     return "`limit_req` may use only this app's own zone, `zone=opscrew_<app>`, which OpsCrew defines. Use that zone.";
+  }
+  if (name === "proxy_set_header") {
+    return "`proxy_set_header` inside a `location` or `if` block makes nginx drop the headers OpsCrew sends the app there (Host and X-Forwarded-*). Put it at the top of the file, outside any block, where it adds to them.";
   }
   return `\`${name}\` is not supported in additions yet; tell OpsCrew if you need it.`;
 }

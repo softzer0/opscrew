@@ -24,6 +24,7 @@ import {
   type RuntimeContext,
   renderCaddyfile,
   renderCompose,
+  renderEdgeSite,
   renderRuntimeFiles,
 } from "../runtime";
 import type { RenderContext } from "../types";
@@ -153,8 +154,12 @@ const PRELUDE = [
  * `p<n> <service> <image> <status> <restarts>`; they are recreated only when their image changed,
  * as Compose does, and `compose stop` exits them. Any other `compose exec` in an app project is a
  * setup step: it fails when its words are a line of $WORK/failing. In the edge's project, `up`
- * fails with EDGE_UP_FAIL, Caddy's reload with CADDY_RELOAD_FAIL, and kamal-proxy's `deploy
- * <service>` writes the target it routes to in $WORK/routes/<service>.
+ * fails with EDGE_UP_FAIL, Caddy's reload with CADDY_RELOAD_FAIL, nginx's from its
+ * NGINX_RELOAD_FAIL-th on, and kamal-proxy's `deploy <service>` writes the target it routes to in
+ * $WORK/routes/<service>. The edge's one-off certbot containers act on $WORK/letsencrypt: `test`
+ * looks for a file, `certbot` gets the certificate (fails with CERTBOT_FAIL, and the first time
+ * with another certbot's lock with CERTBOT_LOCKED), `sh` runs its
+ * script there.
  */
 const FAKE_DOCKER = [
   "#!/usr/bin/env bash",
@@ -216,7 +221,28 @@ const FAKE_DOCKER = [
   '      awk -v s="$arg" \'{ if ($2 == s) $4 = "exited"; print }\' "$processes" > "$processes.tmp"',
   '      mv "$processes.tmp" "$processes"',
   "    done ;;",
-  '  "compose run") cat > /dev/null; echo "run image=${APP_IMAGE:-}" >> "$WORK/docker.log"',
+  '  "compose run") cat > /dev/null',
+  // The edge's one-off certbot containers: certbot's state is $WORK/letsencrypt.
+  '    if [[ "$project" == opscrew-edge ]]; then',
+  '      entry=""; name=""; prev=""; last="${@: -1}"',
+  '      for arg in "$@"; do',
+  '        if [[ "$prev" == --entrypoint ]]; then entry="$arg"; fi',
+  '        if [[ "$prev" == --cert-name ]]; then name="$arg"; fi',
+  '        prev="$arg"',
+  "      done",
+  '      case "$entry" in',
+  '        test) [[ -f "$WORK/letsencrypt${last#/etc/letsencrypt}" ]] ;;',
+  "        certbot)",
+  '          if [[ -n "${CERTBOT_LOCKED:-}" && ! -f "$WORK/certbot-locked" ]]; then touch "$WORK/certbot-locked"; echo "Another instance of Certbot is already running." >&2; exit 1; fi',
+  '          if [[ -n "${CERTBOT_FAIL:-}" ]]; then echo "Error: too many certificates (5) already issued for this exact set of identifiers in the last 168h0m0s" >&2; exit 1; fi',
+  '          mkdir -p "$WORK/letsencrypt/live/$name" "$WORK/letsencrypt/renewal"',
+  '          touch "$WORK/letsencrypt/live/$name/fullchain.pem"',
+  '          if [[ ! -f "$WORK/letsencrypt/renewal/$name.conf" ]]; then printf "version = 5.8.0\\n[renewalparams]\\n" > "$WORK/letsencrypt/renewal/$name.conf"; fi ;;',
+  '        sh) sh -c "${last//\\/etc\\/letsencrypt/$WORK/letsencrypt}" ;;',
+  "      esac",
+  "      exit",
+  "    fi",
+  '    echo "run image=${APP_IMAGE:-}" >> "$WORK/docker.log"',
   '    if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; exit 3; fi ;;',
   '  "compose exec")',
   "    cat > /dev/null",
@@ -226,6 +252,12 @@ const FAKE_DOCKER = [
   "    fi",
   '    if [[ "$4" == caddy ]]; then',
   '      if [[ -n "${CADDY_RELOAD_FAIL:-}" ]]; then echo "Error: ambiguous site definition: :80" >&2; exit 1; fi',
+  "      exit 0",
+  "    fi",
+  // nginx's reloads are counted; from the NGINX_RELOAD_FAIL-th on, nginx -t refuses the site.
+  '    if [[ "$4" == nginx ]]; then',
+  '      n=$(( $(cat "$WORK/nginx-reloads" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$WORK/nginx-reloads"',
+  '      if (( ${NGINX_RELOAD_FAIL:-0} > 0 && n >= ${NGINX_RELOAD_FAIL:-0} )); then echo "nginx: [emerg] cannot load certificate" >&2; exit 1; fi',
   "      exit 0",
   "    fi",
   '    target=""; prev=""; for arg in "$@"; do [[ "$prev" == --target ]] && target="$arg"; prev="$arg"; done',
@@ -283,9 +315,15 @@ function bashWorks(): boolean {
 
 const hasBash = bashWorks();
 
-/** Runs a step's script on the runner, in the app's repository (`repos/<app>`, default `shop`). */
+/**
+ * Runs a step's script on the runner, in the app's repository (`repos/<app>`, default `shop`), from
+ * a file as GitHub Actions does: `bash -c` cuts a here-document over 8 KiB short (bash 5.2 on
+ * MSYS), and the server script of an nginx deploy is longer.
+ */
 function run(script: string, env: Record<string, string> = {}, app = "shop") {
-  const result = spawnSync("bash", ["-c", `${PRELUDE}\n${script}`], {
+  const file = join(work, "step.sh");
+  writeFileSync(file, `${PRELUDE}\n${script}`);
+  const result = spawnSync("bash", [file], {
     cwd: join(work, "repos", app),
     env: {
       ...process.env,
@@ -309,7 +347,7 @@ function runtimeFiles(p: DeployPlan, version = EDGE_VERSION): Record<string, str
   const stamp = (text: string) =>
     text.replace(`\n${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, `\n${EDGE_VERSION_KEY}: ${version}\n`);
   return Object.fromEntries(
-    [renderCompose(p), ...renderRuntimeFiles(p), renderCaddyfile(p, ctx)].map((f) => [
+    [renderCompose(p), ...renderRuntimeFiles(p), ...renderEdgeSite(p, ctx)].map((f) => [
       f.path.replace(/^opscrew\/runtime\//, ""),
       stamp(f.content),
     ]),
@@ -1136,7 +1174,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
         renderCaddyfile(plan, ctx).content,
       );
       expect(edgeCalls().slice(0, 2)).toEqual([
-        "opscrew-edge up -d --wait",
+        "opscrew-edge up -d --wait --remove-orphans",
         "opscrew-edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile",
       ]);
     });
@@ -1156,7 +1194,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       expect(start.status, start.output).toBe(0);
       expect(serverEdge()).toBe(renderEdgeCompose(plan).content);
       expect(start.output).toContain(
-        "OpsCrew's shared edge on this server now publishes the ports for how this app is served.",
+        "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts).",
       );
     });
 
@@ -1354,6 +1392,253 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
         expect(file("containers-shop")).toBe(shopContainers);
         expect(routed()).toBe(NEW);
       });
+    });
+  });
+
+  describe("the nginx edge, certbot's first certificate and the proxy switch", () => {
+    const dns = (proxied: boolean) => ({
+      provider: "cloudflare",
+      domain: "shop.example.com",
+      zone: "example.com",
+      proxied,
+      www: false,
+    });
+    /** The plan on `edge`, its hostname not proxied by Cloudflare (certbot's) unless `proxied`. */
+    const on = (edge: "caddy" | "nginx", proxied = false) =>
+      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge }, dns: dns(proxied) });
+    const nginxPlan = on("nginx");
+    const edgeFile = (name: string) => join(work, "srv", "edge", name);
+    const readEdge = (name: string) =>
+      existsSync(edgeFile(name)) ? readFileSync(edgeFile(name), "utf8") : undefined;
+    const site = (p: DeployPlan, name: string) =>
+      renderEdgeSite(p, ctx).find((f) => f.path.endsWith(`/${name}`))?.content;
+    const at = (text: string) =>
+      dockerCalls()
+        .split("\n")
+        .findIndex((line) => line.includes(text));
+    const certificate = () => {
+      mkdirSync(join(work, "letsencrypt", "live", "shop"), { recursive: true });
+      writeFileSync(join(work, "letsencrypt", "live", "shop", "fullchain.pem"), "# issued\n");
+    };
+
+    beforeEach(() => uploaded(nginxPlan));
+
+    it("gets the first certificate: HTTP-only site, certbot, then the HTTPS site, all before the switch", () => {
+      const start = run(scripts(nginxPlan).start);
+      expect(start.status, start.output).toBe(0);
+      expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.conf"));
+      // nginx and certbot run as the deploy user, from the edge's .env.
+      const uid = spawnSync("id", ["-u"], { encoding: "utf8" }).stdout.trim();
+      expect(readEdge(".env")).toContain(`OPSCREW_DEPLOY_UID=${uid}\n`);
+      const order = [
+        "--entrypoint chown certbot",
+        "--entrypoint test certbot -f /etc/letsencrypt/live/shop/fullchain.pem",
+        " up -d --wait --remove-orphans",
+        "exec -T nginx sh -c nginx -t -q && nginx -s reload",
+        "--entrypoint certbot certbot certonly",
+        "--entrypoint sh certbot -c",
+        "kamal-proxy deploy shop",
+      ].map(at);
+      expect(order.every((n) => n >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      // The second reload, with the HTTPS site, comes after certbot.
+      expect(file("nginx-reloads")).toBe("2");
+      expect(dockerCalls()).toContain(
+        "--cert-name shop --domains shop.example.com --deploy-hook touch /var/www/reload/flag",
+      );
+      // renew_before_expiry written at the top of the renewal file, once.
+      const renewal = () => readFileSync(join(work, "letsencrypt", "renewal", "shop.conf"), "utf8");
+      expect(renewal()).toBe("renew_before_expiry = 45 days\nversion = 5.8.0\n[renewalparams]\n");
+      resetCalls();
+      expect(run(scripts(nginxPlan).start).status).toBe(0);
+      expect(renewal()).toBe("renew_before_expiry = 45 days\nversion = 5.8.0\n[renewalparams]\n");
+      expect(routed()).toBe(NEW);
+    });
+
+    it("keeps the site on HTTP when certbot fails, and ends with certbot's reason and the rate limits", () => {
+      server({ ".env": OLD }, [OLD]);
+      const start = run(scripts(nginxPlan).start, { CERTBOT_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("too many certificates (5) already issued");
+      expect(start.output).toContain(
+        "::error::certbot could not get the certificate for shop.example.com, so the site stays on HTTP only, and the new version was not started. certbot's reason is above. Let's Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname",
+      );
+      expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.http.conf"));
+      expect(containers()).toEqual([OLD]);
+      expect(dockerCalls()).not.toContain("kamal-proxy deploy");
+    });
+
+    it("serves the HTTPS site at once when certbot already has the certificate", () => {
+      certificate();
+      const start = run(scripts(nginxPlan).start, { CERTBOT_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain(
+        "so the site keeps its current certificate (which may not cover every hostname), and the new version was not started.",
+      );
+      expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.conf"));
+    });
+
+    it("puts the HTTP-only site back when nginx refuses the HTTPS one after certbot", () => {
+      const start = run(scripts(nginxPlan).start, { NGINX_RELOAD_FAIL: "2" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain("nginx: [emerg] cannot load certificate");
+      expect(start.output).toContain(
+        "::error::nginx did not accept this app's site (opscrew/runtime/edge/sites/shop.conf) with certbot's certificate, so the site it had stays (on HTTP only before its first certificate), and the new version was not started.",
+      );
+      expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.http.conf"));
+    });
+
+    it("keeps the HTTPS site the app had when nginx refuses the new one after certbot", () => {
+      certificate();
+      mkdirSync(edgeFile("sites"), { recursive: true });
+      writeFileSync(edgeFile("sites/shop.conf"), "# the HTTPS site nginx serves now\n");
+      const start = run(scripts(nginxPlan).start, { NGINX_RELOAD_FAIL: "2" });
+      expect(start.status).toBe(1);
+      expect(readEdge("sites/shop.conf")).toBe("# the HTTPS site nginx serves now\n");
+    });
+
+    it("tries certbot once more when another certbot held its lock, without blaming the rate limits", () => {
+      const start = run(scripts(nginxPlan).start, { CERTBOT_LOCKED: "1" });
+      expect(start.status, start.output).toBe(0);
+      expect(start.output).toContain("Another instance of Certbot is already running.");
+      expect(start.output).not.toContain("Let's Encrypt issues");
+      const calls = dockerCalls().split("\n");
+      expect(calls.filter((line) => line.includes("certbot certonly"))).toHaveLength(2);
+      expect(calls).toContain("sleep 10");
+      expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.conf"));
+    });
+
+    it("puts Caddy back, serving HTTPS as before, when certbot fails during the switch to nginx", () => {
+      const caddy = on("caddy");
+      const caddyEdge = renderEdgeCompose(caddy).content;
+      writeFileSync(edgeFile("compose.yaml"), caddyEdge);
+      const served = {
+        "sites/shop.caddy": "# the site Caddy serves now\n",
+        "sites/shop.additions": "# the additions Caddy serves now\n",
+        "tls/shop/origin.pem": "# the certificate Caddy serves now\n",
+        "tls/shop/origin.key": "# its key\n",
+        "tls/shop/pull.pem": "# the client certificate it trusts now\n",
+      };
+      writeAll(join(work, "srv", "edge"), served);
+      server({ ".env": OLD }, [OLD]);
+      const start = run(scripts(nginxPlan).start, { CERTBOT_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain(
+        "::error::certbot could not get the certificate for shop.example.com, so the server keeps Caddy as its proxy, and the new version was not started.",
+      );
+      expect(readEdge("compose.yaml")).toBe(caddyEdge);
+      for (const [name, content] of Object.entries(served)) expect(readEdge(name)).toBe(content);
+      expect(readEdge("sites/shop.conf")).toBeUndefined();
+      // Caddy started again, without nginx and certbot.
+      expect(
+        file("projects.log")
+          .split("\n")
+          .filter((line) => line === "opscrew-edge up -d --wait --remove-orphans"),
+      ).toHaveLength(2);
+      expect(containers()).toEqual([OLD]);
+    });
+
+    it("runs no certbot for an app whose hostnames all have the origin certificate", () => {
+      const proxied = on("nginx", true);
+      const c: RuntimeContext = { ...ctx, originTls: { hostnames: ["shop.example.com"] } };
+      const start = parse(renderWorkflow(proxied, c).content).jobs.deploy.steps.find(
+        (s: Step) => s.id === "start",
+      ).run;
+      expect(start).not.toContain("certonly");
+      expect(start).not.toContain("http.conf");
+      expect(start).toContain("  cp edge/sites/shop.conf /srv/edge/sites/shop.conf\n");
+      // The chown still runs: certbot's volumes stay the deploy user's.
+      expect(start).toContain("--entrypoint chown certbot");
+    });
+
+    it("switches the server from Caddy to nginx, stating the interruption, and keeps kamal-proxy and the apps", () => {
+      const caddy = on("caddy");
+      writeFileSync(edgeFile("compose.yaml"), renderEdgeCompose(caddy).content);
+      mkdirSync(edgeFile("sites"), { recursive: true });
+      writeFileSync(edgeFile("sites/shop.caddy"), renderCaddyfile(caddy, ctx).content);
+      server({ ".env": OLD }, [OLD]);
+      const start = run(scripts(nginxPlan).start);
+      expect(start.status, start.output).toBe(0);
+      expect(start.output).toContain(
+        "::notice::OpsCrew switches this server's proxy from Caddy to nginx (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while nginx starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while certbot gets their certificates.",
+      );
+      expect(readEdge("compose.yaml")).toBe(renderEdgeCompose(nginxPlan).content);
+      // Compose stops Caddy (no longer in the file) and starts nginx; only the app is replaced.
+      expect(file("projects.log")).toContain("opscrew-edge up -d --wait --remove-orphans");
+      expect(readEdge("sites/shop.caddy")).toBeUndefined();
+      expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.conf"));
+      expect(at("certonly")).toBeLessThan(at("kamal-proxy deploy shop"));
+      expect(routed()).toBe(NEW);
+    });
+
+    it("puts Caddy back when the switch to nginx fails", () => {
+      const caddy = on("caddy");
+      const caddyEdge = renderEdgeCompose(caddy).content;
+      writeFileSync(edgeFile("compose.yaml"), caddyEdge);
+      mkdirSync(edgeFile("sites"), { recursive: true });
+      writeFileSync(edgeFile("sites/shop.caddy"), "# the site Caddy serves now\n");
+      server({ ".env": OLD }, [OLD]);
+      const start = run(scripts(nginxPlan).start, { EDGE_UP_FAIL: "1" });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain(
+        "::error::The switch to nginx did not work, so the server keeps Caddy as its proxy.",
+      );
+      expect(readEdge("compose.yaml")).toBe(caddyEdge);
+      expect(readEdge("sites/shop.caddy")).toBe("# the site Caddy serves now\n");
+      expect(readEdge("sites/shop.conf")).toBeUndefined();
+      // The previous edge started again, without the new proxy's containers.
+      expect(
+        file("projects.log")
+          .split("\n")
+          .filter((line) => line === "opscrew-edge up -d --wait --remove-orphans"),
+      ).toHaveLength(2);
+      expect(containers()).toEqual([OLD]);
+    });
+
+    it("switches the server from nginx back to Caddy, which keeps its own certificates", () => {
+      const caddy = on("caddy");
+      writeFileSync(edgeFile("compose.yaml"), renderEdgeCompose(nginxPlan).content);
+      mkdirSync(edgeFile("sites"), { recursive: true });
+      writeFileSync(edgeFile("sites/shop.conf"), site(nginxPlan, "shop.conf") ?? "");
+      uploaded(caddy);
+      const start = run(scripts(caddy).start);
+      expect(start.status, start.output).toBe(0);
+      expect(start.output).toContain(
+        "::notice::OpsCrew switches this server's proxy from nginx to Caddy (target.edge in opscrew/plan.yaml).",
+      );
+      expect(start.output).toContain("while Caddy gets their certificates.");
+      expect(readEdge("compose.yaml")).toBe(renderEdgeCompose(caddy).content);
+      expect(readEdge("sites/shop.conf")).toBeUndefined();
+      expect(readEdge("sites/shop.caddy")).toBe(renderCaddyfile(caddy, ctx).content);
+      expect(dockerCalls()).not.toContain("certbot");
+    });
+
+    it("never switches the proxy of a server that already runs the plan's", () => {
+      writeFileSync(edgeFile("compose.yaml"), renderEdgeCompose(nginxPlan).content);
+      certificate();
+      const start = run(scripts(nginxPlan).start);
+      expect(start.status, start.output).toBe(0);
+      expect(start.output).not.toContain("switches this server's proxy");
+    });
+
+    it("takes a deploy's old additions and origin files off the server, and back when the proxy refuses the site", () => {
+      const caddy = on("caddy");
+      uploaded(caddy);
+      const served = {
+        "sites/shop.caddy": "# the site Caddy serves now\n",
+        "sites/shop.additions": "# the additions Caddy serves now\n",
+        "tls/shop/origin.pem": "# the certificate\n",
+        "tls/shop/origin.key": "# its key\n",
+        "tls/shop/pull.pem": "# the client certificate\n",
+      };
+      writeAll(join(work, "srv", "edge"), served);
+      const refused = run(scripts(caddy).start, { CADDY_RELOAD_FAIL: "1" });
+      expect(refused.status).toBe(1);
+      for (const [name, content] of Object.entries(served)) expect(readEdge(name)).toBe(content);
+      const start = run(scripts(caddy).start);
+      expect(start.status, start.output).toBe(0);
+      expect(readEdge("sites/shop.additions")).toBeUndefined();
+      expect(existsSync(edgeFile("tls/shop"))).toBe(false);
     });
   });
 

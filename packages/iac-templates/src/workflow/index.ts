@@ -2,12 +2,13 @@
 
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
-import { appDir, CADDY_ADDITIONS, EDGE_DIR } from "../edge";
+import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy } from "../edge";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
-import { type RuntimeContext, renderRuntimeFiles } from "../runtime";
+import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
 import { sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { buildJob } from "./build";
+import { edgeCheckStep } from "./edge-check";
 import { afterDeployJobs } from "./jobs";
 import { renderPortainerWorkflow } from "./portainer";
 import {
@@ -19,7 +20,7 @@ import {
   serviceEnvSecret,
   workflowStart,
 } from "./shared";
-import { dockerConfig, rollbackCommands, switchCommands } from "./switch";
+import { dockerConfig, type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export {
@@ -80,12 +81,12 @@ export function healthUrl(plan: DeployPlan): string {
 const LETS_ENCRYPT_SAME_NAMES_PER_WEEK = 5;
 
 /**
- * Whether the health check reaches Caddy's own certificate: the plan has a domain and no tunnel.
- * Then a failed TLS handshake means that Caddy has no certificate yet (Let's Encrypt's limit is the
- * usual cause on a server rebuilt many times): curl's own (exit 35 or 60) or, behind Cloudflare's
- * proxy, Cloudflare's with the server (HTTP 525 or 526).
+ * Whether the health check reaches the proxy's own certificate: the plan has a domain and no
+ * tunnel. Then a failed TLS handshake means that the proxy has no certificate yet (Let's Encrypt's
+ * limit is the usual cause on a server rebuilt many times): curl's own (exit 35 or 60) or, behind
+ * Cloudflare's proxy, Cloudflare's with the server (HTTP 525 or 526).
  */
-function caddyServesTls(plan: DeployPlan, tunnelHost: string | undefined): boolean {
+function edgeServesTls(plan: DeployPlan, tunnelHost: string | undefined): boolean {
   return plan.dns.domain !== undefined && tunnelHost === undefined;
 }
 
@@ -203,10 +204,11 @@ function originTlsUpload(plan: DeployPlan): string[] {
  * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback,
  * then the optional signing, deploy tag and image retention jobs. The image is built on an arm64
  * runner for arm64 servers; in tunnel mode SSH goes through Cloudflare Access to the SSH hostname
- * with the service token from {@link TUNNEL_DEPLOY_SECRETS}. With `ctx.originTls` (not behind a
- * tunnel) the upload writes the origin certificate and its key from {@link DEPLOY_SECRETS}'
- * `originTls`, and with `ctx.additions` it brings `opscrew/proxy/additions.caddy`; the start step
- * puts both in place with the app's site.
+ * with the service token from {@link TUNNEL_DEPLOY_SECRETS}. The deploy job first checks the edge
+ * with the proxy's own checker ({@link edgeCheckStep}). With `ctx.originTls` (not behind a tunnel)
+ * the upload writes the origin certificate and its key from {@link DEPLOY_SECRETS}' `originTls`,
+ * and with `ctx.additions` it brings the user's additions for the plan's proxy; the start step puts
+ * both in place with the app's site, and on nginx gets certbot's certificate.
  *
  * For a Portainer target the deploy job instead writes the stack file with the new image to the
  * `opscrew-deploy` branch (its only `contents: write`), lets Portainer redeploy (the updater stack,
@@ -217,9 +219,11 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
   checkSshPort(ctx.sshPort);
   // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).
-  const edgeFiles = {
+  const hosts = certbotHosts(plan, ctx);
+  const edgeFiles: EdgeFiles = {
     originTls: ctx.originTls !== undefined && !tunnelMode(plan),
     additions: ctx.additions === true,
+    certbot: hosts.length > 0 ? { hosts, email: ctx.acmeEmail } : undefined,
   };
 
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
@@ -259,7 +263,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   const uploads = [
     "opscrew/runtime/compose.yaml",
     ...runtimeUploads(plan),
-    ...(edgeFiles.additions ? [CADDY_ADDITIONS] : []),
+    ...(edgeFiles.additions ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
   ];
   const uploadRun = [
     "    set -euo pipefail",
@@ -275,6 +279,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
 
   const deploySteps = [
     `- uses: ${ACTIONS.checkout}`,
+    ...edgeCheckStep(plan, edgeFiles),
     ...(tunnelHost === undefined ? [] : installCloudflaredStep()),
     "- name: Configure SSH with the pinned host key",
     "  env:",
@@ -332,7 +337,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     `    URL: ${healthUrl(plan)}`,
     "  run: |",
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
-    ...healthScript(caddyServesTls(plan, tunnelHost) && !edgeFiles.originTls),
+    ...healthScript(edgeServesTls(plan, tunnelHost) && !edgeFiles.originTls),
     // Runs only when starting or checking the new version failed (not for upload or setup errors),
     // and always fails the job.
     "- name: Roll back to the previous version",

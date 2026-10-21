@@ -102,6 +102,33 @@ export interface CaddySite {
   origin?: { hostnames: readonly string[]; dir: string } | undefined;
   /** A file the site imports inside its block: the user's own additions. */
   additions?: string | undefined;
+  /**
+   * Cloudflare's proxy serves the site and the edge trusts Cloudflare's addresses: the app gets the
+   * visitor's address (Caddy's `{client_ip}`, from `CF-Connecting-IP`) as `X-Forwarded-For`.
+   */
+  realIp?: boolean | undefined;
+}
+
+/** Strict-Transport-Security, one year with subdomains, on both proxies (FR-1442). */
+export const HSTS = "max-age=31536000; includeSubDomains";
+
+/** The security headers both proxies send on every response, besides HSTS (FR-1442). */
+export const BASELINE_HEADERS: readonly (readonly [name: string, value: string])[] = [
+  ["X-Content-Type-Options", "nosniff"],
+  ["X-Frame-Options", "SAMEORIGIN"],
+  ["Referrer-Policy", "strict-origin-when-cross-origin"],
+];
+
+/**
+ * `hosts` split into those the origin certificate covers (`origin`) and the others, which get a
+ * certificate from a public authority: Caddy's ACME, or certbot on nginx.
+ */
+export function splitByOrigin(
+  hosts: readonly string[],
+  origin: readonly string[] | undefined,
+): { origin: string[]; others: string[] } {
+  const covered = hosts.filter((host) => origin?.includes(host));
+  return { origin: covered, others: hosts.filter((host) => !covered.includes(host)) };
 }
 
 /**
@@ -192,12 +219,11 @@ export function caddySite(site: CaddySite & { mode: "tunnel" | "direct" }): stri
  */
 function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
   const origin = site.mode === "direct" ? site.origin : undefined;
-  const covered = site.hosts.filter((host) => origin?.hostnames.includes(host));
-  if (origin === undefined || covered.length === 0) return siteBlock(site, site.hosts, tls);
-  const others = site.hosts.filter((host) => !covered.includes(host));
+  const hosts = splitByOrigin(site.hosts, origin?.hostnames);
+  if (origin === undefined || hosts.origin.length === 0) return siteBlock(site, site.hosts, tls);
   return [
-    ...siteBlock(site, covered, originTlsLines(origin.dir)),
-    ...(others.length === 0 ? [] : siteBlock(site, others, tls)),
+    ...siteBlock(site, hosts.origin, originTlsLines(origin.dir)),
+    ...(hosts.others.length === 0 ? [] : siteBlock(site, hosts.others, tls)),
   ];
 }
 
@@ -221,19 +247,17 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
   }
   const header = [
     "\theader {",
-    ...(hosts.length > 0
-      ? ['\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"']
-      : []),
-    '\t\tX-Content-Type-Options "nosniff"',
-    '\t\tX-Frame-Options "SAMEORIGIN"',
-    '\t\tReferrer-Policy "strict-origin-when-cross-origin"',
+    ...(hosts.length > 0 ? [`\t\tStrict-Transport-Security "${HSTS}"`] : []),
+    ...BASELINE_HEADERS.map(([name, value]) => `\t\t${name} "${value}"`),
     ...(site.headers ?? []),
     "\t\t-Server",
     "\t}",
   ];
   lines.push(
     "\tencode zstd gzip",
-    `\treverse_proxy ${site.upstream}`,
+    ...(site.realIp
+      ? [`\treverse_proxy ${site.upstream} {`, "\t\theader_up X-Forwarded-For {client_ip}", "\t}"]
+      : [`\treverse_proxy ${site.upstream}`]),
     ...header,
     // The same headers on the responses Caddy writes itself, such as a 502 while the app is down.
     "\thandle_errors {",
