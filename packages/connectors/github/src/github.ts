@@ -164,6 +164,10 @@ const RunSourceSchema = z.looseObject({
   repository: z.looseObject({ full_name: z.string() }),
 });
 const UserSchema = z.looseObject({ login: z.string(), id: z.number() });
+const AccountSchema = z.looseObject({ id: z.number(), type: z.string() });
+const BranchPoliciesSchema = z.looseObject({
+  branch_policies: z.array(z.looseObject({ name: z.string() })),
+});
 const BranchPolicySchema = z.looseObject({
   protected_branches: z.boolean(),
   custom_branch_policies: z.boolean(),
@@ -920,6 +924,40 @@ export class GitHubClient {
     return toEnvironmentView(this.#parse(EnvironmentSchema, json, what));
   }
 
+  /**
+   * Lets jobs on `branch` deploy to the GitHub environment `env`, whose branch policy must be
+   * custom branch policies (`putEnvironment` first). For a name GitHub already has, it answers
+   * 303 to that policy, which fetch follows. Needs Administration: Read and write.
+   */
+  async addDeploymentBranch(
+    owner: string,
+    repo: string,
+    env: string,
+    branch: string,
+  ): Promise<void> {
+    await this.#request(
+      "POST",
+      `${environmentPath(owner, repo, env)}/deployment-branch-policies`,
+      `let ${branch} deploy to the environment ${env}`,
+      { body: { name: branch, type: "branch" }, permission: ADMINISTRATION },
+    );
+  }
+
+  /**
+   * The names of the custom branch policies of the GitHub environment `env` (up to 100): the
+   * branches allowed to deploy to it when its branch policy is custom. Needs Administration.
+   */
+  async listDeploymentBranches(owner: string, repo: string, env: string): Promise<string[]> {
+    const what = `read which branches may deploy to the environment ${env}`;
+    const { json } = await this.#request(
+      "GET",
+      `${environmentPath(owner, repo, env)}/deployment-branch-policies?per_page=100`,
+      what,
+      { permission: ADMINISTRATION_READ },
+    );
+    return this.#parse(BranchPoliciesSchema, json, what).branch_policies.map((p) => p.name);
+  }
+
   /** Deletes the GitHub environment `name` with its secrets; a missing one (404) counts as deleted. */
   async deleteEnvironment(owner: string, repo: string, name: string): Promise<void> {
     await this.#request(
@@ -1287,7 +1325,10 @@ export class GitHubClient {
    * Waits for a dispatched run to complete: the run `runId` when given, else the newest
    * `workflow_dispatch` run on `ref` created at or after `since` minus two minutes (allowance for
    * a local clock ahead of GitHub's; it may take a few polls to appear). Throws a plain
-   * `PROVIDER_ERROR` naming the run link on timeout.
+   * `PROVIDER_ERROR` naming the run link on timeout. With `onWaiting`, a run that waits for a
+   * required reviewer of its environment (status `waiting`) is reported once through it, and a run
+   * still waiting when the time is up is returned with status `waiting` instead of timing out: a
+   * review may take any time. When a run stops waiting, its time starts again.
    */
   async waitForWorkflowRun(
     owner: string,
@@ -1300,8 +1341,15 @@ export class GitHubClient {
       since: string;
       timeoutMs?: number;
       pollMs?: number;
+      /** Called once, with the run's link, when the run waits for a required reviewer. */
+      onWaiting?: (htmlUrl: string) => Promise<void> | void;
     },
-  ): Promise<{ id: number; conclusion: string | null; htmlUrl: string }> {
+  ): Promise<{
+    id: number;
+    status: "completed" | "waiting";
+    conclusion: string | null;
+    htmlUrl: string;
+  }> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_RUN_POLL_MS;
     // `since` is this computer's time; GitHub stamps runs with its own clock, so a local clock
@@ -1309,10 +1357,17 @@ export class GitHubClient {
     const sinceMs = floorToSecond(options.since) - CLOCK_SKEW_ALLOWANCE_MS;
     const branch = options.ref.replace(/^refs\/heads\//, "");
     const within = durationText(timeoutMs);
+    const { onWaiting } = options;
+    let deadline = this.#now() + timeoutMs;
     let runId = options.runId;
-    const run = await pollAction<WorkflowRun | undefined>({
-      read: async () => {
-        if (runId !== undefined) return this.getWorkflowRun(owner, repo, runId);
+    let reported = false;
+    // Whether the run waited for a reviewer at the last read.
+    let waited = false;
+    for (;;) {
+      let run: WorkflowRun | undefined;
+      if (runId !== undefined) {
+        run = await this.getWorkflowRun(owner, repo, runId);
+      } else {
         const runs = await this.#dispatchRunsSince(
           owner,
           repo,
@@ -1320,41 +1375,66 @@ export class GitHubClient {
           branch,
           sinceMs,
         );
-        const newest = runs.at(-1);
-        runId = newest?.id;
-        return newest;
-      },
-      finished: (run) => run?.status === "completed",
-      // Once a run was found, every later read returns it.
-      timedOut: (run) =>
-        run === undefined
-          ? new OpsCrewError(
-              "PROVIDER_ERROR",
-              `GitHub did not show a run of ${options.workflowFile} on ${branch} within ${within}.`,
-              {
-                hint: `Check the Actions tab of https://github.com/${owner}/${repo} for the run, then run the command again.`,
-              },
-            )
-          : new OpsCrewError(
-              "PROVIDER_ERROR",
-              `The ${options.workflowFile} run on ${branch} did not finish within ${within}.`,
-              {
-                hint: `Follow it at ${run.htmlUrl}, then run the command again once it has finished.`,
-              },
-            ),
-      timeoutMs,
-      intervalMs: pollMs,
-      sleep: this.#sleep,
-      now: this.#now,
-    });
-    // `finished` is true only for a completed run.
-    const { id, conclusion, htmlUrl } = run as WorkflowRun;
-    return { id, conclusion, htmlUrl };
+        run = runs.at(-1);
+        runId = run?.id;
+      }
+      if (run?.status === "completed") {
+        return {
+          id: run.id,
+          status: "completed",
+          conclusion: run.conclusion,
+          htmlUrl: run.htmlUrl,
+        };
+      }
+      if (run?.status === "waiting") {
+        waited = true;
+        if (onWaiting !== undefined && !reported) {
+          reported = true;
+          await onWaiting(run.htmlUrl);
+        }
+      } else if (waited) {
+        // The review is done: the run gets its whole time from here.
+        waited = false;
+        deadline = this.#now() + timeoutMs;
+      }
+      const left = deadline - this.#now();
+      if (left > 0) {
+        await this.#sleep(Math.min(pollMs, left));
+        continue;
+      }
+      // A run still waiting for its reviewer is returned, not a timeout.
+      if (onWaiting !== undefined && run?.status === "waiting") {
+        return { id: run.id, status: "waiting", conclusion: null, htmlUrl: run.htmlUrl };
+      }
+      throw run === undefined
+        ? new OpsCrewError(
+            "PROVIDER_ERROR",
+            `GitHub did not show a run of ${options.workflowFile} on ${branch} within ${within}.`,
+            {
+              hint: `Check the Actions tab of https://github.com/${owner}/${repo} for the run, then run the command again.`,
+            },
+          )
+        : new OpsCrewError(
+            "PROVIDER_ERROR",
+            `The ${options.workflowFile} run on ${branch} did not finish within ${within}.`,
+            {
+              hint: `Follow it at ${run.htmlUrl}, then run the command again once it has finished.`,
+            },
+          );
+    }
   }
 
   /** The authenticated user's login (used to verify the token). */
   async whoAmI(): Promise<string> {
     return (await this.#me(z.looseObject({ login: z.string() }))).login;
+  }
+
+  /** The GitHub account `login` (a user or an organization): its id and type (`User`, `Organization`). */
+  async account(login: string): Promise<{ id: number; type: string }> {
+    const what = `read the GitHub account ${login}`;
+    const { json } = await this.#request("GET", `/users/${encodeURIComponent(login)}`, what);
+    const { id, type } = this.#parse(AccountSchema, json, what);
+    return { id, type };
   }
 
   /** The authenticated user, read with `schema`. */

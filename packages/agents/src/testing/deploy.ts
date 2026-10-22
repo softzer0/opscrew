@@ -8,6 +8,7 @@ import {
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { EnvironmentSettings, EnvironmentView } from "@opscrew/connector-github";
 import type {
   IacApplyResult,
   IacApproval,
@@ -541,7 +542,7 @@ export class FakeEngine implements IacEngine {
 }
 
 /** A GitHub environment with no protection rules, as GitHub shows it. */
-function environmentView(name: string) {
+function environmentView(name: string): EnvironmentView {
   return {
     name,
     waitTimer: 0,
@@ -580,22 +581,53 @@ export class FakeGitHub implements GitHubApi {
   readonly environments = new Map<string, Map<string, string>>();
   /** False: the repository has no GitHub environments (a private one on GitHub Free). */
   environmentsWork = true;
+  /** False: GitHub enforces no branch rule there (a private repository on GitHub Free). */
+  branchPoliciesWork = true;
+  /** True: GitHub enforces required reviewers there (a public repository). */
+  reviewersWork = false;
   /** The environments `environmentCapability` probed. */
   readonly probes: string[] = [];
   async environmentCapability(_owner: string, _repo: string, probe: string) {
     this.probes.push(probe);
     return {
       environments: this.environmentsWork,
-      branchPolicies: this.environmentsWork,
-      reviewers: false,
+      branchPolicies: this.environmentsWork && this.branchPoliciesWork,
+      reviewers: this.environmentsWork && this.reviewersWork,
     };
   }
+  /** The rules of each GitHub environment, as GitHub shows them. */
+  readonly rules = new Map<string, EnvironmentView>();
+  /** Every `putEnvironment`: the environment and the rules sent. */
+  readonly environmentPuts: { name: string; settings: EnvironmentSettings }[] = [];
   async getEnvironment(_owner: string, _repo: string, name: string) {
-    return this.environments.has(name) ? environmentView(name) : undefined;
+    return this.environments.has(name)
+      ? (this.rules.get(name) ?? environmentView(name))
+      : undefined;
   }
-  async putEnvironment(_owner: string, _repo: string, name: string) {
+  async putEnvironment(_owner: string, _repo: string, name: string, settings: EnvironmentSettings) {
+    this.environmentPuts.push({ name, settings });
     if (!this.environments.has(name)) this.environments.set(name, new Map());
-    return environmentView(name);
+    const view = { ...(this.rules.get(name) ?? environmentView(name)) };
+    if (settings.reviewers !== undefined) view.reviewers = settings.reviewers;
+    if (settings.branchPolicy !== undefined) view.branchPolicy = settings.branchPolicy;
+    this.rules.set(name, view);
+    return view;
+  }
+  /** The repository owner's account type (`User` or `Organization`). */
+  ownerType = "User";
+  async account() {
+    return { id: 1001, type: this.ownerType };
+  }
+  /** The branches allowed to deploy to each environment (its custom branch policies). */
+  readonly deploymentBranches = new Map<string, string[]>();
+  /** Thrown by `addDeploymentBranch`. */
+  deploymentBranchError: Error | undefined;
+  async addDeploymentBranch(_owner: string, _repo: string, env: string, branch: string) {
+    if (this.deploymentBranchError !== undefined) throw this.deploymentBranchError;
+    this.deploymentBranches.set(env, [...(this.deploymentBranches.get(env) ?? []), branch]);
+  }
+  async listDeploymentBranches(_owner: string, _repo: string, env: string) {
+    return this.deploymentBranches.get(env) ?? [];
   }
   async environmentPublicKey() {
     return { keyId: "env-key-1", key: "dGVzdC1wdWJsaWMta2V5LXRlc3QtcHVibGljLWtleQ==" };
@@ -616,6 +648,8 @@ export class FakeGitHub implements GitHubApi {
   }
   async deleteEnvironment(_owner: string, _repo: string, name: string) {
     this.environments.delete(name);
+    this.rules.delete(name);
+    this.deploymentBranches.delete(name);
   }
   async findOpenPullRequest(_owner: string, _repo: string, head: string) {
     this.lookups.push(head);

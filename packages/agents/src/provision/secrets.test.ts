@@ -321,3 +321,276 @@ describe.skipIf(!findExecutable("git"))("deploy secrets per environment", () => 
     );
   });
 });
+
+/** Staging deployed by promotion from prod. */
+function promotedStagingOf(prod: DeployPlan): DeployPlan {
+  const staging = stagingOf(prod);
+  return DeployPlanSchema.parse({
+    ...staging,
+    environment: { ...staging.environment, deploySource: { from: "promote", source: "prod" } },
+  });
+}
+
+const RULES_TITLE = "Set the rules of the GitHub environment staging in acme/shop";
+const rulesRequest = (deps: TestPhaseDeps) =>
+  requestsOf(deps).find((request) => request.title === RULES_TITLE);
+const SETTINGS = "https://github.com/acme/shop/settings/environments";
+const CUSTOM = { protectedBranches: false, customBranchPolicies: true };
+const GUARD =
+  "OpsCrew's approval guards against mistakes, not against someone with write access to the repository";
+const count = (text: string, part: string) => text.split(part).length - 1;
+
+describe.skipIf(!findExecutable("git"))("the rules of GitHub environments (FR-1521)", () => {
+  /** Staging's provision with `plan`, `interactive` or not, approving what `approve` allows. */
+  async function provisionStaging(
+    app: Awaited<ReturnType<typeof appInProd>>,
+    plan: DeployPlan,
+    options: { interactive?: boolean; approve?: (title: string) => boolean } = {},
+  ) {
+    const staging = await createTestPhaseDeps({
+      root: app.root,
+      env: app.prodDeps.env,
+      runner: projectRunner(),
+      approvalHandler: new ScriptedApprovalHandler((r) => options.approve?.(r.title) ?? true),
+      environment: "staging",
+    });
+    staging.interactive = options.interactive ?? false;
+    await writeArtifact("plan", staging.paths.files.plan, plan);
+    return { staging, run: () => runProvision(staging, { services: app.services() }) };
+  }
+
+  it("offers the repository's owner as reviewer and the branch rule in an interactive run, under one github-settings approval", async () => {
+    const app = await appInProd();
+    app.github.reviewersWork = true;
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
+      interactive: true,
+    });
+    await run();
+
+    const request = rulesRequest(staging);
+    expect(request?.kind).toBe("github-settings");
+    expect(request?.details).toBe(
+      [
+        "OpsCrew created staging for the deploy secrets of staging, and changes only these of its rules:",
+        "  Required reviewer: acme, the repository's owner. Each deploy to staging waits in GitHub until they approve it.",
+        "  Deployment branches: only main, the default branch. A workflow run on any other branch cannot deploy to staging or read its secrets.",
+      ].join("\n"),
+    );
+    // The rules are set before the deploy secrets are stored.
+    const titles = requestsOf(staging).map((r) => r.title);
+    expect(titles.indexOf(RULES_TITLE)).toBeLessThan(
+      requestsOf(staging).findIndex((r) => r.kind === "github-secrets"),
+    );
+    expect(app.github.rules.get("staging")).toMatchObject({
+      reviewers: [{ type: "User", id: 1001 }],
+      branchPolicy: CUSTOM,
+    });
+    expect(app.github.deploymentBranches.get("staging")).toEqual(["main"]);
+    expect(staging.audit.entries.map((e) => e.action)).toContain(
+      "set rules of environment staging",
+    );
+    expect(staging.reporter.text()).not.toContain(GUARD);
+
+    // Set once: the next provision offers nothing again.
+    await app.merge();
+    const again = await app.deps("staging");
+    again.interactive = true;
+    await runProvision(again, { services: app.services() });
+    expect(rulesRequest(again)).toBeUndefined();
+    expect(app.github.deploymentBranches.get("staging")).toEqual(["main"]);
+  });
+
+  it("keeps no reviewer in a script and says how to add one; the branch rule is still offered", async () => {
+    const app = await appInProd();
+    app.github.reviewersWork = true;
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod));
+    await run();
+
+    expect(rulesRequest(staging)?.details).not.toContain("Required reviewer");
+    expect(rulesRequest(staging)?.details).toContain("Deployment branches: only main");
+    expect(app.github.rules.get("staging")).toMatchObject({ reviewers: [], branchPolicy: CUSTOM });
+    expect(staging.reporter.text()).toContain(
+      `This run is not interactive, so OpsCrew adds no required reviewer for staging, which is deployed by promotion. To have each deploy to staging wait in GitHub for a reviewer's approval, add required reviewers to the GitHub environment staging in ${SETTINGS}.`,
+    );
+  });
+
+  it("offers no reviewer when the repository's owner is an organization, and says how to add one", async () => {
+    const app = await appInProd();
+    app.github.reviewersWork = true;
+    app.github.ownerType = "Organization";
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
+      interactive: true,
+    });
+    await run();
+
+    expect(rulesRequest(staging)?.details).not.toContain("Required reviewer");
+    expect(staging.reporter.text()).toContain(
+      "acme is an organization, so OpsCrew has no reviewer to offer for staging",
+    );
+  });
+
+  it("gives an environment that follows main only the branch rule, and says once what OpsCrew's approval guards against", async () => {
+    const app = await appInProd();
+    const { staging, run } = await provisionStaging(app, stagingOf(app.prod), {
+      interactive: true,
+    });
+    await run();
+
+    expect(rulesRequest(staging)?.details).toBe(
+      [
+        "OpsCrew created staging for the deploy secrets of staging, and changes only these of its rules:",
+        "  Deployment branches: only main, the default branch. A workflow run on any other branch cannot deploy to staging or read its secrets.",
+      ].join("\n"),
+    );
+    expect(app.github.deploymentBranches.get("staging")).toEqual(["main"]);
+    const text = staging.reporter.text();
+    expect(count(text, GUARD)).toBe(1);
+    expect(text).toContain(
+      "GitHub enforces no required reviewers in acme/shop (a private repository has them only on GitHub Enterprise)",
+    );
+  });
+
+  it("leaves the rules as they are when the user refuses them, goes on, and never offers a declined reviewer again", async () => {
+    const app = await appInProd();
+    app.github.reviewersWork = true;
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
+      interactive: true,
+      approve: (title) => title !== RULES_TITLE,
+    });
+    await run();
+
+    expect(rulesRequest(staging)?.details).toContain("Required reviewer: acme");
+    expect(app.github.rules.get("staging")).toMatchObject({ reviewers: [], branchPolicy: null });
+    expect(app.github.deploymentBranches.has("staging")).toBe(false);
+    expect(staging.reporter.text()).toContain(
+      `OpsCrew left the rules of the GitHub environment staging as they are, and does not offer a reviewer for staging again. To add one later, add required reviewers to staging in ${SETTINGS}. The branch rule is offered again at the next \`opscrew provision\`.`,
+    );
+    // Provisioning went on: the deploy secrets are stored, and the record keeps the answer.
+    expect(app.github.environments.get("staging")?.has("OPSCREW_STAGING_HOST")).toBe(true);
+    expect(JSON.parse(await readFile(staging.paths.files.deploySecrets, "utf8"))).toMatchObject({
+      createdEnvironment: true,
+      reviewersDeclined: true,
+    });
+
+    // The next interactive provision offers only the branch rule, and says nothing more of reviewers.
+    await app.merge();
+    const again = await app.deps("staging");
+    again.interactive = true;
+    await runProvision(again, { services: app.services() });
+    expect(rulesRequest(again)?.details).not.toContain("Required reviewer");
+    expect(rulesRequest(again)?.details).toContain("Deployment branches: only main");
+    expect(again.reporter.text()).not.toContain("reviewer for staging");
+    expect(app.github.rules.get("staging")).toMatchObject({ reviewers: [], branchPolicy: CUSTOM });
+  });
+
+  it("offers a refused branch rule again", async () => {
+    const app = await appInProd();
+    const { staging, run } = await provisionStaging(app, stagingOf(app.prod), {
+      approve: (title) => title !== RULES_TITLE,
+    });
+    await run();
+
+    expect(staging.reporter.text()).toContain(
+      `OpsCrew left the rules of the GitHub environment staging as they are. Set them in ${SETTINGS}, or run \`opscrew provision\` again to be offered them again.`,
+    );
+    expect(
+      JSON.parse(await readFile(staging.paths.files.deploySecrets, "utf8")).reviewersDeclined,
+    ).toBeUndefined();
+  });
+
+  it("changes no rule of a GitHub environment the user made, and says so", async () => {
+    const app = await appInProd();
+    app.github.reviewersWork = true;
+    app.github.environments.set("staging", new Map());
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
+      interactive: true,
+    });
+    await run();
+
+    expect(rulesRequest(staging)).toBeUndefined();
+    expect(app.github.environmentPuts.filter((put) => put.name === "staging")).toEqual([]);
+    expect(staging.reporter.text()).toContain(
+      `OpsCrew did not create the GitHub environment staging, so it changes none of its rules. To let only main deploy to it, or to have each deploy wait for a reviewer, set its rules yourself in ${SETTINGS}.`,
+    );
+    // Its deploy secrets still live there.
+    expect(app.github.environments.get("staging")?.has("OPSCREW_STAGING_HOST")).toBe(true);
+  });
+
+  it("puts the rules back when GitHub refuses the default branch, since no branch could deploy", async () => {
+    const app = await appInProd();
+    app.github.deploymentBranchError = new Error("GitHub could not answer");
+    const { staging, run } = await provisionStaging(app, stagingOf(app.prod));
+    await expect(run()).rejects.toMatchObject({
+      message:
+        "OpsCrew could not let main deploy to the GitHub environment staging (GitHub could not answer), so it put the environment's rules back as they were.",
+      hint: "Then run `opscrew provision` again.",
+    });
+    expect(app.github.rules.get("staging")).toMatchObject({ branchPolicy: null });
+    expect(rulesRequest(staging)).toBeDefined();
+    expect(
+      staging.audit.entries.find((e) => e.action === "set rules of environment staging (failed)")
+        ?.detail,
+    ).toBe(
+      "main could not be added to its deployment branches; the rules were put back as they were",
+    );
+  });
+
+  it("says no branch can deploy when the rules cannot be put back, and offers the branch rule again", async () => {
+    const app = await appInProd();
+    const { github } = app;
+    const put = github.putEnvironment.bind(github);
+    // The branch is refused, and so is the PUT that would put the rules back.
+    github.addDeploymentBranch = async () => {
+      github.putEnvironment = async () => {
+        throw new Error("GitHub could not answer");
+      };
+      throw new Error("GitHub could not answer");
+    };
+    const { staging, run } = await provisionStaging(app, stagingOf(app.prod));
+    await expect(run()).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "OpsCrew could not let main deploy to the GitHub environment staging (GitHub could not answer), and could not put its rules back: no branch can deploy to staging now.",
+      hint: `In ${SETTINGS}, add main under Deployment branches of staging, or set them to No restriction. Then run \`opscrew provision\` again.`,
+    });
+    expect(github.rules.get("staging")).toMatchObject({ branchPolicy: CUSTOM });
+    expect(
+      staging.audit.entries.find((e) => e.action === "set rules of environment staging (failed)")
+        ?.detail,
+    ).toBe("main could not be added to its deployment branches; the rules could not be put back");
+
+    // The next provision sees custom branch policies without a branch and offers the default
+    // branch again, without another PUT.
+    github.putEnvironment = put;
+    github.addDeploymentBranch = Object.getPrototypeOf(github).addDeploymentBranch.bind(github);
+    const puts = github.environmentPuts.length;
+    const again = await provisionStaging(app, stagingOf(app.prod));
+    await again.run();
+    expect(rulesRequest(again.staging)?.details).toContain("Deployment branches: only main");
+    expect(github.deploymentBranches.get("staging")).toEqual(["main"]);
+    expect(github.environmentPuts.length).toBe(puts);
+  });
+
+  it("changes no rule on a Free private repository, where GitHub enforces none", async () => {
+    const app = await appInProd();
+    app.github.branchPoliciesWork = false;
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
+      interactive: true,
+    });
+    await run();
+
+    // The deploy secrets live in the GitHub environment, which gets no rule.
+    expect(app.github.environments.get("staging")?.has("OPSCREW_STAGING_HOST")).toBe(true);
+    expect(rulesRequest(staging)).toBeUndefined();
+    expect(app.github.environmentPuts).toEqual([{ name: "staging", settings: {} }]);
+    expect(count(staging.reporter.text(), GUARD)).toBe(1);
+
+    // Without GitHub environments at all, the same plain statement, once.
+    const plain = await appInProd();
+    plain.github.environmentsWork = false;
+    const other = await provisionStaging(plain, promotedStagingOf(plain.prod));
+    await other.run();
+    expect(rulesRequest(other.staging)).toBeUndefined();
+    expect(count(other.staging.reporter.text(), GUARD)).toBe(1);
+  });
+});

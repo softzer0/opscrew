@@ -279,6 +279,7 @@ describe("waitForWorkflowRun", () => {
       });
       expect(result).toEqual({
         id: 42,
+        status: "completed",
         conclusion,
         htmlUrl: "https://github.com/acme/shop/actions/runs/42",
       });
@@ -375,6 +376,108 @@ describe("waitForWorkflowRun", () => {
     expect((error as Error).message).toContain("2 minutes");
     expect(JSON.stringify(error)).not.toContain(TOKEN);
     expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(120_000);
+  });
+
+  it("reports once that the run waits for a reviewer, then follows it to its end", async () => {
+    const clock = fakeClock();
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/42": [
+        { body: run(42, "queued", null, "2026-10-13T10:00:01Z") },
+        { body: run(42, "waiting", null, "2026-10-13T10:00:01Z") },
+        { body: run(42, "waiting", null, "2026-10-13T10:00:01Z") },
+        { body: run(42, "in_progress", null, "2026-10-13T10:00:01Z") },
+        { body: run(42, "completed", "success", "2026-10-13T10:00:01Z") },
+      ],
+    });
+    const waiting: string[] = [];
+    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
+      workflowFile: FILE,
+      ref: "main",
+      runId: 42,
+      since,
+      pollMs: 1000,
+      onWaiting: (url) => {
+        waiting.push(url);
+      },
+    });
+    expect(waiting).toEqual(["https://github.com/acme/shop/actions/runs/42"]);
+    expect(result).toEqual({
+      id: 42,
+      status: "completed",
+      conclusion: "success",
+      htmlUrl: "https://github.com/acme/shop/actions/runs/42",
+    });
+  });
+
+  it("returns a run still waiting for its reviewer when the time is up, not a timeout", async () => {
+    const clock = fakeClock();
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/42": [
+        { body: run(42, "waiting", null, "2026-10-13T10:00:01Z") },
+      ],
+    });
+    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
+      workflowFile: FILE,
+      ref: "main",
+      runId: 42,
+      since,
+      timeoutMs: 60_000,
+      pollMs: 10_000,
+      onWaiting: () => undefined,
+    });
+    expect(result).toEqual({
+      id: 42,
+      status: "waiting",
+      conclusion: null,
+      htmlUrl: "https://github.com/acme/shop/actions/runs/42",
+    });
+    expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(60_000);
+  });
+
+  it("gives a run its whole time again once its review is done", async () => {
+    const clock = fakeClock();
+    // 50 s waiting for the reviewer, then 50 s running: past the 60 s from the start.
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/42": [
+        ...Array.from({ length: 5 }, () => ({
+          body: run(42, "waiting", null, "2026-10-13T10:00:01Z"),
+        })),
+        ...Array.from({ length: 5 }, () => ({
+          body: run(42, "in_progress", null, "2026-10-13T10:00:01Z"),
+        })),
+        { body: run(42, "completed", "success", "2026-10-13T10:00:01Z") },
+      ],
+    });
+    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
+      workflowFile: FILE,
+      ref: "main",
+      runId: 42,
+      since,
+      timeoutMs: 60_000,
+      pollMs: 10_000,
+      onWaiting: () => undefined,
+    });
+    expect(result).toMatchObject({ status: "completed", conclusion: "success" });
+    expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(100_000);
+  });
+
+  it("times out on a waiting run when the caller does not follow reviews", async () => {
+    const clock = fakeClock();
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/42": [
+        { body: run(42, "waiting", null, "2026-10-13T10:00:01Z") },
+      ],
+    });
+    await expect(
+      client(fetch, clock).waitForWorkflowRun("acme", "shop", {
+        workflowFile: FILE,
+        ref: "main",
+        runId: 42,
+        since,
+        timeoutMs: 60_000,
+        pollMs: 10_000,
+      }),
+    ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
   });
 
   it("times out plainly when the run never appears", async () => {

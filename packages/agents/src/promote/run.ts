@@ -2,13 +2,21 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { githubConnector, type RegistryCredential } from "@opscrew/connector-github";
-import { canonicalJson, listText, OpsCrewError, sha256Hex, toPosixRelative } from "@opscrew/core";
+import {
+  canonicalJson,
+  listText,
+  OpsCrewError,
+  type ProjectPaths,
+  sha256Hex,
+  toPosixRelative,
+} from "@opscrew/core";
 import { type DeployPlan, readArtifact, resolveEnvironmentPaths } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
 import { environmentPaths } from "../environments";
 import { REGISTRY_TOKEN_VAR } from "../provision";
 import { missing } from "../provision/credentials";
+import { secretsEnvironment } from "../provision/secrets";
 import { reasonOf } from "../retarget/steps";
 import { codeOf, hintOf } from "../retarget/window";
 import {
@@ -26,7 +34,13 @@ import {
   type ImageBuild,
   imageReference,
 } from "./image";
-import { promotionHash, writePromotion } from "./record";
+import {
+  clearPendingPromotion,
+  promotionHash,
+  readPendingPromotion,
+  writePendingPromotion,
+  writePromotion,
+} from "./record";
 import type { PromoteGitHubApi, PromoteOptions, PromoteResult, PromoteServices } from "./types";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -92,6 +106,63 @@ function gitBlobSha(text: string): string {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
+/** A deploy run still waiting for its reviewer, with the command that records it afterwards. */
+function stillWaiting(target: string, url: string, command: string): string {
+  return `${target}'s deploy run still waits in GitHub for a required reviewer: ${url}. Once they approve it, the run deploys the image. ${NOT_RECORDED} Run \`${command}\` again once the run succeeded: it records the image without a new deploy.`;
+}
+
+/**
+ * The target's pending promotion, whose run was left waiting for a reviewer: recorded once that
+ * run succeeded (the result, with no new dispatch), reported again while it has not finished
+ * (`waiting`), and cleared when it failed or was cancelled, so a new promotion goes ahead
+ * (`undefined`, as without one).
+ */
+async function checkPending(
+  deps: PhaseDeps,
+  paths: ProjectPaths,
+  image: AppImage,
+  run: { target: string; command: string },
+): Promise<PromoteResult | undefined> {
+  const pending = await readPendingPromotion(paths);
+  if (pending === undefined) return undefined;
+  const { target, command } = run;
+  const { digest, source } = pending;
+  deps.reporter.step(`Checking ${target}'s deploy run that waited for a reviewer`);
+  const last = await image.github.getWorkflowRun(image.owner, image.repo, pending.runId);
+  if (last.status !== "completed") {
+    deps.reporter.warn(
+      last.status === "waiting"
+        ? stillWaiting(target, last.htmlUrl, command)
+        : `${target}'s deploy run ${last.htmlUrl} has not finished yet. ${NOT_RECORDED} Run \`${command}\` again once it succeeded: it records the image without a new deploy.`,
+    );
+    return { status: "waiting", digest, runUrl: last.htmlUrl };
+  }
+  const ok = last.conclusion === "success";
+  await deps.audit.append({
+    kind: "provider-call",
+    actor: "opscrew",
+    action: "deploy workflow",
+    target: last.htmlUrl,
+    decision: ok ? "approved" : "refused",
+    detail: `workflow run ${last.id} finished: ${last.conclusion ?? "no result"}`,
+  });
+  await clearPendingPromotion(paths);
+  if (!ok) {
+    deps.reporter.warn(
+      `${target}'s deploy run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}. OpsCrew forgot it and goes on with a new promotion.`,
+    );
+    return undefined;
+  }
+  await writePromotion(paths, {
+    digest,
+    source,
+    runUrl: last.htmlUrl,
+    at: deps.clock.now().toISOString(),
+  });
+  deps.reporter.success(`${target} now runs ${imageReference(image, digest)} (${last.htmlUrl}).`);
+  return { status: "deployed", digest, runUrl: last.htmlUrl };
+}
+
 /** What the approval shows: the image, its build, the target's plan and the hash. */
 function promotionDetails(input: {
   target: string;
@@ -105,6 +176,8 @@ function promotionDetails(input: {
   workflowFile: string;
   defaultBranch: string;
   hash: string;
+  /** The target's GitHub environment, when it has required reviewers. */
+  reviewed: string | undefined;
 }): string {
   const { target, source, plan, chosen, build } = input;
   const url = plan.deployment.url;
@@ -123,7 +196,9 @@ function promotionDetails(input: {
       : []),
     `Promotion hash: ${input.hash}`,
     "",
-    "OpsCrew's approval guards against mistakes, not against someone with write access to the repository, who can start the workflow themselves.",
+    input.reviewed !== undefined
+      ? `GitHub also asks a required reviewer of the GitHub environment ${input.reviewed} before the deploy job runs: that review is the real gate. OpsCrew's approval guards against mistakes.`
+      : "OpsCrew's approval guards against mistakes, not against someone with write access to the repository, who can start the workflow themselves.",
   ].join("\n");
 }
 
@@ -141,7 +216,10 @@ function promotionDetails(input: {
  *    the target plan's hash; never granted by `--yes`.
  * 5. The target's workflow, dispatched on the default branch with the digest, and its run; the
  *    digest is recorded in the target's state once the run succeeded. With `supplyChain.sign`, the
- *    workflow's verify job checks the signature before its deploy job runs.
+ *    workflow's verify job checks the signature before its deploy job runs. A run that waits for
+ *    a required reviewer of the target's GitHub environment is reported as waiting, with its link;
+ *    one still waiting when the wait ends is the result `waiting`, recorded as the target's pending
+ *    promotion, which the next `opscrew promote --to <target>` checks first ({@link checkPending}).
  * `deps` may be any environment's: the target's paths are resolved here.
  * @throws OpsCrewError `PHASE_PRECONDITION` for each refusal, `PLAN_NOT_APPROVED` when
  * `approveHash` names another promotion, `APPROVAL_REFUSED` when the user does not approve, and
@@ -194,6 +272,8 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     repo,
     ...(credential !== undefined ? { credential } : {}),
   };
+  const followed = await checkPending(deps, targetPaths, image, { target, command });
+  if (followed !== undefined) return followed;
   deps.reporter.step(`Finding the image to deploy to ${target}`);
   const chosen = await chooseImage(image, {
     source,
@@ -237,7 +317,12 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     );
   }
 
-  // 4. The approval, bound to the promotion's hash.
+  // 4. The approval, bound to the promotion's hash. It says whether GitHub also asks a reviewer.
+  const environment = secretsEnvironment(plan);
+  const reviewers =
+    environment === undefined
+      ? []
+      : ((await github.api.getEnvironment(owner, repo, environment))?.reviewers ?? []);
   const targetPlanHash = sha256Hex(canonicalJson(plan));
   const hash = promotionHash({ target, source, digest, targetPlanHash });
   const details = promotionDetails({
@@ -252,6 +337,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     workflowFile,
     defaultBranch,
     hash,
+    reviewed: reviewers.length > 0 ? environment : undefined,
   });
   deps.reporter.info(details);
   const later = `${command} --digest ${digest} --approve ${hash}`;
@@ -340,6 +426,10 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
       ref: defaultBranch,
       runId: dispatched.runId,
       since,
+      onWaiting: (url) =>
+        deps.reporter.info(
+          `${target}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run and records the image once it succeeded.`,
+        ),
     });
   } catch (error) {
     throw new OpsCrewError(
@@ -351,6 +441,23 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
         hint: `Follow the run at ${dispatched.url}; if it fails, fix what it says, then run \`${command}\` again.`,
       },
     );
+  }
+  if (run.status === "waiting") {
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: "deploy workflow",
+      target: run.htmlUrl,
+      detail: `workflow run ${run.id} waits for a required reviewer`,
+    });
+    await writePendingPromotion(targetPaths, {
+      digest,
+      source,
+      runId: run.id,
+      at: deps.clock.now().toISOString(),
+    });
+    deps.reporter.warn(stillWaiting(target, run.htmlUrl, command));
+    return { status: "waiting", digest, runUrl: run.htmlUrl };
   }
   const ok = run.conclusion === "success";
   await deps.audit.append({
@@ -380,5 +487,5 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     at: deps.clock.now().toISOString(),
   });
   deps.reporter.success(`${target} now runs ${imageReference(image, digest)} (${run.htmlUrl}).`);
-  return { digest, runUrl: run.htmlUrl };
+  return { status: "deployed", digest, runUrl: run.htmlUrl };
 }

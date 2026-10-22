@@ -59,6 +59,10 @@ export type GitHubApi = Pick<
   | "environmentCapability"
   | "getEnvironment"
   | "putEnvironment"
+  // The rules of a GitHub environment OpsCrew created: its default reviewer and branch rule.
+  | "account"
+  | "addDeploymentBranch"
+  | "listDeploymentBranches"
   | "environmentPublicKey"
   | "setEnvironmentSecret"
   | "deleteEnvironmentSecret"

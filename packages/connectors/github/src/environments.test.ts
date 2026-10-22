@@ -185,6 +185,65 @@ describe("putEnvironment, getEnvironment and deleteEnvironment", () => {
   });
 });
 
+describe("addDeploymentBranch and account", () => {
+  const POLICIES = `${ENV}/deployment-branch-policies`;
+
+  it("adds the branch as a custom branch policy of the environment", async () => {
+    const { fetch, calls } = fakeFetch({
+      [`POST ${POLICIES}`]: { body: { id: 7, name: "main", type: "branch" } },
+    });
+    await client(fetch).addDeploymentBranch("acme", "shop", "staging", "main");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.path).toBe(POLICIES);
+    expect(calls[0]?.body).toEqual({ name: "main", type: "branch" });
+  });
+
+  it("lists the branches that may deploy, and refuses an answer that is not a list", async () => {
+    const { fetch, calls } = fakeFetch({
+      [`GET ${POLICIES}`]: [
+        {
+          body: {
+            total_count: 2,
+            branch_policies: [
+              { id: 7, name: "main", type: "branch" },
+              { id: 8, name: "release/*", type: "branch" },
+            ],
+          },
+        },
+        { body: { total_count: 0, branch_policies: [] } },
+        { body: { total_count: 0 } },
+      ],
+    });
+    const github = client(fetch);
+    expect(await github.listDeploymentBranches("acme", "shop", "staging")).toEqual([
+      "main",
+      "release/*",
+    ]);
+    expect(calls[0]?.url).toContain(`${POLICIES}?per_page=100`);
+    expect(await github.listDeploymentBranches("acme", "shop", "staging")).toEqual([]);
+    const error = await failure(github.listDeploymentBranches("acme", "shop", "staging"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+  });
+
+  it("names Administration on a 403, without the token", async () => {
+    const { fetch } = fakeFetch({ [`POST ${POLICIES}`]: NO_ADMIN });
+    const error = await failure(
+      client(fetch).addDeploymentBranch("acme", "shop", "staging", "main"),
+    );
+    expect(error.hint).toContain("Administration: Read and write");
+  });
+
+  it("reads an account's id and whether it is a user or an organization", async () => {
+    const { fetch, calls } = fakeFetch({
+      "GET /users/acme": { body: { login: "acme", id: 42, type: "Organization" } },
+      "GET /users/octocat": { body: { ...ME, type: "User" } },
+    });
+    expect(await client(fetch).account("acme")).toEqual({ id: 42, type: "Organization" });
+    expect(await client(fetch).account("octocat")).toEqual({ id: ME.id, type: "User" });
+    expect(calls.map((call) => call.path)).toEqual(["/users/acme", "/users/octocat"]);
+  });
+});
+
 describe("environmentCapability", () => {
   it("reports a Free private repository's environment without rules, and deletes the probe", async () => {
     const { fetch, calls } = fakeFetch({

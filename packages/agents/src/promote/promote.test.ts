@@ -22,7 +22,10 @@ import {
   WORKFLOWS,
 } from "./__fixtures__/world";
 import { promote, promotionHash } from "./index";
-import { promotionFile } from "./record";
+import { promotionFile, readPendingPromotion } from "./record";
+
+/** What promote says of prod's deploy run left waiting for its reviewer. */
+const STILL_WAITING = `prod's deploy run still waits in GitHub for a required reviewer: ${DEPLOY_RUN_URL}. Once they approve it, the run deploys the image. OpsCrew did not record the image as running. Run \`opscrew promote --to prod\` again once the run succeeded: it records the image without a new deploy.`;
 
 async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
   const error = await promise.then(
@@ -60,7 +63,7 @@ describe("promote", () => {
 
     const result = await promote(deps, { target: "prod", services: world.services });
 
-    expect(result).toEqual({ digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
+    expect(result).toEqual({ status: "deployed", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
     // The approval: kind promote, bound to the four parts.
     const expected = promotionHash({
       target: "prod",
@@ -136,7 +139,7 @@ describe("promote", () => {
       services: world.services,
     });
 
-    expect(result).toEqual({ digest: PREVIOUS_IMAGE, runUrl: DEPLOY_RUN_URL });
+    expect(result).toEqual({ status: "deployed", digest: PREVIOUS_IMAGE, runUrl: DEPLOY_RUN_URL });
     const request = world.handler.requests[0] as ApprovalRequest;
     expect(request.kind).toBe("promote");
     expect(request.title).toBe("Roll prod back to its previous image");
@@ -711,6 +714,124 @@ describe("promote", () => {
       expect(error.code).toBe("CREDENTIALS_INVALID");
       expect(error.message).toContain("Nothing was deployed");
       expect(error.hint).toBe("Create a new token. Then run `opscrew promote --to prod` again.");
+    });
+  });
+
+  describe("with a required reviewer in GitHub", () => {
+    it("says in the approval that GitHub's review is the real gate", async () => {
+      const world = await promoteWorld({
+        prod: (plan) =>
+          DeployPlanSchema.parse({
+            ...plan,
+            environment: { ...plan.environment, secrets: "environment" },
+          }),
+      });
+      world.github.environments.set("production", {
+        name: "production",
+        waitTimer: 0,
+        preventSelfReview: false,
+        reviewers: [{ type: "User", id: 1001 }],
+        branchPolicy: { protectedBranches: false, customBranchPolicies: true },
+        canAdminsBypass: true,
+      });
+
+      await promote(world.deps, { target: "prod", services: world.services });
+
+      const details = world.handler.requests[0]?.details ?? "";
+      expect(details).toContain(
+        "GitHub also asks a required reviewer of the GitHub environment production before the deploy job runs: that review is the real gate. OpsCrew's approval guards against mistakes.",
+      );
+      expect(details).not.toContain("not against someone with write access");
+    });
+
+    it("says the run waits for the reviewer, with its link, and records the image once it succeeded", async () => {
+      const world = await promoteWorld();
+      world.github.reviewer = "approves";
+
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+
+      expect(result).toEqual({ status: "deployed", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
+      expect(world.deps.reporter.text()).toContain(
+        `prod's deploy run waits in GitHub for a required reviewer: approve it at ${DEPLOY_RUN_URL}.`,
+      );
+      expect(await recordedPromotion(world.deps.paths)).toMatchObject({ digest: STAGING_IMAGE });
+    });
+
+    it("reports a run still waiting for its reviewer as waiting, never as a failure, and records nothing", async () => {
+      const world = await promoteWorld();
+      world.github.reviewer = "pending";
+
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+
+      expect(result).toEqual({ status: "waiting", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
+      const text = world.deps.reporter.text();
+      expect(text).toContain(STILL_WAITING);
+      expect(text).not.toMatch(/did not succeed|did not finish|timed out/);
+      expect(await recordedPromotion(world.deps.paths)).toBeUndefined();
+      expect(await readPendingPromotion(world.deps.paths)).toEqual({
+        digest: STAGING_IMAGE,
+        source: "staging",
+        runId: 777,
+        at: "2026-10-11T12:00:00.000Z",
+      });
+      expect(
+        world.deps.audit.entries.find((entry) => entry.action === "deploy workflow")?.detail,
+      ).toBe("workflow run 777 waits for a required reviewer");
+    });
+
+    /** A promotion to prod left waiting for its reviewer, then a fresh run's deps. */
+    async function leftWaiting() {
+      const world = await promoteWorld();
+      world.github.reviewer = "pending";
+      await promote(world.deps, { target: "prod", services: world.services });
+      world.deps.reporter.lines.length = 0;
+      world.handler.requests.length = 0;
+      return world;
+    }
+
+    it("records the pending promotion once its run succeeded, with no new dispatch", async () => {
+      const world = await leftWaiting();
+      world.github.reviewer = "approves";
+
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+
+      expect(result).toEqual({ status: "deployed", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
+      expect(world.github.reads).toEqual([777]);
+      expect(world.github.dispatches).toHaveLength(1);
+      expect(world.handler.requests).toEqual([]);
+      expect(await recordedPromotion(world.deps.paths)).toMatchObject({
+        digest: STAGING_IMAGE,
+        source: "staging",
+        runUrl: DEPLOY_RUN_URL,
+      });
+      expect(await readPendingPromotion(world.deps.paths)).toBeUndefined();
+    });
+
+    it("says again that the pending run waits, with its link and the command", async () => {
+      const world = await leftWaiting();
+
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+
+      expect(result).toEqual({ status: "waiting", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
+      expect(world.deps.reporter.text()).toContain(STILL_WAITING);
+      expect(world.github.dispatches).toHaveLength(1);
+      expect(await readPendingPromotion(world.deps.paths)).toMatchObject({ runId: 777 });
+    });
+
+    it("forgets a pending run that was cancelled, and lets a new promotion go ahead", async () => {
+      const world = await leftWaiting();
+      world.github.reviewer = "none";
+      world.github.reread = { status: "completed", conclusion: "cancelled" };
+
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+
+      expect(world.deps.reporter.text()).toContain(
+        `prod's deploy run that waited for a reviewer did not succeed (cancelled): ${DEPLOY_RUN_URL}. OpsCrew forgot it and goes on with a new promotion.`,
+      );
+      expect(world.handler.requests.map((r) => r.kind)).toEqual(["promote"]);
+      expect(world.github.dispatches).toHaveLength(2);
+      expect(result.status).toBe("deployed");
+      expect(await readPendingPromotion(world.deps.paths)).toBeUndefined();
     });
   });
 

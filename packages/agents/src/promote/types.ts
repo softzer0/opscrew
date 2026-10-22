@@ -7,9 +7,11 @@ export type PromoteGitHubApi = Pick<
   GitHubClient,
   | "getRepo"
   | "fileSha"
+  | "getEnvironment"
   | "taggedDigest"
   | "imageProvenance"
   | "workflowRun"
+  | "getWorkflowRun"
   | "dispatchWorkflow"
   | "waitForWorkflowRun"
 >;
@@ -45,8 +47,13 @@ export interface PromoteOptions {
 }
 
 export interface PromoteResult {
-  /** The image deployed, by digest. */
+  /**
+   * `deployed`: the run succeeded and the image is recorded. `waiting`: the run still waits in
+   * GitHub for a required reviewer, and nothing is recorded (a run that failed stops with an error).
+   */
+  status: "deployed" | "waiting";
+  /** The image deployed, or to be deployed once the reviewer approves, by digest. */
   digest: string;
-  /** The deploy workflow's run, which succeeded (a run that did not stops with an error). */
+  /** The deploy workflow's run. */
   runUrl: string;
 }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
+  EnvironmentView,
   ImageProvenance,
   RegistryCredential,
   WorkflowRunSource,
@@ -84,6 +85,12 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     return { defaultBranch: "main", private: true, canPush: true };
   }
 
+  /** The repository's GitHub environments with their rules, by name. */
+  readonly environments = new Map<string, EnvironmentView>();
+  async getEnvironment(_owner: string, _repo: string, name: string) {
+    return this.environments.get(name);
+  }
+
   async fileSha(_owner: string, _repo: string, path: string, ref: string) {
     return ref === "main" ? this.onMain.get(path) : undefined;
   }
@@ -122,9 +129,43 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     return { runId: 777, url: DEPLOY_RUN_URL };
   }
 
-  async waitForWorkflowRun(_owner: string, _repo: string, options: { runId?: number }) {
+  /**
+   * The deploy run's required reviewer: `none`; `approves` (the run waits for them first, and
+   * `onWaiting` is told); `pending` (still waiting when the wait ends).
+   */
+  reviewer: "none" | "approves" | "pending" = "none";
+  /** What GitHub shows when a run is read later (default: as the wait would end now). */
+  reread: { status: string; conclusion: string | null } | undefined;
+  async waitForWorkflowRun(
+    _owner: string,
+    _repo: string,
+    options: { runId?: number; onWaiting?: (htmlUrl: string) => Promise<void> | void },
+  ) {
     if (this.waitError !== undefined) throw this.waitError;
-    return { id: options.runId ?? 777, conclusion: this.conclusion, htmlUrl: DEPLOY_RUN_URL };
+    if (this.reviewer !== "none") await options.onWaiting?.(DEPLOY_RUN_URL);
+    const waiting = this.reviewer === "pending";
+    return {
+      id: options.runId ?? 777,
+      status: waiting ? ("waiting" as const) : ("completed" as const),
+      conclusion: waiting ? null : this.conclusion,
+      htmlUrl: DEPLOY_RUN_URL,
+    };
+  }
+
+  /** Workflow runs read with `getWorkflowRun`, by id. */
+  readonly reads: number[] = [];
+  async getWorkflowRun(_owner: string, _repo: string, runId: number) {
+    this.reads.push(runId);
+    const waiting = this.reviewer === "pending";
+    return {
+      id: runId,
+      status: waiting ? "waiting" : "completed",
+      conclusion: waiting ? null : this.conclusion,
+      ...this.reread,
+      htmlUrl: DEPLOY_RUN_URL,
+      headSha: STAGING_COMMIT,
+      createdAt: "2026-10-11T12:00:00Z",
+    };
   }
 
   /**

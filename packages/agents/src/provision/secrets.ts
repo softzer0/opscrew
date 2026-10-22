@@ -1,6 +1,12 @@
 import { isAbsolute, join } from "node:path";
+import type {
+  BranchPolicy,
+  EnvironmentCapability,
+  EnvironmentReviewer,
+  EnvironmentView,
+} from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import { errorText, OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   deploySecretName,
@@ -14,6 +20,7 @@ import {
 import { type DeployPlan, EnvironmentSchema, environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { codeOf, hintOf } from "../retarget/window";
 import {
   type AppEnvironment,
   assembleAppEnv,
@@ -227,8 +234,10 @@ export function secretsEnvironment(plan: DeployPlan): string | undefined {
  * (or briefly changes) the environment's GitHub environment, reads it back and leaves it as it was.
  * Where environments work, that GitHub environment is kept (created when missing) and
  * `environment.secrets` becomes `environment`; otherwise `prefixed`. Says which applies, and when it
- * changed, that the deploy secrets move ({@link setDeploySecrets} shows and makes the move).
- * Returns the plan with the answer.
+ * changed, that the deploy secrets move ({@link setDeploySecrets} shows and makes the move). A
+ * GitHub environment OpsCrew created then gets the rules GitHub enforces ({@link
+ * setEnvironmentRules}); where GitHub enforces no required reviewers, says once what OpsCrew's own
+ * approval guards against. Returns the plan with the answer.
  */
 export async function checkSecretsPlacement(
   deps: PhaseDeps,
@@ -296,24 +305,46 @@ export async function checkSecretsPlacement(
     );
   }
   const secrets = capability.environments ? "environment" : "prefixed";
-  if (secrets === "environment" && (await api.getEnvironment(owner, repo, probe)) === undefined) {
-    await api.putEnvironment(owner, repo, probe, {});
-    await providerCall(`create environment ${probe}`);
-    // Only a GitHub environment OpsCrew created is deleted by destroy.
+  let kept: { view: EnvironmentView; created: boolean; declined: boolean } | undefined;
+  if (secrets === "environment") {
     const record = await readSecretsRecord(deps);
-    await writeFileAtomic(
-      deps.paths.files.deploySecrets,
-      `${JSON.stringify({
-        ...(record?.repo === where ? record : { repo: where, names: [] }),
-        createdEnvironment: true,
-      })}\n`,
-    );
+    const ours = record?.repo === where ? record : undefined;
+    const view = await api.getEnvironment(owner, repo, probe);
+    if (view === undefined) {
+      kept = {
+        view: await api.putEnvironment(owner, repo, probe, {}),
+        created: true,
+        declined: false,
+      };
+      await providerCall(`create environment ${probe}`);
+      // Only a GitHub environment OpsCrew created is deleted by destroy, or gets its rules.
+      await addToSecretsRecord(deps, where, { createdEnvironment: true });
+    } else {
+      kept = {
+        view,
+        created: ours?.createdEnvironment === true,
+        declined: ours?.reviewersDeclined === true,
+      };
+    }
   }
   deps.reporter.info(
     secrets === "environment"
       ? `${where} supports GitHub environments: the deploy secrets of ${name} live in the GitHub environment ${probe}, and its build values are repository secrets.`
       : `${where} does not support GitHub environments (GitHub Free has them only in public repositories), so the deploy secrets of ${name} are repository secrets named ${prefixed}.`,
   );
+  if (kept !== undefined) {
+    await setEnvironmentRules(deps, github, plan, {
+      ...kept,
+      capability,
+      command: run.command,
+      audit: providerCall,
+    });
+  }
+  if (!capability.reviewers) {
+    deps.reporter.info(
+      `GitHub enforces no required reviewers in ${where} (a private repository has them only on GitHub Enterprise), so OpsCrew's approval guards against mistakes, not against someone with write access to the repository: they can start the deploy workflow of ${name} themselves.`,
+    );
+  }
   const before = plan.environment?.secrets;
   if (before !== undefined && before !== secrets) {
     deps.reporter.warn(
@@ -323,6 +354,160 @@ export async function checkSecretsPlacement(
     );
   }
   return withSecrets(secrets);
+}
+
+/** Custom branch policies: only the branches added with `addDeploymentBranch` may deploy. */
+const CUSTOM_BRANCHES: BranchPolicy = { protectedBranches: false, customBranchPolicies: true };
+
+/**
+ * The rules of the GitHub environment `view` that holds the deploy secrets of the plan's
+ * environment, where GitHub enforces them (FR-1521), after a `github-settings` approval naming
+ * each change. Only in an environment OpsCrew created (`created`); a user's own is left as it is,
+ * and the user is told so.
+ * - The branch rule (`capability.branchPolicies`): only the default branch may deploy, as custom
+ *   branch policies with that branch, where the environment still lets every branch deploy, or
+ *   none (custom branch policies without a branch, left by a failed earlier run).
+ * - A required reviewer (`capability.reviewers`), for an environment promoted to that has none:
+ *   offered only in an interactive run, the repository's owner when it is a user. Otherwise
+ *   none is added, and the setting to add one is shown. Once declined (`declined`, the record's
+ *   `reviewersDeclined`), it is not offered again.
+ * A refusal leaves the rules as they are, and provisioning goes on.
+ */
+async function setEnvironmentRules(
+  deps: PhaseDeps,
+  github: GitHubSetup,
+  plan: DeployPlan,
+  input: {
+    view: EnvironmentView;
+    created: boolean;
+    declined: boolean;
+    capability: EnvironmentCapability;
+    command: string;
+    audit: (action: string, detail?: string) => Promise<unknown>;
+  },
+): Promise<void> {
+  const { api, owner, repo, defaultBranch } = github;
+  const { view, capability, command } = input;
+  if (!capability.reviewers && !capability.branchPolicies) return;
+  const where = `${owner}/${repo}`;
+  const env = view.name;
+  const name = plan.environment?.name ?? "prod";
+  const settings = `https://github.com/${where}/settings/environments`;
+  if (!input.created) {
+    deps.reporter.info(
+      `OpsCrew did not create the GitHub environment ${env}, so it changes none of its rules. To let only ${defaultBranch} deploy to it, or to have each deploy wait for a reviewer, set its rules yourself in ${settings}.`,
+    );
+    return;
+  }
+  // Every branch may deploy, or custom branch policies without a branch (none may).
+  const branchRule =
+    capability.branchPolicies &&
+    (view.branchPolicy === null ||
+      (view.branchPolicy.customBranchPolicies &&
+        (await api.listDeploymentBranches(owner, repo, env)).length === 0));
+  let reviewer: EnvironmentReviewer | undefined;
+  const promoted = plan.environment?.deploySource?.from === "promote";
+  if (capability.reviewers && promoted && view.reviewers.length === 0 && !input.declined) {
+    const account = deps.interactive ? await api.account(owner) : undefined;
+    if (account?.type === "User") {
+      reviewer = { type: "User", id: account.id };
+    } else {
+      const why = deps.interactive
+        ? `${owner} is an organization, so OpsCrew has no reviewer to offer`
+        : `This run is not interactive, so OpsCrew adds no required reviewer`;
+      deps.reporter.info(
+        `${why} for ${name}, which is deployed by promotion. To have each deploy to ${name} wait in GitHub for a reviewer's approval, add required reviewers to the GitHub environment ${env} in ${settings}.`,
+      );
+    }
+  }
+  if (reviewer === undefined && !branchRule) return;
+  const changes = [
+    ...(reviewer !== undefined
+      ? [
+          `Required reviewer: ${owner}, the repository's owner. Each deploy to ${name} waits in GitHub until they approve it.`,
+        ]
+      : []),
+    ...(branchRule
+      ? [
+          `Deployment branches: only ${defaultBranch}, the default branch. A workflow run on any other branch cannot deploy to ${env} or read its secrets.`,
+        ]
+      : []),
+  ];
+  const approval = await deps.approvals.request({
+    kind: "github-settings",
+    title: `Set the rules of the GitHub environment ${env} in ${where}`,
+    details: [
+      `OpsCrew created ${env} for the deploy secrets of ${name}, and changes only these of its rules:`,
+      ...changes.map((change) => `  ${change}`),
+    ].join("\n"),
+  });
+  if (!approval.approved) {
+    if (reviewer === undefined) {
+      deps.reporter.info(
+        `OpsCrew left the rules of the GitHub environment ${env} as they are. Set them in ${settings}, or run \`${command}\` again to be offered them again.`,
+      );
+      return;
+    }
+    // A declined reviewer is not offered again.
+    await addToSecretsRecord(deps, where, { reviewersDeclined: true });
+    deps.reporter.info(
+      `OpsCrew left the rules of the GitHub environment ${env} as they are, and does not offer a reviewer for ${name} again. To add one later, add required reviewers to ${env} in ${settings}.${branchRule ? ` The branch rule is offered again at the next \`${command}\`.` : ""}`,
+    );
+    return;
+  }
+  // GitHub merges a PUT of an environment: a rule not sent keeps its value (checked live on a
+  // public repository), so only the rules that change are sent.
+  const custom = branchRule && view.branchPolicy === null;
+  if (reviewer !== undefined || custom) {
+    await api.putEnvironment(owner, repo, env, {
+      ...(reviewer !== undefined ? { reviewers: [reviewer] } : {}),
+      ...(custom ? { branchPolicy: CUSTOM_BRANCHES } : {}),
+    });
+  }
+  if (branchRule) {
+    try {
+      await api.addDeploymentBranch(owner, repo, env, defaultBranch);
+    } catch (error) {
+      // Custom branch policies without a branch stop every deploy: put back what changed.
+      let undone = true;
+      try {
+        if (reviewer !== undefined || custom) {
+          await api.putEnvironment(owner, repo, env, {
+            ...(reviewer !== undefined ? { reviewers: view.reviewers } : {}),
+            ...(custom ? { branchPolicy: null } : {}),
+          });
+        }
+      } catch {
+        undone = false;
+      }
+      await input.audit(
+        `set rules of environment ${env} (failed)`,
+        `${defaultBranch} could not be added to its deployment branches; ${undone ? "the rules were put back as they were" : "the rules could not be put back"}`,
+      );
+      const reason = `OpsCrew could not let ${defaultBranch} deploy to the GitHub environment ${env} (${errorText(error)})`;
+      // Still custom branch policies without a branch: when the rules could not be put back, or
+      // when that was already the state before.
+      if (!undone || !custom) {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          deps.redactor.redact(
+            `${reason}${undone ? "" : ", and could not put its rules back"}: no branch can deploy to ${env} now.`,
+          ),
+          {
+            hint: `In ${settings}, add ${defaultBranch} under Deployment branches of ${env}, or set them to No restriction. Then run \`${command}\` again.`,
+            cause: error,
+          },
+        );
+      }
+      throw new OpsCrewError(
+        codeOf(error),
+        deps.redactor.redact(`${reason}, so it put the environment's rules back as they were.`),
+        { hint: `${hintOf(error)}Then run \`${command}\` again.`, cause: error },
+      );
+    }
+  }
+  await input.audit(`set rules of environment ${env}`, changes.join(" "));
+  deps.reporter.success(`Set the rules of the GitHub environment ${env}: ${changes.join(" ")}`);
 }
 
 /**
@@ -456,9 +641,28 @@ const SecretsRecordSchema = z.looseObject({
   names: z.array(z.string()),
   environment: z.string().optional(),
   createdEnvironment: z.literal(true).optional(),
+  /** The user declined OpsCrew's offer of a required reviewer for that GitHub environment. */
+  reviewersDeclined: z.literal(true).optional(),
 });
 
 type SecretsRecord = z.infer<typeof SecretsRecordSchema>;
+
+/**
+ * Adds `fields` to the environment's record of its deploy secrets for the repository `where` (a
+ * record of another repository is replaced).
+ */
+async function addToSecretsRecord(
+  deps: Pick<PhaseDeps, "paths">,
+  where: string,
+  fields: Pick<SecretsRecord, "createdEnvironment" | "reviewersDeclined">,
+): Promise<void> {
+  const record = await readSecretsRecord(deps);
+  const base = record?.repo === where ? record : { repo: where, names: [] };
+  await writeFileAtomic(
+    deps.paths.files.deploySecrets,
+    `${JSON.stringify({ ...base, ...fields })}\n`,
+  );
+}
 
 /** The environment's record of its deploy secrets (`deps.paths.files.deploySecrets`), if any. */
 export async function readSecretsRecord(
@@ -642,6 +846,7 @@ export async function setDeploySecrets(
       names,
       ...(environment !== undefined ? { environment } : {}),
       ...(previous?.createdEnvironment === true ? { createdEnvironment: true } : {}),
+      ...(previous?.reviewersDeclined === true ? { reviewersDeclined: true } : {}),
     })}\n`,
   );
   deps.reporter.success(
