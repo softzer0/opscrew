@@ -15,6 +15,7 @@ import {
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
+  RUNNERS_DIR,
   RUNTIME_FILE_NAMES,
   SECRET_RUNTIME_FILES,
   SHARED_DIRS,
@@ -45,6 +46,7 @@ import {
   parseOpensshVersion,
   parseOsRelease,
   parsePairs,
+  parseRunners,
   parseRuntimeFiles,
   parseSs,
   parseSshdT,
@@ -225,6 +227,35 @@ if [ -d "${TUNNELS_DIR}" ] && [ ! -L "${TUNNELS_DIR}" ]; then
 fi
 addon portainer ${PORTAINER_DIR} admin_password`;
 
+/**
+ * Each app's GitHub Actions runner in its folder of /srv/runners: whether it registered, the
+ * state of its service, its version, and the label and repository OpsCrew registered it with (in
+ * its own `.opscrew-runner`: the runner's `.runner` holds no labels). `svc.sh install` writes the
+ * unit's name (`actions.runner.<owner>-<repo>.<name>.service`) to `.service`, so the name is read,
+ * never guessed. The version comes from the runner's own binary, run as deploy (its owner), never
+ * as root. Not yet checked on a real server (spike item 4): `.runner`, `.service`, and that
+ * `--version` prints only the version.
+ */
+const RUNNERS_SNIPPET = `${APP_NAME_FN}
+if [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
+  for d in "${RUNNERS_DIR}"/*; do
+    app_name "\${d##*/}" || continue
+    if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi
+    registered=no
+    if [ -f "$d/.runner" ]; then registered=yes; fi
+    unit=$(head -n 1 "$d/.service" 2>/dev/null) || unit=''
+    state=inactive
+    case "$unit" in actions.runner.*.service) state=$(systemctl is-active "$unit" 2>/dev/null) || true ;; esac
+    version=''
+    if [ -x "$d/bin/Runner.Listener" ]; then
+      version=$(runuser -u deploy -- timeout 30 "$d/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1) || version=''
+    fi
+    label=$(sed -n 's/^label=//p' "$d/.opscrew-runner" 2>/dev/null) || label=''
+    url=$(sed -n 's/^url=//p' "$d/.opscrew-runner" 2>/dev/null) || url=''
+    echo "\${d##*/} $registered \${state:-inactive} \${version:--} \${label:--} \${url:--}"
+  done
+fi`;
+
 /** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
 const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
   if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
@@ -327,6 +358,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     `for u in sshd ufw; do printf '%s %s\\n' "$u" "$(systemctl is-active "opscrew-undo-$u.timer" 2>/dev/null)"; done`,
   ],
   ["addons", ADDONS_SNIPPET],
+  ["runners", RUNNERS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
 ];
@@ -614,6 +646,7 @@ export function factsFromOutput(
       .sort()
       .map((app) => ({ app, ...addon(`tunnel:${app}`, tunnelProject(app)) })),
     portainer: addon("portainer", PORTAINER_PROJECT),
+    runners: parseRunners(text("runners")),
     webFilter: {
       ...dockerFirewall({
         daemonJson: section(sections, "docker-daemon"),

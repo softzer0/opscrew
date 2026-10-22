@@ -11,6 +11,8 @@ import {
   portainerPassword,
   provision,
   removeApp,
+  runnerDesired,
+  runnerToken,
   SH_AVAILABLE,
   SHOP_PROJECT,
   shSyntax,
@@ -94,15 +96,21 @@ async function everyPlan(): Promise<HostPlan[]> {
   );
 
   const used = new FakeHost();
-  await provision(
-    used,
-    tunnelDesired(used, { portainer: portainerDesired(), sysctl: MAX_MAP_COUNT }),
-    {
-      secrets: { tunnelToken: tunnelToken(), portainerPassword: portainerPassword() },
-    },
+  const tokens = { runnerToken: async () => runnerToken() };
+  const withRunner = {
+    portainer: portainerDesired(),
+    sysctl: MAX_MAP_COUNT,
+    runner: runnerDesired(),
+  };
+  plans.push(
+    planHost(await inspectHost(used), tunnelDesired(used, withRunner), "opscrew provision"),
   );
+  await provision(used, tunnelDesired(used, withRunner), {
+    secrets: { tunnelToken: tunnelToken(), portainerPassword: portainerPassword() },
+    ...tokens,
+  });
   deployApp(used, "shop", "tunnel");
-  // Switching to public mode removes the tunnel connector and Portainer.
+  // Switching to public mode removes the tunnel connector, Portainer and the runner.
   plans.push(planHost(await inspectHost(used), desiredFor(used), "opscrew provision"));
   plans.push(
     planTeardown(
@@ -118,7 +126,16 @@ async function everyPlan(): Promise<HostPlan[]> {
       { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
       "opscrew destroy",
     ),
+    tokens,
   );
+  // A runner left behind by an app removed earlier.
+  used.runners.set("old", {
+    registered: true,
+    active: false,
+    version: "2.338.0",
+    label: "opscrew-old-prod",
+    url: "https://github.com/acme/old",
+  });
   plans.push(planUndo(await inspectHost(used), "opscrew destroy --undo-host"));
 
   // Two apps on one server: removing one takes its deploy key too.
@@ -190,14 +207,17 @@ describe("generated scripts", () => {
         "setup/runtime-dirs",
         "setup/app-dirs",
         "setup/app-record",
+        "setup/github-runner",
         "setup/tunnel-connector",
         "setup/portainer",
+        "teardown/github-runner",
         "teardown/app-dirs",
         "teardown/deploy-key",
         "teardown/edge",
         "teardown/tunnel-connector",
         "teardown/portainer",
         "teardown/app-record",
+        "undo/github-runner",
         "undo/runtime-dirs",
         "undo/unattended-upgrades",
         "undo/sysctl",
@@ -753,6 +773,21 @@ describe("dead-man scripts", () => {
     expect(script).toContain("UNIT='opscrew-undo-sshd'");
     expect(script).toMatch(/is-active --quiet "\$UNIT.timer" \|\| fail/);
     expect(cancelScript("ufw")).toContain('systemctl stop "$UNIT.timer"');
+  });
+});
+
+describe("the add-ons' scripts on a server the user owns", () => {
+  it("match their snapshot (they stay as they are on servers already set up)", async () => {
+    const plans = await everyPlan();
+    const scripts = Object.fromEntries(
+      plans.flatMap((plan, index) =>
+        [...allScripts(plan)]
+          .filter(([key]) => /\/(tunnel-connector|portainer)\//.test(key))
+          .map(([key, script]) => [`plan ${index}: ${key}`, script]),
+      ),
+    );
+    expect(Object.keys(scripts).length).toBeGreaterThan(10);
+    expect(scripts).toMatchSnapshot();
   });
 });
 

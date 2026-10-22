@@ -1,0 +1,212 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the runner's scripts > match their snapshot > remove apply 1`] = `
+"# opscrew-host: github-runner.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+APP='shop'
+DIR='/srv/runners/shop'
+RUNNERS_DIR='/srv/runners'
+USER_NAME='deploy'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+as_deploy() { runuser -u "$USER_NAME" -- "$@"; }
+uninstall_service() {
+  if [ -f .service ] && [ -f svc.sh ]; then
+    ./svc.sh stop >/dev/null 2>&1 || true
+    quiet ./svc.sh uninstall || fail "The runner's service could not be removed (svc.sh uninstall: $last)."
+  fi
+}
+at_least() {
+  case "$1" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac
+  [ "$(printf '%s\\n%s\\n' "$1" "$2" | sort -t . -k 1,1n -k 2,2n -k 3,3n | head -n 1)" = "$2" ]
+}
+quiet() {
+  last=''
+  if out=$("$@" 2>&1); then return 0; fi
+  last=$(printf '%s\\n' "$out" | tail -n 1)
+  return 1
+}
+read_token() {
+  RUNNER_TOKEN=''
+  IFS= read -r RUNNER_TOKEN || true
+  exec </dev/null
+  [ -n "$RUNNER_TOKEN" ] || fail "No $1 token arrived on standard input, so OpsCrew did not change the runner."
+}
+no_links() {
+  for d in "$@"; do
+    if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
+  done
+}
+read_token remove
+no_links "$RUNNERS_DIR" "$DIR"
+if [ -d "$DIR" ]; then
+  cd "$DIR"
+  uninstall_service
+  # A runner that never registered, or that GitHub does not unregister (it no longer knows it, or
+  # it is another repository's), still goes from the server; the line below tells the caller,
+  # which then deletes the registration through GitHub's API.
+  unregistered=false
+  # The token is never on a command line: the runner reads each argument from
+  # ACTIONS_RUNNER_INPUT_<ARG> and removes the variable once read (CommandSettings.cs). The variable is
+  # set for runuser alone (not through as_deploy: POSIX does not say whether an assignment before a
+  # shell function's call reaches the commands it runs), and runuser -u (not a login shell) keeps the
+  # environment (to confirm in spike item 4); /proc/<pid>/environ is readable only by deploy and root.
+  if [ -f .runner ] && ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" runuser -u "$USER_NAME" -- ./config.sh remove >/dev/null 2>&1; then
+    unregistered=true
+  fi
+  echo "runner.unregistered=$unregistered"
+  cd /
+  rm -rf "$DIR"
+fi
+unset RUNNER_TOKEN
+# The runners' parent goes too once it is empty.
+if [ -d "$RUNNERS_DIR" ] && [ -z "$(ls -A "$RUNNERS_DIR")" ]; then rmdir "$RUNNERS_DIR"; fi
+"
+`;
+
+exports[`the runner's scripts > match their snapshot > setup apply 1`] = `
+"# opscrew-host: github-runner.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+APP='shop'
+DIR='/srv/runners/shop'
+RUNNERS_DIR='/srv/runners'
+USER_NAME='deploy'
+URL='https://github.com/acme/shop'
+NAME='home-shop-prod'
+LABEL='opscrew-shop-prod'
+VERSION='2.338.0'
+SHA256='bb47c7ca183b540bbb0d814c77cefa49c2d962b0155d92a572593a3d7332f7f5'
+ARCHIVE_URL='https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+as_deploy() { runuser -u "$USER_NAME" -- "$@"; }
+uninstall_service() {
+  if [ -f .service ] && [ -f svc.sh ]; then
+    ./svc.sh stop >/dev/null 2>&1 || true
+    quiet ./svc.sh uninstall || fail "The runner's service could not be removed (svc.sh uninstall: $last)."
+  fi
+}
+at_least() {
+  case "$1" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac
+  [ "$(printf '%s\\n%s\\n' "$1" "$2" | sort -t . -k 1,1n -k 2,2n -k 3,3n | head -n 1)" = "$2" ]
+}
+quiet() {
+  last=''
+  if out=$("$@" 2>&1); then return 0; fi
+  last=$(printf '%s\\n' "$out" | tail -n 1)
+  return 1
+}
+read_token() {
+  RUNNER_TOKEN=''
+  IFS= read -r RUNNER_TOKEN || true
+  exec </dev/null
+  [ -n "$RUNNER_TOKEN" ] || fail "No $1 token arrived on standard input, so OpsCrew did not change the runner."
+}
+no_links() {
+  for d in "$@"; do
+    if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
+  done
+}
+read_token registration
+no_links "$RUNNERS_DIR" "$DIR"
+# 1. The runner's folder, for deploy only.
+install -d -m 0755 "$RUNNERS_DIR"
+install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$DIR"
+# 2. The pinned archive, checked against its SHA-256 before anything in it runs.
+if ! command -v curl >/dev/null 2>&1; then apt_get update; apt_get install curl; fi
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL --retry 3 -o "$tmp/runner.tar.gz" "$ARCHIVE_URL" || fail 'The runner could not be downloaded from GitHub.'
+printf '%s  %s\\n' "$SHA256" "$tmp/runner.tar.gz" | sha256sum -c - >/dev/null 2>&1 ||
+  fail 'The downloaded runner does not match its pinned SHA-256, so OpsCrew did not install it.'
+chmod 0755 "$tmp"
+chmod 0644 "$tmp/runner.tar.gz"
+# A runner already here is not the planned one: its service goes, and its registration's local
+# files, so config.sh registers it again (--replace takes its place on GitHub).
+cd "$DIR"
+uninstall_service
+rm -f .runner .credentials .credentials_rsaparams .opscrew-runner
+# 3. Extracted as deploy, who owns everything in the folder.
+quiet as_deploy tar -xzf "$tmp/runner.tar.gz" -C "$DIR" || fail "The runner could not be unpacked ($last)."
+# 4. Its system packages, as root. deploy owns the script, and is in the docker group, which is
+# already root-equivalent: running it as root gives deploy nothing it did not have.
+install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+# Another apt run may hold the lock (a fresh server's daily apt jobs): wait for it, as
+# package-repair does.
+i=0
+until "$DIR/bin/installdependencies.sh" >>'/var/log/opscrew/apt.log' 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -ge 60 ]; then
+    tail -n 5 '/var/log/opscrew/apt.log' >&2 || true
+    fail "The runner's system packages could not be installed (bin/installdependencies.sh)."
+  fi
+  sleep 5
+done
+# 5. Registered as deploy, with the label the deploy job asks for. --replace takes over an old
+# registration of the same name (this runner before, or a server set up again).
+# The token is never on a command line: the runner reads each argument from
+# ACTIONS_RUNNER_INPUT_<ARG> and removes the variable once read (CommandSettings.cs). The variable is
+# set for runuser alone (not through as_deploy: POSIX does not say whether an assignment before a
+# shell function's call reaches the commands it runs), and runuser -u (not a login shell) keeps the
+# environment (to confirm in spike item 4); /proc/<pid>/environ is readable only by deploy and root.
+if ! out=$(ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" runuser -u "$USER_NAME" -- ./config.sh --unattended --url "$URL" --name "$NAME" --labels "$LABEL" --work _work --replace 2>&1); then
+  fail "The runner could not register with GitHub ($(printf '%s\\n' "$out" | tail -n 1))."
+fi
+unset RUNNER_TOKEN
+# What it was registered with, for the next plan (the runner's .runner holds no labels).
+printf 'label=%s\\nurl=%s\\n' "$LABEL" "$URL" | write_file "$DIR/.opscrew-runner" 0644
+# 6. Its systemd service, run as deploy (svc.sh needs root and the runner's folder).
+quiet ./svc.sh install "$USER_NAME" || fail "The runner's service could not be installed (svc.sh install: $last)."
+quiet ./svc.sh start || fail "The runner's service did not start (svc.sh start: $last)."
+"
+`;

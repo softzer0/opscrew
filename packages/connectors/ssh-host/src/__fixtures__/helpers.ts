@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { applyHostPlan } from "../apply";
 import { hostPlanHash } from "../hash";
 import { inspectHost } from "../inspect";
 import { planHost, planTeardown } from "../plan";
-import type { ApplyOptions, DesiredHost, HostPlan } from "../types";
+import type { ApplyOptions, DesiredHost, DesiredRunner, HostPlan } from "../types";
 import type { FakeHost } from "./fake-host";
 
 /** A synthetic OpenSSH public key line (public keys are not secrets). */
@@ -79,6 +80,32 @@ export function tunnelToken(): string {
 
 export function portainerPassword(): string {
   return fakeSecret("generic-password", "portainer");
+}
+
+/** A runner registration or remove token, generated at runtime (never committed). */
+export function runnerToken(seed = "registration"): string {
+  return fakeSecret("hcloud-token", `runner-${seed}`);
+}
+
+/** The bytes the shell tests' `curl` stub downloads as the runner's archive. */
+export const RUNNER_ARCHIVE = "the runner's archive\n";
+
+/**
+ * The app's runner, pinned to the archive above (`runner: server`), with the release URL of its
+ * version and asset, as `TOOLS.githubRunner` gives it.
+ */
+export function runnerDesired(overrides: Partial<DesiredRunner> = {}): DesiredRunner {
+  const { version = "2.338.0", asset = "linux-x64" } = overrides;
+  return {
+    label: "opscrew-shop-prod",
+    name: "home-shop-prod",
+    repositoryUrl: "https://github.com/acme/shop",
+    version,
+    url: `https://github.com/actions/runner/releases/download/v${version}/actions-runner-${asset}-${version}.tar.gz`,
+    sha256: sha256Hex(RUNNER_ARCHIVE),
+    asset,
+    ...overrides,
+  };
 }
 
 /** The project id of the test app "shop". */

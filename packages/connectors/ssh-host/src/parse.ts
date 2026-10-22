@@ -17,6 +17,7 @@ import {
   type DirFact,
   type HostFacts,
   type Listener,
+  type RunnerFact,
   type RuntimeFileFact,
   ServiceEnvFileSchema,
   type WebFilterRules,
@@ -576,6 +577,28 @@ export function parseAddons(text: string): Map<string, AddonLine> {
     });
   }
   return addons;
+}
+
+/**
+ * The runners section: `<app> <yes|no> <systemctl is-active> <version|-> <label|-> <url|->` for
+ * each app's runner (see `RUNNERS_SNIPPET`).
+ */
+export function parseRunners(text: string): RunnerFact[] {
+  return linesOf(text).flatMap((line) => {
+    const [app, registered, state, version, label, url] = line.split(/\s+/);
+    if (!app || !registered) return [];
+    return [
+      {
+        app,
+        registered: registered === "yes",
+        active: state === "active",
+        version: version && /^\d+\.\d+\.\d+$/.test(version) ? version : null,
+        label: label && /^opscrew-[a-z0-9-]+$/.test(label) ? label : null,
+        repositoryUrl:
+          url && /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(url) ? url : null,
+      },
+    ];
+  });
 }
 
 /** The filter table of `iptables-save` (or `ip6tables-save`) output: its chain and rule lines. */

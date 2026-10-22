@@ -6,9 +6,9 @@ import { canonicalIpv4Cidr } from "./parse";
 export const HOST_PLAN_SCHEMA_VERSION = 1;
 
 /**
- * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record` and
- * `tunnel-connector` are the app's own; `edge` only appears in a teardown (the edge goes with the
- * last app).
+ * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
+ * `github-runner` and `tunnel-connector` are the app's own; `edge` only appears in a teardown (the
+ * edge goes with the last app).
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -25,6 +25,7 @@ export const HOST_STEP_IDS = [
   "runtime-dirs",
   "app-dirs",
   "app-record",
+  "github-runner",
   "edge",
   "tunnel-connector",
   "portainer",
@@ -122,6 +123,42 @@ export const TunnelIdSchema = z.string().regex(/^[0-9A-Fa-f-]{8,64}$/, {
   message: "must be a Cloudflare Tunnel id",
 });
 
+/**
+ * The app's GitHub Actions runner on the server (`DesiredHost.runner`): the pinned release, its
+ * archive's SHA-256, and how it registers with the repository. Never a token: the registration
+ * token is fetched while the plan is applied (`ApplyOptions.runnerToken`).
+ */
+export const DesiredRunnerSchema = z.strictObject({
+  /** `opscrew-<app>-<env>`: the deploy job asks for it with `runs-on`. */
+  label: z.string().regex(/^opscrew-[a-z0-9][a-z0-9-]{0,80}$/, {
+    message: "must be opscrew- followed by lower-case letters, digits and dashes",
+  }),
+  /** `<host>-<app>-<env>`: the runner's name on GitHub. */
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, {
+    message: "must be letters, digits, dots, dashes and underscores",
+  }),
+  repositoryUrl: z
+    .string()
+    .regex(/^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/, {
+      message: "must be https://github.com/<owner>/<repo>",
+    }),
+  version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,4}$/, {
+    message: "must be a pinned version such as 2.338.0",
+  }),
+  /** The release archive's URL, from the pin (`TOOLS.githubRunner` in `@opscrew/iac-templates`). */
+  url: z
+    .string()
+    .regex(
+      /^https:\/\/github\.com\/actions\/runner\/releases\/download\/v[0-9.]+\/actions-runner-linux-(?:x64|arm64)-[0-9.]+\.tar\.gz$/,
+      { message: "must be a release archive of github.com/actions/runner" },
+    ),
+  /** The archive's SHA-256, checked on the server before anything in it runs. */
+  sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: "must be a SHA-256 in lower-case hex" }),
+  /** The release archive for the server's architecture. */
+  asset: z.enum(["linux-x64", "linux-arm64"]),
+});
+export type DesiredRunner = z.infer<typeof DesiredRunnerSchema>;
+
 /** More IPv4 ranges than Cloudflare has ever published. */
 export const MAX_WEB_FILTER_RANGES = 100;
 
@@ -208,6 +245,11 @@ export const DesiredHostSchema = z
      */
     sysctl: z.partialRecord(z.enum(HOST_SYSCTL_KEYS), z.string().regex(/^\d{1,10}$/)).optional(),
     /**
+     * The app's GitHub Actions runner (`runner: server`), installed by the `github-runner` step in
+     * `/srv/runners/<app>` and run as deploy. Absent: a runner the app has there is removed.
+     */
+    runner: DesiredRunnerSchema.optional(),
+    /**
      * Explicit choice for password logins, needed only when some login user has a password and no
      * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`
      * leaves the server's password setting alone. Ignored when every password user has a key.
@@ -231,6 +273,12 @@ export interface ApplyOptions {
   command: string;
   /** Supplied at apply, never part of the plan. */
   secrets?: { tunnelToken?: string; portainerPassword?: string };
+  /**
+   * Fetches a GitHub token for the `github-runner` step: a registration token to install the
+   * runner, a remove token to remove it. Called only when that step runs, never for one in place;
+   * the token goes to the server on stdin only and is never part of the plan.
+   */
+  runnerToken?: (kind: "registration" | "remove") => Promise<string>;
   /** Opens NEW connections (deploy user, admin login); true when both work. */
   verifyLogin: () => Promise<boolean>;
   /** Seconds before the server undoes an sshd/ufw change on its own (default 180). */
@@ -244,4 +292,10 @@ export interface ApplyOptions {
 export interface ApplyResult {
   applied: HostStepId[];
   skipped: HostStepId[];
+  /**
+   * The apps whose GitHub Actions runner was removed from the server without GitHub unregistering
+   * it (it never registered, or `config.sh remove` failed): the caller deletes those registrations
+   * through GitHub's API. Absent when there are none.
+   */
+  stillRegistered?: string[];
 }

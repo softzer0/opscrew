@@ -31,6 +31,8 @@ import {
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
+  RUNNERS_DIR,
+  runnerDir,
   runtimeFilePath,
   SHARED_DIRS,
   SSHD_BACKUP,
@@ -55,6 +57,7 @@ import {
   AccessModeSchema,
   AppNameSchema,
   ComposeTextSchema,
+  DesiredRunnerSchema,
   HostnameSchema,
   type HostPlan,
   type HostStep,
@@ -98,6 +101,8 @@ export interface StepScripts {
   deadMan?: { step: GuardedStep; capture: string; params: ScriptParams };
   /** Secret the apply script reads from stdin. */
   secret?: { name: "tunnelToken" | "portainerPassword"; required: boolean };
+  /** The GitHub runner token the apply script reads from stdin, fetched when the step runs. */
+  runnerToken?: "registration" | "remove";
   /** What the step does, for error messages ("installing Docker"). */
   doing: string;
   timeoutMs: number;
@@ -1748,6 +1753,183 @@ rm -f "$DIR/admin_password"`,
   });
 }
 
+// ---------------------------------------------------------------------------------------------
+// github-runner: the app's GitHub Actions runner, run as deploy
+
+/**
+ * Shell helpers of the runner's scripts. `as_deploy <command…>` runs a command as the deploy user
+ * (the runner's owner); `quiet <command…>` runs one with its output kept back, and leaves its last
+ * line in `$last` when it fails. `read_token` reads the token from stdin into `RUNNER_TOKEN` (a
+ * shell variable, not exported), then gives every later command an empty stdin.
+ * `uninstall_service` stops and removes the service of the runner in the current folder, and
+ * `at_least <version> <pinned>` compares two `2.338.0` versions.
+ */
+const RUNNER_HELPERS = `as_deploy() { runuser -u "$USER_NAME" -- "$@"; }
+uninstall_service() {
+  if [ -f .service ] && [ -f svc.sh ]; then
+    ./svc.sh stop >/dev/null 2>&1 || true
+    quiet ./svc.sh uninstall || fail "The runner's service could not be removed (svc.sh uninstall: $last)."
+  fi
+}
+at_least() {
+  case "$1" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac
+  [ "$(printf '%s\\n%s\\n' "$1" "$2" | sort -t . -k 1,1n -k 2,2n -k 3,3n | head -n 1)" = "$2" ]
+}
+quiet() {
+  last=''
+  if out=$("$@" 2>&1); then return 0; fi
+  last=$(printf '%s\\n' "$out" | tail -n 1)
+  return 1
+}
+read_token() {
+  RUNNER_TOKEN=''
+  IFS= read -r RUNNER_TOKEN || true
+  exec </dev/null
+  [ -n "$RUNNER_TOKEN" ] || fail "No $1 token arrived on standard input, so OpsCrew did not change the runner."
+}
+no_links() {
+  for d in "$@"; do
+    if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
+  done
+}`;
+
+/**
+ * Shell comment: how the token reaches `config.sh` without being on any command line (which
+ * `/proc/<pid>/cmdline` shows every user).
+ */
+const TOKEN_ENV_NOTE = `# The token is never on a command line: the runner reads each argument from
+# ACTIONS_RUNNER_INPUT_<ARG> and removes the variable once read (CommandSettings.cs). The variable is
+# set for runuser alone (not through as_deploy: POSIX does not say whether an assignment before a
+# shell function's call reaches the commands it runs), and runuser -u (not a login shell) keeps the
+# environment (to confirm in spike item 4); /proc/<pid>/environ is readable only by deploy and root.`;
+
+const RunnerParams = DesiredRunnerSchema.extend({
+  app: AppNameSchema,
+  user: z.literal("deploy"),
+});
+
+/**
+ * The app's runner (`params.app`, in `runnerDir(app)`): installed by a setup plan, removed by a
+ * setup plan without one (`remove: true`), a teardown, or an undo (any app's left behind).
+ * Setup follows plan.md "8.": the folder for deploy, the pinned archive checked by its SHA-256 and
+ * extracted as deploy, `bin/installdependencies.sh` as root, `config.sh` as deploy with the
+ * registration token from stdin, then `svc.sh install deploy` and `svc.sh start` as root. A
+ * runner already there that is not the planned one (older, another label or repository, or its
+ * service stopped) loses its service and its registration's local files first, and is installed
+ * again over its folder. The label and repository go to OpsCrew's `.opscrew-runner` beside it.
+ * Not yet run on a real server (spike item 4): the runner's own commands and files are as GitHub
+ * documents them and as its scripts read.
+ */
+function runnerScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const { app } = params(step, z.object({ app: AppNameSchema }));
+  if (plan.purpose !== "undo" && app !== plan.app) throw invalid(step, "app");
+  const base = { APP: app, DIR: runnerDir(app), RUNNERS_DIR, USER_NAME: "deploy" };
+  if (plan.purpose !== "setup" || step.params.remove === true) {
+    params(step, z.object({ app: AppNameSchema, remove: z.literal(true) }));
+    return scripts({
+      name: "github-runner.remove",
+      params: base,
+      helpers: RUNNER_HELPERS,
+      verify: `  [ ! -e "$DIR" ] && [ ! -L "$DIR" ]`,
+      apply: `read_token remove
+no_links "$RUNNERS_DIR" "$DIR"
+if [ -d "$DIR" ]; then
+  cd "$DIR"
+  uninstall_service
+  # A runner that never registered, or that GitHub does not unregister (it no longer knows it, or
+  # it is another repository's), still goes from the server; the line below tells the caller,
+  # which then deletes the registration through GitHub's API.
+  unregistered=false
+${TOKEN_ENV_NOTE.replace(/^/gm, "  ")}
+  if [ -f .runner ] && ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" runuser -u "$USER_NAME" -- ./config.sh remove >/dev/null 2>&1; then
+    unregistered=true
+  fi
+  echo "runner.unregistered=$unregistered"
+  cd /
+  rm -rf "$DIR"
+fi
+unset RUNNER_TOKEN
+# The runners' parent goes too once it is empty.
+if [ -d "$RUNNERS_DIR" ] && [ -z "$(ls -A "$RUNNERS_DIR")" ]; then rmdir "$RUNNERS_DIR"; fi`,
+      failed: "The runner's folder is still on the server.",
+      runnerToken: "remove",
+      doing: "removing the GitHub Actions runner",
+      timeoutMs: 5 * MINUTE,
+    });
+  }
+  const p = params(step, RunnerParams);
+  return scripts({
+    name: "github-runner",
+    params: {
+      ...base,
+      URL: p.repositoryUrl,
+      NAME: p.name,
+      LABEL: p.label,
+      VERSION: p.version,
+      SHA256: p.sha256,
+      ARCHIVE_URL: p.url,
+    },
+    helpers: RUNNER_HELPERS,
+    verify: `  [ -f "$DIR/.runner" ] || return 1
+  [ "$(cat "$DIR/.opscrew-runner" 2>/dev/null)" = "$(printf 'label=%s\\nurl=%s' "$LABEL" "$URL")" ] || return 1
+  unit=$(head -n 1 "$DIR/.service" 2>/dev/null) || return 1
+  systemctl is-active --quiet "$unit" || return 1
+  at_least "$(as_deploy timeout 30 "$DIR/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1)" "$VERSION"`,
+    snapshot: `if [ -e "$DIR/.runner" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
+    apply: `read_token registration
+no_links "$RUNNERS_DIR" "$DIR"
+# 1. The runner's folder, for deploy only.
+install -d -m 0755 "$RUNNERS_DIR"
+install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$DIR"
+# 2. The pinned archive, checked against its SHA-256 before anything in it runs.
+if ! command -v curl >/dev/null 2>&1; then apt_get update; apt_get install curl; fi
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL --retry 3 -o "$tmp/runner.tar.gz" "$ARCHIVE_URL" || fail 'The runner could not be downloaded from GitHub.'
+printf '%s  %s\\n' "$SHA256" "$tmp/runner.tar.gz" | sha256sum -c - >/dev/null 2>&1 ||
+  fail 'The downloaded runner does not match its pinned SHA-256, so OpsCrew did not install it.'
+chmod 0755 "$tmp"
+chmod 0644 "$tmp/runner.tar.gz"
+# A runner already here is not the planned one: its service goes, and its registration's local
+# files, so config.sh registers it again (--replace takes its place on GitHub).
+cd "$DIR"
+uninstall_service
+rm -f .runner .credentials .credentials_rsaparams .opscrew-runner
+# 3. Extracted as deploy, who owns everything in the folder.
+quiet as_deploy tar -xzf "$tmp/runner.tar.gz" -C "$DIR" || fail "The runner could not be unpacked ($last)."
+# 4. Its system packages, as root. deploy owns the script, and is in the docker group, which is
+# already root-equivalent: running it as root gives deploy nothing it did not have.
+install -d -m 0700 "$(dirname '${APT_LOG}')"
+# Another apt run may hold the lock (a fresh server's daily apt jobs): wait for it, as
+# package-repair does.
+i=0
+until "$DIR/bin/installdependencies.sh" >>'${APT_LOG}' 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -ge 60 ]; then
+    tail -n 5 '${APT_LOG}' >&2 || true
+    fail "The runner's system packages could not be installed (bin/installdependencies.sh)."
+  fi
+  sleep 5
+done
+# 5. Registered as deploy, with the label the deploy job asks for. --replace takes over an old
+# registration of the same name (this runner before, or a server set up again).
+${TOKEN_ENV_NOTE}
+if ! out=$(ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" runuser -u "$USER_NAME" -- ./config.sh --unattended --url "$URL" --name "$NAME" --labels "$LABEL" --work _work --replace 2>&1); then
+  fail "The runner could not register with GitHub ($(printf '%s\\n' "$out" | tail -n 1))."
+fi
+unset RUNNER_TOKEN
+# What it was registered with, for the next plan (the runner's .runner holds no labels).
+printf 'label=%s\\nurl=%s\\n' "$LABEL" "$URL" | write_file "$DIR/.opscrew-runner" 0644
+# 6. Its systemd service, run as deploy (svc.sh needs root and the runner's folder).
+quiet ./svc.sh install "$USER_NAME" || fail "The runner's service could not be installed (svc.sh install: $last)."
+quiet ./svc.sh start || fail "The runner's service did not start (svc.sh start: $last)."`,
+    failed: "The runner is not registered and running.",
+    runnerToken: "registration",
+    doing: "installing the GitHub Actions runner",
+    timeoutMs: 15 * MINUTE,
+  });
+}
+
 /**
  * How a step's scripts run: the Portainer and tunnel connector steps for Hetzner/DigitalOcean run
  * as the login (the deploy user); everything else as root.
@@ -1791,6 +1973,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return appDirsScripts(plan, step);
     case "app-record":
       return appRecordScripts(plan, step);
+    case "github-runner":
+      return runnerScripts(plan, step);
     case "edge":
       return edgeScripts(plan, step);
     case "tunnel-connector":

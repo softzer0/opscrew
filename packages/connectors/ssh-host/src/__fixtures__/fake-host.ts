@@ -137,6 +137,18 @@ export interface FakeFile {
   kind?: "link" | "other";
 }
 
+/**
+ * An app's GitHub Actions runner: registered (`.runner`), its service active, its version, and
+ * the label and repository URL it was registered with (`.opscrew-runner`).
+ */
+export interface FakeRunner {
+  registered: boolean;
+  active: boolean;
+  version: string;
+  label: string;
+  url: string;
+}
+
 export interface FakeCall {
   command: string;
   input?: string;
@@ -286,6 +298,13 @@ export class FakeHost implements RemoteExec {
   /** Pending dead-man switches: step -> restore. */
   timers = new Map<string, () => void>();
   armedSeconds: number[] = [];
+
+  /** Each app's GitHub Actions runner in /srv/runners/<app>, by app. */
+  runners = new Map<string, FakeRunner>();
+  /** What the runners' `config.sh` did with GitHub, in order (never a token). */
+  runnerLog: string[] = [];
+  /** `config.sh remove` fails (GitHub no longer knows the runner). */
+  unregisterFails = false;
 
   // failure injection
   /** Script names that exit non-zero (with an `opscrew:` message). */
@@ -733,6 +752,16 @@ export class FakeHost implements RemoteExec {
         ...tunnelApps.map((app) => addon(`tunnel:${app}`, `${TUNNELS_DIR}/${app}`, "tunnel.env")),
         addon("portainer", PORTAINER_DIR, "admin_password"),
       ].join("\n"),
+    );
+    add(
+      "runners",
+      [...this.runners.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(
+          ([app, runner]) =>
+            `${app} ${runner.registered ? "yes" : "no"} ${runner.active ? "active" : "inactive"} ${runner.version} ${runner.label} ${runner.url}`,
+        )
+        .join("\n"),
     );
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
@@ -1474,6 +1503,54 @@ export class FakeHost implements RemoteExec {
       }
       case "portainer.verify":
         return this.verify(this.portainerOk(p), p);
+
+      // the app's GitHub Actions runner
+      case "github-runner.check":
+      case "github-runner.verify": {
+        const runner = this.runners.get(p.APP ?? "");
+        // The version as a number (2.338.0 -> 2_338_000): the fake's versions have small parts.
+        const value = (version: string) =>
+          version.split(".").reduce((sum, part) => sum * 1000 + Number(part), 0);
+        const newEnough = value(runner?.version ?? "0.0.0") >= value(p.VERSION ?? "");
+        const ok =
+          runner !== undefined &&
+          runner.registered &&
+          runner.active &&
+          newEnough &&
+          runner.label === p.LABEL &&
+          runner.url === p.URL;
+        return name.endsWith("check") ? this.check(ok, { installed: runner?.registered ?? false }) : this.verify(ok, p);
+      }
+      case "github-runner.apply": {
+        if (!(input.split("\n")[0] ?? "")) {
+          return fail("No registration token arrived on standard input, so OpsCrew did not change the runner.");
+        }
+        // Installed again over its folder and registered again (--replace), the service restarted.
+        this.runnerLog.push(`register ${p.URL} ${p.NAME} ${p.LABEL} ${p.VERSION} from ${p.ARCHIVE_URL}`);
+        this.runners.set(p.APP ?? "", {
+          registered: true,
+          active: true,
+          version: p.VERSION ?? "",
+          label: p.LABEL ?? "",
+          url: p.URL ?? "",
+        });
+        return result();
+      }
+      case "github-runner.remove.check":
+      case "github-runner.remove.verify": {
+        const ok = !this.runners.has(p.APP ?? "");
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "github-runner.remove.apply": {
+        if (!(input.split("\n")[0] ?? "")) {
+          return fail("No remove token arrived on standard input, so OpsCrew did not change the runner.");
+        }
+        const app = p.APP ?? "";
+        const unregistered = this.runners.get(app)?.registered === true && !this.unregisterFails;
+        if (unregistered) this.runnerLog.push(`unregister ${app}`);
+        this.runners.delete(app);
+        return result(`runner.unregistered=${unregistered}\n`);
+      }
 
       case "package-repair.check":
         return this.check(!this.dpkgInterrupted, { interrupted: true });

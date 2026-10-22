@@ -52,6 +52,8 @@ interface RunOptions {
 
 const TOKEN_RE = /^[A-Za-z0-9+/=_.-]{16,8192}$/;
 const PASSWORD_RE = /^[\x20-\x7e]{12,128}$/;
+/** GitHub's runner registration and remove tokens (29 upper-case letters and digits today). */
+const RUNNER_TOKEN_RE = /^[A-Za-z0-9_-]{16,512}$/;
 
 interface Context {
   remote: RemoteExec;
@@ -59,9 +61,12 @@ interface Context {
   privilege: Privilege | null;
   redactor: Redactor;
   secrets: { tunnelToken?: string; portainerPassword?: string };
+  runnerToken: ApplyOptions["runnerToken"];
   verifyLogin: () => Promise<boolean>;
   deadManSeconds: number;
   recorder: Recorder | null;
+  /** The apps whose runner was removed without GitHub unregistering it. */
+  stillRegistered: string[];
   /** Written to the host record as `opscrewVersion`. */
   version: string;
   /** Clock for the host record's timestamps. */
@@ -331,6 +336,24 @@ async function guardedApply(
   }
 }
 
+/**
+ * Fetches the runner token a step needs, now that it runs. It is known to the redactor before it
+ * goes anywhere, so no error or output line can carry it.
+ */
+async function fetchRunnerToken(ctx: Context, kind: "registration" | "remove"): Promise<string> {
+  if (ctx.runnerToken === undefined) throw new Error("runnerToken is checked before any change");
+  const token = await ctx.runnerToken(kind);
+  ctx.redactor.addLiteral(token, "runner-token");
+  if (!RUNNER_TOKEN_RE.test(token)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The runner ${kind} token from GitHub does not look like one, so OpsCrew did not send it to the server.`,
+      { hint: `Run ${ctx.command} again for a fresh token.` },
+    );
+  }
+  return token;
+}
+
 /** Runs one change step; false when the server shows it is already in place. */
 async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Promise<boolean> {
   const check = await runOk(
@@ -351,7 +374,12 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
       scripts.doing,
     );
   }
-  const secret = scripts.secret ? ctx.secrets[scripts.secret.name] : undefined;
+  const secret =
+    scripts.runnerToken !== undefined
+      ? await fetchRunnerToken(ctx, scripts.runnerToken)
+      : scripts.secret
+        ? ctx.secrets[scripts.secret.name]
+        : undefined;
   const options: RunOptions =
     secret === undefined
       ? { timeoutMs: scripts.timeoutMs }
@@ -359,7 +387,11 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   if (scripts.deadMan !== undefined) {
     await guardedApply(ctx, step, scripts, scripts.deadMan, options);
   } else {
-    await runOk(ctx, wrap(ctx, step, scripts.apply), options, scripts.doing);
+    const result = await runOk(ctx, wrap(ctx, step, scripts.apply), options, scripts.doing);
+    // A runner's removal says whether GitHub unregistered it.
+    if (scripts.runnerToken === "remove" && /^runner\.unregistered=false$/m.test(result.stdout)) {
+      ctx.stillRegistered.push(String(step.params.app));
+    }
   }
   if (scripts.postApply !== undefined) {
     await runOk(
@@ -473,8 +505,9 @@ function refuse(message: string, hint: string): OpsCrewError {
  * `approvedHash`, and with PHASE_PRECONDITION when it has findings or blocked steps or a secret
  * it needs is missing. When a step fails, it throws a {@link HostApplyError} whose `applied` lists
  * the steps that changed the server before it.
- * Secrets go to the server only on stdin, into root-only files; they never appear in commands,
- * records or errors. Every change is recorded in `/etc/opscrew/host.json` before it is made.
+ * Secrets go to the server only on stdin, into root-only files or (a runner token) straight to
+ * the runner's `config.sh`; they never appear in commands, records or errors. `opts.runnerToken`
+ * is called only when a `github-runner` step runs. Every change is recorded in `/etc/opscrew/host.json` before it is made.
  */
 export async function applyHostPlan(
   remote: RemoteExec,
@@ -558,6 +591,12 @@ export async function applyHostPlan(
         "Supply it at apply time; it is never part of the plan.",
       );
     }
+    if (scripts.runnerToken !== undefined && opts.runnerToken === undefined) {
+      throw refuse(
+        "Applying this plan needs a GitHub runner token, and no way to fetch one was supplied.",
+        "Supply it at apply time; it is never part of the plan.",
+      );
+    }
   }
 
   const ctx: Context = {
@@ -566,9 +605,11 @@ export async function applyHostPlan(
     privilege: null,
     redactor,
     secrets,
+    runnerToken: opts.runnerToken,
     verifyLogin: opts.verifyLogin,
     deadManSeconds,
     recorder: null,
+    stillRegistered: [],
     version: opts.version ?? HOST_ADAPTER_VERSION,
     now: opts.now ?? (() => new Date()),
     command: opts.command,
@@ -608,5 +649,6 @@ export async function applyHostPlan(
       throw failure(error, applied);
     }
   }
-  return { applied, skipped };
+  const { stillRegistered } = ctx;
+  return stillRegistered.length > 0 ? { applied, skipped, stillRegistered } : { applied, skipped };
 }

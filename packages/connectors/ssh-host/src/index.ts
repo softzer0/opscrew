@@ -17,7 +17,9 @@ export {
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  RUNNERS_DIR,
   type RuntimeFileName,
+  runnerDir,
   runtimeFilePath,
   SECRET_RUNTIME_FILES,
   SHARED_DIRS,
@@ -32,17 +34,21 @@ export {
   type HostFacts,
   HostFactsSchema,
   otherActiveApps,
+  type RunnerFact,
   readableRecords,
+  runnerOf,
   tunnelOf,
 } from "./facts";
 export { hostPlanHash } from "./hash";
 export { inspectHost } from "./inspect";
+export { localExec } from "./local";
 export { isPublicAddress } from "./parse";
 export { planHost, planPortainer, planTeardown, planUndo } from "./plan";
 export {
   type ApplyOptions,
   type ApplyResult,
   type DesiredHost,
+  type DesiredRunner,
   type HostPlan,
   HostPlanSchema,
   type HostStep,

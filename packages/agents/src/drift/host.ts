@@ -94,6 +94,7 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "runtime-dirs": "Shared folders (/srv/edge, /srv/apps and /srv/data)",
   "app-dirs": "The app's folders (in /srv/apps and /srv/data)",
   "app-record": "The app's record (in /etc/opscrew/apps)",
+  "github-runner": "The GitHub Actions runner",
   edge: "The shared edge (/srv/edge)",
   "tunnel-connector": "Cloudflare Tunnel connector",
   portainer: "Portainer",
@@ -630,6 +631,9 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     }
     case "app-record":
       return appRecordDetails(facts, app);
+    // T1511 adds the runner's drift.
+    case "github-runner":
+      return [];
     // Only in a teardown: never in the setup plan drift compares with.
     case "edge":
       return [];

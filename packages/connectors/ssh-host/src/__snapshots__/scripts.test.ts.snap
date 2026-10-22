@@ -1,0 +1,2143 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the add-ons' scripts on a server the user owns > match their snapshot (they stay as they are on servers already set up) 1`] = `
+{
+  "plan 0: setup/portainer/apply": "# opscrew-host: portainer.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+RUN_AS='root'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+umask 077
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$(dirname "$DIR")"; fi
+install -d -m 0700 "$DIR"
+if ! command -v curl >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then apt_get update; apt_get install curl
+  else fail 'curl is missing on the server; install it, then turn Portainer on again.'; fi
+fi
+pw=''
+sent=false
+IFS= read -r pw || true
+if [ -n "$pw" ]; then
+  sent=true
+  printf '%s' "$pw" | write_file "$DIR/admin_password" 0600
+  pw=''
+  write_compose "$INITIAL_B64"
+elif [ "$NEEDS_PASSWORD" = true ]; then
+  fail 'No Portainer admin password arrived on standard input, so Portainer was not set up.'
+else
+  write_compose "$FINAL_B64"
+fi
+if ! compose up -d --remove-orphans --quiet-pull >/dev/null 2>&1; then
+  rm -f "$DIR/admin_password"
+  fail 'Portainer did not start (docker compose up failed).'
+fi
+code=$(wait_up) || code=none
+if [ "$code" != 204 ]; then
+  compose stop >/dev/null 2>&1 || true
+  rm -f "$DIR/admin_password"
+  if [ "$code" = 404 ] && [ "$sent" = true ]; then fail 'Portainer started without an admin account, so OpsCrew stopped it. Turn Portainer on again so OpsCrew can set the admin password.'; fi
+  if [ "$code" = 404 ]; then fail 'Portainer has data on this server but no admin account, and no admin password reached the server, so OpsCrew stopped it. Run opscrew portainer disable --delete-data and turn Portainer on again, or copy the password file from the computer that turned Portainer on and run the command again.'; fi
+  fail 'Portainer did not answer on 127.0.0.1:9443 within two minutes, so OpsCrew stopped it.'
+fi
+# The admin account exists: run without the one-time password file, then delete it.
+if ! compose_is "$FINAL_SHA256"; then
+  write_compose "$FINAL_B64"
+  rm -f "$DIR/admin_password"
+  compose up -d --remove-orphans >/dev/null 2>&1 || fail 'Portainer did not restart without its one-time password file.'
+fi
+rm -f "$DIR/admin_password"
+",
+  "plan 0: setup/portainer/check": "# opscrew-host: portainer.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+RUN_AS='root'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+verify_state() {
+  compose_is "$FINAL_SHA256" || return 1
+  [ ! -e "$DIR/admin_password" ] || return 1
+  running || return 1
+}
+if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 0: setup/portainer/verify": "# opscrew-host: portainer.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+RUN_AS='root'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+VERIFY_FAILED='Portainer is not running as planned.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+verify_state() {
+  compose_is "$FINAL_SHA256" || return 1
+  [ ! -e "$DIR/admin_password" ] || return 1
+  running || return 1
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 10: setup/portainer/apply": "# opscrew-host: portainer.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/home/deploy/opscrew/portainer'
+RUN_AS='login'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+umask 077
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$(dirname "$DIR")"; fi
+install -d -m 0700 "$DIR"
+if ! command -v curl >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then apt_get update; apt_get install curl
+  else fail 'curl is missing on the server; install it, then turn Portainer on again.'; fi
+fi
+pw=''
+sent=false
+IFS= read -r pw || true
+if [ -n "$pw" ]; then
+  sent=true
+  printf '%s' "$pw" | write_file "$DIR/admin_password" 0600
+  pw=''
+  write_compose "$INITIAL_B64"
+elif [ "$NEEDS_PASSWORD" = true ]; then
+  fail 'No Portainer admin password arrived on standard input, so Portainer was not set up.'
+else
+  write_compose "$FINAL_B64"
+fi
+if ! compose up -d --remove-orphans --quiet-pull >/dev/null 2>&1; then
+  rm -f "$DIR/admin_password"
+  fail 'Portainer did not start (docker compose up failed).'
+fi
+code=$(wait_up) || code=none
+if [ "$code" != 204 ]; then
+  compose stop >/dev/null 2>&1 || true
+  rm -f "$DIR/admin_password"
+  if [ "$code" = 404 ] && [ "$sent" = true ]; then fail 'Portainer started without an admin account, so OpsCrew stopped it. Turn Portainer on again so OpsCrew can set the admin password.'; fi
+  if [ "$code" = 404 ]; then fail 'Portainer has data on this server but no admin account, and no admin password reached the server, so OpsCrew stopped it. Run opscrew portainer disable --delete-data and turn Portainer on again, or copy the password file from the computer that turned Portainer on and run the command again.'; fi
+  fail 'Portainer did not answer on 127.0.0.1:9443 within two minutes, so OpsCrew stopped it.'
+fi
+# The admin account exists: run without the one-time password file, then delete it.
+if ! compose_is "$FINAL_SHA256"; then
+  write_compose "$FINAL_B64"
+  rm -f "$DIR/admin_password"
+  compose up -d --remove-orphans >/dev/null 2>&1 || fail 'Portainer did not restart without its one-time password file.'
+fi
+rm -f "$DIR/admin_password"
+",
+  "plan 10: setup/portainer/check": "# opscrew-host: portainer.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/home/deploy/opscrew/portainer'
+RUN_AS='login'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+verify_state() {
+  compose_is "$FINAL_SHA256" || return 1
+  [ ! -e "$DIR/admin_password" ] || return 1
+  running || return 1
+}
+if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 10: setup/portainer/verify": "# opscrew-host: portainer.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/home/deploy/opscrew/portainer'
+RUN_AS='login'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+VERIFY_FAILED='Portainer is not running as planned.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+verify_state() {
+  compose_is "$FINAL_SHA256" || return 1
+  [ ! -e "$DIR/admin_password" ] || return 1
+  running || return 1
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 11: setup/portainer/apply": "# opscrew-host: portainer.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/home/deploy/opscrew/portainer'
+PARENT='/home/deploy/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='true'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='login'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
+rm -rf "$DIR"
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+",
+  "plan 11: setup/portainer/check": "# opscrew-host: portainer.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/home/deploy/opscrew/portainer'
+PARENT='/home/deploy/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='true'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='login'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 11: setup/portainer/verify": "# opscrew-host: portainer.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/home/deploy/opscrew/portainer'
+PARENT='/home/deploy/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='true'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='login'
+VERIFY_FAILED='OpsCrew'\\''s portainer is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 1: setup/tunnel-connector/apply": "# opscrew-host: tunnel-connector.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PROJECT='shop-tunnel'
+ADDONS_ROOT='/srv/opscrew'
+TUNNELS_DIR='/srv/opscrew/cloudflared'
+RUN_AS='root'
+COMPOSE_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3Jldy4KbmFtZTogb3BzY3Jldy10dW5uZWwKc2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoyMDI2LjUuMUBzaGEyNTY6MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6IFsidHVubmVsIiwgIi0tbm8tYXV0b3VwZGF0ZSIsICJydW4iXQogICAgZW52X2ZpbGU6IFt0dW5uZWwuZW52XQogICAgbmV0d29ya19tb2RlOiBob3N0Cg=='
+COMPOSE_SHA256='a9db417691e92531f52a348fb1fcbd43dbeceab6bbfeeca31363d5aa84bd411d'
+TUNNEL_ID='6f1d0c2e-1111-4a5b-9c3d-0123456789ab'
+NEEDS_TOKEN='true'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+umask 077
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$ADDONS_ROOT" "$TUNNELS_DIR"; fi
+install -d -m 0700 "$DIR"
+token=''
+IFS= read -r token || true
+recreate=''
+if [ -n "$token" ]; then
+  case "$token" in
+    *[!A-Za-z0-9+/=_.-]*) token=''; fail 'The tunnel token has unexpected characters, so it was not written.' ;;
+  esac
+  printf 'TUNNEL_TOKEN=%s\\n' "$token" | write_file "$DIR/tunnel.env" 0600
+  token=''
+  # A new token means a new connector container, so it really uses it.
+  recreate=--force-recreate
+elif [ "$NEEDS_TOKEN" = true ] || [ ! -s "$DIR/tunnel.env" ]; then
+  fail 'No tunnel token arrived on standard input, so the tunnel connector was not set up.'
+fi
+# The tunnel id is not secret: it tells a later plan whether the tunnel was replaced.
+printf '%s\\n' "$TUNNEL_ID" > "$DIR/tunnel.id"
+write_compose "$COMPOSE_B64"
+# shellcheck disable=SC2086 # recreate is empty or one flag.
+compose up -d --remove-orphans --quiet-pull $recreate >/dev/null 2>&1 || fail 'The tunnel connector did not start (docker compose up failed).'
+i=0
+until compose logs --no-color --tail 300 2>/dev/null | grep -q 'Registered tunnel connection'; do
+  i=$((i + 1))
+  if [ "$i" -ge 45 ]; then fail 'The tunnel connector did not connect to Cloudflare within 90 seconds. Check that the server can reach Cloudflare on port 7844 (outbound) and that the tunnel still exists.'; fi
+  sleep 2
+done
+",
+  "plan 1: setup/tunnel-connector/check": "# opscrew-host: tunnel-connector.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PROJECT='shop-tunnel'
+ADDONS_ROOT='/srv/opscrew'
+TUNNELS_DIR='/srv/opscrew/cloudflared'
+RUN_AS='root'
+COMPOSE_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3Jldy4KbmFtZTogb3BzY3Jldy10dW5uZWwKc2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoyMDI2LjUuMUBzaGEyNTY6MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6IFsidHVubmVsIiwgIi0tbm8tYXV0b3VwZGF0ZSIsICJydW4iXQogICAgZW52X2ZpbGU6IFt0dW5uZWwuZW52XQogICAgbmV0d29ya19tb2RlOiBob3N0Cg=='
+COMPOSE_SHA256='a9db417691e92531f52a348fb1fcbd43dbeceab6bbfeeca31363d5aa84bd411d'
+TUNNEL_ID='6f1d0c2e-1111-4a5b-9c3d-0123456789ab'
+NEEDS_TOKEN='true'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+verify_state() {
+  [ -s "$DIR/tunnel.env" ] || return 1
+  [ "$(head -n 1 "$DIR/tunnel.id" 2>/dev/null)" = "$TUNNEL_ID" ] || return 1
+  compose_is "$COMPOSE_SHA256" || return 1
+  running || return 1
+}
+if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 1: setup/tunnel-connector/verify": "# opscrew-host: tunnel-connector.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PROJECT='shop-tunnel'
+ADDONS_ROOT='/srv/opscrew'
+TUNNELS_DIR='/srv/opscrew/cloudflared'
+RUN_AS='root'
+COMPOSE_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3Jldy4KbmFtZTogb3BzY3Jldy10dW5uZWwKc2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoyMDI2LjUuMUBzaGEyNTY6MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6IFsidHVubmVsIiwgIi0tbm8tYXV0b3VwZGF0ZSIsICJydW4iXQogICAgZW52X2ZpbGU6IFt0dW5uZWwuZW52XQogICAgbmV0d29ya19tb2RlOiBob3N0Cg=='
+COMPOSE_SHA256='a9db417691e92531f52a348fb1fcbd43dbeceab6bbfeeca31363d5aa84bd411d'
+TUNNEL_ID='6f1d0c2e-1111-4a5b-9c3d-0123456789ab'
+NEEDS_TOKEN='true'
+VERIFY_FAILED='The tunnel connector is not running.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+verify_state() {
+  [ -s "$DIR/tunnel.env" ] || return 1
+  [ "$(head -n 1 "$DIR/tunnel.id" 2>/dev/null)" = "$TUNNEL_ID" ] || return 1
+  compose_is "$COMPOSE_SHA256" || return 1
+  running || return 1
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 2: setup/portainer/apply": "# opscrew-host: portainer.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+RUN_AS='root'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+umask 077
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$(dirname "$DIR")"; fi
+install -d -m 0700 "$DIR"
+if ! command -v curl >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then apt_get update; apt_get install curl
+  else fail 'curl is missing on the server; install it, then turn Portainer on again.'; fi
+fi
+pw=''
+sent=false
+IFS= read -r pw || true
+if [ -n "$pw" ]; then
+  sent=true
+  printf '%s' "$pw" | write_file "$DIR/admin_password" 0600
+  pw=''
+  write_compose "$INITIAL_B64"
+elif [ "$NEEDS_PASSWORD" = true ]; then
+  fail 'No Portainer admin password arrived on standard input, so Portainer was not set up.'
+else
+  write_compose "$FINAL_B64"
+fi
+if ! compose up -d --remove-orphans --quiet-pull >/dev/null 2>&1; then
+  rm -f "$DIR/admin_password"
+  fail 'Portainer did not start (docker compose up failed).'
+fi
+code=$(wait_up) || code=none
+if [ "$code" != 204 ]; then
+  compose stop >/dev/null 2>&1 || true
+  rm -f "$DIR/admin_password"
+  if [ "$code" = 404 ] && [ "$sent" = true ]; then fail 'Portainer started without an admin account, so OpsCrew stopped it. Turn Portainer on again so OpsCrew can set the admin password.'; fi
+  if [ "$code" = 404 ]; then fail 'Portainer has data on this server but no admin account, and no admin password reached the server, so OpsCrew stopped it. Run opscrew portainer disable --delete-data and turn Portainer on again, or copy the password file from the computer that turned Portainer on and run the command again.'; fi
+  fail 'Portainer did not answer on 127.0.0.1:9443 within two minutes, so OpsCrew stopped it.'
+fi
+# The admin account exists: run without the one-time password file, then delete it.
+if ! compose_is "$FINAL_SHA256"; then
+  write_compose "$FINAL_B64"
+  rm -f "$DIR/admin_password"
+  compose up -d --remove-orphans >/dev/null 2>&1 || fail 'Portainer did not restart without its one-time password file.'
+fi
+rm -f "$DIR/admin_password"
+",
+  "plan 2: setup/portainer/check": "# opscrew-host: portainer.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+RUN_AS='root'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+verify_state() {
+  compose_is "$FINAL_SHA256" || return 1
+  [ ! -e "$DIR/admin_password" ] || return 1
+  running || return 1
+}
+if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 2: setup/portainer/verify": "# opscrew-host: portainer.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+RUN_AS='root'
+PROJECT='opscrew-portainer'
+PORT='9443'
+INITIAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgojIEZpcnN0IHN0YXJ0OiBQb3J0YWluZXIgY3JlYXRlcyBpdHMgYWRtaW4gZnJvbSAuL2FkbWluX3Bhc3N3b3JkLCB3aGljaCBpcyB0aGVuIGRlbGV0ZWQuCm5hbWU6IG9wc2NyZXctcG9ydGFpbmVyCnNlcnZpY2VzOgogIHBvcnRhaW5lcjoKICAgIGltYWdlOiBwb3J0YWluZXIvcG9ydGFpbmVyLWNlOjIuMzMuMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6CiAgICAgIC0gLS1odHRwLWRpc2FibGVkCiAgICAgIC0gLS1hZG1pbi1wYXNzd29yZC1maWxlCiAgICAgIC0gL3J1bi9zZWNyZXRzL3BvcnRhaW5lcl9hZG1pbl9wYXNzd29yZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQogICAgc2VjcmV0czoKICAgICAgLSBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQKdm9sdW1lczoKICBwb3J0YWluZXJfZGF0YToge30Kc2VjcmV0czoKICBwb3J0YWluZXJfYWRtaW5fcGFzc3dvcmQ6CiAgICBmaWxlOiAuL2FkbWluX3Bhc3N3b3JkCg=='
+FINAL_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3JldyBmcm9tIG9wc2NyZXcvcGxhbi55YW1sLgpuYW1lOiBvcHNjcmV3LXBvcnRhaW5lcgpzZXJ2aWNlczoKICBwb3J0YWluZXI6CiAgICBpbWFnZTogcG9ydGFpbmVyL3BvcnRhaW5lci1jZToyLjMzLjEKICAgIHJlc3RhcnQ6IHVubGVzcy1zdG9wcGVkCiAgICBjb21tYW5kOgogICAgICAtIC0taHR0cC1kaXNhYmxlZAogICAgcG9ydHM6CiAgICAgIC0gMTI3LjAuMC4xOjk0NDM6OTQ0MwogICAgdm9sdW1lczoKICAgICAgLSAvdmFyL3J1bi9kb2NrZXIuc29jazovdmFyL3J1bi9kb2NrZXIuc29jawogICAgICAtIHBvcnRhaW5lcl9kYXRhOi9kYXRhCiAgICBzZWN1cml0eV9vcHQ6CiAgICAgIC0gbm8tbmV3LXByaXZpbGVnZXM6dHJ1ZQp2b2x1bWVzOgogIHBvcnRhaW5lcl9kYXRhOiB7fQo='
+FINAL_SHA256='b40f810e9c54b65ad60041189f6bbfd2e7287eb9ca4c9d4ad833069eedc2edda'
+NEEDS_PASSWORD='true'
+VERIFY_FAILED='Portainer is not running as planned.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+admin_check() { curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/api/users/admin/check" 2>/dev/null || true; }
+wait_up() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    code=$(admin_check)
+    case "$code" in 204|404) echo "$code"; return 0 ;; esac
+    i=$((i + 1))
+    sleep 2
+  done
+  return 1
+}
+verify_state() {
+  compose_is "$FINAL_SHA256" || return 1
+  [ ! -e "$DIR/admin_password" ] || return 1
+  running || return 1
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 2: setup/tunnel-connector/apply": "# opscrew-host: tunnel-connector.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PROJECT='shop-tunnel'
+ADDONS_ROOT='/srv/opscrew'
+TUNNELS_DIR='/srv/opscrew/cloudflared'
+RUN_AS='root'
+COMPOSE_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3Jldy4KbmFtZTogb3BzY3Jldy10dW5uZWwKc2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoyMDI2LjUuMUBzaGEyNTY6MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6IFsidHVubmVsIiwgIi0tbm8tYXV0b3VwZGF0ZSIsICJydW4iXQogICAgZW52X2ZpbGU6IFt0dW5uZWwuZW52XQogICAgbmV0d29ya19tb2RlOiBob3N0Cg=='
+COMPOSE_SHA256='a9db417691e92531f52a348fb1fcbd43dbeceab6bbfeeca31363d5aa84bd411d'
+TUNNEL_ID='6f1d0c2e-1111-4a5b-9c3d-0123456789ab'
+NEEDS_TOKEN='true'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+umask 077
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$ADDONS_ROOT" "$TUNNELS_DIR"; fi
+install -d -m 0700 "$DIR"
+token=''
+IFS= read -r token || true
+recreate=''
+if [ -n "$token" ]; then
+  case "$token" in
+    *[!A-Za-z0-9+/=_.-]*) token=''; fail 'The tunnel token has unexpected characters, so it was not written.' ;;
+  esac
+  printf 'TUNNEL_TOKEN=%s\\n' "$token" | write_file "$DIR/tunnel.env" 0600
+  token=''
+  # A new token means a new connector container, so it really uses it.
+  recreate=--force-recreate
+elif [ "$NEEDS_TOKEN" = true ] || [ ! -s "$DIR/tunnel.env" ]; then
+  fail 'No tunnel token arrived on standard input, so the tunnel connector was not set up.'
+fi
+# The tunnel id is not secret: it tells a later plan whether the tunnel was replaced.
+printf '%s\\n' "$TUNNEL_ID" > "$DIR/tunnel.id"
+write_compose "$COMPOSE_B64"
+# shellcheck disable=SC2086 # recreate is empty or one flag.
+compose up -d --remove-orphans --quiet-pull $recreate >/dev/null 2>&1 || fail 'The tunnel connector did not start (docker compose up failed).'
+i=0
+until compose logs --no-color --tail 300 2>/dev/null | grep -q 'Registered tunnel connection'; do
+  i=$((i + 1))
+  if [ "$i" -ge 45 ]; then fail 'The tunnel connector did not connect to Cloudflare within 90 seconds. Check that the server can reach Cloudflare on port 7844 (outbound) and that the tunnel still exists.'; fi
+  sleep 2
+done
+",
+  "plan 2: setup/tunnel-connector/check": "# opscrew-host: tunnel-connector.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PROJECT='shop-tunnel'
+ADDONS_ROOT='/srv/opscrew'
+TUNNELS_DIR='/srv/opscrew/cloudflared'
+RUN_AS='root'
+COMPOSE_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3Jldy4KbmFtZTogb3BzY3Jldy10dW5uZWwKc2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoyMDI2LjUuMUBzaGEyNTY6MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6IFsidHVubmVsIiwgIi0tbm8tYXV0b3VwZGF0ZSIsICJydW4iXQogICAgZW52X2ZpbGU6IFt0dW5uZWwuZW52XQogICAgbmV0d29ya19tb2RlOiBob3N0Cg=='
+COMPOSE_SHA256='a9db417691e92531f52a348fb1fcbd43dbeceab6bbfeeca31363d5aa84bd411d'
+TUNNEL_ID='6f1d0c2e-1111-4a5b-9c3d-0123456789ab'
+NEEDS_TOKEN='true'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+verify_state() {
+  [ -s "$DIR/tunnel.env" ] || return 1
+  [ "$(head -n 1 "$DIR/tunnel.id" 2>/dev/null)" = "$TUNNEL_ID" ] || return 1
+  compose_is "$COMPOSE_SHA256" || return 1
+  running || return 1
+}
+if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 2: setup/tunnel-connector/verify": "# opscrew-host: tunnel-connector.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PROJECT='shop-tunnel'
+ADDONS_ROOT='/srv/opscrew'
+TUNNELS_DIR='/srv/opscrew/cloudflared'
+RUN_AS='root'
+COMPOSE_B64='IyBHZW5lcmF0ZWQgYnkgT3BzQ3Jldy4KbmFtZTogb3BzY3Jldy10dW5uZWwKc2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoyMDI2LjUuMUBzaGEyNTY6MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMQogICAgcmVzdGFydDogdW5sZXNzLXN0b3BwZWQKICAgIGNvbW1hbmQ6IFsidHVubmVsIiwgIi0tbm8tYXV0b3VwZGF0ZSIsICJydW4iXQogICAgZW52X2ZpbGU6IFt0dW5uZWwuZW52XQogICAgbmV0d29ya19tb2RlOiBob3N0Cg=='
+COMPOSE_SHA256='a9db417691e92531f52a348fb1fcbd43dbeceab6bbfeeca31363d5aa84bd411d'
+TUNNEL_ID='6f1d0c2e-1111-4a5b-9c3d-0123456789ab'
+NEEDS_TOKEN='true'
+VERIFY_FAILED='The tunnel connector is not running.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+compose_is() { [ -f "$DIR/compose.yaml" ] && [ "$(sha256sum "$DIR/compose.yaml" | cut -d ' ' -f 1)" = "$1" ]; }
+write_compose() { printf '%s' "$1" | base64 -d | write_file "$DIR/compose.yaml" 0600; }
+running() { [ -n "$(compose ps --status running -q 2>/dev/null)" ]; }
+verify_state() {
+  [ -s "$DIR/tunnel.env" ] || return 1
+  [ "$(head -n 1 "$DIR/tunnel.id" 2>/dev/null)" = "$TUNNEL_ID" ] || return 1
+  compose_is "$COMPOSE_SHA256" || return 1
+  running || return 1
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 3: setup/portainer/apply": "# opscrew-host: portainer.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+PARENT='/srv/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
+rm -rf "$DIR"
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+",
+  "plan 3: setup/portainer/check": "# opscrew-host: portainer.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+PARENT='/srv/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 3: setup/portainer/verify": "# opscrew-host: portainer.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+PARENT='/srv/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+VERIFY_FAILED='OpsCrew'\\''s portainer is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 3: setup/tunnel-connector/apply": "# opscrew-host: tunnel-connector.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PARENT='/srv/opscrew/cloudflared'
+PROJECT='shop-tunnel'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
+rm -rf "$DIR"
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+",
+  "plan 3: setup/tunnel-connector/check": "# opscrew-host: tunnel-connector.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PARENT='/srv/opscrew/cloudflared'
+PROJECT='shop-tunnel'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 3: setup/tunnel-connector/verify": "# opscrew-host: tunnel-connector.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PARENT='/srv/opscrew/cloudflared'
+PROJECT='shop-tunnel'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+VERIFY_FAILED='OpsCrew'\\''s tunnel-connector is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 4: teardown/portainer/apply": "# opscrew-host: portainer.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+PARENT='/srv/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='true'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
+rm -rf "$DIR"
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+",
+  "plan 4: teardown/portainer/check": "# opscrew-host: portainer.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+PARENT='/srv/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='true'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 4: teardown/portainer/verify": "# opscrew-host: portainer.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/portainer'
+PARENT='/srv/opscrew'
+PROJECT='opscrew-portainer'
+DELETE_DATA='true'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+VERIFY_FAILED='OpsCrew'\\''s portainer is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "plan 4: teardown/tunnel-connector/apply": "# opscrew-host: tunnel-connector.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PARENT='/srv/opscrew/cloudflared'
+PROJECT='shop-tunnel'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
+rm -rf "$DIR"
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+",
+  "plan 4: teardown/tunnel-connector/check": "# opscrew-host: tunnel-connector.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PARENT='/srv/opscrew/cloudflared'
+PROJECT='shop-tunnel'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "plan 4: teardown/tunnel-connector/verify": "# opscrew-host: tunnel-connector.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+DIR='/srv/opscrew/cloudflared/shop'
+PARENT='/srv/opscrew/cloudflared'
+PROJECT='shop-tunnel'
+DELETE_DATA='false'
+ADDONS_ROOT='/srv/opscrew'
+RUN_AS='root'
+VERIFY_FAILED='OpsCrew'\\''s tunnel-connector is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}
+verify_state() {
+  [ ! -e "$DIR" ] || return 1
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
+  return 0
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+}
+`;

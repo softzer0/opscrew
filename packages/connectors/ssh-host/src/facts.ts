@@ -117,6 +117,21 @@ export type AddonFact = z.infer<typeof AddonSchema>;
 /** An app's Cloudflare Tunnel connector (`/srv/opscrew/cloudflared/<app>`, project `<app>-tunnel`). */
 const TunnelSchema = AddonSchema.extend({ app: z.string() });
 
+/** An app's GitHub Actions runner in `/srv/runners/<app>`. */
+const RunnerSchema = z.object({
+  app: z.string(),
+  /** It registered with GitHub (`config.sh` wrote `.runner`). */
+  registered: z.boolean(),
+  /** Its systemd service (the unit `svc.sh install` names in `.service`) is active. */
+  active: z.boolean(),
+  /** `bin/Runner.Listener --version`, null when it could not be read. */
+  version: z.string().nullable(),
+  /** The label and repository it was registered with (OpsCrew's `.opscrew-runner`), or null. */
+  label: z.string().nullable(),
+  repositoryUrl: z.string().nullable(),
+});
+export type RunnerFact = z.infer<typeof RunnerSchema>;
+
 const WebFilterRulesSchema = z.object({
   /** OpsCrew's chain `OPSCREW-WEB`, null when it does not exist. */
   chain: z
@@ -312,6 +327,8 @@ export const HostFactsSchema = z.object({
   /** Each app's tunnel connector whose folder exists, by app (see {@link tunnelOf}). */
   tunnels: z.array(TunnelSchema),
   portainer: AddonSchema,
+  /** Each app's GitHub Actions runner whose folder exists (see {@link runnerOf}). */
+  runners: z.array(RunnerSchema).default([]),
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
 });
@@ -333,6 +350,11 @@ export function tunnelOf(facts: Pick<HostFacts, "tunnels">, app: string): AddonF
       tunnelId: null,
     }
   );
+}
+
+/** `app`'s GitHub Actions runner as inspection found it in its folder, undefined without one. */
+export function runnerOf(facts: Pick<HostFacts, "runners">, app: string): RunnerFact | undefined {
+  return facts.runners.find((runner) => runner.app === app);
 }
 
 /** The records of the apps on the server that could be read (`HostFacts["apps"]`). */

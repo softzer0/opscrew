@@ -10,6 +10,17 @@ export const EDGE_DIR = "/srv/edge";
  */
 export const EDGE_PROJECT = "opscrew-edge";
 
+/** The parent of each app's GitHub Actions runner (root, 0755). */
+export const RUNNERS_DIR = "/srv/runners";
+
+/**
+ * The folder of an app's GitHub Actions runner, owned by deploy (0750), which runs it. The host
+ * plan's app already names the environment (`<app>-<env>` for every environment but prod).
+ */
+export function runnerDir(app: string): string {
+  return `${RUNNERS_DIR}/${app}`;
+}
+
 /** The folders the apps share, which the `runtime-dirs` step creates for the deploy user. */
 export const SHARED_DIRS = [EDGE_DIR, APPS_DIR, DATA_DIR] as const;
 

@@ -17,6 +17,7 @@ import {
   PORTAINER_PORT,
   PORTAINER_PROJECT,
   PORTAINER_REPOSITORY,
+  runnerDir,
   SHARED_DIRS,
   SSHD_HEADER,
   SSHD_MODULI_FILE,
@@ -38,7 +39,9 @@ import {
   HostFactsSchema,
   type HostRecordEntry,
   otherActiveApps,
+  type RunnerFact,
   readableRecords,
+  runnerOf,
   tunnelOf,
   type WebFilterRules,
 } from "./facts";
@@ -56,6 +59,7 @@ import {
   AppNameSchema,
   type DesiredHost,
   DesiredHostSchema,
+  type DesiredRunner,
   HOST_PLAN_SCHEMA_VERSION,
   type HostFinding,
   type HostPlan,
@@ -98,6 +102,7 @@ const APP_STEPS: ReadonlySet<HostStepId> = new Set([
   "deploy-key",
   "app-dirs",
   "app-record",
+  "github-runner",
   "tunnel-connector",
 ]);
 
@@ -292,7 +297,13 @@ const TITLES = {
   removeTunnel: "Remove the Cloudflare Tunnel connector",
   removePortainer: "Remove Portainer (its data volume stays)",
   removePortainerData: "Remove Portainer and its data",
+  removeRunner: (app: string) => `Remove the GitHub Actions runner of "${app}"`,
 };
+
+/** What a runner's removal does, in a plan's details. */
+function runnerRemoval(app: string): string {
+  return `Stops and removes its service, unregisters it from GitHub with a remove token fetched while this plan is applied (never part of this plan), and deletes ${runnerDir(app)}.`;
+}
 
 interface SetupContext {
   facts: HostFacts;
@@ -1062,6 +1073,95 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
   );
 }
 
+/** `version` is `pinned` or newer (`2.338.0` style). */
+function atLeast(version: string, pinned: string): boolean {
+  const [a = [], b = []] = [version, pinned].map((text) => text.split(".").map(Number));
+  for (let i = 0; i < 3; i += 1) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+  }
+  return true;
+}
+
+/** Why the app's registered runner, as inspection found it, is not the planned one. */
+function runnerDifferences(found: RunnerFact, runner: DesiredRunner): string[] {
+  const why: string[] = [];
+  if (found.version === null || !atLeast(found.version, runner.version)) {
+    why.push(`it is at ${found.version ?? "an unknown version"}, older than ${runner.version}`);
+  }
+  if (found.label !== runner.label) {
+    why.push(`it has the label ${found.label ?? "unknown"}, not ${runner.label}`);
+  }
+  if (found.repositoryUrl !== runner.repositoryUrl) {
+    why.push(
+      `it is registered with ${found.repositoryUrl ?? "an unknown repository"}, not ${runner.repositoryUrl}`,
+    );
+  }
+  if (!found.active) why.push("its service is not running");
+  return why;
+}
+
+/**
+ * The app's GitHub Actions runner (`runner: server`): installed when the caller passes one, and
+ * removed when it does not and the app has one (its deploy job runs on GitHub's machines again).
+ * It is in place once registered with the planned label and repository, at the pinned version or
+ * newer (it updates itself), with its service active. Otherwise it is installed again over its
+ * folder, registered again with `--replace`, and its service restarted.
+ */
+function runnerStep({ facts, desired }: SetupContext): HostStep | undefined {
+  const app = desired.app;
+  const found = runnerOf(facts, app);
+  const runner = desired.runner;
+  if (runner === undefined) {
+    if (found === undefined) return undefined;
+    return step(
+      "github-runner",
+      TITLES.removeRunner(app),
+      "change",
+      { app, remove: true },
+      `The deploy job runs on GitHub's machines again. ${runnerRemoval(app)}`,
+    );
+  }
+  const asset = facts.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  if (runner.asset !== asset) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The runner's archive is for ${runner.asset}, but this server is ${facts.arch}.`,
+      { hint: `Plan again with the runner's ${asset} archive.` },
+    );
+  }
+  const archive = `actions-runner-${runner.asset}-${runner.version}.tar.gz`;
+  if (!runner.url.endsWith(`/v${runner.version}/${archive}`)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The runner's archive URL is not the one of version ${runner.version} for ${runner.asset}.`,
+      { hint: "Plan again with the pinned runner's URL." },
+    );
+  }
+  const params = { app, user: "deploy", ...runner };
+  const title = `Install the GitHub Actions runner ${runner.version} for "${app}", run as deploy, with the label ${runner.label}`;
+  const why = found?.registered ? runnerDifferences(found, runner) : [];
+  if (found?.registered && why.length === 0) {
+    return step(
+      "github-runner",
+      title,
+      "in-place",
+      params,
+      `Already registered and running (version ${found.version}).`,
+    );
+  }
+  const again =
+    why.length === 0
+      ? ""
+      : `The runner on this server is not the planned one (${listText(why)}), so OpsCrew installs it again over its folder, registers it again in its place and restarts its service. `;
+  return step(
+    "github-runner",
+    title,
+    "change",
+    params,
+    `${again}Downloads ${archive} from GitHub and checks it against the SHA-256 ${runner.sha256}, extracts it to ${runnerDir(app)} as deploy, installs its system packages (bin/installdependencies.sh, as root), registers it with ${runner.repositoryUrl} as ${runner.name} with a registration token fetched while this plan is applied (never part of this plan), and runs it as a systemd service as deploy (svc.sh, as root). The deploy job then runs on this server, and GitHub never connects to it. The runner updates itself.`,
+  );
+}
+
 /** ` (<image>)` for the image a rendered Compose file names first, for a step title. */
 function imageIn(compose: string): string {
   const image = /^\s*image:\s*["']?([^"'\s]+)/m.exec(compose)?.[1];
@@ -1246,6 +1346,9 @@ function allBlocked(desired: DesiredHost): HostStep[] {
     step("app-dirs", `Create the folders of "${desired.app}"`, "blocked", {}, reason),
     step("app-record", `Record the OpsCrew app "${desired.app}"`, "blocked", {}, reason),
   ];
+  if (desired.runner !== undefined) {
+    steps.push(step("github-runner", "Install the GitHub Actions runner", "blocked", {}, reason));
+  }
   if (desired.tunnel !== undefined) {
     steps.push(step("tunnel-connector", TITLES.tunnel, "blocked", {}, reason));
   }
@@ -1285,11 +1388,11 @@ function conflicts(
  * The host plan that prepares the server for `desired`. Each step is shared by the apps on the
  * server (Docker, the deploy user, SSH hardening, ufw, the web filter, fail2ban, automatic
  * updates, the shared folders and, when asked for, Portainer) or the app's own (its deploy key,
- * its folders, its record and, when asked for, its tunnel connector). While other apps are on
- * the server, a shared part that is there stays as it is: it is planned only when missing. Each
- * step is in place, a change or blocked; every blocked step comes with a finding that says what
- * was found and what to do, and to run `command` (for example `opscrew provision`) again once it
- * is fixed.
+ * its folders, its record and, when asked for, its GitHub Actions runner and its tunnel
+ * connector). While other apps are on the server, a shared part that is there stays as it is: it
+ * is planned only when missing. Each step is in place, a change or blocked; every blocked step
+ * comes with a finding that says what was found and what to do, and to run `command` (for
+ * example `opscrew provision`) again once it is fixed.
  */
 export function planHost(facts: HostFacts, desired: DesiredHost, command: string): HostPlan {
   const f = parseFacts(facts);
@@ -1366,6 +1469,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
     runtimeStep(ctx),
     appDirsStep(ctx),
     appRecordStep(ctx),
+    runnerStep(ctx),
     tunnelStep(ctx),
     portainerStep(ctx),
   ].filter((item): item is HostStep => item !== undefined);
@@ -1374,9 +1478,10 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
 
 /**
  * The host plan that removes the app `opts.app` from the server, and only its own parts: its
- * containers (by their Compose project label, so they go without a record too), its folder
- * `/srv/apps/<app>`, its site and kamal-proxy service on the shared edge, its tunnel connector, its
- * deploy key while other apps stay, and its record. Its data (`/srv/data/<app>`, its Compose
+ * GitHub Actions runner (first, so no deploy job runs meanwhile), its containers (by their Compose
+ * project label, so they go without a record too), its folder `/srv/apps/<app>`, its site and
+ * kamal-proxy service on the shared edge, its tunnel connector, its deploy key while other apps
+ * stay, and its record. Its data (`/srv/data/<app>`, its Compose
  * volumes) is deleted only with `deleteData`; otherwise its record stays as `data-kept`, so only
  * its project can take the data again. With the last app the shared edge goes too (the
  * `opscrew-edge` project's containers, network and volumes, and `/srv/edge` when OpsCrew created
@@ -1430,6 +1535,19 @@ export function planTeardown(
   const volumes = f.volumeProjects.includes(app);
   const dataFiles = (dir(dirs.data)?.entries ?? 0) > 0;
   const steps: HostStep[] = [];
+
+  // The runner goes first, so no deploy job runs while the app is removed.
+  if (runnerOf(f, app) !== undefined) {
+    steps.push(
+      step(
+        "github-runner",
+        TITLES.removeRunner(app),
+        "change",
+        { app, remove: true },
+        runnerRemoval(app),
+      ),
+    );
+  }
 
   // Data goes only together with the app (its containers or its folder, or files in its data
   // folder), or with its record: never Compose volumes alone, which could be another project's.
@@ -1552,8 +1670,9 @@ function rulesToRemove(
 
 /**
  * The host plan that reverses OpsCrew's own host changes, from the record in
- * `/etc/opscrew/host.json`: Portainer and the tunnel connector, the shared folders when empty,
- * automatic updates, firewall rules, SSH settings and the deploy user, then OpsCrew's records.
+ * `/etc/opscrew/host.json`: Portainer, the tunnel connectors and runners left behind, the shared
+ * folders when empty, automatic updates, firewall rules, SSH settings and the deploy user, then
+ * OpsCrew's records.
  * Refused while an app is still set up on the server (an app removed with its data kept is not:
  * its data folder stays). Anything OpsCrew did not install is left alone, and Docker stays
  * installed (other software may use it). Findings say to run `command` (for example
@@ -1608,6 +1727,21 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
           "change",
           { remove: true, app: tunnel.app },
           undefined,
+          "shared",
+        ),
+      );
+    }
+  }
+  // Each app's teardown removes its runner; one left behind goes here.
+  if (entry("github-runner")) {
+    for (const runner of f.runners) {
+      steps.push(
+        step(
+          "github-runner",
+          TITLES.removeRunner(runner.app),
+          "change",
+          { app: runner.app, remove: true },
+          runnerRemoval(runner.app),
           "shared",
         ),
       );
