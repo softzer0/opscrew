@@ -381,7 +381,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema` and `pnpm lint`
   - Effort: high
 
-- [ ] T1517b [US6] The runner machine's host plan, in `packages/connectors/ssh-host/src/**`
+- [X] T1517b [US6] The runner machine's host plan, in `packages/connectors/ssh-host/src/**`
   - Owns: ssh-host (+ tests)
   - Reads: data-model.md "Runner machine"; plan.md "8." and "16."
   - Depends: T1511b, T1517a
