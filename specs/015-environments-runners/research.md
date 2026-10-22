@@ -175,14 +175,21 @@ considered. The open items for the spike (T1502) are at the end.
 
 ## Spike results (T1502, 2026-10-22)
 
-Run on the throwaway repository (private, owned by a user) through a throwaway workflow, removed afterwards; and locally on this Windows 11 computer (Docker Desktop, WSL2). Items 1, 4, 5 and 9 wait for the e2e token's new permissions.
+Run on the throwaway repository (private, owned by a user) through a throwaway workflow, removed afterwards; and locally on this Windows 11 computer (Docker Desktop, WSL2). Items 1 and 5 ran after the founder extended the e2e token; items 4 and 9 run with the real code in T1515.
 
-- **The e2e token** answers 403 for runners, the fork-PR policy, Actions permissions, variables and deployments, and for `PUT environments` (accepted: `administration=write`). Listing environments works. The founder must add the fine-grained permissions **Administration: Read and write**, **Environments: Read and write**, **Variables: Read and write** and **Deployments: Read** before items 1, 4, 5 and 9, and before the live tests.
+- **The e2e token** first answered 403 for runners, the fork-PR policy, variables, deployments and `PUT environments`. The founder extended it (2026-10-22): Actions, Administration, Contents, Environments, Pull requests, Secrets, Variables and Workflows (Read and write), and Deployments (Read). Every read answers 200 on both e2e repositories. Listing or reading an environment also needs **Actions: Read** (`x-accepted-github-permissions: actions=read`), and writing a workflow file needs **Contents** and **Workflows: write**.
+- **1. GitHub environments on a Free private repository** (owned by a user):
+  - `PUT environments/<name>` with a wait timer: 422, "ensure the billing plan supports the wait timer protection rule". The environment was created anyway, without rules. `deployment-branch-policies`: 404. So neither branch rules nor wait timers (nor, by GitHub's docs, reviewers) exist there.
+  - Environment secrets do work: the environment's public key answers, and in a throwaway workflow a job naming the environment received the environment-only secret, and the environment's value of a secret also set in the repository. A job naming no environment got the repository's value and no environment-only secret.
+  - **Decision:** the capability check reports `{ environments: true, branchPolicies: false, reviewers: false }` there, so secrets go into the environment. Without branch rules, any workflow in the repository that names the environment can read them. The guide says so: on Free private repositories the separation is against mistakes, and OpsCrew's approval is the only gate (T1512).
+  - GitHub created a `production` environment by itself on the throwaway repository, when earlier deploy workflows named it. OpsCrew did not create it, so destroy leaves it (T1508b).
+- **5. The fork-PR approval policy** on a private repository: `GET` answers 422, "Fork PR approval is not allowed for private repositories". It applies to public repositories only, as designed; the PUT on a public repository is checked live in T1515.
+- **Runner registration:** `POST …/actions/runners/registration-token` answers 201 (Administration: write), with a 29-character token valid for one hour.
 - **2. Retagging:** `docker buildx imagetools create --tag … image@<digest>` with the GITHUB_TOKEN (`packages: write`) kept the digest exactly (`sha256:f0f40b0a…` before and after).
   - The provenance is SLSA v1 (`buildDefinition`, `runDetails`).
   - With 012's `provenance-add-gha=false` it holds no ref or commit. `runDetails.builder.id` is the build run's URL (`https://github.com/<owner>/<repo>/actions/runs/<id>/attempts/1`).
   - **Decision:** promotion's check reads the run id from the provenance. The run must belong to this repository, and its API record (`GET /repos/{o}/{r}/actions/runs/{id}`) gives `head_branch` and `head_sha`. The branch must be the default branch, and `head_sha` must match the image's commit tag. The signature is checked when signing is on.
-  - The spike left a tag `opscrew-spike` on one version of the test repository's image. GHCR cannot remove a tag without deleting the version; it's harmless.
+  - The spike left a tag `opscrew-spike` on one version of the test repository's image (with an old build's commit tag). GHCR cannot remove a tag without deleting the version, and our tokens cannot delete packages, so the founder deletes it in the UI. Retention would otherwise keep it forever, since it looks like an environment label (T1516).
 - **3. Dispatch:** `POST …/actions/workflows/<file>/dispatches` with `{ ref, inputs }` returned 204. The run appeared in `…/runs?event=workflow_dispatch` after 7 s, and the input reached the job. The workflow file had to be on the default branch.
 - **6. Localhost on Windows:**
   - Docker Desktop reports `MemTotal` 16.7 GB (12 CPUs) and Compose v5.5.1, and ports 80, 443, 8080 and 8443 were free.
