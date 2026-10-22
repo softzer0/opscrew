@@ -374,7 +374,7 @@ Effort`.
   - Reads: data-model.md "Runner machine"; plan.md "8." and "16."
   - Depends: T1511b, T1517a
   - Accept:
-    - **A runner machine's host plan:** the deploy user, the runner's prerequisites, Docker when an environment builds there, and one `github-runner` step per environment. No edge, app-record, firewall, SSH or web-filter step.
+    - **A runner machine's host plan:** the deploy user, the runner's prerequisites, Docker (always: the deploy job's edge check runs `docker compose` there; T1517c), and one `github-runner` step per environment. No edge, app-record, firewall, SSH or web-filter step.
     - **Ownership:** the runner step refuses a folder whose `.opscrew-runner` names another repository, on runner machines and own servers alike, instead of replacing it.
     - **Removal:** an environment's runner comes off on its own. The machine's teardown removes OpsCrew's runners, and what OpsCrew installed, as for an own server.
     - **Tests:** a fake host for each, and the token absent from every plan, hash and log.
@@ -403,7 +403,7 @@ Effort`.
       - the host plan approved by its hash as `host-apply`;
       - the record in the project's home folder;
       - removal refused while an environment uses the machine.
-    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. `env add`'s target question offers "This computer" once (today `interview/questions.ts` and `environments/add.ts` both add it; T1512b's review). An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
+    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. `build: runner` on the local runner with a Buildpacks or Railpack builder is refused on a computer that isn't Linux, since their tools are Linux builds; a Dockerfile build works on any OS (T1517c). `env add`'s target question offers "This computer" once (today `interview/questions.ts` and `environments/add.ts` both add it; T1512b's review). An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
     - **Provision and destroy** of an environment with `runner: host` add and remove its `github-runner` step on the machine's host plan, approved by that plan's hash. Its deploy secrets include the SSH connection secrets, as for a GitHub-hosted job.
     - **`status` and `secure`** report the machine's runners through `runnerStatus`. Its wording (`runners/status.ts`) names the runner machine for `runner: host`, not "the server's runner" (T1517a's report).
     - **Tests:** add, apply and remove a machine; two environments on one machine; destroy removing only one environment's runner; the refusals; no token or address in any plan or committed file.

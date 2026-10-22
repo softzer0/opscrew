@@ -94,7 +94,7 @@ Retention keeps every version with an `opscrew-<env>` or `opscrew-<env>-previous
 |---|---|
 | Record | `<project home>/runner-hosts/<name>.json`: the SSH login (user, address, port), the key file, the pinned host key, `arch`, and whether Docker is installed. Never committed. |
 | Name | `^[a-z][a-z0-9-]{0,31}$`, unique in the project |
-| Host plan | the deploy user, the runner prerequisites (as on own servers), Docker when an environment builds there, and one `github-runner` step per environment that uses it. No edge, app, firewall or SSH hardening steps. |
+| Host plan | the deploy user, the runner prerequisites (as on own servers), Docker (the deploy job's edge check uses it), and one `github-runner` step per environment that uses it. No edge, app, firewall or SSH hardening steps. |
 | Runner per environment | as the server runner: `/srv/runners/<app>` as `deploy`'s user service, label `opscrew-<app>-<env>`, name `<8 hex of sha256(host)>-<app>-<env>` |
 | Another repository's runner folder | refused, never replaced |
 | Removal | refused while an environment uses the machine |

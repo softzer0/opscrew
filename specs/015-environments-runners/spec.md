@@ -118,7 +118,7 @@ The developer has a machine they control: a home server, a spare PC or a VM. The
 
 **Acceptance Scenarios**:
 
-1. **Given** an Ubuntu or Debian machine the user can reach over SSH with sudo, **When** the user adds it as a runner machine, **Then** OpsCrew shows its host plan (the deploy user, Docker when builds run there, and one runner per environment that uses it) and applies it only after its hash is approved.
+1. **Given** an Ubuntu or Debian machine the user can reach over SSH with sudo, **When** the user adds it as a runner machine, **Then** OpsCrew shows its host plan (the deploy user, Docker, and one runner per environment that uses it) and applies it only after its hash is approved.
 2. **Given** an environment whose runner is that machine, **When** a deploy runs, **Then** the deploy job runs on the runner machine and reaches the environment's server over SSH from there. GitHub's machines never connect to the server.
 3. **Given** an environment that builds on its runner, **When** a commit lands, **Then** the image is built on that runner (the local runner or a runner machine), with the same provenance and SBOM as on GitHub's machines. A runner whose architecture differs from the target's is refused at design.
 4. **Given** a runner machine several environments use, **When** one environment is destroyed, **Then** only that environment's runner on it is removed. The machine is removed only by its own command, and only when no environment uses it.
@@ -216,7 +216,7 @@ The developer has a machine they control: a home server, a spare PC or a VM. The
 
 **Runner machines and builds on self-hosted runners** (the founder, 2026-10-22)
 
-- **FR-1532**: A runner machine MUST be added and removed through its own host plan, approved by its hash, over SSH with the user's key and a pinned host key, as for the user's own server. It installs the deploy user, Docker only when an environment builds there, and one runner per environment that uses it, each as the deploy user's service. Its address is never written to a plan or a committed file, and OpsCrew does not harden it (it may be a desktop).
+- **FR-1532**: A runner machine MUST be added and removed through its own host plan, approved by its hash, over SSH with the user's key and a pinned host key, as for the user's own server. It installs the deploy user, Docker, and one runner per environment that uses it, each as the deploy user's service. Its address is never written to a plan or a committed file, and OpsCrew does not harden it (it may be a desktop).
 - **FR-1533**: An environment on a target reached over SSH (a cloud or own server) MUST be able to choose a runner machine for its deploy job. The job then deploys to the target over SSH from the runner machine, as a GitHub-hosted job does today.
 - **FR-1534**: An environment that follows main MUST be able to build its image on its self-hosted runner when that runner is the local runner or a runner machine, never the production server's runner. The build keeps its provenance, SBOM and optional signature. A runner whose architecture differs from the target's is refused, naming the server types that match.
 - **FR-1535**: Destroying an environment MUST remove only its runner from a runner machine. Removing the machine MUST be refused while an environment uses it. A runner folder that belongs to another repository is never replaced.
