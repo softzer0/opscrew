@@ -172,6 +172,10 @@ Effort`.
   - Accept:
     - **One helper, `runtimeDir(plan)`:** `opscrew/runtime` for prod, and `opscrew/environments/<env>/runtime` for a named environment. Every renderer and every workflow step that names a runtime file uses it: the workflow's uploads, `edge-check.ts`, `switch.ts` and the runtime and edge renderers.
     - **Portainer's deploy branch:** `opscrew-deploy` for prod, `opscrew-deploy-<env>` for a named environment (`portainer-target/stack.ts` and every reader).
+    - **Package root exports for T1510:** `switchCommands`, `rollbackCommands`, `EdgeFiles`, `APPS_DIR`, and T1506's localhost helpers (`localhostHostname`, `localhostTlsUpload`, `LocalhostSite`).
+    - **The lock where `flock` is missing** (Git for Windows, macOS): the scripts take the edge's lock only when `command -v flock` finds it. T1510 serialises local deploys with its own lock.
+    - **`image: local-build`:** the localhost switch doesn't pull the app's locally built image (for example `pull_policy: never` on that service, or a pull that skips it), with a test that `docker compose pull` doesn't fail on it.
+    - **Settings files on localhost** (MySQL, Valkey and others) are inline Compose configs, as the local Docker pass's `localServerCompose` does. Files bind-mounted from Windows are world-writable, and MySQL ignores such files.
     - **Prod's rendered output is byte-identical** (snapshots).
     - **Tests:** two environments' rendered files never share a path; a Portainer staging stack points at its own branch.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
@@ -234,6 +238,8 @@ Effort`.
   - Depends: T1508a, T1506, T1507
   - Accept:
     - **`localPreflight`** runs each check of the contract. Every problem stops before any change, with its fix. The notes (the licence, the architecture) are given once.
+    - **Components that need a host kernel setting** (the search engines' `vm.max_map_count` through the privileged sysctl service) are refused on localhost with a plain message, as on Portainer (T1506).
+    - **Local deploys are serialised** with a lock in the user's OpsCrew home, since the scripts' `flock` is missing on Git for Windows and macOS (T1506).
     - **`planLocal` and `applyLocal`:** the local plan, hashed, approved as `host-apply`, and applied through `localExec`.
     - **The image:** the production digest from GHCR when the architecture matches; otherwise `docker build` for Dockerfile apps, or the production image under emulation with a warning.
     - **The local CA** is made on first use in `~/.opscrew/local-ca/` with the key at 0600. Leaf certificates go to each localhost hostname. **`localTrust`** shows the command first, and runs it only when the user agrees.
