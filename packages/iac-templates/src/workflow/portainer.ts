@@ -19,6 +19,7 @@ import {
   imageOutput,
   promoted,
   promotedAbout,
+  provisionCommand,
   run,
   secret,
   workflowStart,
@@ -68,7 +69,7 @@ const GIT_IDENTITY = [
  * the branch held before (empty for the placeholder), which image retention never deletes.
  * Nothing is written when the branch already holds this version.
  */
-function writeScript(branch: string, template: string): string[] {
+function writeScript(branch: string, template: string, provision: string): string[] {
   return [
     "set -euo pipefail",
     `if [[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]; then`,
@@ -76,7 +77,7 @@ function writeScript(branch: string, template: string): string[] {
     "  exit 1",
     "fi",
     `if [[ ! -f ${template} ]] || ! grep -qF ${PORTAINER_IMAGE_PLACEHOLDER} ${template}; then`,
-    `  echo "::error::${template} does not mark the app's image (${PORTAINER_IMAGE_PLACEHOLDER}); run \\\`opscrew provision\\\` to write it again."`,
+    `  echo "::error::${template} does not mark the app's image (${PORTAINER_IMAGE_PLACEHOLDER}); run \\\`${provision}\\\` to write it again."`,
     "  exit 1",
     "fi",
     `template="$(cat ${template})"`,
@@ -257,7 +258,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
     `  name: Write the new version to the ${branch} branch`,
     "  env:",
     image,
-    ...run(writeScript(branch, portainerStackTemplatePath(plan))),
+    ...run(writeScript(branch, portainerStackTemplatePath(plan), provisionCommand(plan))),
   ];
   if (cloudflare) {
     steps.push(
@@ -272,10 +273,10 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
         'case "$code" in',
         '  2[0-9][0-9]) echo "Portainer accepted the redeploy." ;;',
         "  401|403)",
-        '    echo "::error::Cloudflare Access refused the deploy workflow\'s service token (HTTP $code). Run \\`opscrew provision\\` again to set the deploy secrets."',
+        `    echo "::error::Cloudflare Access refused the deploy workflow's service token (HTTP $code). Run \\\`${provisionCommand(plan)}\\\` again to set the deploy secrets."`,
         "    exit 1 ;;",
         "  404)",
-        "    echo \"::error::Portainer does not know this stack's webhook (HTTP 404). Run \\`opscrew provision\\` again to repair the stack's redeploy setting.\"",
+        `    echo "::error::Portainer does not know this stack's webhook (HTTP 404). Run \\\`${provisionCommand(plan)}\\\` again to repair the stack's redeploy setting."`,
         "    exit 1 ;;",
         "  *)",
         '    echo "::warning::Portainer did not confirm the redeploy (HTTP ${code:-none}); OpsCrew still waits for the new version." ;;',

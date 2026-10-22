@@ -17,13 +17,18 @@ import {
   CHECK_IMAGE,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
+  DOCKER_CONTEXT_HOST,
   deployJob,
   deploySecretName,
+  deploysInPlace,
   environmentName,
   healthPath,
   imageOutput,
+  onRunnerMachine,
   promoted,
   promotedAbout,
+  provisionCommand,
+  run,
   secret,
   selfHosted,
   serviceEnvSecret,
@@ -56,18 +61,31 @@ export const TUNNEL_DEPLOY_SECRETS = {
 } as const;
 
 const SSH_OPTS_BASE =
-  "-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20";
+  "-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20";
+
+/**
+ * Where the deploy keeps its SSH key (`opscrew`), known hosts and, in tunnel mode, SSH config: the
+ * runner's `~/.ssh` on GitHub's machines, which no other job uses; on a runner machine
+ * ({@link onRunnerMachine}) the job's own `$RUNNER_TEMP/opscrew-ssh`, which the runner empties
+ * after the job.
+ */
+function sshFile(machine: boolean, name: string): string {
+  return machine ? `"$RUNNER_TEMP/opscrew-ssh/${name}"` : `~/.ssh/${name}`;
+}
 
 /**
  * The bash `ssh_opts` array shared by every `ssh` and `scp` call. A server whose sshd listens on a
  * port other than 22 (public mode) gets `-o Port=<port>`, which both `ssh` and `scp` honour (and
  * which makes ssh look up `[host]:port` in known_hosts, as provision writes it). Tunnel mode never
  * gets it: cloudflared's ProxyCommand ignores the client-side port, the tunnel itself routes to the
- * server's sshd port, and known_hosts holds the bare SSH hostname.
+ * server's sshd port, and known_hosts holds the bare SSH hostname. On a runner machine the options
+ * name the job's own known hosts and SSH config ({@link sshFile}) too.
  */
-function sshOptsLine(port: number | undefined, tunnel: boolean): string {
+function sshOptsLine(port: number | undefined, tunnel: boolean, machine: boolean): string {
   const portOpt = port === undefined || port === 22 || tunnel ? "" : ` -o Port=${port}`;
-  return `ssh_opts=(${SSH_OPTS_BASE}${portOpt})`;
+  const known = machine ? ` -o UserKnownHostsFile=${sshFile(machine, "known_hosts")}` : "";
+  const config = machine ? ` -F ${sshFile(machine, "config")}` : "";
+  return `ssh_opts=(-i ${sshFile(machine, "opscrew")}${known}${config} ${SSH_OPTS_BASE}${portOpt})`;
 }
 
 function checkSshPort(port: number | undefined): void {
@@ -81,16 +99,16 @@ function checkSshPort(port: number | undefined): void {
 
 /**
  * URL the deploy job polls after starting the new version: the health path on the app's domain;
- * without one, on the server's address from GitHub's machines, or on the machine's own edge
- * (`http://127.0.0.1`) from the server's runner. On this computer (the localhost target, `local`),
- * HTTPS at the app's hostname there and the target's HTTPS port, which the health check resolves
- * to 127.0.0.1 ({@link healthScript}): the plain HTTP port only redirects.
+ * without one, on the server's address from GitHub's machines or a runner machine, or on the
+ * machine's own edge (`http://127.0.0.1`) from the server's runner. On this computer (the localhost
+ * target, `local`), HTTPS at the app's hostname there and the target's HTTPS port, which the
+ * health check resolves to 127.0.0.1 ({@link healthScript}): the plain HTTP port only redirects.
  */
 export function healthUrl(plan: DeployPlan, local?: LocalEdge): string {
   const path = healthPath(plan);
   if (local !== undefined) return `https://${local.hostname}${httpsPortSuffix(local.port)}${path}`;
   if (plan.dns.domain) return `https://${plan.dns.domain}${path}`;
-  if (!selfHosted(plan)) return `http://${secret(plan, DEPLOY_SECRETS.host)}${path}`;
+  if (!deploysInPlace(plan)) return `http://${secret(plan, DEPLOY_SECRETS.host)}${path}`;
   return `http://127.0.0.1${path}`;
 }
 
@@ -175,12 +193,21 @@ function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): st
 }
 
 /**
- * Tunnel mode: installs the pinned cloudflared on the runner after checking its SHA-256, so SSH can
- * go through Cloudflare Access (`ProxyCommand cloudflared access ssh`).
+ * Where the deploy's cloudflared is: /usr/local/bin on GitHub's machines; on a runner machine,
+ * whose user has no sudo, the downloaded file in the job's temp folder.
  */
-function installCloudflaredStep(): string[] {
-  const arch = (machine: string, name: PinArch) =>
-    `      ${machine}) url='${toolDownloadUrl("cloudflared", name)}'; sum='${TOOLS.cloudflared.sha256[name]}' ;;`;
+function cloudflaredPath(machine: boolean): string {
+  return machine ? "$RUNNER_TEMP/cloudflared" : "/usr/local/bin/cloudflared";
+}
+
+/**
+ * Tunnel mode: installs the pinned cloudflared on the runner after checking its SHA-256, so SSH can
+ * go through Cloudflare Access (`ProxyCommand cloudflared access ssh`), at {@link cloudflaredPath}.
+ */
+function installCloudflaredStep(machine: boolean): string[] {
+  const path = cloudflaredPath(machine);
+  const arch = (uname: string, name: PinArch) =>
+    `      ${uname}) url='${toolDownloadUrl("cloudflared", name)}'; sum='${TOOLS.cloudflared.sha256[name]}' ;;`;
   return [
     `- name: Install cloudflared ${TOOLS.cloudflared.version}`,
     "  run: |",
@@ -192,8 +219,12 @@ function installCloudflaredStep(): string[] {
     "    esac",
     '    curl -fsSL --retry 3 -o "$RUNNER_TEMP/cloudflared" "$url"',
     '    echo "$sum  $RUNNER_TEMP/cloudflared" | sha256sum -c -',
-    '    sudo install -m 0755 "$RUNNER_TEMP/cloudflared" /usr/local/bin/cloudflared',
-    "    cloudflared --version",
+    ...(machine
+      ? [`    chmod 0755 "${path}"`, `    "${path}" --version`]
+      : [
+          `    sudo install -m 0755 "$RUNNER_TEMP/cloudflared" ${path}`,
+          "    cloudflared --version",
+        ]),
   ];
 }
 
@@ -234,7 +265,7 @@ const HERE: On = (command) => `(${command})`;
 
 /** Shown when the origin certificate's deploy secret holds no certificate and key. */
 function originTlsMissing(plan: DeployPlan): string {
-  return `::error::The deploy secret ${deploySecretName(plan, DEPLOY_SECRETS.originTls)} must hold the app's Cloudflare origin certificate, then its private key. Run \\\`opscrew provision\\\` again to set it, then deploy again.`;
+  return `::error::The deploy secret ${deploySecretName(plan, DEPLOY_SECRETS.originTls)} must hold the app's Cloudflare origin certificate, then its private key. Run \\\`${provisionCommand(plan)}\\\` again to set it, then deploy again.`;
 }
 
 /**
@@ -373,9 +404,11 @@ interface Upload {
 }
 
 /**
- * The deploy from GitHub's machines over SSH (as `deploy`, with the pinned host key; in tunnel mode
- * through Cloudflare Access to the SSH hostname, with the service token from
- * {@link TUNNEL_DEPLOY_SECRETS}): the upload, then the start and rollback steps over SSH.
+ * The deploy from GitHub's machines or a runner machine over SSH (as `deploy`, with the pinned host
+ * key; in tunnel mode through Cloudflare Access to the SSH hostname, with the service token from
+ * {@link TUNNEL_DEPLOY_SECRETS}): the upload, then the start and rollback steps over SSH. A runner
+ * machine runs the same steps with the job's own SSH files ({@link sshFile}) and cloudflared
+ * ({@link cloudflaredPath}).
  */
 function sshDeploy(
   plan: DeployPlan,
@@ -385,7 +418,25 @@ function sshDeploy(
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
   // HCL anyway); the service token reaches cloudflared only through the environment.
   const tunnelHost = sshHostname(plan);
-  const sshOpts = `    ${sshOptsLine(ctx.sshPort, tunnelHost !== undefined)}`;
+  const machine = onRunnerMachine(plan);
+  const file = (name: string) => sshFile(machine, name);
+  const sshOpts = `    ${sshOptsLine(ctx.sshPort, tunnelHost !== undefined, machine)}`;
+  // On GitHub's machines the path is fixed; a runner machine's folder is expanded when written.
+  const proxyCommand = `  ProxyCommand ${cloudflaredPath(machine)} access ssh --hostname %h`;
+  // The tunnel's SSH config; on a runner machine always the job's own (empty in public mode), so
+  // that the machine user's own ssh config cannot change the deploy's connection.
+  const sshConfig =
+    tunnelHost !== undefined
+      ? [
+          "    {",
+          `      echo 'Host ${tunnelHost}'`,
+          `      echo ${machine ? `"${proxyCommand}"` : `'${proxyCommand}'`}`,
+          `    } > ${file("config")}`,
+          `    chmod 600 ${file("config")}`,
+        ]
+      : machine
+        ? [`    : > ${file("config")}`]
+        : [];
   const hostEnv = [
     tunnelHost === undefined
       ? `    HOST: ${secret(plan, DEPLOY_SECRETS.host)}`
@@ -400,26 +451,18 @@ function sshDeploy(
   // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
   const dir = appDir(plan);
   const setup = [
-    ...(tunnelHost === undefined ? [] : installCloudflaredStep()),
+    ...(tunnelHost === undefined ? [] : installCloudflaredStep(machine)),
     "- name: Configure SSH with the pinned host key",
     "  env:",
     `    SSH_KEY: ${secret(plan, DEPLOY_SECRETS.sshKey)}`,
     `    KNOWN_HOSTS: ${secret(plan, DEPLOY_SECRETS.knownHosts)}`,
     "  run: |",
     "    set -euo pipefail",
-    "    install -m 700 -d ~/.ssh",
-    "    printf '%s\\n' \"$SSH_KEY\" > ~/.ssh/opscrew",
-    "    chmod 600 ~/.ssh/opscrew",
-    "    printf '%s\\n' \"$KNOWN_HOSTS\" > ~/.ssh/known_hosts",
-    ...(tunnelHost === undefined
-      ? []
-      : [
-          "    {",
-          `      echo 'Host ${tunnelHost}'`,
-          "      echo '  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h'",
-          "    } > ~/.ssh/config",
-          "    chmod 600 ~/.ssh/config",
-        ]),
+    `    install -m 700 -d ${machine ? '"$RUNNER_TEMP/opscrew-ssh"' : "~/.ssh"}`,
+    `    printf '%s\\n' "$SSH_KEY" > ${file("opscrew")}`,
+    `    chmod 600 ${file("opscrew")}`,
+    `    printf '%s\\n' "$KNOWN_HOSTS" > ${file("known_hosts")}`,
+    ...sshConfig,
     "- name: Upload runtime files and environment",
     "  env:",
     ...hostEnv,
@@ -482,12 +525,12 @@ function localDeployLock(plan: DeployPlan): string[] {
 }
 
 /**
- * The deploy on the self-hosted runner's own machine, with no SSH and no host, key or known-hosts
- * secret: the runtime files and env files are copied into the app's folder, and the same switch
- * and rollback scripts run with the local `sh`, with the same arguments and stdin. The server's
- * runner runs as `deploy`, with the server's folders; the local runner takes this computer's
- * folders from its environment (`OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR`, set by `opscrew runner
- * start`), which the scripts read too.
+ * The deploy on the server's or the local runner's own machine, with no SSH and no host, key or
+ * known-hosts secret: the runtime files and env files are copied into the app's folder, and the
+ * same switch and rollback scripts run with the local `sh`, with the same arguments and stdin. The
+ * server's runner runs as `deploy`, with the server's folders; the local runner takes this
+ * computer's folders from its environment (`OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR`, set by
+ * `opscrew runner start`), which the scripts read too.
  */
 function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach: Reach } {
   const app = plan.app.name;
@@ -520,8 +563,18 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
       env: [],
       prelude: local ? [...localDeployLock(plan), dir] : [dir],
       savePrevious: `cd "$dir" && ${SAVE_PREVIOUS}`,
-      // The scripts run here, so they must not inherit the job's token.
+      // The scripts run here, so they must not inherit the job's token. On this computer the app's
+      // Docker settings start with a ghcr.io entry: settings without any make docker log in to the
+      // computer's credential store, where the user's own login lives.
       login: [
+        ...(local
+          ? [
+              '    if [[ ! -f "$dir"/.docker/config.json ]]; then',
+              '      mkdir -p "$dir"/.docker',
+              '      printf \'{"auths":{"ghcr.io":{}}}\\n\' > "$dir"/.docker/config.json',
+              "    fi",
+            ]
+          : []),
         '    printf \'%s\\n\' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$dir"/.docker docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin',
         "    unset REGISTRY_TOKEN",
       ],
@@ -536,9 +589,10 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
  * workflow can read, which `opscrew provision` sets: the build values (none for a promoted
  * environment, which builds nothing); for a Portainer target, in redeploy mode `cloudflare`, the
  * webhook's; for a server, the app's env file, one per service with secrets and the origin
- * certificate (not behind a tunnel), plus, when the deploy runs on GitHub's machines, the
- * connection: the host, the SSH key, the known hosts and in tunnel mode the Access service token.
- * A self-hosted runner deploys on its own machine, so it needs no connection secret.
+ * certificate (not behind a tunnel), plus, when the deploy runs over SSH (on GitHub's machines or
+ * a runner machine), the connection: the host, the SSH key, the known hosts and in tunnel mode the
+ * Access service token. The server's and the local runner deploy on their own machine, so they
+ * need no connection secret.
  */
 export function deploySecretNamesFor(plan: DeployPlan): string[] {
   const build: string[] = promoted(plan)
@@ -549,7 +603,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     return [...build, ...(cloudflare ? Object.values(PORTAINER_DEPLOY_SECRETS) : [])];
   }
   const tunnel = tunnelMode(plan);
-  const connection = selfHosted(plan)
+  const connection = deploysInPlace(plan)
     ? []
     : [
         DEPLOY_SECRETS.host,
@@ -572,9 +626,11 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  * then the optional signing, deploy tag and image retention jobs, and the environment's image
  * labels. A promoted environment instead starts from the digest `opscrew promote` gives it, which
  * its verify job checks, and builds nothing. The deploy job's secrets, GitHub environment, runner
- * and concurrency group are the environment's own; on a self-hosted runner it deploys on the
- * runner's own machine, with no SSH ({@link localDeploy}). The image is built on an arm64
- * runner for arm64 servers; in tunnel mode SSH goes through Cloudflare Access to the SSH hostname
+ * and concurrency group are the environment's own; on the server's or the local runner it deploys
+ * on the runner's own machine, with no SSH ({@link localDeploy}), and on a runner machine over SSH
+ * as from GitHub's machines. The image is built on an arm64 runner for arm64 servers, or with
+ * `environment.build` `runner` on the environment's own runner; in tunnel mode SSH goes through
+ * Cloudflare Access to the SSH hostname
  * with the service token from {@link TUNNEL_DEPLOY_SECRETS}. The deploy job first checks the edge
  * with the proxy's own checker ({@link edgeCheckStep}). With `ctx.originTls` (not behind a tunnel)
  * the upload writes the origin certificate and its key from {@link DEPLOY_SECRETS}' `originTls`,
@@ -621,15 +677,21 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ],
     edgeFiles,
   };
-  const { setup, reach } = selfHosted(plan)
-    ? localDeploy(plan, upload)
-    : sshDeploy(plan, ctx, upload);
+  const own = deploysInPlace(plan);
+  const { setup, reach } = own ? localDeploy(plan, upload) : sshDeploy(plan, ctx, upload);
   const local: LocalEdge | undefined =
     plan.target.provider === "localhost"
       ? { hostname: localhostSite(ctx.localhost).hostname, port: plan.target.ports.https }
       : undefined;
 
   const deploySteps = [
+    // The app's own Docker settings (its login) hold no context: keep Docker Desktop's daemon.
+    ...(plan.environment?.runner === "local"
+      ? [
+          "- name: Use this computer's Docker daemon",
+          ...run(["set -euo pipefail", ...DOCKER_CONTEXT_HOST]),
+        ]
+      : []),
     `- uses: ${ACTIONS.checkout}`,
     // A self-hosted runner keeps its workspace: the job's token stays out of its git settings.
     ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
@@ -646,7 +708,6 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...rollbackStep(plan, reach, edgeFiles.localhost),
   ];
 
-  const own = selfHosted(plan);
   const lines = [
     ...workflowStart(
       plan,

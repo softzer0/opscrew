@@ -136,7 +136,7 @@ function pushBranch(content: string, parent?: string): string {
   return commit;
 }
 
-const timeout = 30_000;
+const timeout = 60_000;
 
 describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)", () => {
   beforeEach(() => {

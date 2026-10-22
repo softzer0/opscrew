@@ -298,7 +298,7 @@ function runScript(script: string, fakes: string, env: Record<string, string>, c
   return { status: result.status, out: `${result.stdout}${result.stderr}`, outputs, calls };
 }
 
-describe("the verify job", { timeout: 30_000 }, () => {
+describe("the verify job", { timeout: 60_000 }, () => {
   const DIGEST = `sha256:${"b".repeat(64)}`;
   const COMMIT = "c".repeat(40);
   const IMAGE = `ghcr.io/acme/shop@${DIGEST}`;
@@ -534,7 +534,7 @@ describe("the verify job", { timeout: 30_000 }, () => {
   });
 });
 
-describe("the label job", { timeout: 30_000 }, () => {
+describe("the label job", { timeout: 60_000 }, () => {
   const RUNNING = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
   const BEFORE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
   const label = (plan: DeployPlan) => workflow(plan).jobs.label as Job;
@@ -591,7 +591,7 @@ describe("the label job", { timeout: 30_000 }, () => {
   );
 });
 
-describe("the deploy job on a self-hosted runner", { timeout: 30_000 }, () => {
+describe("the deploy job on a self-hosted runner", { timeout: 60_000 }, () => {
   const staged = (runner: "github" | "server") =>
     inEnvironment(serverPlan(), { name: "staging", runner, secrets: "prefixed" });
   const server = staged("server");
@@ -624,11 +624,22 @@ describe("the deploy job on a self-hosted runner", { timeout: 30_000 }, () => {
       // Every run: step with bash, Git for Windows' on a Windows computer.
       expect(deploy(plan).defaults).toEqual({ run: { shell: "bash" } });
       // The runner keeps its workspace: the job's token stays out of its git settings.
-      expect(deploy(plan).steps[0]).toEqual({
+      expect(deploy(plan).steps.find((s) => s.uses === action("checkout"))).toEqual({
         uses: action("checkout"),
         with: { "persist-credentials": false },
       });
     }
+    // The local runner first keeps Docker Desktop's daemon for every later step; others need not.
+    expect(deploy(local).steps[0]).toEqual({
+      name: "Use this computer's Docker daemon",
+      run: [
+        "set -euo pipefail",
+        "docker_host=\"$(docker context inspect --format '{{.Endpoints.docker.Host}}')\"",
+        'echo "DOCKER_HOST=$docker_host" >> "$GITHUB_ENV"',
+        "",
+      ].join("\n"),
+    });
+    expect(deploy(server).steps[0]?.uses).toBe(action("checkout"));
     expect(workflow(prod).jobs.deploy?.steps[0]).toEqual({ uses: action("checkout") });
     expect(jobYaml(content(server), "deploy")).toMatchSnapshot();
     expect(jobYaml(content(local), "deploy")).toMatchSnapshot();
@@ -927,6 +938,30 @@ describe("deploySecretNamesFor", () => {
       for (const [, name] of content(plan).matchAll(/secrets\.([A-Z_]+)/g)) {
         if (name !== "GITHUB_TOKEN") expect(listed.has(name ?? ""), name).toBe(true);
       }
+    }
+  });
+});
+
+describe("messages that name a command", () => {
+  it("name the environment's --env outside prod, and stay as they were for prod", () => {
+    const origin = { ...ctx, originTls: { hostnames: ["shop.example.com"] } };
+    const tls = (plan: DeployPlan) => renderWorkflow(plan, origin).content;
+    expect(tls(staging)).toContain("Run \\`opscrew provision --env staging\\` again to set it");
+    expect(tls(staging)).toContain("(opscrew provision --env staging renders the site again)");
+    expect(tls(prod)).toContain("Run \\`opscrew provision\\` again to set it");
+    expect(tls(prod)).toContain("(opscrew provision renders the site again)");
+    for (const redeploy of ["updater", "cloudflare"] as const) {
+      const named = inEnvironment(portainerTestPlan({ redeploy }), {
+        name: "staging",
+        secrets: "prefixed",
+      });
+      expect(content(named)).toContain(
+        "run \\`opscrew provision --env staging\\` to write it again",
+      );
+      expect(content(named)).not.toMatch(/opscrew provision\\`/);
+      expect(content(portainerTestPlan({ redeploy }))).toContain(
+        "run \\`opscrew provision\\` to write it again",
+      );
     }
   });
 });

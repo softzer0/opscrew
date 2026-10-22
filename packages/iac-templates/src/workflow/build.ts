@@ -3,12 +3,14 @@ import type { DeployPlan, RuntimeLanguage } from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
 import { SECRET_FILE_PATTERNS } from "../docker";
 import { supercronicAdd } from "../docker/stacks";
-import { ACTIONS, IMAGES, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import { ACTIONS, IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import {
   buildArch,
   buildRunner,
+  buildsOnRunner,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
+  DOCKER_CONTEXT_HOST,
   GHCR_LOGIN,
   hasCronJobs,
   job,
@@ -93,17 +95,24 @@ export const RAILPACK_USER = "10001:10001";
 /** `owner/name@<sha> # vX` for `uses:`. */
 const uses = (key: keyof typeof ACTIONS) => `  uses: ${ACTIONS[key]}`;
 
-/** `name` (`ghcr.io/<owner>/<repo>`) and `image` (`<name>:<commit>`), lower case as GHCR needs. */
-const IMAGE_NAME = [
-  "- id: image",
-  "  name: Choose the image name",
-  ...run([
-    "set -euo pipefail",
-    'repo="${GITHUB_REPOSITORY,,}"',
-    'echo "name=ghcr.io/${repo}" >> "$GITHUB_OUTPUT"',
-    'echo "image=ghcr.io/${repo}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"',
-  ]),
-];
+/**
+ * `name` (`ghcr.io/<owner>/<repo>`) and `image` (`<name>:<commit>`), lower case as GHCR needs. On
+ * the environment's own runner without bash 4's `${…,,}` (macOS's bash 3.2), with `tr`.
+ */
+function imageName(plan: DeployPlan): string[] {
+  return [
+    "- id: image",
+    "  name: Choose the image name",
+    ...run([
+      "set -euo pipefail",
+      buildsOnRunner(plan)
+        ? `repo="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"`
+        : 'repo="${GITHUB_REPOSITORY,,}"',
+      'echo "name=ghcr.io/${repo}" >> "$GITHUB_OUTPUT"',
+      'echo "image=ghcr.io/${repo}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"',
+    ]),
+  ];
+}
 
 const SETUP_BUILDX = [
   "# Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the",
@@ -257,20 +266,109 @@ function envPairs(array: string, input: string, pair = '"$line"'): string[] {
 }
 
 /**
- * Installs the pinned release archive of `tool` (pack or Railpack) for `arch` after checking it
- * against the SHA-256 in pins.ts, never against a checksum from the same release.
+ * On the environment's own runner, which may be macOS (bash 3.2, no `sha256sum`): sets the bash
+ * array `sha256` to `sha256sum`, or to macOS's `shasum -a 256`.
  */
-function installTool(tool: "pack" | "railpack", arch: PinArch, name: string): string[] {
-  const archive = `"$RUNNER_TEMP/${tool}.tar.gz"`;
+const PORTABLE_SHA256 =
+  "if command -v sha256sum > /dev/null; then sha256=(sha256sum); else sha256=(shasum -a 256); fi";
+
+/**
+ * `"${name[@]}"`, the bash array `name` as arguments; on the environment's own runner in the form
+ * bash 3.2 (macOS) accepts under `set -u` when the array is empty.
+ */
+function arrayArgs(plan: DeployPlan, name: string): string {
+  return buildsOnRunner(plan) ? `\${${name}[@]+"\${${name}[@]}"}` : `"\${${name}[@]}"`;
+}
+
+/**
+ * The wrapper that stands in for `tool` on a self-hosted runner that is not Linux: it runs the
+ * tool's Linux build ({@link IMAGES}' `linuxTools`) through Docker, with the Docker socket and the
+ * runner's work folder (the checkout and `$RUNNER_TEMP`) mounted at the paths this shell has
+ * (Git Bash's `/c/…` on Windows, which Docker gets as `C:/…`, with `MSYS_NO_PATHCONV=1` so Git
+ * Bash leaves the paths alone). It turns Windows paths in the arguments into those. pack reads
+ * the job's registry login from the job's own Docker settings ({@link OWN_DOCKER_CONFIG}), which
+ * hold it in the file, not in a credential store the container cannot read.
+ */
+function linuxToolWrapper(tool: "pack" | "railpack"): string[] {
   return [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    'if [[ "$RUNNER_OS" == Windows ]]; then temp="$(cygpath -u "$RUNNER_TEMP")"; else temp="$RUNNER_TEMP"; fi',
+    'work="$(dirname "$temp")"',
+    'mount="$work"',
+    'if [[ "$RUNNER_OS" == Windows ]]; then mount="$(cd "$work" && pwd -W)"; fi',
+    "windows='^[A-Za-z]:[\\\\/]'",
+    "args=()",
+    'for arg in "$@"; do',
+    '  if [[ "$RUNNER_OS" == Windows && "$arg" =~ $windows ]]; then arg="$(cygpath -u "$arg")"; fi',
+    '  args+=("$arg")',
+    "done",
+    `MSYS_NO_PATHCONV=1 exec docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$mount:$work" -w "$(pwd)" -e DOCKER_CONFIG="$temp/docker" ${IMAGES.linuxTools.ref} "$temp/opscrew-linux/${tool}" \${args[@]+"\${args[@]}"}`,
+  ];
+}
+
+/**
+ * Installs the pinned release archive of `tool` (pack or Railpack) for the plan's
+ * {@link buildArch} after checking it against the SHA-256 in pins.ts, never against a checksum from
+ * the same release: into /usr/local/bin on GitHub's machines; on the environment's own runner,
+ * whose user has no sudo, into the job's `$RUNNER_TEMP/bin`, which it adds to the job's `PATH`.
+ * These are Linux builds: on a local runner that is not Linux (Windows or macOS)
+ * `$RUNNER_TEMP/bin` gets {@link linuxToolWrapper} instead.
+ */
+function installTool(plan: DeployPlan, tool: "pack" | "railpack", name: string): string[] {
+  const arch = buildArch(plan);
+  const archive = `"$RUNNER_TEMP/${tool}.tar.gz"`;
+  const binary = `"$(find "$RUNNER_TEMP/${tool}" -type f -name ${tool} | head -n 1)"`;
+  const download = [
+    `curl -fsSL --retry 3 -o ${archive} ${toolDownloadUrl(tool, arch)}`,
+    `echo "${TOOLS[tool].sha256[arch]}  $RUNNER_TEMP/${tool}.tar.gz" | ${buildsOnRunner(plan) ? '"${sha256[@]}"' : "sha256sum"} -c -`,
+    `mkdir -p "$RUNNER_TEMP/${tool}"`,
+    // Git Bash's tar takes `C:\…` for a remote host's path: the own runner's uses relative paths.
+    buildsOnRunner(plan)
+      ? `(cd "$RUNNER_TEMP" && tar -xzf ${tool}.tar.gz -C ${tool})`
+      : `tar -xzf ${archive} -C "$RUNNER_TEMP/${tool}"`,
+  ];
+  if (!buildsOnRunner(plan)) {
+    return [
+      `- name: Install ${name} ${TOOLS[tool].version}`,
+      ...run([
+        "set -euo pipefail",
+        ...download,
+        `sudo install -m 0755 ${binary} /usr/local/bin/${tool}`,
+      ]),
+    ];
+  }
+  const native = `install -m 0755 ${binary} "$RUNNER_TEMP/bin/${tool}"`;
+  // A runner machine is Linux; the local runner's computer may not be.
+  const local = plan.environment?.runner === "local";
+  return [
+    ...(local
+      ? [
+          `# ${name}'s Linux build. On a computer that is not Linux it runs in a pinned Linux container`,
+          "# through Docker.",
+        ]
+      : []),
     `- name: Install ${name} ${TOOLS[tool].version}`,
     ...run([
       "set -euo pipefail",
-      `curl -fsSL --retry 3 -o ${archive} ${toolDownloadUrl(tool, arch)}`,
-      `echo "${TOOLS[tool].sha256[arch]}  $RUNNER_TEMP/${tool}.tar.gz" | sha256sum -c -`,
-      `mkdir -p "$RUNNER_TEMP/${tool}"`,
-      `tar -xzf ${archive} -C "$RUNNER_TEMP/${tool}"`,
-      `sudo install -m 0755 "$(find "$RUNNER_TEMP/${tool}" -type f -name ${tool} | head -n 1)" /usr/local/bin/${tool}`,
+      PORTABLE_SHA256,
+      ...download,
+      'mkdir -p "$RUNNER_TEMP/bin"',
+      ...(local
+        ? [
+            'if [[ "$RUNNER_OS" == Linux ]]; then',
+            `  ${native}`,
+            "else",
+            '  mkdir -p "$RUNNER_TEMP/opscrew-linux"',
+            `  install -m 0755 ${binary} "$RUNNER_TEMP/opscrew-linux/${tool}"`,
+            `  cat > "$RUNNER_TEMP/bin/${tool}" <<'WRAPPER'`,
+            ...linuxToolWrapper(tool),
+            "WRAPPER",
+            `  chmod 0755 "$RUNNER_TEMP/bin/${tool}"`,
+            "fi",
+          ]
+        : [native]),
+      'echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"',
     ]),
   ];
 }
@@ -311,7 +409,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
   const setting = versionSetting(plan, BUILDPACKS_VERSION_SETTING);
   const context = plan.app.buildContext || ".";
   return [
-    ...installTool("pack", buildArch(plan), "pack"),
+    ...installTool(plan, "pack", "pack"),
     ...removeSecretFiles(JSON.stringify(context)),
     "- id: pack",
     "  name: Build the image with Buildpacks",
@@ -335,7 +433,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       `pack build "$NAME:build-$GITHUB_SHA" --path ${JSON.stringify(context)} \\`,
       `  --builder ${IMAGES.paketoBuilder.ref} \\`,
       `  --run-image ${IMAGES.paketoRun.ref} \\`,
-      '  "${settings[@]}" --publish --cache-image "$NAME:buildcache" --report-output-dir "$report"',
+      `  ${arrayArgs(plan, "settings")} --publish --cache-image "$NAME:buildcache" --report-output-dir "$report"`,
       'digest="$(sed -nE \'s/^[[:space:]]*digest = "(sha256:[0-9a-f]{64})".*/\\1/p\' "$report/report.toml" | head -n 1)"',
       'if [[ -z "$digest" ]]; then',
       '  echo "::error::pack did not report the digest of the image it pushed; re-run the workflow."',
@@ -365,7 +463,7 @@ function railpackSteps(plan: DeployPlan): string[] {
   ];
   const setting = versionSetting(plan, RAILPACK_VERSION_SETTING);
   return [
-    ...installTool("railpack", buildArch(plan), "Railpack"),
+    ...installTool(plan, "railpack", "Railpack"),
     "- id: prepare",
     "  name: Plan the Railpack build",
     "  env:",
@@ -380,7 +478,7 @@ function railpackSteps(plan: DeployPlan): string[] {
       ...envPairs("values", '"${BUILD_SECRETS:-}"', '"${line%%=*}="'),
       "for attempt in 1 2 3; do",
       "  code=0",
-      `  railpack prepare ${context} --plan-out "$RUNNER_TEMP/railpack-plan.json" --info-out "$RUNNER_TEMP/railpack-info.json" "\${values[@]}" || code=$?`,
+      `  railpack prepare ${context} --plan-out "$RUNNER_TEMP/railpack-plan.json" --info-out "$RUNNER_TEMP/railpack-info.json" ${arrayArgs(plan, "values")} || code=$?`,
       "  # 75 is a temporary failure, such as a download; anything else is final.",
       '  if [[ "$code" -ne 75 ]]; then break; fi',
       "  sleep 10",
@@ -390,7 +488,14 @@ function railpackSteps(plan: DeployPlan): string[] {
       "  exit 1",
       "fi",
       // A new non-secret value changes the cache key, so it is not served from the cache.
-      'echo "hash=$(printf \'%s\' "${BUILD_ENV:-}" | sha256sum | cut -d \' \' -f 1)" >> "$GITHUB_OUTPUT"',
+      ...(buildsOnRunner(plan)
+        ? [
+            PORTABLE_SHA256,
+            'echo "hash=$(printf \'%s\' "${BUILD_ENV:-}" | "${sha256[@]}" | cut -d \' \' -f 1)" >> "$GITHUB_OUTPUT"',
+          ]
+        : [
+            'echo "hash=$(printf \'%s\' "${BUILD_ENV:-}" | sha256sum | cut -d \' \' -f 1)" >> "$GITHUB_OUTPUT"',
+          ]),
     ]),
     "- id: railpack",
     "  name: Build the image with Railpack",
@@ -443,16 +548,46 @@ const RECORD = [
   ]),
 ];
 
-const SCAN = [
-  "# The scan runs after the registry logout, so it never holds the job's packages: write token.",
-  "- name: Scan the image (report only)",
-  "  env:",
-  "    IMAGE: ${{ steps.final.outputs.ref }}",
+/**
+ * The report-only scan. On the environment's own runner the socket's path reaches Docker as it is
+ * (`MSYS_NO_PATHCONV=1`: Git Bash on Windows would turn it into a Windows path).
+ */
+function scan(plan: DeployPlan): string[] {
+  const noPathConv = buildsOnRunner(plan) ? "MSYS_NO_PATHCONV=1 " : "";
+  return [
+    "# The scan runs after the registry logout, so it never holds the job's packages: write token.",
+    "- name: Scan the image (report only)",
+    "  env:",
+    "    IMAGE: ${{ steps.final.outputs.ref }}",
+    ...run([
+      "set -euo pipefail",
+      'docker pull --quiet "$IMAGE"',
+      "docker logout ghcr.io",
+      `${noPathConv}docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
+    ]),
+  ];
+}
+
+/**
+ * The environment's own runner runs as a user who keeps Docker settings of their own (the local
+ * runner's computer) or runs other environments' builds at once (a runner machine), so each build
+ * job keeps its registry login (which the login action and the scan log out of again) and its
+ * Buildx builder in Docker settings of its own, in its temp folder. It keeps the daemon the current
+ * Docker context names (Docker Desktop's) and the user's CLI plugins (buildx). The settings start
+ * with a ghcr.io entry: settings without any make docker log in to the computer's credential store
+ * (the macOS keychain, Windows' credential manager), where the user's own login lives.
+ */
+const OWN_DOCKER_CONFIG = [
+  "- name: Keep this job's Docker login and builder to itself",
   ...run([
     "set -euo pipefail",
-    'docker pull --quiet "$IMAGE"',
-    "docker logout ghcr.io",
-    `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
+    // Read with the user's settings, which hold the context.
+    ...DOCKER_CONTEXT_HOST,
+    'plugins="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"',
+    'mkdir -p "$RUNNER_TEMP/docker"',
+    'if [[ -d "$plugins" ]]; then ln -s "$plugins" "$RUNNER_TEMP/docker/cli-plugins"; fi',
+    `printf '{"auths":{"ghcr.io":{}}}\\n' > "$RUNNER_TEMP/docker/config.json"`,
+    'echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"',
   ]),
 ];
 
@@ -464,6 +599,12 @@ const SCAN = [
  * folder the app's user's ({@link sqliteSeal}). Every builder ends in one
  * `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
  * index digest reference, and `tag`, `<name>:<commit>`. Then the optional report-only scan.
+ *
+ * With `environment.build` `runner` it runs on the environment's own runner ({@link buildRunner}),
+ * every step with bash, and with the same steps in forms macOS's bash 3.2 and Git Bash run; pack
+ * and Railpack go into the job's temp folder, through Docker off Linux ({@link installTool}). It
+ * first moves the Docker settings into the job's temp folder ({@link OWN_DOCKER_CONFIG}), and its
+ * checkout keeps the job's token out of the runner's kept workspace.
  */
 export function buildJob(plan: DeployPlan): string[] {
   const builder = plan.app.build?.builder;
@@ -473,20 +614,24 @@ export function buildJob(plan: DeployPlan): string[] {
       : builder === "railpack"
         ? railpackSteps(plan)
         : dockerfileSteps(plan);
+  const own = buildsOnRunner(plan);
   return job({
     id: "build",
     name: "Build the image",
     runsOn: buildRunner(plan),
+    shell: own ? "bash" : undefined,
     permissions: ["contents: read", "packages: write"],
     outputs: ["image: ${{ steps.final.outputs.ref }}", "tag: ${{ steps.image.outputs.image }}"],
     steps: [
+      ...(own ? OWN_DOCKER_CONFIG : []),
       `- uses: ${ACTIONS.checkout}`,
-      ...IMAGE_NAME,
+      ...(own ? ["  with:", "    persist-credentials: false"] : []),
+      ...imageName(plan),
       ...SETUP_BUILDX,
       ...GHCR_LOGIN,
       ...steps,
       ...RECORD,
-      ...(plan.security.imageScan ? SCAN : []),
+      ...(plan.security.imageScan ? scan(plan) : []),
     ],
   });
 }

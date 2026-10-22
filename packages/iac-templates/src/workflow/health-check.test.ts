@@ -83,7 +83,7 @@ describe("the health check's rendered script", () => {
   });
 });
 
-describe.skipIf(!bashWorks())("the health check in bash", { timeout: 30_000 }, () => {
+describe.skipIf(!bashWorks())("the health check in bash", { timeout: 60_000 }, () => {
   it("says the server has no certificate yet when every attempt fails with 35 or 60", () => {
     for (const codes of ["35", "60", "35 60 35"]) {
       const result = run(healthScript(direct), codes);

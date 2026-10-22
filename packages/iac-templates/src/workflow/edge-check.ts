@@ -5,7 +5,7 @@ import { LOCALHOST_TLS } from "../edge/localhost";
 import { LETSENCRYPT } from "../edge/nginx";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
-import { environmentName } from "./shared";
+import { environmentName, onRunnerMachine, provisionCommand } from "./shared";
 import type { EdgeFiles } from "./switch";
 
 /** Where the step lays the edge out as the server has it, on the runner. */
@@ -20,7 +20,7 @@ function placeholder(key: string, certificate: string): string {
 function checkFailed(plan: DeployPlan, file: string, additions: boolean): string {
   const { label, additions: yours } = EDGE_PROXIES[edgeProxy(plan)];
   const also = additions ? ` with your additions in ${yours}` : "";
-  return `::error::${label} refused this app's edge configuration (${file}${also}) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.`;
+  return `::error::${label} refused this app's edge configuration (${file}${also}) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (${provisionCommand(plan)} renders the site again), then push again.`;
 }
 
 /**
@@ -86,7 +86,10 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
       : []),
     // nginx runs as the deploy user on the server, here as the runner's.
     ...(nginx ? ['    export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"'] : []),
-    `    docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
+    // A runner machine runs other environments' deploys at once: one of them may create it first.
+    onRunnerMachine(plan)
+      ? `    docker network create ${EDGE_PROJECT} > /dev/null 2>&1 || docker network inspect ${EDGE_PROJECT} > /dev/null`
+      : `    docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
     ...files.flatMap((file) => [
       `    cp ${dir}/edge/sites/${file} ${CHECK}/sites/${app}.${site}`,
       `    if ! docker compose -p opscrew-edge-check -f ${CHECK}/compose.yaml ${check} < /dev/null; then`,

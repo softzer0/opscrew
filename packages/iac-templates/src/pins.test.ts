@@ -88,7 +88,10 @@ describe("pins.ts", () => {
       nginx: "1.30.6-alpine",
       certbot: "v5.8.0",
       pebble: "2.10.1",
+      linuxTools: "latest",
     });
+    // Distroless publishes no versioned tags; the digest pins it, update-pins refreshes it.
+    expect(parseImageRef(IMAGES.linuxTools.ref).repo).toBe("gcr.io/distroless/base-debian13");
     expect(parseImageRef(IMAGES.sshAudit.ref).repo).toBe("positronsecurity/ssh-audit");
     expect(parseImageRef(IMAGES.testssl.ref).repo).toBe("ghcr.io/testssl/testssl.sh");
     expect(parseImageRef(IMAGES.nginx.ref).repo).toBe("nginxinc/nginx-unprivileged");
@@ -113,6 +116,7 @@ describe("pins.ts", () => {
         "garage",
         "kafka",
         "kamalProxy",
+        "linuxTools",
         "mariadb",
         "mongodb",
         "mysql",

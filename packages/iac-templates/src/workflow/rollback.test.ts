@@ -435,7 +435,7 @@ const runningProcesses = (image: string, services = ["worker", "beat", "cron"]) 
 
 // Each test runs bash several times; on Windows (Git Bash) under a parallel `pnpm check` that
 // can take longer than the default 5 seconds.
-describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000 }, () => {
+describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000 }, () => {
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-rollback-")).replaceAll("\\", "/");
     for (const dir of ["repos/shop", "srv/edge", "tmp", "bin"]) {

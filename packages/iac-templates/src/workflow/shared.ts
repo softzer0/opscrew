@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import { posix } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, targetArch } from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
 import { ACTIONS, type PinArch } from "../pins";
 
@@ -36,10 +36,9 @@ export function serviceEnvSecret(service: string): string {
   return `OPSCREW_SERVICE_${service.toUpperCase().replaceAll("-", "_")}_ENV`;
 }
 
-/** The CPU architecture the image is built for: the server's, or this computer's on localhost. */
+/** The CPU architecture the image is built for: the target's ({@link targetArch}). */
 export function buildArch(plan: DeployPlan): PinArch {
-  const { target } = plan;
-  return "arch" in target && target.arch === "arm64" ? "arm64" : "amd64";
+  return targetArch(plan.target);
 }
 
 /** True when the plan has an enabled cron job, which the `cron` service runs with supercronic. */
@@ -103,11 +102,19 @@ export function sqliteFolder(plan: DeployPlan): string | undefined {
 }
 
 /**
- * GitHub-hosted runner that builds the image: arm64 servers (and arm64 Portainer environments) get
- * an arm64 runner (no emulation).
+ * The `runs-on` of the job that builds the image: with `environment.build` `runner`, the
+ * environment's self-hosted runner ({@link runnerLabel}), whose architecture is the target's;
+ * otherwise a GitHub-hosted runner, an arm64 one for arm64 servers (and arm64 Portainer
+ * environments), with no emulation.
  */
 export function buildRunner(plan: DeployPlan): string {
+  if (buildsOnRunner(plan)) return `[self-hosted, ${runnerLabel(plan)}]`;
   return buildArch(plan) === "arm64" ? "ubuntu-24.04-arm" : "ubuntu-latest";
+}
+
+/** True when the image is built on the environment's own runner (`environment.build` `runner`). */
+export function buildsOnRunner(plan: DeployPlan): boolean {
+  return plan.environment?.build === "runner";
 }
 
 /** The plan's health path with a leading `/`. */
@@ -138,6 +145,12 @@ export function secret(plan: DeployPlan, name: string): string {
 /** The plan's environment name: `prod` for the plan without one. */
 export function environmentName(plan: DeployPlan): string {
   return plan.environment?.name ?? "prod";
+}
+
+/** `opscrew provision`, with `--env <env>` for an environment other than prod. */
+export function provisionCommand(plan: DeployPlan): string {
+  const name = plan.environment?.name;
+  return name === undefined ? "opscrew provision" : `opscrew provision --env ${name}`;
 }
 
 /** True when the environment is deployed only by `opscrew promote`, from a digest. */
@@ -178,10 +191,30 @@ export function runnerLabel(plan: DeployPlan): string {
 
 /**
  * True when the deploy job runs on the environment's self-hosted runner (`environment.runner`
- * `server` or `local`), on the machine it deploys to.
+ * `server`, `local` or `host`) rather than on GitHub's machines.
  */
 export function selfHosted(plan: DeployPlan): boolean {
   return (plan.environment?.runner ?? "github") !== "github";
+}
+
+/**
+ * True when the deploy job runs on the machine it deploys to: the server's runner or the local
+ * runner (`environment.runner` `server` or `local`). A runner machine (`host`) deploys over SSH,
+ * as GitHub's machines do.
+ */
+export function deploysInPlace(plan: DeployPlan): boolean {
+  const runner = plan.environment?.runner;
+  return runner === "server" || runner === "local";
+}
+
+/**
+ * True when the deploy job runs on a runner machine (`environment.runner` `host`). It runs other
+ * environments' jobs as the same user and keeps its home folder, so the job keeps its SSH files
+ * and Docker settings in its own temp folder (`$RUNNER_TEMP`, which the runner empties after each
+ * job), and its user has no sudo.
+ */
+export function onRunnerMachine(plan: DeployPlan): boolean {
+  return plan.environment?.runner === "host";
 }
 
 /** Stops a step whose `$IMAGE` is not a GHCR digest reference. */
@@ -203,6 +236,17 @@ export function run(script: readonly string[]): string[] {
 }
 
 /** The step that logs in to GitHub Container Registry with the job's token. */
+/**
+ * Script lines that give the job's later steps the daemon of the current Docker context
+ * (`DOCKER_HOST` through `$GITHUB_ENV`), so docker reaches Docker Desktop's on macOS also with
+ * other Docker settings than the user's or without its default socket. Harmless on Linux and
+ * Windows, where the context names the usual daemon.
+ */
+export const DOCKER_CONTEXT_HOST = [
+  "docker_host=\"$(docker context inspect --format '{{.Endpoints.docker.Host}}')\"",
+  'echo "DOCKER_HOST=$docker_host" >> "$GITHUB_ENV"',
+];
+
 export const GHCR_LOGIN = [
   "- name: Log in to GitHub Container Registry",
   `  uses: ${ACTIONS.login}`,
@@ -308,10 +352,10 @@ export function job(j: Job): string[] {
  * The `deploy` job (`name` shown in GitHub): after the job that gives it the image
  * ({@link imageJob}), in the {@link githubEnvironment}, with the token's `permissions`
  * (`contents: read`, …) and the `steps`. It runs on `ubuntu-latest`, or with `environment.runner`
- * `server` or `local` on the environment's self-hosted runner ({@link runnerLabel}), every step
- * with bash (Git for Windows' on a Windows computer). Its output `previous` is the image that ran
- * before this deploy (empty on the first one), which the image retention job never deletes and the
- * label job labels `opscrew-<env>-previous`.
+ * `server`, `local` or `host` on the environment's self-hosted runner ({@link runnerLabel}), every
+ * step with bash (Git for Windows' on a Windows computer). Its output `previous` is the image that
+ * ran before this deploy (empty on the first one), which the image retention job never deletes and
+ * the label job labels `opscrew-<env>-previous`.
  */
 export function deployJob(
   plan: DeployPlan,

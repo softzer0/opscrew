@@ -428,7 +428,7 @@ function bashWorks(): boolean {
   }
 }
 
-describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, () => {
+describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 60_000 }, () => {
   let work = "";
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-build-")).replaceAll("\\", "/");

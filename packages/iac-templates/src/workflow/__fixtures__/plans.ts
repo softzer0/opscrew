@@ -124,6 +124,8 @@ export function inEnvironment(
     name?: string;
     deploySource?: NonNullable<DeployPlan["environment"]>["deploySource"];
     runner?: NonNullable<DeployPlan["environment"]>["runner"];
+    runnerHost?: NonNullable<DeployPlan["environment"]>["runnerHost"];
+    build?: NonNullable<DeployPlan["environment"]>["build"];
     secrets?: NonNullable<DeployPlan["environment"]>["secrets"];
   },
 ): DeployPlan {

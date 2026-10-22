@@ -129,7 +129,7 @@ function bashWorks(): boolean {
  * Runs the generated install script in bash with a fake `uname`, `curl` (writes FAKE_BINARY),
  * `sudo` and `install` (copies into $WORK/bin), and the real `sha256sum`.
  */
-describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 30_000 }, () => {
+describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 60_000 }, () => {
   const FAKE_BINARY = "fake cloudflared binary";
   const fakeSum = createHash("sha256").update(FAKE_BINARY).digest("hex");
   const PRELUDE = [

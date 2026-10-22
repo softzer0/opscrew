@@ -108,7 +108,7 @@ jobs:
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
           cp opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-staging.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision --env staging renders the site again), then push again.'
             exit 1
           fi
       - name: Configure SSH with the pinned host key
@@ -880,7 +880,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
           cp opscrew/environments/eu-staging/runtime/edge/sites/shop-eu-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-eu-staging.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/eu-staging/runtime/edge/sites/shop-eu-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/eu-staging/runtime/edge/sites/shop-eu-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision --env eu-staging renders the site again), then push again.'
             exit 1
           fi
       - name: Configure SSH with the pinned host key
@@ -1104,7 +1104,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
           cp opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-staging.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision --env staging renders the site again), then push again.'
             exit 1
           fi
       - name: Copy the runtime files and environment into the app's folder
@@ -1305,6 +1305,11 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
     outputs:
       previous: \${{ steps.start.outputs.previous }}
     steps:
+      - name: Use this computer's Docker daemon
+        run: |
+          set -euo pipefail
+          docker_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+          echo "DOCKER_HOST=$docker_host" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -1322,7 +1327,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
           cp opscrew/environments/dev/runtime/edge/sites/shop-dev.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-dev.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/dev/runtime/edge/sites/shop-dev.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/dev/runtime/edge/sites/shop-dev.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision --env dev renders the site again), then push again.'
             exit 1
           fi
       - name: Copy the runtime files and environment into the app's folder
@@ -1373,6 +1378,10 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           previous="$(cd "$dir" && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi)"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          if [[ ! -f "$dir"/.docker/config.json ]]; then
+            mkdir -p "$dir"/.docker
+            printf '{"auths":{"ghcr.io":{}}}\\n' > "$dir"/.docker/config.json
+          fi
           printf '%s\\n' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$dir"/.docker docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           unset REGISTRY_TOKEN
           sh -s -- "$IMAGE" <<'REMOTE'

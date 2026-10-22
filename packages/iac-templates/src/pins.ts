@@ -69,6 +69,13 @@ export const IMAGES = {
   curl: {
     ref: "curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac",
   },
+  /**
+   * The small Linux (glibc, CA certificates, no shell) that runs the Linux pack and Railpack CLIs
+   * on a self-hosted runner that is not Linux, through Docker (read from the registry 2026-10-22).
+   */
+  linuxTools: {
+    ref: "gcr.io/distroless/base-debian13:latest@sha256:44a80dc28b49f47396e72ab2dc644b3f849880335de09625762faed207bb891d",
+  },
   /** Paketo's Ubuntu 24.04 builder (lifecycle 0.21.22), amd64 and arm64. */
   paketoBuilder: {
     ref: "paketobuildpacks/ubuntu-noble-builder:0.0.203@sha256:ba79c24b55830210fc5ee06768237ab989dbaeec36adb60a986bcb8e70e4d7cd",
