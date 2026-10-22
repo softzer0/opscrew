@@ -52,6 +52,7 @@ opscrew destroy --env staging --confirm staging
 With staging following main and prod promoted from staging:
 
 ```bash
+opscrew env set prod --from staging && opscrew provision --env prod   # prod's workflow becomes the promoted one
 git commit --allow-empty -m change && git push        # staging deploys
 opscrew promote --to prod                             # shows the digest and provenance
 opscrew promote --to prod --approve <hash>

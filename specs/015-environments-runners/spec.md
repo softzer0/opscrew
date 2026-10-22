@@ -169,7 +169,7 @@ For an environment on the developer's own computer, the developer can also run t
 
 **Promotion (User Story 3)**
 
-- **FR-1517**: Environments MUST have an order. Each environment's deploy source MUST be either the main branch (built and deployed on each push) or promotion from the environment before it. By default the first environment GitHub can deploy to follows the main branch, and every later one is promoted.
+- **FR-1517**: Environments MUST have an order. Each environment's deploy source MUST be either the main branch (built and deployed on each push) or promotion from the environment before it. A new environment follows the main branch unless the developer names its source, and adding one never changes another environment. Changing an existing environment's source (for example, prod promoted from staging) is its own explicit step, applied at that environment's next provision.
 - **FR-1518**: `opscrew promote --to <env>` MUST:
   1. find the image the source environment runs, by digest;
   2. verify its build provenance;
@@ -235,7 +235,7 @@ Defaults the lead chose while the founder was away (2026-10-21). Each is open fo
   - dev is localhost;
   - staging is its own smallest server at prod's provider, with the cost shown, and sharing the user's own server with prod is allowed;
   - in a Portainer, staging is another stack.
-- **The deploy source:** the first environment GitHub can deploy to follows the main branch, and every later one is promoted. A localhost environment without the local runner is provisioned from the computer itself.
+- **The deploy source:** a new environment follows the main branch unless `--from` names its source. Making prod promoted from staging is an explicit `env set prod --from staging`, so adding an environment never changes prod. A localhost environment without the local runner is provisioned from the computer itself.
 - **GitHub plans:** environments, environment secrets and branch rules need GitHub Pro, Team or Enterprise on a private repository, and required reviewers on a private repository appear to need Enterprise. OpsCrew checks what the repository actually supports instead of assuming. Without them, secrets are prefixed repository secrets, and the approval is OpsCrew's own.
 - **The server's runner** runs as the existing deploy user, the same privilege as today's SSH deploys. It is persistent, not one job per runner, because a per-job runner would need a long-lived administrator token on the server.
 - **The local runner** runs interactively as the user, not as a system service.

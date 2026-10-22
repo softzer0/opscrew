@@ -197,9 +197,12 @@ Effort`.
 
       It writes the environment's requirements, designs it, and shows its monthly cost.
     - **Design for an environment** copies the shared parts from prod's plan, sets `app.name` to `<app>-<env>`, derives the hostnames, and writes `plan.environment`.
+    - **The deploy source:** `--from` defaults to `main`, and adding an environment never changes another's plan. **`setDeploySource(root, environment, from)`** changes one environment's `deploySource` (an existing source, never itself, no cycle). That environment's next provision shows and applies the workflow change.
+    - **The target's connection:** for an own server or a Portainer, prod's connection is offered as the default answer (without prod's `created` list), and the interview's follow-ups are asked for another one. The recovery copy is per environment (`opscrew/environments/<env>/secrets.sops.json`). A hostname another environment uses is refused.
+    - **Localhost** is offered as a target; its design comes with T1510.
     - **`listEnvironments`** gives each environment's name, target, source, runner and deployed state. **`removeEnvironment`** refuses while the environment is deployed, and removes its files.
     - **`supplyChain.sign` is a shared part** too, copied and compared like the others. The promoted environment's verify job checks the signature by its own plan, while the source's workflow is what signs (T1505's review).
-    - **One `dependabot.yml` for every environment:** design and provision render it with every environment's runtime folder (from `environmentsOf`), so prod's and staging's provisions write the same file (T1506b).
+    - **One `dependabot.yml` for every environment:** provision renders it with every environment's runtime folder (from `environmentsOf`), so prod's and staging's provisions write the same file (T1506b). iac-templates' `renderDependabot` takes the environments' names for this, with prod-only output unchanged: `packages/iac-templates/src/dependabot/**` is in T1508a's Owns for this change.
     - **`sharedPartsDiffer(prodPlan, envPlan)`** runs in provision's preflight: `PHASE_PRECONDITION` naming the fields, with the hint `opscrew design --env <env>`.
     - **Every phase** (provision, destroy, drift, status, verify, secure, retarget, secrets) resolves its paths through the environment. Agents' `stateFile()` (`shared/engine.ts`) uses core's `tfstateFile(paths)`, since today it hard-codes `prod.tfstate` (T1503's review).
     - **Tests:** an existing prod app is unchanged, with nothing to apply; adding staging; two environments on one own server; the shared-parts refusal; the choice in scripts.
@@ -254,6 +257,13 @@ Effort`.
   - Depends: T1508a, T1506, T1507
   - Accept:
     - **`localPreflight`** runs each check of the contract. Every problem stops before any change, with its fix. The notes (the licence, the architecture) are given once.
+    - **Interview and design for localhost** (`localhostNotSupported` goes):
+      - the architecture from the computer and the ports probed, both injected;
+      - `image` as data-model.md's table says;
+      - no DNS;
+      - the hostnames `<app>.localhost`, or `<env>.<app>.localhost` beside another localhost environment.
+
+      The design and interview files' localhost branches are in T1510's Owns (T1508a's report).
     - **Components that need a host kernel setting** (the search engines' `vm.max_map_count` through the privileged sysctl service) are refused on localhost with a plain message, as on Portainer (T1506).
     - **Rendering a local-runner workflow** passes the environment's localhost hostname in the render context (`ctx.localhost`). The scripts need it for kamal-proxy's `--host` (T1506's rebase report).
     - **Local deploys are serialised** with a lock in the user's OpsCrew home, since the scripts' `flock` is missing on Git for Windows and macOS (T1506).
@@ -291,10 +301,10 @@ Effort`.
   - Accept:
     - **The CLI:**
       - `--env` on provision, destroy, drift, status, verify, secure, retarget, secrets and promote;
-      - `env add|list|remove`, `promote`, `localhost trust|untrust`, `runner start`.
+      - `env add|set|list|remove`, `promote`, `localhost trust|untrust`, `runner start`.
     - **MCP:**
       - an `environment` input on the matching tools;
-      - `opscrew_env_add`, `opscrew_env_list` and `opscrew_env_remove`;
+      - `opscrew_env_add`, `opscrew_env_set`, `opscrew_env_list` and `opscrew_env_remove`;
       - `opscrew_promote`, with the approval dialog. The `promote` approval is never granted without the user.
     - **The guide:** new pages `environments.md`, `localhost.md` (with Docker Desktop's licence note and the trust command per OS) and `runners.md`. `environments.md` says plainly that without image signing, promotion's provenance check is a consistency check: anyone who can push to the GHCR package could forge it. Signing (`supplyChain.sign`) is the real gate (T1505's review). Environment sections where pages need them. The runbook per environment.
     - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).

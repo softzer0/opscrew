@@ -47,6 +47,7 @@ resolveEnvironment(root, requested: string | undefined, deps): Promise<string>;
 | CLI | MCP | Does |
 |---|---|---|
 | `opscrew env add <name> [--target …] [--from <source>] [--runner github\|server\|local]` | `opscrew_env_add` | asks the environment's own questions, writes its requirements, designs it, shows its cost |
+| `opscrew env set <name> --from main\|<source>` | `opscrew_env_set` | changes that environment's deploy source in its plan (an existing source, never itself, no cycle); its next provision applies the workflow change |
 | `opscrew env list` | `opscrew_env_list` | name, target, deploy source, runner, deployed or not |
 | `opscrew env remove <name>` | `opscrew_env_remove` | refuses while deployed; removes its files |
 | `opscrew promote --to <env> [--digest sha256:…] [--approve <hash>]` | `opscrew_promote` (dialog) | section below |
