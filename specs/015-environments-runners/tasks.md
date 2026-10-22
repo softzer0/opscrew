@@ -130,7 +130,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1506 [P] [US1] Localhost templates: Compose, the edge with the local CA, and the scripts' root folders, in `packages/iac-templates/src/{edge,runtime}/**`, `packages/iac-templates/src/workflow/switch.ts`
+- [X] T1506 [P] [US1] Localhost templates: Compose, the edge with the local CA, and the scripts' root folders, in `packages/iac-templates/src/{edge,runtime}/**`, `packages/iac-templates/src/workflow/switch.ts`
   - Owns: those paths (+ tests, snapshots)
   - Reads: contracts/localhost.md "The script roots", "Localhost Compose and edge"; plan.md "7."; research.md R4 and "Spike results" 6, 7, 10
   - Depends: T1501a, T1502
@@ -176,6 +176,7 @@ Effort`.
     - **The lock where `flock` is missing** (Git for Windows, macOS): the scripts take the edge's lock only when `command -v flock` finds it. T1510 serialises local deploys with its own lock.
     - **`image: local-build`:** the localhost switch doesn't pull the app's locally built image (for example `pull_policy: never` on that service, or a pull that skips it), with a test that `docker compose pull` doesn't fail on it.
     - **The localhost health check** in the workflow probes HTTPS through the local CA: `https://<host>:<https port><path>`, with `--resolve` to 127.0.0.1 and `--cacert "$OPSCREW_LOCAL_CA_FILE"`. The plain HTTP port answers with a redirect, which `curl -f` would count as healthy (T1505).
+    - **The local runner's deploy and its leaf certificate:** the localhost start script swaps in `local.pem.new` and `local.key.new` only when they exist, and keeps the leaf already in the edge's TLS folder otherwise. A workflow deploy on the local runner brings no new leaf; `opscrew provision` issues it. The local job's edge check validates with that existing leaf (T1506's rebase report).
     - **Settings files on localhost** (MySQL, Valkey and others) are inline Compose configs, as the local Docker pass's `localServerCompose` does. Files bind-mounted from Windows are world-writable, and MySQL ignores such files.
     - **Prod's rendered output is byte-identical** (snapshots).
     - **Tests:** two environments' rendered files never share a path; a Portainer staging stack points at its own branch.
@@ -241,6 +242,7 @@ Effort`.
   - Accept:
     - **`localPreflight`** runs each check of the contract. Every problem stops before any change, with its fix. The notes (the licence, the architecture) are given once.
     - **Components that need a host kernel setting** (the search engines' `vm.max_map_count` through the privileged sysctl service) are refused on localhost with a plain message, as on Portainer (T1506).
+    - **Rendering a local-runner workflow** passes the environment's localhost hostname in the render context (`ctx.localhost`). The scripts need it for kamal-proxy's `--host` (T1506's rebase report).
     - **Local deploys are serialised** with a lock in the user's OpsCrew home, since the scripts' `flock` is missing on Git for Windows and macOS (T1506).
     - **`planLocal` and `applyLocal`:** the local plan, hashed, approved as `host-apply`, and applied through `localExec`.
     - **The image:** the production digest from GHCR when the architecture matches; otherwise `docker build` for Dockerfile apps, or the production image under emulation with a warning.
