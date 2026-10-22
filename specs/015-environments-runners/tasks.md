@@ -403,7 +403,7 @@ Effort`.
       - the host plan approved by its hash as `host-apply`;
       - the record in the project's home folder;
       - removal refused while an environment uses the machine.
-    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
+    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. `env add`'s target question offers "This computer" once (today `interview/questions.ts` and `environments/add.ts` both add it; T1512b's review). An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
     - **Provision and destroy** of an environment with `runner: host` add and remove its `github-runner` step on the machine's host plan, approved by that plan's hash. Its deploy secrets include the SSH connection secrets, as for a GitHub-hosted job.
     - **`status` and `secure`** report the machine's runners through `runnerStatus`. Its wording (`runners/status.ts`) names the runner machine for `runner: host`, not "the server's runner" (T1517a's report).
     - **Tests:** add, apply and remove a machine; two environments on one machine; destroy removing only one environment's runner; the refusals; no token or address in any plan or committed file.
@@ -429,7 +429,7 @@ Effort`.
   - Depends: T1508b, T1509, T1510, T1511
   - Accept:
     - **The CLI:**
-      - `--env` on provision, destroy, drift, status, verify, secure, retarget, secrets and promote;
+      - `--env` on design, provision, destroy, drift, status, verify, secure, retarget and secrets, and `--to` on promote;
       - `env add|set|list|remove`, `promote`, `localhost trust|untrust`, `runner start`.
     - **MCP:**
       - an `environment` input on the matching tools;
@@ -457,7 +457,7 @@ Effort`.
   - Depends: T1508b, T1509, T1510, T1511
   - Accept:
     - **The guide:** new pages `environments.md`, `localhost.md` (with Docker Desktop's licence note and the trust command per OS) and `runners.md`. `environments.md` says plainly that on a Free private repository GitHub environments hold secrets but have no branch rules, wait timers or reviewers, so any workflow naming the environment can read them and OpsCrew's approval is the only gate (spike result 1). It also says that without image signing, promotion's provenance check is a consistency check: anyone who can push to the GHCR package could forge it. Signing (`supplyChain.sign`) is the real gate (T1505's review). Environment sections where pages need them. The runbook per environment.
-    - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
+    - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write) and Environments (Read and write), the ones OpsCrew's calls use (no deployments or variables endpoint is called; T1512b's review). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
       The list names only what OpsCrew's code calls: check the connector before listing a permission (Variables, for example, only if some call uses it). Listing or reading an environment also needs Actions: Read (spike result).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-github` and `pnpm lint`
   - Effort: high
@@ -516,6 +516,7 @@ Effort`.
     - Core's `signedLeafCertificate` takes a `commonName` option, so a long localhost hostname needs no extra short SAN name (`<16 hex>.localhost`) (T1510).
     - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
     - The runbook's `workflowName` and plan-file path rebuild what `workflow/shared.ts` builds inline (`workflowStart`): export one helper (T1512b).
+    - iac-templates' `workflow/shared.ts` comment on concurrency says no queued deploy is cancelled; GitHub keeps only the newest waiting run (T1512b's review).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`

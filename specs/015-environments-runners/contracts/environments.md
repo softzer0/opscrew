@@ -51,7 +51,7 @@ resolveEnvironment(root, requested: string | undefined, deps): Promise<string>;
 | `opscrew env list` | `opscrew_env_list` | name, target, deploy source, runner, deployed or not |
 | `opscrew env remove <name>` | `opscrew_env_remove` | refuses while deployed; removes its files |
 | `opscrew promote --to <env> [--digest sha256:…] [--approve <hash>]` | `opscrew_promote` (dialog) | section below |
-| `--env <name>` on provision, destroy, drift, status, verify, secure, retarget, secrets | `environment` input on the matching tools | acts on that environment only |
+| `--env <name>` on design, provision, destroy, drift, status, verify, secure, retarget, secrets | `environment` input on the matching tools | acts on that environment only |
 
 ## Promotion (agents)
 
