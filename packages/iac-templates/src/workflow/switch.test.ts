@@ -9,6 +9,7 @@ import { testContext, testPlan } from "../__fixtures__/plans";
 import { localhostHostname, localhostTlsUpload, renderEdgeCompose } from "../edge";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
+import { runtimeDir } from "../runtime-dir";
 import { NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
 import { type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
 
@@ -101,6 +102,20 @@ describe("the start script on this computer", () => {
       expect(plain.join("\n")).not.toMatch(/edge run|pull\.pem|origin\.(pem|key)/);
     }
   });
+
+  it("takes the edge's lock only where flock exists, which a server's script always does", () => {
+    const local = switchCommands(localhostPlan(), [], {
+      originTls: false,
+      additions: false,
+      localhost: { hostname: "shop.localhost" },
+    });
+    expect(local).toContain("  if command -v flock > /dev/null 2>&1; then flock 9; fi");
+    expect(local).not.toContain("  flock 9");
+    for (const script of serverScripts().slice(0, 5)) {
+      expect(script).toContain("  flock 9");
+      expect(script.join("\n")).not.toContain("command -v flock");
+    }
+  });
 });
 
 const IMAGE = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
@@ -187,17 +202,17 @@ const localFiles = (hostname: string): EdgeFiles => ({
 
 /**
  * What the local deploy leaves before the start script: the app's runtime files in its folder,
- * and the leaf certificate and key (placeholders) in the edge's TLS folder.
+ * and the `leaf` certificate and key (placeholders) in the edge's TLS folder; no leaf with `false`
+ * (a deploy on the local runner).
  */
-function upload(plan: DeployPlan, hostname: string, leaf = hostname): void {
+function upload(plan: DeployPlan, hostname: string, leaf: string | false = hostname): void {
   const ctx = { ...testContext(), localhost: { hostname } };
   const files = [renderCompose(plan), ...renderRuntimeFiles(plan), ...renderEdgeSite(plan, ctx)];
+  const dir = runtimeDir(plan);
   for (const file of files) {
-    write(
-      `${appsDir()}/${plan.app.name}/${file.path.replace(/^opscrew\/runtime\//, "")}`,
-      file.content,
-    );
+    write(`${appsDir()}/${plan.app.name}/${file.path.slice(dir.length + 1)}`, file.content);
   }
+  if (leaf === false) return;
   const tls = localhostTlsUpload(plan.app.name);
   write(`${edgeDir()}/${tls.certificate}`, `certificate for ${leaf}\n`);
   write(`${edgeDir()}/${tls.key}`, `key for ${leaf}\n`);
@@ -322,6 +337,37 @@ describe.skipIf(!shWorks())(
         "::error::OpsCrew's shared edge on the server (Caddy and kamal-proxy, in",
       );
       expect(failed.output).toContain(`, in ${edgeDir()}) did not start`);
+      expect(read(`${edgeDir()}/tls/shop/local.pem`)).toBe("certificate for the first\n");
+      expect(read(`${edgeDir()}/tls/shop/local.key`)).toBe("key for the first\n");
+    });
+
+    it("deploys without the edge's lock where flock is missing (Git for Windows, macOS)", () => {
+      rmSync(`${work}/bin/flock`);
+      const plan = localhostPlan();
+      upload(plan, "shop.localhost");
+      const start = run(switchCommands(plan, [], localFiles("shop.localhost")));
+      expect(start.status, start.output).toBe(0);
+      expect(existsSync(`${work}/flock.log`)).toBe(false);
+      expect(read(`${edgeDir()}/tls/shop/local.pem`)).toBe("certificate for shop.localhost\n");
+      expect(route("shop")).toBe("shop-app-1:3000 shop.localhost");
+    });
+
+    it("keeps the leaf certificate the edge has when the deploy brings none", () => {
+      const plan = localhostPlan();
+      upload(plan, "shop.localhost", "the first");
+      expect(run(switchCommands(plan, [], localFiles("shop.localhost"))).status).toBe(0);
+      // A deploy on the local runner: the runtime files, and no new leaf.
+      upload(plan, "shop.localhost", false);
+      const again = run(switchCommands(plan, [], localFiles("shop.localhost")));
+      expect(again.status, again.output).toBe(0);
+      expect(read(`${edgeDir()}/tls/shop/local.pem`)).toBe("certificate for the first\n");
+      expect(read(`${edgeDir()}/tls/shop/local.key`)).toBe("key for the first\n");
+      expect(existsSync(`${edgeDir()}/tls/shop/local.pem.previous`)).toBe(false);
+      // The edge refusing the site keeps it too.
+      const failed = run(switchCommands(plan, [], localFiles("shop.localhost")), {
+        EDGE_UP_FAIL: "1",
+      });
+      expect(failed.status).toBe(1);
       expect(read(`${edgeDir()}/tls/shop/local.pem`)).toBe("certificate for the first\n");
       expect(read(`${edgeDir()}/tls/shop/local.key`)).toBe("key for the first\n");
     });

@@ -40,7 +40,7 @@ export interface ServiceContext {
 
 /** A settings file OpsCrew writes for a service and mounts read-only. */
 export interface ServiceConfigFile {
-  /** Its name in `opscrew/runtime/services/<service>/`, for example `my.cnf`. */
+  /** Its name in `<runtimeDir>/services/<service>/`, for example `my.cnf`. */
   name: string;
   /** Where it is mounted in the container. */
   target: string;

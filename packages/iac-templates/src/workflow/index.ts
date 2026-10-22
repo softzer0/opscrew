@@ -3,8 +3,10 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
 import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy, type LocalhostSite } from "../edge";
+import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
+import { runtimeDir } from "../runtime-dir";
 import { sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { edgeCheckStep } from "./edge-check";
@@ -40,7 +42,7 @@ export {
   sqliteFolder,
   supercronicArch,
 } from "./shared";
-export { processServices } from "./switch";
+export { type EdgeFiles, processServices, rollbackCommands, switchCommands } from "./switch";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
@@ -80,14 +82,16 @@ function checkSshPort(port: number | undefined): void {
 /**
  * URL the deploy job polls after starting the new version: the health path on the app's domain;
  * without one, on the server's address from GitHub's machines, or on the machine's own edge
- * (`127.0.0.1`, at the localhost target's HTTP port) from a self-hosted runner.
+ * (`http://127.0.0.1`) from the server's runner. On this computer (the localhost target, `local`),
+ * HTTPS at the app's hostname there and the target's HTTPS port, which the health check resolves
+ * to 127.0.0.1 ({@link healthScript}): the plain HTTP port only redirects.
  */
-export function healthUrl(plan: DeployPlan): string {
+export function healthUrl(plan: DeployPlan, local?: LocalEdge): string {
   const path = healthPath(plan);
+  if (local !== undefined) return `https://${local.hostname}${httpsPortSuffix(local.port)}${path}`;
   if (plan.dns.domain) return `https://${plan.dns.domain}${path}`;
   if (!selfHosted(plan)) return `http://${secret(plan, DEPLOY_SECRETS.host)}${path}`;
-  const port = plan.target.provider === "localhost" ? `:${plan.target.ports.http}` : "";
-  return `http://127.0.0.1${port}${path}`;
+  return `http://127.0.0.1${path}`;
 }
 
 /**
@@ -97,25 +101,49 @@ export function healthUrl(plan: DeployPlan): string {
 const LETS_ENCRYPT_SAME_NAMES_PER_WEEK = 5;
 
 /**
- * Whether the health check reaches the proxy's own certificate: the plan has a domain and no
- * tunnel. Then a failed TLS handshake means that the proxy has no certificate yet (Let's Encrypt's
- * limit is the usual cause on a server rebuilt many times): curl's own (exit 35 or 60) or, behind
+ * Whether the health check reaches the proxy's own certificate from Let's Encrypt: the plan has a
+ * domain, no tunnel, and is not on this computer (whose leaf comes from OpsCrew's local CA). Then
+ * a failed TLS handshake means that the proxy has no certificate yet (Let's Encrypt's limit is
+ * the usual cause on a server rebuilt many times): curl's own (exit 35 or 60) or, behind
  * Cloudflare's proxy, Cloudflare's with the server (HTTP 525 or 526).
  */
 function edgeServesTls(plan: DeployPlan, tunnelHost: string | undefined): boolean {
-  return plan.dns.domain !== undefined && tunnelHost === undefined;
+  return (
+    plan.target.provider !== "localhost" &&
+    plan.dns.domain !== undefined &&
+    tunnelHost === undefined
+  );
+}
+
+/** On this computer: the app's hostname there and the target's HTTPS port. */
+export interface LocalEdge {
+  hostname: string;
+  port: number;
 }
 
 /**
  * The health check's script. With `tlsHint`, curl's exit codes and HTTP statuses are recorded
  * and, when every attempt failed a TLS handshake, the error says that the server has no
  * certificate yet; otherwise, and without `tlsHint`, it says only that the new version did not
- * answer.
+ * answer. On this computer (`local`), curl connects to 127.0.0.1 and trusts only OpsCrew's local
+ * CA, whose certificate the local runner names in `OPSCREW_LOCAL_CA_FILE`.
  */
-function healthScript(tlsHint: boolean): string[] {
+function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): string[] {
   const failed = 'echo "::error::The new version did not answer at $URL."';
+  const curl =
+    local === undefined
+      ? "curl -fsS --max-time 10"
+      : `curl -fsS --max-time 10 --resolve ${local.hostname}:${local.port}:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE"`;
   return [
     "    set -euo pipefail",
+    ...(local === undefined
+      ? []
+      : [
+          '    if [[ -z "${OPSCREW_LOCAL_CA_FILE:-}" ]]; then',
+          `      echo "::error::This runner does not set OPSCREW_LOCAL_CA_FILE, the certificate of OpsCrew's local CA that the app's HTTPS is checked with. Start it with \\\`opscrew runner start --env ${environmentName(plan)}\\\`, which sets it."`,
+          "      exit 1",
+          "    fi",
+        ]),
     ...(tlsHint ? ["    tls_only=1"] : []),
     "    for attempt in $(seq 1 30); do",
     ...(tlsHint
@@ -124,7 +152,7 @@ function healthScript(tlsHint: boolean): string[] {
           '      status="$(curl -fsS --max-time 10 -o /dev/null -w \'%{http_code}\' "$URL")" || code=$?',
           '      if [ "$code" -eq 0 ]; then',
         ]
-      : ['      if curl -fsS --max-time 10 -o /dev/null "$URL"; then']),
+      : [`      if ${curl} -o /dev/null "$URL"; then`]),
     '        echo "Healthy after $attempt attempt(s)."',
     "        exit 0",
     "      fi",
@@ -177,13 +205,16 @@ function envFileServices(plan: DeployPlan): string[] {
 }
 
 /**
- * What the upload copies next to compose.yaml: the `opscrew/runtime/services` folder and the
- * crontab when {@link renderRuntimeFiles} renders them, and the `opscrew/runtime/edge` folder (the
- * edge's Compose file, the app's site and, with origin TLS, `tls/pull.pem`), which the start step
- * puts in place.
+ * What the upload copies next to compose.yaml, from the environment's {@link runtimeDir}: the
+ * `services` folder and the crontab when {@link renderRuntimeFiles} renders them, and the `edge`
+ * folder (the edge's Compose file, the app's site and, with origin TLS, `tls/pull.pem`), which the
+ * start step puts in place.
  */
 function runtimeUploads(plan: DeployPlan): string[] {
-  const top = renderRuntimeFiles(plan).map((file) => file.path.split("/").slice(0, 3).join("/"));
+  const dir = runtimeDir(plan);
+  const top = renderRuntimeFiles(plan).map(
+    (file) => `${dir}/${file.path.slice(dir.length + 1).split("/")[0]}`,
+  );
   return [...new Set(top)];
 }
 
@@ -519,9 +550,10 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  * both in place with the app's site, and on nginx gets certbot's certificate.
  *
  * For a Portainer target the deploy job instead writes the stack file with the new image to the
- * `opscrew-deploy` branch (its only `contents: write`), lets Portainer redeploy (the updater stack,
- * or a webhook call through Cloudflare Access with {@link PORTAINER_DEPLOY_SECRETS}), waits for
- * the new version on the site and, when it does not come up, writes the previous version back.
+ * environment's deploy branch (`portainerDeployBranch`, its only `contents: write`), lets
+ * Portainer redeploy (the updater stack, or a webhook call through Cloudflare Access with
+ * {@link PORTAINER_DEPLOY_SECRETS}), waits for the new version on the site and, when it does not
+ * come up, writes the previous version back.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
@@ -551,7 +583,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ],
     envFiles,
     files: [
-      "opscrew/runtime/compose.yaml",
+      `${runtimeDir(plan)}/compose.yaml`,
       ...runtimeUploads(plan),
       ...(edgeFiles.additions ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
     ],
@@ -560,6 +592,10 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   const { setup, reach } = selfHosted(plan)
     ? localDeploy(plan, upload)
     : sshDeploy(plan, ctx, upload);
+  const local: LocalEdge | undefined =
+    plan.target.provider === "localhost"
+      ? { hostname: localhostSite(ctx.localhost).hostname, port: plan.target.ports.https }
+      : undefined;
 
   const deploySteps = [
     `- uses: ${ACTIONS.checkout}`,
@@ -571,10 +607,10 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",
-    `    URL: ${healthUrl(plan)}`,
+    `    URL: ${healthUrl(plan, local)}`,
     "  run: |",
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
-    ...healthScript(edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls),
+    ...healthScript(plan, edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls, local),
     ...rollbackStep(plan, reach, edgeFiles.localhost),
   ];
 

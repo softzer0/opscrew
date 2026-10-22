@@ -1,5 +1,6 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { appDir } from "../edge";
+import { runtimeDir } from "../runtime-dir";
 import type { RenderContext } from "../types";
 
 /** Text for a Markdown table cell: pipes escaped, newlines turned into spaces. */
@@ -57,7 +58,7 @@ export function deploySections(
     `1. You push to \`${branch}\` (or run the "OpsCrew deploy" workflow by hand in GitHub → Actions).`,
     "2. GitHub Actions builds the Docker image from your Dockerfile and pushes it to GitHub Container Registry.",
     ...(notes.build ?? []),
-    `3. It copies \`opscrew/runtime/compose.yaml\` (with the services' settings) to \`${appDir(plan)}\` on the server and`,
+    `3. It copies \`${runtimeDir(plan)}/compose.yaml\` (with the services' settings) to \`${appDir(plan)}\` on the server and`,
     `   the app's site file to the shared edge in \`/srv/edge\`, writes the app's and the services' environment from the`,
     "   deploy secrets, starts the services, runs the release command if the app has one, switches to the new version,",
     "   then restarts the workers and cron jobs with it. A worker that does not stay up sends the app back to the",
@@ -116,11 +117,21 @@ export function settingsSection(bullets: readonly string[]): string[] {
   ];
 }
 
-/** The last bullet of "Check for drift": the generated files against the plan. */
-export const DRIFT_FILES = [
-  "- **The files with the plan:** files under `opscrew/infra/` and `opscrew/runtime/` that differ from what",
-  "  `opscrew/plan.yaml` would generate.",
-];
+/**
+ * The last bullet of "Check for drift": the generated files against the plan, in the
+ * environment's infrastructure root and {@link runtimeDir} (prod: `opscrew/infra/` and
+ * `opscrew/runtime/`).
+ */
+export function driftFiles(plan: DeployPlan): string[] {
+  const env = plan.environment?.name;
+  const infra = env === undefined ? "opscrew/infra" : plan.infra.dir;
+  const planFile =
+    env === undefined ? "opscrew/plan.yaml" : `opscrew/environments/${env}/plan.yaml`;
+  return [
+    `- **The files with the plan:** files under \`${infra}/\` and \`${runtimeDir(plan)}/\` that differ from what`,
+    `  \`${planFile}\` would generate.`,
+  ];
+}
 
 /** The start of "Security": the reports OpsCrew writes. */
 export const SECURITY_HEAD = [

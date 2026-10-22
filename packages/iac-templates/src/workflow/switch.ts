@@ -25,6 +25,7 @@ import {
 } from "../edge/nginx";
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
+import { runtimeDir } from "../runtime-dir";
 import { hasCronJobs, healthPath } from "./shared";
 
 /**
@@ -363,7 +364,7 @@ const PREVIOUS_EDGE = ".edge.previous";
 
 /** The app's site file in the repository, for the messages. */
 function siteFile(plan: DeployPlan): string {
-  return `opscrew/runtime/edge/sites/${plan.app.name}.${EDGE_PROXIES[edgeProxy(plan)].site}`;
+  return `${runtimeDir(plan)}/edge/sites/${plan.app.name}.${EDGE_PROXIES[edgeProxy(plan)].site}`;
 }
 
 /** Shown when the edge did not start or refused the app's site; names no server and no secret. */
@@ -438,8 +439,8 @@ export interface EdgeFiles {
    */
   certbot?: { hosts: readonly string[]; email?: string | undefined } | undefined;
   /**
-   * The localhost target (required there): the app's hostname on this computer. The local deploy
-   * left its leaf certificate and key where `localhostTlsUpload` says.
+   * The localhost target (required there): the app's hostname on this computer. `opscrew provision`
+   * leaves its new leaf certificate and key where `localhostTlsUpload` says.
    */
   localhost?: LocalhostSite | undefined;
 }
@@ -471,7 +472,9 @@ export interface EdgeFiles {
  * back (or the new ones go, when it had none), so the proxy never keeps a site it refused. After a
  * switch, any failure, also certbot's, puts the previous proxy back with its files, so it serves
  * HTTPS as before. On this computer the app's leaf certificate and key take the origin files'
- * place (the local deploy always leaves new ones), and there is no certbot.
+ * place, swapped in only when the deploy left new ones (`opscrew provision` does; a deploy on the
+ * local runner keeps the edge's), there is no certbot, and the lock is taken only where `flock`
+ * exists (Git for Windows and macOS have none; the local deploy serialises itself there).
  */
 function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const proxy = edgeProxy(plan);
@@ -577,7 +580,7 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     // Before the edge's Compose mounts them: Docker would create them owned by root.
     `mkdir -p ${EDGE}/sites ${EDGE}/tls`,
     "(",
-    "  flock 9",
+    local ? "  if command -v flock > /dev/null 2>&1; then flock 9; fi" : "  flock 9",
     `  docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
     ...nginxFiles,
     `  uploaded="$(${stamp(EDGE_VERSION_KEY, "edge/compose.yaml")})"`,
@@ -604,8 +607,16 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     // and the uploaded one, if any, takes its place.
     ...(o.originTls && !local ? [`  cp edge/tls/pull.pem ${tls}/pull.pem.new`] : []),
     `  for f in ${tlsFiles}; do`,
-    `    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
-    ...(newTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
+    ...(local
+      ? [
+          // A deploy on the local runner brings no leaf: the edge keeps the one it has.
+          `    if [ -f ${tls}/$f ]; then cp ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
+          `    if [ -f ${tls}/$f.new ]; then mv -f ${tls}/$f.new ${tls}/$f; fi`,
+        ]
+      : [
+          `    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
+          ...(newTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
+        ]),
     "  done",
     ...(proxy === "nginx" && !local
       ? [

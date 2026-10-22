@@ -9,7 +9,7 @@ import { renderPortainerStack } from "./stack";
 /**
  * Everything `opscrew provision` writes into the repository for a Portainer target: the Cloudflare
  * root module (with its vendored modules), the app stack's template
- * (`opscrew/runtime/compose.yaml`) and the deploy workflow. What lives only in Portainer (the
+ * (`<runtimeDir>/compose.yaml`) and the deploy workflow. What lives only in Portainer (the
  * updater and connector stacks) and the deploy branch's first file are not repository files:
  * {@link renderUpdaterStack}, {@link renderPortainerConnectorStack} and
  * {@link renderPlaceholderStack} render them. Deterministic; contains no secrets.

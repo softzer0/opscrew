@@ -5,6 +5,7 @@ import { designProbe, testPlan } from "../__fixtures__/plans";
 import { SERVICE_SPECS } from "../catalog";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { PORTAINER_STACK_TEMPLATE_PATH } from "../portainer-target/stack";
+import { inEnvironment } from "../workflow/__fixtures__/plans";
 import { NO_MAJOR_UPDATES, renderDependabot } from "./index";
 
 function facts(overrides: Partial<ProjectFacts>): ProjectFacts {
@@ -159,6 +160,26 @@ describe("renderDependabot", () => {
     expect(PORTAINER_STACK_TEMPLATE_PATH).toBe("opscrew/runtime/compose.yaml");
     expect(entries(updates(facts({}), portainerTestPlan()))).toContain(
       "docker-compose /opscrew/runtime,/opscrew/runtime/cloudflared,/opscrew/runtime/portainer",
+    );
+  });
+
+  it("adds a named environment's own runtime folder to prod's", () => {
+    const staging = inEnvironment(portainerTestPlan(), { name: "staging" });
+    const compose = updates(facts({}), staging).find(
+      (u) => u["package-ecosystem"] === "docker-compose",
+    );
+    expect(compose?.directories).toEqual([
+      "/opscrew/runtime",
+      "/opscrew/runtime/cloudflared",
+      "/opscrew/runtime/portainer",
+      "/opscrew/environments/staging/runtime",
+      "/opscrew/environments/staging/runtime/cloudflared",
+      "/opscrew/environments/staging/runtime/portainer",
+    ]);
+    // Prod's plan with its environment block renders prod's file.
+    const prod = inEnvironment(portainerTestPlan(), {});
+    expect(renderDependabot(facts({}), prod)).toEqual(
+      renderDependabot(facts({}), portainerTestPlan()),
     );
   });
 

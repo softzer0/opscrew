@@ -175,14 +175,18 @@ function s3Main(
   ];
 }
 
-/** The `storage` root's folder, beside `plan.infra.dir`: `opscrew/infra/storage`. */
-export function storageRootDir(plan: Pick<DeployPlan, "infra">): string {
+/**
+ * The `storage` root's folder, beside `plan.infra.dir`: `opscrew/infra/storage` for prod,
+ * `opscrew/infra/storage-<env>` for a named environment.
+ */
+export function storageRootDir(plan: Pick<DeployPlan, "infra" | "environment">): string {
   const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}storage`;
+  const env = plan.environment?.name;
+  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}storage${env === undefined ? "" : `-${env}`}`;
 }
 
 /**
- * The `storage` root (`opscrew/infra/storage`, beside `plan.infra.dir`) when
+ * The `storage` root ({@link storageRootDir}, beside `plan.infra.dir`) when
  * `storage.objectStorage` is a provider bucket; none for Garage, which runs on the server. It
  * holds only the bucket and, with `cors`, a rule letting the app's own origins send GET, PUT and
  * POST:

@@ -37,6 +37,7 @@ export { imageDigest } from "./registry";
 export * from "./render";
 export * from "./runbook";
 export * from "./runtime";
+export { runtimeDir } from "./runtime-dir";
 export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";

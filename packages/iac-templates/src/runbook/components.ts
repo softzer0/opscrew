@@ -8,6 +8,7 @@ import { portainerStackName } from "../portainer-target/stack";
 import { usesCloudflare } from "../predicates";
 import { STORAGE_NAMES } from "../prices";
 import { cronMemoryMb } from "../runtime/components";
+import { runtimeDir } from "../runtime-dir";
 import { tunnelMode } from "../tunnel";
 import { cell } from "./shared";
 
@@ -103,7 +104,7 @@ export function componentsSection(plan: DeployPlan): string[] {
   ];
   if (jobs.length > 0) {
     lines.push(
-      `Cron jobs${portainer ? "" : ", in `opscrew/runtime/crontab`"} (times in UTC; a run is skipped while the last one still runs):`,
+      `Cron jobs${portainer ? "" : `, in \`${runtimeDir(plan)}/crontab\``} (times in UTC; a run is skipped while the last one still runs):`,
       "",
       ...jobs.map((job) =>
         job.route === undefined
@@ -151,8 +152,8 @@ export function edgeSection(plan: DeployPlan, shared: boolean): string[] {
     "",
     `Web traffic reaches the app through OpsCrew's edge in \`/srv/edge\`, the Compose project \`opscrew-edge\`: ${label}`,
     "serves HTTPS and passes each request to kamal-proxy, which switches deploys without downtime. The app's site is",
-    `\`/srv/edge/sites/${name}.${site}\` (from \`opscrew/runtime/edge/sites/${name}.${site}\`). Each deploy copies the edge's files`,
-    "from `opscrew/runtime/edge/` and replaces the edge only with a newer version, so an older app never downgrades it.",
+    `\`/srv/edge/sites/${name}.${site}\` (from \`${runtimeDir(plan)}/edge/sites/${name}.${site}\`). Each deploy copies the edge's files`,
+    `from \`${runtimeDir(plan)}/edge/\` and replaces the edge only with a newer version, so an older app never downgrades it.`,
     ...(shared
       ? [
           "Every OpsCrew app on this server sits behind the same edge, each with its own folders in `/srv/apps` and",

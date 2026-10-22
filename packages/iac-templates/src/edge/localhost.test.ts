@@ -11,6 +11,7 @@ import {
   renderEdgeSite,
   renderRuntimeFiles,
 } from "../runtime";
+import { NIGHTLY, withProcesses } from "../workflow/__fixtures__/plans";
 import { localhostPlan, onThisComputer } from "./__fixtures__/localhost";
 import { localhostHostname, localhostTlsUpload, renderEdgeCompose } from "./index";
 
@@ -93,6 +94,57 @@ describe("the app's Compose project on this computer", () => {
     const server = parse(renderCompose(testPlan()).content) as ComposeFile;
     expect(server.name).toBe("shop");
     expect(server.services.db?.volumes).toEqual(["/srv/data/shop/db:/var/lib/postgresql/data"]);
+  });
+
+  it("holds the services' settings files and the crontab inline: no file is mounted from here", () => {
+    const services = withServices([{ kind: "mysql" }, { kind: "nats" }]);
+    const local = withProcesses(onThisComputer(services), { cron: [NIGHTLY] });
+    const server = withProcesses(services, { cron: [NIGHTLY] });
+    const doc = parse(renderCompose(local).content) as ComposeFile;
+    const files = new Map(renderRuntimeFiles(server).map((file) => [file.path, file.content]));
+    // The same settings as a server's files, as Compose configs (`$$` keeps Compose's hands off).
+    const config = (file: string) => ({
+      content: files.get(`opscrew/runtime/${file}`)?.replaceAll("$", () => "$$"),
+    });
+    expect(doc.configs).toEqual({
+      "mysql-my.cnf": config("services/mysql/my.cnf"),
+      "nats-nats.conf": config("services/nats/nats.conf"),
+      crontab: config("crontab"),
+    });
+    expect(doc.configs?.["nats-nats.conf"]?.content).toContain("$$");
+    expect(doc.services.mysql?.configs).toEqual([
+      { source: "mysql-my.cnf", target: "/etc/mysql/conf.d/opscrew.cnf" },
+    ]);
+    expect(doc.services.cron?.configs).toEqual([
+      { source: "crontab", target: "/etc/opscrew/crontab" },
+    ]);
+    for (const service of Object.values(doc.services)) {
+      for (const volume of service.volumes ?? []) expect(volume).not.toMatch(/^\.\//);
+    }
+    // Only the edge's file is brought next to compose.yaml.
+    expect(renderRuntimeFiles(local).map((file) => file.path)).toEqual([
+      "opscrew/runtime/edge/compose.yaml",
+    ]);
+  });
+
+  it("never pulls an image built on this computer (image: local-build), and pulls the production one", () => {
+    const built = DeployPlanSchema.parse({
+      ...withProcesses(shop, {
+        workers: [{ name: "worker", command: "node worker.js" }],
+        cron: [NIGHTLY],
+      }),
+      app: { ...shop.app, releaseCommand: "npm run migrate" },
+      target: { ...shop.target, image: "local-build" },
+    });
+    const doc = parse(renderCompose(built).content) as ComposeFile;
+    for (const name of ["app", "release", "worker", "cron"]) {
+      expect(doc.services[name]?.pull_policy, name).toBe("never");
+    }
+    expect(doc.services.db?.pull_policy).toBeUndefined();
+    const registry = parse(renderCompose(shop).content) as ComposeFile;
+    for (const service of Object.values(registry.services)) {
+      expect(service.pull_policy).toBeUndefined();
+    }
   });
 });
 
@@ -274,14 +326,16 @@ describe("snapshots", () => {
       const [first, second] = [prod, staging].map((plan) =>
         files(plan, localCtx(localhostHostname(plan, true))),
       );
-      const edgeFile = "opscrew/runtime/edge/compose.yaml";
-      expect(first?.[edgeFile]).toBe(second?.[edgeFile]);
+      // Each environment's files are in its own runtime folder; the edge's are the same.
+      const [dir, stagingDir] = ["opscrew/runtime", "opscrew/environments/staging/runtime"];
+      const edgeFile = "edge/compose.yaml";
+      expect(first?.[`${dir}/${edgeFile}`]).toBe(second?.[`${stagingDir}/${edgeFile}`]);
       const ext = proxy === "caddy" ? "caddy" : "conf";
       expect({
-        edge: first?.[edgeFile],
+        edge: first?.[`${dir}/${edgeFile}`],
         sites: {
-          [`shop.${ext}`]: first?.[`opscrew/runtime/edge/sites/shop.${ext}`],
-          [`shop-staging.${ext}`]: second?.[`opscrew/runtime/edge/sites/shop-staging.${ext}`],
+          [`shop.${ext}`]: first?.[`${dir}/edge/sites/shop.${ext}`],
+          [`shop-staging.${ext}`]: second?.[`${stagingDir}/edge/sites/shop-staging.${ext}`],
         },
       }).toMatchSnapshot();
     });

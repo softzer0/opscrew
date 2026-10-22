@@ -104,11 +104,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
-          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          cp opscrew/environments/staging/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
-          cp opscrew/runtime/edge/sites/shop-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-staging.caddy
+          cp opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-staging.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
             exit 1
           fi
       - name: Configure SSH with the pinned host key
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop-staging'
-          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop-staging/"
+          scp -r "\${ssh_opts[@]}" opscrew/environments/staging/runtime/compose.yaml opscrew/environments/staging/runtime/edge "deploy@\${HOST}:/srv/apps/shop-staging/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-staging/app.env'
           printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-staging/db.env'
       - id: start
@@ -202,7 +202,7 @@ jobs:
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop-staging.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
             rm -f "$EDGE_DIR"/sites/shop-staging.conf
@@ -867,11 +867,11 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
-          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          cp opscrew/environments/eu-staging/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
-          cp opscrew/runtime/edge/sites/shop-eu-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-eu-staging.caddy
+          cp opscrew/environments/eu-staging/runtime/edge/sites/shop-eu-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-eu-staging.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop-eu-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/eu-staging/runtime/edge/sites/shop-eu-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
             exit 1
           fi
       - name: Configure SSH with the pinned host key
@@ -893,7 +893,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop-eu-staging'
-          scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop-eu-staging/"
+          scp -r "\${ssh_opts[@]}" opscrew/environments/eu-staging/runtime/compose.yaml opscrew/environments/eu-staging/runtime/edge "deploy@\${HOST}:/srv/apps/shop-eu-staging/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-eu-staging/app.env'
           printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-eu-staging/db.env'
       - id: start
@@ -965,7 +965,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop-eu-staging.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/environments/eu-staging/runtime/edge/sites/shop-eu-staging.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
             rm -f "$EDGE_DIR"/sites/shop-eu-staging.conf
@@ -1091,11 +1091,11 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
-          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          cp opscrew/environments/staging/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
-          cp opscrew/runtime/edge/sites/shop-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-staging.caddy
+          cp opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-staging.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
             exit 1
           fi
       - name: Copy the runtime files and environment into the app's folder
@@ -1106,7 +1106,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           set -euo pipefail
           dir=/srv/apps/shop-staging
           mkdir -p "$dir"
-          cp -r opscrew/runtime/compose.yaml opscrew/runtime/edge "$dir"/
+          cp -r opscrew/environments/staging/runtime/compose.yaml opscrew/environments/staging/runtime/edge "$dir"/
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | (umask 077 && cat > "$dir"/app.env)
           printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | (umask 077 && cat > "$dir"/db.env)
       - id: start
@@ -1178,7 +1178,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop-staging.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/environments/staging/runtime/edge/sites/shop-staging.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
             rm -f "$EDGE_DIR"/sites/shop-staging.conf
@@ -1303,11 +1303,17 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
-          cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          cp opscrew/environments/dev/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          if [[ -z "\${OPSCREW_EDGE_DIR:-}" || ! -f "$OPSCREW_EDGE_DIR"/tls/shop-dev/local.pem || ! -f "$OPSCREW_EDGE_DIR"/tls/shop-dev/local.key ]]; then
+            echo '::error::This runner finds no leaf certificate for the app in this computer'\\''s edge (tls/shop-dev/local.pem and local.key in OPSCREW_EDGE_DIR). Run \`opscrew provision --env dev\`, which issues it, and start the runner with \`opscrew runner start --env dev\`, which sets OPSCREW_EDGE_DIR; then run the workflow again.'
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/opscrew-edge"/tls/shop-dev
+          cp "$OPSCREW_EDGE_DIR"/tls/shop-dev/local.pem "$OPSCREW_EDGE_DIR"/tls/shop-dev/local.key "$RUNNER_TEMP/opscrew-edge"/tls/shop-dev/
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
-          cp opscrew/runtime/edge/sites/shop-dev.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-dev.caddy
+          cp opscrew/environments/dev/runtime/edge/sites/shop-dev.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop-dev.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop-dev.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
+            echo '::error::Caddy refused this app'\\''s edge configuration (opscrew/environments/dev/runtime/edge/sites/shop-dev.caddy) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (opscrew provision renders the site again), then push again.'
             exit 1
           fi
       - name: Copy the runtime files and environment into the app's folder
@@ -1322,7 +1328,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           fi
           dir="$OPSCREW_APPS_DIR/shop-dev"
           mkdir -p "$dir"
-          cp -r opscrew/runtime/compose.yaml opscrew/runtime/edge "$dir"/
+          cp -r opscrew/environments/dev/runtime/compose.yaml opscrew/environments/dev/runtime/edge "$dir"/
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | (umask 077 && cat > "$dir"/app.env)
           printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | (umask 077 && cat > "$dir"/db.env)
       - id: start
@@ -1356,7 +1362,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
-            flock 9
+            if command -v flock > /dev/null 2>&1; then flock 9; fi
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
             current="$(sed -n 's/^x-opscrew-edge-version: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
@@ -1376,8 +1382,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
             for f in local.pem local.key; do
-              if [ -f "$EDGE_DIR"/tls/shop-dev/$f ]; then mv -f "$EDGE_DIR"/tls/shop-dev/$f "$EDGE_DIR"/tls/shop-dev/$f.previous; else rm -f "$EDGE_DIR"/tls/shop-dev/$f.previous; fi
-              mv -f "$EDGE_DIR"/tls/shop-dev/$f.new "$EDGE_DIR"/tls/shop-dev/$f
+              if [ -f "$EDGE_DIR"/tls/shop-dev/$f ]; then cp "$EDGE_DIR"/tls/shop-dev/$f "$EDGE_DIR"/tls/shop-dev/$f.previous; else rm -f "$EDGE_DIR"/tls/shop-dev/$f.previous; fi
+              if [ -f "$EDGE_DIR"/tls/shop-dev/$f.new ]; then mv -f "$EDGE_DIR"/tls/shop-dev/$f.new "$EDGE_DIR"/tls/shop-dev/$f; fi
             done
             rm -f .site.previous .additions.previous
             if [ -f "$EDGE_DIR"/sites/shop-dev.caddy ]; then cp "$EDGE_DIR"/sites/shop-dev.caddy .site.previous; fi
@@ -1395,7 +1401,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop-dev.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/environments/dev/runtime/edge/sites/shop-dev.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
             rm -f "$EDGE_DIR"/sites/shop-dev.conf
@@ -1423,11 +1429,15 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
       - id: health
         name: Check that the app is healthy
         env:
-          URL: http://127.0.0.1:8080/api/health
+          URL: https://shop.localhost:8443/api/health
         run: |
           set -euo pipefail
+          if [[ -z "\${OPSCREW_LOCAL_CA_FILE:-}" ]]; then
+            echo "::error::This runner does not set OPSCREW_LOCAL_CA_FILE, the certificate of OpsCrew's local CA that the app's HTTPS is checked with. Start it with \\\`opscrew runner start --env dev\\\`, which sets it."
+            exit 1
+          fi
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+            if curl -fsS --max-time 10 --resolve shop.localhost:8443:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE" -o /dev/null "$URL"; then
               echo "Healthy after $attempt attempt(s)."
               exit 0
             fi

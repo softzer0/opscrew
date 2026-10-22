@@ -8,6 +8,7 @@ import type {
 import { stringify } from "yaml";
 import { imageName, SERVICE_SPECS, serviceSpec } from "../catalog";
 import { appDirectory } from "../docker/stacks";
+import { runtimeDir } from "../runtime-dir";
 import type { RenderedFile } from "../types";
 
 /** Dependabot ecosystem of each package manager detection reports. */
@@ -54,17 +55,21 @@ export const NO_MAJOR_UPDATES: readonly string[] = [
 export const NO_MINOR_UPDATES: readonly string[] = [imageName(serviceSpec("meilisearch"))];
 
 /**
- * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper). A
+ * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper):
+ * prod's runtime folder, and a named environment's plan adds its own ({@link runtimeDir}). A
  * Portainer target's stack template is committed here on the default branch too, the only branch
- * Dependabot reads; the orphan `opscrew-deploy` branch Portainer deploys holds only its copy. The
- * shared edge (`opscrew/runtime/edge`) is left out: its pins move only with OpsCrew's releases
- * and its version stamp, which decides which app's copy a server keeps.
+ * Dependabot reads; the orphan deploy branch Portainer deploys holds only its copy. The shared
+ * edge (`<runtimeDir>/edge`) is left out: its pins move only with OpsCrew's releases and its
+ * version stamp, which decides which app's copy a server keeps.
  */
-const RUNTIME_FOLDERS = [
-  "/opscrew/runtime",
-  "/opscrew/runtime/cloudflared",
-  "/opscrew/runtime/portainer",
-];
+function runtimeFolders(plan: DeployPlan): string[] {
+  const own = plan.environment?.name === undefined ? [] : [runtimeDir(plan)];
+  return ["opscrew/runtime", ...own].flatMap((dir) => [
+    `/${dir}`,
+    `/${dir}/cloudflared`,
+    `/${dir}/portainer`,
+  ]);
+}
 
 function update(
   ecosystem: string,
@@ -103,7 +108,7 @@ export type JavaBuild = "maven" | "gradle";
 /**
  * `.github/dependabot.yml`: weekly updates with minor and patch versions grouped, one entry per
  * detected ecosystem and folder, plus the Dockerfile (when the builder uses one), the Compose files
- * in `opscrew/runtime` and the GitHub Actions. Runtime base images get no major updates. A Java
+ * in `opscrew/runtime` (and a named environment's own runtime folder) and the GitHub Actions. Runtime base images get no major updates. A Java
  * app's entry needs its build tool, `javaBuild` (`pom.xml` or `build.gradle[.kts]`). The caller
  * adds the file only when the repository has no Dependabot configuration.
  */
@@ -132,7 +137,7 @@ export function renderDependabot(
   if (builder === undefined || builder === "generated-dockerfile" || builder === "own-dockerfile") {
     entries.push(update("docker", { directory: rooted(posix.dirname(plan.app.dockerfile)) }, true));
   }
-  entries.push(update("docker-compose", { directories: RUNTIME_FOLDERS }, true));
+  entries.push(update("docker-compose", { directories: runtimeFolders(plan) }, true));
   entries.push(update("github-actions", { directory: "/" }));
 
   const header = [

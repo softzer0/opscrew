@@ -12,6 +12,7 @@ import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { memoryLimit } from "../runtime/components";
 import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
+import { runtimeDir } from "../runtime-dir";
 import { CONNECTOR_MEMORY_MB, TUNNEL_ORIGIN_PORT, tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import {
@@ -142,8 +143,14 @@ export function caddyAdditionsFile(app: string): string {
 
 /**
  * The client certificate Cloudflare presents to the app's origin (public), committed with the
- * runtime files; the deploy puts it in `/srv/edge/tls/<app>/pull.pem`, the site's trust pool.
+ * runtime files at `<runtimeDir>/edge/tls/pull.pem`; the deploy puts it in
+ * `/srv/edge/tls/<app>/pull.pem`, the site's trust pool.
  */
+export function originPullPem(plan: DeployPlan): string {
+  return `${runtimeDir(plan)}/edge/tls/pull.pem`;
+}
+
+/** Prod's {@link originPullPem}. */
 export const ORIGIN_PULL_PEM = "opscrew/runtime/edge/tls/pull.pem";
 
 /**
@@ -334,7 +341,7 @@ function header(plan: DeployPlan): string {
 }
 
 /**
- * `opscrew/runtime/edge/compose.yaml`: the plan's proxy (Caddy, or nginx with certbot) and
+ * `<runtimeDir>/edge/compose.yaml`: the plan's proxy (Caddy, or nginx with certbot) and
  * kamal-proxy on the external network `opscrew-edge`, stamped with {@link EDGE_VERSION} and the
  * proxy ({@link EDGE_PROXY_KEY}). kamal-proxy keeps the apps' routes on a named volume, so they
  * survive a recreate; the proxy publishes the ports the server's access mode needs (the same for
@@ -367,7 +374,7 @@ export function renderEdgeCompose(
     volumes: { ...front.volumes, "kamal-proxy-config": {} },
   };
   return {
-    path: "opscrew/runtime/edge/compose.yaml",
+    path: `${runtimeDir(plan)}/edge/compose.yaml`,
     content: `${header(plan)}\n${stringify(document, { lineWidth: 0 })}`,
     kind: "runtime",
   };

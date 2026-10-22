@@ -2,11 +2,11 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS } from "../pins";
 import {
-  PORTAINER_DEPLOY_BRANCH,
   PORTAINER_IMAGE_PLACEHOLDER,
-  PORTAINER_STACK_TEMPLATE_PATH,
   PORTAINER_VERSION_PLACEHOLDER,
+  portainerDeployBranch,
   portainerStackName,
+  portainerStackTemplatePath,
 } from "../portainer-target/stack";
 import { portainerTarget } from "../providers";
 import { PORTAINER_VERSION_PATH } from "../runtime/services";
@@ -62,14 +62,13 @@ const GIT_IDENTITY = [
 ];
 
 /**
- * Writes the template with the new image as the only file of a new commit on the deploy branch
- * (an orphan history: each commit holds only `compose.yaml`, its parent the previous version), and
- * reports `previous`, `deployed` and `changed`, plus `previous_image`, the app image the branch
- * held before (empty for the placeholder), which image retention never deletes. Nothing is written
- * when the branch already holds this version.
+ * Writes the `template` with the new image as the only file of a new commit on the deploy
+ * `branch` (an orphan history: each commit holds only `compose.yaml`, its parent the previous
+ * version), and reports `previous`, `deployed` and `changed`, plus `previous_image`, the app image
+ * the branch held before (empty for the placeholder), which image retention never deletes.
+ * Nothing is written when the branch already holds this version.
  */
-function writeScript(branch: string): string[] {
-  const template = PORTAINER_STACK_TEMPLATE_PATH;
+function writeScript(branch: string, template: string): string[] {
   return [
     "set -euo pipefail",
     `if [[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]; then`,
@@ -224,7 +223,8 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
  * The deploy workflow of a Portainer target (`renderWorkflow` delegates here): the same build job
  * (or verify job, for a promoted environment), triggers and jobs after the deploy as other
  * targets, with a deploy job holding `contents: write` (only
- * for the deploy branch) that writes the stack file with the new image to `opscrew-deploy`, calls
+ * for the deploy branch) that writes the stack file with the new image to the environment's deploy
+ * branch (`opscrew-deploy` for prod, `opscrew-deploy-<env>` for another), calls
  * Portainer's webhook through
  * Cloudflare Access in redeploy mode `cloudflare`, waits (bounded) until the site answers with the
  * new version, and otherwise writes the previous version back (calling the webhook again in
@@ -234,7 +234,7 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
  */
 export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
   const target = portainerTarget(plan.target);
-  const branch = PORTAINER_DEPLOY_BRANCH;
+  const branch = portainerDeployBranch(plan);
   const cloudflare = target.redeploy === "cloudflare";
   const url = portainerHealthUrl(plan);
   const image = `    IMAGE: ${imageOutput(plan, "image")}`;
@@ -257,7 +257,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
     `  name: Write the new version to the ${branch} branch`,
     "  env:",
     image,
-    ...run(writeScript(branch)),
+    ...run(writeScript(branch, portainerStackTemplatePath(plan))),
   ];
   if (cloudflare) {
     steps.push(
@@ -326,7 +326,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
           ]
         : [
             "# Builds the app image, pushes it to GitHub Container Registry and writes it to the",
-            "# opscrew-deploy branch, which your Portainer deploys. Secrets are set by `opscrew provision`;",
+            `# ${branch} branch, which your Portainer deploys. Secrets are set by \`opscrew provision\`;`,
             "# their values never appear in this file.",
           ],
     ),

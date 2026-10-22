@@ -16,6 +16,7 @@ import {
 import type { ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
+import { runtimeDir } from "../runtime-dir";
 import type { RenderedFile } from "../types";
 import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { sqliteFolder } from "../workflow/shared";
@@ -46,9 +47,9 @@ export interface RenderedServices {
   dependsOn: Record<string, { condition: string }>;
   /** Named volumes to declare: the services', then the SQLite volume (see {@link appVolumes}). */
   volumes: string[];
-  /** Portainer: the settings files, inline (`configs.<name>.content`). */
+  /** Portainer and this computer: the settings files, inline (`configs.<name>.content`). */
   configs: Record<string, { content: string }>;
-  /** Server: the settings files next to compose.yaml, in `opscrew/runtime/services/<name>/`. */
+  /** Server: the settings files next to compose.yaml, in `<runtimeDir>/services/<name>/`. */
   files: RenderedFile[];
 }
 
@@ -202,14 +203,16 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
     const mounts: string[] = [];
     const configs: { source: string; target: string }[] = [];
     for (const file of files) {
-      if (target.kind === "portainer") {
+      // Inline in a Portainer stack, which has no folder, and on this computer, where Docker
+      // Desktop shows a file mounted from Windows as writable by everyone (MySQL ignores it).
+      if (target.kind === "portainer" || plan.target.provider === "localhost") {
         const source = `${service.name}-${file.name}`;
         rendered.configs[source] = { content: composeLiteral(file.content) };
         configs.push({ source, target: file.target });
       } else {
         const path = `services/${service.name}/${file.name}`;
         rendered.files.push({
-          path: `opscrew/runtime/${path}`,
+          path: `${runtimeDir(plan)}/${path}`,
           content: file.content,
           kind: "runtime",
         });
@@ -317,9 +320,9 @@ const ROUTE_CALLS: Record<
 };
 
 /**
- * `opscrew/runtime/crontab`, the cron service's jobs for supercronic: every enabled job of
- * `processes.cron`, in UTC (`CRON_TZ` covers the whole file, and Alpine images have no other time
- * zone); a run is skipped while the job's last one still runs.
+ * The crontab (`<runtimeDir>/crontab` on a server), the cron service's jobs for supercronic:
+ * every enabled job of `processes.cron`, in UTC (`CRON_TZ` covers the whole file, and Alpine
+ * images have no other time zone); a run is skipped while the job's last one still runs.
  * @throws OpsCrewError `INVALID_INPUT` for a `route` job when the image has no probe tool that can
  * send the Authorization header (`app.build.probe` `none` or `wget`).
  */
@@ -411,6 +414,8 @@ export function cronMemoryMb(plan: {
 /** What the workers and cron share with the app's service. */
 export interface ProcessBase {
   image: string;
+  /** The app service's `pull_policy`, when it has one (an image built on this computer). */
+  pull?: { pull_policy?: string };
   /** The app's `env_file` and `environment`, a new object each time (no YAML aliases). */
   environment: () => object;
   dependsOn: Record<string, { condition: string }>;
@@ -437,6 +442,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
   for (const worker of plan.processes.workers.filter((worker) => worker.enabled)) {
     services[worker.name] = {
       image: base.image,
+      ...base.pull,
       restart: "unless-stopped",
       ...base.environment(),
       ...workerStart(plan, worker),
@@ -450,6 +456,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
   if (cronMb !== undefined) {
     services.cron = {
       image: base.image,
+      ...base.pull,
       restart: "unless-stopped",
       ...base.environment(),
       ...cronStart(plan),
@@ -464,8 +471,8 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
   return services;
 }
 
-/** The path and mount of the crontab on a server. */
-export const SERVER_CRONTAB = { path: "opscrew/runtime/crontab", mount: `./crontab:${CRONTAB}:ro` };
+/** The crontab's file name next to compose.yaml on a server, and its mount. */
+export const SERVER_CRONTAB = { file: "crontab", mount: `./crontab:${CRONTAB}:ro` };
 
-/** The crontab's config in a Portainer stack. */
+/** The crontab's config in a Portainer stack and on this computer. */
 export const STACK_CRONTAB = { source: "crontab", target: CRONTAB };

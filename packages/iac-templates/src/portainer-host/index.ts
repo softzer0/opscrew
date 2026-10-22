@@ -2,6 +2,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { hardened } from "../runtime/services";
+import { runtimeDir } from "../runtime-dir";
 import { PORTAINER_PORT } from "../tunnel";
 import type { RenderedFile } from "../types";
 
@@ -28,7 +29,7 @@ export interface PortainerComposeOptions {
 }
 
 /**
- * `opscrew/runtime/portainer/compose.yaml`: Portainer CE as its own Compose project
+ * `<runtimeDir>/portainer/compose.yaml`: Portainer CE as its own Compose project
  * (`opscrew-portainer`), pinned to `plan.portainer.version` (by digest when it is the version
  * in `pins.ts`, else by tag), listening only on
  * `127.0.0.1:9443` (no Edge port 8000, HTTP port 9000 disabled), with the Docker socket and the
@@ -82,7 +83,7 @@ export function renderPortainerCompose(
         ]),
   ].join("\n");
   return {
-    path: "opscrew/runtime/portainer/compose.yaml",
+    path: `${runtimeDir(plan)}/portainer/compose.yaml`,
     content: `${header}\n${stringify(document, { lineWidth: 0 })}`,
     kind: "runtime",
   };

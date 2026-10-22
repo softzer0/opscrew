@@ -6,12 +6,14 @@ import https from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { generateP256, localCaCertificate, signedLeafCertificate } from "@opscrew/core";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testContext } from "../__fixtures__/plans";
+import { testContext, testPlan } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
-import { renderEdgeSite } from "../runtime";
-import { localhostPlan } from "./__fixtures__/localhost";
+import { renderCompose, renderEdgeSite } from "../runtime";
+import { NIGHTLY, withProcesses } from "../workflow/__fixtures__/plans";
+import { localhostPlan, onThisComputer } from "./__fixtures__/localhost";
 import { EDGE_PROXIES, type EdgeProxy, localhostHostname, renderEdgeCompose } from "./index";
 import { NGINX_LOOP, NGINX_PORTS } from "./nginx";
 
@@ -81,6 +83,42 @@ function published(container: string, port: number): number {
   const out = spawnSync("docker", ["port", container, `${port}/tcp`], { encoding: "utf8" });
   return Number(out.stdout.trim().split(":").at(-1));
 }
+
+describe.skipIf(reason !== undefined)(
+  "the localhost switch's pull with image: local-build (OPSCREW_DOCKER_TESTS=1)",
+  () => {
+    /** `docker compose pull` of `plan`'s Compose file, with the app's image only this computer has. */
+    function pull(plan: DeployPlan) {
+      const work = mkdtempSync(join(tmpdir(), "opscrew-localhost-pull-"));
+      try {
+        writeFileSync(join(work, "compose.yaml"), renderCompose(plan).content);
+        writeFileSync(join(work, "app.env"), "");
+        return spawnSync("docker", ["compose", "-f", join(work, "compose.yaml"), "pull"], {
+          encoding: "utf8",
+          timeout: 120_000,
+          env: { ...process.env, APP_IMAGE: `opscrew-test-local-build-${process.pid}:absent` },
+        });
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    }
+
+    it("pulls nothing for the app's locally built image, its workers' or cron's", () => {
+      const plan = withProcesses(onThisComputer(testPlan({ postgres: false })), {
+        workers: [{ name: "worker", command: "node worker.js" }],
+        cron: [NIGHTLY],
+      });
+      const built = DeployPlanSchema.parse({
+        ...plan,
+        target: { ...plan.target, image: "local-build" },
+      });
+      const pulled = pull(built);
+      expect(pulled.status, `${pulled.stdout}${pulled.stderr}`).toBe(0);
+      // Without `pull_policy: never` the same pull fails: no registry has the image.
+      expect(pull(plan).status).not.toBe(0);
+    }, 300_000);
+  },
+);
 
 describe.skipIf(reason !== undefined).each(["caddy", "nginx"] as const)(
   "the localhost edge on %s (OPSCREW_DOCKER_TESTS=1)",

@@ -3,12 +3,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { ACTIONS, TOOLS } from "../pins";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
+import { renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { inEnvironment, jobYaml, localhostPlan, serverPlan, withPlan } from "./__fixtures__/plans";
 import {
   DEPLOY_SECRETS,
@@ -296,7 +297,7 @@ function runScript(script: string, fakes: string, env: Record<string, string>, c
   return { status: result.status, out: `${result.stdout}${result.stderr}`, outputs, calls };
 }
 
-describe("the verify job", () => {
+describe("the verify job", { timeout: 30_000 }, () => {
   const DIGEST = `sha256:${"b".repeat(64)}`;
   const COMMIT = "c".repeat(40);
   const IMAGE = `ghcr.io/acme/shop@${DIGEST}`;
@@ -512,7 +513,7 @@ describe("the verify job", () => {
   });
 });
 
-describe("the label job", () => {
+describe("the label job", { timeout: 30_000 }, () => {
   const RUNNING = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
   const BEFORE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
   const label = (plan: DeployPlan) => workflow(plan).jobs.label as Job;
@@ -569,7 +570,7 @@ describe("the label job", () => {
   );
 });
 
-describe("the deploy job on a self-hosted runner", () => {
+describe("the deploy job on a self-hosted runner", { timeout: 30_000 }, () => {
   const staged = (runner: "github" | "server") =>
     inEnvironment(serverPlan(), { name: "staging", runner, secrets: "prefixed" });
   const server = staged("server");
@@ -644,7 +645,7 @@ describe("the deploy job on a self-hosted runner", () => {
       expect(lines.slice(0, 2).map((line) => line.trim())).toEqual(roots);
     }
     expect(runOf(local, UPLOAD)).toContain('\ndir="$OPSCREW_APPS_DIR/shop-dev"\n');
-    expect(stepOf(deploy(local), "health").env?.URL).toBe("http://127.0.0.1:8080/api/health");
+    expect(stepOf(deploy(local), "health").env?.URL).toBe("https://shop.localhost:8443/api/health");
     expect(stepOf(deploy(server), "health").env?.URL).toBe(
       "https://staging-shop.example.com/api/health",
     );
@@ -662,7 +663,7 @@ describe("the deploy job on a self-hosted runner", () => {
       const roots = { OPSCREW_APPS_DIR: apps, OPSCREW_EDGE_DIR: `${work}/edge` };
       const upload = runOf(local, UPLOAD);
       const files = /cp -r (.+) "\$dir"\//.exec(upload)?.[1]?.split(" ") ?? [];
-      expect(files).toContain("opscrew/runtime/compose.yaml");
+      expect(files).toContain("opscrew/environments/dev/runtime/compose.yaml");
       for (const file of files) {
         const path = join(checkout, file);
         if (file.endsWith(".yaml")) {
@@ -682,7 +683,9 @@ describe("the deploy job on a self-hosted runner", () => {
       const copied = runScript(upload, "", { ...values, ...roots }, checkout);
       expect(copied.status, copied.out).toBe(0);
       const dir = `${apps}/shop-dev`;
-      expect(readFileSync(`${dir}/compose.yaml`, "utf8")).toBe("opscrew/runtime/compose.yaml\n");
+      expect(readFileSync(`${dir}/compose.yaml`, "utf8")).toBe(
+        "opscrew/environments/dev/runtime/compose.yaml\n",
+      );
       expect(existsSync(`${dir}/edge/compose.yaml`)).toBe(true);
       expect(readFileSync(`${dir}/app.env`, "utf8")).toBe("A=1\n");
       expect(readFileSync(`${dir}/db.env`, "utf8")).toBe("P=2\n");
@@ -717,6 +720,82 @@ describe("the deploy job on a self-hosted runner", () => {
       ]);
       expect(readFileSync(join(work, "login"), "utf8")).toBe("registry-placeholder\n");
       expect(readFileSync(join(work, "script"), "utf8")).toBe(heredoc(start));
+    },
+  );
+
+  it.skipIf(!bashWorks())(
+    "checks the local app over HTTPS at its hostname on 127.0.0.1, trusting only the local CA",
+    () => {
+      const health = stepOf(deploy(local), "health");
+      const URL = health.env?.URL ?? "";
+      const fakes = [
+        'curl() { printf \'curl %s\\n\' "$*" >> "$WORK/calls"; }',
+        "sleep() { :; }",
+      ].join("\n");
+      const unset = runScript(health.run ?? "", fakes, { URL, OPSCREW_LOCAL_CA_FILE: "" });
+      expect(unset.status).toBe(1);
+      expect(unset.out).toContain(
+        "::error::This runner does not set OPSCREW_LOCAL_CA_FILE, the certificate of OpsCrew's local CA that the app's HTTPS is checked with. Start it with `opscrew runner start --env dev`, which sets it.",
+      );
+      expect(unset.calls).toEqual([]);
+      const ca = `${work}/ca.pem`;
+      const healthy = runScript(health.run ?? "", fakes, { URL, OPSCREW_LOCAL_CA_FILE: ca });
+      expect(healthy.status, healthy.out).toBe(0);
+      expect(healthy.calls).toEqual([
+        `curl -fsS --max-time 10 --resolve shop.localhost:8443:127.0.0.1 --cacert ${ca} -o /dev/null https://shop.localhost:8443/api/health`,
+      ]);
+      // A server's runner checks as before.
+      expect(stepOf(deploy(server), "health").run).not.toMatch(/--resolve|--cacert|LOCAL_CA/);
+      // A domain in the plan changes nothing here: the leaf is the local CA's, not Let's Encrypt's.
+      const named = DeployPlanSchema.parse({
+        ...local,
+        dns: { ...local.dns, domain: "shop.example.com" },
+      });
+      const withDomain = stepOf(deploy(named), "health");
+      expect(withDomain.env?.URL).toBe(URL);
+      expect(withDomain.run).toBe(health.run);
+      expect(withDomain.run).not.toContain("Let's Encrypt");
+    },
+  );
+
+  it.skipIf(!bashWorks())(
+    "validates the local edge with the leaf certificate this computer's edge already has",
+    () => {
+      const step = deploy(local).steps.find((s) => s.name?.startsWith("Validate the edge"));
+      const script = step?.run ?? "";
+      const checkout = join(work, "edge-checkout");
+      const files = [
+        ...renderRuntimeFiles(local),
+        ...renderEdgeSite(local, { ...ctx, localhost: { hostname: "shop.localhost" } }),
+      ];
+      for (const file of files) {
+        mkdirSync(join(checkout, file.path, ".."), { recursive: true });
+        writeFileSync(join(checkout, file.path), file.content);
+      }
+      const edgeDir = `${work}/local-edge`;
+      const temp = `${work}/runner-temp`;
+      const fakes = 'docker() { printf \'docker %s\\n\' "$*" >> "$WORK/calls"; }';
+      const env = { OPSCREW_EDGE_DIR: edgeDir, RUNNER_TEMP: temp };
+      const none = runScript(script, fakes, env, checkout);
+      expect(none.status).toBe(1);
+      expect(none.out).toContain(
+        "::error::This runner finds no leaf certificate for the app in this computer's edge (tls/shop-dev/local.pem and local.key in OPSCREW_EDGE_DIR). Run `opscrew provision --env dev`, which issues it",
+      );
+      expect(none.calls).toEqual([]);
+      mkdirSync(`${edgeDir}/tls/shop-dev`, { recursive: true });
+      writeFileSync(`${edgeDir}/tls/shop-dev/local.pem`, "leaf certificate\n");
+      writeFileSync(`${edgeDir}/tls/shop-dev/local.key`, "leaf key\n");
+      const checked = runScript(script, fakes, env, checkout);
+      expect(checked.status, checked.out).toBe(0);
+      expect(readFileSync(`${temp}/opscrew-edge/tls/shop-dev/local.pem`, "utf8")).toBe(
+        "leaf certificate\n",
+      );
+      expect(readFileSync(`${temp}/opscrew-edge/tls/shop-dev/local.key`, "utf8")).toBe(
+        "leaf key\n",
+      );
+      expect(checked.calls.at(-1)).toContain(" caddy caddy validate ");
+      // A server's check makes its placeholders as before, with no leaf of this computer.
+      expect(jobYaml(content(server), "deploy")).not.toContain('OPSCREW_EDGE_DIR"/tls');
     },
   );
 });
