@@ -467,6 +467,34 @@ export class Cloudflare {
     return results;
   }
 
+  /**
+   * When Cloudflare finished rolling out a per-hostname Authenticated Origin Pulls setting between
+   * `since` and `before` (the account's audit log: `deployed` entries for `hostname_association`), in
+   * epoch milliseconds. The entries name no zone, so this covers the whole account.
+   */
+  async originPullDeploys(accountId: string, since: Date, before: Date): Promise<number[]> {
+    const query = new URLSearchParams({
+      since: since.toISOString(),
+      before: before.toISOString(),
+      "action.type": "deployed",
+      per_page: "100",
+    });
+    const got = await this.call("GET", `/accounts/${accountId}/audit_logs?${query}`);
+    const body = got.json as
+      | { success?: boolean; result?: { when?: string; resource?: { type?: string } }[] }
+      | undefined;
+    if (got.status !== 200 || body?.success !== true) {
+      throw new Error(
+        `Cloudflare did not show the account's audit log (HTTP ${got.status}); the token needs to read it (docs/e2e.md, "Environments and promotion").`,
+      );
+    }
+    return (body.result ?? []).flatMap((entry) =>
+      entry.resource?.type === "hostname_association" && entry.when !== undefined
+        ? [Date.parse(entry.when)]
+        : [],
+    );
+  }
+
   /** The zone that holds `hostname` (the longest matching zone name). */
   async zoneOf(hostname: string): Promise<CloudflareZone> {
     const labels = hostname.replace(/\.$/, "").split(".");

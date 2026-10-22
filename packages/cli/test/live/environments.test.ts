@@ -16,6 +16,7 @@ import { underLoad } from "./builder-checks";
 import { type CloudflareZone, DEPLOY_WORKFLOW, minutes } from "./cloud";
 import {
   AppEnvironments,
+  acceptOriginPullBlips,
   designProd,
   expectNoRunner,
   forkPrPolicy,
@@ -154,28 +155,35 @@ describe.skipIf(MISSING.length > 0)(
       "3. adds staging, provisions and deploys it while prod answers under load with its plan unchanged",
       minutes(90),
       async () => {
-        await underLoad([await run.healthUrl()], "staging's addition", log, async () => {
-          await run.opscrewOk("env", "add", STAGING, "--target", "hetzner", "--from", "main");
-          const staging = await envs.designed(STAGING);
-          const host = staging.dns.domain;
-          if (host === undefined || host === run.appHost) {
-            throw new Error("design gave staging no hostname of its own.");
-          }
-          stagingHosts = [host, `www.${host}`];
-          stagingHealth = `https://${host}${staging.app.healthPath}`;
-          expect(planHash(await run.readPlan()), "prod's plan hash after env add").toBe(prodHash);
-          await envs.provision(STAGING, "staging");
-          expect(planHash(await run.readPlan()), "prod's plan hash after staging's provision").toBe(
-            prodHash,
-          );
-          const deployed = await run.deploy("staging's first deploy", [
-            await workflowOf(run, STAGING),
-            DEPLOY_WORKFLOW,
-          ]);
-          if (deployed === undefined) {
-            throw new Error("staging's provision opened no deploy-setup pull request.");
-          }
-        });
+        await underLoad(
+          [await run.healthUrl()],
+          "staging's addition",
+          log,
+          async () => {
+            await run.opscrewOk("env", "add", STAGING, "--target", "hetzner", "--from", "main");
+            const staging = await envs.designed(STAGING);
+            const host = staging.dns.domain;
+            if (host === undefined || host === run.appHost) {
+              throw new Error("design gave staging no hostname of its own.");
+            }
+            stagingHosts = [host, `www.${host}`];
+            stagingHealth = `https://${host}${staging.app.healthPath}`;
+            expect(planHash(await run.readPlan()), "prod's plan hash after env add").toBe(prodHash);
+            await envs.provision(STAGING, "staging");
+            expect(
+              planHash(await run.readPlan()),
+              "prod's plan hash after staging's provision",
+            ).toBe(prodHash);
+            const deployed = await run.deploy("staging's first deploy", [
+              await workflowOf(run, STAGING),
+              DEPLOY_WORKFLOW,
+            ]);
+            if (deployed === undefined) {
+              throw new Error("staging's provision opened no deploy-setup pull request.");
+            }
+          },
+          acceptOriginPullBlips(run, log),
+        );
         await run.waitForHealth(minutes(10), true, stagingHealth);
         await run.opscrewOk("verify", "--env", STAGING);
         await expectProdUnchanged("staging's provision and deploy");
@@ -251,8 +259,12 @@ describe.skipIf(MISSING.length > 0)(
       "7. staging's destroy leaves prod answering under load with its plan unchanged, and removes staging's server, records, secrets and GitHub environment",
       minutes(45),
       async () => {
-        await underLoad([await run.healthUrl()], "staging's destroy", log, () =>
-          envs.destroy(STAGING),
+        await underLoad(
+          [await run.healthUrl()],
+          "staging's destroy",
+          log,
+          () => envs.destroy(STAGING),
+          acceptOriginPullBlips(run, log),
         );
         await envs.expectNothingLeft(STAGING);
         if (stagingSecrets !== undefined) await envs.expectSecretsGone(STAGING, stagingSecrets);

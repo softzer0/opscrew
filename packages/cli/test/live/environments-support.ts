@@ -253,3 +253,27 @@ export function environmentRules(json: unknown): EnvironmentRules {
           },
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Cloudflare's brief 52x answers while an origin pull setting rolls out.
+
+/** How far from a rollout a 52x answer may be sent and still be Cloudflare's brief one. */
+export const ORIGIN_PULL_BLIP_MS = 3_000;
+
+/**
+ * Why a failed request is Cloudflare's brief 52x answer while a per-hostname Authenticated Origin
+ * Pulls setting rolls out, which the founder accepted (docs/guide/origin-protection.md, "Known
+ * limits", 2026-10-23): an HTTP 520 to 527 sent within {@link ORIGIN_PULL_BLIP_MS} of a rollout in
+ * `deploys` (epoch milliseconds, from the account's audit log). `undefined` for anything else.
+ */
+export function originPullBlip(
+  failure: { at: string; what: string },
+  deploys: readonly number[],
+): string | undefined {
+  if (!/^HTTP 52[0-7]$/.test(failure.what)) return undefined;
+  const sent = Date.parse(failure.at);
+  const near = deploys.find((at) => Math.abs(sent - at) <= ORIGIN_PULL_BLIP_MS);
+  if (near === undefined) return undefined;
+  const offset = sent - near;
+  return `${failure.what}, ${Math.abs(offset)} ms ${offset >= 0 ? "after" : "before"} Cloudflare rolled out an origin pull setting (${new Date(near).toISOString()})`;
+}

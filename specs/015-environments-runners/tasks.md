@@ -588,7 +588,7 @@ Effort`.
   - Effort: xhigh
 
 - [ ] T1515 Live runs (lead): the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`. Windows localhost runs by hand on the founder's computer.
-  - The founder accepted Cloudflare's brief 520s for a zone's other hostnames while a new hostname's Authenticated Origin Pulls setting deploys (seen in 1 of 3 runs; documented in `docs/guide/origin-protection.md`, 2026-10-23). The environments test's load check tolerates only 52x answers within 2 s after a `hostname_association` entry in the zone's audit log, and reports them by name; any other failure still fails the step.
+  - The founder accepted Cloudflare's brief 520s for a zone's other hostnames while a new hostname's Authenticated Origin Pulls setting deploys (seen in 1 of 3 runs; documented in `docs/guide/origin-protection.md`, 2026-10-23). The environments test's load check accepts only HTTP 520–527 answers sent within 3 s of a `deployed` `hostname_association` entry in the account's audit log (the entries name no zone), and logs each with its distance from the rollout; any other failure still fails the step.
 
 ## End-of-feature simplify pass (after T1515)
 

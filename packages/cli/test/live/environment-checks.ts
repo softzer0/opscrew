@@ -30,6 +30,7 @@ import {
   destroyWithinBudget,
   type EnvironmentRules,
   environmentRules,
+  originPullBlip,
   overlapping,
   runnerCredentialSecrets,
   runnerTokenShapes,
@@ -45,7 +46,7 @@ import {
 } from "./harness";
 import { secretNames } from "./portainer-cloud";
 import { deployedImage } from "./portainer-support";
-import { approveHashes, leakedLabels, printedHash } from "./support";
+import { approveHashes, type LoadFailure, leakedLabels, printedHash } from "./support";
 
 /**
  * The scrubber's label for this computer's public address: masked in everything printed, but not
@@ -270,6 +271,39 @@ export async function expectSshClosedToActions(
  * which were designed, provisioned and destroyed, their paths, plans, secrets and servers, the
  * leak search over all of them, and the cleanup of what OpsCrew created for them.
  */
+/**
+ * The `accepted` check of `underLoad` while an environment's hostnames are added or removed:
+ * Cloudflare's brief 52x answers for the zone's other hostnames while the change's origin pull
+ * setting rolls out (`originPullBlip`), found in the account's audit log. The log may show an
+ * entry late, so a failure is looked up only a minute after it was sent. When the log cannot be
+ * read, every failure counts.
+ */
+export function acceptOriginPullBlips(
+  run: LiveRun,
+  log: (message: string) => void,
+): (failure: LoadFailure) => Promise<string | undefined> {
+  return async (failure) => {
+    const zone = run.zone;
+    if (zone === undefined || !/^HTTP 52/.test(failure.what)) return undefined;
+    const sent = Date.parse(failure.at);
+    const wait = sent + 60_000 - Date.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    try {
+      const deploys = await run.cloudflare.originPullDeploys(
+        zone.accountId,
+        new Date(sent - 60_000),
+        new Date(sent + 60_000),
+      );
+      return originPullBlip(failure, deploys);
+    } catch (error) {
+      log(
+        `Cloudflare's audit log could not be read, so the request sent at ${failure.at} counts as failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    }
+  };
+}
+
 export class AppEnvironments {
   /** Each designed environment's app name, in the order they were designed (prod first). */
   readonly apps = new Map<string, string>();

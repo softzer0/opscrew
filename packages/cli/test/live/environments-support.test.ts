@@ -1,7 +1,8 @@
 /**
  * Offline checks of the pure helpers of feature 015's live tests: address ranges against GitHub's
  * Actions ranges, a firewall's SSH sources, the runners' secrets, the promotion to approve and a
- * GitHub environment's rules. No network.
+ * GitHub environment's rules, and Cloudflare's brief 52x answers during an origin pull rollout. No
+ * network.
  */
 import { randomBytes } from "node:crypto";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -10,6 +11,8 @@ import {
   cidrsOverlap,
   destroyWithinBudget,
   environmentRules,
+  ORIGIN_PULL_BLIP_MS,
+  originPullBlip,
   overlapping,
   promotionApproval,
   runnerCredentialSecrets,
@@ -190,5 +193,29 @@ describe("environmentRules", () => {
       waitTimer: 0,
       branchPolicy: null,
     });
+  });
+});
+
+describe("originPullBlip", () => {
+  const rollout = Date.parse("2026-10-22T22:28:10.095Z");
+  const at = (offset: number) => new Date(rollout + offset).toISOString();
+
+  it("accepts a 52x sent just after or just before a rollout and says how far from it", () => {
+    expect(originPullBlip({ at: at(22), what: "HTTP 520" }, [rollout])).toBe(
+      "HTTP 520, 22 ms after Cloudflare rolled out an origin pull setting (2026-10-22T22:28:10.095Z)",
+    );
+    expect(originPullBlip({ at: at(-400), what: "HTTP 525" }, [rollout])).toContain(
+      "400 ms before",
+    );
+  });
+
+  it("counts a 52x away from every rollout, any other failure, and a run with no rollout", () => {
+    expect(originPullBlip({ at: at(ORIGIN_PULL_BLIP_MS + 1), what: "HTTP 520" }, [rollout])).toBe(
+      undefined,
+    );
+    for (const what of ["HTTP 502", "HTTP 528", "TimeoutError", "ECONNRESET"]) {
+      expect(originPullBlip({ at: at(10), what }, [rollout]), what).toBe(undefined);
+    }
+    expect(originPullBlip({ at: at(10), what: "HTTP 520" }, [])).toBe(undefined);
   });
 });

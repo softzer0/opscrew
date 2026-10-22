@@ -247,14 +247,16 @@ function closedBeforeAnswer(error: unknown): boolean {
  * Runs `body` (a deploy, or an app's destroy) under a steady load of {@link LOAD_RPS} requests per
  * second on each of `urls` (health routes), logs every failed request with the time it was sent,
  * and fails when any request failed. A request whose kept-alive connection closed before any
- * answer is sent again once, as browsers do, and counted. The URLs are counted by their index (`site 1`, …) in the
- * messages, which never name a host.
+ * answer is sent again once, as browsers do, and counted. `accepted` may name a failure the founder
+ * accepted (it is logged with its reason and not counted); every other failure counts. The URLs are
+ * counted by their index (`site 1`, …) in the messages, which never name a host.
  */
 export async function underLoad<T>(
   urls: readonly string[],
   what: string,
   log: (message: string) => void,
   body: () => Promise<T>,
+  accepted?: (failure: LoadFailure) => Promise<string | undefined>,
 ): Promise<T> {
   const sites = (index: number) => (urls.length === 1 ? "" : ` (site ${index + 1})`);
   log(`${what}: sending ${LOAD_RPS} requests per second to each of ${urls.length} health route(s)`);
@@ -304,7 +306,13 @@ export async function underLoad<T>(
     log(
       `${what}${sites(index)}: ${summary.sent} requests in ${Math.round(seconds)} s, ${summary.failures.length} failed${again > 0 ? `, ${again} sent again after their connection closed` : ""}`,
     );
-    expect(summary.failures, `requests that failed during ${what}${sites(index)}`).toEqual([]);
+    const counted: LoadFailure[] = [];
+    for (const failure of summary.failures) {
+      const reason = await accepted?.(failure);
+      if (reason === undefined) counted.push(failure);
+      else log(`${what}${sites(index)}: the request sent at ${failure.at} is accepted: ${reason}`);
+    }
+    expect(counted, `requests that failed during ${what}${sites(index)}`).toEqual([]);
     // A computer too busy to keep the rate would test less than the documented load.
     expect(
       summary.sent,
