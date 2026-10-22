@@ -379,6 +379,15 @@ deploy of the target already running (it waits instead).
 - **The Free private repository case:** prefixed secrets and OpsCrew's approval.
 - **Leak search:** the runner token, every environment's generated values, and the local CA key.
 
+### 16. Runner machines and builds on self-hosted runners (T1517a–T1517e, the founder, 2026-10-22)
+
+- **The plan (T1517a):** `environment.runner` gains `host`, with `runnerHost: { name, arch }`, and `environment.build` is `github` (default) or `runner`. `build: runner` is allowed only with `runner: local` or `host`, only for an environment that follows main, and only when the runner's architecture equals the target's. The production server's runner never builds: the app's build scripts would then run on the production server.
+- **The machine (T1517b, T1517d):** a runner machine is set up like the user's own server: SSH with the user's key, the host key pinned at first contact, inspected, then a host plan approved by its hash. The plan holds the deploy user, the runner's prerequisites (T1511b), Docker when an environment builds there, and one `github-runner` step per environment. It has no edge, app, firewall or SSH hardening steps, since the machine may be the user's desktop. Its record lives in the project's home folder, and the plan names it only by `name`.
+- **Ownership:** a runner folder whose `.opscrew-runner` names another repository is refused, on runner machines and own servers alike, never replaced.
+- **The workflow (T1517c):** the deploy job on a runner machine runs on its label with the same SSH deploy steps and secrets a GitHub-hosted job uses. With `build: runner`, the build job runs on the environment's self-hosted label with Buildx, provenance and SBOM unchanged.
+- **Surfaces (T1517e):** `opscrew runner host add|remove|list`, and `env add|set --runner host --runner-host <name> --build runner`.
+- **Later (016):** runner machines and every self-hosted runner reach servers over 016's private network, so public SSH can close.
+
 ## Order
 
 1. **Wave 1:** T1501a (contracts) and T1501b (pins, the local CA). The spike T1502 runs alongside.

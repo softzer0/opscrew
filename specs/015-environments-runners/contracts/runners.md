@@ -58,6 +58,20 @@ When the host is gone, the flow calls `deleteRunner` instead.
 **Inspect:** the service's state (`systemctl is-active`) and the installed version
 (`bin/Runner.Listener --version`).
 
+## Runner machines (FR-1532–FR-1535)
+
+```ts
+// @opscrew/agents
+addRunnerHost(deps, { name, ssh: { user, host, port? }, keyFile? }): Promise<{ plan: HostPlan; hash: string }>;   // inspect, pin the host key, plan
+applyRunnerHost(deps, { name, approvedHash }): Promise<void>;
+removeRunnerHost(deps, { name, approvedHash? }): Promise<void>;   // refused while an environment uses it
+listRunnerHosts(deps): Promise<{ name: string; arch: string; docker: boolean; environments: string[] }[]>;
+```
+
+- **An environment with `runner: host`** adds its `github-runner` step to the machine's host plan at its provision, and removes it at its destroy, each approved by the machine's plan hash.
+- **The deploy job** on a runner machine runs `runs-on: [self-hosted, opscrew-<app>-<env>]` with the same SSH deploy steps a GitHub-hosted job uses, and the same deploy secrets.
+- **`build: runner`:** the build job runs on the environment's self-hosted runner label, with Buildx, provenance and SBOM as on GitHub's machines.
+
 ## Agents
 
 ```ts

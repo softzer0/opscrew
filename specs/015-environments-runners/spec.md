@@ -108,6 +108,21 @@ For an environment on the developer's own computer, the developer can also run t
 2. **Given** the local runner is running, **When** a commit lands on the branch that environment follows, **Then** the workflow's deploy job runs on the user's computer and deploys to the local stack.
 3. **Given** the user stops the runner, **When** they stop it, **Then** it is unregistered, and the environment can still be provisioned locally without it.
 
+### User Story 6 - A runner machine of my own, for deploys and builds (Priority: P2)
+
+The developer has a machine they control: a home server, a spare PC or a VM. They want the pipeline's jobs to run there. The deploy job, so it reaches servers from inside their own network; and the build, so the image is built on their own hardware instead of GitHub's machines. OpsCrew sets that machine up over SSH as a runner machine, the way it sets up the user's own server, and environments can choose it.
+
+**Why this priority**: the founder asked for it (2026-10-22): builds on faster or arm64 hardware, and deploys from inside a private network.
+
+**Independent Test**: add a runner machine over SSH, point an environment's runner and build at it, push a commit, and see the image built and the app deployed by jobs that ran on that machine.
+
+**Acceptance Scenarios**:
+
+1. **Given** an Ubuntu or Debian machine the user can reach over SSH with sudo, **When** the user adds it as a runner machine, **Then** OpsCrew shows its host plan (the deploy user, Docker when builds run there, and one runner per environment that uses it) and applies it only after its hash is approved.
+2. **Given** an environment whose runner is that machine, **When** a deploy runs, **Then** the deploy job runs on the runner machine and reaches the environment's server over SSH from there. GitHub's machines never connect to the server.
+3. **Given** an environment that builds on its runner, **When** a commit lands, **Then** the image is built on that runner (the local runner or a runner machine), with the same provenance and SBOM as on GitHub's machines. A runner whose architecture differs from the target's is refused at design.
+4. **Given** a runner machine several environments use, **When** one environment is destroyed, **Then** only that environment's runner on it is removed. The machine is removed only by its own command, and only when no environment uses it.
+
 ### Edge Cases
 
 - **A repository that turns public** while a self-hosted runner serves it: `secure` reports it as high, and `provision` refuses to keep the runner until the repository is private again or outside contributors' runs need approval.
@@ -120,6 +135,9 @@ For an environment on the developer's own computer, the developer can also run t
 - **Docker's memory was lowered** after the stack was provisioned: `status` reports that the limits no longer fit.
 - **An environment is removed** while others depend on it as their promotion source: the next environment's source moves to the one before, or the user is asked.
 - **The server's runner falls more than 30 days behind GitHub's runner release** (GitHub then sends it no jobs): `status` and `secure` say so before that happens, and `provision` updates it.
+- **A runner machine that is offline**: its jobs wait in GitHub's queue; `status` warns, and `provision` says the deploy waits for it.
+- **A runner machine that is the environment's own server**: OpsCrew says to use the server's runner instead.
+- **A runner folder on a runner machine that belongs to another repository**: refused, never replaced.
 - **A Portainer environment**: its deploys already need no SSH (Portainer redeploys the stack), so the server's runner is not offered there.
 
 ## Requirements *(mandatory)*
@@ -196,6 +214,13 @@ For an environment on the developer's own computer, the developer can also run t
 - **FR-1529**: The local runner MUST run on the user's computer as the user, for a localhost environment only, from start until the user stops it. It is unregistered when stopped.
 - **FR-1530**: `status` and `secure` MUST report a self-hosted runner's state: online or offline, its version against GitHub's current release, and the repository's visibility. `provision` keeps it current.
 
+**Runner machines and builds on self-hosted runners** (the founder, 2026-10-22)
+
+- **FR-1532**: A runner machine MUST be added and removed through its own host plan, approved by its hash, over SSH with the user's key and a pinned host key, as for the user's own server. It installs the deploy user, Docker only when an environment builds there, and one runner per environment that uses it, each as the deploy user's service. Its address is never written to a plan or a committed file, and OpsCrew does not harden it (it may be a desktop).
+- **FR-1533**: An environment on a target reached over SSH (a cloud or own server) MUST be able to choose a runner machine for its deploy job. The job then deploys to the target over SSH from the runner machine, as a GitHub-hosted job does today.
+- **FR-1534**: An environment that follows main MUST be able to build its image on its self-hosted runner when that runner is the local runner or a runner machine, never the production server's runner. The build keeps its provenance, SBOM and optional signature. A runner whose architecture differs from the target's is refused, naming the server types that match.
+- **FR-1535**: Destroying an environment MUST remove only its runner from a runner machine. Removing the machine MUST be refused while an environment uses it. A runner folder that belongs to another repository is never replaced.
+
 **Coverage**
 
 - **FR-1531**: The localhost target MUST be checked automatically on Linux, and on macOS on GitHub's Intel macOS runners with Colima. Windows is checked by hand on the founder's computer. Docker on Apple silicon MUST be listed as not tested live, since GitHub's Apple silicon runners cannot run it.
@@ -205,7 +230,8 @@ For an environment on the developer's own computer, the developer can also run t
 - **Environment:** a name, its place in the order, a target, hostnames, a size, a deploy source (the main branch, or promotion from the environment before), a runner choice, and where its deploy secrets live (a GitHub environment or prefixed repository secrets).
 - **Shared app definition:** what every environment has in common: the build, the components, the port and the health route.
 - **Promotion:** the source environment, the target environment, the image digest, the result of the provenance check, the target's plan hash and the approval bound to both.
-- **Self-hosted runner:** its kind (server or local), the environment it serves, its label, its version, and whether it is registered and online.
+- **Runner machine:** its name, its SSH login and address (kept on the user's computer only), its architecture, whether it has Docker, and the environments it serves.
+- **Self-hosted runner:** its kind (server, local or runner machine), the environment it serves, its label, its version, and whether it is registered and online.
 - **Local certificate authority:** one per computer, with its root certificate, its private key in the user's OpsCrew folder, and whether the user trusted it.
 - **Localhost target:** the computer's Docker, the ports in use, the computer's architecture, and where the image comes from (built locally, or the production image).
 
@@ -222,6 +248,7 @@ For an environment on the developer's own computer, the developer can also run t
 - **SC-1507**: With the local runner running, a pushed commit answers at the local address within 10 minutes.
 - **SC-1508**: Every change in this feature is applied only after an approval bound to its plan's hash, and a promotion's approval also names the image digest. The changes are the localhost stack, each environment's plans, the runner's install and removal, the repository settings OpsCrew changes, and each promotion.
 - **SC-1509**: The localhost target passes on Linux and on Intel macOS in CI, and by hand on Windows once for the feature. The coverage page lists Apple silicon as not tested live.
+- **SC-1510**: With a runner machine, the build and the deploy job of a pushed commit both run on it, and GitHub's machines never connect to the environment's server.
 
 ## Assumptions
 
@@ -249,4 +276,5 @@ Defaults the lead chose while the founder was away (2026-10-21). Each is open fo
   - CI other than GitHub Actions;
   - Windows containers;
   - organisation-level runner groups;
+  - a runner machine reaching servers through 016's private network (the founder, 2026-10-22: in 016, for every self-hosted runner);
   - a runner per job.

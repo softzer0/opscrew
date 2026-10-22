@@ -340,6 +340,72 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
+- [ ] T1517a [US6] The runner machine and builds on self-hosted runners in the plan, in `packages/plan-schema/src/**`
+  - Owns: plan-schema (+ tests and the generated schemas)
+  - Reads: data-model.md "Environment" and "Runner machine"; plan.md "16."; spec US6, FR-1532–FR-1535
+  - Depends: T1511
+  - Accept:
+    - **`environment.runner`** gains `host`. **`environment.runnerHost: { name, arch }`** is required with it and absent otherwise; `name` follows data-model.md's rule. **`environment.build`** is `github` (the default) or `runner`.
+    - **The rules,** each with a plain message:
+      - `host` only for cloud and own-server targets;
+      - `build: runner` only with `runner: local` or `host`, and only for an environment that follows main;
+      - the runner's architecture (`runnerHost.arch`, or the localhost target's for `local`) equals the target's.
+    - **Prod-only and existing plans are unchanged:** the defaults are never written.
+    - **Tests:** each rule, and an existing plan's bytes unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema` and `pnpm lint`
+  - Effort: high
+
+- [ ] T1517b [US6] The runner machine's host plan, in `packages/connectors/ssh-host/src/**`
+  - Owns: ssh-host (+ tests)
+  - Reads: data-model.md "Runner machine"; plan.md "8." and "16."
+  - Depends: T1511b, T1517a
+  - Accept:
+    - **A runner machine's host plan:** the deploy user, the runner's prerequisites, Docker when an environment builds there, and one `github-runner` step per environment. No edge, app-record, firewall, SSH or web-filter step.
+    - **Ownership:** the runner step refuses a folder whose `.opscrew-runner` names another repository, on runner machines and own servers alike, instead of replacing it.
+    - **Removal:** an environment's runner comes off on its own. The machine's teardown removes OpsCrew's runners, and what OpsCrew installed, as for an own server.
+    - **Tests:** a fake host for each, and the token absent from every plan, hash and log.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1517c [P] [US6] The workflow for runner machines and builds on self-hosted runners, in `packages/iac-templates/src/workflow/**`
+  - Owns: those paths (+ tests and snapshots)
+  - Reads: contracts/runners.md "Runner machines"; plan.md "16."
+  - Depends: T1517a
+  - Accept:
+    - **`runner: host`:** the deploy job runs on `[self-hosted, opscrew-<app>-<env>]` with the SSH deploy steps a GitHub-hosted job uses. `deploySecretNamesFor` includes the connection secrets for it.
+    - **`build: runner`:** the build job runs on the environment's self-hosted label, with Buildx (pinned), provenance, SBOM and the optional signing as on GitHub's machines.
+    - **Prod and every existing environment** render byte-identically.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
+  - Effort: high
+
+- [ ] T1517d [US6] Runner machines in agents, in `packages/agents/src/runners/**` and the provision, destroy, design, status and secure wiring
+  - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
+  - Reads: contracts/runners.md "Runner machines"; plan.md "16."; spec US6
+  - Depends: T1517a, T1517b, T1517c, T1508b
+  - Accept:
+    - **`addRunnerHost`, `applyRunnerHost`, `removeRunnerHost` and `listRunnerHosts`** follow the contract:
+      - inspect over SSH, pinning the host key at first contact as for an own server;
+      - the host plan approved by its hash as `host-apply`;
+      - the record in the project's home folder;
+      - removal refused while an environment uses the machine.
+    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
+    - **Provision and destroy** of an environment with `runner: host` add and remove its `github-runner` step on the machine's host plan, approved by that plan's hash. Its deploy secrets include the SSH connection secrets, as for a GitHub-hosted job.
+    - **`status` and `secure`** report the machine's runners through `runnerStatus`.
+    - **Tests:** add, apply and remove a machine; two environments on one machine; destroy removing only one environment's runner; the refusals; no token or address in any plan or committed file.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1517e [US6] Runner machines in the CLI, MCP and the guide
+  - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/runners.md` and `docs/guide/environments.md` (+ tests)
+  - Reads: contracts/runners.md "Runner machines"; plan.md "16."
+  - Depends: T1517d, T1512a, T1512b
+  - Accept:
+    - **The CLI:** `opscrew runner host add <name> --ssh <user@host[:port]> [--key <file>]`, `runner host remove <name>` and `runner host list`, plus `env add|set --runner host --runner-host <name> [--build runner]`.
+    - **MCP:** matching tools, with the host plan's approval dialog.
+    - **The guide:** `runners.md` explains runner machines and builds on your own hardware: the architecture rule, why the production server never builds, and that 016's private network will let them reach servers without public SSH.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
+  - Effort: high
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [ ] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
@@ -384,7 +450,7 @@ Effort`.
 - [ ] T1513 [P] The localhost Docker pass, and OpsCrew's own CI workflow, in `packages/cli/test/e2e/**`, `examples/**`, `.github/workflows/localhost.yml` (new)
   - Owns: those paths
   - Reads: quickstart.md "1." and "6."; research.md R5 and "Spike results" 7, 8
-  - Depends: T1510, T1511b, T1512a
+  - Depends: T1510, T1511b, T1512a, T1517e
   - Accept:
     - **The Docker pass** (`OPSCREW_DOCKER_TESTS=1`): quickstart "1." with the real CLI on this computer, plus a second localhost environment beside the first.
       - The site answers through the local CA (trusted only inside the test, with `NODE_EXTRA_CA_CERTS`).
@@ -411,6 +477,7 @@ Effort`.
     - **The server's runner** (`OPSCREW_E2E_RUNNER=1`): quickstart "4.", with the firewall refusing SSH from GitHub's address ranges during the deploy.
     - **The Free private repository case** is recorded as found: GitHub environments with secrets but no rules (spike result 1).
     - **The public repository** `OPSCREW_E2E_GITHUB_REPO_C` (throwaway, the founder, 2026-10-22) covers the path with every environment rule: provision creates the environment with its branch rule, and destroy removes it. No self-hosted runner is ever registered there: a runner for a public repository is checked only as far as the refusal and the fork-PR policy change, as a plan, never applied.
+    - **A runner machine** (`OPSCREW_E2E_RUNNER_HOST=1`): a throwaway Hetzner server set up as a runner machine, building the image and deploying to a cloud target, with the target refusing SSH from GitHub's address ranges.
     - **The leak search** covers the runner token, every environment's generated values, and the local CA key.
     - **The docs:** `docs/e2e.md` sections, and the coverage page's rows as "Not run yet".
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
@@ -441,7 +508,7 @@ Effort`.
 ## Dependencies
 
 {T1501a, T1501b} with T1502 (lead) alongside → {T1503, T1504, T1505, T1506, T1507} → {T1508a, T1508c} →
-{T1508b, T1509, T1510} → T1511 → {T1511b, T1512a, T1512b} → T1513 → T1514 → T1515 → T1516.
+{T1508b, T1509, T1510} → T1511 → {T1511b, T1512a, T1512b, T1517a} → {T1517b, T1517c} → T1517d → T1517e → T1513 → T1514 → T1515 → T1516.
 
 **User stories:**
 - **US1:** T1501a, T1501b, T1506, T1507, T1510, T1513.
@@ -449,6 +516,7 @@ Effort`.
 - **US3:** T1504, T1505, T1509.
 - **US4:** T1501b, T1504, T1505, T1507, T1511, T1511b.
 - **US5:** T1511, T1512a, T1512b.
+- **US6:** T1517a–T1517e.
 
 ## Parallel waves
 
@@ -458,8 +526,9 @@ Effort`.
 3. T1508a, T1508c: environments, design and the phases' paths; the Portainer and origin-TLS names.
 4. T1508b, T1509, T1510: provision secrets with destroy; promote/; localhost/ with its branches.
 5. T1511, then T1511b (the runner on cloud servers).
-6. T1511b, T1512a and T1512b together (T1512a edits only agents' message text; T1511b the runner wiring), then T1513.
-7. T1514, then T1515, then T1516.
+6. T1511b, T1512a, T1512b and T1517a together (T1512a edits only agents' message text; T1511b the runner wiring; T1517a plan-schema).
+7. T1517b and T1517c, then T1517d, then T1517e, then T1513.
+8. T1514, then T1515, then T1516.
 
 ## Implementation strategy
 
