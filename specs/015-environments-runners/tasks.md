@@ -165,7 +165,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
   - Effort: high
 
-- [ ] T1506b [US2] The runtime folder and Portainer's deploy branch per environment, in `packages/iac-templates/src/**` (the paths only)
+- [X] T1506b [US2] The runtime folder and Portainer's deploy branch per environment, in `packages/iac-templates/src/**` (the paths only)
   - Owns: every `opscrew/runtime/…` path and Portainer's deploy branch name in `packages/iac-templates/src/**` (+ tests, snapshots)
   - Reads: data-model.md "Paths per environment"; T1505's and T1506's reports
   - Depends: T1505, T1506
@@ -201,7 +201,7 @@ Effort`.
     - **`supplyChain.sign` is a shared part** too, copied and compared like the others. The promoted environment's verify job checks the signature by its own plan, while the source's workflow is what signs (T1505's review).
     - **One `dependabot.yml` for every environment:** design and provision render it with every environment's runtime folder (from `environmentsOf`), so prod's and staging's provisions write the same file (T1506b).
     - **Portainer's stack Git ref per environment:** `packages/connectors/portainer` (`names.ts` `DEPLOY_BRANCH` and `DEPLOY_REFERENCE`, and `plan.ts`'s `branch: z.literal(DEPLOY_BRANCH)`) takes the environment's deploy branch from iac-templates' `portainerDeployBranch(plan)`, as do agents' `provision/deploy-branch.ts`, `provision/stack-plan.ts`, `provision/types.ts` and `provision/portainer-flow.ts`. Otherwise a staging stack would follow prod's branch while its workflow writes `opscrew-deploy-staging` (T1506b's review). These connector files are in T1508a's Owns for this change.
-    - **The storage root per environment:** agents' `provision/storage.ts` uses iac-templates' `storageDir(plan)` (`opscrew/infra/storage-<env>` outside prod) (T1506b's review).
+    - **The storage root per environment** comes from iac-templates' `storageRootDir(plan)` (`opscrew/infra/storage-<env>` outside prod), so agents' storage callers need no change. Since an environment's infrastructure root is `opscrew/infra/<env>`, the name rule refuses `storage` and names starting with `storage-`: core's `ENVIRONMENT_NAME_PATTERN` and `ENVIRONMENT_NAME_MESSAGE` in `packages/core/src/paths.ts`, with a test (T1506b). That file is in T1508a's Owns for this change.
     - **Agents use the per-environment helpers** `originPullPem(plan)`, `portainerStackTemplatePath(plan)` and `portainerDeployBranch(plan)`, instead of the prod-only constants `ORIGIN_PULL_PEM`, `PORTAINER_STACK_TEMPLATE_PATH` and agents' own `DEPLOY_BRANCH` (in `provision/origin-tls.ts`, `drift/portainer.ts`, `shared/portainer-stacks.ts`, `destroy/portainer.ts`). Then remove the constants (T1506b).
     - **`sharedPartsDiffer(prodPlan, envPlan)`** runs in provision's preflight: `PHASE_PRECONDITION` naming the fields, with the hint `opscrew design --env <env>`.
     - **Every phase** (provision, destroy, drift, status, verify, secure, retarget, secrets) resolves its paths through the environment. Agents' `stateFile()` (`shared/engine.ts`) uses core's `tfstateFile(paths)`, since today it hard-codes `prod.tfstate` (T1503's review).
