@@ -35,7 +35,7 @@ setForkPrApprovalPolicy(owner, repo, policy): Promise<void>;   // a github-setti
 ```ts
 interface DesiredRunner {
   label: string;          // "opscrew-<app>-<env>"
-  name: string;           // "<host>-<app>-<env>"
+  name: string;           // "<8 hex of sha256(host)>-<app>-<env>": GitHub never sees the address, and two servers never share a name
   repositoryUrl: string;  // "https://github.com/<owner>/<repo>"
   version: string; sha256: string; asset: "linux-x64" | "linux-arm64";
 }
@@ -61,9 +61,9 @@ When the host is gone, the flow calls `deleteRunner` instead.
 ## Agents
 
 ```ts
-planServerRunner(deps, plan): Promise<{ step?: DesiredRunner; settings?: GithubSettingsChange; refusal?: string }>;
-startLocalRunner(deps, { environment }): Promise<{ stop: () => Promise<void> }>;
-runnerStatus(deps, plan): Promise<{ registered: boolean; online?: boolean; version?: string; behind?: boolean; visibility: string }>;
+planServerRunner(repository, plan): Promise<{ step?: DesiredRunner; settings?: GithubSettingsChange; refusal?: string }>;
+startLocalRunner(deps, { environment }): Promise<{ stop: () => Promise<void>; finished: Promise<void> }>;   // finished: the CLI waits on it in the foreground
+runnerStatus(deps, repository, plan): Promise<{ registered: boolean; online?: boolean; version?: string; latest?: string; behind?: boolean; visibility: string; forkPrApproval?: string }>;
 ```
 
 **Rules:**

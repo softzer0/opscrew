@@ -81,7 +81,7 @@ Retention keeps every version with an `opscrew-<env>` or `opscrew-<env>-previous
 | User | `deploy` | the user |
 | Lifetime | persistent, a systemd service | one session in the foreground (`--ephemeral`) |
 | Label | `opscrew-<app>-<env>` | `opscrew-<app>-<env>` |
-| Name | `<host>-<app>-<env>` | `<computer>-<app>-<env>` |
+| Name | `<8 hex of sha256(host)>-<app>-<env>`, so GitHub never sees the address | `<computer>-<app>-<env>` |
 | Registered by | the host plan step, with a token fetched at apply | `opscrew runner start`, with a token fetched at start |
 | Removed by | teardown (`config.sh remove`, else `DELETE /runners/{id}`) | stop (the API) |
 | Allowed | private repositories, or public ones whose fork-PR policy is `all_external_contributors` | the same |

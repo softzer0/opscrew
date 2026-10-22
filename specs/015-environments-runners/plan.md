@@ -270,7 +270,7 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
   2. downloads the pinned tarball and checks it;
   3. extracts it as `deploy`;
   4. runs `installdependencies.sh` (root);
-  5. runs `config.sh --unattended --url <repo> --token <stdin> --name <host>-<app>-<env> --labels opscrew-<app>-<env> --work _work` as `deploy`;
+  5. runs `config.sh --unattended --url <repo> --token <stdin> --name <8 hex of sha256(host)>-<app>-<env> --labels opscrew-<app>-<env> --work _work` as `deploy`;
   6. runs `svc.sh install deploy`, then `svc.sh start`.
 - **The registration token** reaches the script only on stdin, read into a variable that is unset afterwards. It is never in the plan: the plan says "a registration token fetched at apply".
 - **Inspect** reads the service's state and the runner's version.
