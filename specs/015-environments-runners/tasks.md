@@ -210,7 +210,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1508c [P] [US2] Per-environment names for Portainer and origin TLS, in `packages/connectors/portainer/src/**` and agents' Portainer and origin-TLS files, and the storage names in core's name rule
+- [X] T1508c [P] [US2] Per-environment names for Portainer and origin TLS, in `packages/connectors/portainer/src/**` and agents' Portainer and origin-TLS files, and the storage names in core's name rule
   - Owns: `packages/connectors/portainer/src/**`; agents' `provision/{deploy-branch,stack-plan,types,portainer-flow,origin-tls}.ts`, `drift/portainer.ts`, `drift/__fixtures__/portainer-project.ts`, `shared/portainer-stacks.ts`, `destroy/portainer.ts`; `packages/core/src/paths.ts`; their tests
   - Reads: data-model.md "Paths per environment"; iac-templates' `portainerDeployBranch`, `portainerStackTemplatePath`, `originPullPem`, `storageRootDir` (T1506b)
   - Depends: T1503, T1506b
@@ -236,6 +236,7 @@ Effort`.
     - **Moving prod's secrets into the `production` environment** deletes prod's old repository secrets of the same names. Otherwise a missing environment secret would fall back to them (T1505).
     - **A change of capability** shows the move of the secrets as a planned change.
     - **Destroying an environment** removes only its secrets and its GitHub environment (`github-settings`), and keeps every other environment's.
+    - **Destroy's text names the environment's own files:** Portainer's "What remains" lists `plan.cicd.workflowPath` (`opscrew-deploy-<env>.yml`), not prod's workflow file (T1508c).
     - **Tests:** both kinds, the move, destroy keeping the others, and no secret value in any output.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high
