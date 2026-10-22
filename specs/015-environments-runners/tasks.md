@@ -342,10 +342,10 @@ Effort`.
 
 ## Phase 5: Surfaces, the Docker pass and live tests
 
-- [ ] T1512 [P] Surfaces and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
-  - Owns: those paths (+ tests)
-  - Reads: contracts/environments.md "Commands"; plan.md "13."; quickstart.md
-  - Depends: T1508b, T1509, T1510, T1511, T1511b
+- [ ] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
+  - Owns: those paths (+ tests); the agents files named below, for their text only
+  - Reads: contracts/environments.md "Commands", contracts/runners.md, contracts/localhost.md; plan.md "13."; quickstart.md
+  - Depends: T1508b, T1509, T1510, T1511
   - Accept:
     - **The CLI:**
       - `--env` on provision, destroy, drift, status, verify, secure, retarget, secrets and promote;
@@ -354,10 +354,8 @@ Effort`.
       - an `environment` input on the matching tools;
       - `opscrew_env_add`, `opscrew_env_set`, `opscrew_env_list` and `opscrew_env_remove`;
       - `opscrew_promote`, with the approval dialog. The `promote` approval is never granted without the user.
-    - **The guide:** new pages `environments.md`, `localhost.md` (with Docker Desktop's licence note and the trust command per OS) and `runners.md`. `environments.md` says plainly that on a Free private repository GitHub environments hold secrets but have no branch rules, wait timers or reviewers, so any workflow naming the environment can read them and OpsCrew's approval is the only gate (spike result 1). It also says that without image signing, promotion's provenance check is a consistency check: anyone who can push to the GHCR package could forge it. Signing (`supplyChain.sign`) is the real gate (T1505's review). Environment sections where pages need them. The runbook per environment.
-    - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
     - **Messages that name a command** for a named environment include `--env <env>`: the Portainer template error, the edge-check hint and similar (T1506b's review).
-    - **Agents' text that names prod's branch or runtime folder** says the environment's own: `provision/publish.ts`, `verify/portainer.ts`, `secure/portainer.ts`, `drift/render.ts`, and `destroy/types.ts`'s doc comment. Use `portainerDeployBranch(plan)` and `runtimeDir(plan)`. Those agents files are in T1512's Owns for this change (T1508c's report).
+    - **Agents' text that names prod's branch or runtime folder** says the environment's own: `provision/publish.ts`, `verify/portainer.ts`, `secure/portainer.ts`, `drift/render.ts`, and `destroy/types.ts`'s doc comment. Use `portainerDeployBranch(plan)` and `runtimeDir(plan)`. Those agents files are in T1512a's Owns for this change (T1508c's report).
     - **Runners in the CLI** (T1511's report): `runner start` awaits `startLocalRunner`'s `finished` in the foreground and stops it on Ctrl+C; `status` and `secure` show `runnerStatusLines`.
     - **Localhost in the CLI** (T1510's report):
       - `--plan-only` prints `localPlanHash`;
@@ -369,13 +367,24 @@ Effort`.
       - the deploy-setup pull request's body lists the environment's runtime folder and plan file, not `opscrew/runtime/` and `opscrew/plan.yaml`;
       - the "state is not on this computer" hints name the environment's state folder, not `.opscrew/tfstate`.
     - **The plugin's deploy skill** learns environments and promotion. `node plugin/validate.mjs` passes.
-  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, `node plugin/validate.mjs` and `pnpm lint`
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/agents`, `node plugin/validate.mjs` and `pnpm lint`
+  - Effort: high
+
+- [ ] T1512b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`, and the token permission list
+  - Owns: those paths (+ tests); `GITHUB_TOKEN_PERMISSIONS` in `packages/connectors/github/src/github.ts` (+ its test)
+  - Reads: contracts/environments.md, contracts/runners.md, contracts/localhost.md; plan.md "8." (with its cloud part) and "13."; quickstart.md; research.md "Spike results"
+  - Depends: T1508b, T1509, T1510, T1511
+  - Accept:
+    - **The guide:** new pages `environments.md`, `localhost.md` (with Docker Desktop's licence note and the trust command per OS) and `runners.md`. `environments.md` says plainly that on a Free private repository GitHub environments hold secrets but have no branch rules, wait timers or reviewers, so any workflow naming the environment can read them and OpsCrew's approval is the only gate (spike result 1). It also says that without image signing, promotion's provenance check is a consistency check: anyone who can push to the GHCR package could forge it. Signing (`supplyChain.sign`) is the real gate (T1505's review). Environment sections where pages need them. The runbook per environment.
+    - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
+      The list names only what OpsCrew's code calls: check the connector before listing a permission (Variables, for example, only if some call uses it). Listing or reading an environment also needs Actions: Read (spike result).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-github` and `pnpm lint`
   - Effort: high
 
 - [ ] T1513 [P] The localhost Docker pass, and OpsCrew's own CI workflow, in `packages/cli/test/e2e/**`, `examples/**`, `.github/workflows/localhost.yml` (new)
   - Owns: those paths
   - Reads: quickstart.md "1." and "6."; research.md R5 and "Spike results" 7, 8
-  - Depends: T1510, T1512
+  - Depends: T1510, T1511b, T1512a
   - Accept:
     - **The Docker pass** (`OPSCREW_DOCKER_TESTS=1`): quickstart "1." with the real CLI on this computer, plus a second localhost environment beside the first.
       - The site answers through the local CA (trusted only inside the test, with `NODE_EXTRA_CA_CERTS`).
@@ -392,7 +401,7 @@ Effort`.
 - [ ] T1514 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md "2."–"5."; plan.md "15."
-  - Depends: T1512
+  - Depends: T1512a, T1512b, T1513
   - Accept:
     - **Hetzner environments and promotion** (`OPSCREW_E2E_ENVIRONMENTS=1`), quickstart "2." and "3.":
       - prod's plan hash and site stay unchanged under load;
@@ -432,14 +441,14 @@ Effort`.
 ## Dependencies
 
 {T1501a, T1501b} with T1502 (lead) alongside → {T1503, T1504, T1505, T1506, T1507} → {T1508a, T1508c} →
-{T1508b, T1509, T1510} → T1511 → T1511b → {T1512, then T1513} → T1514 → T1515 → T1516.
+{T1508b, T1509, T1510} → T1511 → {T1511b, T1512a, T1512b} → T1513 → T1514 → T1515 → T1516.
 
 **User stories:**
 - **US1:** T1501a, T1501b, T1506, T1507, T1510, T1513.
 - **US2:** T1501a, T1503, T1504, T1505, T1508a, T1508b, T1508c.
 - **US3:** T1504, T1505, T1509.
 - **US4:** T1501b, T1504, T1505, T1507, T1511, T1511b.
-- **US5:** T1511, T1512.
+- **US5:** T1511, T1512a, T1512b.
 
 ## Parallel waves
 
@@ -449,12 +458,12 @@ Effort`.
 3. T1508a, T1508c: environments, design and the phases' paths; the Portainer and origin-TLS names.
 4. T1508b, T1509, T1510: provision secrets with destroy; promote/; localhost/ with its branches.
 5. T1511, then T1511b (the runner on cloud servers).
-6. T1512, then T1513.
+6. T1511b, T1512a and T1512b together (T1512a edits only agents' message text; T1511b the runner wiring), then T1513.
 7. T1514, then T1515, then T1516.
 
 ## Implementation strategy
 
-- **MVP:** US1 (localhost) and US2 (environments). That is T1501a–T1503, T1506–T1508b, T1510, and the matching parts of T1512.
+- **MVP:** US1 (localhost) and US2 (environments). That is T1501a–T1503, T1506–T1508b, T1510, and the matching parts of T1512a and T1512b.
 - **Then:** US3 (promotion).
 - **Then:** US4 and US5 (runners).
 
