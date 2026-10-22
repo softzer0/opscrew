@@ -1,9 +1,10 @@
 import { posix } from "node:path";
-import type {
-  DeployPlan,
-  PackageManager,
-  ProjectFacts,
-  RuntimeLanguage,
+import {
+  type DeployPlan,
+  EnvironmentSchema,
+  type PackageManager,
+  type ProjectFacts,
+  type RuntimeLanguage,
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { imageName, SERVICE_SPECS, serviceSpec } from "../catalog";
@@ -56,19 +57,21 @@ export const NO_MINOR_UPDATES: readonly string[] = [imageName(serviceSpec("meili
 
 /**
  * The folders OpsCrew's Compose files are in (the cloudflared and Portainer ones one deeper):
- * prod's runtime folder, and a named environment's plan adds its own ({@link runtimeDir}). A
- * Portainer target's stack template is committed here on the default branch too, the only branch
- * Dependabot reads; the orphan deploy branch Portainer deploys holds only its copy. The shared
- * edge (`<runtimeDir>/edge`) is left out: its pins move only with OpsCrew's releases and its
- * version stamp, which decides which app's copy a server keeps.
+ * prod's runtime folder, then the other `environments`' by name, each its plan's
+ * {@link runtimeDir}. A Portainer target's stack template is committed here on the default branch
+ * too, the only branch Dependabot reads; the orphan deploy branch Portainer deploys holds only its
+ * copy. The shared edge (`<runtimeDir>/edge`) is left out: its pins move only with OpsCrew's
+ * releases and its version stamp, which decides which app's copy a server keeps.
  */
-function runtimeFolders(plan: DeployPlan): string[] {
-  const own = plan.environment?.name === undefined ? [] : [runtimeDir(plan)];
-  return ["opscrew/runtime", ...own].flatMap((dir) => [
-    `/${dir}`,
-    `/${dir}/cloudflared`,
-    `/${dir}/portainer`,
-  ]);
+function runtimeFolders(plan: DeployPlan, environments: readonly string[]): string[] {
+  const named = [...new Set(environments)].filter((name) => name !== "prod").sort();
+  const dirs = [undefined, ...named].map((name) =>
+    runtimeDir({
+      ...plan,
+      environment: name === undefined ? undefined : EnvironmentSchema.parse({ name }),
+    }),
+  );
+  return dirs.flatMap((dir) => [`/${dir}`, `/${dir}/cloudflared`, `/${dir}/portainer`]);
 }
 
 function update(
@@ -108,14 +111,18 @@ export type JavaBuild = "maven" | "gradle";
 /**
  * `.github/dependabot.yml`: weekly updates with minor and patch versions grouped, one entry per
  * detected ecosystem and folder, plus the Dockerfile (when the builder uses one), the Compose files
- * in `opscrew/runtime` (and a named environment's own runtime folder) and the GitHub Actions. Runtime base images get no major updates. A Java
- * app's entry needs its build tool, `javaBuild` (`pom.xml` or `build.gradle[.kts]`). The caller
- * adds the file only when the repository has no Dependabot configuration.
+ * in every environment's runtime folder and the GitHub Actions. Runtime base images get no major
+ * updates. A Java app's entry needs its build tool, `javaBuild` (`pom.xml` or
+ * `build.gradle[.kts]`). `environments` names the app's environments whose runtime folders it
+ * lists besides prod's (by default the plan's own): `environmentsOf`, so that every environment's
+ * provision writes the same file. The caller adds the file only when the repository has no
+ * Dependabot configuration.
  */
 export function renderDependabot(
   facts: ProjectFacts,
   plan: DeployPlan,
   javaBuild?: JavaBuild,
+  environments: readonly string[] = [plan.environment?.name ?? "prod"],
 ): RenderedFile {
   const entries: Record<string, unknown>[] = [];
   const seen = new Set<string>();
@@ -137,7 +144,7 @@ export function renderDependabot(
   if (builder === undefined || builder === "generated-dockerfile" || builder === "own-dockerfile") {
     entries.push(update("docker", { directory: rooted(posix.dirname(plan.app.dockerfile)) }, true));
   }
-  entries.push(update("docker-compose", { directories: runtimeFolders(plan) }, true));
+  entries.push(update("docker-compose", { directories: runtimeFolders(plan, environments) }, true));
   entries.push(update("github-actions", { directory: "/" }));
 
   const header = [

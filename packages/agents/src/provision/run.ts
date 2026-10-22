@@ -6,6 +6,8 @@ import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opsc
 import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { requireOwnHostnames } from "../environments/hostnames";
+import { requireSharedParts } from "../environments/shared-parts";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
 import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
@@ -256,9 +258,12 @@ async function provisionFlow(
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
 
-  // 1–2. Preconditions and credentials. A recovery copy another computer updated stops the run
-  // before any plan or change (FR-1417).
-  requireOwnCopy(await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
+  // 1–2. Preconditions and credentials. Another environment's plan must share prod's build,
+  // components and port, and serve hostnames of its own; a recovery copy another computer updated
+  // stops the run before any plan or change (FR-1417).
+  await requireSharedParts(deps.paths, plan);
+  await requireOwnHostnames(deps.paths, plan);
+  requireOwnCopy(deps.paths, await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
   const git = await requireGitRepo(deps);
   await requireDockerfile(deps, git, plan);
   if (plan.target.provider === "portainer") {

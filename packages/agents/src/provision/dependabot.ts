@@ -1,7 +1,12 @@
 import { join } from "node:path";
 import { exists, listText, readTextIfExists } from "@opscrew/core";
 import { type JavaBuild, type RenderedFile, renderDependabot } from "@opscrew/iac-templates";
-import { type DeployPlan, type ProjectFacts, readOptionalArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  environmentsOf,
+  type ProjectFacts,
+  readOptionalArtifact,
+} from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import { z } from "zod";
 import { findInApp } from "../adapt/build-files";
@@ -9,6 +14,9 @@ import type { PhaseDeps } from "../context";
 
 /** The places Dependabot reads its configuration from. */
 const DEPENDABOT_FILES = [".github/dependabot.yml", ".github/dependabot.yaml"];
+
+/** A named environment's runtime folder in OpsCrew's file, its name captured. */
+const ENVIRONMENT_RUNTIME = /\/opscrew\/environments\/([a-z][a-z0-9-]*)\/runtime$/gm;
 
 const DependabotConfigSchema = z.object({
   updates: z
@@ -45,11 +53,13 @@ async function javaBuildOf(root: string, facts: ProjectFacts): Promise<JavaBuild
 }
 
 /**
- * `.github/dependabot.yml` (`renderDependabot`, with a Java app's build tool) when the repository
- * has no Dependabot configuration (FR-1221), or has OpsCrew's file unchanged (written by a
- * `--plan-only` run, or committed earlier, so committing it again leaves it as it is); otherwise
- * the user's stays as it is, with the entries OpsCrew's would add that it lacks: an ecosystem with
- * a folder no entry of that ecosystem lists.
+ * `.github/dependabot.yml` (`renderDependabot`, with a Java app's build tool and every environment
+ * of the app, so each environment's provision renders the same file) when the repository has no
+ * Dependabot configuration (FR-1221), or has OpsCrew's file unchanged (written by a `--plan-only`
+ * run, or committed earlier, so committing it again leaves it as it is), or OpsCrew's file for the
+ * environments it names (committed before one was added or removed, so it is brought up to date);
+ * otherwise the user's stays as it is, with the entries OpsCrew's would add that it lacks: an
+ * ecosystem with a folder no entry of that ecosystem lists.
  */
 export async function dependabotStep(
   root: string,
@@ -58,13 +68,16 @@ export async function dependabotStep(
 ): Promise<DependabotStep> {
   const java =
     plan.app.build?.runtime.language === "java" ? await javaBuildOf(root, facts) : undefined;
-  const file = renderDependabot(facts, plan, java);
+  const file = renderDependabot(facts, plan, java, await environmentsOf(root));
   for (const path of DEPENDABOT_FILES) {
     const text = await readTextIfExists(join(root, path));
     if (text === undefined) continue;
-    if (path === file.path && text.replace(/\r\n/g, "\n") === file.content) {
-      return { action: "write", file };
-    }
+    const content = text.replace(/\r\n/g, "\n");
+    const named = [...content.matchAll(ENVIRONMENT_RUNTIME)].map((match) => match[1] as string);
+    const ours =
+      content === file.content ||
+      content === renderDependabot(facts, plan, java, ["prod", ...named]).content;
+    if (path === file.path && ours) return { action: "write", file };
     let config: z.infer<typeof DependabotConfigSchema>;
     try {
       config = DependabotConfigSchema.parse(parse(text) ?? {});

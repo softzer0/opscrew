@@ -8,7 +8,7 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { planProvider, providerProfile } from "../providers";
 import {
-  COPY_PATH,
+  copyPath,
   keyHandoverNote,
   type RefreshRecoveryOptions,
   refreshRecoveryCopy,
@@ -22,8 +22,9 @@ export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
 /** The review checklist item of every deploy-setup pull request about the workflow's actions. */
 const PINNED_ACTIONS_CHECK = "- [ ] The workflow only uses pinned, first-party actions.";
 
-/** The pull request's line for the recovery copy, when it is in the pull request. */
-const RECOVERY_COPY_LINE = `- \`${COPY_PATH}\`: the encrypted recovery copy of what OpsCrew keeps on your computer for this app (its generated secrets, the deploy key, the infrastructure state and its records). Only your age key opens it; the names of the files in it are readable. \`opscrew secrets restore\` rebuilds them on another computer.`;
+/** The pull request's line about the recovery copy at `path`, when it is in the pull request. */
+const recoveryCopyLine = (path: string) =>
+  `- \`${path}\`: the encrypted recovery copy of what OpsCrew keeps on your computer for this app (its generated secrets, the deploy key, the infrastructure state and its records). Only your age key opens it; the names of the files in it are readable. \`opscrew secrets restore\` rebuilds them on another computer.`;
 
 export interface PublishResult {
   /** The branch holding the files: the current one when nothing was committed. */
@@ -62,8 +63,8 @@ interface DeploySetupBodyOptions {
   secretsStored?: boolean;
   /** Dependabot's configuration: added in this pull request, or the user's and what it lacks. */
   dependabot?: DependabotStep;
-  /** Whether the recovery copy (`opscrew/secrets.sops.json`) is in the pull request. */
-  recoveryCopy?: boolean;
+  /** The recovery copy's path (`copyPath`) when it is in the pull request. */
+  recoveryCopy?: string;
 }
 
 /**
@@ -97,7 +98,7 @@ export function deploySetupPullRequestBody(
       : "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
-    ...(options.recoveryCopy === true ? [RECOVERY_COPY_LINE] : []),
+    ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, ready, host),
@@ -185,7 +186,7 @@ function portainerPullRequestBody(
     `- \`opscrew/runtime/compose.yaml\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`opscrew-deploy\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`opscrew-deploy\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran `opscrew provision`.",
-    ...(options.recoveryCopy === true ? [RECOVERY_COPY_LINE] : []),
+    ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, "The app's stacks are set up in your Portainer", where),
@@ -517,10 +518,11 @@ export async function publishDeploySetup(
       : { branch: await localDeployBranch(git, plan, phase) });
   const recovery = await recoveryCopyFiles(deps, input);
   const paths = [...input.paths, ...recovery.map((file) => file.path)];
+  const copy = copyPath(deps.paths);
   const body = deploySetupPullRequestBody(plan, deps.version, {
     secretsStored: input.secretsStored !== false,
     ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
-    recoveryCopy: recovery.some((file) => file.path === COPY_PATH),
+    ...(recovery.some((file) => file.path === copy) ? { recoveryCopy: copy } : {}),
   });
   return commitAndPropose(deps, {
     git,

@@ -4,10 +4,24 @@
  */
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { isRecord, type ProjectPaths, type Redactor, readTextIfExists } from "@opscrew/core";
+import {
+  isRecord,
+  type ProjectPaths,
+  type Redactor,
+  readTextIfExists,
+  toPosixRelative,
+} from "@opscrew/core";
 
-/** The copy in the repository (committed). */
+/** Prod's copy in the repository (committed); {@link copyPath} gives each environment's. */
 export const COPY_PATH = "opscrew/secrets.sops.json";
+
+/**
+ * The environment's copy in the repository, relative to its root: {@link COPY_PATH} for prod,
+ * `opscrew/environments/<env>/secrets.sops.json` for another, beside its plan.
+ */
+export function copyPath(paths: Pick<ProjectPaths, "root" | "artefactsDir">): string {
+  return toPosixRelative(paths.root, join(paths.artefactsDir, "secrets.sops.json"));
+}
 
 /** From the project's folder in OpsCrew's home (`~/.opscrew/projects/<id>/`). */
 const HOME_FILES = [

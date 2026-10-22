@@ -396,16 +396,18 @@ export function answersToOwnServer(
 
 /**
  * Records the answers in OpsCrew's local state (`.opscrew/server.json` → `own`, gitignored)
- * through `recordOwnServer`. For the same address and port the pinned host key and the public
+ * through `recordOwnServer`. For the same address and port as `pinned` (by default the connection
+ * recorded there; another environment's on the same server) the pinned host key and the public
  * addresses are kept; when either changed they are dropped, so the next connection shows the new
  * server's host key for confirmation again.
  */
 export async function recordOwnServerAnswers(
   paths: ProjectPaths,
   answers: OwnServerAnswers,
+  pinned?: OwnServerConnection,
 ): Promise<void> {
   const server = OwnServerAnswersSchema.parse(answers);
-  const pinned = await readOwnServer(paths);
+  pinned ??= await readOwnServer(paths);
   const kept =
     pinned !== undefined && sameHost(pinned.host, server.host) && pinned.port === server.port
       ? {

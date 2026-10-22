@@ -236,7 +236,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   // The app's Cloudflare record: its certificates, or how to fix it when it is damaged.
   try {
-    checked.push(...recordCertificateCheck(await readCloudflareRecord(deps.paths), deps.clock));
+    checked.push(
+      ...recordCertificateCheck(plan, await readCloudflareRecord(deps.paths), deps.clock),
+    );
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     checked.push(
@@ -315,8 +317,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
         ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),
         ...(sshPort !== undefined ? { sshPort } : {}),
       });
-  await writeRenderedFiles(paths.root, [runbook]);
+  // The environment's own runbook, beside its plan (prod's `opscrew/RUNBOOK.md`).
   const runbookPath = toPosixRelative(paths.root, paths.files.runbook);
+  await writeRenderedFiles(paths.root, [{ ...runbook, path: runbookPath }]);
 
   const summary = summarizeChecks(checks);
   if (passed) {

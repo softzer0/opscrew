@@ -237,9 +237,9 @@ async function loadPreviousServer(
  * certificate confirmed and the environments listed through `options.portainer`, then the rest.
  * Nothing is written here.
  */
-async function portainerAnswers(
+export async function portainerAnswers(
   deps: PhaseDeps,
-  options: InterviewOptions,
+  options: Pick<InterviewOptions, "askPortainer" | "portainer">,
   given: PortainerAnswersGiven,
   context: PortainerContext,
 ): Promise<PortainerAnswers> {

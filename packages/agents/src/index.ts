@@ -6,6 +6,7 @@ export * from "./destroy";
 export * from "./dns";
 export * from "./domain";
 export * from "./drift";
+export * from "./environments";
 export * from "./init";
 export * from "./interview";
 export * from "./portainer";

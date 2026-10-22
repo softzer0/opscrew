@@ -22,15 +22,17 @@ import { parse } from "yaml";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { readValidJson } from "../shared/files";
-import { COPY_PATH } from "./files";
+import { copyPath } from "./files";
 
 /** The creation rule's file in the repository (committed). */
 export const SOPS_CONFIG_PATH = "opscrew/.sops.yaml";
 
-/** The `.gitattributes` lines that keep the copy and its rule LF on every computer. */
-const GITATTRIBUTES_LINES = [`${COPY_PATH} text eol=lf`, `${SOPS_CONFIG_PATH} text eol=lf`];
+/** The `.gitattributes` lines that keep the environment's copy and its rule LF on every computer. */
+function gitattributesLines(paths: Pick<ProjectPaths, "root" | "artefactsDir">): string[] {
+  return [`${copyPath(paths)} text eol=lf`, `${SOPS_CONFIG_PATH} text eol=lf`];
+}
 
-/** The creation rule's `path_regex`, which matches the copy wherever sops is run. */
+/** The creation rule's `path_regex`, which matches every environment's copy wherever sops is run. */
 const COPY_RULE = "secrets\\.sops\\.json$";
 
 const HEX64 = z.string().regex(/^[0-9a-f]{64}$/);
@@ -111,21 +113,27 @@ export function folderCopyPath(folder: string, app: string): string {
   return join(folder, `${app}.sops.json`);
 }
 
-/** The repository's copy (`opscrew/secrets.sops.json` in this checkout), if there is one. */
-export function readRepositoryCopy(paths: Pick<ProjectPaths, "root">): Promise<string | undefined> {
-  return readTextIfExists(join(paths.root, COPY_PATH));
+/** The environment's copy in this checkout ({@link copyPath}), if there is one. */
+export function readRepositoryCopy(
+  paths: Pick<ProjectPaths, "root" | "artefactsDir">,
+): Promise<string | undefined> {
+  return readTextIfExists(join(paths.root, copyPath(paths)));
 }
 
 /**
- * Stops with `SECRETS_COPY_CHANGED_ELSEWHERE` when the repository's copy is not the one this
- * computer last wrote or restored from: another computer updated it, so writing this computer's
- * files over it could lose that computer's secrets (FR-1417).
+ * Stops with `SECRETS_COPY_CHANGED_ELSEWHERE` when the environment's copy in the repository is not
+ * the one this computer last wrote or restored from: another computer updated it, so writing this
+ * computer's files over it could lose that computer's secrets (FR-1417).
  */
-export function requireOwnCopy(repositoryCopy: string | undefined, record: RecoveryRecord): void {
+export function requireOwnCopy(
+  paths: Pick<ProjectPaths, "root" | "artefactsDir">,
+  repositoryCopy: string | undefined,
+  record: RecoveryRecord,
+): void {
   if (repositoryCopy === undefined || sha256Hex(repositoryCopy) === record.copySha256) return;
   throw new OpsCrewError(
     "SECRETS_COPY_CHANGED_ELSEWHERE",
-    `${COPY_PATH} in the repository is not the copy this computer last wrote: another computer updated it, so OpsCrew did not update it from this computer's files.`,
+    `${copyPath(paths)} in the repository is not the copy this computer last wrote: another computer updated it, so OpsCrew did not update it from this computer's files.`,
     {
       hint: "Run `opscrew secrets restore` first: it shows which files and generated values differ, by name only, and lets you choose which side to keep.",
     },
@@ -182,13 +190,16 @@ export function sopsConfigFile(recipients: readonly string[]): RenderedFile {
   };
 }
 
-/** `.gitattributes` with the copy's lines added, or `undefined` when it has them already. */
+/**
+ * `.gitattributes` with the environment's copy's lines added, or `undefined` when it has them
+ * already.
+ */
 export async function gitattributesFile(
-  paths: Pick<ProjectPaths, "root">,
+  paths: Pick<ProjectPaths, "root" | "artefactsDir">,
 ): Promise<RenderedFile | undefined> {
   const current = (await readTextIfExists(join(paths.root, ".gitattributes"))) ?? "";
   const lines = new Set(current.split(/\r?\n/).map((line) => line.trim()));
-  const missing = GITATTRIBUTES_LINES.filter((line) => !lines.has(line));
+  const missing = gitattributesLines(paths).filter((line) => !lines.has(line));
   if (missing.length === 0) return undefined;
   const head = current === "" || current.endsWith("\n") ? current : `${current}\n`;
   return {
@@ -199,9 +210,12 @@ export async function gitattributesFile(
   };
 }
 
-/** The repository's copy as a file for the pull request. */
-export function copyFile(copy: string): RenderedFile {
-  return { path: COPY_PATH, content: copy, kind: "doc", mode: 0o644 };
+/** The environment's copy ({@link copyPath}) as a file for the pull request. */
+export function copyFile(
+  paths: Pick<ProjectPaths, "root" | "artefactsDir">,
+  copy: string,
+): RenderedFile {
+  return { path: copyPath(paths), content: copy, kind: "doc", mode: 0o644 };
 }
 
 /** True when `file` is `dir` or lies below it. */

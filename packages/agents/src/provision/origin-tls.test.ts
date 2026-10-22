@@ -332,7 +332,7 @@ describe("what provision says about TLS", () => {
     expect(warning).toContain("OpsCrew does not replace it by itself");
     expect(warning).toContain("opscrew/runtime/edge/tls/pull.pem");
     // The same warning for status and secure.
-    expect(clientCertificateWarning(near, clock)).toBe(warning);
+    expect(clientCertificateWarning(dnsOnly, near, clock)).toBe(warning);
     const far = recordWith({
       client: {
         ...(near.tls?.client as NonNullable<NonNullable<SharedRecord["tls"]>["client"]>),

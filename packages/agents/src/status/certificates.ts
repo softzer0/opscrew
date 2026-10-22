@@ -64,6 +64,7 @@ export function proxyRenewalAdvice(plan: DeployPlan, failure: string | undefined
  * certificate, which OpsCrew never replaces by itself (`clientCertificateWarning`, with the steps).
  */
 export function recordCertificateWarnings(
+  plan: DeployPlan,
   record: Pick<SharedRecord, "tls"> | undefined,
   clock: Clock,
 ): string[] {
@@ -74,7 +75,7 @@ export function recordCertificateWarnings(
       `The app's Cloudflare origin certificate for ${listText(origin.hostnames)} expires on ${origin.expiresAt.slice(0, 10)}. Run \`opscrew provision\`: it replaces the certificate, and the deploy brings the server the new one.`,
     );
   }
-  const client = clientCertificateWarning(record, clock);
+  const client = clientCertificateWarning(plan, record, clock);
   if (client !== undefined) warnings.push(client);
   return warnings;
 }
@@ -91,12 +92,13 @@ export const RECORD_CERTIFICATES = {
  * ({@link recordCertificateWarnings}); none when the app has no origin TLS.
  */
 export function recordCertificateCheck(
+  plan: DeployPlan,
   record: Pick<SharedRecord, "tls"> | undefined,
   clock: Clock,
 ): CheckResult[] {
   const { origin, client } = record?.tls ?? {};
   if (origin === undefined && client === undefined) return [];
-  const warnings = recordCertificateWarnings(record, clock);
+  const warnings = recordCertificateWarnings(plan, record, clock);
   const until = (what: string, at: string) => `the ${what} certificate until ${at.slice(0, 10)}`;
   const valid = [
     ...(origin !== undefined ? [until("origin", origin.expiresAt)] : []),
@@ -192,7 +194,7 @@ export async function tlsStatusReport(
   const record = await readCloudflareRecord(deps.paths).catch(() => undefined);
   const lines = [proxyLine(plan)];
   const certificates: string[] = [];
-  const warnings = recordCertificateWarnings(record, deps.clock);
+  const warnings = recordCertificateWarnings(plan, record, deps.clock);
   const { origin, client } = record?.tls ?? {};
   if (origin !== undefined) {
     certificates.push(

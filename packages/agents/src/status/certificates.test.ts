@@ -168,8 +168,9 @@ describe("tlsStatusReport (FR-1462)", () => {
 
 describe("the certificates OpsCrew manages (FR-1406)", () => {
   it("warns about the record's certificates below 30 days, with the steps for the client one", () => {
-    expect(recordCertificateWarnings(record(), clock)).toEqual([]);
+    expect(recordCertificateWarnings(testPlan(), record(), clock)).toEqual([]);
     const [origin, client] = recordCertificateWarnings(
+      testPlan(),
       record("2026-11-15T00:00:00.000Z", "2026-11-01T00:00:00.000Z"),
       clock,
     );

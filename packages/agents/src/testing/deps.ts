@@ -96,6 +96,8 @@ export const forbiddenFetch: FetchLike = async (input) => {
 export interface TestPhaseDepsOptions extends Partial<Omit<PhaseDeps, "paths" | "approvals">> {
   /** Project root; a fresh temp dir when omitted. */
   root?: string;
+  /** The app's environment the paths belong to (default prod). */
+  environment?: string;
   approvalHandler?: ApprovalHandler;
 }
 
@@ -115,7 +117,7 @@ export async function createTestPhaseDeps(
 ): Promise<TestPhaseDeps> {
   const root = options.root ?? (await mkdtemp(join(tmpdir(), "opscrew-test-")));
   const env = options.env ?? { OPSCREW_HOME: join(root, ".home-opscrew") };
-  const paths = resolveProjectPaths(root, { env });
+  const paths = resolveProjectPaths(root, { env, environment: options.environment });
   const audit = new MemoryAuditLog();
   const approvalHandler = options.approvalHandler ?? new ScriptedApprovalHandler();
   const clock = options.clock ?? { now: () => new Date("2026-10-11T12:00:00.000Z") };
@@ -125,7 +127,7 @@ export async function createTestPhaseDeps(
     audit,
     clock,
   });
-  const { root: _root, approvalHandler: _h, ...rest } = options;
+  const { root: _root, approvalHandler: _h, environment: _environment, ...rest } = options;
   return {
     paths,
     reporter: new MemoryReporter(),

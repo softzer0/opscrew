@@ -19,7 +19,7 @@ import { CAA_ISSUERS, edgeProxy } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { readCloudflareRecord, sharedCloudflareClient } from "../provision/shared-cloudflare";
-import { COPY_PATH } from "../secrets";
+import { copyPath } from "../secrets";
 import { readRecord } from "../secrets/store";
 import { checkResult, repositoryPrivate } from "../shared";
 import { proxyCertificateHosts, recordCertificateCheck } from "../status/certificates";
@@ -155,7 +155,8 @@ export function behindCloudflare(plan: DeployPlan): boolean {
  * in the repository.
  */
 async function copyCheck(deps: PhaseDeps): Promise<CheckResult[]> {
-  if (!(await exists(join(deps.paths.root, COPY_PATH)))) return [];
+  const copy = copyPath(deps.paths);
+  if (!(await exists(join(deps.paths.root, copy)))) return [];
   const id = "secrets-copy-repository";
   const title = "The secrets copy is in a repository you chose for it";
   const isPrivate = await repositoryPrivate(deps);
@@ -196,7 +197,7 @@ async function copyCheck(deps: PhaseDeps): Promise<CheckResult[]> {
       title,
       "high",
       "warn",
-      `The repository became public with the encrypted secrets copy in it (${COPY_PATH}): anyone can keep a copy of the encrypted file and try to open it later, and the names of the files it holds are readable.`,
+      `The repository became public with the encrypted secrets copy in it (${copy}): anyone can keep a copy of the encrypted file and try to open it later, and the names of the files it holds are readable.`,
       {
         remediation:
           "Make the repository private again if it should not be public. If it stays public, keep your age key safe (only it opens the copy); to be sure, run `opscrew secrets rotate` and then change the secrets themselves, since older commits keep the old copy.",
@@ -217,7 +218,7 @@ export async function settingsChecks(
   services: { cloudflare?: CloudflareClient },
 ): Promise<CheckResult[]> {
   const record = await readCloudflareRecord(deps.paths);
-  const results = [...recordCertificateCheck(record, deps.clock), ...permissionGap(record)];
+  const results = [...recordCertificateCheck(plan, record, deps.clock), ...permissionGap(record)];
   if (record !== undefined && plan.dns.provider === "cloudflare") {
     try {
       const client = sharedCloudflareClient(

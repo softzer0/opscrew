@@ -15,14 +15,24 @@ import {
   DeployPlanSchema,
   type DeployProvider,
   type DesignOption,
+  EnvironmentSchema,
   type ProjectFacts,
   type Region,
   type Requirements,
   readArtifact,
+  readOptionalArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
+import { requireOwnHostnames } from "../environments/hostnames";
+import {
+  environmentInfraDir,
+  environmentPaths,
+  environmentWorkflowPath,
+} from "../environments/paths";
+import { readEnvironmentRequirements } from "../environments/requirements";
+import { withSharedParts } from "../environments/shared-parts";
 import {
   type OwnServerFacts,
   providerProfile,
@@ -106,6 +116,11 @@ export interface RunDesignOptions {
   catalog?: ComputeCatalog;
   /** A server the user owns: what inspection found and how the internet reaches it. */
   ownServer?: OwnServerDesignInput;
+  /**
+   * A new environment's deploy source and runner (`opscrew env add`), written into its first
+   * plan; a later design keeps the plan's own.
+   */
+  environment?: Pick<NonNullable<DeployPlan["environment"]>, "deploySource" | "runner">;
 }
 
 /**
@@ -152,9 +167,16 @@ export interface DesignResult {
  * options on the requested provider (live catalogue when its token verifies, otherwise the dated
  * static table with a warning), lets the user choose (or takes `optionId` / the recommendation),
  * derives the code changes and writes `opscrew/plan.yaml`. Marks the `design` phase.
+ *
+ * For an environment other than prod (`deps.paths.environment`) the requirements are prod's with
+ * the environment's own answers over them, and the plan (`opscrew/environments/<env>/plan.yaml`)
+ * takes what every environment shares from prod's plan: the components are designed from it and
+ * its shared parts copied (`withSharedParts`). Its app name is `<app>-<env>`, with its own
+ * infrastructure root, workflow and `environment` block. A hostname another environment uses
+ * stops design.
  * @throws OpsCrewError `PHASE_PRECONDITION` (nothing written) when the plan has a live deployment
- * on another provider than the one requested, and (before reading anything else) while
- * `opscrew retarget` is moving the deployment.
+ * on another provider than the one requested, before prod's plan exists for another environment,
+ * and (before reading anything else) while `opscrew retarget` is moving the deployment.
  */
 export async function runDesign(
   deps: PhaseDeps,
@@ -219,6 +241,7 @@ export async function previewDesignOptions(
   options: PreviewDesignOptions = {},
 ): Promise<DesignPreview> {
   const inputs = await readInputs(deps, options.facts);
+  const shared = await sharedPartsSource(deps);
   const warnings: string[] = [];
   const previous = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   const move = previous === undefined ? undefined : moveInProgress(previous);
@@ -235,7 +258,30 @@ export async function previewDesignOptions(
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
   }
-  return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer, previous);
+  return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer, {
+    previous,
+    shared,
+  });
+}
+
+/**
+ * For an environment other than prod: prod's plan, which the environment takes what every
+ * environment shares from; `undefined` for prod.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when prod's plan does not exist yet.
+ */
+async function sharedPartsSource(deps: PhaseDeps): Promise<DeployPlan | undefined> {
+  const name = deps.paths.environment;
+  if (name === "prod") return undefined;
+  const prodPlan = await readOptionalArtifact(
+    "plan",
+    environmentPaths(deps.paths, "prod").files.plan,
+  );
+  if (prodPlan !== undefined) return prodPlan;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The ${name} environment takes what every environment shares (the build, the components, the port) from prod's plan, and opscrew/plan.yaml does not exist yet. Nothing was written.`,
+    { hint: `Run \`opscrew design\` for prod first, then \`opscrew design --env ${name}\`.` },
+  );
 }
 
 /**
@@ -377,16 +423,17 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   deps.reporter.step("Designing deployment options");
   const resolvedFacts =
     facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
-  const requirements = await readArtifact("requirements", paths.files.requirements);
+  const requirements = await readEnvironmentRequirements(paths);
   if (requirements.provider === "localhost") throw localhostNotSupported("`opscrew design`");
   await requireChosenApp(paths.root, resolvedFacts, requirements);
   return { facts: resolvedFacts, requirements };
 }
 
 /**
- * What runs next to the app ({@link designComponents}), its warnings said, after refusing an
- * SQLite folder a persistent volume cannot take (the folder the database is moved to, when the
- * framework reads its path from the environment, `sqliteMove`).
+ * What runs next to the app ({@link designComponents}, keeping the edits of `previous`: the
+ * plan's own, or prod's for another environment), its warnings said, after refusing an SQLite
+ * folder a persistent volume cannot take (the folder the database is moved to, when the framework
+ * reads its path from the environment, `sqliteMove`).
  */
 async function componentsFor(
   deps: PhaseDeps,
@@ -402,13 +449,22 @@ async function componentsFor(
   return { components: designed.components, lines: designed.lines };
 }
 
+/**
+ * The plans design starts from: the environment's own `previous` plan, and for an environment
+ * other than prod prod's plan (`shared`), whose shared parts it takes.
+ */
+interface PlanBasis {
+  previous: DeployPlan | undefined;
+  shared: DeployPlan | undefined;
+}
+
 async function priceOptions(
   deps: PhaseDeps,
   inputs: DesignInputs,
   override: ComputeCatalog | undefined,
   warnings: string[],
   ownServer: OwnServerDesignInput | undefined,
-  previous: DeployPlan | undefined,
+  { previous, shared }: PlanBasis,
 ): Promise<DesignPreview> {
   const { facts, requirements } = inputs;
   // The user's own server is the catalogue's only offer; its vCPUs decide whether Dragonfly is
@@ -422,7 +478,13 @@ async function priceOptions(
         }).catalog())
       : undefined;
   const vcpus = (await ownCatalog?.listOffers())?.[0]?.vcpus;
-  const designed = await componentsFor(deps, inputs, previous, warner(deps, warnings), vcpus);
+  const designed = await componentsFor(
+    deps,
+    inputs,
+    shared ?? previous,
+    warner(deps, warnings),
+    vcpus,
+  );
   if (requirements.provider === "portainer") {
     return pricePortainer(deps, inputs, warnings, designed);
   }
@@ -511,6 +573,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const warn = warner(deps, warnings);
 
   const inputs = await readInputs(deps);
+  const shared = await sharedPartsSource(deps);
   const previous = await readArtifact("plan", paths.files.plan).catch((error: unknown) => {
     if (!(isUserFacingError(error) && error.code === "ARTIFACT_MISSING")) {
       warn(
@@ -540,7 +603,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     ownServer = { ...ownServer, access, serving };
   }
 
-  const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer, previous);
+  const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer, {
+    previous,
+    shared,
+  });
   const { facts, requirements, priceSource, components } = preview;
   const designOptions = preview.options;
   const budget = requirements.budgetMonthly;
@@ -549,7 +615,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const chosen = await pick(designOptions, options);
   const build = chooseBuilder(
     facts,
-    previous,
+    shared ?? previous,
     chosen.target.architecture === "arm" ? "arm64" : "amd64",
   );
   if ("refused" in build) {
@@ -587,7 +653,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     );
     fresh = planFor({ ...components, processes: { ...components.processes, cron } });
   }
-  const kept = previous ? keepPlanSettings(fresh, previous, requirements) : fresh;
+  const named =
+    shared === undefined
+      ? fresh
+      : environmentNames(fresh, shared, paths.environment, options.environment);
+  const own = previous ? keepPlanSettings(named, previous, requirements) : named;
+  const kept = shared === undefined ? own : environmentPlan(own, shared, paths);
   // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
   // a newer interview it is written anyway: its date then says the answers are in it, so the next
   // design keeps what the user edits in plan.yaml instead of taking the answers again.
@@ -615,6 +686,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     const owner = sqliteOwnerWarning(previous, plan);
     if (owner !== undefined) warn(owner);
   }
+  await requireOwnHostnames(paths, plan);
   if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
@@ -660,7 +732,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const additionLines = additions.lines.map(say);
   for (const line of additionLines) reporter.info(line);
   for (const warning of additions.warnings) warn(warning);
-  reporter.info("Next: run `opscrew adapt` to prepare the code in a pull request.");
+  reporter.info(
+    shared === undefined
+      ? "Next: run `opscrew adapt` to prepare the code in a pull request."
+      : `Next: run \`opscrew provision --env ${paths.environment}\`. The code is prod's, which \`opscrew adapt\` prepares.`,
+  );
   await deps.state.markPhase(
     "design",
     "ok",
@@ -691,6 +767,51 @@ function samePlan(a: DeployPlan, b: DeployPlan): boolean {
     cost: { ...plan.cost, asOf: "" },
   });
   return canonicalJson(undated(a)) === canonicalJson(undated(b));
+}
+
+/**
+ * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>`, its own
+ * workflow and infrastructure root, and its `environment` block (with the deploy source and runner
+ * `opscrew env add` chose). An earlier plan's root and block are kept over these
+ * (`keepPlanSettings`).
+ */
+function environmentNames(
+  plan: DeployPlan,
+  prodPlan: DeployPlan,
+  name: string,
+  environment: RunDesignOptions["environment"],
+): DeployPlan {
+  return {
+    ...plan,
+    environment: EnvironmentSchema.parse({ ...environment, name }),
+    app: { ...plan.app, name: `${prodPlan.app.name}-${name}` },
+    infra: { ...plan.infra, dir: environmentInfraDir(name) },
+    cicd: { ...plan.cicd, workflowPath: environmentWorkflowPath(name) },
+  };
+}
+
+/**
+ * The plan of the environment `paths` belong to: `plan` with prod's shared parts
+ * (`withSharedParts`), validated.
+ * @throws OpsCrewError `INVALID_INPUT` when the result is no valid plan (for example a runner its
+ * target does not take), naming the field.
+ */
+function environmentPlan(
+  plan: DeployPlan,
+  prodPlan: DeployPlan,
+  paths: PhaseDeps["paths"],
+): DeployPlan {
+  const name = paths.environment;
+  const parsed = DeployPlanSchema.safeParse(withSharedParts(plan, prodPlan));
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `OpsCrew cannot design the ${name} environment: ${issue?.path.join(".") || "plan"} ${issue?.message ?? "is not valid"}. ${toPosixRelative(paths.root, paths.files.plan)} was not changed.`,
+    {
+      hint: `Fix the field shown above in ${toPosixRelative(paths.root, paths.files.plan)}, or change the environment's answers in ${toPosixRelative(paths.root, paths.files.requirements)}, then run \`opscrew design --env ${name}\` again.`,
+    },
+  );
 }
 
 /**
@@ -868,7 +989,7 @@ async function requireChosenApp(
 
 /**
  * Carries what the user and later phases put into the previous plan over to the new one:
- * `deployment`, `approvals`, `security`, `infra`, `app.maxBodyMb`, the server's proxy
+ * `deployment`, `approvals`, `security`, `infra`, `environment`, `app.maxBodyMb`, the server's proxy
  * (`target.edge`, between server targets) and the status of code changes that are still
  * the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the DNS proxy
  * setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
@@ -934,6 +1055,7 @@ function keepPlanSettings(
       status: statuses.get(key(change)) ?? change.status,
     })),
     infra: previous.infra,
+    ...(previous.environment === undefined ? {} : { environment: previous.environment }),
     security: previous.dns.proxied === fresh.dns.proxied ? previous.security : security,
     approvals: previous.approvals,
     deployment: previous.deployment,

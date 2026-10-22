@@ -15,6 +15,7 @@ import {
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { readEnvironmentRequirements } from "../environments/requirements";
 import {
   diffRenderedFiles,
   ensureDeployKey,
@@ -32,9 +33,10 @@ import { type OriginTlsValues, originTlsFor, pullPemFile, readOriginTlsValues } 
 import { readCloudflareRecord } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
+/** The environment's requirements (`readEnvironmentRequirements`); `undefined` without prod's. */
 export async function readRequirements(deps: PhaseDeps): Promise<Requirements | undefined> {
   try {
-    return await readArtifact("requirements", deps.paths.files.requirements);
+    return await readEnvironmentRequirements(deps.paths);
   } catch (error) {
     if ((error as { code?: string }).code === "ARTIFACT_MISSING") return undefined;
     throw error;
@@ -137,7 +139,7 @@ export function deploymentFiles(
   const files = [...renderDeployment(plan, ctx), ...renderStorage(plan, ctx)];
   if (usesTunnel(plan)) files.push(renderTunnelConnectorCompose(plan));
   if (ctx.originTls !== undefined && plan.target.provider !== "portainer") {
-    files.push(pullPemFile(values));
+    files.push(pullPemFile(plan, values));
   }
   return files;
 }

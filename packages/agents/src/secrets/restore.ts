@@ -13,7 +13,7 @@ import {
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
-  COPY_PATH,
+  copyPath,
   differingGeneratedNames,
   fileMode,
   isCopyPath,
@@ -51,11 +51,11 @@ async function readCopyToRestore(
   const file = from === undefined ? undefined : resolve(deps.paths.root, from);
   const encrypted =
     file === undefined ? await readRepositoryCopy(deps.paths) : await readTextIfExists(file);
-  if (encrypted !== undefined) return { encrypted, name: file ?? COPY_PATH };
+  if (encrypted !== undefined) return { encrypted, name: file ?? copyPath(deps.paths) };
   throw file === undefined
     ? new OpsCrewError(
         "PHASE_PRECONDITION",
-        `There is no recovery copy (${COPY_PATH}) in this checkout, so there is nothing to restore.`,
+        `There is no recovery copy (${copyPath(deps.paths)}) in this checkout, so there is nothing to restore.`,
         {
           hint: "Switch to the branch that has it (usually the latest main: `git pull`), or name another copy, such as the folder copy, then try again.",
         },
@@ -68,7 +68,7 @@ async function readCopyToRestore(
 /**
  * Rebuilds this computer's files from the recovery copy with the user's age key
  * (`input.identity`: the key, or the text of the key file OpsCrew wrote), decrypted by sops
- * through pipes (FR-1413). The copy is the repository's (`opscrew/secrets.sops.json`), or
+ * through pipes (FR-1413). The copy is the environment's in the repository (`copyPath`), or
  * `input.from`, such as the folder copy. Only the copy's allowed paths are accepted. A local file
  * that exists and differs stops the restore before any write and is listed, with the names of the
  * generated values that differ, never values; `onConflict` decides: `use-copy` writes the copy's
@@ -85,7 +85,7 @@ export async function restoreRecoveryCopy(
   const { encrypted, name } = await readCopyToRestore(deps, input.from);
   const plaintext = await sopsDecrypt(
     await sopsBinary(deps),
-    { encrypted, identity, filename: COPY_PATH },
+    { encrypted, identity, filename: copyPath(deps.paths) },
     { exec: deps.runner, redactor: deps.redactor, env: deps.env },
   );
   const parsed = PlaintextSchema.safeParse(JSON.parse(plaintext));

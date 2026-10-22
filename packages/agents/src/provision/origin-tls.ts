@@ -26,7 +26,7 @@ import {
   EDGE_PROXIES,
   type EdgeProxy,
   edgeProxy,
-  ORIGIN_PULL_PEM,
+  originPullPem,
   PORTAINER_STACK_VARIABLES,
   type RenderedFile,
   siteHosts,
@@ -324,9 +324,12 @@ export function portainerOriginTls(values: OriginTlsValues): string {
   return Buffer.from(pem, "utf8").toString("base64");
 }
 
-/** `opscrew/runtime/edge/tls/pull.pem`: the client certificate, the origin's trust pool (public). */
-export function pullPemFile(values: OriginTlsValues): RenderedFile {
-  return { path: ORIGIN_PULL_PEM, content: values.ORIGIN_PULL_CERT ?? "", kind: "runtime" };
+/**
+ * The environment's `pull.pem` (`originPullPem`: prod's `opscrew/runtime/edge/tls/pull.pem`): the
+ * client certificate, the origin's trust pool (public).
+ */
+export function pullPemFile(plan: DeployPlan, values: OriginTlsValues): RenderedFile {
+  return { path: originPullPem(plan), content: values.ORIGIN_PULL_CERT ?? "", kind: "runtime" };
 }
 
 /**
@@ -552,17 +555,19 @@ export function tlsWarnings(
       `Cloudflare has CAA records at ${dns.domain} that OpsCrew did not create (${caa.map((r) => r.content).join("; ")}). OpsCrew leaves them as they are and adds its own for the authorities your server's proxy uses; together they decide which authorities may issue certificates there, so check that they still name the one the proxy uses.`,
     );
   }
-  const expiring = clientCertificateWarning(shared?.record, clock);
+  const expiring = clientCertificateWarning(plan, shared?.record, clock);
   if (expiring !== undefined) warnings.push(expiring);
   return warnings;
 }
 
 /**
  * The warning about the app's client certificate for Cloudflare's origin pulls within 30 days of
- * its expiry (FR-1406), with the steps to replace it, since OpsCrew never replaces it by itself;
- * `undefined` otherwise. Provision says it, and `status` and `secure` can too.
+ * its expiry (FR-1406), with the steps to replace it in the plan's `pull.pem` (`originPullPem`),
+ * since OpsCrew never replaces it by itself; `undefined` otherwise. Provision says it, and
+ * `status` and `secure` can too.
  */
 export function clientCertificateWarning(
+  plan: DeployPlan,
   record: Pick<SharedRecord, "tls"> | undefined,
   clock: Clock,
 ): string | undefined {
@@ -571,7 +576,8 @@ export function clientCertificateWarning(
   if (daysLeft(client.expiresAt, clock.now()) >= CERTIFICATE_WARN_DAYS) {
     return undefined;
   }
-  return `This app's client certificate for Cloudflare's origin pulls expires on ${client.expiresAt.slice(0, 10)}, and OpsCrew does not replace it by itself: the server must trust the new one before Cloudflare sends it. To replace it: add a new client certificate after the old one in ${ORIGIN_PULL_PEM} and deploy; upload the new one and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old one from ${ORIGIN_PULL_PEM} and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json, and its key in generated_values.json.`;
+  const pullPem = originPullPem(plan);
+  return `This app's client certificate for Cloudflare's origin pulls expires on ${client.expiresAt.slice(0, 10)}, and OpsCrew does not replace it by itself: the server must trust the new one before Cloudflare sends it. To replace it: add a new client certificate after the old one in ${pullPem} and deploy; upload the new one and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old one from ${pullPem} and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json, and its key in generated_values.json.`;
 }
 
 /**

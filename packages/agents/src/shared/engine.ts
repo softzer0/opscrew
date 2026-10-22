@@ -1,7 +1,14 @@
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, ResourceAction, ResourceChange } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, readTextIfExists } from "@opscrew/core";
+import {
+  OpsCrewError,
+  type ProjectPaths,
+  readTextIfExists,
+  resolveProjectPaths,
+  tfstateFile,
+  toPosixRelative,
+} from "@opscrew/core";
 import {
   type EnginePreference,
   engineLabel,
@@ -13,29 +20,35 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { ensureStatePassphrase, readSecretFile, statePassphraseFile } from "./secret-files";
 
-/** `.opscrew/tfstate/prod.tfstate`: the state file provision, destroy, drift and retarget use. */
-export function stateFile(paths: Pick<ProjectPaths, "files">): string {
-  return join(paths.files.tfstateDir, "prod.tfstate");
+/**
+ * The environment's infrastructure state file (core's `tfstateFile`: `.opscrew/tfstate/prod.tfstate`
+ * for prod), which provision, destroy, drift and retarget use.
+ */
+export function stateFile(paths: ProjectPaths): string {
+  return tfstateFile(paths);
 }
 
 /**
  * The stop (`PHASE_PRECONDITION`, nothing changed) when the infrastructure state of `plan` is not
- * on this computer, so OpsCrew `cannot` do what the command is for (`tell what to delete`).
+ * on this computer, so OpsCrew `cannot` do what the command is for (`tell what to delete`). The
+ * message names the state file of the plan's environment.
  */
 export function stateNotHere(
-  plan: Pick<DeployPlan, "app">,
+  plan: Pick<DeployPlan, "app" | "environment">,
   cannot: string,
   hint: string,
 ): OpsCrewError {
+  // Only the layout is needed, so any root does: the path is shown relative to it.
+  const paths = resolveProjectPaths(".", { env: {}, environment: plan.environment?.name });
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot ${cannot}. Nothing was changed.`,
+    `The infrastructure state of ${plan.app.name} is not on this computer (${toPosixRelative(paths.root, stateFile(paths))}), so OpsCrew cannot ${cannot}. Nothing was changed.`,
     { hint },
   );
 }
 
-/** True when the project's state file exists and is not empty. */
-export async function hasState(paths: Pick<ProjectPaths, "files">): Promise<boolean> {
+/** True when the environment's state file exists and is not empty. */
+export async function hasState(paths: ProjectPaths): Promise<boolean> {
   try {
     return (await stat(stateFile(paths))).size > 0;
   } catch {
@@ -292,7 +305,7 @@ export async function readOutputsAfterInit(
 
 /**
  * The root-module outputs from the infrastructure state on this computer
- * (`.opscrew/tfstate/prod.tfstate`, decrypted with the state passphrase when there is one), read
+ * ({@link stateFile}, decrypted with the state passphrase when there is one), read
  * with the project's engine; `undefined` without a state file or when the engine cannot read them.
  * Needs no provider credentials.
  */

@@ -183,6 +183,32 @@ describe("renderDependabot", () => {
     );
   });
 
+  it("lists every environment's runtime folder, so each environment's provision writes the same file", () => {
+    const names = ["prod", "staging", "dev"];
+    const prod = renderDependabot(facts({}), portainerTestPlan(), undefined, names);
+    const staging = inEnvironment(portainerTestPlan(), { name: "staging" });
+    expect(renderDependabot(facts({}), staging, undefined, names)).toEqual(prod);
+    const compose = (parse(prod.content) as { updates: Update[] }).updates.find(
+      (u) => u["package-ecosystem"] === "docker-compose",
+    );
+    // Prod's folder first, then the named environments' by name.
+    expect(compose?.directories).toEqual([
+      "/opscrew/runtime",
+      "/opscrew/runtime/cloudflared",
+      "/opscrew/runtime/portainer",
+      "/opscrew/environments/dev/runtime",
+      "/opscrew/environments/dev/runtime/cloudflared",
+      "/opscrew/environments/dev/runtime/portainer",
+      "/opscrew/environments/staging/runtime",
+      "/opscrew/environments/staging/runtime/cloudflared",
+      "/opscrew/environments/staging/runtime/portainer",
+    ]);
+    // An app with prod only renders today's file.
+    expect(renderDependabot(facts({}), portainerTestPlan(), undefined, ["prod"])).toEqual(
+      renderDependabot(facts({}), portainerTestPlan()),
+    );
+  });
+
   it("leaves the shared edge out: its pins move only with OpsCrew's version stamp", () => {
     const [sample, deployPlan] = EXAMPLES["monorepo-two-apps (pnpm workspace member)"] as [
       ProjectFacts,

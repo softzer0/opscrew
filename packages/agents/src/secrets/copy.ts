@@ -19,7 +19,7 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { COPY_PATH, readLocalFiles } from "./files";
+import { COPY_PATH, copyPath, readLocalFiles } from "./files";
 import {
   copyFile,
   folderCopyPath,
@@ -106,7 +106,7 @@ async function mayCommit(
   if (record.publicConfirmed === false || !deps.interactive) return { commit: false, record };
   const decision = await deps.approvals.request({
     kind: "repo-write",
-    title: `Commit the encrypted recovery copy of this app's secrets (${COPY_PATH}) to this public repository`,
+    title: `Commit the encrypted recovery copy of this app's secrets (${copyPath(deps.paths)}) to this public repository`,
     details: `${PUBLIC_WARNING} Only your age key opens it.`,
   });
   const answered = { ...record, publicConfirmed: decision.approved };
@@ -115,10 +115,11 @@ async function mayCommit(
 }
 
 /**
- * Why the copy is not committed, where it was written instead, and how to commit it. `command` is
- * what to run in a terminal to be asked when no folder is set.
+ * Why the copy (at `path` in the repository) is not committed, where it was written instead, and
+ * how to commit it. `command` is what to run in a terminal to be asked when no folder is set.
  */
 function notCommittedWarning(
+  path: string,
   record: RecoveryRecord,
   folderCopy: string | undefined,
   command: string,
@@ -131,16 +132,21 @@ function notCommittedWarning(
     return `${why} No folder is set for the copy either, so OpsCrew made none. Set one with \`opscrew secrets folder <path>\`${declined ? "." : `, or run \`${command}\` in a terminal to be asked.`}`;
   }
   const commit = declined
-    ? `To commit it after all, copy that file to ${COPY_PATH} and commit it.`
-    : `To commit it, run \`opscrew provision\` in a terminal, which asks first, or copy that file to ${COPY_PATH} and commit it.`;
+    ? `To commit it after all, copy that file to ${path} and commit it.`
+    : `To commit it, run \`opscrew provision\` in a terminal, which asks first, or copy that file to ${path} and commit it.`;
   return `${why} It wrote the copy only to ${folderCopy}. ${commit}`;
 }
 
 const NO_KEY_FILE =
   "OpsCrew has made no encrypted recovery copy of this app's secrets yet: it needs a file to write your new age key to, outside the repository, or your own age key (age1…). Run `opscrew provision` in a terminal, which asks for them, or name the file with `--key-out <path>`.";
 
-/** FR-1414: older commits stay readable with the old key, and when to change the secrets too. */
-export const OLD_COMMITS = `Older commits of ${COPY_PATH} can still be opened with the old key. If the old key may have leaked, change the secrets themselves too (the generated passwords, the deploy key and the state passphrase), because anyone with the old key and an old commit can read them.`;
+/**
+ * FR-1414: older commits of the copy at `path` stay readable with the old key, and when to change
+ * the secrets too.
+ */
+export function oldCommitsNote(path: string): string {
+  return `Older commits of ${path} can still be opened with the old key. If the old key may have leaked, change the secrets themselves too (the generated passwords, the deploy key and the state passphrase), because anyone with the old key and an old commit can read them.`;
+}
 
 /** A new age key, registered with the redactor at once. */
 function newKey(deps: PhaseDeps): { identity: string; recipient: string } {
@@ -179,7 +185,7 @@ function encryptCopy(deps: PhaseDeps, bin: string, plan: CopyPlan): Promise<stri
     {
       plaintext: JSON.stringify({ files: plan.files }),
       recipients: plan.recipients,
-      filename: COPY_PATH,
+      filename: copyPath(deps.paths),
     },
     { exec: deps.runner, redactor: deps.redactor, env: deps.env },
   );
@@ -212,7 +218,7 @@ async function placeCopy(
   if (!plan.commit) {
     warnings.push(
       folderCopy !== undefined
-        ? notCommittedWarning(plan.record, folderCopy, plan.command)
+        ? notCommittedWarning(copyPath(deps.paths), plan.record, folderCopy, plan.command)
         : "The repository is public and the copy is not committed there either, so this computer's secrets have no copy yet.",
     );
   }
@@ -230,7 +236,7 @@ async function placeCopy(
   const gitattributes = await gitattributesFile(deps.paths);
   return {
     repositoryFiles: [
-      ...(plan.commit ? [copyFile(copy)] : []),
+      ...(plan.commit ? [copyFile(deps.paths, copy)] : []),
       ...(newRule ? [sopsConfigFile(plan.recipients)] : []),
       ...(gitattributes !== undefined ? [gitattributes] : []),
     ],
@@ -270,7 +276,7 @@ export async function refreshRecoveryCopy(
 ): Promise<RefreshRecoveryResult> {
   const repositoryCopy = await readRepositoryCopy(deps.paths);
   const record = await readRecord(deps.paths);
-  requireOwnCopy(repositoryCopy, record);
+  requireOwnCopy(deps.paths, repositoryCopy, record);
   const files = await readLocalFiles(deps.paths, deps.redactor);
   if (Object.keys(files).length === 0) return { changed: false };
   const hashes = hashesOf(files);
@@ -308,7 +314,10 @@ export async function refreshRecoveryCopy(
   const decided = await mayCommit(deps, record, options, repositoryCopy !== undefined);
   const command = "opscrew provision";
   if (!decided.commit && folderCopy === undefined) {
-    return { changed: false, warning: notCommittedWarning(decided.record, undefined, command) };
+    return {
+      changed: false,
+      warning: notCommittedWarning(copyPath(deps.paths), decided.record, undefined, command),
+    };
   }
   // Only the folder copy is written, and it already holds these files.
   if (!decided.commit && sameHashes(hashes, record.folderHashes)) return { changed: false };
@@ -362,7 +371,7 @@ export async function rotateRecoveryKey(
   const file = await keyFilePath(deps.paths, input.keyOut);
   const repositoryCopy = await readRepositoryCopy(deps.paths);
   const record = await readRecord(deps.paths);
-  requireOwnCopy(repositoryCopy, record);
+  requireOwnCopy(deps.paths, repositoryCopy, record);
   const files = await readLocalFiles(deps.paths, deps.redactor);
   if (Object.keys(files).length === 0) {
     throw new OpsCrewError(
@@ -385,7 +394,7 @@ export async function rotateRecoveryKey(
   if (!decided.commit && folderCopy === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      notCommittedWarning(decided.record, undefined, command),
+      notCommittedWarning(copyPath(deps.paths), decided.record, undefined, command),
     );
   }
 
@@ -408,10 +417,10 @@ export async function rotateRecoveryKey(
       keyHandoverNote(handover),
       `The copy is encrypted again to the new key${backup !== undefined ? " and the backup key" : ""}.`,
       decided.commit
-        ? `Merge the pull request with ${COPY_PATH} and ${SOPS_CONFIG_PATH} to put it in the repository.`
+        ? `Merge the pull request with ${copyPath(deps.paths)} and ${SOPS_CONFIG_PATH} to put it in the repository.`
         : `Merge the pull request with ${SOPS_CONFIG_PATH}, which names the new key.`,
       ...placed.warnings,
-      OLD_COMMITS,
+      oldCommitsNote(copyPath(deps.paths)),
     ].join(" "),
   };
 }
@@ -435,12 +444,14 @@ export interface RecoveryStatus {
   behind: boolean;
   /** The folder the copy is also written to. */
   folder?: string;
+  /** The environment's copy in the repository (`copyPath`); absent for prod's, {@link COPY_PATH}. */
+  path?: string;
 }
 
 /**
  * The copy's last update and recipient count (from its sops metadata: the repository's copy, or
  * else the folder's), whether this computer's files changed since the repository's copy was made,
- * and the folder.
+ * the folder, and for an environment other than prod its copy's path.
  */
 export async function recoveryStatus(deps: PhaseDeps): Promise<RecoveryStatus> {
   const folder = await readFolder(deps.paths);
@@ -451,7 +462,12 @@ export async function recoveryStatus(deps: PhaseDeps): Promise<RecoveryStatus> {
   if (copy === undefined && folder !== undefined) {
     copy = await readTextIfExists(folderCopyPath(folder, await planApp(deps)));
   }
-  const status = { behind, ...(folder !== undefined ? { folder } : {}) };
+  const path = copyPath(deps.paths);
+  const status = {
+    behind,
+    ...(folder !== undefined ? { folder } : {}),
+    ...(path === COPY_PATH ? {} : { path }),
+  };
   if (copy === undefined) return { exists: false, recipients: 0, ...status };
   let metadata: z.infer<typeof CopyMetadataSchema>["sops"] | undefined;
   try {
@@ -462,8 +478,8 @@ export async function recoveryStatus(deps: PhaseDeps): Promise<RecoveryStatus> {
   if (metadata === undefined) {
     throw new OpsCrewError(
       "ARTIFACT_INVALID",
-      `The recovery copy is not a sops file OpsCrew can read (${COPY_PATH}, or the folder copy).`,
-      { hint: `Put back the copy OpsCrew wrote (git restore ${COPY_PATH}).` },
+      `The recovery copy is not a sops file OpsCrew can read (${path}, or the folder copy).`,
+      { hint: `Put back the copy OpsCrew wrote (git restore ${path}).` },
     );
   }
   return {
@@ -475,8 +491,9 @@ export async function recoveryStatus(deps: PhaseDeps): Promise<RecoveryStatus> {
 }
 
 /**
- * What `opscrew secrets status` and `opscrew_secrets_status` show of the recovery copy: its last
- * update and how many keys open it, whether it is behind, and the folder copy.
+ * What `opscrew secrets status` and `opscrew_secrets_status` show of the environment's recovery
+ * copy: its path, its last update and how many keys open it, whether it is behind, and the folder
+ * copy.
  */
 export function recoveryStatusLines(copy: RecoveryStatus): string[] {
   const folder =
@@ -492,7 +509,7 @@ export function recoveryStatusLines(copy: RecoveryStatus): string[] {
   const updated =
     copy.lastModified === undefined ? "" : `, last updated ${formatUtc(copy.lastModified)}`;
   return [
-    `Recovery copy (${COPY_PATH})${updated}: ${plural(copy.recipients, "key")} can open it.`,
+    `Recovery copy (${copy.path ?? COPY_PATH})${updated}: ${plural(copy.recipients, "key")} can open it.`,
     copy.behind
       ? "Behind: files on this computer changed since the copy in the repository was made; the next `opscrew provision` updates it."
       : "Up to date with the files on this computer.",
