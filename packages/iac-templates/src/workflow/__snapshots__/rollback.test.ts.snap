@@ -66,59 +66,61 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
-          export DOCKER_CONFIG=/srv/apps/shop/.docker
+          export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
-          cd /srv/apps/shop
+          cd "$APPS_DIR"/shop
           export APP_IMAGE="$1"
-          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           docker compose pull
-          mkdir -p /srv/edge/sites /srv/edge/tls
+          mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
             flock 9
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
-            current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
-            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            current="$(sed -n 's/^x-opscrew-edge-version: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
+            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
               echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
-              cp /srv/edge/compose.yaml .edge.previous
-              cp edge/compose.yaml /srv/edge/compose.yaml
+              cp "$EDGE_DIR"/compose.yaml .edge.previous
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
-              cp edge/compose.yaml /srv/edge/compose.yaml
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
-            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
-              cp edge/compose.yaml /srv/edge/compose.yaml
+            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml "$EDGE_DIR"/compose.yaml; then
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
               echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
             for f in origin.pem origin.key pull.pem; do
-              if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+              if [ -f "$EDGE_DIR"/tls/shop/$f ]; then mv -f "$EDGE_DIR"/tls/shop/$f "$EDGE_DIR"/tls/shop/$f.previous; else rm -f "$EDGE_DIR"/tls/shop/$f.previous; fi
             done
             rm -f .site.previous .additions.previous
-            if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
-            if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
-            cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
-            rm -f /srv/edge/sites/shop.additions
+            if [ -f "$EDGE_DIR"/sites/shop.caddy ]; then cp "$EDGE_DIR"/sites/shop.caddy .site.previous; fi
+            if [ -f "$EDGE_DIR"/sites/shop.additions ]; then cp "$EDGE_DIR"/sites/shop.additions .additions.previous; fi
+            cp edge/sites/shop.caddy "$EDGE_DIR"/sites/shop.caddy
+            rm -f "$EDGE_DIR"/sites/shop.additions
             if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-              if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
-              if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+              if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.caddy; else rm -f "$EDGE_DIR"/sites/shop.caddy; fi
+              if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
               for f in origin.pem origin.key pull.pem; do
-                if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+                if [ -f "$EDGE_DIR"/tls/shop/$f.previous ]; then mv -f "$EDGE_DIR"/tls/shop/$f.previous "$EDGE_DIR"/tls/shop/$f; else rm -f "$EDGE_DIR"/tls/shop/$f; fi
               done
               if [ -f .edge.previous ]; then
-                cp .edge.previous /srv/edge/compose.yaml
+                cp .edge.previous "$EDGE_DIR"/compose.yaml
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
-            rm -f /srv/edge/sites/shop.conf
-            rm -rf /srv/edge/tls/shop
-          ) 9> /srv/edge/.lock
+            rm -f "$EDGE_DIR"/sites/shop.conf
+            rm -rf "$EDGE_DIR"/tls/shop
+          ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
           trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
           edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
@@ -157,9 +159,11 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
-          cd /srv/apps/shop
-          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+          cd "$APPS_DIR"/shop
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
@@ -264,59 +268,61 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
-          export DOCKER_CONFIG=/srv/apps/shop/.docker
+          export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
-          cd /srv/apps/shop
+          cd "$APPS_DIR"/shop
           export APP_IMAGE="$1"
-          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           docker compose pull
-          mkdir -p /srv/edge/sites /srv/edge/tls
+          mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
             flock 9
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
-            current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
-            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            current="$(sed -n 's/^x-opscrew-edge-version: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
+            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
               echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
-              cp /srv/edge/compose.yaml .edge.previous
-              cp edge/compose.yaml /srv/edge/compose.yaml
+              cp "$EDGE_DIR"/compose.yaml .edge.previous
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
-              cp edge/compose.yaml /srv/edge/compose.yaml
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
-            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
-              cp edge/compose.yaml /srv/edge/compose.yaml
+            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml "$EDGE_DIR"/compose.yaml; then
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
               echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
             for f in origin.pem origin.key pull.pem; do
-              if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+              if [ -f "$EDGE_DIR"/tls/shop/$f ]; then mv -f "$EDGE_DIR"/tls/shop/$f "$EDGE_DIR"/tls/shop/$f.previous; else rm -f "$EDGE_DIR"/tls/shop/$f.previous; fi
             done
             rm -f .site.previous .additions.previous
-            if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
-            if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
-            cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
-            rm -f /srv/edge/sites/shop.additions
+            if [ -f "$EDGE_DIR"/sites/shop.caddy ]; then cp "$EDGE_DIR"/sites/shop.caddy .site.previous; fi
+            if [ -f "$EDGE_DIR"/sites/shop.additions ]; then cp "$EDGE_DIR"/sites/shop.additions .additions.previous; fi
+            cp edge/sites/shop.caddy "$EDGE_DIR"/sites/shop.caddy
+            rm -f "$EDGE_DIR"/sites/shop.additions
             if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-              if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
-              if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+              if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.caddy; else rm -f "$EDGE_DIR"/sites/shop.caddy; fi
+              if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
               for f in origin.pem origin.key pull.pem; do
-                if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+                if [ -f "$EDGE_DIR"/tls/shop/$f.previous ]; then mv -f "$EDGE_DIR"/tls/shop/$f.previous "$EDGE_DIR"/tls/shop/$f; else rm -f "$EDGE_DIR"/tls/shop/$f; fi
               done
               if [ -f .edge.previous ]; then
-                cp .edge.previous /srv/edge/compose.yaml
+                cp .edge.previous "$EDGE_DIR"/compose.yaml
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
-            rm -f /srv/edge/sites/shop.conf
-            rm -rf /srv/edge/tls/shop
-          ) 9> /srv/edge/.lock
+            rm -f "$EDGE_DIR"/sites/shop.conf
+            rm -rf "$EDGE_DIR"/tls/shop
+          ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
           old="$(docker compose ps -aq app | tr '\\n' ' ')"
           docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
@@ -360,9 +366,11 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
-          cd /srv/apps/shop
-          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+          cd "$APPS_DIR"/shop
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
@@ -474,65 +482,67 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
-          export DOCKER_CONFIG=/srv/apps/shop/.docker
+          export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
-          cd /srv/apps/shop
+          cd "$APPS_DIR"/shop
           export APP_IMAGE="$1"
-          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           docker compose pull
-          mkdir -p /srv/edge/sites /srv/edge/tls
+          mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
             flock 9
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             uploaded="$(sed -n 's/^x-opscrew-edge-version: //p' edge/compose.yaml)"
-            current="$(sed -n 's/^x-opscrew-edge-version: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
-            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"
+            current="$(sed -n 's/^x-opscrew-edge-version: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
+            proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
               echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
-              cp /srv/edge/compose.yaml .edge.previous
-              cp edge/compose.yaml /srv/edge/compose.yaml
+              cp "$EDGE_DIR"/compose.yaml .edge.previous
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
-              cp edge/compose.yaml /srv/edge/compose.yaml
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
               echo "OpsCrew's shared edge on this server is now version $uploaded."
-            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml /srv/edge/compose.yaml; then
-              cp edge/compose.yaml /srv/edge/compose.yaml
+            elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml "$EDGE_DIR"/compose.yaml; then
+              cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
               echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."
             elif [ "$uploaded" -lt "\${current:-0}" ]; then
               echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."
             fi
             for f in origin.pem origin.key pull.pem; do
-              if [ -f /srv/edge/tls/shop/$f ]; then mv -f /srv/edge/tls/shop/$f /srv/edge/tls/shop/$f.previous; else rm -f /srv/edge/tls/shop/$f.previous; fi
+              if [ -f "$EDGE_DIR"/tls/shop/$f ]; then mv -f "$EDGE_DIR"/tls/shop/$f "$EDGE_DIR"/tls/shop/$f.previous; else rm -f "$EDGE_DIR"/tls/shop/$f.previous; fi
             done
             rm -f .site.previous .additions.previous
-            if [ -f /srv/edge/sites/shop.caddy ]; then cp /srv/edge/sites/shop.caddy .site.previous; fi
-            if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi
-            cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy
-            rm -f /srv/edge/sites/shop.additions
+            if [ -f "$EDGE_DIR"/sites/shop.caddy ]; then cp "$EDGE_DIR"/sites/shop.caddy .site.previous; fi
+            if [ -f "$EDGE_DIR"/sites/shop.additions ]; then cp "$EDGE_DIR"/sites/shop.additions .additions.previous; fi
+            cp edge/sites/shop.caddy "$EDGE_DIR"/sites/shop.caddy
+            rm -f "$EDGE_DIR"/sites/shop.additions
             if ! edge up -d --wait --remove-orphans || ! edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
-              if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.caddy; else rm -f /srv/edge/sites/shop.caddy; fi
-              if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi
+              if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.caddy; else rm -f "$EDGE_DIR"/sites/shop.caddy; fi
+              if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
               for f in origin.pem origin.key pull.pem; do
-                if [ -f /srv/edge/tls/shop/$f.previous ]; then mv -f /srv/edge/tls/shop/$f.previous /srv/edge/tls/shop/$f; else rm -f /srv/edge/tls/shop/$f; fi
+                if [ -f "$EDGE_DIR"/tls/shop/$f.previous ]; then mv -f "$EDGE_DIR"/tls/shop/$f.previous "$EDGE_DIR"/tls/shop/$f; else rm -f "$EDGE_DIR"/tls/shop/$f; fi
               done
               if [ -f .edge.previous ]; then
-                cp .edge.previous /srv/edge/compose.yaml
+                cp .edge.previous "$EDGE_DIR"/compose.yaml
                 edge up -d --wait --remove-orphans || true
                 echo '::error::The switch to Caddy did not work, so the server keeps nginx as its proxy.'
               fi
-              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
+              echo '::error::OpsCrew'\\''s shared edge on the server (Caddy and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.caddy), so the new version was not started, the previous version keeps serving and Caddy keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.'
               exit 1
             fi
-            rm -f /srv/edge/sites/shop.conf
-            rm -rf /srv/edge/tls/shop
-          ) 9> /srv/edge/.lock
+            rm -f "$EDGE_DIR"/sites/shop.conf
+            rm -rf "$EDGE_DIR"/tls/shop
+          ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db cache
-          if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > /srv/apps/shop/release.log 2>&1); then
-            echo '::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in /srv/apps/shop/release.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.'
+          if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > "$APPS_DIR"/shop/release.log 2>&1); then
+            echo '::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in '"$APPS_DIR"'/shop/release.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.'
             exit 1
           fi
-          echo 'The release command finished; its output is in /srv/apps/shop/release.log on the server.'
+          echo 'The release command finished; its output is in '"$APPS_DIR"'/shop/release.log on the server.'
           for service in worker beat cron; do
             if [ -n "$(docker compose ps -q "$service")" ]; then echo "$service"; fi
           done > .processes.previous
@@ -565,7 +575,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
             for id in $(docker compose ps -aq "$service"); do
               now="$id=$(docker inspect --format '{{.State.Status}}:{{.RestartCount}}' "$id")"
               case " $started " in *" $now "*) continue ;; esac
-              printf '::error::The %s container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in /srv/apps/shop (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n' "$service" "$service"
+              printf '::error::The %s container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in '"$APPS_DIR"'/shop (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n' "$service" "$service"
               exit 1
             done
           done
@@ -594,9 +604,11 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
-          cd /srv/apps/shop
-          edge() { docker compose -p opscrew-edge -f /srv/edge/compose.yaml "$@"; }
+          cd "$APPS_DIR"/shop
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"

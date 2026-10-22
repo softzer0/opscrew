@@ -3,7 +3,8 @@
  * The shared edge on every server (contracts/components.md "The edge on a server"): one Compose
  * project, `opscrew-edge` in `/srv/edge`, with the server's proxy (Caddy, or nginx with certbot)
  * and kamal-proxy in front of every OpsCrew app on the server. Each app is its own Compose project
- * in `/srv/apps/<app>`, its data in `/srv/data/<app>`.
+ * in `/srv/apps/<app>`, its data in `/srv/data/<app>`. On the user's own computer (the localhost
+ * target) the same edge listens on 127.0.0.1 with leaf certificates from OpsCrew's local CA.
  */
 import { sha256Hex } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -25,6 +26,12 @@ import {
   RELOAD_DIR,
 } from "./nginx";
 
+export {
+  type LocalhostSite,
+  localhostHostname,
+  localhostTlsUpload,
+} from "./localhost";
+
 /** The edge's Compose project, and the external network the edge and every app's web service join. */
 export const EDGE_PROJECT = "opscrew-edge";
 
@@ -34,9 +41,12 @@ export const EDGE_PROJECT = "opscrew-edge";
  */
 export const EDGE_DIR = "/srv/edge";
 
+/** Where the apps' folders are on the server. */
+export const APPS_DIR = "/srv/apps";
+
 /** The app's folder on the server (its Compose project, env files and logs): `/srv/apps/<app>`. */
 export function appDir(plan: DeployPlan): string {
-  return `/srv/apps/${plan.app.name}`;
+  return `${APPS_DIR}/${plan.app.name}`;
 }
 
 /**
@@ -138,24 +148,33 @@ export const ORIGIN_PULL_PEM = "opscrew/runtime/edge/tls/pull.pem";
 
 /**
  * Caddy's main configuration: with Cloudflare's `ranges`, global options that take the client's
- * address from `CF-Connecting-IP` on requests from them; then the apps' site files, then
- * {@link CATCH_ALL_SITES}.
+ * address from `CF-Connecting-IP` on requests from them; on this computer (`local`), global
+ * options without HTTP/3, whose UDP port the edge does not publish there; then the apps' site
+ * files, then {@link CATCH_ALL_SITES}.
  */
-function caddyfile(ranges: readonly string[]): string {
+function caddyfile(ranges: readonly string[], local: boolean): string {
+  const servers = (comment: string, options: readonly string[]) => [
+    comment,
+    "{",
+    "\tservers {",
+    ...options.map((option) => `\t\t${option}`),
+    "\t}",
+    "}",
+    "",
+  ];
   return [
     "# OpsCrew's shared edge: each OpsCrew app on this server has its site in /srv/edge/sites/<app>.caddy.",
     ...(ranges.length === 0
       ? []
-      : [
-          "# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.",
-          "{",
-          "\tservers {",
-          `\t\ttrusted_proxies static ${ranges.join(" ")}`,
-          "\t\tclient_ip_headers CF-Connecting-IP",
-          "\t}",
-          "}",
-          "",
-        ]),
+      : servers("# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.", [
+          `trusted_proxies static ${ranges.join(" ")}`,
+          "client_ip_headers CF-Connecting-IP",
+        ])),
+    ...(local
+      ? servers("# No HTTP/3: the edge on this computer publishes no UDP port.", [
+          "protocols h1 h2",
+        ])
+      : []),
     `import ${CADDY_SITES}/*.caddy`,
     "",
     ...CATCH_ALL_SITES,
@@ -163,11 +182,16 @@ function caddyfile(ranges: readonly string[]): string {
 }
 
 /**
- * The proxy's published ports, to its `http` and `https` ports in the container: loopback in
- * tunnel mode (the tunnel connector reaches it there), IPv4 only behind OpsCrew's web filter (the
- * filter covers IPv4 only), otherwise HTTP, HTTPS and HTTP/3.
+ * The proxy's published ports, to its `http` and `https` ports in the container: on this computer
+ * the target's HTTP and HTTPS ports on its loopback only, loopback in tunnel mode (the tunnel
+ * connector reaches it there), IPv4 only behind OpsCrew's web filter (the filter covers IPv4
+ * only), otherwise HTTP, HTTPS and HTTP/3.
  */
 function edgePorts(plan: DeployPlan, http: number, https: number): string[] {
+  if (plan.target.provider === "localhost") {
+    const { ports } = plan.target;
+    return [`127.0.0.1:${ports.http}:${http}`, `127.0.0.1:${ports.https}:${https}`];
+  }
   if (tunnelMode(plan)) return [`127.0.0.1:${TUNNEL_ORIGIN_PORT}:${http}`];
   const host = webFilterMode(plan) ? "0.0.0.0:" : "";
   return [`${host}80:${http}`, `${host}443:${https}`, `${host}443:${https}/udp`];
@@ -189,10 +213,12 @@ const CADDY_HEALTHCHECK = {
 
 /**
  * Caddy, reading each app's site file from `/srv/edge/sites` and its origin certificate from
- * `/srv/edge/tls/<app>`, and trusting Cloudflare's `ranges` for the visitor's address.
+ * `/srv/edge/tls/<app>`, and trusting Cloudflare's `ranges` for the visitor's address (never on
+ * this computer, which Cloudflare does not reach).
  */
 function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
-  const main = caddyfile(ranges);
+  const local = plan.target.provider === "localhost";
+  const main = caddyfile(local ? [] : ranges, local);
   return {
     services: {
       caddy: {
@@ -229,9 +255,11 @@ const DEPLOY_USER =
  * `/srv/edge/sites`, their origin certificates from `/srv/edge/tls/<app>` and certbot's from the
  * volume `letsencrypt`, and certbot renewing them through the webroot `acme-webroot`. certbot's
  * deploy hook leaves a flag on the volume `reload`, where nginx's loop sees it and reloads. Neither
- * has the Docker socket, nor any Linux capability.
+ * has the Docker socket, nor any Linux capability. On this computer the apps' leaf certificates
+ * come from OpsCrew's local CA, in `tls/<app>`, so there is no certbot and none of its volumes.
  */
 function nginxEdge(plan: DeployPlan) {
+  const certbot = plan.target.provider !== "localhost";
   return {
     services: {
       nginx: {
@@ -246,9 +274,13 @@ function nginxEdge(plan: DeployPlan) {
         volumes: [
           "./sites:/etc/nginx/sites:ro",
           "./tls:/etc/nginx/tls:ro",
-          `letsencrypt:${LETSENCRYPT}:ro`,
-          `acme-webroot:${ACME_WEBROOT}:ro`,
-          `reload:${RELOAD_DIR}`,
+          ...(certbot
+            ? [
+                `letsencrypt:${LETSENCRYPT}:ro`,
+                `acme-webroot:${ACME_WEBROOT}:ro`,
+                `reload:${RELOAD_DIR}`,
+              ]
+            : []),
         ],
         healthcheck: NGINX_HEALTHCHECK,
         // A changed main configuration changes this label, so Compose recreates nginx with it.
@@ -257,28 +289,40 @@ function nginxEdge(plan: DeployPlan) {
         ...hardened({ noCapabilities: true }),
         networks: [EDGE_PROJECT],
       },
-      certbot: {
-        image: IMAGES.certbot.ref,
-        restart: "unless-stopped",
-        user: DEPLOY_USER,
-        init: true,
-        ...memoryLimit(CERTBOT_MEMORY_MB),
-        entrypoint: ["sh", "-c", composeLiteral(CERTBOT_LOOP)],
-        volumes: [
-          `letsencrypt:${LETSENCRYPT}`,
-          `acme-webroot:${ACME_WEBROOT}`,
-          `reload:${RELOAD_DIR}`,
-        ],
-        ...hardened({ noCapabilities: true }),
-        networks: [EDGE_PROJECT],
-      },
+      ...(certbot
+        ? {
+            certbot: {
+              image: IMAGES.certbot.ref,
+              restart: "unless-stopped",
+              user: DEPLOY_USER,
+              init: true,
+              ...memoryLimit(CERTBOT_MEMORY_MB),
+              entrypoint: ["sh", "-c", composeLiteral(CERTBOT_LOOP)],
+              volumes: [
+                `letsencrypt:${LETSENCRYPT}`,
+                `acme-webroot:${ACME_WEBROOT}`,
+                `reload:${RELOAD_DIR}`,
+              ],
+              ...hardened({ noCapabilities: true }),
+              networks: [EDGE_PROJECT],
+            },
+          }
+        : {}),
     },
     configs: { "nginx-conf": { content: composeLiteral(NGINX_CONF) } },
-    volumes: { letsencrypt: {}, "acme-webroot": {}, reload: {} },
+    volumes: certbot ? { letsencrypt: {}, "acme-webroot": {}, reload: {} } : {},
   };
 }
 
-function header(proxy: EdgeProxy): string {
+function header(plan: DeployPlan): string {
+  const proxy = edgeProxy(plan);
+  if (plan.target.provider === "localhost") {
+    return [
+      "# Generated by OpsCrew from opscrew/plan.yaml; `opscrew provision` regenerates it.",
+      "# OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of",
+      `# every OpsCrew app there: ${EDGE_PROXIES[proxy].label} and kamal-proxy. It listens on 127.0.0.1 only.`,
+    ].join("\n");
+  }
   const front = proxy === "nginx" ? "nginx, certbot and kamal-proxy" : "Caddy and kamal-proxy";
   return [
     "# Generated by OpsCrew from opscrew/plan.yaml; `opscrew provision` regenerates it.",
@@ -324,7 +368,7 @@ export function renderEdgeCompose(
   };
   return {
     path: "opscrew/runtime/edge/compose.yaml",
-    content: `${header(proxy)}\n${stringify(document, { lineWidth: 0 })}`,
+    content: `${header(plan)}\n${stringify(document, { lineWidth: 0 })}`,
     kind: "runtime",
   };
 }

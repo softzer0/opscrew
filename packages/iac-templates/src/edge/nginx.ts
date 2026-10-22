@@ -5,6 +5,7 @@
  * user, so nginx reads the origin key the deploy writes (0600) and certbot's files.
  */
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
+import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 
 /**
  * The upstream group of the edge's kamal-proxy in nginx's configuration: a site, and the user's
@@ -39,7 +40,10 @@ const NGINX_PID = "/tmp/nginx.pid";
  */
 export const RENEW_BEFORE_EXPIRY_DAYS = 45;
 
-/** Where nginx reads the app's origin certificate, its key and `pull.pem` (`/srv/edge/tls/<app>`). */
+/**
+ * Where nginx reads the app's origin certificate, its key and `pull.pem` (`/srv/edge/tls/<app>`),
+ * or on this computer its leaf certificate and key.
+ */
 function nginxTlsDir(app: string): string {
   return `/etc/nginx/tls/${app}`;
 }
@@ -242,6 +246,12 @@ export interface NginxSite {
    * client-certificate requirement.
    */
   redirects?: readonly string[] | undefined;
+  /**
+   * `direct` mode on this computer (the localhost target): every hostname is served with the leaf
+   * certificate of OpsCrew's local CA from the app's TLS folder, and HTTP redirects to HTTPS on
+   * `httpsPort`.
+   */
+  local?: { httpsPort: number } | undefined;
 }
 
 /** `hosts` split into those the site serves and those that redirect, and where they redirect. */
@@ -256,7 +266,7 @@ function byRedirect(site: NginxSite, hosts: readonly string[]) {
 
 /**
  * The directives of a server that serves the app: the security headers (HSTS only with `hsts`,
- * HTTP/3's `Alt-Svc` only with `tls`), on every response nginx sends (`always`, as Caddy's
+ * HTTP/3's `Alt-Svc` only with `h3`), on every response nginx sends (`always`, as Caddy's
  * `handle_errors`); the body limit; the request to kamal-proxy with the hostname, the
  * `X-Forwarded-*` headers (the client's own `X-Forwarded-For` is replaced, as Caddy does),
  * WebSockets and 300 seconds per request, streamed both ways; then the user's additions, whose
@@ -264,7 +274,7 @@ function byRedirect(site: NginxSite, hosts: readonly string[]) {
  * the client's address is the one Cloudflare's `CF-Connecting-IP` names on requests from those
  * ranges, so `$remote_addr`, `X-Forwarded-For` and the request zone use the visitor's.
  */
-function serve(site: NginxSite, o: { hsts: boolean; tls: boolean }): string[] {
+function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
   const header = (name: string, value: string) => `\tadd_header ${name} "${value}" always;`;
   const realIp = site.realIpFrom ?? [];
   return [
@@ -272,7 +282,7 @@ function serve(site: NginxSite, o: { hsts: boolean; tls: boolean }): string[] {
     ...(realIp.length > 0 ? ["\treal_ip_header CF-Connecting-IP;"] : []),
     ...(o.hsts ? [header("Strict-Transport-Security", HSTS)] : []),
     ...BASELINE_HEADERS.map(([name, value]) => header(name, value)),
-    ...(o.tls ? [`\tadd_header Alt-Svc 'h3=":443"; ma=2592000' always;`] : []),
+    ...(o.h3 ? [`\tadd_header Alt-Svc 'h3=":443"; ma=2592000' always;`] : []),
     `\tclient_max_body_size ${site.maxBodyMb}m;`,
     "\tproxy_http_version 1.1;",
     "\tproxy_set_header Host $host;",
@@ -329,23 +339,31 @@ function httpServer(names: string, body: readonly string[]): string[] {
   return ["server {", `\tlisten ${NGINX_PORTS.http};`, `\tserver_name ${names};`, ...body, "}", ""];
 }
 
-/** The HTTP server of `hosts` served over HTTPS: certbot's challenges (with `acme`), then a redirect. */
-function redirectServer(hosts: readonly string[], acme: boolean): string[] {
+/**
+ * The HTTP server of `hosts` served over HTTPS (on `httpsPort`): certbot's challenges (with
+ * `acme`), then a redirect.
+ */
+function redirectServer(hosts: readonly string[], acme: boolean, httpsPort = 443): string[] {
   return httpServer(hosts.join(" "), [
     ...(acme ? ACME_LOCATION : []),
     "\tlocation / {",
-    "\t\treturn 308 https://$host$request_uri;",
+    `\t\treturn 308 https://$host${httpsPortSuffix(httpsPort)}$request_uri;`,
     "\t}",
   ]);
 }
 
-/** The HTTPS server of `hosts` with the certificate lines `tls`, over TCP and QUIC (HTTP/3). */
+/**
+ * The HTTPS server of `hosts` with the certificate lines `tls`, over TCP and QUIC (HTTP/3), with
+ * HSTS. On this computer (`local`) over TCP only, since the edge publishes no UDP port there, and
+ * without HSTS, which would hold the hostname to HTTPS in the browser on every port for a year.
+ */
 function tlsServer(site: NginxSite, hosts: readonly string[], tls: readonly string[]): string[] {
   const { served, moved, to } = byRedirect(site, hosts);
+  const local = site.local !== undefined;
   const server = (names: readonly string[], body: readonly string[]) => [
     "server {",
     `\tlisten ${NGINX_PORTS.https} ssl;`,
-    `\tlisten ${NGINX_PORTS.https} quic;`,
+    ...(local ? [] : [`\tlisten ${NGINX_PORTS.https} quic;`]),
     `\tserver_name ${names.join(" ")};`,
     ...tls,
     ...body,
@@ -353,7 +371,7 @@ function tlsServer(site: NginxSite, hosts: readonly string[], tls: readonly stri
     "",
   ];
   return [
-    ...(served.length > 0 ? server(served, serve(site, { hsts: true, tls: true })) : []),
+    ...(served.length > 0 ? server(served, serve(site, { hsts: !local, h3: !local })) : []),
     ...(moved.length > 0 && to !== undefined
       ? server(moved, [`\treturn 308 https://${to}$request_uri;`])
       : []),
@@ -367,6 +385,8 @@ function tlsServer(site: NginxSite, hosts: readonly string[], tls: readonly stri
  *   the others get certbot's certificate, `--cert-name <app>`. Each group has an HTTP server that
  *   redirects to HTTPS, with certbot's challenges for the second;
  * - `direct` without hostnames (no domain yet): plain HTTP for every hostname;
+ * - `direct` on this computer (`local`): the leaf certificate of OpsCrew's local CA from
+ *   `tls/<app>` for every hostname, with an HTTP server that redirects to HTTPS;
  * - `tunnel`: plain HTTP for its hostnames, with HSTS, and visitors who used HTTP redirected by
  *   Cloudflare's `Cf-Visitor` header, as Caddy does.
  */
@@ -385,7 +405,7 @@ export function nginxSite(site: NginxSite): string[] {
         "\tif ($http_cf_visitor ~ '\"http\"') {",
         "\t\treturn 308 https://$host$request_uri;",
         "\t}",
-        ...serve(site, { hsts: true, tls: false }),
+        ...serve(site, { hsts: true, h3: false }),
       ]),
       ...redirectedOverHttp(site, site.hosts, "https", []),
     ];
@@ -394,11 +414,21 @@ export function nginxSite(site: NginxSite): string[] {
     return [
       ...lines,
       "# No domain yet: every hostname is served over plain HTTP.",
-      ...httpServer("~.", serve(site, { hsts: false, tls: false })),
+      ...httpServer("~.", serve(site, { hsts: false, h3: false })),
+    ];
+  }
+  const dir = nginxTlsDir(site.app);
+  if (site.local !== undefined) {
+    return [
+      ...lines,
+      ...redirectServer(site.hosts, false, site.local.httpsPort),
+      ...tlsServer(site, site.hosts, [
+        `\tssl_certificate ${dir}/${LOCALHOST_TLS.certificate};`,
+        `\tssl_certificate_key ${dir}/${LOCALHOST_TLS.key};`,
+      ]),
     ];
   }
   const { origin, others: certbot } = splitByOrigin(site.hosts, site.origin);
-  const dir = nginxTlsDir(site.app);
   const live = certbotLive(site.app);
   if (origin.length > 0) {
     lines.push(
@@ -421,7 +451,7 @@ export function nginxSite(site: NginxSite): string[] {
         ? []
         : httpServer(served.join(" "), [
             ...ACME_LOCATION,
-            ...serve(site, { hsts: false, tls: false }),
+            ...serve(site, { hsts: false, h3: false }),
           ])),
       ...redirectedOverHttp(site, certbot, "http", ACME_LOCATION),
     ];

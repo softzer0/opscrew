@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 import {
+  APPS_DIR,
   appDir,
   EDGE_DIR,
   EDGE_PROJECT,
@@ -9,8 +10,10 @@ import {
   EDGE_VERSION_KEY,
   type EdgeProxy,
   edgeProxy,
+  type LocalhostSite,
   otherProxy,
 } from "../edge";
+import { LOCALHOST_TLS, localhostSite } from "../edge/localhost";
 import {
   ACME_WEBROOT,
   CERTBOT_LOCKED,
@@ -25,12 +28,41 @@ import { shellQuote } from "../runtime/services";
 import { hasCronJobs, healthPath } from "./shared";
 
 /**
+ * The first lines of every script (contracts/localhost.md "The script roots"): the apps' and the
+ * edge's folders, a server's unless the local executor names this computer's in
+ * `OPSCREW_APPS_DIR` and `OPSCREW_EDGE_DIR`. Every path the scripts use is built from them.
+ */
+const SCRIPT_ROOTS = [
+  `APPS_DIR="\${OPSCREW_APPS_DIR:-${APPS_DIR}}"`,
+  `EDGE_DIR="\${OPSCREW_EDGE_DIR:-${EDGE_DIR}}"`,
+];
+
+/** The apps' folder in a script. */
+const APPS = '"$APPS_DIR"';
+
+/** The edge's folder in a script. */
+const EDGE = '"$EDGE_DIR"';
+
+/** The app's folder in a script: `"$APPS_DIR"/<app>`. */
+function appFolder(plan: DeployPlan): string {
+  return `${APPS}/${plan.app.name}`;
+}
+
+/**
+ * `text` as one shell word ({@link shellQuote}) in which the scripts' roots ({@link APPS},
+ * {@link EDGE}) are expanded, so a message names the folders the script uses.
+ */
+function shellMessage(text: string): string {
+  return shellQuote(text).replace(/"\$(?:APPS|EDGE)_DIR"/g, (root) => `'${root}'`);
+}
+
+/**
  * Where the release command's output stays: on the server, readable only by the deploy user. It is
  * never printed in the workflow log, which is public for public repositories, because a failed
  * migration can quote rows of the database.
  */
 function releaseLog(plan: DeployPlan): string {
-  return `${appDir(plan)}/release.log`;
+  return `${appFolder(plan)}/release.log`;
 }
 
 /**
@@ -101,7 +133,7 @@ function steadyServices(plan: DeployPlan): string[] {
 
 /** Where the output of a failed one-time setup step stays on the server, as {@link releaseLog}. */
 function initLog(plan: DeployPlan): string {
-  return `${appDir(plan)}/init.log`;
+  return `${appFolder(plan)}/init.log`;
 }
 
 /**
@@ -133,7 +165,7 @@ function serviceInit(steps: readonly ServiceInitStep[], log: string): string[] {
   return steps.flatMap(({ service, check, run }) => [
     `if ! ${exec(service, check)} > /dev/null 2>&1; then`,
     `  if ! (umask 077; ${exec(service, run)} > ${log} 2>&1); then`,
-    `    echo ${shellQuote(initFailed(service, log))}`,
+    `    echo ${shellMessage(initFailed(service, log))}`,
     "    exit 1",
     "  fi",
     "fi",
@@ -153,7 +185,7 @@ const PROCESS_CHECK_SECONDS = 30;
 
 /** printf's format for a worker that stopped: `%s` is its Compose service, twice. */
 function processFailed(plan: DeployPlan): string {
-  return `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in ${appDir(plan)} (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n`;
+  return `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in ${appFolder(plan)} (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n`;
 }
 
 /**
@@ -212,7 +244,7 @@ function startProcesses(plan: DeployPlan, services: readonly string[]): string[]
     ...each,
     `    now="$id=$(docker inspect --format '{{.State.Status}}:{{.RestartCount}}' "$id")"`,
     '    case " $started " in *" $now "*) continue ;; esac',
-    `    printf ${shellQuote(processFailed(plan))} "$service" "$service"`,
+    `    printf ${shellMessage(processFailed(plan))} "$service" "$service"`,
     "    exit 1",
     "  done",
     "done",
@@ -220,16 +252,17 @@ function startProcesses(plan: DeployPlan, services: readonly string[]): string[]
 }
 
 /** The edge's Compose project, from any folder: `edge up -d`, `edge exec -T kamal-proxy …`. */
-const EDGE_FUNCTION = `edge() { docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml "$@"; }`;
+const EDGE_FUNCTION = `edge() { docker compose -p ${EDGE_PROJECT} -f ${EDGE}/compose.yaml "$@"; }`;
 
 /**
  * kamal-proxy's hostname for the app's service: the domain only, since the edge's proxy redirects
  * `www.<domain>` to `https://<domain>` itself (kamal-proxy's `--canonical-host` redirects to
  * `http://` behind a proxy that terminates TLS); none before the plan has a domain (the service
- * then gets every request).
+ * then gets every request). On this computer, the app's hostname there (`localhost`).
  */
-function proxyHosts(plan: DeployPlan): string {
-  const [domain] = siteHosts(plan);
+function proxyHosts(plan: DeployPlan, localhost: LocalhostSite | undefined): string {
+  const [domain] =
+    plan.target.provider === "localhost" ? [localhostSite(localhost).hostname] : siteHosts(plan);
   return domain === undefined ? "" : ` --host ${domain}`;
 }
 
@@ -259,14 +292,20 @@ const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
  * keeps a pause even across its restarts. The first deploy registers the first target the same
  * way (its pause fails, as kamal-proxy has no service yet, and the deploy goes on). Containers of
  * services the Compose file no longer has go with the new copy's start. When the new copy never
- * becomes healthy it is removed, `failed` is printed and the script exits 1.
+ * becomes healthy it is removed, `failed` is printed and the script exits 1. `hosts` are
+ * kamal-proxy's for the service ({@link proxyHosts}).
  */
-function switchApp(plan: DeployPlan, failed: string, onExit: readonly string[] = []): string[] {
+function switchApp(
+  plan: DeployPlan,
+  hosts: string,
+  failed: string,
+  onExit: readonly string[] = [],
+): string[] {
   const { strategy, drainSeconds } = plan.deploy;
   const app = plan.app.name;
   const kamal = [
     'name="$(docker inspect --format \'{{.Name}}\' "$new")"',
-    `if ! ${kamalProxy(`deploy ${app} --target "\${name#/}:${plan.app.port}"${proxyHosts(plan)} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)}; then`,
+    `if ! ${kamalProxy(`deploy ${app} --target "\${name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)}; then`,
     '  docker rm -f "$new" > /dev/null',
     `  echo ${shellQuote(failed)}`,
     "  exit 1",
@@ -331,7 +370,7 @@ function siteFile(plan: DeployPlan): string {
 function edgeFailed(plan: DeployPlan, additions: boolean): string {
   const { label, additions: file } = EDGE_PROXIES[edgeProxy(plan)];
   const yours = additions ? ` or your additions (${file})` : "";
-  return `::error::OpsCrew's shared edge on the server (${label} and kamal-proxy, in ${EDGE_DIR}) did not start or did not accept this app's site (${siteFile(plan)})${yours}, so the new version was not started, the previous version keeps serving and ${label} keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
+  return `::error::OpsCrew's shared edge on the server (${label} and kamal-proxy, in ${EDGE}) did not start or did not accept this app's site (${siteFile(plan)})${yours}, so the new version was not started, the previous version keeps serving and ${label} keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
 }
 
 /**
@@ -374,6 +413,9 @@ function tlsSiteFailed(plan: DeployPlan): string {
 /** The app's origin TLS files in `/srv/edge/tls/<app>`, as a shell word list. */
 const TLS_FILES = "origin.pem origin.key pull.pem";
 
+/** On this computer, the app's leaf certificate and key in the edge's `tls/<app>`, the same way. */
+const LOCAL_TLS_FILES = `${LOCALHOST_TLS.certificate} ${LOCALHOST_TLS.key}`;
+
 /** How the deploy reloads the server's proxy: each keeps its running configuration on an error. */
 const RELOAD: Record<EdgeProxy, string> = {
   caddy:
@@ -395,6 +437,11 @@ export interface EdgeFiles {
    * the upload left the app's site before its first certificate as `edge/sites/<app>.http.conf`.
    */
   certbot?: { hosts: readonly string[]; email?: string | undefined } | undefined;
+  /**
+   * The localhost target (required there): the app's hostname on this computer. The local deploy
+   * left its leaf certificate and key where `localhostTlsUpload` says.
+   */
+  localhost?: LocalhostSite | undefined;
 }
 
 /**
@@ -423,42 +470,47 @@ export interface EdgeFiles {
  * When the start or the reload fails, the app's previous site, additions and origin TLS files go
  * back (or the new ones go, when it had none), so the proxy never keeps a site it refused. After a
  * switch, any failure, also certbot's, puts the previous proxy back with its files, so it serves
- * HTTPS as before.
+ * HTTPS as before. On this computer the app's leaf certificate and key take the origin files'
+ * place (the local deploy always leaves new ones), and there is no certbot.
  */
 function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const proxy = edgeProxy(plan);
   const { site: ext } = EDGE_PROXIES[proxy];
   const from = EDGE_PROXIES[otherProxy(proxy)].label;
   const app = plan.app.name;
-  const site = `${EDGE_DIR}/sites/${app}.${ext}`;
-  const additions = `${EDGE_DIR}/sites/${app}.additions`;
-  const tls = `${EDGE_DIR}/tls/${app}`;
+  const site = `${EDGE}/sites/${app}.${ext}`;
+  const additions = `${EDGE}/sites/${app}.additions`;
+  const tls = `${EDGE}/tls/${app}`;
+  const local = plan.target.provider === "localhost";
+  const tlsFiles = local ? LOCAL_TLS_FILES : TLS_FILES;
+  /** The upload left new TLS files as `<file>.new`. */
+  const newTls = local || o.originTls;
   const stamp = (key: string, file: string) => `sed -n 's/^${key}: //p' ${file}`;
   /** Puts `previous` back as `file`, or removes `file` when it had none. */
   const restore = (previous: string, file: string) =>
     `if [ -f ${previous} ]; then cp ${previous} ${file}; else rm -f ${file}; fi`;
-  /** The app's previous site, additions and origin TLS files back, indented by `pad`. */
+  /** The app's previous site, additions and TLS files back, indented by `pad`. */
   const restoreFiles = (pad: string) =>
     [
       restore(PREVIOUS_SITE, site),
       restore(PREVIOUS_ADDITIONS, additions),
-      `for f in ${TLS_FILES}; do`,
+      `for f in ${tlsFiles}; do`,
       `  if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
       "done",
     ].map((line) => `${pad}${line}`);
   /** After a switch: the server's previous edge file back, which starts its proxy again. */
   const restoreEdge = (pad: string) =>
-    [
-      `cp ${PREVIOUS_EDGE} ${EDGE_DIR}/compose.yaml`,
-      "edge up -d --wait --remove-orphans || true",
-    ].map((line) => `${pad}${line}`);
-  const certbot = proxy === "nginx" && o.certbot !== undefined && o.certbot.hosts.length > 0;
+    [`cp ${PREVIOUS_EDGE} ${EDGE}/compose.yaml`, "edge up -d --wait --remove-orphans || true"].map(
+      (line) => `${pad}${line}`,
+    );
+  const certbot =
+    !local && proxy === "nginx" && o.certbot !== undefined && o.certbot.hosts.length > 0;
   /** A one-off container of the edge's certbot service. */
   const certbotRun = (args: string) => `edge run --rm --no-deps -T ${args} < /dev/null`;
   const nginxFiles =
     proxy === "nginx"
       ? [
-          `  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > ${EDGE_DIR}/.env`,
+          `  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > ${EDGE}/.env`,
         ]
       : [];
   const installSite = certbot
@@ -523,39 +575,39 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   }
   return [
     // Before the edge's Compose mounts them: Docker would create them owned by root.
-    `mkdir -p ${EDGE_DIR}/sites ${EDGE_DIR}/tls`,
+    `mkdir -p ${EDGE}/sites ${EDGE}/tls`,
     "(",
     "  flock 9",
     `  docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
     ...nginxFiles,
     `  uploaded="$(${stamp(EDGE_VERSION_KEY, "edge/compose.yaml")})"`,
-    `  current="$(${stamp(EDGE_VERSION_KEY, `${EDGE_DIR}/compose.yaml`)} 2> /dev/null || true)"`,
-    `  proxy="$(${stamp(EDGE_PROXY_KEY, `${EDGE_DIR}/compose.yaml`)} 2> /dev/null || true)"`,
+    `  current="$(${stamp(EDGE_VERSION_KEY, `${EDGE}/compose.yaml`)} 2> /dev/null || true)"`,
+    `  proxy="$(${stamp(EDGE_PROXY_KEY, `${EDGE}/compose.yaml`)} 2> /dev/null || true)"`,
     `  rm -f ${PREVIOUS_EDGE}`,
     `  if [ -n "$proxy" ] && [ "$proxy" != ${proxy} ]; then`,
     `    echo ${shellQuote(switchNotice(plan))}`,
-    `    cp ${EDGE_DIR}/compose.yaml ${PREVIOUS_EDGE}`,
-    `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
+    `    cp ${EDGE}/compose.yaml ${PREVIOUS_EDGE}`,
+    `    cp edge/compose.yaml ${EDGE}/compose.yaml`,
     '  elif [ "$uploaded" -gt "${current:-0}" ]; then',
-    `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
+    `    cp edge/compose.yaml ${EDGE}/compose.yaml`,
     `    echo "OpsCrew's shared edge on this server is now version $uploaded."`,
     // The same version with other content: how the server's apps are served changed (they all are
     // served the same way, the host plan refuses anything else), or Cloudflare's addresses did, so
     // this app's copy is the one.
-    `  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml ${EDGE_DIR}/compose.yaml; then`,
-    `    cp edge/compose.yaml ${EDGE_DIR}/compose.yaml`,
+    `  elif [ "$uploaded" -eq "\${current:-0}" ] && ! cmp -s edge/compose.yaml ${EDGE}/compose.yaml; then`,
+    `    cp edge/compose.yaml ${EDGE}/compose.yaml`,
     `    echo "OpsCrew's shared edge on this server now has this app's settings (its ports, and the Cloudflare addresses it trusts)."`,
     '  elif [ "$uploaded" -lt "${current:-0}" ]; then',
     `    echo "The server's shared edge (version $current) is newer than this app's ($uploaded), so it stays."`,
     "  fi",
     // Each file the server has is kept as `<file>.previous` (a stale one goes when it has none),
     // and the uploaded one, if any, takes its place.
-    ...(o.originTls ? [`  cp edge/tls/pull.pem ${tls}/pull.pem.new`] : []),
-    `  for f in ${TLS_FILES}; do`,
+    ...(o.originTls && !local ? [`  cp edge/tls/pull.pem ${tls}/pull.pem.new`] : []),
+    `  for f in ${tlsFiles}; do`,
     `    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi`,
-    ...(o.originTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
+    ...(newTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
     "  done",
-    ...(proxy === "nginx"
+    ...(proxy === "nginx" && !local
       ? [
           `  ${certbotRun(`--user 0:0 --cap-add CHOWN --entrypoint chown certbot "$(id -u):$(id -g)" ${LETSENCRYPT} ${ACME_WEBROOT} ${RELOAD_DIR}`)}`,
         ]
@@ -571,18 +623,19 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     ...restoreEdge("      "),
     `      echo ${shellQuote(switchFailed(plan))}`,
     "    fi",
-    `    echo ${shellQuote(edgeFailed(plan, o.additions))}`,
+    `    echo ${shellMessage(edgeFailed(plan, o.additions))}`,
     "    exit 1",
     "  fi",
     ...certificate,
     // Only now: a switch that failed above puts the previous proxy back with these files.
-    `  rm -f ${EDGE_DIR}/sites/${app}.${EDGE_PROXIES[otherProxy(proxy)].site}`,
-    o.originTls
-      ? `  rm -f ${TLS_FILES.split(" ")
+    `  rm -f ${EDGE}/sites/${app}.${EDGE_PROXIES[otherProxy(proxy)].site}`,
+    newTls
+      ? `  rm -f ${tlsFiles
+          .split(" ")
           .map((f) => `${tls}/${f}.previous`)
           .join(" ")}`
       : `  rm -rf ${tls}`,
-    `) 9> ${EDGE_DIR}/.lock`,
+    `) 9> ${EDGE}/.lock`,
   ];
 }
 
@@ -603,7 +656,8 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
  * rollback ({@link rollbackCommands}) puts the web and the workers back. The services are never
  * named after the setup, and no Compose command names another app's folder or project. The script
  * reaches `sh` on its stdin, so the commands that read stdin (`docker compose exec` and `run`) get
- * `/dev/null`; otherwise they would swallow the rest of the script.
+ * `/dev/null`; otherwise they would swallow the rest of the script. It starts with
+ * {@link SCRIPT_ROOTS}, so the local executor runs it on this computer under its own folders.
  */
 export function switchCommands(
   plan: DeployPlan,
@@ -616,16 +670,18 @@ export function switchCommands(
       ? []
       : [
           `if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > ${releaseLog(plan)} 2>&1); then`,
-          `  echo ${shellQuote(releaseFailed(plan))}`,
+          `  echo ${shellMessage(releaseFailed(plan))}`,
           "  exit 1",
           "fi",
-          `echo ${shellQuote(`The release command finished; its output is in ${releaseLog(plan)} on the server.`)}`,
+          `echo ${shellMessage(`The release command finished; its output is in ${releaseLog(plan)} on the server.`)}`,
         ];
   return [
+    ...SCRIPT_ROOTS,
     "set -eu",
-    `export DOCKER_CONFIG=${dockerConfig(plan)}`,
+    // The same folder as `dockerConfig`, where the workflow logs in to the registry.
+    `export DOCKER_CONFIG=${appFolder(plan)}/.docker`,
     `trap '${LOGOUT}' EXIT`,
-    `cd ${appDir(plan)}`,
+    `cd ${appFolder(plan)}`,
     'export APP_IMAGE="$1"',
     EDGE_FUNCTION,
     "docker compose pull",
@@ -635,7 +691,7 @@ export function switchCommands(
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),
-    ...switchApp(plan, healthFailed(plan), [LOGOUT]),
+    ...switchApp(plan, proxyHosts(plan, edgeFiles.localhost), healthFailed(plan), [LOGOUT]),
     ...startProcesses(plan, processServices(plan)),
   ];
 }
@@ -645,12 +701,14 @@ export function switchCommands(
  * `.env.previous` holds another image, switches the web back to that one the same way as the
  * deploy, starts on it the workers and cron that ran before the deploy and stops the others, and
  * prints `restored`; prints `unchanged` when this run never switched, `no-previous` when there is
- * nothing to go back to, and nothing when the switch back failed.
+ * nothing to go back to, and nothing when the switch back failed. On this computer `localhost` is
+ * the app's hostname there, as the start script had it.
  */
-export function rollbackCommands(plan: DeployPlan): string[] {
+export function rollbackCommands(plan: DeployPlan, localhost?: LocalhostSite): string[] {
   return [
+    ...SCRIPT_ROOTS,
     "set -eu",
-    `cd ${appDir(plan)}`,
+    `cd ${appFolder(plan)}`,
     EDGE_FUNCTION,
     'if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi',
     "if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi",
@@ -658,7 +716,11 @@ export function rollbackCommands(plan: DeployPlan): string[] {
     "export APP_IMAGE",
     "{",
     ...[
-      ...switchApp(plan, "::error::The previous version did not pass its health check either."),
+      ...switchApp(
+        plan,
+        proxyHosts(plan, localhost),
+        "::error::The previous version did not pass its health check either.",
+      ),
       ...restoreProcesses(processServices(plan)),
     ].map((line) => `  ${line}`),
     "} >&2",

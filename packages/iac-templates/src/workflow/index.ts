@@ -2,7 +2,7 @@
 
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
-import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy } from "../edge";
+import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy, type LocalhostSite } from "../edge";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
 import { sshHostname, tunnelMode } from "../tunnel";
@@ -294,9 +294,14 @@ function startStep(plan: DeployPlan, edgeFiles: EdgeFiles, reach: Reach): string
 
 /**
  * The rollback step: runs only when starting or checking the new version failed (not for upload
- * or setup errors), and always fails the job.
+ * or setup errors), and always fails the job. `localhost` is the app's hostname on the localhost
+ * target, as the start script has it.
  */
-function rollbackStep(plan: DeployPlan, reach: Reach): string[] {
+function rollbackStep(
+  plan: DeployPlan,
+  reach: Reach,
+  localhost: LocalhostSite | undefined,
+): string[] {
   return [
     "- name: Roll back to the previous version",
     "  if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
@@ -307,7 +312,7 @@ function rollbackStep(plan: DeployPlan, reach: Reach): string[] {
     "    set -uo pipefail",
     ...reach.prelude,
     "    cat > \"$RUNNER_TEMP/rollback.sh\" <<'REMOTE'",
-    ...remote(rollbackCommands(plan)),
+    ...remote(rollbackCommands(plan, localhost)),
     "    outcome=unchanged",
     `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
     `      outcome="$(${reach.sh} -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"`,
@@ -527,6 +532,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     originTls: ctx.originTls !== undefined && !tunnelMode(plan),
     additions: ctx.additions === true,
     certbot: hosts.length > 0 ? { hosts, email: ctx.acmeEmail } : undefined,
+    localhost: ctx.localhost,
   };
 
   const envFiles = [
@@ -569,7 +575,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     "  run: |",
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
     ...healthScript(edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls),
-    ...rollbackStep(plan, reach),
+    ...rollbackStep(plan, reach, edgeFiles.localhost),
   ];
 
   const own = selfHosted(plan);

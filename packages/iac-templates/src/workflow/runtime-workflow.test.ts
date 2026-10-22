@@ -203,7 +203,7 @@ describe("renderWorkflow", () => {
     const login = start.split("\n").find((line) => line.includes("docker login ghcr.io")) ?? "";
     expect(login).toContain('"DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u');
     const script = serverScript(plan()).split("\n");
-    const exported = script.indexOf("export DOCKER_CONFIG=/srv/apps/shop/.docker");
+    const exported = script.indexOf('export DOCKER_CONFIG="$APPS_DIR"/shop/.docker');
     expect(exported).toBeGreaterThan(-1);
     // Set before the logout on exit and the pull, which both use it.
     expect(exported).toBeLessThan(script.findIndex((line) => line.includes("docker logout")));

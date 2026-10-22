@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
+import { httpsPortSuffix, LOCALHOST_TLS } from "../edge/localhost";
 import { IMAGES } from "../pins";
 import { CLOUDFLARED_METRICS } from "../tunnel";
 
@@ -75,7 +76,8 @@ const TUNNEL_NOTE =
 /**
  * Where Caddy reads the app's Cloudflare origin certificate (`origin.pem`), its key (`origin.key`)
  * and the client certificate Cloudflare presents for the app (`pull.pem`): the server's
- * `/srv/edge/tls/<app>`, or the stack Caddy's tmpfs.
+ * `/srv/edge/tls/<app>`, or the stack Caddy's tmpfs. On this computer, the app's leaf certificate
+ * and key from OpsCrew's local CA.
  */
 export function originTlsDir(app: string): string {
   return `/etc/caddy/tls/${app}`;
@@ -105,6 +107,12 @@ export interface CaddySite {
    * the client certificate Cloudflare sends for the app.
    */
   origin?: { hostnames: readonly string[]; dir: string } | undefined;
+  /**
+   * `direct` mode on this computer (the localhost target): every hostname is served with the leaf
+   * certificate of OpsCrew's local CA from `dir` ({@link originTlsDir}), so Caddy obtains none,
+   * HTTP redirects to HTTPS on `httpsPort`, and the headers leave out HSTS.
+   */
+  local?: { dir: string; httpsPort: number } | undefined;
   /** A file the site imports inside its block: the user's own additions. */
   additions?: string | undefined;
   /**
@@ -231,9 +239,23 @@ export function caddySite(site: CaddySite & { mode: "tunnel" | "direct" }): stri
 }
 
 /**
+ * An HTTP block for `hosts` that redirects to HTTPS on `httpsPort` with the path and query (308).
+ * Caddy's automatic redirect does not answer for hostnames with a certificate of their own.
+ */
+function httpsRedirect(hosts: readonly string[], httpsPort = 443): string[] {
+  return [
+    `${hosts.map((host) => `http://${host}`).join(", ")} {`,
+    `\tredir https://{host}${httpsPortSuffix(httpsPort)}{uri} 308`,
+    "}",
+    "",
+  ];
+}
+
+/**
  * The site's blocks: in `direct` mode the hostnames with the origin certificate get an HTTP block
  * that redirects to HTTPS and a block of their own ({@link originTlsLines}), and any others a
- * second one with `tls`; otherwise one block with `tls` for every hostname.
+ * second one with `tls`; on this computer (`local`) every hostname gets that redirect and the
+ * leaf certificate; otherwise one block with `tls` for every hostname.
  */
 function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
   const redirects = site.redirects ?? [];
@@ -247,16 +269,22 @@ function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
       ...(to === undefined ? [] : redirectBlock(site, moved, first, to)),
     ];
   };
+  const local = site.mode === "direct" ? site.local : undefined;
+  if (local !== undefined) {
+    const { dir, httpsPort } = local;
+    return [
+      ...httpsRedirect(site.hosts, httpsPort),
+      ...blocks(site.hosts, [
+        `\ttls ${dir}/${LOCALHOST_TLS.certificate} ${dir}/${LOCALHOST_TLS.key}`,
+      ]),
+    ];
+  }
   const origin = site.mode === "direct" ? site.origin : undefined;
   const hosts = splitByOrigin(site.hosts, origin?.hostnames);
   if (origin === undefined || hosts.origin.length === 0) return blocks(site.hosts, tls);
   return [
-    // Cloudflare forwards a visitor's plain HTTP to port 80, where the catch-all would abort it:
-    // Caddy's automatic redirect does not answer for hostnames with a certificate of their own.
-    `${hosts.origin.map((host) => `http://${host}`).join(", ")} {`,
-    "\tredir https://{host}{uri} 308",
-    "}",
-    "",
+    // Cloudflare forwards a visitor's plain HTTP to port 80, where the catch-all would abort it.
+    ...httpsRedirect(hosts.origin),
     ...blocks(hosts.origin, originTlsLines(origin.dir)),
     ...(hosts.others.length === 0 ? [] : blocks(hosts.others, tls)),
   ];
@@ -292,9 +320,11 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
       "\tredir @http_visitor https://{host}{uri} 308",
     );
   }
+  // No HSTS on this computer: it would hold the hostname to HTTPS on every port for a year.
+  const hsts = hosts.length > 0 && site.local === undefined;
   const header = [
     "\theader {",
-    ...(hosts.length > 0 ? [`\t\tStrict-Transport-Security "${HSTS}"`] : []),
+    ...(hsts ? [`\t\tStrict-Transport-Security "${HSTS}"`] : []),
     ...BASELINE_HEADERS.map(([name, value]) => `\t\t${name} "${value}"`),
     "\t\t-Server",
     "\t}",

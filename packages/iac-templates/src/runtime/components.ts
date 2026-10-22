@@ -54,8 +54,9 @@ export interface RenderedServices {
 
 /**
  * The service's data mounts: on a server the folder `/srv/data/<app>/<service>`, with a subfolder
- * per data folder when there are several; in Portainer, and on a server for an image that runs as
- * its own user, the volume `<service>_data` (`<service>_<name>` when there are several).
+ * per data folder when there are several; in Portainer, on this computer (the localhost target),
+ * and on a server for an image that runs as its own user, the volume `<service>_data`
+ * (`<service>_<name>` when there are several).
  */
 function dataMounts(
   plan: DeployPlan,
@@ -65,7 +66,7 @@ function dataMounts(
 ): { mounts: string[]; volumes: string[] } {
   const single = typeof spec.dataDir === "string";
   const dirs = dataDirs(spec);
-  if (target.kind === "portainer" || spec.namedVolume) {
+  if (target.kind === "portainer" || spec.namedVolume || plan.target.provider === "localhost") {
     const volumes = dirs.map(([name]) => `${service.name}_${name}`);
     return { mounts: dirs.map(([, dir], i) => `${volumes[i]}:${dir}`), volumes };
   }

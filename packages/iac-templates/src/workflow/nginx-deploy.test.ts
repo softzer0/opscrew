@@ -32,15 +32,15 @@ const start = (plan: DeployPlan, c: RuntimeContext) => step(plan, c, "start").ru
 const edgePart = (plan: DeployPlan, c: RuntimeContext) => {
   const script = start(plan, c);
   return script.slice(
-    script.indexOf("mkdir -p /srv/edge/sites"),
-    script.indexOf(") 9> /srv/edge/.lock"),
+    script.indexOf('mkdir -p "$EDGE_DIR"/sites'),
+    script.indexOf(') 9> "$EDGE_DIR"/.lock'),
   );
 };
 
 describe("the deploy on the nginx edge", () => {
   it("writes the deploy user's uid and gid to the edge's .env, which runs nginx and certbot as them", () => {
     expect(edgePart(dnsOnly, ctx)).toContain(
-      `  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > /srv/edge/.env\n`,
+      `  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > "$EDGE_DIR"/.env\n`,
     );
     expect(edgePart(on("caddy", true), ctx)).not.toContain(".env");
   });
@@ -58,10 +58,10 @@ describe("the deploy on the nginx edge", () => {
     expect(part).toContain(
       [
         "  if edge run --rm --no-deps -T --entrypoint test certbot -f /etc/letsencrypt/live/shop/fullchain.pem < /dev/null; then",
-        "    cp edge/sites/shop.conf /srv/edge/sites/shop.conf",
+        '    cp edge/sites/shop.conf "$EDGE_DIR"/sites/shop.conf',
         "    first=0",
         "  else",
-        "    cp edge/sites/shop.http.conf /srv/edge/sites/shop.conf",
+        '    cp edge/sites/shop.http.conf "$EDGE_DIR"/sites/shop.conf',
         "    first=1",
         "  fi",
       ].join("\n"),
@@ -93,7 +93,7 @@ describe("the deploy on the nginx edge", () => {
     const after = part.slice(at("certbot certonly"));
     const order = [
       "--entrypoint sh certbot -c",
-      "  cp edge/sites/shop.conf /srv/edge/sites/shop.conf\n",
+      '  cp edge/sites/shop.conf "$EDGE_DIR"/sites/shop.conf\n',
       "  if ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then\n",
     ].map((text) => after.indexOf(text));
     expect(order.every((n) => n > 0)).toBe(true);
@@ -103,10 +103,10 @@ describe("the deploy on the nginx edge", () => {
   it("reloads nginx with nginx -t first, and puts the previous site back when it refuses the new one", () => {
     const part = edgePart(dnsOnly, ctx);
     expect(part).toContain(
-      "  if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then\n    if [ -f .site.previous ]; then cp .site.previous /srv/edge/sites/shop.conf; else rm -f /srv/edge/sites/shop.conf; fi\n",
+      `  if ! edge up -d --wait --remove-orphans || ! edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null; then\n    if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi\n`,
     );
     expect(part).toContain(
-      "nginx and kamal-proxy, in /srv/edge) did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.conf)",
+      `nginx and kamal-proxy, in '"$EDGE_DIR"') did not start or did not accept this app'\\''s site (opscrew/runtime/edge/sites/shop.conf)`,
     );
   });
 
@@ -114,7 +114,7 @@ describe("the deploy on the nginx edge", () => {
     const part = edgePart(proxied, origin);
     expect(part).not.toContain("certonly");
     expect(part).not.toContain("--entrypoint test");
-    expect(part).toContain("  cp edge/sites/shop.conf /srv/edge/sites/shop.conf\n");
+    expect(part).toContain('  cp edge/sites/shop.conf "$EDGE_DIR"/sites/shop.conf\n');
     // A proxied app without the origin certificate (no permission yet) gets certbot's.
     expect(edgePart(proxied, ctx)).toContain("certonly");
   });
@@ -124,19 +124,21 @@ describe("the deploy on the nginx edge", () => {
     expect(step(dnsOnly, c, "Upload runtime files and environment").run).toContain(
       ' opscrew/runtime/compose.yaml opscrew/runtime/edge opscrew/proxy/additions.nginx "deploy@${HOST}:/srv/apps/shop/"\n',
     );
-    expect(edgePart(dnsOnly, c)).toContain("  cp additions.nginx /srv/edge/sites/shop.additions\n");
+    expect(edgePart(dnsOnly, c)).toContain(
+      '  cp additions.nginx "$EDGE_DIR"/sites/shop.additions\n',
+    );
   });
 
   it("switches the proxy when the server's edge runs the other one, and states the interruption", () => {
     const part = edgePart(dnsOnly, ctx);
     expect(part).toContain(
       [
-        `  proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' /srv/edge/compose.yaml 2> /dev/null || true)"`,
+        `  proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"`,
         "  rm -f .edge.previous",
         '  if [ -n "$proxy" ] && [ "$proxy" != nginx ]; then',
         "    echo '::notice::OpsCrew switches this server'\\''s proxy from Caddy to nginx (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while nginx starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while certbot gets their certificates.'",
-        "    cp /srv/edge/compose.yaml .edge.previous",
-        "    cp edge/compose.yaml /srv/edge/compose.yaml",
+        '    cp "$EDGE_DIR"/compose.yaml .edge.previous',
+        '    cp edge/compose.yaml "$EDGE_DIR"/compose.yaml',
         '  elif [ "$uploaded" -gt "${current:-0}" ]; then',
       ].join("\n"),
     );
@@ -144,10 +146,10 @@ describe("the deploy on the nginx edge", () => {
     expect(part).not.toMatch(/volume rm|down/);
     // Caddy's site and the earlier origin files go only once certbot and nginx took the new site,
     // so a failed switch can put Caddy back with them.
-    expect(part.indexOf("  rm -f /srv/edge/sites/shop.caddy\n")).toBeGreaterThan(
+    expect(part.indexOf('  rm -f "$EDGE_DIR"/sites/shop.caddy\n')).toBeGreaterThan(
       part.lastIndexOf("nginx -s reload"),
     );
-    expect(part.indexOf("  rm -rf /srv/edge/tls/shop\n")).toBeGreaterThan(
+    expect(part.indexOf('  rm -rf "$EDGE_DIR"/tls/shop\n')).toBeGreaterThan(
       part.lastIndexOf("nginx -s reload"),
     );
     expect(edgePart(on("caddy", true), ctx)).toContain(

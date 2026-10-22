@@ -650,7 +650,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
       expect(workflow).toContain("cd /srv/apps/shop");
       expect(workflow).not.toContain("/srv/apps/blog");
-      expect(workflow).toContain("cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy");
+      expect(workflow).toContain('cp edge/sites/shop.caddy "$EDGE_DIR"/sites/shop.caddy');
     });
 
     it("stops before any change at a hostname the other app serves, naming it", async () => {

@@ -1663,7 +1663,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
       ).run;
       expect(start).not.toContain("certonly");
       expect(start).not.toContain("http.conf");
-      expect(start).toContain("  cp edge/sites/shop.conf /srv/edge/sites/shop.conf\n");
+      expect(start).toContain('  cp edge/sites/shop.conf "$EDGE_DIR"/sites/shop.conf\n');
       // The chown still runs: certbot's volumes stay the deploy user's.
       expect(start).toContain("--entrypoint chown certbot");
     });

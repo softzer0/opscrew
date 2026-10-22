@@ -66,7 +66,7 @@ describe("the deploy with origin TLS", () => {
     );
     const script = start(plan, origin);
     const at = (text: string) => script.indexOf(text);
-    const tls = "/srv/edge/tls/shop";
+    const tls = '"$EDGE_DIR"/tls/shop';
     const swap = [
       `  cp edge/tls/pull.pem ${tls}/pull.pem.new`,
       "  for f in origin.pem origin.key pull.pem; do",
@@ -87,7 +87,7 @@ describe("the deploy with origin TLS", () => {
 
   it("takes the app's origin files out of /srv/edge/tls when the deploy has no origin TLS", () => {
     const script = start(plan, ctx);
-    const tls = "/srv/edge/tls/shop";
+    const tls = '"$EDGE_DIR"/tls/shop';
     // Kept aside until the edge took the site, put back when it refused it, then removed.
     expect(script).toContain(
       `  for f in origin.pem origin.key pull.pem; do\n    if [ -f ${tls}/$f ]; then mv -f ${tls}/$f ${tls}/$f.previous; else rm -f ${tls}/$f.previous; fi\n  done\n`,
@@ -101,7 +101,7 @@ describe("the deploy with origin TLS", () => {
 
   it("puts the previous certificate files back when Caddy refuses the deploy, and drops them once it took it", () => {
     const script = start(plan, origin);
-    const tls = "/srv/edge/tls/shop";
+    const tls = '"$EDGE_DIR"/tls/shop';
     const back = [
       "    for f in origin.pem origin.key pull.pem; do",
       `      if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
@@ -110,7 +110,7 @@ describe("the deploy with origin TLS", () => {
     const failed = script.indexOf("caddy reload");
     expect(script.indexOf(back)).toBeGreaterThan(failed);
     expect(script.indexOf(back)).toBeLessThan(script.indexOf("    exit 1", failed));
-    const done = `  rm -f ${tls}/origin.pem.previous ${tls}/origin.key.previous ${tls}/pull.pem.previous\n) 9> /srv/edge/.lock`;
+    const done = `  rm -f ${tls}/origin.pem.previous ${tls}/origin.key.previous ${tls}/pull.pem.previous\n) 9> "$EDGE_DIR"/.lock`;
     expect(script).toContain(done);
   });
 
@@ -150,15 +150,15 @@ describe("the deploy with the user's additions", () => {
     const at = (text: string) => script.indexOf(text);
     expect(
       at(
-        "if [ -f /srv/edge/sites/shop.additions ]; then cp /srv/edge/sites/shop.additions .additions.previous; fi",
+        'if [ -f "$EDGE_DIR"/sites/shop.additions ]; then cp "$EDGE_DIR"/sites/shop.additions .additions.previous; fi',
       ),
     ).toBeGreaterThan(-1);
-    expect(at("cp edge/sites/shop.caddy /srv/edge/sites/shop.caddy")).toBeLessThan(
-      at("cp additions.caddy /srv/edge/sites/shop.additions"),
+    expect(at('cp edge/sites/shop.caddy "$EDGE_DIR"/sites/shop.caddy')).toBeLessThan(
+      at('cp additions.caddy "$EDGE_DIR"/sites/shop.additions'),
     );
     expect(at("cp additions.caddy")).toBeLessThan(at("caddy reload"));
     expect(script).toContain(
-      "if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi",
+      'if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi',
     );
     expect(script).toContain(
       "s site (opscrew/runtime/edge/sites/shop.caddy) or your additions (opscrew/proxy/additions.caddy), so",
@@ -169,12 +169,12 @@ describe("the deploy with the user's additions", () => {
   it("takes the app's additions off the server when the deploy has none, and back when Caddy refuses the site", () => {
     const script = start(plan, ctx);
     const at = (text: string) => script.indexOf(text);
-    expect(at("  rm -f /srv/edge/sites/shop.additions\n")).toBeGreaterThan(
-      at("cp /srv/edge/sites/shop.additions .additions.previous"),
+    expect(at('  rm -f "$EDGE_DIR"/sites/shop.additions\n')).toBeGreaterThan(
+      at('cp "$EDGE_DIR"/sites/shop.additions .additions.previous'),
     );
-    expect(at("  rm -f /srv/edge/sites/shop.additions\n")).toBeLessThan(at("caddy reload"));
+    expect(at('  rm -f "$EDGE_DIR"/sites/shop.additions\n')).toBeLessThan(at("caddy reload"));
     expect(script).toContain(
-      "if [ -f .additions.previous ]; then cp .additions.previous /srv/edge/sites/shop.additions; else rm -f /srv/edge/sites/shop.additions; fi",
+      'if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi',
     );
   });
 });
