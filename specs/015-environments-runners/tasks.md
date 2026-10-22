@@ -267,7 +267,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1510 [P] [US1] Localhost in agents: the provider, the preflight, the local plan, the deploy, the local CA and trust, verify/status/drift/destroy, in `packages/agents/src/localhost/**` (new), `packages/agents/src/providers/**` (the profile), and the localhost branches in provision, verify, status, drift and destroy
+- [X] T1510 [P] [US1] Localhost in agents: the provider, the preflight, the local plan, the deploy, the local CA and trust, verify/status/drift/destroy, in `packages/agents/src/localhost/**` (new), `packages/agents/src/providers/**` (the profile), and the localhost branches in provision, verify, status, drift and destroy
   - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
   - Reads: contracts/localhost.md "Agents"; plan.md "11."; research.md R4 and "Spike results" 6, 7, 10; spec US1, FR-1501–FR-1509
   - Depends: T1508a, T1506, T1507
@@ -392,6 +392,7 @@ Effort`.
     - Remove iac-templates' `PORTAINER_STACK_TEMPLATE_PATH` and `ORIGIN_PULL_PEM` once only their own tests use them (T1508c). The connector's `DEPLOY_BRANCH` and `DEPLOY_REFERENCE` stay for the Portainer live test.
     - The generic error helpers `reasonOf`, `codeOf` and `hintOf` live in `retarget/` and are imported by promote: move them to `shared/` (T1509's review).
     - Localhost's `shellWord` duplicates the unexported `shellQuote` helpers; and its runbook (`localhost/runbook.ts`) belongs beside `renderRunbook` in iac-templates (T1510).
+    - Core's `signedLeafCertificate` takes a `commonName` option, so a long localhost hostname needs no extra short SAN name (`<16 hex>.localhost`) (T1510).
     - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
