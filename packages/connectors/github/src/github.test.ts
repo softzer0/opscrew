@@ -8,6 +8,7 @@ import sodium from "libsodium-wrappers";
 import { describe, expect, it } from "vitest";
 import { GITHUB_API } from "./github";
 import {
+  GITHUB_TOKEN_PERMISSIONS,
   GitClient,
   GitHubClient,
   githubConnector,
@@ -320,6 +321,22 @@ describe("githubConnector", () => {
     expect(await githubConnector({ token: undefined, fetch }).verifyCredentials()).toMatchObject({
       ok: false,
     });
+  });
+
+  it("lists the token's permissions, those of environments and runners marked as only theirs", () => {
+    expect(GITHUB_TOKEN_PERMISSIONS).toEqual([
+      "Contents: Read and write",
+      "Pull requests: Read and write",
+      "Secrets: Read and write",
+      "Actions: Read and write",
+      "Workflows: Read and write",
+      "Metadata: Read",
+      "Administration: Read and write (only for an app with several environments, and for self-hosted runners)",
+      "Environments: Read and write (only for an app with several environments)",
+    ]);
+    expect(
+      githubConnector({ token: TOKEN, fetch: fakeFetch({}).fetch }).credentials.scopes,
+    ).toEqual([...GITHUB_TOKEN_PERMISSIONS]);
   });
 });
 

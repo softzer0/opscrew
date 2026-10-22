@@ -10,7 +10,7 @@ import { STORAGE_NAMES } from "../prices";
 import { cronMemoryMb } from "../runtime/components";
 import { runtimeDir } from "../runtime-dir";
 import { tunnelMode } from "../tunnel";
-import { cell } from "./shared";
+import { cell, opscrew, runbookFolders } from "./shared";
 
 /** True for an app in the user's Portainer, whose components are the app's stack. */
 function inPortainer(plan: DeployPlan): boolean {
@@ -62,7 +62,7 @@ export function dataCell(plan: DeployPlan, backups: string, external: string): s
  * (`/srv/data/<app>/<name>` or a Docker volume), the cron jobs (UTC) and the SQLite volume, and
  * how to change them.
  */
-export function componentsSection(plan: DeployPlan): string[] {
+export function componentsSection(plan: DeployPlan, environments?: readonly string[]): string[] {
   const portainer = inPortainer(plan);
   const project = projectOf(plan);
   const { workers, cron } = plan.processes;
@@ -122,16 +122,25 @@ export function componentsSection(plan: DeployPlan): string[] {
       "",
     );
   }
+  const status = `\`${opscrew(plan, "status", environments)}\``;
+  const design = `\`${opscrew(plan, "design", environments)}\``;
+  const provision = `\`${opscrew(plan, "provision", environments)}\``;
+  // Every environment shares prod's components: they change in prod's plan, and each
+  // environment's design copies them.
+  const where =
+    plan.environment?.name === undefined
+      ? "`opscrew/plan.yaml`"
+      : "`opscrew/plan.yaml` (prod's plan: every environment shares its components)";
   lines.push(
     portainer
-      ? "`opscrew status` shows whether each component runs, and Portainer shows each container's log. Change a"
-      : "`opscrew status` shows whether each component runs, and `docker compose logs <component>` in the app's folder shows",
+      ? `${status} shows whether each component runs, and Portainer shows each container's log. Change a`
+      : `${status} shows whether each component runs, and \`docker compose logs <component>\` in the app's folder shows`,
     portainer
-      ? "component's count, memory or version, or turn one off, in `opscrew/plan.yaml`, then run `opscrew design` and"
-      : "its log. Change a component's count, memory or version, or turn one off, in `opscrew/plan.yaml`, then run",
+      ? `component's count, memory or version, or turn one off, in ${where}, then run ${design} and`
+      : `its log. Change a component's count, memory or version, or turn one off, in ${where}, then run`,
     portainer
-      ? "`opscrew provision`."
-      : "`opscrew design` (it checks that everything fits the server and keeps your changes) and `opscrew provision`.",
+      ? `${provision}.`
+      : `${design} (it checks that everything fits the server and keeps your changes) and ${provision}.`,
     "",
   );
   return lines;
@@ -143,7 +152,11 @@ export function componentsSection(plan: DeployPlan): string[] {
  * the app's certificates with their renewal. `shared`: a server several OpsCrew apps may share
  * (the user's own).
  */
-export function edgeSection(plan: DeployPlan, shared: boolean): string[] {
+export function edgeSection(
+  plan: DeployPlan,
+  shared: boolean,
+  environments: readonly string[] | undefined,
+): string[] {
   const name = plan.app.name;
   const proxy = edgeProxy(plan);
   const { label, site, additions } = EDGE_PROXIES[proxy];
@@ -157,75 +170,87 @@ export function edgeSection(plan: DeployPlan, shared: boolean): string[] {
     ...(shared
       ? [
           "Every OpsCrew app on this server sits behind the same edge, each with its own folders in `/srv/apps` and",
-          "`/srv/data` and its own site file. `opscrew destroy` removes the edge only with the last app.",
+          `\`/srv/data\` and its own site file. \`${opscrew(plan, "destroy", environments)}\` removes the edge only with the last app.`,
         ]
       : []),
     "",
     `- **Your own rules:** \`${additions}\` holds this app's own ${label} rules (headers, redirects, rate limits, basic`,
     "  authentication). OpsCrew checks them with its rules and with the proxy's own checker before they go live.",
-    `- **The proxy:** \`target.edge\` in \`opscrew/plan.yaml\` (\`caddy\` or \`nginx\`). Every app on a server uses the same one;`,
+    `- **The proxy:** \`target.edge\` in \`${runbookFolders(plan, undefined).artefacts}/plan.yaml\` (\`caddy\` or \`nginx\`). Every app on a server uses the same one;`,
     "  it can be switched while the server holds only one OpsCrew app, with a short interruption the plan states.",
-    ...certificateLines(plan, proxy),
+    ...certificateLines(plan, proxy, environments),
     "",
   ];
 }
 
 /** The app's certificates and who renews them, for "The edge". */
-function certificateLines(plan: DeployPlan, proxy: EdgeProxy): string[] {
+function certificateLines(
+  plan: DeployPlan,
+  proxy: EdgeProxy,
+  environments: readonly string[] | undefined,
+): string[] {
   if (tunnelMode(plan)) {
     return [
       "- **Certificates:** Cloudflare's edge serves HTTPS; the tunnel needs no certificate on the server.",
     ];
   }
   if (!usesCloudflare(plan) || plan.dns.domain === undefined) return [];
+  const [status, verify, secure] = ["status", "verify", "secure"].map(
+    (command) => `\`${opscrew(plan, command, environments)}\``,
+  );
   if (plan.dns.proxied) {
     return [
       "- **Certificates:** the server serves a Cloudflare origin certificate for this app's hostnames (valid for 15 years)",
       "  and refuses any connection without this app's own client certificate, which only Cloudflare sends for your",
-      "  zone. `opscrew status` shows both and when they expire; `opscrew provision` replaces the origin certificate",
+      `  zone. ${status} shows both and when they expire; \`${opscrew(plan, "provision", environments)}\` replaces the origin certificate`,
       "  when fewer than 30 days remain. Without the Cloudflare token's SSL and Certificates permission the site keeps",
-      "  public certificates, and `opscrew secure` lists the gap.",
+      `  public certificates, and ${secure} lists the gap.`,
     ];
   }
   const caa = `OpsCrew's CAA records name only ${listText(CAA_ISSUERS[proxy].map((issuer) => `\`${issuer}\``))} (none at the zone's apex).`;
   return proxy === "nginx"
     ? [
         "- **Certificates:** certbot gets the first certificate from Let's Encrypt during the first deploy and renews it",
-        "  twice a day when it is due; nginx reloads without dropping connections. `opscrew status`, `opscrew verify`",
-        "  and `opscrew secure` warn 30 days before a certificate expires, with certbot's reason when a renewal failed.",
+        `  twice a day when it is due; nginx reloads without dropping connections. ${status}, ${verify}`,
+        `  and ${secure} warn 30 days before a certificate expires, with certbot's reason when a renewal failed.`,
         `  ${caa}`,
       ]
     : [
         "- **Certificates:** Caddy gets and renews the certificates itself (Let's Encrypt, with ZeroSSL as its fallback).",
-        "  `opscrew status`, `opscrew verify` and `opscrew secure` warn 30 days before a certificate expires.",
+        `  ${status}, ${verify} and ${secure} warn 30 days before a certificate expires.`,
         `  ${caa}`,
       ];
 }
 
 /**
- * "The secrets recovery copy": what `opscrew/secrets.sops.json` holds, how it stays current, how
- * to restore it on another computer (with OpsCrew, or with sops alone) and how to change the key.
+ * "The secrets recovery copy": what the environment's `secrets.sops.json` holds, how it stays
+ * current, how to restore it on another computer (with OpsCrew, or with sops alone) and how to
+ * change the key.
  */
-export function recoverySection(): string[] {
+export function recoverySection(plan: DeployPlan, environments?: readonly string[]): string[] {
+  const copy = `${runbookFolders(plan, undefined).artefacts}/secrets.sops.json`;
+  const provision = opscrew(plan, "provision", environments);
+  const restore = `${opscrew(plan, "secrets restore", environments)} --key-file <your age key file>`;
+  const column = Math.max(restore.length, provision.length) + 3;
   return [
     "## The secrets recovery copy",
     "",
-    "`opscrew/secrets.sops.json` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran",
-    "`opscrew provision`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,",
+    `\`${copy}\` is an encrypted copy of what OpsCrew keeps for this app on the machine that ran`,
+    `\`${provision}\`: the generated passwords and keys, the deploy key, the infrastructure state and its passphrase,`,
     "and OpsCrew's records. Only your age key (or your backup key) opens it, and OpsCrew keeps no copy of the key.",
-    "`opscrew provision` updates it in its pull request whenever one of those files changes; `opscrew secrets status`",
+    `\`${provision}\` updates it in its pull request whenever one of those files changes; \`${opscrew(plan, "secrets status", environments)}\``,
     "shows when it was last updated and whether it is behind.",
     "",
     "To manage the deployment from another computer:",
     "",
     "```bash",
     "git clone <this repository> && cd <it>",
-    "opscrew secrets restore --key-file <your age key file>   # or without --key-file, to paste the key unseen",
-    "opscrew provision                                        # reuses the restored files: nothing is generated again",
+    `${restore.padEnd(column)}# or without --key-file, to paste the key unseen`,
+    `${provision.padEnd(column)}# reuses the restored files: nothing is generated again`,
     "```",
     "",
-    "- **Without OpsCrew:** `SOPS_AGE_KEY_FILE=<your age key file> sops decrypt opscrew/secrets.sops.json` prints the files.",
-    "- **A new key:** `opscrew secrets rotate --key-out <file>` writes a new key to that file and proposes the copy,",
+    `- **Without OpsCrew:** \`SOPS_AGE_KEY_FILE=<your age key file> sops decrypt ${copy}\` prints the files.`,
+    `- **A new key:** \`${opscrew(plan, "secrets rotate", environments)} --key-out <file>\` writes a new key to that file and proposes the copy,`,
     "  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets",
     "  themselves too.",
     "",
@@ -237,7 +262,11 @@ export function recoverySection(): string[] {
  * storage key: the user's own, created in the provider's console, kept on the machine that ran
  * provision and never in the repository or in infrastructure state (Garage's is generated).
  */
-export function objectStorageSection(plan: DeployPlan, projectDir: string): string[] {
+export function objectStorageSection(
+  plan: DeployPlan,
+  projectDir: string,
+  environments?: readonly string[],
+): string[] {
   const storage = plan.storage?.objectStorage;
   if (storage === undefined) return [];
   const { price } = storage;
@@ -253,19 +282,20 @@ export function objectStorageSection(plan: DeployPlan, projectDir: string): stri
       "",
     ];
   }
+  const provision = `\`${opscrew(plan, "provision", environments)}\``;
   return [
     "## Object storage",
     "",
     `The app's files are in the private bucket \`${storage.bucket}\` on ${STORAGE_NAMES[storage.provider]} (${storage.region}), about`,
-    `${priced}. OpsCrew creates the bucket in its own root, \`${storageRootDir(plan)}/\`, so \`opscrew destroy\` keeps it`,
+    `${priced}. OpsCrew creates the bucket in its own root, \`${storageRootDir(plan)}/\`, so \`${opscrew(plan, "destroy", environments)}\` keeps it`,
     "with its files unless you add `--delete-data`.",
     "",
     "- **The storage key is yours.** OpsCrew never creates one: you created it in the provider's console with the steps",
-    "  `opscrew provision` showed. OpsCrew keeps it on the machine that ran `opscrew provision`",
+    `  ${provision} showed. OpsCrew keeps it on the machine that ran ${provision}`,
     `  (\`${projectDir}/storage_key.json\`), never in this repository or in infrastructure state, and the app gets it`,
     "  as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, with `AWS_REGION` and `AWS_ENDPOINT_URL_S3`.",
     "- **To replace it:** create a new key, delete the stored copy (or set `OPSCREW_STORAGE_ACCESS_KEY_ID` and",
-    "  `OPSCREW_STORAGE_SECRET_ACCESS_KEY` to it in scripts), run `opscrew provision` to give it to the app, re-run the",
+    `  \`OPSCREW_STORAGE_SECRET_ACCESS_KEY\` to it in scripts), run ${provision} to give it to the app, re-run the`,
     "  deploy workflow, then revoke the old key in the provider's console.",
     "",
   ];

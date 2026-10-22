@@ -117,6 +117,19 @@ rule, and also the zone's rule list of that kind when OpsCrew created it and not
 it. The other apps in the zone keep their protection, their tunnels and their Access logins. The
 account's Zero Trust organization and one-time PIN login always stay.
 
+## Environments in one zone
+
+Each of an app's [environments](environments.md) is protected like an app of its own: staging's
+hostnames (`staging.example.com`) join the same two OpsCrew rules, each environment's provision
+shows its own Cloudflare plan, and each remembers its hostnames in its own record
+(`.opscrew/environments/<env>/cloudflare.json`; prod's stays `.opscrew/cloudflare.json`).
+Every environment needs hostnames of its own: design refuses one that another environment of the
+app already uses, and the Cloudflare plan one that another app has
+(see [A hostname another app already uses](#a-hostname-another-app-already-uses)).
+`npx opscrew destroy --env staging` removes only staging's
+hostnames, and prod keeps its protection. An environment [on your computer](localhost.md) uses no
+Cloudflare at all.
+
 ## Cloudflare token permissions
 
 Give your `CLOUDFLARE_API_TOKEN` these permissions for the zone:

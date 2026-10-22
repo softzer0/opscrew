@@ -51,7 +51,10 @@ The image name is in lower case, but the identity is not: write `<Owner>/<Repo>`
 spells your repository, as in its address on github.com (for example `Acme/Shop`). The signature
 records that spelling, and cosign compares it letter for letter. The identity is the deploy
 workflow on your deploy branch: use your branch instead of `main` if it has another name, and the
-path in `cicd.workflowPath` (in `opscrew/plan.yaml`) if you changed it. To accept any workflow of
+path in `cicd.workflowPath` (in `opscrew/plan.yaml`) if you changed it. With several
+[environments](environments.md), the identity is the workflow of the environment that built the
+image, such as `.github/workflows/opscrew-deploy-staging.yml`: a promoted environment signs nothing
+and checks its source's signature. To accept any workflow of
 your repository instead, replace `--certificate-identity "…"` with
 `--certificate-identity-regexp '^https://github.com/<Owner>/<Repo>/'`.
 
@@ -111,6 +114,12 @@ newest 10 deployed images, with their SBOM, provenance and signature, and delete
 never deletes the image that is running or the one before it, so the previous version stays
 available. Images you tagged yourself are kept too. The intermediate images that Buildpacks and
 Railpack builds leave behind are always deleted.
+
+Each healthy deploy also labels the image its [environment](environments.md) now runs
+`opscrew-<env>` (`opscrew-prod` for prod) and the one before it `opscrew-<env>-previous`.
+These tags only label the images; deploys always name the digest. Cleanup never deletes an image
+with such a label, so every environment keeps what it runs and what it ran before, which
+[promotion and rollback](environments.md#promotion) use.
 
 To keep more or fewer, set `cicd.imageRetention.keep` (2 to 100) in `opscrew/plan.yaml`. To keep
 every deployed image, set `cicd.imageRetention.enabled: false`. Then run `npx opscrew provision`.

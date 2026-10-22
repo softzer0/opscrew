@@ -3,7 +3,8 @@ import { providerBucket } from "../infra/storage";
 import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
-import type { RenderContext, RenderedFile } from "../types";
+import type { RenderedFile } from "../types";
+import { selfHosted } from "../workflow/shared";
 import {
   componentsSection,
   dataCell,
@@ -14,17 +15,20 @@ import {
 import {
   cell,
   DATABASE_DUMP,
-  DEPLOY_AGAIN,
-  DEPLOY_KEY_STORED,
+  deployAgain,
+  deployKeyStored,
   deployRows,
   deploySections,
   driftFiles,
   externalDatabaseCell,
+  opscrew,
+  type RunbookContext,
+  runbookFolders,
   runbookHead,
-  SECURITY_HEAD,
+  securityHead,
   serverCommands,
   settingsSection,
-  TROUBLESHOOTING,
+  troubleshooting,
 } from "./shared";
 
 /**
@@ -32,12 +36,12 @@ import {
  * it, in any mode (FR-902, stricter than ADR 0010's exception for unproxied servers): commands name
  * `<server>`, and `ctx.serverIpv4`/`serverIpv6` are ignored. No server price: the user already
  * pays for the server. Backups are the user's responsibility, and the Portainer password is only
- * named by its file.
+ * named by its file. Another environment's runbook has its own folders and `--env <env>`.
  */
 export function renderOwnRunbook(
   plan: DeployPlan,
   target: OwnDeployTarget,
-  ctx: RenderContext,
+  ctx: RunbookContext,
 ): RenderedFile {
   const tunnel = tunnelMode(plan);
   const cloudflare = usesCloudflare(plan);
@@ -45,7 +49,9 @@ export function renderOwnRunbook(
   const hosts = siteHosts(plan);
   const url =
     hosts.length > 0 ? `https://${hosts[0]}` : "`http://<server>` (your server's address)";
-  const projectDir = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`;
+  const { environments } = ctx;
+  const folders = runbookFolders(plan, ctx.projectId);
+  const projectDir = folders.home;
   const keyPath = `${projectDir}/deploy_key`;
   const server = "<server>";
   // Both commands connect to the server directly (in tunnel mode over the user's own network), so
@@ -58,12 +64,15 @@ export function renderOwnRunbook(
   const name = plan.app.name;
   // The app's bucket at a provider, which destroy keeps unless asked (Garage's is on the server).
   const bucket = providerBucket(plan)?.bucket;
+  const status = opscrew(plan, "status", environments);
+  const provision = opscrew(plan, "provision", environments);
+  const drift = opscrew(plan, "drift", environments);
 
   const addresses = tunnel
     ? "none needed: the server is reached through a Cloudflare Tunnel"
     : proxied
-      ? "kept private behind Cloudflare: `opscrew status` shows them"
-      : "kept out of this repository: `opscrew status` shows them";
+      ? `kept private behind Cloudflare: \`${status}\` shows them`
+      : `kept out of this repository: \`${status}\` shows them`;
   const db = dataCell(plan, "backups are your responsibility", externalDatabaseCell(plan));
   const dns = tunnel
     ? "Cloudflare, through a Cloudflare Tunnel (no DNS record points at the server)"
@@ -90,34 +99,35 @@ export function renderOwnRunbook(
         ]),
     "| Cost | no server price: you already pay for this server; OpsCrew adds no server cost |",
     "",
-    ...deploySections(plan, {
+    ...deploySections(plan, environments, {
       build:
         target.arch === "arm64"
           ? ["   Your server is arm64, so the image is built on GitHub's arm64 runner."]
           : [],
+      // The server's own runner deploys without SSH, so without the tunnel's SSH hostname.
       start:
-        sshHost === undefined
+        sshHost === undefined || selfHosted(plan)
           ? []
           : [
               `   Your server has no open port for this: the workflow installs a pinned \`cloudflared\` and connects to \`${sshHost}\``,
               "   through the Cloudflare Tunnel with a Cloudflare Access service token kept in the deploy secrets.",
             ],
     }),
-    ...componentsSection(plan),
-    ...edgeSection(plan, true),
-    ...objectStorageSection(plan, projectDir),
+    ...componentsSection(plan, environments),
+    ...edgeSection(plan, true, environments),
+    ...objectStorageSection(plan, projectDir, environments),
     "## Connect to the server",
     "",
     "Your own login keeps working as before (with your key). To work as the deploy user:",
     "",
     ...serverCommands(plan, [`ssh ${port}-i ${keyPath} deploy@${server}`]),
     "",
-    "`<server>` is the address you gave OpsCrew; it is not written in this repository. `opscrew status` shows it on the",
-    "machine that ran `opscrew provision`.",
+    `\`<server>\` is the address you gave OpsCrew; it is not written in this repository. \`${status}\` shows it on the`,
+    `machine that ran \`${provision}\`.`,
     ...(tunnel
       ? [
           `The tunnel's SSH hostname (\`${sshHost}\`) only lets the deploy workflow in; connect over your own network`,
-          "or VPN as you did when you ran `opscrew provision`.",
+          `or VPN as you did when you ran \`${provision}\`.`,
         ]
       : proxied
         ? [
@@ -125,12 +135,12 @@ export function renderOwnRunbook(
           ]
         : []),
     "",
-    DEPLOY_KEY_STORED,
+    deployKeyStored(plan, environments),
     "secret). OpsCrew turned off password logins on the server.",
     "",
     "## Backups are your responsibility",
     "",
-    "OpsCrew cannot turn on backups or snapshots on a server you own, and `opscrew destroy` takes no snapshot. Back up",
+    `OpsCrew cannot turn on backups or snapshots on a server you own, and \`${opscrew(plan, "destroy", environments)}\` takes no snapshot. Back up`,
     "the server the way your hosting provider or your own setup allows, and keep copies somewhere else.",
     "",
   ];
@@ -152,13 +162,13 @@ export function renderOwnRunbook(
       "",
       `Then open https://localhost:${PORTAINER_PORT} (Portainer uses a self-signed certificate) and log in as \`admin\`.`,
       `The password is in \`${projectDir}/portainer_password\``,
-      "on the machine that ran `opscrew provision`; it is never written to this repository.",
+      `on the machine that ran \`${provision}\`; it is never written to this repository.`,
       ...(portainerHost === undefined
         ? []
         : [
             "",
             `It is also served on https://${portainerHost}, behind Cloudflare Access: only the email addresses listed in`,
-            "`opscrew/plan.yaml` get in, with a one-time PIN sent to that address, and Portainer's own login still applies.",
+            `\`${folders.artefacts}/plan.yaml\` get in, with a one-time PIN sent to that address, and Portainer's own login still applies.`,
           ]),
       "",
       "`opscrew portainer disable` removes it (deleting its data only after you type the app name).",
@@ -167,8 +177,8 @@ export function renderOwnRunbook(
   }
 
   lines.push(
-    ...settingsSection([
-      "- **Domain or tunnel:** run `opscrew design` and `opscrew provision`. OpsCrew shows the plans (the Cloudflare changes and",
+    ...settingsSection(plan, environments, [
+      `- **Domain or tunnel:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plans (the Cloudflare changes and`,
       "  the host changes) and applies nothing without your approval.",
       "- **Switching between direct access and the tunnel** runs in two steps: OpsCrew first removes the current way in",
       "  (the DNS records, or the tunnel and its Access applications), then adds the new one, each with its own plan and",
@@ -176,21 +186,21 @@ export function renderOwnRunbook(
       "- **Your server itself** (size, operating system, other software) is yours to manage; OpsCrew changes only what its",
       "  host plan lists, and records each change in `/etc/opscrew/host.json` on the server.",
     ]),
-    ...recoverySection(),
+    ...recoverySection(plan, environments),
     "## Check for drift",
     "",
-    "Run `opscrew drift` on the machine that ran `opscrew provision`. It compares:",
+    `Run \`${drift}\` on the machine that ran \`${provision}\`. It compares:`,
     "",
     `- **Cloudflare with the state and the code:** DNS records${tunnel || portainerHost ? ", the tunnel and Cloudflare Access" : ""} changed`,
-    "  outside OpsCrew, or changes in `opscrew/infra/` that have not been applied yet.",
+    `  outside OpsCrew, or changes in \`${folders.infra}/\` that have not been applied yet.`,
     "- **The server with what OpsCrew set up:** SSH settings, firewall rules, the deploy user, runtime files and containers,",
     "  against the record in `/etc/opscrew/host.json`.",
     ...driftFiles(plan),
     "",
-    "`opscrew drift` never changes anything. To fix drift, run `opscrew provision`, which shows the plans and applies",
+    `\`${drift}\` never changes anything. To fix drift, run \`${provision}\`, which shows the plans and applies`,
     "nothing without your approval.",
     "",
-    ...SECURITY_HEAD,
+    ...securityHead(plan, environments),
     "- What OpsCrew set up on the server: Docker Engine from Docker's repository, a `deploy` user with key-only SSH,",
     "  password logins off (root keeps key-only access only if you log in as root), automatic security updates and,",
     `  unless another firewall already manages the server, a host firewall that allows only SSH${tunnel ? "" : ", HTTP and HTTPS"}.`,
@@ -205,23 +215,23 @@ export function renderOwnRunbook(
   }
   lines.push(
     "",
-    ...TROUBLESHOOTING,
+    ...troubleshooting(plan, environments),
     "## Tear it down",
     "",
-    "Run `opscrew destroy` on the machine that ran `opscrew provision`. It removes what OpsCrew set up for this app: the",
+    `Run \`${opscrew(plan, "destroy", environments)}\` on the machine that ran \`${provision}\`. It removes what OpsCrew set up for this app: the`,
     `${cloudflare ? `Cloudflare ${tunnel ? "tunnel, Access applications and DNS records" : "DNS records and rules"} OpsCrew created, the ` : ""}app's containers and runtime`,
     "files on the server, and the GitHub deploy secrets. It **never** deletes, rebuilds or reinstalls your server.",
     "",
     `- **App data:** the data in \`/srv/data/${name}\`${bucket === undefined ? " and" : ","} the app's Docker volumes${bucket === undefined ? "" : ` and the bucket \`${bucket}\``} stay unless you add`,
     `  \`--delete-data\`, which needs the destroy approval and the typed app name (\`${name}\`; \`--confirm ${name}\` in scripts).`,
     "  There is no snapshot: back up first if you want to keep it. Other apps on the server keep their data.",
-    "- **Undo OpsCrew's host changes:** `opscrew destroy --undo-host` also plans the reverse of what OpsCrew changed on the",
+    `- **Undo OpsCrew's host changes:** \`${opscrew(plan, "destroy --undo-host", environments)}\` also plans the reverse of what OpsCrew changed on the`,
     "  server (deploy user, SSH settings, firewall, automatic updates, Docker if OpsCrew installed it), from the record in",
     "  `/etc/opscrew/host.json`. It is a separate plan that you approve on its own.",
     `- **What remains:** your server, the container images in GitHub Container Registry (\`ghcr.io/${repo.toLowerCase()}\`), and`,
     `  the files in this repository (\`opscrew/\` and \`${plan.cicd.workflowPath}\`).`,
     "",
-    ...DEPLOY_AGAIN,
+    ...deployAgain(plan, environments),
   );
-  return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };
+  return { path: `${folders.artefacts}/RUNBOOK.md`, content: lines.join("\n"), kind: "doc" };
 }

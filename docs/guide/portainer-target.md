@@ -274,6 +274,19 @@ Portainer. The values the image needs while it is built are also stored in the G
 any value; a changed value shows in a plan by its name only. An optional variable you leave unset reaches the app as an empty
 value, so make sure your app treats an empty value like a missing one.
 
+## Several environments in your Portainer
+
+An app's [environments](environments.md) can share your Portainer: `npx opscrew env add staging`
+offers prod's Portainer by default, and staging becomes another stack beside prod's, under its own
+name (`opscrew-<app>-staging`, with its own volumes and hostname). Its new versions come from its
+own branch, `opscrew-deploy-staging`, written by its own workflow, and each environment's stack plan
+is approved by its own hash. `npx opscrew destroy --env staging` removes only staging's stacks, and
+prod keeps running. A promoted environment gets exactly the image its source runs (see
+[Promotion](environments.md#promotion)).
+
+There is no [self-hosted runner](runners.md) here: Portainer redeploys the stack itself, so the
+deploys already need no SSH.
+
 ## Day 2
 
 - `npx opscrew verify` checks the site through its domain. Behind your own reverse proxy, add

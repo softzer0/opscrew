@@ -117,6 +117,20 @@ SOPS_AGE_KEY_FILE=~/opscrew-shop-age-key.txt sops decrypt opscrew/secrets.sops.j
 It prints a JSON object whose `files` hold each file's content by its path: `home/<name>` for the
 files in `~/.opscrew/projects/<project>/`, and `state/<path>` for those in `.opscrew/`.
 
+## Each environment's copy
+
+Each of an app's [environments](environments.md) has its own copy beside its plan:
+`opscrew/environments/<env>/secrets.sops.json`, with that environment's generated values, deploy key,
+state and records (prod's stays `opscrew/secrets.sops.json`). Every copy is sealed to the same age
+keys, from `opscrew/.sops.yaml`, so one key restores them all. The commands take `--env`:
+
+```bash
+npx opscrew secrets status --env staging
+npx opscrew secrets restore --env staging --key-file ~/opscrew-shop-age-key.txt
+```
+
+A folder copy is named after the environment's app name, such as `shop-staging.sops.json`.
+
 ## From Claude Code
 
 The OpsCrew plugin has the same tools. A new key goes only to the file you name (`keyOut`), and a

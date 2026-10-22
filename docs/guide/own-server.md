@@ -225,6 +225,23 @@ app's components. It warns when less than 15% stays free.
 
 When you remove an app, the others keep running. The edge goes with the last app.
 
+## Several environments on your server
+
+An app's [environments](environments.md) can share your server: `npx opscrew env add staging`
+offers prod's server by default. Staging then runs beside prod exactly as a second app does, under
+its own name `<app>-staging` (`/srv/apps/shop-staging`, `/srv/data/shop-staging`, its own record,
+deploy key and hostname such as `staging.example.com`), behind the same edge. Its memory limits
+count in design's check like any other app's, and there is no extra server cost.
+
+Each environment has its own host plan, approved by its own hash; the server's shared setup is
+already in place, so a second environment's plan changes only what is its own: its folders, its
+record and its deploy key.
+`npx opscrew destroy --env staging` removes only staging, and prod keeps running. An environment can
+also go to another server of yours: answer its address when `env add` asks.
+
+With the [server's runner](runners.md#the-servers-runner), the deploy job runs on your server
+itself, so GitHub no longer reaches it over SSH.
+
 ## How visitors reach your server
 
 The interview asks how your site is served. There are three ways:

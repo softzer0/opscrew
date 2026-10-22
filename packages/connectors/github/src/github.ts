@@ -17,6 +17,15 @@ import { sealSecret } from "./seal";
 
 export const GITHUB_API = "https://api.github.com";
 
+/**
+ * The fine-grained permissions OpsCrew's calls need on the repository, as GitHub's token page names
+ * them (shown by `opscrew init` and the guide). Actions also covers reading GitHub environments.
+ * Administration (GitHub environments, runner registration, the fork-PR policy) and Environments
+ * (environment secrets) are needed only for an app with several environments and for self-hosted
+ * runners. `opscrew promote` reads GitHub's container registry with `OPSCREW_GHCR_READ_TOKEN` (a
+ * classic token with `read:packages`) when it is set, since the registry may not accept a
+ * fine-grained token.
+ */
 export const GITHUB_TOKEN_PERMISSIONS = [
   "Contents: Read and write",
   "Pull requests: Read and write",
@@ -24,6 +33,8 @@ export const GITHUB_TOKEN_PERMISSIONS = [
   "Actions: Read and write",
   "Workflows: Read and write",
   "Metadata: Read",
+  "Administration: Read and write (only for an app with several environments, and for self-hosted runners)",
+  "Environments: Read and write (only for an app with several environments)",
 ] as const;
 
 export interface GitHubClientOptions {

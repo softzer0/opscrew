@@ -3,7 +3,7 @@ import { type CloudDeployTarget, type DeployPlan, serviceOf } from "@opscrew/pla
 import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
 import { siteHosts } from "../runtime";
-import type { RenderContext, RenderedFile } from "../types";
+import type { RenderedFile } from "../types";
 import {
   componentsSection,
   dataCell,
@@ -15,21 +15,30 @@ import { renderOwnRunbook } from "./own";
 import {
   cell,
   DATABASE_DUMP,
-  DEPLOY_AGAIN,
-  DEPLOY_KEY_STORED,
+  deployAgain,
+  deployKeyStored,
   deployRows,
   deploySections,
   driftFiles,
   externalDatabaseCell,
+  opscrew,
+  type RunbookContext,
+  runbookFolders,
   runbookHead,
-  SECURITY_HEAD,
+  securityHead,
   serverCommands,
   settingsSection,
-  TROUBLESHOOTING,
+  troubleshooting,
 } from "./shared";
 
 export { componentsSection, objectStorageSection, recoverySection } from "./components";
-export { cell, deployRows, externalDatabaseCell, runbookHead } from "./shared";
+export {
+  cell,
+  deployRows,
+  externalDatabaseCell,
+  type RunbookContext,
+  runbookHead,
+} from "./shared";
 
 const PENDING = "_(set by `opscrew provision`)_";
 
@@ -48,9 +57,11 @@ function money(plan: DeployPlan, provider: ProviderText): string {
  * the real values from the plan. Deterministic; contains no secrets or absolute paths. The
  * server's address (`ctx.serverIpv4`/`serverIpv6`) is shown only when the domain is not behind
  * Cloudflare's proxy: a published origin address would let anyone go around Cloudflare. A server
- * the user owns gets its own runbook (see `renderOwnRunbook`).
+ * the user owns gets its own runbook (see `renderOwnRunbook`). Another environment's runbook is
+ * `opscrew/environments/<env>/RUNBOOK.md`, with its own folders and `--env <env>` on every command;
+ * prod's is unchanged.
  */
-export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFile {
   if (plan.target.provider === "own") return renderOwnRunbook(plan, plan.target, ctx);
   const target = cloudTarget(plan.target);
   const provider = PROVIDER_TEXT[target.provider];
@@ -59,11 +70,16 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
   const ipv6 = hidden ? undefined : ctx.serverIpv6;
   const hosts = siteHosts(plan);
   const url = hosts.length > 0 ? `https://${hosts[0]}` : ip ? `http://${ip}` : PENDING;
-  const projectDir = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`;
+  const { environments } = ctx;
+  const folders = runbookFolders(plan, ctx.projectId);
+  const projectDir = folders.home;
   const keyPath = `${projectDir}/deploy_key`;
-  const ssh = `ssh -i ${keyPath} deploy@${ip ?? "$(opscrew status --ip)"}`;
+  const status = opscrew(plan, "status", environments);
+  const statusIp = opscrew(plan, "status --ip", environments);
+  const provision = opscrew(plan, "provision", environments);
+  const ssh = `ssh -i ${keyPath} deploy@${ip ?? `$(${statusIp})`}`;
   const addresses = hidden
-    ? "kept private behind Cloudflare: `opscrew status` shows them"
+    ? `kept private behind Cloudflare: \`${status}\` shows them`
     : `${ip ?? PENDING} / ${ipv6 ?? PENDING}`;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const db = dataCell(
@@ -84,20 +100,20 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     `| DNS | ${cell(dns)} |`,
     `| Cost | ${cell(money(plan, provider))} |`,
     "",
-    ...deploySections(plan),
-    ...componentsSection(plan),
-    ...edgeSection(plan, false),
-    ...objectStorageSection(plan, projectDir),
+    ...deploySections(plan, environments),
+    ...componentsSection(plan, environments),
+    ...edgeSection(plan, false, environments),
+    ...objectStorageSection(plan, projectDir, environments),
     "## Connect to the server",
     "",
     ...serverCommands(plan, [
       ssh,
       ...(ip === undefined
-        ? [`# without a global install: ssh -i ${keyPath} deploy@$(npx opscrew status --ip)`]
+        ? [`# without a global install: ssh -i ${keyPath} deploy@$(npx ${statusIp})`]
         : []),
     ]),
     "",
-    DEPLOY_KEY_STORED,
+    deployKeyStored(plan, environments),
     "secret). Password login and root login are disabled on the server.",
     "",
     ...(ip === undefined
@@ -108,7 +124,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
                 "address would let anyone go around Cloudflare.",
               ]
             : []),
-          "`opscrew status` shows the address on the machine that ran `opscrew provision` (`opscrew status --ip` prints",
+          `\`${status}\` shows the address on the machine that ran \`${provision}\` (\`${statusIp}\` prints`,
           "only the IPv4 address, as used above).",
           "",
         ]
@@ -122,33 +138,33 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
       "",
       target.backups
         ? provider.runbook.backupsOn
-        : "Automated server backups are **off**. Turn them on with `opscrew design` (they cost extra; it shows the price) or make your own backups:",
+        : `Automated server backups are **off**. Turn them on with \`${opscrew(plan, "design", environments)}\` (they cost extra; it shows the price) or make your own backups:`,
       "",
       ...DATABASE_DUMP,
     );
   }
 
   lines.push(
-    ...settingsSection([
-      "- **Server size, location, domain:** run `opscrew design` and `opscrew provision`. OpsCrew shows the plan and the cost",
+    ...settingsSection(plan, environments, [
+      `- **Server size, location, domain:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plan and the cost`,
       "  change and applies nothing without your approval. Destroying or replacing the server always needs a typed confirmation.",
     ]),
-    ...recoverySection(),
-    ...moving(plan),
+    ...recoverySection(plan, environments),
+    ...moving(plan, ctx.environments),
     "## Check for drift",
     "",
-    "Run `opscrew drift` on the machine that ran `opscrew provision` (the state lives there). It compares three things:",
+    `Run \`${opscrew(plan, "drift", environments)}\` on the machine that ran \`${provision}\` (the state lives there). It compares three things:`,
     "",
     "- **The real infrastructure with the state:** a refresh-only plan shows anything changed outside OpsCrew, for example",
     `  a firewall rule edited in ${provider.console} or a DNS record changed in Cloudflare.`,
-    "- **The state with the code:** a normal plan shows changes in `opscrew/infra/` that have not been applied yet.",
+    `- **The state with the code:** a normal plan shows changes in \`${folders.infra}/\` that have not been applied yet.`,
     ...driftFiles(plan),
     "",
-    "`opscrew drift` never changes anything and leaves no plan behind that could be applied. It exits with 0 when",
-    "everything matches and 1 when something differs (`--json` for scripts). To fix drift, run `opscrew provision`,",
+    `\`${opscrew(plan, "drift", environments)}\` never changes anything and leaves no plan behind that could be applied. It exits with 0 when`,
+    `everything matches and 1 when something differs (\`--json\` for scripts). To fix drift, run \`${provision}\`,`,
     "which shows the plan and applies nothing without your approval.",
     "",
-    ...SECURITY_HEAD,
+    ...securityHead(plan, environments),
     "- What OpsCrew set up on the server: a `deploy` user with key-only SSH, no root login, fail2ban against brute force,",
     `  automatic security updates, a host firewall (22/80/443) in addition to ${provider.runbook.cloudFirewall}, and Docker log limits.`,
   );
@@ -158,8 +174,12 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
       "  Cloudflare's IP ranges.",
     );
   }
-  lines.push("", ...TROUBLESHOOTING, ...teardown(plan, target, repo, provider));
-  return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };
+  lines.push(
+    "",
+    ...troubleshooting(plan, environments),
+    ...teardown(plan, target, repo, provider, ctx.environments),
+  );
+  return { path: `${folders.artefacts}/RUNBOOK.md`, content: lines.join("\n"), kind: "doc" };
 }
 
 /**
@@ -167,7 +187,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
  * on the server), the cost of running both servers until `--finish`, and `--abort` before the DNS
  * switch.
  */
-function moving(plan: DeployPlan): string[] {
+function moving(plan: DeployPlan, environments: readonly string[] | undefined): string[] {
   const confirm = "it continues once you confirm; in scripts, pass `--dns-switched`";
   const dns = usesCloudflare(plan)
     ? "switches the Cloudflare DNS records to it."
@@ -175,17 +195,18 @@ function moving(plan: DeployPlan): string[] {
       ? `shows you the DNS records to change at your DNS provider (${confirm}).`
       : `shows you the new server's address (${confirm}).`;
   const copy = serviceOf(plan, "postgres") ? ", copies the database" : "";
+  const retarget = (options: string) => `\`${opscrew(plan, `retarget${options}`, environments)}\``;
   return [
     "## Moving to another provider",
     "",
     ...wrap(
-      "`opscrew retarget --to <provider>` moves this app to another provider without losing its data. Run it on the " +
-        "machine that ran `opscrew provision`, with the tokens of both providers set. OpsCrew creates a new server next " +
+      `${retarget(" --to <provider>")} moves this app to another provider without losing its data. Run it on the ` +
+        `machine that ran \`${opscrew(plan, "provision", environments)}\`, with the tokens of both providers set. OpsCrew creates a new server next ` +
         `to the current one, deploys the app there with the deploy workflow${copy} and ${dns} Every change shows its ` +
         "plan and waits for your approval; in scripts, each plan stops with its hash and " +
-        "`opscrew retarget --approve <hash>` continues, and `--yes` approves storing the GitHub deploy secrets, " +
-        "pushing and opening the pull request. If a run is interrupted, run `opscrew retarget` again: it " +
-        "continues where it stopped, and `opscrew status` shows how far the move got.",
+        `${retarget(" --approve <hash>")} continues, and \`--yes\` approves storing the GitHub deploy secrets, ` +
+        `pushing and opening the pull request. If a run is interrupted, run ${retarget("")} again: it ` +
+        `continues where it stopped, and \`${opscrew(plan, "status", environments)}\` shows how far the move got.`,
     ),
     "",
     ...wrap(
@@ -193,21 +214,21 @@ function moving(plan: DeployPlan): string[] {
         ? "- **Maintenance window:** the database is copied while the app is stopped, so the app is offline for a few " +
             "minutes. OpsCrew shows the database size and the expected downtime first and asks before it stops the app " +
             "(in scripts, pass `--allow-downtime`). If the copy or the new app fails, the app starts again on the current server." +
-            manualSwitchDowntime(plan)
+            manualSwitchDowntime(plan, environments)
         : "- **No maintenance window:** this app keeps no database on the server, so there is nothing to copy and the " +
             "current server serves users until DNS points at the new one.",
       "  ",
     ),
     ...wrap(
-      "- **Both servers cost money:** the old server keeps running until you run `opscrew retarget --finish` (its app " +
+      `- **Both servers cost money:** the old server keeps running until you run ${retarget(" --finish")} (its app ` +
         "is stopped after the DNS switch), and both servers are billed until then. Finish deletes the old server the " +
-        "way `opscrew destroy` would: it offers a snapshot, asks you to type the app name " +
+        `way \`${opscrew(plan, "destroy", environments)}\` would: it offers a snapshot, asks you to type the app name ` +
         `(\`--confirm ${plan.app.name}\` in scripts) and opens a pull request with the final infrastructure files.`,
       "  ",
     ),
     ...wrap(
-      "- **Abort:** `opscrew retarget --abort` deletes the new server and puts the app back on the current one, but " +
-        "only before the DNS switch. After the switch, the way back is another `opscrew retarget`.",
+      `- **Abort:** ${retarget(" --abort")} deletes the new server and puts the app back on the current one, but ` +
+        `only before the DNS switch. After the switch, the way back is another ${retarget("")}.`,
       "  ",
     ),
     "",
@@ -219,7 +240,10 @@ function moving(plan: DeployPlan): string[] {
  * after the copy until the user's own switch has taken effect: say so (leading space included),
  * or nothing when OpsCrew switches DNS itself.
  */
-function manualSwitchDowntime(plan: DeployPlan): string {
+function manualSwitchDowntime(
+  plan: DeployPlan,
+  environments: readonly string[] | undefined,
+): string {
   if (usesCloudflare(plan)) return "";
   if (plan.dns.domain === undefined) {
     return (
@@ -234,7 +258,7 @@ function manualSwitchDowntime(plan: DeployPlan): string {
     "lower the TTL of the DNS records beforehand (for example to 60 seconds). In scripts, pass " +
     "`--allow-downtime --dns-switched` together only when the records are ready to change right after the copy; " +
     "with `--allow-downtime` alone the run stops after the copy, with the app offline, until you change them and " +
-    "run `opscrew retarget --dns-switched`."
+    `run \`${opscrew(plan, "retarget --dns-switched", environments)}\`.`
   );
 }
 
@@ -263,6 +287,7 @@ function teardown(
   { backups }: CloudDeployTarget,
   repo: string,
   provider: ProviderText,
+  environments: readonly string[] | undefined,
 ): string[] {
   const name = plan.app.name;
   const text = provider.runbook;
@@ -278,7 +303,7 @@ function teardown(
   return [
     "## Tear it down",
     "",
-    "Run `opscrew destroy` on the machine that ran `opscrew provision`. It deletes",
+    `Run \`${opscrew(plan, "destroy", environments)}\` on the machine that ran \`${opscrew(plan, "provision", environments)}\`. It deletes`,
     `${deletes}.`,
     `It first lists everything it will delete and the data at risk, then asks you to type the ${noun} name`,
     `(\`${name}\`) before anything is deleted. In scripts, pass \`--confirm ${name}\`.`,
@@ -294,8 +319,8 @@ function teardown(
           `- **The bucket \`${plan.storage.objectStorage.bucket}\`** stays with the app's files, and is billed, unless you add \`--delete-data\`.`,
         ]),
     "- **What is removed besides the infrastructure:** the GitHub deploy secrets, so the workflow can no longer deploy,",
-    `  and ${text.hostKey} on this machine. \`opscrew/plan.yaml\` records that the deployment was destroyed.`,
+    `  and ${text.hostKey} on this machine. \`${runbookFolders(plan, undefined).artefacts}/plan.yaml\` records that the deployment was destroyed.`,
     "",
-    ...DEPLOY_AGAIN,
+    ...deployAgain(plan, environments),
   ];
 }

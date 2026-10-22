@@ -7,6 +7,8 @@ an app yet.
 
 - [Deploy to a server you already have](own-server.md)
 - [Deploy to a Portainer you already run](portainer-target.md)
+- [Your app's production stack on your own computer](localhost.md)
+- [dev, staging and prod: environments](environments.md)
 - [Portainer: a web UI for your containers](portainer.md)
 - [Buying or connecting a domain](domains.md)
 - [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
@@ -15,6 +17,7 @@ an app yet.
 
 - [How OpsCrew builds your app's image](builders.md)
 - [Deploys without downtime](zero-downtime.md)
+- [Self-hosted runners: where the deploy job runs](runners.md)
 - [The image supply chain](supply-chain.md)
 - [The reverse proxy: Caddy or nginx, and your own rules](reverse-proxy.md)
 

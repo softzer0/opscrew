@@ -42,6 +42,20 @@ message also names the builder that made the image and the setting that switches
   (`recreate`, below), a drain longer than 90 seconds can make the requests waiting for the new
   version time out.
 
+## Environments
+
+Each of an app's [environments](environments.md) switches the same way, with its own workflow and
+its own drain time and strategy. Deploys of one environment never run at the same time: a deploy
+waits for the running one, and if several wait, GitHub keeps only the newest and cancels the older
+waiting ones. A running deploy is never cancelled. Different environments may deploy at once, also
+when they share a server: each switches only its own app (`shop` or `shop-staging`) behind the
+shared edge.
+
+A promoted environment builds nothing: its deploy starts from the image the source environment
+runs and switches to it the same way. A promotion started while that environment is still deploying
+waits like any other deploy. On [your computer](localhost.md) the switch is the production one
+too, run by the same scripts.
+
 ## Small servers restart the app instead
 
 Two copies of the app run during a switch. On a server with less than 1 GB of memory, OpsCrew
