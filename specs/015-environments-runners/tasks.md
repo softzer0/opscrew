@@ -291,7 +291,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1511 [US4] [US5] Runners in agents: the server's runner in provision, the local runner, status and secure, in `packages/agents/src/runners/**` (new), and the host-plan wiring in provision for `runner: server`
+- [X] T1511 [US4] [US5] Runners in agents: the server's runner in provision, the local runner, status and secure, in `packages/agents/src/runners/**` (new), and the host-plan wiring in provision for `runner: server`
   - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
   - Reads: contracts/runners.md "Agents"; plan.md "12."; research.md R3 and "Spike results" 4, 5, 9; spec US4, US5, FR-1524–FR-1530
   - Depends: T1508b, T1510, T1507, T1504

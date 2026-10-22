@@ -61,7 +61,7 @@ When the host is gone, the flow calls `deleteRunner` instead.
 ## Agents
 
 ```ts
-planServerRunner(repository, plan): Promise<{ step?: DesiredRunner; settings?: GithubSettingsChange; refusal?: string }>;
+planServerRunner(repository, plan, server: { arch, host }): Promise<{ step?: DesiredRunner; settings?: GithubSettingsChange; refusal?: string }>;
 startLocalRunner(deps, { environment }): Promise<{ stop: () => Promise<void>; finished: Promise<void> }>;   // finished: the CLI waits on it in the foreground
 runnerStatus(deps, repository, plan): Promise<{ registered: boolean; online?: boolean; version?: string; latest?: string; behind?: boolean; visibility: string; forkPrApproval?: string }>;
 ```
