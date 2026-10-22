@@ -466,6 +466,7 @@ Effort`.
     - **CLI:** `runner host add|set <name> --harden ssh|firewall` (either or both) `[--ssh-from <cidr> …]`, and `--no-harden ssh|firewall` to turn one off. `--harden firewall` without `--ssh-from` is refused with a plain message.
     - **MCP:** the matching inputs, through the host plan's approval dialog.
     - **The guide** (`runners.md`): hardening is optional and off by default; what each part does; the firewall touches only port 22 in OpsCrew's own table; the lockout safeguards; how to undo.
+    - **From T1517f's report:** pass `harden` and `hostKeyType` (the pinned host key's type) on every `planRunnerHost` call except runner-only removals; a runner machine's login check covers only the admin login (deploy has no SSH key there); a firewall plan holds the user's addresses, so runner machines' saved plans stay local and are never committed.
     - **Tests:** add with each part, set to turn one off, the refusal without sources, and `runner host list` showing what is hardened.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: high
