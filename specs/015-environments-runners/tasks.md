@@ -403,7 +403,7 @@ Effort`.
       - the host plan approved by its hash as `host-apply`;
       - the record in the project's home folder;
       - removal refused while an environment uses the machine.
-    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. `build: runner` on the local runner with a Buildpacks or Railpack builder is refused on a computer that isn't Linux, since their tools are Linux builds; a Dockerfile build works on any OS (T1517c). `env add`'s target question offers "This computer" once (today `interview/questions.ts` and `environments/add.ts` both add it; T1512b's review). An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
+    - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. On a local runner that isn't Linux, the workflow runs the pinned Linux `pack` and `railpack` inside a pinned Linux container with Docker's socket, so every builder works there (the founder, 2026-10-22; T1517c). `env add`'s target question offers "This computer" once (today `interview/questions.ts` and `environments/add.ts` both add it; T1512b's review). An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
     - **Provision and destroy** of an environment with `runner: host` add and remove its `github-runner` step on the machine's host plan, approved by that plan's hash. Its deploy secrets include the SSH connection secrets, as for a GitHub-hosted job.
     - **`status` and `secure`** report the machine's runners through `runnerStatus`. Its wording (`runners/status.ts`) names the runner machine for `runner: host`, not "the server's runner" (T1517a's report).
     - **Tests:** add, apply and remove a machine; two environments on one machine; destroy removing only one environment's runner; the refusals; no token or address in any plan or committed file.
@@ -471,6 +471,7 @@ Effort`.
       - The site answers through the local CA (trusted only inside the test, with `NODE_EXTRA_CA_CERTS`).
       - The rendered stack's differences from a server's are exactly research R4's list (SC-1502).
       - Destroy leaves nothing, checked by label.
+    - **A Buildpacks or Railpack build on the local runner off Linux** (the CLIs in a container with Docker's socket, T1517c) runs in the macOS job, and by hand on Windows in T1515.
     - **`.github/workflows/localhost.yml`:**
       - `ubuntu-latest` runs the Docker pass;
       - `macos-15-intel` runs Colima, then the Docker pass, with `continue-on-error`;
