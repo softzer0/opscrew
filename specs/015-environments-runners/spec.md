@@ -154,7 +154,9 @@ The developer has a machine they control: a home server, a spare PC or a VM. The
   - published ports bound to 127.0.0.1 only;
   - certificates from OpsCrew's local certificate authority instead of a public one;
   - the image built on the computer for its own architecture by default (FR-1507);
-  - files the server keeps on disk are kept in Docker volumes where the computer's Docker needs it.
+  - files the server keeps on disk are kept in Docker volumes where the computer's Docker needs it;
+  - the Compose project is named `opscrew-<app>`, so it never collides with the user's own Compose projects on the computer;
+  - no HSTS header, since a browser would then remember HTTPS-only for the `.localhost` name (the founder agreed, 2026-10-22).
 - **FR-1505**: The app MUST be served at `https://<app>.localhost`, and an environment other than the computer's only one at `https://<env>.<app>.localhost`, on port 443 when free, else on 8443. OpsCrew's own checks MUST reach the app without relying on the computer resolving these names.
 - **FR-1506**: OpsCrew MUST create a local certificate authority per computer, whose private key stays only in the user's OpsCrew folder and is never committed or copied. Trusting it is a separate, explicit step that names what it changes on the computer (it may ask for an administrator password) and prints the command that undoes it.
 - **FR-1507**: On a computer whose architecture differs from production's, the app's image MUST be built locally for the computer by default, and OpsCrew MUST say the image differs from production's. Running the production image under emulation MUST be available as a choice.

@@ -305,6 +305,17 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
+- [ ] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
+  - Owns: that path (+ tests)
+  - Reads: quickstart.md "1."; spec US1
+  - Depends: T1510
+  - Accept:
+    - **`init` passes with Docker and no cloud token,** for a user who deploys only to this computer (T1513's Docker pass found it exits 1). A missing cloud token is a note that names localhost, a server the user already has, and the cloud providers, never a failure.
+    - **Docker's absence** is a note too, unless the project already targets localhost.
+    - **Tests:** no cloud token with Docker; no cloud token and no Docker; an existing check unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: medium
+
 - [X] T1511 [US4] [US5] Runners in agents: the server's runner in provision, the local runner, status and secure, in `packages/agents/src/runners/**` (new), and the host-plan wiring in provision for `runner: server`
   - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
   - Reads: contracts/runners.md "Agents"; plan.md "12."; research.md R3 and "Spike results" 4, 5, 9; spec US4, US5, FR-1524–FR-1530
@@ -473,7 +484,7 @@ Effort`.
   - Accept:
     - **The Docker pass** (`OPSCREW_DOCKER_TESTS=1`): quickstart "1." with the real CLI on this computer, plus a second localhost environment beside the first.
       - The site answers through the local CA (trusted only inside the test, with `NODE_EXTRA_CA_CERTS`).
-      - The rendered stack's differences from a server's are exactly research R4's list (SC-1502).
+      - The rendered stack's differences from a server's are exactly FR-1504's list (SC-1502).
       - Destroy leaves nothing, checked by label.
     - **A Buildpacks or Railpack build on the local runner off Linux** (the CLIs in a container with Docker's socket, T1517c) runs in the macOS job, and by hand on Windows in T1515.
     - **`.github/workflows/localhost.yml`:**

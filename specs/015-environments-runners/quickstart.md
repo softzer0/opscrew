@@ -16,6 +16,7 @@ the local ones are the Docker pass of T1513.
 opscrew init && opscrew analyze --no-ai
 opscrew interview --answers <answers with provider localhost>
 opscrew design
+opscrew adapt --no-ai             # a local build needs the Dockerfile it writes
 opscrew provision --plan-only     # the local plan and its hash
 opscrew provision --approve <hash>
 opscrew localhost trust           # optional; shows the command first
@@ -26,7 +27,8 @@ opscrew destroy --confirm <app>   # data volumes stay without --delete-data
 **Expect:**
 - the app answers at `https://<app>.localhost` (or `:8443`), and only on 127.0.0.1;
 - the preflight lists memory, ports and Docker's licence;
-- the rendered stack differs from a server's only by research R4's list (SC-1502);
+- the rendered stack differs from a server's only by FR-1504's list (SC-1502);
+- `opscrew init` passes with Docker and no cloud token;
 - destroy leaves no OpsCrew container or network.
 
 ## 2. Environments (User Story 2)
