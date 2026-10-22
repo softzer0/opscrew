@@ -1,7 +1,6 @@
 # OpsCrew's own check of the localhost target (FR-1531, quickstart "6."): the localhost Docker pass
-# with real Docker on Linux, the same pass and the off-Linux Buildpacks build on Intel macOS with
-# Colima (non-blocking), and the localhost unit and command tests, with Docker faked, on Windows and
-# Apple silicon (whose runners cannot run Linux containers). No GitHub runner is ever registered.
+# with real Docker on Linux, the same pass on Intel macOS with Colima (non-blocking), and the
+# localhost unit and command tests, with Docker faked, on Windows and Apple silicon (whose runners cannot run Linux containers). No GitHub runner is ever registered.
 name: Localhost
 
 on:
@@ -18,7 +17,6 @@ on:
       - packages/core/src/crypto/x509.test.ts
       - examples/**
       - packages/cli/test/e2e/localhost*.ts
-      - packages/cli/test/e2e/off-linux-build.test.ts
       - .github/workflows/localhost.yml
   schedule:
     - cron: "23 5 * * 1"
@@ -56,9 +54,11 @@ jobs:
         run: pnpm turbo run test --filter=opscrew -- test/e2e/localhost.test.ts
 
   docker-macos-intel:
-    name: Docker pass and off-Linux build (Intel macOS, Colima)
+    name: Docker pass (Intel macOS, Colima)
     runs-on: macos-15-intel
     # Intel macOS runners have a shelf life and Colima takes about 6 minutes to start (research R5).
+    # The off-Linux Buildpacks build runs by hand on Windows: here a plain `docker pull` of the
+    # Paketo builder kills Colima's VM within seconds (research.md).
     continue-on-error: true
     timeout-minutes: 75
     env:
@@ -88,73 +88,29 @@ jobs:
             ln -sfn "$(brew --prefix)/opt/$plugin/bin/$plugin" "$HOME/.docker/cli-plugins/$plugin"
           done
           colima start $COLIMA_FLAGS
-          # Docker pulls one layer at a time: the VM died in every run while Docker pulled the
-          # Paketo builder's 113 layers three at a time. Colima's `docker` setting is the daemon's
-          # daemon.json and only its config file sets it: into the file this start saved, and a
-          # restart applies it (also every later `colima start`).
-          colima stop
-          yq -i '.docker["max-concurrent-downloads"] = 1' "$HOME/.colima/default/colima.yaml"
-          colima start $COLIMA_FLAGS
-          colima ssh -- cat /etc/docker/daemon.json || true
           docker info --format '{{.ServerVersion}} {{.OSType}} {{.MemTotal}}'
           docker compose version
           # Colima shares the home folder with its VM, so the stack's bind mounts resolve there.
           mkdir -p "$HOME/opscrew-test-tmp"
           echo "OPSCREW_TEST_TMP=$HOME/opscrew-test-tmp" >> "$GITHUB_ENV"
-      # The pinned Paketo builder (1.5 GB) with plain Docker, no wrapper: when the VM dies here, the
-      # pull kills it, not the wrapper.
-      - name: Pull the Paketo builder with plain Docker
-        run: |
-          set -euo pipefail
-          builder="$(sed -nE 's/.*"(paketobuildpacks\/ubuntu-noble-builder:[^"]+)".*/\1/p' packages/iac-templates/src/pins.ts)"
-          [[ -n "$builder" ]]
-          started=$SECONDS
-          docker pull "$builder"
-          echo "Pulled $builder in $((SECONDS - started)) s"
-      # The build first, on the fresh VM: the second run's build failed only after the Docker pass.
-      - name: The off-Linux Buildpacks build (pack in a Linux container through Docker)
-        env:
-          OPSCREW_DOCKER_TESTS: "1"
-        run: pnpm turbo run test --filter=opscrew -- test/e2e/off-linux-build.test.ts
-      # After each pass, the memory and disk left, so the cause shows before a VM dies.
-      - name: Room on the host and in Colima's VM (after the build)
-        if: always()
-        run: |
-          df -h / || true
-          colima ssh -- sh -c 'free -m; df -h /var/lib/docker' || true
-      # The VM has died in every run's Buildpacks build while Docker pulled the 1.5 GB Paketo
-      # builder: the Docker pass gets a VM again (with the saved one-layer-at-a-time setting), so
-      # each pass shows its own result. First what the dead VM's host agent and console logged,
-      # which the restart overwrites.
-      - name: Restart Colima if the build stopped it
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          if ! colima status; then
-            tail -n 80 "$HOME/.colima/_lima/colima/ha.stderr.log" || true
-            tail -n 60 "$HOME"/.colima/_lima/colima/serial*.log || true
-            colima stop --force || true
-            colima start $COLIMA_FLAGS
-            docker info --format '{{.ServerVersion}} {{.OSType}} {{.MemTotal}}'
-          fi
       - name: The localhost Docker pass
-        if: ${{ !cancelled() }}
         env:
           OPSCREW_DOCKER_TESTS: "1"
         run: pnpm turbo run test --filter=opscrew -- test/e2e/localhost.test.ts
-      - name: Room on the host and in Colima's VM (after the Docker pass)
+      # After the pass, the memory and disk left, so the cause shows when the VM dies.
+      - name: Room on the host and in Colima's VM
         if: always()
         run: |
           df -h / || true
           colima ssh -- sh -c 'free -m; df -h /var/lib/docker' || true
-      # When a pass fails, what Colima's VM and its Docker say: a daemon that crashed or ran out of
-      # memory, or a full disk, shows here (the first run's `error waiting for container:
-      # unexpected EOF` in the Buildpacks build left no other trace).
+      # When the pass fails, what Colima's VM and its Docker say: a daemon that crashed or ran out of
+      # memory, or a full disk, shows here.
       - name: Colima's VM and its Docker after a failure
         if: ${{ failure() }}
         run: |
           colima status || true
           tail -n 80 "$HOME/.colima/_lima/colima/ha.stderr.log" || true
+          tail -n 60 "$HOME"/.colima/_lima/colima/serial*.log || true
           docker info --format '{{.ServerVersion}} {{.MemTotal}} {{.Containers}} containers' || true
           colima ssh -- sh -c 'uptime; free -m; df -h / /var/lib/docker; sudo dmesg | tail -n 60; sudo journalctl -u docker -u containerd --no-pager -n 200' || true
 
