@@ -260,7 +260,7 @@ Effort`.
   - Depends: T1508a, T1506, T1507
   - Accept:
     - **`localPreflight`** runs each check of the contract. Every problem stops before any change, with its fix. The notes (the licence, the architecture) are given once.
-    - **Interview and design for localhost** (`localhostNotSupported` goes):
+    - **Interview and design for localhost** (`localhostNotSupported` goes, in `interview/answers.ts` and design):
       - the architecture from the computer and the ports probed, both injected;
       - `image` as data-model.md's table says;
       - no DNS;
@@ -313,6 +313,10 @@ Effort`.
     - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
     - **Messages that name a command** for a named environment include `--env <env>`: the Portainer template error, the edge-check hint and similar (T1506b's review).
     - **Agents' text that names prod's branch or runtime folder** says the environment's own: `provision/publish.ts`, `verify/portainer.ts`, `secure/portainer.ts`, `drift/render.ts`, and `destroy/types.ts`'s doc comment. Use `portainerDeployBranch(plan)` and `runtimeDir(plan)`. Those agents files are in T1512's Owns for this change (T1508c's report).
+    - **More of the same** (T1508a's report):
+      - with `--env`, the recovery status passes `copyPath(deps.paths)` to `recoveryStatusLines`;
+      - the deploy-setup pull request's body lists the environment's runtime folder and plan file, not `opscrew/runtime/` and `opscrew/plan.yaml`;
+      - the "state is not on this computer" hints name the environment's state folder, not `.opscrew/tfstate`.
     - **The plugin's deploy skill** learns environments and promotion. `node plugin/validate.mjs` passes.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/iac-templates`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
