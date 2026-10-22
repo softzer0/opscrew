@@ -304,6 +304,8 @@ Effort`.
 - [ ] T1516 The end-of-feature simplify pass: duplication across 015's changes, and the items collected during the waves
   - Owns: any 015 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
   - Accept: the items collected below during the waves; a duplication sweep over 015's change (merged, and what was left and why); no behaviour change
+  - Items collected during the waves:
+    - `waitForWorkflowRun`'s search branch (no run id given) is dead once `dispatchWorkflow` always returns a run id: make `runId` required and drop the search, `since`, `floorToSecond` and `CLOCK_SKEW_ALLOWANCE_MS` (T1504's review).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
 
