@@ -67,6 +67,12 @@ import {
   splitSections,
 } from "./parse";
 import { asLogin, asRoot, buildScript } from "./shell";
+import {
+  SSH_FIREWALL_FUNCTIONS,
+  SSH_FIREWALL_RULES,
+  SSH_FIREWALL_SERVICE,
+  SSH_FIREWALL_UNIT,
+} from "./ssh-firewall";
 import { AppNameSchema } from "./types";
 import {
   WEB_FILTER_DROP_IN,
@@ -278,6 +284,15 @@ done
 echo "enabled $(systemctl is-enabled ${WEB_FILTER_SERVICE} 2>/dev/null)"
 echo "active $(systemctl is-active ${WEB_FILTER_SERVICE} 2>/dev/null)"`;
 
+/** OpsCrew's SSH firewall: nft, its files, its unit and its table (see `parseSshFirewall`). */
+const SSH_FIREWALL_SNIPPET = `${SSH_FIREWALL_FUNCTIONS}
+if command -v nft >/dev/null 2>&1; then echo 'nft yes'; else echo 'nft no'; fi
+for f in rules:${SSH_FIREWALL_RULES} unit:${SSH_FIREWALL_UNIT}; do
+  if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
+done
+echo "enabled $(systemctl is-enabled ${SSH_FIREWALL_SERVICE} 2>/dev/null)"
+echo "table $(nft_table)"`;
+
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */
 const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
 const PAM_FILES = [
@@ -370,12 +385,14 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["record", `cat ${RECORD_PATH}`],
   [
     "pending-undo",
-    `for u in sshd ufw; do printf '%s %s\\n' "$u" "$(systemctl is-active "opscrew-undo-$u.timer" 2>/dev/null)"; done`,
+    `for u in sshd ufw ssh-firewall; do printf '%s %s\\n' "$u" "$(systemctl is-active "opscrew-undo-$u.timer" 2>/dev/null)"; done`,
   ],
   ["addons", ADDONS_SNIPPET],
   ["runners", RUNNERS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
+  ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
+  ["ssh-firewall", SSH_FIREWALL_SNIPPET],
 ];
 
 /** A read-only script of `sections`, each printed under its mark (a failing one never stops the rest). */
@@ -509,6 +526,36 @@ export function dockerFirewall(input: { daemonJson: Section; execStart: string; 
     driver.startsWith("nftables");
   const off = settings.iptables === false || /--iptables[= ]false\b/.test(flags);
   return { backend: nftables ? "nftables" : off ? "off" : "iptables" };
+}
+
+/** `$SSH_CONNECTION` (`<address> <port> <server address> <server port>`), null when unreadable. */
+function parseSshConnection(text: string): HostFacts["sshClient"] {
+  const [address, , , port] = text.trim().split(/\s+/);
+  const number = Number(port);
+  return address && Number.isInteger(number) && number > 0 && number < 65536
+    ? { address, port: number }
+    : null;
+}
+
+/** OpsCrew's SSH firewall, from its section (see `SSH_FIREWALL_SNIPPET`). */
+function parseSshFirewall(text: string): HostFacts["sshFirewall"] {
+  const values = new Map<string, string>();
+  for (const line of linesOf(text)) {
+    const [kind = "", ...rest] = line.split(" ");
+    const value = rest.join(" ");
+    if (kind === "file") values.set(rest[0] ?? "", rest[1] ?? "");
+    else values.set(kind, value);
+  }
+  const hash = (name: string) => {
+    const value = values.get(name);
+    return value !== undefined && /^[0-9a-f]{64}$/.test(value) ? value : null;
+  };
+  return {
+    nft: values.get("nft") === "yes",
+    table: values.get("table") || null,
+    files: { rules: hash("rules"), unit: hash("unit") },
+    enabled: values.get("enabled") === "enabled",
+  };
 }
 
 /** OpsCrew's web filter files and unit state, from its section. */
@@ -677,6 +724,7 @@ export function factsFromOutput(
     pendingUndo: {
       sshd: pending.get("sshd") === "active",
       ufw: pending.get("ufw") === "active",
+      sshFirewall: pending.get("ssh-firewall") === "active",
     },
     tunnels: [...addons.keys()]
       .filter((name) => name.startsWith("tunnel:"))
@@ -698,6 +746,8 @@ export function factsFromOutput(
         dockerUser: parseDockerUserChain(ok(sections, "iptables")),
       },
     },
+    sshClient: parseSshConnection(ok(sections, "ssh-connection")),
+    sshFirewall: parseSshFirewall(text("ssh-firewall")),
   };
   const parsed = HostFactsSchema.safeParse(facts);
   if (!parsed.success) {

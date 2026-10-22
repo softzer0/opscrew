@@ -6,8 +6,9 @@
  * and Cloudflare Tunnel connector, and the shared edge goes with the last one. An app's GitHub
  * Actions runner (feature 015) is deploy's systemd user service there and, through `planRunner`
  * as the deploy user, on the servers OpsCrew creates. A runner machine (a machine of the user's
- * that only runs the environments' runners) has a host plan of its own, `planRunnerHost`, and is
- * taken back with `planUndo`. No plan replaces or removes another repository's runner.
+ * that only runs the environments' runners) has a host plan of its own, `planRunnerHost`, hardened
+ * only when asked (SSH hardening, and OpsCrew's own nftables table for port 22), and is taken back
+ * with `planUndo`. No plan replaces or removes another repository's runner.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md` and
  * `specs/015-environments-runners/contracts/runners.md`.

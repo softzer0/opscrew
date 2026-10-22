@@ -30,7 +30,14 @@ import {
   inspectScript,
   privilegeProbeScript,
 } from "./inspect";
-import { planHost, planPortainer, planRunner, planTeardown, planUndo } from "./plan";
+import {
+  planHost,
+  planPortainer,
+  planRunner,
+  planRunnerHost,
+  planTeardown,
+  planUndo,
+} from "./plan";
 import { asDeployUser, asLogin, asRoot } from "./shell";
 import {
   armScript,
@@ -213,6 +220,35 @@ async function everyPlan(): Promise<HostPlan[]> {
   plans.push(cloudRunner);
   await applyApproved(cloud, cloudRunner, tokens);
   plans.push(planRunner(await inspectRunners(cloud), { app: "shop" }));
+  // A runner machine's hardening: on, turned off again, and its undo.
+  const machine = new FakeHost({ login: "ana" });
+  const add = "opscrew runner host add home";
+  const hardened = planRunnerHost(
+    await inspectHost(machine),
+    {
+      repositoryUrl: SHOP_REPOSITORY,
+      runners: [],
+      harden: { ssh: true, firewall: { sshFrom: ["198.51.100.0/24", "2001:db8::/32"] } },
+      hostKeyType: "ssh-ed25519",
+    },
+    add,
+  );
+  plans.push(hardened);
+  await applyApproved(machine, hardened);
+  plans.push(
+    planRunnerHost(
+      await inspectHost(machine),
+      { repositoryUrl: SHOP_REPOSITORY, runners: [] },
+      add,
+    ),
+  );
+  plans.push(
+    planUndo(
+      await inspectHost(machine),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew runner host remove home",
+    ),
+  );
   return plans;
 }
 
@@ -230,6 +266,7 @@ describe("generated scripts", () => {
         "setup/deploy-key",
         "setup/sshd",
         "setup/ufw",
+        "setup/ssh-firewall",
         "setup/web-filter",
         "setup/fail2ban",
         "setup/unattended-upgrades",
@@ -253,6 +290,7 @@ describe("generated scripts", () => {
         "undo/sysctl",
         "undo/fail2ban",
         "undo/ufw",
+        "undo/ssh-firewall",
         "undo/web-filter",
         "undo/sshd",
         "undo/deploy-user",

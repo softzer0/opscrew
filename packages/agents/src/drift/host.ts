@@ -95,6 +95,7 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "deploy-key": "The app's deploy key",
   sshd: "SSH settings",
   ufw: "Firewall (ufw)",
+  "ssh-firewall": "SSH firewall (nftables table inet opscrew)",
   "web-filter": "Web filter (only Cloudflare reaches ports 80 and 443)",
   fail2ban: "Brute-force protection (fail2ban)",
   "unattended-upgrades": "Automatic security updates",
@@ -621,6 +622,8 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
       return sshdDetails(facts, step);
     case "ufw":
       return ufwDetails(facts, step);
+    case "ssh-firewall":
+      return ["OpsCrew's SSH firewall (the nftables table inet opscrew) is not as planned."];
     case "web-filter":
       return webFilterDetails(facts, step, applied);
     case "fail2ban":

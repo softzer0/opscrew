@@ -32,6 +32,7 @@ import {
 } from "../constants";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { runnerUnitText } from "../runner-unit";
+import { SSH_FIREWALL_RULES, SSH_FIREWALL_UNIT } from "../ssh-firewall";
 import { WEB_FILTER_DROP_IN, WEB_FILTER_SCRIPT, WEB_FILTER_UNIT } from "../web-filter";
 
 /** One address family's filter state: OpsCrew's chain (null when absent) and DOCKER-USER. */
@@ -262,6 +263,12 @@ export class FakeHost implements RemoteExec {
   ufwLog: string[] = [];
   firewalld = false;
   nftablesService = false;
+  /** OpsCrew's SSH connection (`$SSH_CONNECTION`): its address and the port it reaches. */
+  sshClient: { address: string; port: number } | null = { address: "198.51.100.20", port: 22 };
+  /** The `nft` command is installed. */
+  nftInstalled = true;
+  /** OpsCrew's nftables table `inet opscrew` as `nft_table` prints it, and its unit's state. */
+  sshFirewall: { table: string | null; enabled: boolean } = { table: null, enabled: false };
   iptables = "";
   ip6tables = "";
   nft = "";
@@ -449,7 +456,7 @@ export class FakeHost implements RemoteExec {
     return [
       ...this.sshdBase.port.map((port) => `port ${port}`),
       "addressfamily any",
-      "listenaddress [::]:22",
+      ...this.sshdBase.port.map((port) => `listenaddress [::]:${port}`),
       `permitrootlogin ${root}`,
       "pubkeyauthentication yes",
       `passwordauthentication ${eff.passwordauthentication}`,
@@ -781,7 +788,7 @@ export class FakeHost implements RemoteExec {
     add("record", record ?? "", record === undefined ? 1 : 0);
     add(
       "pending-undo",
-      ["sshd", "ufw"].map((step) => `${step} ${this.timers.has(step) ? "active" : "inactive"}`).join("\n"),
+      ["sshd", "ufw", "ssh-firewall"].map((step) => `${step} ${this.timers.has(step) ? "active" : "inactive"}`).join("\n"),
     );
     const addon = (name: string, dir: string, secret: string) => {
       const compose = this.files.get(`${dir}/compose.yaml`);
@@ -823,6 +830,20 @@ export class FakeHost implements RemoteExec {
       "docker-firewall",
       this.dockerRunning ? `{"Driver":"${this.dockerFirewall}"}` : "",
       this.dockerRunning ? 0 : 1,
+    );
+    add(
+      "ssh-connection",
+      this.sshClient ? `${this.sshClient.address} 50022 192.168.1.20 ${this.sshClient.port}` : "",
+    );
+    add(
+      "ssh-firewall",
+      [
+        `nft ${this.nftInstalled ? "yes" : "no"}`,
+        fileLine("rules", SSH_FIREWALL_RULES),
+        fileLine("unit", SSH_FIREWALL_UNIT),
+        `enabled ${this.sshFirewall.enabled ? "enabled" : "disabled"}`,
+        `table ${this.sshFirewall.table ?? ""}`,
+      ].join("\n"),
     );
     return sections
       .map(([name, text, exit]) => `\n${SECTION_MARK}${name}\n${text}\n${EXIT_MARK}${exit}`)
@@ -994,7 +1015,7 @@ export class FakeHost implements RemoteExec {
     if (!root && !(loginAddon && p.RUN_AS === "login")) {
       return result("", 1, "Permission denied\n");
     }
-    const deadMan = /^deadman\.(arm|cancel|trigger)\.(sshd|ufw)$/.exec(name);
+    const deadMan = /^deadman\.(arm|cancel|trigger)\.(sshd|ufw|ssh-firewall)$/.exec(name);
     if (deadMan?.[1] && deadMan[2]) return this.deadMan(deadMan[1], deadMan[2], p);
     switch (name) {
       // docker
@@ -1113,6 +1134,52 @@ export class FakeHost implements RemoteExec {
         const done = backup !== undefined ? this.files.get(SSHD_DROP_IN) === backup : !this.files.has(SSHD_DROP_IN);
         return this.verify(done && !this.timers.has("sshd"), p);
       }
+
+      // ssh-firewall (a runner machine's port 22 only from the named sources)
+      case "ssh-firewall.check":
+      case "ssh-firewall.verify": {
+        const is = (path: string, sum: string | undefined) => {
+          const content = this.files.get(path);
+          return content !== undefined && sha256(content) === sum;
+        };
+        const ok =
+          this.nftInstalled &&
+          is(SSH_FIREWALL_RULES, p.RULES_SHA256) &&
+          is(SSH_FIREWALL_UNIT, p.UNIT_SHA256) &&
+          this.sshFirewall.enabled &&
+          this.sshFirewall.table === p.LISTING &&
+          !this.timers.has("ssh-firewall");
+        return name.endsWith("check")
+          ? this.check(ok, { table: this.sshFirewall.table === null ? "absent" : "present" })
+          : this.verify(ok, p);
+      }
+      case "ssh-firewall.apply": {
+        if (!this.nftInstalled) return fail("The nft command (from the nftables package) is not installed.");
+        if (this.sshClient?.address !== p.FROM) {
+          return fail(`OpsCrew now connects from ${this.sshClient?.address ?? "an address it could not read"}, not from ${p.FROM} as when the plan was made, so it did not turn the SSH firewall on.`, 4);
+        }
+        const decode = (value: string | undefined) => Buffer.from(value ?? "", "base64").toString("utf8");
+        this.files.set(SSH_FIREWALL_RULES, decode(p.RULES_B64));
+        this.files.set(SSH_FIREWALL_UNIT, decode(p.UNIT_B64));
+        // Loading the rules gives the table nft then lists.
+        this.sshFirewall = { table: p.LISTING ?? "", enabled: true };
+        return result();
+      }
+      case "ssh-firewall.remove.check":
+      case "ssh-firewall.remove.verify": {
+        const ok =
+          this.sshFirewall.table === null &&
+          !this.files.has(SSH_FIREWALL_RULES) &&
+          !this.files.has(SSH_FIREWALL_UNIT);
+        return name.endsWith("check")
+          ? this.check(ok, { table: this.sshFirewall.table === null ? "absent" : "present" })
+          : this.verify(ok, p);
+      }
+      case "ssh-firewall.remove.apply":
+        this.files.delete(SSH_FIREWALL_UNIT);
+        this.files.delete(SSH_FIREWALL_RULES);
+        this.sshFirewall = { table: null, enabled: false };
+        return result();
 
       // ufw
       // web-filter
@@ -1646,6 +1713,21 @@ export class FakeHost implements RemoteExec {
           else this.files.set(SSHD_DROP_IN, before);
           this.sshdReloads += 1;
           this.timers.delete("sshd");
+        });
+      } else if (step === "ssh-firewall") {
+        // The undo puts OpsCrew's rules from before back, or removes its table, unit and rules.
+        const rules = this.files.get(SSH_FIREWALL_RULES);
+        const firewall = { ...this.sshFirewall };
+        this.timers.set("ssh-firewall", () => {
+          if (rules === undefined) {
+            this.files.delete(SSH_FIREWALL_RULES);
+            this.files.delete(SSH_FIREWALL_UNIT);
+            this.sshFirewall = { table: null, enabled: false };
+          } else {
+            this.files.set(SSH_FIREWALL_RULES, rules);
+            this.sshFirewall = firewall;
+          }
+          this.timers.delete("ssh-firewall");
         });
       } else {
         const active = this.ufwActive;

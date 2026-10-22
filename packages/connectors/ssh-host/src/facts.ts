@@ -208,6 +208,8 @@ export const HostFactsSchema = z.object({
   sshd: z
     .object({
       ports: z.array(z.number().int()),
+      /** The ports of its `ListenAddress` lines (sshd listens only there when it has any). */
+      listenPorts: z.array(z.number().int()).default([]),
       passwordAuthentication: z.boolean(),
       kbdInteractiveAuthentication: z.boolean(),
       /** Normalised: `without-password` is reported as `prohibit-password`. */
@@ -326,7 +328,11 @@ export const HostFactsSchema = z.object({
   record: HostRecordSchema.nullable(),
   recordDamaged: z.boolean(),
   /** Dead-man switches still waiting on the server (from an interrupted apply). */
-  pendingUndo: z.object({ sshd: z.boolean(), ufw: z.boolean() }),
+  pendingUndo: z.object({
+    sshd: z.boolean(),
+    ufw: z.boolean(),
+    sshFirewall: z.boolean().default(false),
+  }),
   /** Each app's tunnel connector whose folder exists, by app (see {@link tunnelOf}). */
   tunnels: z.array(TunnelSchema),
   portainer: AddonSchema,
@@ -334,6 +340,25 @@ export const HostFactsSchema = z.object({
   runners: z.array(RunnerSchema).default([]),
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
+  /**
+   * OpsCrew's SSH connection (`$SSH_CONNECTION`): the address it comes from and the server's port
+   * it reaches; null when it could not be read. Local state only: never write it to committed
+   * files.
+   */
+  sshClient: z.object({ address: z.string(), port: z.number().int() }).nullable().default(null),
+  /** OpsCrew's SSH firewall on a runner machine (the `ssh-firewall` step). */
+  sshFirewall: z
+    .object({
+      /** The `nft` command is there. */
+      nft: z.boolean(),
+      /** OpsCrew's table `inet opscrew` as `nft_table` prints it, null when there is none. */
+      table: z.string().nullable(),
+      /** SHA-256 of OpsCrew's rules file and unit; null when the file is absent. */
+      files: z.object({ rules: z.string().nullable(), unit: z.string().nullable() }),
+      /** `systemctl is-enabled opscrew-ssh-firewall.service` says enabled. */
+      enabled: z.boolean(),
+    })
+    .default({ nft: false, table: null, files: { rules: null, unit: null }, enabled: false }),
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;

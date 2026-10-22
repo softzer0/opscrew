@@ -133,8 +133,13 @@ export function parseSshdT(
   const first = (key: string, fallback: string) => values.get(key)?.[0]?.toLowerCase() ?? fallback;
   const words = (key: string) => (values.get(key) ?? []).flatMap((value) => value.split(/\s+/));
   const rootLogin = first("permitrootlogin", "prohibit-password");
+  // `listenaddress 0.0.0.0:2222` or `listenaddress [::]:22` (sshd -T always names the port).
+  const listenPorts = (values.get("listenaddress") ?? [])
+    .map((value) => Number.parseInt(/:(\d{1,5})(?:\s|$)/.exec(value)?.[1] ?? "", 10))
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65536);
   return {
     ports: [...new Set(ports)].sort((a, b) => a - b),
+    listenPorts: [...new Set(listenPorts)].sort((a, b) => a - b),
     passwordAuthentication: first("passwordauthentication", "yes") === "yes",
     kbdInteractiveAuthentication:
       first("kbdinteractiveauthentication", first("challengeresponseauthentication", "yes")) ===
@@ -698,4 +703,78 @@ export function canonicalIpv4Cidr(text: string): string | null {
   const network = (value & mask) >>> 0;
   const dotted = [24, 16, 8, 0].map((shift) => (network >>> shift) & 255).join(".");
   return prefix === 32 ? dotted : `${dotted}/${prefix}`;
+}
+
+/** The 128-bit value of an IPv6 address in hex groups (no embedded IPv4, no zone), or null. */
+function ipv6Value(address: string): bigint | null {
+  const halves = address.split("::");
+  if (halves.length > 2) return null;
+  const groups = (part: string | undefined) => (part ? part.split(":") : []);
+  const head = groups(halves[0]);
+  const tail = groups(halves[1]);
+  if (![...head, ...tail].every((group) => /^[0-9A-Fa-f]{1,4}$/.test(group))) return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const all = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  return all.reduce((value, group) => (value << 16n) | BigInt(Number.parseInt(group, 16)), 0n);
+}
+
+/** An IPv6 address as glibc's inet_ntop prints it (and nft): lower case, the longest zero run `::`. */
+function ipv6Text(value: bigint): string {
+  const groups = Array.from({ length: 8 }, (_, i) =>
+    Number((value >> BigInt(112 - 16 * i)) & 0xffffn),
+  );
+  let best = { start: 0, length: 0 };
+  for (let start = 0; start < 8; start += 1) {
+    let end = start;
+    while (end < 8 && groups[end] === 0) end += 1;
+    if (end - start > best.length) best = { start, length: end - start };
+  }
+  const hex = groups.map((group) => group.toString(16));
+  if (best.length < 2) return hex.join(":");
+  const head = hex.slice(0, best.start).join(":");
+  const tail = hex.slice(best.start + best.length).join(":");
+  return `${head}::${tail}`;
+}
+
+/**
+ * An SSH source (`harden.firewall.sshFrom` of a runner machine) in the form nft prints it, so
+ * OpsCrew finds its rules again: an IPv4 or IPv6 address or network, host bits cleared, without
+ * `/32` or `/128`. Null for anything else, for `/0` (every address), and for IPv6 addresses whose
+ * first 80 bits are zero (IPv4-mapped and other special forms, which nft prints differently).
+ */
+export function canonicalSshSource(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed.includes(":")) {
+    const network = canonicalIpv4Cidr(trimmed);
+    return network === null || network.endsWith("/0") ? null : network;
+  }
+  const [address = "", prefixText, extra] = trimmed.split("/");
+  if (extra !== undefined) return null;
+  if (prefixText !== undefined && !/^\d{1,3}$/.test(prefixText)) return null;
+  const value = ipv6Value(address);
+  const prefix = prefixText === undefined ? 128 : Number(prefixText);
+  if (value === null || prefix < 1 || prefix > 128) return null;
+  const network = (value >> BigInt(128 - prefix)) << BigInt(128 - prefix);
+  if (network >> 48n === 0n) return null;
+  const printed = ipv6Text(network);
+  return prefix === 128 ? printed : `${printed}/${prefix}`;
+}
+
+/** The IPv4 or IPv6 `address` is in `network` (a source as {@link canonicalSshSource} gives it). */
+export function networkHolds(network: string, address: string): boolean {
+  const [base = "", prefixText] = network.split("/");
+  const v6 = base.includes(":");
+  if (v6 !== address.includes(":")) return false;
+  const bits = v6 ? 128 : 32;
+  const value = (text: string) => {
+    if (v6) return ipv6Value(text);
+    const v4 = ipv4Value(text);
+    return v4 === null ? null : BigInt(v4);
+  };
+  const want = value(base);
+  const have = value(address);
+  if (want === null || have === null) return false;
+  const shift = BigInt(bits - (prefixText === undefined ? bits : Number(prefixText)));
+  return have >> shift === want >> shift;
 }

@@ -145,15 +145,20 @@ export function hostFindings(command: string) {
       message: `The SSH server only lets in some users (${setting}), and the deploy user OpsCrew needs for deploys is not one of them.`,
       hint: `Add deploy to that setting (or remove the setting) in your SSH configuration, ${rerun}.`,
     }),
-    passwordUsersWithoutKeys: (users: readonly string[]): HostFinding => ({
+    /** `choice`: the user may choose to keep or turn off password logins (a server, not a runner machine). */
+    passwordUsersWithoutKeys: (users: readonly string[], choice = true): HostFinding => ({
       code: "password-users-without-keys",
       message: `${listText(users)} ${users.length === 1 ? "logs" : "log"} in with a password and ${users.length === 1 ? "has" : "have"} no SSH key. Turning password logins off would lock ${users.length === 1 ? "that user" : "them"} out.`,
-      hint: "Give each of them an SSH key first, or decide explicitly: turn password logins off anyway, or leave password logins as they are.",
+      hint: choice
+        ? "Give each of them an SSH key first, or decide explicitly: turn password logins off anyway, or leave password logins as they are."
+        : `Give each of them an SSH key first, or leave SSH hardening off for this machine, ${rerun}.`,
     }),
-    directoryLogins: (what: readonly string[]): HostFinding => ({
+    directoryLogins: (what: readonly string[], choice = true): HostFinding => ({
       code: "directory-logins",
       message: `Users on this server may come from a directory service (${listText(what)}). OpsCrew cannot see whether they log in with passwords, so turning password logins off could lock them out.`,
-      hint: "Make sure those users log in with SSH keys, then decide explicitly: turn password logins off anyway, or leave password logins as they are.",
+      hint: choice
+        ? "Make sure those users log in with SSH keys, then decide explicitly: turn password logins off anyway, or leave password logins as they are."
+        : `Leave SSH hardening off for this machine: OpsCrew cannot tell whether those users need their passwords. ${upperFirst(rerun)} if that changes.`,
     }),
     composeProjectExists: (app: string): HostFinding => ({
       code: "compose-project-exists",
@@ -314,6 +319,35 @@ export function hostFindings(command: string) {
       code: "ssh-forwarding-off",
       message: `SSH port forwarding is turned off on this server (AllowTcpForwarding ${setting}), and the command that opens Portainer through SSH needs it.`,
       hint: `Allow local forwarding for the deploy user (a "Match User deploy" block with "AllowTcpForwarding local" at the end of /etc/ssh/sshd_config), or leave Portainer off, ${rerun}.`,
+    }),
+    rootLoginHardened: (): HostFinding => ({
+      code: "ssh-hardening-root-login",
+      message:
+        "OpsCrew connects to this machine as root, and SSH hardening turns root logins off, so OpsCrew could no longer connect.",
+      hint: `Connect as a user with passwordless sudo instead of root, or leave SSH hardening off, ${rerun}.`,
+    }),
+    noNft: (): HostFinding => ({
+      code: "no-nft",
+      message:
+        "This machine has no nft command (from the nftables package), which OpsCrew's SSH firewall needs.",
+      hint: `Install it ("sudo apt-get install nftables"), or leave the SSH firewall off, ${rerun}.`,
+    }),
+    sshPortsUnknown: (): HostFinding => ({
+      code: "ssh-ports-unknown",
+      message:
+        "OpsCrew could not read which ports SSH listens on (sshd -T failed), so it cannot tell which ports the SSH firewall should restrict.",
+      hint: `Check that OpenSSH server is installed and its configuration is valid (run "sudo sshd -t" on the machine), or leave the SSH firewall off, ${rerun}.`,
+    }),
+    sshClientUnknown: (): HostFinding => ({
+      code: "ssh-client-unknown",
+      message:
+        "OpsCrew could not tell which address it connects to this machine from (SSH_CONNECTION), so it cannot make sure the SSH firewall still lets it in.",
+      hint: `Leave the SSH firewall off, or check that sshd sets SSH_CONNECTION for the login and that root can read /proc, ${rerun}.`,
+    }),
+    sshFromLocksOut: (client: string, sources: readonly string[]): HostFinding => ({
+      code: "ssh-firewall-locks-out",
+      message: `OpsCrew connects to this machine from ${client}, which is not among the sources the SSH firewall would let in (${listText(sources)}), so it would lock OpsCrew out.`,
+      hint: `Add ${client} or a network that holds it to the SSH sources, ${rerun}.`,
     }),
     appStillDeployed: (apps: readonly string[]): HostFinding => ({
       code: "app-still-deployed",

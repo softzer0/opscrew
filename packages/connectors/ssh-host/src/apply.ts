@@ -22,6 +22,7 @@ import { asDeployUser, asLogin, asRoot, type Privilege } from "./shell";
 import {
   armScript,
   cancelScript,
+  type GuardedStep,
   readRecordScript,
   runAsOf,
   type StepScripts,
@@ -245,7 +246,7 @@ class Recorder {
 }
 
 /** Runs the scheduled undo now; true when the server confirmed it. */
-async function trigger(ctx: Context, step: HostStep, guarded: "sshd" | "ufw"): Promise<boolean> {
+async function trigger(ctx: Context, step: HostStep, guarded: GuardedStep): Promise<boolean> {
   try {
     const result = await ctx.remote.run(wrap(ctx, step, triggerScript(guarded)), {
       timeoutMs: 120_000,
@@ -268,7 +269,11 @@ async function guardedApply(
   options: RunOptions,
 ): Promise<void> {
   const seconds = ctx.deadManSeconds;
-  const what = deadMan.step === "sshd" ? "SSH settings" : "firewall settings";
+  const what = {
+    sshd: "SSH settings",
+    ufw: "firewall settings",
+    "ssh-firewall": "SSH firewall settings",
+  }[deadMan.step];
   await runOk(
     ctx,
     wrap(ctx, step, armScript(deadMan, seconds)),

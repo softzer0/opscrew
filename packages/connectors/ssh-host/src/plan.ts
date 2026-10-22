@@ -57,7 +57,24 @@ import {
   hostFindings,
   privilegeFindings,
 } from "./findings";
-import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
+import {
+  canonicalSshSource,
+  isLoopback,
+  majorOf,
+  networkHolds,
+  publishesPort,
+  ufwRuleCovers,
+  WEB_FILTER_PORTS,
+} from "./parse";
+import {
+  SSH_FIREWALL_RULES,
+  SSH_FIREWALL_SERVICE,
+  SSH_FIREWALL_TABLE,
+  sshFirewallFileHashes,
+  sshFirewallListing,
+  sshPortsText,
+  sshSources,
+} from "./ssh-firewall";
 import { appRecord, dataKeptRecord, type RunAs, stepScripts } from "./steps";
 import {
   type AccessMode,
@@ -328,6 +345,7 @@ const TITLES = {
   tunnel: "Run the Cloudflare Tunnel connector",
   portainer: "Run Portainer CE",
   removeWebFilter: "Remove OpsCrew's web filter for Cloudflare's addresses",
+  removeSshFirewall: `Remove OpsCrew's SSH firewall (its nftables table ${SSH_FIREWALL_TABLE})`,
   removeTunnel: "Remove the Cloudflare Tunnel connector",
   removePortainer: "Remove Portainer (its data volume stays)",
   removePortainerData: "Remove Portainer and its data",
@@ -646,7 +664,7 @@ function opensshAtLeast(version: string | null, major: number, minor: number): b
  */
 function sshdAlgorithms(
   version: string | null,
-  desired: DesiredHost,
+  desired: Pick<DesiredHost, "hostKeyType">,
 ): {
   params: { moduliFile: boolean; ecdsaHostKey?: EcdsaHostKeyType };
   text: string;
@@ -674,7 +692,22 @@ function sshdAlgorithms(
   };
 }
 
-function sshdStep({ facts, desired, found, findings, others }: SetupContext): HostStep {
+/** What the sshd step reads: a server's setup context, or a runner machine's ({@link runnerSshdStep}). */
+type SshdContext = MachineContext &
+  Pick<SetupContext, "others"> & {
+    desired: Pick<DesiredHost, "admin" | "hostKeyType" | "disablePasswords">;
+  };
+
+/**
+ * The SSH hardening step. `onServer`: on a server (not a runner machine, whose deploy user only
+ * runs the runners) the deploy user logs in over SSH, so sshd must let it in, and the user may
+ * choose to keep password logins (`DesiredHost.disablePasswords`).
+ */
+function sshdStep(
+  { facts, desired, found, findings, others }: SshdContext,
+  onServer = true,
+): HostStep {
+  const deployLogin = onServer;
   const sshd = facts.sshd;
   const permitRootLogin = desired.admin.isRoot ? "prohibit-password" : "no";
   const rootText = desired.admin.isRoot
@@ -685,7 +718,7 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
     return step("sshd", TITLES.sshd, "blocked", { permitRootLogin }, "sshd -T failed.");
   }
   const algorithms = sshdAlgorithms(sshd.version, desired);
-  const blockedBy = deployBlockedBy(sshd);
+  const blockedBy = deployLogin ? deployBlockedBy(sshd) : null;
   if (blockedBy !== null) found.push(findings.sshdDeploysBlocked(blockedBy));
   // The other apps' setup chose these settings; this app never weakens or changes them.
   if (others.length > 0 && sshd.dropIn?.startsWith(SSHD_HEADER) && !facts.pendingUndo.sshd) {
@@ -712,16 +745,18 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
   if (lacking.length === 0 && directory.length === 0) disablePasswords = true;
   else if (desired.disablePasswords !== undefined) disablePasswords = desired.disablePasswords;
   else {
-    if (lacking.length > 0) found.push(findings.passwordUsersWithoutKeys(lacking));
-    if (directory.length > 0) found.push(findings.directoryLogins(directory));
+    if (lacking.length > 0) found.push(findings.passwordUsersWithoutKeys(lacking, onServer));
+    if (directory.length > 0) found.push(findings.directoryLogins(directory, onServer));
     return step(
       "sshd",
       TITLES.sshd,
       "blocked",
       { permitRootLogin },
-      lacking.length > 0
-        ? `${lacking.join(", ")} log${lacking.length === 1 ? "s" : ""} in with a password and no SSH key; password logins stay as they are until you choose.`
-        : "Users from a directory service may log in with passwords; password logins stay as they are until you choose.",
+      `${
+        lacking.length > 0
+          ? `${lacking.join(", ")} log${lacking.length === 1 ? "s" : ""} in with a password and no SSH key`
+          : "Users from a directory service may log in with passwords"
+      }; password logins stay as they are${onServer ? " until you choose" : ""}.`,
     );
   }
   const kbdInteractiveOff = disablePasswords && sshd.authenticationMethods === "any";
@@ -760,7 +795,128 @@ function sshdStep({ facts, desired, found, findings, others }: SetupContext): Ho
     `Harden SSH: ${passwordText}, ${rootText}, modern algorithms only`,
     "change",
     params,
-    `OpsCrew writes /etc/ssh/sshd_config.d/10-opscrew.conf, checks it with sshd -t and reloads SSH. ${algorithms.text} The server undoes the change on its own unless new logins as deploy and as ${desired.admin.user} work afterwards. AllowUsers is never set.`,
+    `OpsCrew writes /etc/ssh/sshd_config.d/10-opscrew.conf, checks it with sshd -t and reloads SSH. ${algorithms.text} The server undoes the change on its own unless ${deployLogin ? `new logins as deploy and as ${desired.admin.user} work` : `a new login as ${desired.admin.user} works`} afterwards. AllowUsers is never set.`,
+  );
+}
+
+/**
+ * A runner machine's SSH hardening (`harden.ssh`): the server's sshd step for OpsCrew's login,
+ * with root logins off. Blocked while OpsCrew connects as root, which that would lock out; a
+ * login with a password and no SSH key blocks it as on a server.
+ */
+function runnerSshdStep(ctx: MachineContext, hostKeyType: DesiredHost["hostKeyType"]): HostStep {
+  if (ctx.facts.privilege === "root") {
+    ctx.found.push(ctx.findings.rootLoginHardened());
+    return step(
+      "sshd",
+      TITLES.sshd,
+      "blocked",
+      { permitRootLogin: "no" },
+      "OpsCrew logs in as root.",
+    );
+  }
+  const others = otherActiveApps(ctx.facts.apps, "");
+  const desired = { admin: { user: ctx.facts.user, isRoot: false }, hostKeyType };
+  return sshdStep({ ...ctx, others, desired }, false);
+}
+
+/** Undoes the sshd step: the SSH settings file from before OpsCrew back, or none. */
+function sshdRemoval(facts: HostFacts, params: HostStep["params"]): HostStep {
+  const ours = facts.sshd?.dropIn?.startsWith("# Managed by OpsCrew") ?? false;
+  return step(
+    "sshd",
+    setupEntry(facts, "sshd")?.previous.dropIn === "present"
+      ? "Put back the SSH settings file that was there before OpsCrew, and remove OpsCrew's moduli file (moduli.opscrew)"
+      : "Remove OpsCrew's SSH settings file (10-opscrew.conf) and its moduli file (moduli.opscrew)",
+    ours || facts.pendingUndo.sshd ? "change" : "in-place",
+    params,
+    "The server undoes this on its own unless new logins still work afterwards.",
+  );
+}
+
+/** Whether OpsCrew's SSH firewall (its table, rules file or unit) is on the machine. */
+function sshFirewallPresent(facts: HostFacts): boolean {
+  const { table, files } = facts.sshFirewall;
+  return table !== null || files.rules !== null || files.unit !== null;
+}
+
+/** Removes OpsCrew's SSH firewall: its table, unit and rules file. */
+function sshFirewallRemoval(): HostStep {
+  return step(
+    "ssh-firewall",
+    TITLES.removeSshFirewall,
+    "change",
+    { remove: true },
+    `OpsCrew deletes its own nftables table ${SSH_FIREWALL_TABLE}, ${SSH_FIREWALL_SERVICE} and ${SSH_FIREWALL_RULES}; every other table, rule and default policy stays as it is.`,
+  );
+}
+
+/**
+ * The ports sshd listens on as its settings say (its `ListenAddress` ports, else its `Port`s),
+ * and the one OpsCrew's connection reaches (systemd's ssh.socket may listen there instead);
+ * null when sshd's settings could not be read.
+ */
+function runnerSshPorts(facts: HostFacts): number[] | null {
+  if (facts.sshd === null) return null;
+  const { listenPorts, ports } = facts.sshd;
+  const all = new Set(listenPorts.length > 0 ? listenPorts : ports);
+  if (facts.sshClient !== null) all.add(facts.sshClient.port);
+  return [...all].sort((a, b) => a - b);
+}
+
+/**
+ * A runner machine's SSH firewall (`harden.firewall`): OpsCrew's own nftables table that lets
+ * only `sshFrom` reach the ports SSH listens on, applied under the automatic undo. Blocked
+ * without `nft`, when those ports are unknown, and when the address OpsCrew connects from is
+ * unknown or not among the sources (the firewall would lock it out).
+ */
+function sshFirewallStep(
+  { facts, found, findings }: MachineContext,
+  sshFrom: readonly string[],
+): HostStep {
+  const sources = sshSources(sshFrom);
+  const ports = runnerSshPorts(facts);
+  const blocked = (finding: HostFinding, reason: string) => {
+    found.push(finding);
+    return step(
+      "ssh-firewall",
+      `SSH firewall: SSH only from ${listText(sources)}`,
+      "blocked",
+      { sources: sources.join(" ") },
+      reason,
+    );
+  };
+  const firewall = facts.sshFirewall;
+  if (!firewall.nft) return blocked(findings.noNft(), "nft is not installed.");
+  if (ports === null) return blocked(findings.sshPortsUnknown(), "SSH's ports are unknown.");
+  const title = `SSH firewall: ${sshPortsText(ports)} only from ${listText(sources)}`;
+  const params = { sources: sources.join(" "), ports: ports.join(" ") };
+  const hashes = sshFirewallFileHashes({ sources, ports });
+  if (
+    firewall.table === sshFirewallListing({ sources, ports }) &&
+    firewall.files.rules === hashes.rules &&
+    firewall.files.unit === hashes.unit &&
+    firewall.enabled &&
+    !facts.pendingUndo.sshFirewall
+  ) {
+    return step("ssh-firewall", title, "in-place", params, "Already set.");
+  }
+  const from = facts.sshClient === null ? null : canonicalSshSource(facts.sshClient.address);
+  if (from === null || from.includes("/")) {
+    return blocked(findings.sshClientUnknown(), "OpsCrew's own address is unknown.");
+  }
+  if (!sources.some((source) => networkHolds(source, from))) {
+    return blocked(
+      findings.sshFromLocksOut(from, sources),
+      `OpsCrew connects from ${from}, which the sources leave out.`,
+    );
+  }
+  return step(
+    "ssh-firewall",
+    title,
+    "change",
+    { ...params, from },
+    `OpsCrew adds its own nftables table ${SSH_FIREWALL_TABLE}, whose input chain accepts SSH (TCP ${sshPortsText(ports)}, where sshd listens) from these sources and drops other traffic to ${ports.length === 1 ? "that port" : "those ports"}, over IPv4 and IPv6. No other port, rule, table or default policy changes: ufw, firewalld and your own nftables tables stay as they are. OpsCrew applies it from ${from}, which the sources let in, and changes nothing if it then connects from another address. The machine undoes the change on its own unless a new login works afterwards. ${SSH_FIREWALL_SERVICE} loads the table at boot from ${SSH_FIREWALL_RULES}.`,
   );
 }
 
@@ -1980,6 +2136,7 @@ export function planUndo(
       ),
     );
   }
+  if (sshFirewallPresent(f)) steps.push(sshFirewallRemoval());
   const ufw = entry("ufw");
   if (ufw) {
     const removeRules = rulesToRemove(f, ufw.previous);
@@ -2021,20 +2178,7 @@ export function planUndo(
       ),
     );
   }
-  if (entry("sshd")) {
-    const ours = f.sshd?.dropIn?.startsWith("# Managed by OpsCrew") ?? false;
-    steps.push(
-      step(
-        "sshd",
-        entry("sshd")?.previous.dropIn === "present"
-          ? "Put back the SSH settings file that was there before OpsCrew, and remove OpsCrew's moduli file (moduli.opscrew)"
-          : "Remove OpsCrew's SSH settings file (10-opscrew.conf) and its moduli file (moduli.opscrew)",
-        ours || f.pendingUndo.sshd ? "change" : "in-place",
-        {},
-        "The server undoes this on its own unless new logins still work afterwards.",
-      ),
-    );
-  }
+  if (entry("sshd")) steps.push(sshdRemoval(f, {}));
   const deploy = entry("deploy-user");
   // The runners left above run as deploy: it stays while any is there.
   const kept = repository === undefined ? f.runners.map((runner) => `"${runner.app}"`) : [];
@@ -2251,9 +2395,16 @@ export function planRunner(
  * runner installed with `runner`, as deploy's user service as on a server the user owns, or
  * removed without. A plan that only removes runners installs nothing. Runners it does not name
  * are left alone, and a runner folder of another repository is never replaced or removed. There
- * is no edge, app record, firewall, SSH or web-filter step: the machine may be the user's desktop,
- * and OpsCrew does not harden it. The plan is no one app's (`app` is ""); findings say to run
- * `command` again once fixed. {@link planUndo} takes the machine back.
+ * is no edge, app record, ufw or web-filter step: the machine may be the user's desktop.
+ *
+ * It is hardened only as `desired.harden` asks (FR-1536), each part on its own: `ssh` adds the
+ * server's `sshd` step (refused while OpsCrew logs in as root or a login has a password and no
+ * key), `firewall` the `ssh-firewall` step (port 22 only from `sshFrom`, refused when that would
+ * leave out the address OpsCrew connects from). A part OpsCrew put on the machine that `harden`
+ * leaves out is removed. Without `harden` and without OpsCrew's hardening on the machine, the
+ * plan has no hardening step; a plan that only removes runners leaves the hardening as it is.
+ * The plan is no one app's (`app` is ""); findings say to run `command` again once fixed.
+ * {@link planUndo} takes the machine back.
  */
 export function planRunnerHost(
   facts: HostFacts,
@@ -2281,11 +2432,39 @@ export function planRunnerHost(
   const fatal = fatalFindings(f, findings);
   if (fatal.length > 0) return plan([], fatal);
   const ctx: MachineContext = { facts: f, found: [], findings };
+  const hardening = onlyRemovals ? [] : hardeningSteps(ctx, d);
+  // The SSH settings and the firewall change under the automatic undo, which needs flock.
+  const guarded = (item: HostStep) =>
+    item.id === "sshd" || (item.id === "ssh-firewall" && item.params.remove !== true);
+  if (hardening.some((item) => guarded(item) && item.state === "change") && !f.flock) {
+    ctx.found.push(findings.noFlock());
+  }
   return plan(
     [
       ...(onlyRemovals ? [] : [packageRepairStep(f), dockerStep(ctx), deployUserStep(ctx)]),
+      ...hardening,
       ...runners.map(({ app, runner }) => ownRunnerStep(ctx, app, runner, d.repositoryUrl)),
     ],
     ctx.found,
   );
+}
+
+/**
+ * A runner machine's hardening steps as `desired.harden` asks: each part it names, and the
+ * removal of each part OpsCrew put there that it leaves out (the SSH settings only while no app
+ * of a server is on the machine: they are that server's too).
+ */
+function hardeningSteps(ctx: MachineContext, desired: DesiredRunnerHost): HostStep[] {
+  const { facts } = ctx;
+  const { harden, hostKeyType } = desired;
+  const steps: HostStep[] = [];
+  if (harden?.ssh && hostKeyType !== undefined) {
+    steps.push(runnerSshdStep(ctx, hostKeyType));
+  } else if (setupEntry(facts, "sshd") && otherActiveApps(facts.apps, "").length === 0) {
+    const removal = sshdRemoval(facts, { remove: true });
+    if (removal.state === "change") steps.push(removal);
+  }
+  if (harden?.firewall) steps.push(sshFirewallStep(ctx, harden.firewall.sshFrom));
+  else if (sshFirewallPresent(facts)) steps.push(sshFirewallRemoval());
+  return steps;
 }

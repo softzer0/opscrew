@@ -51,9 +51,20 @@ import {
   WEB_RULES,
 } from "./constants";
 import type { AppRecord } from "./facts";
-import { canonicalIpv4Cidr } from "./parse";
+import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 import { runnerUnitText } from "./runner-unit";
 import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
+import {
+  SSH_FIREWALL_FUNCTIONS,
+  SSH_FIREWALL_RULES,
+  SSH_FIREWALL_SERVICE,
+  SSH_FIREWALL_TABLE,
+  SSH_FIREWALL_UNIT,
+  SSH_FIREWALL_UNIT_TEXT,
+  sshFirewallListing,
+  sshFirewallRules,
+  sshSources,
+} from "./ssh-firewall";
 import {
   type AccessMode,
   AccessModeSchema,
@@ -84,7 +95,7 @@ import {
 } from "./web-filter";
 
 /** Steps whose change can cut SSH access; they run under the dead-man switch. */
-export type GuardedStep = "sshd" | "ufw";
+export type GuardedStep = "sshd" | "ufw" | "ssh-firewall";
 
 export interface StepScripts {
   /** Read-only: prints `state=in-place|change` and `prev.<key>=<value>` lines. */
@@ -766,6 +777,135 @@ ufw_active || fail 'ufw did not turn on.'`,
     deadMan: { step: "ufw", capture, params: sp },
     doing: "setting up the ufw firewall",
     timeoutMs: 5 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// ssh-firewall: a runner machine's SSH ports only from the sources the user named (ssh-firewall.ts)
+
+/** An address or network as {@link canonicalSshSource} gives it. */
+const SshSourceSchema = z.string().refine((text) => canonicalSshSource(text) === text);
+
+const SshFirewallParams = z.union([
+  z.strictObject({ remove: z.literal(true) }),
+  z.strictObject({
+    /** The sources, space-separated, as {@link sshSources} gives them. */
+    sources: z.string().refine((text) => {
+      const list = text.split(" ");
+      return (
+        list.every((item) => SshSourceSchema.safeParse(item).success) &&
+        sshSources(list).join(" ") === text
+      );
+    }),
+    /** The ports sshd listens on, space-separated, ascending. */
+    ports: z
+      .string()
+      .regex(/^\d{1,5}( \d{1,5})*$/)
+      .refine((text) =>
+        text
+          .split(" ")
+          .map(Number)
+          .every(
+            (port, i, list) => port > 0 && port < 65536 && (i === 0 || port > (list[i - 1] ?? 0)),
+          ),
+      ),
+    /** The address OpsCrew connected from when the plan was made, one of the sources'. */
+    from: SshSourceSchema.refine((text) => !text.includes("/")),
+  }),
+]);
+
+const SSH_FIREWALL_HELPERS = `${SSH_FIREWALL_FUNCTIONS}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }`;
+
+const SSH_FIREWALL_UNDO_TIMER = "! systemctl is-active --quiet opscrew-undo-ssh-firewall.timer";
+
+/**
+ * Dead-man capture of the SSH firewall: the undo puts OpsCrew's rules from before back (when it
+ * was on with other sources or ports), or removes its table, unit and rules file.
+ */
+const SSH_FIREWALL_CAPTURE = `if [ -f ${SSH_FIREWALL_RULES} ]; then cp -p ${SSH_FIREWALL_RULES} ${DEAD_MAN_DIR}/ssh-firewall.prev; else rm -f ${DEAD_MAN_DIR}/ssh-firewall.prev; fi
+cat > ${DEAD_MAN_DIR}/ssh-firewall.undo.sh <<'OPSCREW_UNDO'
+${undoPreamble("ssh-firewall", "puts the previous SSH firewall back, or removes OpsCrew's table.")}
+if [ -f ${DEAD_MAN_DIR}/ssh-firewall.prev ]; then
+  cp -p ${DEAD_MAN_DIR}/ssh-firewall.prev ${SSH_FIREWALL_RULES}
+  nft -f ${SSH_FIREWALL_RULES} || true
+else
+  systemctl disable --quiet ${SSH_FIREWALL_SERVICE} >/dev/null 2>&1 || true
+  rm -f ${SSH_FIREWALL_UNIT} ${SSH_FIREWALL_RULES}
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if nft list table ${SSH_FIREWALL_TABLE} >/dev/null 2>&1; then nft delete table ${SSH_FIREWALL_TABLE} || true; fi
+fi
+OPSCREW_UNDO`;
+
+function sshFirewallScripts(step: HostStep): StepScripts {
+  const p = params(step, SshFirewallParams);
+  const files = {
+    RULES: SSH_FIREWALL_RULES,
+    UNIT: SSH_FIREWALL_UNIT,
+    SERVICE: SSH_FIREWALL_SERVICE,
+  };
+  const snapshot = `if [ -n "$(nft_table)" ]; then echo prev.table=present; else echo prev.table=absent; fi`;
+  if ("remove" in p) {
+    return scripts({
+      name: "ssh-firewall.remove",
+      params: files,
+      helpers: SSH_FIREWALL_HELPERS,
+      verify: `  [ -z "$(nft_table)" ] || return 1
+  [ ! -e "$UNIT" ] && [ ! -e "$RULES" ]`,
+      snapshot,
+      apply: `if [ -e "$UNIT" ]; then
+  systemctl disable --quiet "$SERVICE" || true
+  rm -f "$UNIT"
+  systemctl daemon-reload
+fi
+rm -f "$RULES"
+# Only OpsCrew's own table goes; every other table and rule stays.
+if [ -n "$(nft_table)" ]; then nft delete table ${SSH_FIREWALL_TABLE}; fi`,
+      failed: "OpsCrew's SSH firewall is still there.",
+      doing: "removing OpsCrew's SSH firewall",
+      timeoutMs: 2 * MINUTE,
+    });
+  }
+  const firewall = { sources: p.sources.split(" "), ports: p.ports.split(" ").map(Number) };
+  const rules = sshFirewallRules(firewall);
+  return scripts({
+    name: "ssh-firewall",
+    params: {
+      ...files,
+      RULES_B64: base64(rules),
+      RULES_SHA256: sha256Hex(rules),
+      UNIT_B64: base64(SSH_FIREWALL_UNIT_TEXT),
+      UNIT_SHA256: sha256Hex(SSH_FIREWALL_UNIT_TEXT),
+      LISTING: sshFirewallListing(firewall),
+      FROM: p.from,
+    },
+    helpers: SSH_FIREWALL_HELPERS,
+    verify: `  command -v nft >/dev/null 2>&1 || return 1
+  file_is "$RULES" "$RULES_SHA256" || return 1
+  file_is "$UNIT" "$UNIT_SHA256" || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
+  [ "$(nft_table)" = "$LISTING" ] || return 1
+  ${SSH_FIREWALL_UNDO_TIMER}`,
+    snapshot,
+    apply: `command -v nft >/dev/null 2>&1 || fail 'The nft command (from the nftables package) is not installed.'
+# Never lock OpsCrew out: the connection this runs over comes from the address the plan let in.
+client=$(ssh_connection)
+client=\${client%% *}
+if [ "$client" != "$FROM" ]; then
+  fail "OpsCrew now connects from \${client:-an address it could not read}, not from $FROM as when the plan was made, so it did not turn the SSH firewall on." 4
+fi
+install -d -m 0700 ${OPSCREW_DIR}
+install -d -m 0755 "$(dirname "$UNIT")"
+printf '%s' "$RULES_B64" | base64 -d | write_file "$RULES" 0600
+printf '%s' "$UNIT_B64" | base64 -d | write_file "$UNIT" 0644
+systemctl daemon-reload
+systemctl enable --quiet "$SERVICE"
+# The unit loads the rules now and at boot, in one nft transaction that replaces OpsCrew's table.
+systemctl restart "$SERVICE"`,
+    failed: "OpsCrew's SSH firewall is not in effect.",
+    deadMan: { step: "ssh-firewall", capture: SSH_FIREWALL_CAPTURE, params: {} },
+    doing: "turning on OpsCrew's SSH firewall",
+    timeoutMs: 2 * MINUTE,
   });
 }
 
@@ -2069,9 +2209,12 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
     case "deploy-key":
       return deployKeyScripts(step);
     case "sshd":
-      return sshdScripts(plan.purpose, step);
+      // A runner machine's setup plan turns SSH hardening off with the undo's scripts.
+      return sshdScripts(step.params.remove === true ? "undo" : plan.purpose, step);
     case "ufw":
       return ufwScripts(plan.purpose, step);
+    case "ssh-firewall":
+      return sshFirewallScripts(step);
     case "web-filter":
       return webFilterScripts(step);
     case "unattended-upgrades":

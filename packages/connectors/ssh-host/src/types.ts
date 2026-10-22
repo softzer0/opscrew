@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ECDSA_HOST_KEY_TYPES, HOST_SYSCTL_KEYS, MAX_COMPOSE_BYTES } from "./constants";
-import { canonicalIpv4Cidr } from "./parse";
+import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
 export const HOST_PLAN_SCHEMA_VERSION = 1;
@@ -18,6 +18,7 @@ export const HOST_STEP_IDS = [
   "deploy-key",
   "sshd",
   "ufw",
+  "ssh-firewall",
   "web-filter",
   "fail2ban",
   "unattended-upgrades",
@@ -168,6 +169,18 @@ export const DesiredRunnerSchema = z.strictObject({
 });
 export type DesiredRunner = z.infer<typeof DesiredRunnerSchema>;
 
+/** More SSH sources (`sshFrom`) than anyone names by hand. */
+export const MAX_SSH_SOURCES = 32;
+
+/** The algorithm of the host key a project pinned (its known_hosts holds it). */
+const HostKeyTypeSchema = z.enum(["ssh-ed25519", "ssh-rsa", ...ECDSA_HOST_KEY_TYPES]);
+
+/** An IPv4 or IPv6 address or network that may reach a runner machine's SSH (`sshFrom`). */
+const SshSourceSchema = z.string().refine((text) => canonicalSshSource(text) !== null, {
+  message:
+    "must be an IPv4 or IPv6 address or network such as 203.0.113.7, 198.51.100.0/24 or 2001:db8::/32",
+});
+
 /**
  * A runner machine's part of the project (`planRunnerHost`): the project's repository, and the
  * runners of the environments the plan names, each by its app name (`<app>-<env>`): installed
@@ -180,6 +193,27 @@ export const DesiredRunnerHostSchema = z
     runners: z.array(
       z.strictObject({ app: AppNameSchema, runner: DesiredRunnerSchema.optional() }),
     ),
+    /**
+     * The machine's hardening, off by default and each part on its own (FR-1536). A part the
+     * machine has from OpsCrew and `harden` leaves out is removed. `ssh`: the own server's SSH
+     * hardening (key-only logins, no root login), with its automatic undo. `firewall`: OpsCrew's
+     * nftables table `inet opscrew`, which lets only `sshFrom` reach port 22 (no default: a guess
+     * at this computer's address could lock the user out when it changes).
+     */
+    harden: z
+      .strictObject({
+        ssh: z.literal(true).optional(),
+        firewall: z
+          .strictObject({ sshFrom: z.array(SshSourceSchema).min(1).max(MAX_SSH_SOURCES) })
+          .optional(),
+      })
+      .optional(),
+    /** The pinned host key's algorithm; needed with `harden.ssh` (see `DesiredHost.hostKeyType`). */
+    hostKeyType: HostKeyTypeSchema.optional(),
+  })
+  .refine((host) => host.harden?.ssh !== true || host.hostKeyType !== undefined, {
+    message: "is needed to harden SSH",
+    path: ["hostKeyType"],
   })
   .refine((host) => new Set(host.runners.map((item) => item.app)).size === host.runners.length, {
     message: "must name each app once",
@@ -235,7 +269,7 @@ export const DesiredHostSchema = z
      * secrets hold it). An ECDSA key keeps the ECDSA host key offered, so the pinned key still
      * works; otherwise only the ED25519 and RSA host keys are.
      */
-    hostKeyType: z.enum(["ssh-ed25519", "ssh-rsa", ...ECDSA_HOST_KEY_TYPES]),
+    hostKeyType: HostKeyTypeSchema,
     access: z.enum(["public", "tunnel"]),
     /**
      * Tunnel mode: the app's own connector's Compose file as rendered by `@opscrew/iac-templates`

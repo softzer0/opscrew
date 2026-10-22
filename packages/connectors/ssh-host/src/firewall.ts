@@ -5,8 +5,12 @@
  */
 import { plural } from "@opscrew/core";
 
-/** Chains and nftables tables that belong to tools OpsCrew can live next to. */
+/**
+ * Chains and nftables tables that belong to tools OpsCrew can live next to, and OpsCrew's own
+ * (a runner machine's SSH firewall, the nftables table `inet opscrew`).
+ */
 const KNOWN_PREFIXES = [
+  "opscrew",
   "ufw",
   "f2b-",
   "fail2ban",
