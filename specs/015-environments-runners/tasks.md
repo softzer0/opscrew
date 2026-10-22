@@ -531,7 +531,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
-- [ ] T1515a [US3] Commit tags per environment, found by the live run (T1515)
+- [X] T1515a [US3] Commit tags per environment, found by the live run (T1515)
   - Owns: iac-templates' `src/workflow/**` (the build's tags, the verify job's commit-tag check, retention) with its tests and snapshots; agents' `promote/**` (the commit-tag check); any reader of the commit tag (search for it)
   - Reads: data-model.md "Promotion"; research.md R2; the live run's finding below
   - Depends: T1509, T1505
