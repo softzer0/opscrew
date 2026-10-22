@@ -51,12 +51,16 @@ called only when the step runs. The token goes to the script on stdin, is read i
 variable, used once, and unset. It is registered with the redactor before the call, so no output
 line can carry it.
 
-**Teardown:** the step's removal is in `planTeardown` and `planUndo`. It runs `svc.sh stop` and
-`svc.sh uninstall`, then `config.sh remove` with a remove token on stdin, then deletes the folder.
-When the host is gone, the flow calls `deleteRunner` instead.
+**The runner is deploy's systemd user service** on every server (T1511b):
+- the step runs as `deploy`: directly over SSH on a cloud server, through `runuser -u deploy` when the host plan runs as root on an own server;
+- it checks the download's SHA-256, extracts it, runs `config.sh --unattended --replace` with the token in `ACTIONS_RUNNER_INPUT_TOKEN` (never argv), and starts the user unit `opscrew-runner-<app>.service` (`Restart=always`) with `systemctl --user enable --now` and `XDG_RUNTIME_DIR` set;
+- the root-only parts are done once: by cloud-init on a cloud server (the runner's libraries, `/srv/runners` owned by `deploy`, `loginctl enable-linger deploy`), and by the step's root prelude on an own server. There is no `svc.sh` or `installdependencies.sh`.
 
-**Inspect:** the service's state (`systemctl is-active`) and the installed version
-(`bin/Runner.Listener --version`).
+**On a cloud target,** the host plan holds only the runner step. It is planned from what `deploy` reads (`inspectRunners`, `planRunner`, `RunnerFacts`) and approved by its hash as `host-apply`.
+
+**Teardown:** `systemctl --user disable --now` and the unit file removed, then `config.sh remove` with a remove token in `ACTIONS_RUNNER_INPUT_TOKEN`, then the folder. On an own server, the root part removes `/srv/runners` and linger after the last runner. A switch back to `runner: github` is planned from the server's inspection, not from this computer's saved plans. Destroying a cloud server deletes the registration through the API (`deleteRegistrations`, exact name and label) before the server goes.
+
+**Inspect:** the unit's state and the installed version (`bin/Runner.Listener --version`), read as `deploy`.
 
 ## Runner machines (FR-1532–FR-1535)
 

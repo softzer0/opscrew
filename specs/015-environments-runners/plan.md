@@ -269,12 +269,12 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
   1. makes `/srv/runners/<app>` (the environment's app name), owned by `deploy`;
   2. downloads the pinned tarball and checks it;
   3. extracts it as `deploy`;
-  4. runs `installdependencies.sh` (root);
+  4. (replaced by T1511b: the runner's libraries are installed once, by cloud-init on a cloud server and by the step's root prelude on an own server);
   5. runs `config.sh --unattended --url <repo> --token <stdin> --name <8 hex of sha256(host)>-<app>-<env> --labels opscrew-<app>-<env> --work _work` as `deploy`;
-  6. runs `svc.sh install deploy`, then `svc.sh start`.
+  6. (replaced by T1511b) starts deploy's user unit `opscrew-runner-<app>.service` with `systemctl --user enable --now`, through linger.
 - **The registration token** reaches the script only on stdin, read into a variable that is unset afterwards. It is never in the plan: the plan says "a registration token fetched at apply".
-- **Inspect** reads the service's state and the runner's version.
-- **Teardown:** `svc.sh stop` and `uninstall`, then `config.sh remove --token <stdin>`, then the folder is removed.
+- **Inspect** reads the user unit's state and the runner's version, as `deploy`.
+- **Teardown:** `systemctl --user disable --now`, then `config.sh remove` with the token in `ACTIONS_RUNNER_INPUT_TOKEN`, then the folder is removed.
 - **Tests:** a fake host, the script snapshot, and the token absent from the plan, its hash and every log.
 - **On cloud servers (T1511b, the lead after T1511's report):** servers OpsCrew creates have only `deploy`, with no sudo and no root login, so steps 4 and 6 have no root to run as. So:
   - cloud-init on every cloud server, whatever the runner choice, installs the runner's OS packages, makes `/srv/runners` owned by `deploy`, and runs `loginctl enable-linger deploy`. Choosing a runner later never changes `user_data`, so it never replaces the server;
