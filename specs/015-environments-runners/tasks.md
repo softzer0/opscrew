@@ -340,7 +340,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1517a [US6] The runner machine and builds on self-hosted runners in the plan, in `packages/plan-schema/src/**`
+- [X] T1517a [US6] The runner machine and builds on self-hosted runners in the plan, in `packages/plan-schema/src/**`
   - Owns: plan-schema (+ tests and the generated schemas)
   - Reads: data-model.md "Environment" and "Runner machine"; plan.md "16."; spec US6, FR-1532–FR-1535
   - Depends: T1511
