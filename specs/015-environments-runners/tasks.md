@@ -247,7 +247,7 @@ Effort`.
   - Effort: high
 
 - [ ] T1509 [P] [US3] `opscrew promote`, in `packages/agents/src/promote/**` (new)
-  - Owns: that path (+ tests); `packages/agents/src/index.ts` for the new exports only; the GitHub connector's `fileExists` (`packages/connectors/github/src/{github,connector}.ts` and its test)
+  - Owns: that path (+ tests); `packages/agents/src/index.ts` for the new exports only; the GitHub connector's `fileSha` and `workflowRun` (`packages/connectors/github/src/{github,connector}.ts` and their tests); iac-templates' verify job in `src/workflow/jobs.ts` (the run's event and head repository) and the snapshots it changes
   - Reads: contracts/environments.md "Promotion"; data-model.md "Promotion"; plan.md "10."; spec US3, FR-1517–FR-1523
   - Depends: T1508a, T1504, T1505
   - Accept:
@@ -257,8 +257,11 @@ Effort`.
     - **After a successful run,** the digest is recorded in the target's state. A rollback works the same way.
     - **Lead decisions (T1509's report):**
       - the signature is checked by the target workflow's verify job before its deploy job, and the approval says so;
-      - a workflow missing on the default branch is refused before the approval, through the connector's new `fileExists`;
-      - generated files that differ from the target's plan count as pending;
+      - the target's workflow on the default branch must equal the rendered one (the connector's `fileSha` against the git blob hash), checked before the approval;
+      - every difference drift reports that provision would apply counts as pending: files changed or missing, the host plan, Cloudflare rules, the Portainer stack;
+      - the build run must be a `push` run whose head repository is this one, in promote and in the verify job;
+      - "Nothing was deployed" only for a definite refusal; otherwise the run may have started, with the Actions link;
+      - a builder id that is not a run URL is never printed as given;
       - the result has no `deployed` field, since a failed run throws.
     - **Tests:** the fake GitHub's tags, provenance and dispatch; each refusal; a rollback; the approval hash changing with any of its four parts.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
@@ -377,6 +380,7 @@ Effort`.
     - `retarget/steps.ts`: the `runId !== undefined` check is always true now; drop it (T1504).
     - `provision/origin-tls.ts`: when GitHub accepted the dispatch but no run appeared in time, the warning still says "could not start the deploy workflow"; say it was accepted, and where to look (T1504).
     - Remove iac-templates' `PORTAINER_STACK_TEMPLATE_PATH` and `ORIGIN_PULL_PEM` once only their own tests use them (T1508c). The connector's `DEPLOY_BRANCH` and `DEPLOY_REFERENCE` stay for the Portainer live test.
+    - The generic error helpers `reasonOf`, `codeOf` and `hintOf` live in `retarget/` and are imported by promote: move them to `shared/` (T1509's review).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
