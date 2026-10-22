@@ -217,8 +217,9 @@ interface RepoInfo {
  * they only look for the tokens. The cloud provider check looks at the planned provider's token
  * (else the interview answer's, else whichever single token is set) and never at the other
  * provider's; a server the user already owns has no token, so the check looks at its recorded SSH
- * login and key instead (the `ssh` check covers the binaries). Required checks (Node, git repository, engine, ssh, cloud provider and GitHub tokens,
- * Cloudflare when the plan uses it) fail; the rest only warn. Every message is redacted.
+ * login and key instead (the `ssh` check covers the binaries). Required checks (Node, git repository, engine, ssh, the cloud provider token, the GitHub token
+ * when the target deploys through GitHub Actions, Cloudflare when the plan uses it) fail; the rest
+ * only warn. Every message is redacted.
  */
 export async function runInitChecks(
   deps: PhaseDeps,
@@ -321,7 +322,12 @@ export async function runInitChecks(
         ),
     ),
     guard("github", "GitHub token", true, () =>
-      withBudget(checkGitHub(offline, github), budget, "GitHub", true),
+      withBudget(
+        checkGitHub(offline, github, deploysThroughActions(artifacts)),
+        budget,
+        "GitHub",
+        true,
+      ),
     ),
     guard("model", "Model credentials", false, () => checkModel(deps)),
     guard("scanners", "Optional scanners", false, async () => checkScanners(which)),
@@ -1075,18 +1081,39 @@ function githubLookup(
   };
 }
 
+/**
+ * Whether the project's target deploys through GitHub Actions: every cloud, own server and
+ * Portainer target, and localhost with the local runner. No target yet (no usable plan or
+ * interview answers), or localhost without the local runner, does not.
+ */
+function deploysThroughActions({ plan, requirements }: ProjectArtifacts): boolean {
+  if (plan !== undefined) {
+    return plan.target.provider !== "localhost" || plan.environment?.runner === "local";
+  }
+  return requirements !== undefined && requirements.provider !== "localhost";
+}
+
+/**
+ * The GitHub token. A missing one fails when the target deploys through GitHub Actions
+ * (`required`); before a target, or for localhost without the local runner, it is a note. A token
+ * that is set but rejected always fails.
+ */
 async function checkGitHub(
   offline: boolean,
   github: () => Promise<GitHubLookup>,
+  required: boolean,
 ): Promise<CheckResult> {
   const { info, source, repo, error } = await github();
   if (source === undefined) {
-    return {
-      status: "fail",
-      message:
-        "No GitHub token is set (GITHUB_TOKEN and GH_TOKEN are empty) and the GitHub CLI is not logged in.",
-      fix: githubFix(info.coordinates),
-    };
+    const missing =
+      "No GitHub token is set (GITHUB_TOKEN and GH_TOKEN are empty) and the GitHub CLI is not logged in.";
+    return required
+      ? { status: "fail", message: missing, fix: githubFix(info.coordinates) }
+      : {
+          status: "warn",
+          message: `${missing} It is needed for deploys through GitHub Actions, the local runner and the deploy-setup pull request.`,
+          fix: githubFix(info.coordinates),
+        };
   }
   if (offline) {
     return {

@@ -9,8 +9,14 @@ import type {
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  type Requirements,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { localPlan } from "../localhost/__fixtures__/computer";
 import { withBucket } from "../provision/__fixtures__/storage";
 import {
   createTestPhaseDeps,
@@ -810,17 +816,52 @@ describe("runInitChecks", () => {
   });
 
   describe("GitHub", () => {
-    it("fails without a token", async () => {
-      const gh = await check("github", { env: { HCLOUD_TOKEN: HCLOUD } });
-      expect(gh.status).toBe("fail");
-      expect(gh.fix).toContain("GITHUB_TOKEN");
-      expect(gh.fix).toContain("gh auth login");
-      expect(gh.fix).toContain("Contents: Read and write");
-      expect(gh.fix).toContain("https://github.com/settings/personal-access-tokens/new");
+    const noGitHub = { env: { HCLOUD_TOKEN: HCLOUD } };
+
+    async function githubCheck(plan?: DeployPlan): Promise<{ gh?: InitCheck; passed: boolean }> {
+      const { deps } = await setup(noGitHub);
+      if (plan) await writeArtifact("plan", deps.paths.files.plan, plan);
+      const checks = await runInitChecks(deps, { services: services() });
+      return { gh: checks.find((c) => c.id === "github"), passed: initPassed(checks) };
+    }
+
+    it("fails without a token for a Hetzner plan", async () => {
+      const { gh } = await githubCheck(testPlan());
+      expect(gh?.status).toBe("fail");
+      expect(gh?.fix).toContain("GITHUB_TOKEN");
+      expect(gh?.fix).toContain("gh auth login");
+      expect(gh?.fix).toContain("Contents: Read and write");
+      expect(gh?.fix).toContain("https://github.com/settings/personal-access-tokens/new");
+    });
+
+    it("only notes a missing token before a target is chosen, and init passes", async () => {
+      const { gh, passed } = await githubCheck();
+      expect(gh?.status).toBe("warn");
+      expect(gh?.message).toContain("No GitHub token is set");
+      expect(gh?.message).toContain(
+        "needed for deploys through GitHub Actions, the local runner and the deploy-setup pull request",
+      );
+      expect(gh?.fix).toContain("gh auth login");
+      expect(passed).toBe(true);
+    });
+
+    it("only notes a missing token for localhost without the local runner", async () => {
+      const { gh } = await githubCheck(localPlan());
+      expect(gh?.status).toBe("warn");
+    });
+
+    it("fails without a token for localhost with the local runner", async () => {
+      const plan = localPlan({ image: "registry" });
+      const { gh } = await githubCheck(
+        DeployPlanSchema.parse({ ...plan, environment: { runner: "local" } }),
+      );
+      expect(gh?.status).toBe("fail");
+      expect(gh?.fix).toContain("gh auth login");
     });
 
     it("names both variables in the missing-token message, unmasked by the redactor", async () => {
-      const { deps } = await setup({ env: { HCLOUD_TOKEN: HCLOUD } });
+      const { deps } = await setup(noGitHub);
+      await writeArtifact("plan", deps.paths.files.plan, testPlan());
       const checks = await runInitChecks(deps, { services: services() });
       const gh = checks.find((c) => c.id === "github");
       const expected =
@@ -834,6 +875,15 @@ describe("runInitChecks", () => {
       expect(gh.status).toBe("fail");
       expect(gh.message).toContain("cannot push to acme/shop");
       expect(gh.fix).toContain("acme/shop");
+    });
+
+    it("fails a rejected token before a target is chosen", async () => {
+      const { deps } = await setup({ net: { github: 404 } });
+      const checks = await runInitChecks(deps, { services: services() });
+      const gh = checks.find((c) => c.id === "github");
+      expect(gh?.status).toBe("fail");
+      expect(gh?.message).toContain("cannot read acme/shop");
+      expect(initPassed(checks)).toBe(false);
     });
 
     it("fails when the token cannot read the repository, without echoing the token", async () => {
@@ -933,7 +983,7 @@ describe("runInitChecks", () => {
     const { deps: empty } = await setup({ env: {} });
     const missing = await runInitChecks(empty, { offline: true, services: services() });
     expect(missing.find((c) => c.id === "provider")?.status).toBe("warn");
-    expect(missing.find((c) => c.id === "github")?.status).toBe("fail");
+    expect(missing.find((c) => c.id === "github")?.status).toBe("warn");
   });
 });
 
