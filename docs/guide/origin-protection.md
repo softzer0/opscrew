@@ -124,6 +124,11 @@ Switching a hostname from proxied to DNS only takes two provision runs, so no re
   have them.
 - **The client certificate is never replaced by OpsCrew.** It is valid for 15 years. When it nears
   its expiry, `status` and `secure` warn and give the steps to replace it by hand.
+- **A brief error for the zone's other apps, now and then.** When OpsCrew turns on the client
+  certificate for a new hostname (a new app or environment in the zone), Cloudflare can fail a few
+  requests to the zone's other proxied hostnames with error 520, for a fraction of a second. It
+  comes from Cloudflare applying the setting: OpsCrew changes nothing for those hostnames. It is
+  rare, and a reload works.
 - **Another app's settings win.** When one of this app's hostnames already has a per-hostname
   setting with a certificate that is not this app's, OpsCrew stops and says how to free the
   hostname, as it does for [OpsCrew's rules](cloudflare.md#a-hostname-another-app-already-uses).
