@@ -238,7 +238,7 @@ Effort`.
       - offline is a warning;
       - more than 21 days behind GitHub's latest release is a warning;
       - a public repository whose fork-PR policy isn't `all_external_contributors` is high.
-    - **Destroy, or a switch back to `runner: github`,** unregisters and removes the runner.
+    - **Destroy, or a switch back to `runner: github`,** unregisters and removes the runner. When `config.sh remove` failed on the server, the flow deletes the registration through the API (`deleteRunner`), as T1507's step doesn't stop on it.
     - **Tests:** a public repository refused, and allowed after the policy change; the token reaching only the step; the local runner's start, stop and signal; the status findings.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high

@@ -266,7 +266,7 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
 ### 8. The server's runner as a host step (T1507)
 
 - **`github-runner`** comes after `app-record`. It:
-  1. makes `/srv/opscrew/runner/<app>-<env>`, owned by `deploy`;
+  1. makes `/srv/runners/<app>` (the environment's app name), owned by `deploy`;
   2. downloads the pinned tarball and checks it;
   3. extracts it as `deploy`;
   4. runs `installdependencies.sh` (root);

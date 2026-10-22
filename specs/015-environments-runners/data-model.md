@@ -76,7 +76,7 @@ Retention keeps every version with an `opscrew-<env>` or `opscrew-<env>-previous
 
 | Field | Server runner | Local runner |
 |---|---|---|
-| Where | `/srv/opscrew/runner/<app>-<env>` on the server | `<OpsCrew home>/runners/<app>-<env>` on the computer |
+| Where | `/srv/runners/<app>` on the server (`<app>` is the environment's app name, `<app>-<env>` outside prod) | `<OpsCrew home>/runners/<app>-<env>` on the computer |
 | User | `deploy` | the user |
 | Lifetime | persistent, a systemd service | one session in the foreground (`--ephemeral`) |
 | Label | `opscrew-<app>-<env>` | `opscrew-<app>-<env>` |
