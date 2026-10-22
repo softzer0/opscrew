@@ -70,7 +70,7 @@ Effort`.
 
 ## Phase 2: Spike (lead)
 
-- [ ] T1502 The spike (lead), research.md's open items 1–10, run alongside wave 1 on the throwaway repository, a throwaway Hetzner server, this Windows computer and a throwaway CI workflow. The results go into research.md as "Spike results", one line per item: what was run, and what was seen. They decide the open details of T1504–T1511, and any finding that changes a design goes back into plan.md before wave 2.
+- [X] T1502 The spike (lead), research.md's open items 1–10, run alongside wave 1 on the throwaway repository, a throwaway Hetzner server, this Windows computer and a throwaway CI workflow. The results go into research.md as "Spike results", one line per item: what was run, and what was seen. They decide the open details of T1504–T1511, and any finding that changes a design goes back into plan.md before wave 2.
 
 ## Phase 3: Packages (parallel)
 
@@ -377,7 +377,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
-- [ ] T1515 Live runs (lead): the passes in `docs/e2e.md`. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`. Windows localhost runs by hand on the founder's computer.
+- [ ] T1515 Live runs (lead): the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`. Windows localhost runs by hand on the founder's computer.
 
 ## End-of-feature simplify pass (after T1515)
 
