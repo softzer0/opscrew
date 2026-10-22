@@ -267,7 +267,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1508d [US3] Required reviewers and the branch rule where GitHub enforces them (FR-1521), in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/promote/**` and the GitHub connector
+- [X] T1508d [US3] Required reviewers and the branch rule where GitHub enforces them (FR-1521), in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/promote/**` and the GitHub connector
   - Owns: those paths (+ tests); `packages/connectors/github/src/{github,connector}.ts` for the branch rule's calls (+ tests)
   - Reads: spec FR-1514 and FR-1521; research.md "Spike results" 1 (the public repository); data-model.md "Approval kinds"
   - Depends: T1508b, T1509
