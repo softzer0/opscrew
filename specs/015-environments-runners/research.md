@@ -205,6 +205,11 @@ Run on the throwaway repository (private, owned by a user) through a throwaway w
   - `dscacheutil` does not resolve `app.localhost`, the same as Windows.
   - The whole job took 428 s, about 70 minutes of the plan's macOS quota on a private repository.
   - **`windows-latest`:** Docker's server OS is `windows`, and `docker run alpine` fails: no Linux containers. Node cannot resolve `app.localhost`.
+- **The localhost CI on GitHub (2026-10-22, runs 39790397663 to 39805990349):**
+  - Linux (`ubuntu-latest`): the Docker pass 7/7 in every run.
+  - Windows and macOS unit tests pass (after fixing the trust commands per OS and a test's home folder).
+  - Intel macOS (`macos-15-intel`, Colima 0.10.3 with VZ, `--cpu 4 --memory 10 --disk 40`): the Docker pass 7/7 once the local executor passed the Docker context's socket as `DOCKER_HOST` (T1513b). The first `provision` takes about 9 minutes there.
+  - The off-Linux Buildpacks build cannot run there: a plain `docker pull` of the pinned Paketo builder (113 layers, about 1.5 GB) kills Colima's VM within seconds, even with `max-concurrent-downloads: 1`. No OpsCrew code is involved. The same build passed by hand on Windows with Docker Desktop (442 s). So it is listed as not tested live on Intel macOS, and the macOS job no longer runs it.
 - **10. The local CA in both proxies** (openssl, the same shape as T1501b's): a P-256 CA (CA:TRUE, pathlen 0) and a leaf for `app.localhost` and `staging.app.localhost` (serverAuth). With Node's TLS against the CA:
   - pinned Caddy (`tls <cert> <key>`) and pinned nginx-unprivileged (`ssl_certificate`) served both names (200);
   - Caddy refused an unknown name at the handshake;
