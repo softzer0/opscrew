@@ -6,6 +6,17 @@ name: Localhost
 on:
   push:
     branches: [main]
+    paths:
+      - packages/agents/src/localhost/**
+      - packages/iac-templates/src/edge/**
+      - packages/iac-templates/src/runtime/**
+      - packages/connectors/ssh-host/src/local.ts
+      - packages/connectors/ssh-host/src/local.test.ts
+      - packages/core/src/crypto/x509.ts
+      - packages/core/src/crypto/x509.test.ts
+      - examples/**
+      - packages/cli/test/e2e/localhost*.ts
+      - .github/workflows/localhost.yml
   pull_request:
     paths:
       - packages/agents/src/localhost/**
