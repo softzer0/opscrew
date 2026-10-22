@@ -7,6 +7,7 @@ import {
   APPS_DIR,
   DATA_DIR,
   HASHED_RUNTIME_FILES,
+  RUNNERS_DIR,
   RUNTIME_FILE_NAMES,
   type RuntimeFileName,
   SHARED_DIRS,
@@ -375,11 +376,11 @@ const APP_NAME_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 /**
  * Lines `<path> absent|link|other` or `<path> dir <owner> <group> <mode> <entries>`: the shared
- * folders, always listed (absent when not printed), then the apps' folders in `/srv/apps` and
- * `/srv/data` that exist, sorted by path.
+ * folders and the runners' parent, always listed (absent when not printed), then the apps'
+ * folders in `/srv/apps` and `/srv/data` that exist, sorted by path.
  */
 export function parseDirs(text: string): DirFact[] {
-  const shared: readonly string[] = SHARED_DIRS;
+  const shared: readonly string[] = [...SHARED_DIRS, RUNNERS_DIR];
   const found = new Map<string, DirFact>();
   for (const line of linesOf(text)) {
     const [path, kind, owner, group, mode, entries] = line.split(/\s+/);
@@ -404,7 +405,7 @@ export function parseDirs(text: string): DirFact[] {
   }
   const children = [...found.keys()].filter((path) => !shared.includes(path)).sort();
   return [
-    ...SHARED_DIRS.map((path) => found.get(path) ?? { path, kind: "absent" as const }),
+    ...shared.map((path) => found.get(path) ?? { path, kind: "absent" as const }),
     ...children.map((path) => found.get(path) as DirFact),
   ];
 }

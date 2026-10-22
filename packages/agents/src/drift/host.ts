@@ -42,7 +42,7 @@ import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements, recordedEdge, siteContext } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { serverRunner } from "../runners";
+import { type CloudRunnerServices, cloudRunnerPlan, serverRunner } from "../runners";
 import {
   committedText,
   gitClient,
@@ -897,6 +897,46 @@ export async function serverComponentDrift(
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     notes.push(`OpsCrew could not compare the app's components on the server. ${errorText(error)}`);
+    return undefined;
+  }
+}
+
+/**
+ * How the server's runner on a server OpsCrew created differs from what provision sets up
+ * (FR-1530), read over SSH as deploy as provision reads it (`cloudRunnerPlan`): each change its
+ * runner host plan would make. `undefined` on GitHub's machines (the server is not read), or,
+ * with a note in `notes`, when the server cannot be read.
+ */
+export async function cloudRunnerDrift(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: CloudRunnerServices,
+  notes: string[],
+): Promise<HostDifference[] | undefined> {
+  if (plan.environment?.runner !== "server") return undefined;
+  const cannot = "OpsCrew could not compare the server's runner.";
+  try {
+    // The repository as provision registers the runner with (the repository's check is provision's).
+    const planned = await cloudRunnerPlan(deps, plan, services, () =>
+      githubCoordinates(gitClient(deps)),
+    );
+    if (planned === undefined) {
+      notes.push(
+        `${cannot} This computer does not know the server's address or has no deploy key; run \`opscrew drift\` on the computer that created the server.`,
+      );
+      return undefined;
+    }
+    return planned.plan.steps
+      .filter((step) => step.state === "change")
+      .map((step) => ({
+        area: step.id,
+        title: AREA_TITLES[step.id],
+        detail: step.reason ?? "differs from OpsCrew's setup.",
+        restoredByProvision: true,
+      }));
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    notes.push(`${cannot} ${errorText(error)}`);
     return undefined;
   }
 }

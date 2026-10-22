@@ -1,0 +1,146 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`cloud-init template > matches its snapshot 1`] = `
+"#cloud-config
+# Rendered by OpsCrew. Runs once at first boot: creates the deploy user, hardens SSH, installs
+# Docker Engine (28 or newer, from Docker's apt repository), fail2ban, automatic security updates
+# and the host firewall, and prepares what a GitHub Actions runner needs from root (so one can be
+# added later as deploy, which has no root). /var/lib/opscrew-ready is written only when Docker
+# installed correctly.
+users:
+  - name: deploy
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy
+ssh_pwauth: false
+disable_root: true
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - fail2ban
+  - unattended-upgrades
+  - ufw
+  - curl
+  # The GitHub Actions runner's system libraries, as its bin/installdependencies.sh (v2.338.0)
+  # picks them on Ubuntu 24.04.
+  - libicu74
+  - libkrb5-3
+  - liblttng-ust1t64
+  - libssl3t64
+  - zlib1g
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-opscrew.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      MaxAuthTries 3
+      X11Forwarding no
+      AllowUsers deploy
+      KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512
+      Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-gcm@openssh.com,aes128-ctr
+      MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+      RequiredRSASize 3072
+      HostKey /etc/ssh/ssh_host_ed25519_key
+      HostKey /etc/ssh/ssh_host_rsa_key
+      HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+      CASignatureAlgorithms sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+      HostbasedAcceptedAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256-cert-v01@openssh.com,rsa-sha2-256
+      PubkeyAcceptedAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+      ModuliFile /etc/ssh/moduli.opscrew
+  - path: /etc/fail2ban/jail.d/opscrew.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 5
+      bantime = 1h
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" },
+        "no-new-privileges": true,
+        "live-restore": true
+      }
+  - path: /usr/local/sbin/opscrew-install-docker
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      # Installs Docker Engine and its Buildx and Compose plugins from Docker's apt repository
+      # (https://docs.docker.com/engine/install/ubuntu/). With --check, only verifies the install.
+      fail() {
+        echo "opscrew: $*" >&2
+        exit 1
+      }
+      check() {
+        version="$(docker version --format "{{.Server.Version}}")" || fail "Docker Engine is not running"
+        major="\${version%%.*}"
+        case "$major" in
+          '' | *[!0-9]*) fail "unexpected Docker Engine version '$version'" ;;
+        esac
+        if [ "$major" -lt 28 ]; then
+          fail "Docker Engine $version is older than 28"
+        fi
+        docker compose version >/dev/null || fail "the Docker Compose plugin is missing"
+        docker buildx version >/dev/null || fail "the Docker Buildx plugin is missing"
+      }
+      if [ "\${1:-}" = "--check" ]; then
+        check
+        exit 0
+      fi
+      . /etc/os-release
+      [ "\${ID:-}" = ubuntu ] || fail "expected Ubuntu, found \${ID:-an unknown system}"
+      codename="\${UBUNTU_CODENAME:-\${VERSION_CODENAME:-}}"
+      [ -n "$codename" ] || fail "cannot tell the Ubuntu release from /etc/os-release"
+      arch="$(dpkg --print-architecture)"
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL --retry 5 https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      cat > /etc/apt/sources.list.d/docker.sources <<EOF
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: $codename
+      Components: stable
+      Architectures: $arch
+      Signed-By: /etc/apt/keyrings/docker.asc
+      EOF
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o DPkg::Lock::Timeout=600 update
+      apt-get -o DPkg::Lock::Timeout=600 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
+      check
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+runcmd:
+  - [/usr/local/sbin/opscrew-install-docker]
+  - [usermod, -aG, docker, deploy]
+  # deploy's services (a GitHub Actions runner) run without a login, from boot on.
+  - [loginctl, enable-linger, deploy]
+  # The shared edge, the apps' folders and their data, as on servers the user owns, and the
+  # runners' parent; the first deploy brings up the edge.
+  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /srv/edge, /srv/apps, /srv/data, /srv/runners]
+  - [ufw, default, deny, incoming]
+  - [ufw, allow, 22/tcp]
+  - [ufw, allow, 80/tcp]
+  - [ufw, allow, 443/tcp]
+  - [ufw, allow, 443/udp]
+  - [ufw, --force, enable]
+  - [systemctl, enable, --now, docker, fail2ban, unattended-upgrades]
+  # SSH: a copy of the moduli with only the groups of 3072 bits and more (ModuliFile; the conffile
+  # /etc/ssh/moduli is never changed), and the hardened settings only when
+  # sshd -t accepts them; otherwise the stock settings stay, and the server is never marked ready.
+  - [sh, -c, "awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.opscrew"]
+  - [sh, -c, "install -d -m 0755 /run/sshd && sshd -t || rm -f /etc/ssh/sshd_config.d/10-opscrew.conf"]
+  - [systemctl, restart, ssh]
+  - [sh, -c, "/usr/local/sbin/opscrew-install-docker --check && test -f /etc/ssh/sshd_config.d/10-opscrew.conf && touch /var/lib/opscrew-ready"]
+"
+`;

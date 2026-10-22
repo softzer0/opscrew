@@ -20,6 +20,7 @@ import {
   PORTAINER_PROJECT,
   READY_FLAG,
   RECORD_PATH,
+  RUNNERS_DIR,
   RUNTIME_FILE_NAMES,
   runtimeFilePath,
   SHARED_DIRS,
@@ -157,6 +158,8 @@ export interface FakeCall {
   script: string;
   params: Record<string, string>;
   sudo: boolean;
+  /** The user a root shell ran the script as (`runuser -u deploy -- sh -c …`). */
+  asUser?: string;
 }
 
 export interface FakeHostOptions {
@@ -305,6 +308,11 @@ export class FakeHost implements RemoteExec {
   runnerLog: string[] = [];
   /** `config.sh remove` fails (GitHub no longer knows the runner). */
   unregisterFails = false;
+  /**
+   * The runner's root parts: its system libraries, deploy's lingering and /srv/runners for deploy
+   * (the first boot of a server OpsCrew creates, or the step's root part on a server the user owns).
+   */
+  runnerPrepared = false;
 
   // failure injection
   /** Script names that exit non-zero (with an `opscrew:` message). */
@@ -352,10 +360,16 @@ export class FakeHost implements RemoteExec {
       rest = rest.slice("sudo -n ".length);
     }
     if (!rest.startsWith("sh -c ")) throw new Error(`unexpected command: ${command}`);
-    const script = unquote(rest.slice("sh -c ".length));
+    let script = unquote(rest.slice("sh -c ".length));
+    let asUser: string | undefined;
+    const wrapped = /^runuser -u (\S+) -- sh -c ('[\s\S]*')$/.exec(script);
+    if (wrapped?.[1] && wrapped[2]) {
+      asUser = wrapped[1];
+      script = unquote(wrapped[2]);
+    }
     const name = /^# opscrew-host: (\S+)/.exec(script)?.[1] ?? "";
     const params = scriptParams(script);
-    const call: FakeCall = { command, name, script, params, sudo };
+    const call: FakeCall = { command, name, script, params, sudo, ...(asUser ? { asUser } : {}) };
     if (options.input !== undefined) call.input = options.input;
     this.calls.push(call);
 
@@ -367,10 +381,17 @@ export class FakeHost implements RemoteExec {
       return result("", 1, "sudo: a password is required\n");
     }
     const root = sudo || this.login === "root";
+    if (asUser !== undefined && !root) throw new Error(`fake host: runuser without root: ${command}`);
     const failure = this.failScripts.get(name);
     if (failure !== undefined) return fail(failure);
     if (this.echoStdinOn === name) return result("", 1, `got: ${options.input ?? ""}`);
-    return this.handle(name, params, root, options.input ?? "");
+    // The runner's own scripts run as deploy: through runuser from root, or as the deploy login.
+    if (/^github-runner(\.remove)?\.(check|apply|verify)$/.test(name)) {
+      const deploy = asUser === "deploy" || (asUser === undefined && !root && this.login === "deploy");
+      if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
+      return this.runnerScript(name, params, options.input ?? "");
+    }
+    return this.handle(name, params, root && asUser === undefined, options.input ?? "");
   }
 
   // -------------------------------------------------------------------------------------------
@@ -539,6 +560,28 @@ export class FakeHost implements RemoteExec {
   // -------------------------------------------------------------------------------------------
   // inspection output
 
+  /** The runners section, as the snippet prints it. */
+  private runnerLines(): string {
+    return [...this.runners.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(
+        ([app, runner]) =>
+          `${app} ${runner.registered ? "yes" : "no"} ${runner.active ? "active" : "inactive"} ${runner.version} ${runner.label} ${runner.url}`,
+      )
+      .join("\n");
+  }
+
+  /** What `inspectRunners` reads: the server's architecture, the runners, and their root parts. */
+  private runnersInspection(): string {
+    return [
+      ["dpkg-arch", this.arch, 0],
+      ["runners", this.runnerLines(), 0],
+      ["runners-prepared", "", this.runnerPrepared ? 0 : 1],
+    ]
+      .map(([name, text, exit]) => `\n${SECTION_MARK}${name}\n${text}\n${EXIT_MARK}${exit}`)
+      .join("\n");
+  }
+
   private inspection(root: boolean): string {
     const sections: [string, string, number][] = [];
     const add = (name: string, text: string, exit = 0) => sections.push([name, text, exit]);
@@ -676,7 +719,7 @@ export class FakeHost implements RemoteExec {
       return dir ? `${path} dir ${dir.owner} ${dir.group} ${dir.mode} ${this.entries(path)}` : `${path} absent`;
     };
     const children = [...this.dirs.keys()].filter((path) => /^\/srv\/(apps|data)\/[^/]+$/.test(path)).sort();
-    add("dirs", [...SHARED_DIRS, ...children].map(dirLine).join("\n"));
+    add("dirs", [...SHARED_DIRS, RUNNERS_DIR, ...children].map(dirLine).join("\n"));
     const apps = children
       .filter((path) => path.startsWith("/srv/apps/"))
       .map((path) => path.slice("/srv/apps/".length));
@@ -753,16 +796,7 @@ export class FakeHost implements RemoteExec {
         addon("portainer", PORTAINER_DIR, "admin_password"),
       ].join("\n"),
     );
-    add(
-      "runners",
-      [...this.runners.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(
-          ([app, runner]) =>
-            `${app} ${runner.registered ? "yes" : "no"} ${runner.active ? "active" : "inactive"} ${runner.version} ${runner.label} ${runner.url}`,
-        )
-        .join("\n"),
-    );
+    add("runners", this.runnerLines());
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
       return `file ${name} ${content === undefined ? "-" : sha256(content)}`;
@@ -938,6 +972,8 @@ export class FakeHost implements RemoteExec {
         return result(this.sudo === "password" ? "sudo-password\n" : "none\n");
       case "inspect":
         return result(this.inspection(root));
+      case "runners.inspect":
+        return result(this.runnersInspection());
       case "record.read":
         return result(this.files.get(RECORD_PATH) ?? "");
       case "record.write":
@@ -1504,53 +1540,20 @@ export class FakeHost implements RemoteExec {
       case "portainer.verify":
         return this.verify(this.portainerOk(p), p);
 
-      // the app's GitHub Actions runner
-      case "github-runner.check":
-      case "github-runner.verify": {
-        const runner = this.runners.get(p.APP ?? "");
-        // The version as a number (2.338.0 -> 2_338_000): the fake's versions have small parts.
-        const value = (version: string) =>
-          version.split(".").reduce((sum, part) => sum * 1000 + Number(part), 0);
-        const newEnough = value(runner?.version ?? "0.0.0") >= value(p.VERSION ?? "");
-        const ok =
-          runner !== undefined &&
-          runner.registered &&
-          runner.active &&
-          newEnough &&
-          runner.label === p.LABEL &&
-          runner.url === p.URL;
-        return name.endsWith("check") ? this.check(ok, { installed: runner?.registered ?? false }) : this.verify(ok, p);
-      }
-      case "github-runner.apply": {
-        if (!(input.split("\n")[0] ?? "")) {
-          return fail("No registration token arrived on standard input, so OpsCrew did not change the runner.");
-        }
-        // Installed again over its folder and registered again (--replace), the service restarted.
-        this.runnerLog.push(`register ${p.URL} ${p.NAME} ${p.LABEL} ${p.VERSION} from ${p.ARCHIVE_URL}`);
-        this.runners.set(p.APP ?? "", {
-          registered: true,
-          active: true,
-          version: p.VERSION ?? "",
-          label: p.LABEL ?? "",
-          url: p.URL ?? "",
-        });
+      // the GitHub Actions runner's root parts on a server the user owns
+      case "github-runner.root.apply": {
+        this.runnerPrepared = true;
+        const dir = this.dirs.get(RUNNERS_DIR);
+        this.dirs.set(RUNNERS_DIR, { owner: "deploy", group: "deploy", mode: "750", entries: dir?.entries ?? 0 });
         return result();
       }
-      case "github-runner.remove.check":
-      case "github-runner.remove.verify": {
-        const ok = !this.runners.has(p.APP ?? "");
-        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
-      }
-      case "github-runner.remove.apply": {
-        if (!(input.split("\n")[0] ?? "")) {
-          return fail("No remove token arrived on standard input, so OpsCrew did not change the runner.");
+      case "github-runner.remove.root.apply":
+        // deploy's lingering goes with the last runner; the folder only when OpsCrew made it.
+        if (this.runners.size === 0) {
+          this.runnerPrepared = false;
+          if (p.REMOVE_PARENT === "true" && (this.dirs.get(RUNNERS_DIR)?.entries ?? 0) === 0) this.dirs.delete(RUNNERS_DIR);
         }
-        const app = p.APP ?? "";
-        const unregistered = this.runners.get(app)?.registered === true && !this.unregisterFails;
-        if (unregistered) this.runnerLog.push(`unregister ${app}`);
-        this.runners.delete(app);
-        return result(`runner.unregistered=${unregistered}\n`);
-      }
+        return result();
 
       case "package-repair.check":
         return this.check(!this.dpkgInterrupted, { interrupted: true });
@@ -1564,6 +1567,63 @@ export class FakeHost implements RemoteExec {
         return this.check(true);
     }
     throw new Error(`fake host: unknown script ${name}`);
+  }
+
+  /** The app's GitHub Actions runner's own scripts, which run as deploy. */
+  private runnerScript(name: string, p: Record<string, string>, input: string): CommandResult {
+    const app = p.APP ?? "";
+    switch (name) {
+      case "github-runner.check":
+      case "github-runner.verify": {
+        const runner = this.runners.get(app);
+        // The version as a number (2.338.0 -> 2_338_000): the fake's versions have small parts.
+        const value = (version: string) =>
+          version.split(".").reduce((sum, part) => sum * 1000 + Number(part), 0);
+        const newEnough = value(runner?.version ?? "0.0.0") >= value(p.VERSION ?? "");
+        const ok =
+          runner !== undefined &&
+          runner.registered &&
+          runner.active &&
+          newEnough &&
+          runner.label === p.LABEL &&
+          runner.url === p.URL;
+        const previous = { installed: runner?.registered ?? false, runners: this.dirs.has(RUNNERS_DIR) ? "present" : "absent" };
+        return name.endsWith("check") ? this.check(ok, previous) : this.verify(ok, p);
+      }
+      case "github-runner.apply": {
+        if (!(input.split("\n")[0] ?? "")) {
+          return fail("No registration token arrived on standard input, so OpsCrew did not change the runner.");
+        }
+        if (!this.runnerPrepared) {
+          return fail("/srv/runners is missing or not deploy's, so OpsCrew did not install the runner.");
+        }
+        // Installed again over its folder and registered again (--replace), the service restarted.
+        this.runnerLog.push(`register ${p.URL} ${p.NAME} ${p.LABEL} ${p.VERSION} from ${p.ARCHIVE_URL}`);
+        this.runners.set(app, {
+          registered: true,
+          active: true,
+          version: p.VERSION ?? "",
+          label: p.LABEL ?? "",
+          url: p.URL ?? "",
+        });
+        return result();
+      }
+      case "github-runner.remove.check":
+      case "github-runner.remove.verify": {
+        const ok = !this.runners.has(app);
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "github-runner.remove.apply": {
+        if (!(input.split("\n")[0] ?? "")) {
+          return fail("No remove token arrived on standard input, so OpsCrew did not change the runner.");
+        }
+        const unregistered = this.runners.get(app)?.registered === true && !this.unregisterFails;
+        if (unregistered) this.runnerLog.push(`unregister ${app}`);
+        this.runners.delete(app);
+        return result(`runner.unregistered=${unregistered}\n`);
+      }
+    }
+    throw new Error(`fake host: unknown runner script ${name}`);
   }
 
   private deadMan(action: string, step: string, p: Record<string, string>): CommandResult {

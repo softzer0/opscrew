@@ -122,7 +122,7 @@ const RunnerSchema = z.object({
   app: z.string(),
   /** It registered with GitHub (`config.sh` wrote `.runner`). */
   registered: z.boolean(),
-  /** Its systemd service (the unit `svc.sh install` names in `.service`) is active. */
+  /** deploy's systemd user service `opscrew-runner-<app>.service` is active. */
   active: z.boolean(),
   /** `bin/Runner.Listener --version`, null when it could not be read. */
   version: z.string().nullable(),
@@ -309,8 +309,9 @@ export const HostFactsSchema = z.object({
     })
     .default({ live: {}, file: {} }),
   /**
-   * The shared folders (`/srv/edge`, `/srv/apps`, `/srv/data`, always listed), then every app's
-   * folder found in `/srv/apps` and `/srv/data` (only those that exist).
+   * The shared folders (`/srv/edge`, `/srv/apps`, `/srv/data`) and the runners' parent
+   * (`/srv/runners`), always listed, then every app's folder found in `/srv/apps` and `/srv/data`
+   * (only those that exist).
    */
   dirs: z.array(DirSchema),
   /**
@@ -334,6 +335,16 @@ export const HostFactsSchema = z.object({
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;
+
+/**
+ * What `inspectRunners` reads as the deploy user on a server OpsCrew created: the server's
+ * architecture, each app's runner, and whether its first boot prepared what a runner needs from
+ * root (`prepared`: `/srv/runners` is deploy's to write, and deploy lingers).
+ */
+export const RunnerFactsSchema = HostFactsSchema.pick({ arch: true, runners: true }).extend({
+  prepared: z.boolean(),
+});
+export type RunnerFacts = z.infer<typeof RunnerFactsSchema>;
 
 /**
  * `app`'s tunnel connector as inspection found it in its folder; none without the folder (a

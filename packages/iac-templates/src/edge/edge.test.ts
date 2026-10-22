@@ -459,11 +459,12 @@ describe("OpsCrew's cloud servers", () => {
       "/srv/edge",
       "/srv/apps",
       "/srv/data",
+      "/srv/runners",
     ]);
     // Docker and the deploy user come first; the old single-app folder is gone.
     const at = (command: string) => runcmd.findIndex((c) => c.join(" ") === command);
     expect(at("usermod -aG docker deploy")).toBeLessThan(
-      at("install -d -m 0750 -o deploy -g deploy /srv/edge /srv/apps /srv/data"),
+      at("install -d -m 0750 -o deploy -g deploy /srv/edge /srv/apps /srv/data /srv/runners"),
     );
     expect(template).not.toMatch(/\/srv\/app\b/);
   });

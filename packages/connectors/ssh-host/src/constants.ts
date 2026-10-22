@@ -10,7 +10,10 @@ export const EDGE_DIR = "/srv/edge";
  */
 export const EDGE_PROJECT = "opscrew-edge";
 
-/** The parent of each app's GitHub Actions runner (root, 0755). */
+/**
+ * The parent of each app's GitHub Actions runner, deploy's (0750): made at first boot on the
+ * servers OpsCrew creates, and by the runner step's root part on a server the user owns.
+ */
 export const RUNNERS_DIR = "/srv/runners";
 
 /**
@@ -19,6 +22,11 @@ export const RUNNERS_DIR = "/srv/runners";
  */
 export function runnerDir(app: string): string {
   return `${RUNNERS_DIR}/${app}`;
+}
+
+/** The systemd user unit (deploy's, in `~/.config/systemd/user`) that runs an app's runner. */
+export function runnerUnit(app: string): string {
+  return `opscrew-runner-${app}.service`;
 }
 
 /** The folders the apps share, which the `runtime-dirs` step creates for the deploy user. */

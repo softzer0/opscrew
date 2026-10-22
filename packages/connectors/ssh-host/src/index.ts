@@ -3,9 +3,12 @@
  * (feature 009). Read-only inspection, host plans of fixed steps, and an apply bound to the
  * plan's SHA-256 hash, with SSH and firewall changes under a dead-man switch on the server.
  * Several OpsCrew apps share a server (feature 013): each has its own record, folders, deploy key
- * and Cloudflare Tunnel connector, and the shared edge goes with the last one.
- * See `specs/009-own-server/contracts/host-adapter.md` and
- * `specs/013-component-model/contracts/components.md`.
+ * and Cloudflare Tunnel connector, and the shared edge goes with the last one. An app's GitHub
+ * Actions runner (feature 015) is deploy's systemd user service there and, through `planRunner`
+ * as the deploy user, on the servers OpsCrew creates.
+ * See `specs/009-own-server/contracts/host-adapter.md`,
+ * `specs/013-component-model/contracts/components.md` and
+ * `specs/015-environments-runners/contracts/runners.md`.
  */
 
 export { applyHostPlan, HostApplyError } from "./apply";
@@ -35,15 +38,16 @@ export {
   HostFactsSchema,
   otherActiveApps,
   type RunnerFact,
+  type RunnerFacts,
   readableRecords,
   runnerOf,
   tunnelOf,
 } from "./facts";
 export { hostPlanHash } from "./hash";
-export { inspectHost } from "./inspect";
+export { inspectHost, inspectRunners } from "./inspect";
 export { localExec } from "./local";
 export { isPublicAddress } from "./parse";
-export { planHost, planPortainer, planTeardown, planUndo } from "./plan";
+export { planHost, planPortainer, planRunner, planTeardown, planUndo } from "./plan";
 export {
   type ApplyOptions,
   type ApplyResult,

@@ -32,6 +32,7 @@ import {
   planJsonFor,
   projectRunner,
   publicOutputs,
+  readyRemote,
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
@@ -99,9 +100,7 @@ async function project(
   const remote = (host: string): RemoteExec => ({
     host,
     run: async (command) => {
-      if (!command.includes("opscrew-edge-read 1")) {
-        return { exitCode: 0, stdout: "ready\n", stderr: "" };
-      }
+      if (!command.includes("opscrew-edge-read 1")) return readyRemote(host).run(command);
       reads.push(command);
       if (server.down) return { exitCode: 255, stdout: "", stderr: "Connection timed out" };
       return {

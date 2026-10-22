@@ -583,6 +583,7 @@ describe("inspection", () => {
       "/srv/edge",
       "/srv/apps",
       "/srv/data",
+      "/srv/runners",
       "/srv/apps/blog",
       "/srv/apps/shop",
       "/srv/data/blog",

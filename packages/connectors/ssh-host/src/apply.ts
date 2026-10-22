@@ -18,7 +18,7 @@ import { claimFindings, type HostFindings, hostFindings } from "./findings";
 import { hostPlanHash } from "./hash";
 import { probePrivilege, readAppsScript } from "./inspect";
 import { linesOf, parseAppRecords } from "./parse";
-import { asLogin, asRoot, type Privilege } from "./shell";
+import { asDeployUser, asLogin, asRoot, type Privilege } from "./shell";
 import {
   armScript,
   cancelScript,
@@ -129,9 +129,10 @@ async function runOk(
   return result;
 }
 
-function wrap(ctx: Context, step: HostStep, script: string): string {
+/** The command for one of `step`'s scripts; `asDeploy`: as the deploy user (`StepScripts.asDeploy`). */
+function wrap(ctx: Context, step: HostStep, script: string, asDeploy = false): string {
   if (runAsOf(step) === "login" || ctx.privilege === null) return asLogin(script);
-  return asRoot(ctx.privilege, script);
+  return asRoot(ctx.privilege, asDeploy ? asDeployUser(script) : script);
 }
 
 function wrapRoot(ctx: Context, script: string): string {
@@ -356,9 +357,10 @@ async function fetchRunnerToken(ctx: Context, kind: "registration" | "remove"): 
 
 /** Runs one change step; false when the server shows it is already in place. */
 async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Promise<boolean> {
+  const own = (script: string) => wrap(ctx, step, script, scripts.asDeploy === true);
   const check = await runOk(
     ctx,
-    wrap(ctx, step, scripts.check),
+    own(scripts.check),
     { timeoutMs: 120_000 },
     `checking "${step.title}"`,
   );
@@ -387,7 +389,7 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   if (scripts.deadMan !== undefined) {
     await guardedApply(ctx, step, scripts, scripts.deadMan, options);
   } else {
-    const result = await runOk(ctx, wrap(ctx, step, scripts.apply), options, scripts.doing);
+    const result = await runOk(ctx, own(scripts.apply), options, scripts.doing);
     // A runner's removal says whether GitHub unregistered it.
     if (scripts.runnerToken === "remove" && /^runner\.unregistered=false$/m.test(result.stdout)) {
       ctx.stillRegistered.push(String(step.params.app));
@@ -403,7 +405,7 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   }
   await runOk(
     ctx,
-    wrap(ctx, step, scripts.verify),
+    own(scripts.verify),
     { timeoutMs: 120_000 },
     `checking the result of ${scripts.doing}`,
   );

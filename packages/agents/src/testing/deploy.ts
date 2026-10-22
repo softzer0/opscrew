@@ -788,9 +788,28 @@ export async function writeFakeState(paths: ProjectPaths): Promise<void> {
   await writeFile(join(paths.files.tfstateDir, "prod.tfstate"), JSON.stringify({ fake: true }));
 }
 
-/** Remote shell fake: cloud-init is finished. */
+/**
+ * What deploy's read of the runners finds on a fresh server OpsCrew created (`inspectRunners`,
+ * in the host adapter's section format): no runner, and the first boot's parts in place.
+ */
+const NO_RUNNERS = [
+  ["dpkg-arch", "amd64"],
+  ["runners", ""],
+  ["runners-prepared", ""],
+]
+  .map(([name, text]) => `\n@@opscrew-section ${name}\n${text}\n@@opscrew-exit 0`)
+  .join("\n");
+
+/** Remote shell fake: cloud-init is finished, and the server has no runner. */
 export function readyRemote(host: string): RemoteExec {
-  return { host, run: async () => ({ exitCode: 0, stdout: "ready\n", stderr: "" }) };
+  return {
+    host,
+    run: async (command) => ({
+      exitCode: 0,
+      stdout: command.includes("# opscrew-host: runners.inspect") ? NO_RUNNERS : "ready\n",
+      stderr: "",
+    }),
+  };
 }
 
 /** Real git for the project; `ssh-keyscan` answers with {@link HOST_KEY}. */

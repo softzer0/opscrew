@@ -3,10 +3,12 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { PUBLIC_KEY } from "../__fixtures__/plans";
+import { PUBLIC_KEY, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
+import { renderInfra } from "./index";
 
 const MODULES = ["hetzner-vps", "digitalocean-droplet"] as const;
 const template = MODULE_FILES["hetzner-vps/cloud-init.yaml.tftpl"] ?? "";
@@ -191,6 +193,27 @@ describe("cloud-init template", () => {
     expect(rendered.match(/touch \/var\/lib\/opscrew-ready/g)).toHaveLength(1);
   });
 
+  it("prepares what a GitHub Actions runner needs from root on every server: its libraries, deploy's lingering and /srv/runners", () => {
+    // What the runner's bin/installdependencies.sh (v2.338.0) installs on Ubuntu 24.04.
+    expect(config.packages).toEqual(
+      expect.arrayContaining(["libicu74", "libkrb5-3", "liblttng-ust1t64", "libssl3t64", "zlib1g"]),
+    );
+    const commands = config.runcmd.map((c) => (Array.isArray(c) ? c.join(" ") : c));
+    expect(commands).toContain("loginctl enable-linger deploy");
+    expect(commands.indexOf("loginctl enable-linger deploy")).toBeGreaterThan(
+      commands.indexOf("usermod -aG docker deploy"),
+    );
+    expect(commands).toContain(
+      "install -d -m 0750 -o deploy -g deploy /srv/edge /srv/apps /srv/data /srv/runners",
+    );
+    // deploy gets no sudo, and the runner itself is never installed here.
+    expect(rendered).not.toMatch(/sudo|actions-runner/);
+  });
+
+  it("matches its snapshot", () => {
+    expect(rendered).toMatchSnapshot();
+  });
+
   it("hardens SSH to R8's algorithms with only the ED25519 and RSA host keys", () => {
     const lines = (file(SSHD_DROP_IN)?.content ?? "").trimEnd().split("\n");
     expect(lines.slice(0, 6)).toEqual([
@@ -278,5 +301,16 @@ describe.each(MODULES)("%s module", (module) => {
     expect(MODULE_FILES[`${module}/cloud-init.yaml.tftpl`]).toBe(template);
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
     expect(main).toMatch(/ignore_changes = \[[^\]]*\buser_data\b/);
+  });
+
+  it("renders the same server, its user_data included, with and without the server's runner", () => {
+    const without = testPlan({ provider: module === "hetzner-vps" ? "hetzner" : "digitalocean" });
+    const withRunner = DeployPlanSchema.parse({ ...without, environment: { runner: "server" } });
+    const ctx = testContext({ cloudflare: testCloudflare() });
+    const files = renderInfra(without, ctx);
+    expect(files.map((f) => f.path)).toContain(
+      `opscrew/infra/modules/${module}/cloud-init.yaml.tftpl`,
+    );
+    expect(renderInfra(withRunner, ctx)).toEqual(files);
   });
 });

@@ -246,7 +246,8 @@ export const DesiredHostSchema = z
     sysctl: z.partialRecord(z.enum(HOST_SYSCTL_KEYS), z.string().regex(/^\d{1,10}$/)).optional(),
     /**
      * The app's GitHub Actions runner (`runner: server`), installed by the `github-runner` step in
-     * `/srv/runners/<app>` and run as deploy. Absent: a runner the app has there is removed.
+     * `/srv/runners/<app>` and run as deploy's systemd user service. Absent: a runner the app has
+     * there is removed.
      */
     runner: DesiredRunnerSchema.optional(),
     /**

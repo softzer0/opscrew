@@ -27,10 +27,10 @@ import {
   published,
 } from "../drift/__fixtures__/own-project";
 import { runProvision } from "../provision/run";
-import { createTestPhaseDeps, FakeHostServer, ownPlan, testPlan } from "../testing";
+import { createTestPhaseDeps, FakeHostServer, ownPlan } from "../testing";
 import { FakeRunnerGitHub, listedRunner } from "./__fixtures__/github";
 import { applyRunnerSettings, checkRunnerRepository } from "./github";
-import { planServerRunner, requireServerRunnerTarget, runnerTokens } from "./server";
+import { planServerRunner, runnerTokens } from "./server";
 
 /** `plan` with its deploy job on the server's runner (`environment.runner: server`). */
 function onServerRunner(plan: DeployPlan, name?: string): DeployPlan {
@@ -121,17 +121,6 @@ describe("planServerRunner", () => {
 
     api.policy = "all_external_contributors";
     expect(await checkRunnerRepository(repository(api))).toEqual({});
-  });
-
-  it("stops for the server's runner on a server OpsCrew creates", async () => {
-    const cloud = onServerRunner(testPlan());
-    const error = await expectError(
-      planServerRunner(repository(), cloud, SERVER),
-      "PHASE_PRECONDITION",
-    );
-    expect(error.message).toContain("only on a server you own");
-    expect(() => requireServerRunnerTarget(cloud)).toThrow(OpsCrewError);
-    expect(() => requireServerRunnerTarget(testPlan())).not.toThrow();
   });
 });
 

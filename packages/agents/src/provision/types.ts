@@ -20,6 +20,7 @@ import type {
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
 import type { LocalhostServices } from "../localhost/services";
+import type { CloudRunnerHost } from "../runners/cloud";
 import type { RunnerGitHubApi } from "../runners/github";
 import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
@@ -119,6 +120,11 @@ export interface ProvisionServices {
   localhost?: LocalhostServices;
   /** GitHub's runner API for a self-hosted runner (default: the client of the user's token). */
   runnerGitHub?: RunnerGitHubApi;
+  /**
+   * The server's runner on a server OpsCrew created: its inspection and apply as deploy (default:
+   * `inspectRunners` and `applyHostPlan`; a fake in tests).
+   */
+  runnerHost?: CloudRunnerHost;
 }
 
 /**

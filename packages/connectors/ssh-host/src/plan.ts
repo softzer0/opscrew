@@ -17,7 +17,9 @@ import {
   PORTAINER_PORT,
   PORTAINER_PROJECT,
   PORTAINER_REPOSITORY,
+  RUNNERS_DIR,
   runnerDir,
+  runnerUnit,
   SHARED_DIRS,
   SSHD_HEADER,
   SSHD_MODULI_FILE,
@@ -40,6 +42,8 @@ import {
   type HostRecordEntry,
   otherActiveApps,
   type RunnerFact,
+  type RunnerFacts,
+  RunnerFactsSchema,
   readableRecords,
   runnerOf,
   tunnelOf,
@@ -60,6 +64,7 @@ import {
   type DesiredHost,
   DesiredHostSchema,
   type DesiredRunner,
+  DesiredRunnerSchema,
   HOST_PLAN_SCHEMA_VERSION,
   type HostFinding,
   type HostPlan,
@@ -302,7 +307,17 @@ const TITLES = {
 
 /** What a runner's removal does, in a plan's details. */
 function runnerRemoval(app: string): string {
-  return `Stops and removes its service, unregisters it from GitHub with a remove token fetched while this plan is applied (never part of this plan), and deletes ${runnerDir(app)}.`;
+  return `As deploy, stops and disables its service ${runnerUnit(app)}, unregisters it from GitHub with a remove token fetched while this plan is applied (never part of this plan), and deletes ${runnerDir(app)}.`;
+}
+
+/** What installing the runner does, in a plan's details (`runAs`: how its step runs). */
+function runnerInstall(app: string, runner: DesiredRunner, runAs: RunAs): string {
+  const archive = `actions-runner-${runner.asset}-${runner.version}.tar.gz`;
+  const first =
+    runAs === "root"
+      ? "As root, installs the runner's system libraries (those GitHub's installdependencies.sh picks for this release) and lets deploy's services run without a login (loginctl enable-linger deploy). Then, as deploy, it downloads"
+      : "As deploy (the server's first boot installed the runner's system libraries and lets deploy's services run without a login), it downloads";
+  return `${first} ${archive} from GitHub and checks it against the SHA-256 ${runner.sha256}, extracts it to ${runnerDir(app)}, registers it with ${runner.repositoryUrl} as ${runner.name} with a registration token fetched while this plan is applied (never part of this plan), and runs it as deploy's systemd user service ${runnerUnit(app)}. The deploy job then runs on this server, and GitHub never connects to it. The runner updates itself.`;
 }
 
 interface SetupContext {
@@ -1102,23 +1117,28 @@ function runnerDifferences(found: RunnerFact, runner: DesiredRunner): string[] {
 
 /**
  * The app's GitHub Actions runner (`runner: server`): installed when the caller passes one, and
- * removed when it does not and the app has one (its deploy job runs on GitHub's machines again).
+ * removed when it does not and the app has one (its deploy job runs elsewhere now).
  * It is in place once registered with the planned label and repository, at the pinned version or
  * newer (it updates itself), with its service active. Otherwise it is installed again over its
- * folder, registered again with `--replace`, and its service restarted.
+ * folder, registered again with `--replace`, and its service restarted. `runAs` is how the step
+ * runs: as root on a server the user owns, as the login (deploy) on a server OpsCrew created.
  */
-function runnerStep({ facts, desired }: SetupContext): HostStep | undefined {
-  const app = desired.app;
+function runnerStep(
+  facts: Pick<HostFacts, "arch" | "runners">,
+  app: string,
+  runner: DesiredRunner | undefined,
+  runAs: RunAs,
+): HostStep | undefined {
   const found = runnerOf(facts, app);
-  const runner = desired.runner;
+  const login: HostStep["params"] = runAs === "login" ? { runAs } : {};
   if (runner === undefined) {
     if (found === undefined) return undefined;
     return step(
       "github-runner",
       TITLES.removeRunner(app),
       "change",
-      { app, remove: true },
-      `The deploy job runs on GitHub's machines again. ${runnerRemoval(app)}`,
+      { app, remove: true, ...login },
+      `The deploy job no longer runs on this server's runner. ${runnerRemoval(app)}`,
     );
   }
   const asset = facts.arch === "arm64" ? "linux-arm64" : "linux-x64";
@@ -1137,7 +1157,7 @@ function runnerStep({ facts, desired }: SetupContext): HostStep | undefined {
       { hint: "Plan again with the pinned runner's URL." },
     );
   }
-  const params = { app, user: "deploy", ...runner };
+  const params = { app, user: "deploy", ...login, ...runner };
   const title = `Install the GitHub Actions runner ${runner.version} for "${app}", run as deploy, with the label ${runner.label}`;
   const why = found?.registered ? runnerDifferences(found, runner) : [];
   if (found?.registered && why.length === 0) {
@@ -1158,8 +1178,31 @@ function runnerStep({ facts, desired }: SetupContext): HostStep | undefined {
     title,
     "change",
     params,
-    `${again}Downloads ${archive} from GitHub and checks it against the SHA-256 ${runner.sha256}, extracts it to ${runnerDir(app)} as deploy, installs its system packages (bin/installdependencies.sh, as root), registers it with ${runner.repositoryUrl} as ${runner.name} with a registration token fetched while this plan is applied (never part of this plan), and runs it as a systemd service as deploy (svc.sh, as root). The deploy job then runs on this server, and GitHub never connects to it. The runner updates itself.`,
+    `${again}${runnerInstall(app, runner, runAs)}`,
   );
+}
+
+/** OpsCrew made `/srv/runners` on this server: its host record says it was absent before. */
+function runnersDirMade(facts: HostFacts): boolean {
+  return setupEntry(facts, "github-runner")?.previous.runners === "absent";
+}
+
+/**
+ * The runner's step on a server the user owns ({@link runnerStep}, run as root): a removal takes
+ * `/srv/runners` too when OpsCrew made it, and an install is blocked while `/srv/runners` is
+ * there but not deploy's folder, which OpsCrew never takes over.
+ */
+function ownRunnerStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
+  const item = runnerStep(facts, desired.app, desired.runner, "root");
+  if (item?.params.remove === true) {
+    return { ...item, params: { ...item.params, removeParent: runnersDirMade(facts) } };
+  }
+  const dir = facts.dirs.find((entry) => entry.path === RUNNERS_DIR);
+  const free =
+    dir === undefined || dir.kind === "absent" || (dir.kind === "dir" && dir.owner === "deploy");
+  if (item?.state !== "change" || free) return item;
+  found.push(findings.runnersDirTaken(dir.kind === "dir" ? dir.owner : undefined));
+  return { ...item, state: "blocked", reason: `${RUNNERS_DIR} is not the deploy user's folder.` };
 }
 
 /** ` (<image>)` for the image a rendered Compose file names first, for a step title. */
@@ -1469,7 +1512,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
     runtimeStep(ctx),
     appDirsStep(ctx),
     appRecordStep(ctx),
-    runnerStep(ctx),
+    ownRunnerStep(ctx),
     tunnelStep(ctx),
     portainerStep(ctx),
   ].filter((item): item is HostStep => item !== undefined);
@@ -1543,7 +1586,7 @@ export function planTeardown(
         "github-runner",
         TITLES.removeRunner(app),
         "change",
-        { app, remove: true },
+        { app, remove: true, removeParent: runnersDirMade(f) },
         runnerRemoval(app),
       ),
     );
@@ -1740,7 +1783,7 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
           "github-runner",
           TITLES.removeRunner(runner.app),
           "change",
-          { app: runner.app, remove: true },
+          { app: runner.app, remove: true, removeParent: runnersDirMade(f) },
           runnerRemoval(runner.app),
           "shared",
         ),
@@ -2030,5 +2073,39 @@ export function planPortainer(options: {
   };
   // Validate now so a bad directory or version fails before anything is approved.
   for (const item of plan.steps) stepScripts(plan, item);
+  return plan;
+}
+
+/**
+ * The host plan of the app's GitHub Actions runner on a server OpsCrew created (Hetzner,
+ * DigitalOcean), from `inspectRunners`: only the `github-runner` step, run as the login (the deploy
+ * user, who has no root there: the server's first boot installed the runner's system libraries,
+ * made `/srv/runners` deploy's and lets deploy's services run without a login). The runner is
+ * installed, or installed again, when `runner` is given, and removed when it is not and the app
+ * has one; otherwise the plan has no step. It needs no root and writes no host record. Apply it
+ * with `applyHostPlan` like any host plan.
+ */
+export function planRunner(
+  facts: RunnerFacts,
+  input: { app: string; runner?: DesiredRunner },
+): HostPlan {
+  const f = RunnerFactsSchema.safeParse(facts);
+  const app = AppNameSchema.safeParse(input.app);
+  const runner =
+    input.runner === undefined ? undefined : DesiredRunnerSchema.safeParse(input.runner);
+  if (!f.success || !app.success || runner?.success === false) {
+    throw new OpsCrewError("INVALID_INPUT", "The runner's plan input is not valid.", {
+      hint: "Inspect the server again with OpsCrew before planning.",
+    });
+  }
+  const item = runnerStep(f.data, app.data, runner?.data, "login");
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app: app.data,
+    steps: item === undefined ? [] : [item],
+    findings: [],
+  };
+  for (const each of plan.steps) stepScripts(plan, each);
   return plan;
 }

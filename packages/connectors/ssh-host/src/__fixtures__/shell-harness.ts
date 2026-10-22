@@ -31,6 +31,7 @@ const MOVED = [
   "/run/sshd",
   "/var/lib/opscrew-ready",
   "/var/lib/dpkg",
+  "/var/lib/systemd/linger",
   "/var/log/opscrew",
   "/usr/local/sbin/opscrew-web-filter",
   "/etc/systemd/system",

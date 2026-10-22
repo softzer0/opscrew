@@ -6,7 +6,7 @@
  */
 import type { ApplyOptions, DesiredRunner } from "@opscrew/connector-ssh-host";
 import type { PhaseName } from "@opscrew/contracts";
-import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { listText, sha256Hex } from "@opscrew/core";
 import { runnerLabel, TOOLS } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -17,7 +17,7 @@ import {
   type RunnerRepository,
   repositoryUrl,
 } from "./github";
-import { planWhere, runnerSuffix } from "./words";
+import { runnerSuffix } from "./words";
 
 /**
  * The server's runner's name on GitHub, `<8 hex of the SHA-256 of host>-<app>-<env>`: two servers
@@ -55,8 +55,9 @@ export function serverRunner(
 /**
  * The server's runner for `plan` (contracts/runners.md "Agents"): none unless its environment's
  * runner is `server`; otherwise the `github-runner` step for the server (its login's `host` and
- * its CPU), after checking the repository. A public repository whose outside contributors' runs need no approval gives the
- * `github-settings` change that allows the runner, and the refusal without it.
+ * its CPU), after checking the repository. A public repository whose outside contributors' runs
+ * need no approval gives the `github-settings` change that allows the runner, and the refusal
+ * without it.
  */
 export async function planServerRunner(
   repository: RunnerRepository,
@@ -64,32 +65,10 @@ export async function planServerRunner(
   server: { arch: "amd64" | "arm64"; host: string },
 ): Promise<{ step?: DesiredRunner; settings?: GithubSettingsChange; refusal?: string }> {
   if (plan.environment?.runner !== "server") return {};
-  requireServerRunnerTarget(plan);
   return {
     step: serverRunner(plan, server, repository),
     ...(await checkRunnerRepository(repository)),
   };
-}
-
-/** The stop for the server's runner on a server OpsCrew created. */
-function cloudServerRunner(plan: DeployPlan): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "OpsCrew installs the server's runner only on a server you own for now: it needs root once for its system packages and its service, and the servers OpsCrew creates allow no root login. Nothing was changed.",
-    {
-      hint: `Set environment.runner to github in ${planWhere(plan).file}, then run the command again.`,
-    },
-  );
-}
-
-/**
- * Stops before any change when the plan asks for the server's runner on a server OpsCrew creates
- * (see {@link cloudServerRunner}).
- */
-export function requireServerRunnerTarget(plan: DeployPlan): void {
-  if (plan.environment?.runner === "server" && plan.target.provider !== "own") {
-    throw cloudServerRunner(plan);
-  }
 }
 
 /**

@@ -67,6 +67,14 @@ export function asLogin(script: string): string {
 }
 
 /**
+ * The command that runs `script` as the deploy user, for a root shell ({@link asRoot}): `runuser`
+ * without a login shell, so stdin (a secret) reaches the script.
+ */
+export function asDeployUser(script: string): string {
+  return `runuser -u deploy -- sh -c ${shellQuote(script)}`;
+}
+
+/**
  * Shell lines shared by the scripts. apt waits for other apt runs, writes its output to
  * {@link APT_LOG} (so a dropped SSH session cannot break it with a closed pipe) and, when it
  * fails, prints the last lines of that log for the error message. `write_file <path> <mode>

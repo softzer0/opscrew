@@ -11,7 +11,7 @@ import { requireSharedParts } from "../environments/shared-parts";
 import { provisionLocalhost } from "../localhost/provision";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
-import { requireServerRunnerTarget } from "../runners";
+import { applyCloudRunner, checkCloudRunner, type RunnerRepository } from "../runners";
 import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
 import {
   addressFromOutputs,
@@ -281,8 +281,6 @@ async function provisionFlow(
     const saved = await savedInfrastructureHashes(deps, options, plan);
     return provisionPortainer(deps, options, { plan, requirements, git, phase, saved, extras });
   }
-  // The server's runner needs a server the user owns (root once, for its packages and service).
-  requireServerRunnerTarget(plan);
   const profile = providerProfile(planProvider(plan));
   deps.reporter.step(
     ownServer
@@ -403,6 +401,8 @@ async function provisionFlow(
   let ownRender: OwnRenderInput | undefined;
   /** The host plan applied before a mode switch's removal deleted the tunnel. */
   let earlyHost: HostChangeResult | undefined;
+  /** A server OpsCrew creates with the server's runner: the repository, checked before any change. */
+  let runnerRepository: RunnerRepository | undefined;
   if (ownServer) {
     ownRun = await prepareOwnServer(deps, {
       plan,
@@ -473,6 +473,15 @@ async function provisionFlow(
       if (removal.approval) approvals.push(approvalEntry(removal.approval));
       if (removal.host?.approval) approvals.push(approvalEntry(removal.host.approval));
     }
+  } else {
+    // A server OpsCrew creates with the server's runner, before any change: an existing server's
+    // first-boot parts the runner needs, and the repository's check (a public one needs its own
+    // approval, FR-1527).
+    runnerRepository = await checkCloudRunner(deps, plan, services, {
+      phase,
+      command,
+      planOnly: options.planOnly === true,
+    });
   }
 
   // 3c. OpsCrew's shared Cloudflare change (its rules in the zone, the account's Zero Trust
@@ -672,6 +681,18 @@ async function provisionFlow(
           "The host plan for your server follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's id. Applying it shows the host plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the host plan's hash).",
         );
       }
+    } else {
+      // The server's runner on a server OpsCrew created: its own host plan, shown and saved.
+      hostPlanHash ??= (
+        await applyCloudRunner(deps, {
+          plan,
+          services,
+          phase,
+          command,
+          planOnly: true,
+          repository: runnerRepository,
+        })
+      )?.hash;
     }
     if (learned.zoneLearned) await writePlanIfChanged(deps, persisted(plan));
     return {
@@ -762,6 +783,19 @@ async function provisionFlow(
       services,
     });
     secretsTarget = { host: ipv4, knownHosts: pinned.knownHostsLines };
+    // 7b. The server's runner (or its removal): its own host plan, as deploy.
+    host = await applyCloudRunner(deps, {
+      plan,
+      services,
+      phase,
+      command,
+      repository: runnerRepository,
+    });
+    if (host?.approval) {
+      approvals.push(approvalEntry(host.approval));
+      plan = record(host.applied);
+      await writePlanIfChanged(deps, persisted(plan));
+    }
   }
 
   // 8–9. Production environment and GitHub Actions secrets

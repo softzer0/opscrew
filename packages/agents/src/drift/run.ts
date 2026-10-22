@@ -13,7 +13,7 @@ import { requireStorageKey } from "../provision/storage";
 import { hasDeployment, stateFile, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
-import { type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
+import { cloudRunnerDrift, type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
 import {
   compareInfrastructure,
   driftEngine,
@@ -143,7 +143,8 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   notes.push(...storage.notes);
 
   // 5. A server the user owns: compare the server with OpsCrew's record and setup (read-only);
-  // a server OpsCrew created: the app's components, once it was deployed (read-only).
+  // a server OpsCrew created: the app's components, once it was deployed, and the server's runner
+  // (read-only, as deploy).
   let host: HostDrift | undefined;
   if (ownServer) {
     host = await ownHostDrift(deps, plan, {
@@ -152,8 +153,15 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
       ...(tunnelId !== undefined ? { tunnelId } : {}),
       ...(services.cloudflare !== undefined ? { cloudflare: services.cloudflare } : {}),
     });
-  } else if (appDeployed(plan)) {
-    host = await serverComponentDrift(deps, plan, services, notes);
+  } else {
+    const components = appDeployed(plan)
+      ? await serverComponentDrift(deps, plan, services, notes)
+      : undefined;
+    const runner = await cloudRunnerDrift(deps, plan, services, notes);
+    host =
+      runner === undefined
+        ? components
+        : { differences: [...(components?.differences ?? []), ...runner] };
   }
 
   return finishDriftReport(deps, plan, {

@@ -24,7 +24,14 @@ import {
   TUNNELS_DIR,
   tunnelProject,
 } from "./constants";
-import { type HostFacts, HostFactsSchema, HostRecordSchema, type WebFilterFacts } from "./facts";
+import {
+  type HostFacts,
+  HostFactsSchema,
+  HostRecordSchema,
+  type RunnerFacts,
+  RunnerFactsSchema,
+  type WebFilterFacts,
+} from "./facts";
 import { foreignFirewalls } from "./firewall";
 import {
   dockerdFlags,
@@ -125,7 +132,10 @@ const APP_NAME_FN = `app_name() {
   [ "\${#1}" -le 41 ]
 }`;
 
-/** The shared folders, then each app's folder in /srv/apps and /srv/data (never through a link). */
+/**
+ * The shared folders and the runners' parent, then each app's folder in /srv/apps and /srv/data
+ * (never through a link).
+ */
 const DIRS_SNIPPET = `${APP_NAME_FN}
 dir_line() {
   if [ -L "$1" ]; then echo "$1 link"
@@ -133,7 +143,7 @@ dir_line() {
   elif [ -e "$1" ]; then echo "$1 other"
   else echo "$1 absent"; fi
 }
-for d in ${SHARED_DIRS.join(" ")}; do dir_line "$d"; done
+for d in ${SHARED_DIRS.join(" ")} ${RUNNERS_DIR}; do dir_line "$d"; done
 for parent in ${APPS_DIR} ${DATA_DIR}; do
   if [ -L "$parent" ] || [ ! -d "$parent" ]; then continue; fi
   for d in "$parent"/*; do
@@ -229,26 +239,26 @@ addon portainer ${PORTAINER_DIR} admin_password`;
 
 /**
  * Each app's GitHub Actions runner in its folder of /srv/runners: whether it registered, the
- * state of its service, its version, and the label and repository OpsCrew registered it with (in
- * its own `.opscrew-runner`: the runner's `.runner` holds no labels). `svc.sh install` writes the
- * unit's name (`actions.runner.<owner>-<repo>.<name>.service`) to `.service`, so the name is read,
- * never guessed. The version comes from the runner's own binary, run as deploy (its owner), never
- * as root. Not yet checked on a real server (spike item 4): `.runner`, `.service`, and that
- * `--version` prints only the version.
+ * state of deploy's user service `opscrew-runner-<app>.service`, its version, and the label and
+ * repository OpsCrew registered it with (in its own `.opscrew-runner`: the runner's `.runner`
+ * holds no labels). The service's state and the version (from the runner's own binary) are read as
+ * deploy, its owner: through `runuser` when inspection runs as root, directly when the login is
+ * deploy (a server OpsCrew created). Not yet checked on a real server (spike item 4): `.runner`,
+ * and that `--version` prints only the version.
  */
 const RUNNERS_SNIPPET = `${APP_NAME_FN}
-if [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
+if [ "$(id -u)" = 0 ]; then as_deploy() { runuser -u deploy -- "$@"; }; else as_deploy() { "$@"; }; fi
+uid=$(id -u deploy 2>/dev/null) || uid=''
+if [ -n "$uid" ] && [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
   for d in "${RUNNERS_DIR}"/*; do
     app_name "\${d##*/}" || continue
     if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi
     registered=no
     if [ -f "$d/.runner" ]; then registered=yes; fi
-    unit=$(head -n 1 "$d/.service" 2>/dev/null) || unit=''
-    state=inactive
-    case "$unit" in actions.runner.*.service) state=$(systemctl is-active "$unit" 2>/dev/null) || true ;; esac
+    state=$(as_deploy env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user is-active "opscrew-runner-\${d##*/}.service" 2>/dev/null) || true
     version=''
     if [ -x "$d/bin/Runner.Listener" ]; then
-      version=$(runuser -u deploy -- timeout 30 "$d/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1) || version=''
+      version=$(as_deploy timeout 30 "$d/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1) || version=''
     fi
     label=$(sed -n 's/^label=//p' "$d/.opscrew-runner" 2>/dev/null) || label=''
     url=$(sed -n 's/^url=//p' "$d/.opscrew-runner" 2>/dev/null) || url=''
@@ -363,14 +373,38 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
 ];
 
+/** A read-only script of `sections`, each printed under its mark (a failing one never stops the rest). */
+function sectionsScript(name: string, sections: readonly (readonly [string, string])[]): string {
+  const body = sections
+    .map(
+      ([section, command]) =>
+        `printf '\\n${SECTION_MARK}%s\\n' '${section}'\n{\n${command}\n} 2>/dev/null\nprintf '\\n${EXIT_MARK}%s\\n' "$?"`,
+    )
+    .join("\n");
+  const helpers = "docker_up() { systemctl is-active --quiet docker 2>/dev/null; }";
+  return buildScript(name, {}, `${helpers}\n${body}`, { tolerant: true });
+}
+
 /** The single read-only inspection script (tolerant: a failing probe never stops the others). */
 export function inspectScript(): string {
-  const body = INSPECT_SECTIONS.map(
-    ([name, command]) =>
-      `printf '\\n${SECTION_MARK}%s\\n' '${name}'\n{\n${command}\n} 2>/dev/null\nprintf '\\n${EXIT_MARK}%s\\n' "$?"`,
-  ).join("\n");
-  const helpers = "docker_up() { systemctl is-active --quiet docker 2>/dev/null; }";
-  return buildScript("inspect", {}, `${helpers}\n${body}`, { tolerant: true });
+  return sectionsScript("inspect", INSPECT_SECTIONS);
+}
+
+/**
+ * The sections {@link inspectRunners} reads: the server's architecture, the runners, and whether
+ * the server's first boot made `/srv/runners` deploy's and lets deploy linger.
+ */
+const RUNNER_SECTIONS = [
+  ...INSPECT_SECTIONS.filter(([name]) => name === "dpkg-arch" || name === "runners"),
+  [
+    "runners-prepared",
+    `[ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ] && [ -w "${RUNNERS_DIR}" ] && [ -e /var/lib/systemd/linger/deploy ]`,
+  ],
+] as const;
+
+/** The read-only script of {@link inspectRunners}. */
+export function inspectRunnersScript(): string {
+  return sectionsScript("runners.inspect", RUNNER_SECTIONS);
 }
 
 /** Read-only: the apps' records, as the inspection prints them (see {@link parseAppRecords}). */
@@ -687,4 +721,31 @@ export async function inspectHost(remote: RemoteExec): Promise<HostFacts> {
     });
   }
   return factsFromOutput(result.stdout, privilege);
+}
+
+/**
+ * Reads the apps' GitHub Actions runners, the server's architecture, and whether its first boot
+ * prepared what a runner needs from root, as the login itself with no root: the deploy user on a
+ * server OpsCrew created (Hetzner, DigitalOcean), for `planRunner`. Read-only.
+ */
+export async function inspectRunners(remote: RemoteExec): Promise<RunnerFacts> {
+  const result = await run(remote, asLogin(inspectRunnersScript()), 120_000);
+  if (!result.stdout.includes(SECTION_MARK)) {
+    throw new OpsCrewError("COMMAND_FAILED", "OpsCrew could not read the runner on the server.", {
+      hint: "Check that the server is reachable over SSH as deploy, then try again.",
+    });
+  }
+  const sections = splitSections(result.stdout);
+  const parsed = RunnerFactsSchema.safeParse({
+    arch: ok(sections, "dpkg-arch").trim(),
+    runners: parseRunners(section(sections, "runners").text),
+    prepared: section(sections, "runners-prepared").exit === 0,
+  });
+  if (!parsed.success) {
+    throw new OpsCrewError("INTERNAL", "OpsCrew could not make sense of the server's answers.", {
+      hint: "Run the command again; if it keeps failing, report it with the server's OS version.",
+      cause: parsed.error,
+    });
+  }
+  return parsed.data;
 }

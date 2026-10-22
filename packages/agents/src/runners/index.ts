@@ -1,7 +1,15 @@
 /**
  * Self-hosted runners (feature 015, contracts/runners.md "Agents"): the server's runner as a step
- * of the host plan, the local runner on this computer, and their state in status and secure.
+ * of the host plan (on a server OpsCrew created, a host plan of its own, as deploy), the local
+ * runner on this computer, and their state in status and secure.
  */
+export {
+  applyCloudRunner,
+  type CloudRunnerHost,
+  type CloudRunnerServices,
+  checkCloudRunner,
+  cloudRunnerPlan,
+} from "./cloud";
 export {
   applyRunnerSettings,
   checkRunnerRepository,
@@ -26,7 +34,6 @@ export {
 export {
   planServerRunner,
   removeKeptRegistrations,
-  requireServerRunnerTarget,
   runnerTokens,
   serverRunner,
   serverRunnerName,

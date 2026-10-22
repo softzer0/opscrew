@@ -458,6 +458,7 @@ describe("inspectHost: the apps' records and folders (real shell)", () => {
           ["/srv/edge", "absent"],
           ["/srv/apps", "dir"],
           ["/srv/data", "dir"],
+          ["/srv/runners", "absent"],
           ["/srv/apps/shop", "dir"],
           ["/srv/data/shop", "dir"],
         ]);

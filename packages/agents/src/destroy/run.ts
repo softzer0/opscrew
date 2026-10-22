@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural } from "@opscrew/core";
-import { cloudTarget } from "@opscrew/iac-templates";
+import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
+import { deleteRegistrations, runnerRepository, serverRunnerName } from "../runners";
 import {
   describeChanges,
   hasDeployment,
@@ -103,6 +104,8 @@ interface DestroyContext {
   vars?: Readonly<Record<string, string>>;
   /** Delay between polls of the tunnel's connections (tests). */
   sleep?: (ms: number) => Promise<void>;
+  /** Deletes the server's runner registration at GitHub, right before the server is deleted. */
+  unregisterRunner?: () => Promise<void>;
 }
 
 /**
@@ -240,6 +243,8 @@ async function destroyInfrastructure(
       );
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
+    // The server's runner goes with the server, so GitHub forgets it first.
+    if (serverDeleted) await ctx.unregisterRunner?.();
     // Portainer's subdomain: its tunnel connector runs on the server. Deleted with the server, its
     // connections may outlast it and Cloudflare refuses the tunnel (1022); then this run waits
     // until Cloudflare reports no active connections and deletes the tunnel with a plan of its own
@@ -496,6 +501,12 @@ export async function runDestroy(
   await checkProvider(deps, provider, services);
   await checkCloudflare(deps, plan, services);
   const github = await resolveGitHub(deps, services);
+  // The server's runner: its registration is deleted through GitHub's API before the server, so
+  // a missing token stops here, before anything is deleted.
+  const runnerRepo =
+    plan.environment?.runner === "server"
+      ? await runnerRepository(deps, services.runnerGitHub)
+      : undefined;
 
   // 3. Engine, state encryption, init
   const setup = await setupEngine(deps, plan, options);
@@ -525,6 +536,26 @@ export async function runDestroy(
     engine: async () => engine,
     engineEnv: env,
   });
+  if (runnerRepo !== undefined && address === undefined) {
+    // Without the address OpsCrew cannot tell this server's runner from another's: never by the
+    // label alone, so none is deleted.
+    deps.reporter.warn(
+      `OpsCrew does not know the server's address on this computer, so it cannot tell which registration at GitHub is this server's runner and deletes none. Once the server is gone, remove the offline runner with the label ${runnerLabel(plan)} under the repository's Settings → Actions → Runners.`,
+    );
+  } else if (runnerRepo !== undefined && address !== undefined) {
+    // This server's runner only: its exact name (from the login's host) and the environment's label.
+    ctx.unregisterRunner = async () => {
+      const deleted = await deleteRegistrations(deps, runnerRepo, plan, {
+        phase: "provision",
+        name: serverRunnerName(plan, address.ipv4),
+      });
+      if (deleted > 0) {
+        deps.reporter.info(
+          "Deleted the server's runner at GitHub; the runner itself goes with the server.",
+        );
+      }
+    };
+  }
   // This app's hostnames in OpsCrew's shared Cloudflare rules (read-only now; removed after the
   // infrastructure is deleted, so a run that stopped before that continues with them).
   const shared = await planSharedRemoval(deps, plan, services);

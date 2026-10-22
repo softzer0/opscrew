@@ -33,6 +33,7 @@ import {
   RECORD_PATH,
   RUNNERS_DIR,
   runnerDir,
+  runnerUnit,
   runtimeFilePath,
   SHARED_DIRS,
   SSHD_BACKUP,
@@ -51,7 +52,7 @@ import {
 } from "./constants";
 import type { AppRecord } from "./facts";
 import { canonicalIpv4Cidr } from "./parse";
-import { APT_FUNCTIONS, buildScript, type ScriptParams } from "./shell";
+import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
 import {
   type AccessMode,
   AccessModeSchema,
@@ -103,6 +104,12 @@ export interface StepScripts {
   secret?: { name: "tunnelToken" | "portainerPassword"; required: boolean };
   /** The GitHub runner token the apply script reads from stdin, fetched when the step runs. */
   runnerToken?: "registration" | "remove";
+  /**
+   * The check, apply and verify run as the deploy user: through `runuser` when the step runs as
+   * root, as the login itself otherwise (the deploy user, on a server OpsCrew created). The pre-
+   * and post-apply scripts run as the step does.
+   */
+  asDeploy?: true;
   /** What the step does, for error messages ("installing Docker"). */
   doing: string;
   timeoutMs: number;
@@ -1754,23 +1761,41 @@ rm -f "$DIR/admin_password"`,
 }
 
 // ---------------------------------------------------------------------------------------------
-// github-runner: the app's GitHub Actions runner, run as deploy
+// github-runner: the app's GitHub Actions runner, deploy's systemd user service
 
 /**
- * Shell helpers of the runner's scripts. `as_deploy <command…>` runs a command as the deploy user
- * (the runner's owner); `quiet <command…>` runs one with its output kept back, and leaves its last
- * line in `$last` when it fails. `read_token` reads the token from stdin into `RUNNER_TOKEN` (a
- * shell variable, not exported), then gives every later command an empty stdin.
- * `uninstall_service` stops and removes the service of the runner in the current folder, and
- * `at_least <version> <pinned>` compares two `2.338.0` versions.
+ * The runner's system libraries, each the first of its candidates the release offers, as GitHub's
+ * `bin/installdependencies.sh` (v2.338.0) picks them. The servers OpsCrew creates get Ubuntu
+ * 24.04's at first boot (cloud-init: libicu74, libkrb5-3, liblttng-ust1t64, libssl3t64, zlib1g).
  */
-const RUNNER_HELPERS = `as_deploy() { runuser -u "$USER_NAME" -- "$@"; }
-uninstall_service() {
-  if [ -f .service ] && [ -f svc.sh ]; then
-    ./svc.sh stop >/dev/null 2>&1 || true
-    quiet ./svc.sh uninstall || fail "The runner's service could not be removed (svc.sh uninstall: $last)."
-  fi
-}
+const RUNNER_LIBRARIES = [
+  "libkrb5-3",
+  "zlib1g",
+  "liblttng-ust1t64 liblttng-ust1 liblttng-ust0",
+  "libssl3t64 libssl3 libssl1.1 libssl1.0.2 libssl1.0.0",
+  "libicu80 libicu79 libicu78 libicu77 libicu76 libicu75 libicu74 libicu73 libicu72 libicu71 libicu70 libicu69 libicu68 libicu67 libicu66 libicu65 libicu63 libicu60 libicu57 libicu55 libicu52",
+] as const;
+
+/** `no_links <path…>` stops on a symbolic link, which OpsCrew never follows. */
+const NO_LINKS = `no_links() {
+  for d in "$@"; do
+    if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
+  done
+}`;
+
+/**
+ * Shell helpers of the runner's scripts, which run as deploy. `systemctl --user` reaches deploy's
+ * systemd user manager through `XDG_RUNTIME_DIR`, and `UNIT_FILE` is the runner's unit in deploy's
+ * home. `quiet <command…>` runs a command with its output kept back, and leaves its last line in
+ * `$last` when it fails. `read_token` reads the token from stdin into `RUNNER_TOKEN` (a shell
+ * variable, not exported), then gives every later command an empty stdin. `at_least <version>
+ * <pinned>` compares two `2.338.0` versions, `unit_text` prints the unit as OpsCrew writes it, and
+ * `user_manager` waits for deploy's user manager (it starts once deploy lingers).
+ */
+const RUNNER_HELPERS = `${NO_LINKS}
+XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export XDG_RUNTIME_DIR
+UNIT_FILE="$(getent passwd "$USER_NAME" | cut -d: -f6)/.config/systemd/user/$UNIT"
 at_least() {
   case "$1" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac
   [ "$(printf '%s\\n%s\\n' "$1" "$2" | sort -t . -k 1,1n -k 2,2n -k 3,3n | head -n 1)" = "$2" ]
@@ -1787,9 +1812,20 @@ read_token() {
   exec </dev/null
   [ -n "$RUNNER_TOKEN" ] || fail "No $1 token arrived on standard input, so OpsCrew did not change the runner."
 }
-no_links() {
-  for d in "$@"; do
-    if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
+# KillMode, KillSignal and TimeoutStopSec as GitHub's own service unit has them: a stop reaches
+# run.sh alone, which stops the runner its own way.
+unit_text() {
+  printf '%s\\n' '[Unit]' "Description=GitHub Actions runner of $APP (OpsCrew)" '' '[Service]' \\
+    "ExecStart=$DIR/run.sh" "WorkingDirectory=$DIR" 'Restart=always' 'RestartSec=5' \\
+    'KillMode=process' 'KillSignal=SIGTERM' 'TimeoutStopSec=5min' '' '[Install]' \\
+    'WantedBy=default.target'
+}
+user_manager() {
+  i=0
+  until systemctl --user show-environment >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -lt 30 ] || fail "deploy's systemd user manager is not running, so OpsCrew did not change the runner."
+    sleep 1
   done
 }`;
 
@@ -1798,66 +1834,134 @@ no_links() {
  * `/proc/<pid>/cmdline` shows every user).
  */
 const TOKEN_ENV_NOTE = `# The token is never on a command line: the runner reads each argument from
-# ACTIONS_RUNNER_INPUT_<ARG> and removes the variable once read (CommandSettings.cs). The variable is
-# set for runuser alone (not through as_deploy: POSIX does not say whether an assignment before a
-# shell function's call reaches the commands it runs), and runuser -u (not a login shell) keeps the
-# environment (to confirm in spike item 4); /proc/<pid>/environ is readable only by deploy and root.`;
+# ACTIONS_RUNNER_INPUT_<ARG> and removes the variable once read (CommandSettings.cs), and
+# /proc/<pid>/environ is readable only by deploy and root.`;
+
+/**
+ * As root, on a server the user owns: the runner's system libraries (no script from the archive
+ * runs as root), deploy's lingering, so its services run without a login from boot on, and the
+ * runners' parent for deploy. The servers OpsCrew creates have them from their first boot.
+ */
+const RUNNER_ROOT_SETUP = `no_links "$RUNNERS_DIR"
+# The runner's system libraries, each the first of its candidates this release offers, as GitHub's
+# bin/installdependencies.sh picks them, and curl for the runner's download.
+apt_get update || fail "apt-get update failed, so OpsCrew did not install the runner's system libraries; see ${APT_LOG} on the server."
+libs=curl
+for candidates in ${RUNNER_LIBRARIES.map(shellQuote).join(" ")}; do
+  found=''
+  for p in $candidates; do
+    if apt-cache show "$p" >/dev/null 2>&1; then found=$p; break; fi
+  done
+  [ -n "$found" ] || fail "This server's release offers none of $candidates, which the GitHub Actions runner needs."
+  libs="$libs $found"
+done
+# shellcheck disable=SC2086 # a list of package names
+apt_get install $libs || fail "The runner's system libraries could not be installed; see ${APT_LOG} on the server."
+# deploy's services run without a login, from boot on.
+loginctl enable-linger "$USER_NAME" || fail "OpsCrew could not let deploy's services run without a login (loginctl enable-linger)."
+# The runners' parent, deploy's, as on the servers OpsCrew creates.
+install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$RUNNERS_DIR"`;
+
+/**
+ * As root, on a server the user owns, after a runner went: deploy's lingering came with the first
+ * runner (the server's deploy user is always OpsCrew's own), so it goes with the last one, and so
+ * do the runners' parent when OpsCrew made it (`REMOVE_PARENT`, from the host record).
+ */
+const RUNNER_ROOT_CLEANUP = `no_links "$RUNNERS_DIR"
+if [ ! -d "$RUNNERS_DIR" ] || [ -z "$(ls -A "$RUNNERS_DIR")" ]; then
+  loginctl disable-linger "$USER_NAME" >/dev/null 2>&1 || true
+  if [ "$REMOVE_PARENT" = true ] && [ -d "$RUNNERS_DIR" ]; then rmdir "$RUNNERS_DIR"; fi
+fi`;
 
 const RunnerParams = DesiredRunnerSchema.extend({
   app: AppNameSchema,
   user: z.literal("deploy"),
+  runAs: RunAsSchema.optional(),
 });
 
 /**
  * The app's runner (`params.app`, in `runnerDir(app)`): installed by a setup plan, removed by a
- * setup plan without one (`remove: true`), a teardown, or an undo (any app's left behind).
- * Setup follows plan.md "8.": the folder for deploy, the pinned archive checked by its SHA-256 and
- * extracted as deploy, `bin/installdependencies.sh` as root, `config.sh` as deploy with the
- * registration token from stdin, then `svc.sh install deploy` and `svc.sh start` as root. A
- * runner already there that is not the planned one (older, another label or repository, or its
- * service stopped) loses its service and its registration's local files first, and is installed
- * again over its folder. The label and repository go to OpsCrew's `.opscrew-runner` beside it.
- * Not yet run on a real server (spike item 4): the runner's own commands and files are as GitHub
- * documents them and as its scripts read.
+ * setup plan without one (`remove: true`), a teardown, or an undo (any app's left behind). It is
+ * deploy's systemd user service `runnerUnit(app)` (`Restart=always`), on the servers OpsCrew
+ * creates and on those the user owns alike, and every runner command runs as deploy (see
+ * `StepScripts.asDeploy`): the pinned archive checked by its SHA-256 and extracted, `config.sh`
+ * with the token from stdin, the unit written, enabled and started. Run as root (a server the user
+ * owns), the step first installs the runner's system libraries, makes deploy linger and makes
+ * `/srv/runners` deploy's; with the last runner, deploy's lingering goes, and `/srv/runners` too
+ * when OpsCrew made it (`removeParent`). The servers OpsCrew creates have them from their first
+ * boot. A runner already there that is not the planned one
+ * (older, another label or repository, or its service stopped) is stopped and loses its
+ * registration's local files first, and is installed again over its folder. The label and
+ * repository go to OpsCrew's `.opscrew-runner` beside it.
  */
 function runnerScripts(plan: HostPlan, step: HostStep): StepScripts {
   const { app } = params(step, z.object({ app: AppNameSchema }));
   if (plan.purpose !== "undo" && app !== plan.app) throw invalid(step, "app");
-  const base = { APP: app, DIR: runnerDir(app), RUNNERS_DIR, USER_NAME: "deploy" };
+  const base = {
+    APP: app,
+    DIR: runnerDir(app),
+    RUNNERS_DIR,
+    USER_NAME: "deploy",
+    UNIT: runnerUnit(app),
+  };
+  // The parts only root can do, on a server the user owns.
+  const root = (name: string, body: string, extra: ScriptParams = {}) =>
+    runAsOf(step) === "root"
+      ? applyScript(name, { RUNNERS_DIR, USER_NAME: "deploy", ...extra }, NO_LINKS, body)
+      : undefined;
   if (plan.purpose !== "setup" || step.params.remove === true) {
-    params(step, z.object({ app: AppNameSchema, remove: z.literal(true) }));
+    const p = params(
+      step,
+      z.object({
+        app: AppNameSchema,
+        remove: z.literal(true),
+        runAs: RunAsSchema.optional(),
+        /** OpsCrew made `/srv/runners` (the host record says it was absent): it goes when empty. */
+        removeParent: z.boolean().optional(),
+      }),
+    );
+    const cleanup = root("github-runner.remove.root", RUNNER_ROOT_CLEANUP, {
+      REMOVE_PARENT: p.removeParent === true,
+    });
     return scripts({
       name: "github-runner.remove",
       params: base,
       helpers: RUNNER_HELPERS,
-      verify: `  [ ! -e "$DIR" ] && [ ! -L "$DIR" ]`,
+      verify: `  [ ! -e "$DIR" ] && [ ! -L "$DIR" ] && [ ! -e "$UNIT_FILE" ]`,
       apply: `read_token remove
 no_links "$RUNNERS_DIR" "$DIR"
+# Its service stops first, so no job runs while the runner goes.
+if [ -e "$UNIT_FILE" ]; then
+  systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
+  if systemctl --user is-active --quiet "$UNIT"; then fail "The runner's service did not stop (systemctl --user disable --now $UNIT)."; fi
+  rm -f "$UNIT_FILE"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
 if [ -d "$DIR" ]; then
   cd "$DIR"
-  uninstall_service
   # A runner that never registered, or that GitHub does not unregister (it no longer knows it, or
   # it is another repository's), still goes from the server; the line below tells the caller,
   # which then deletes the registration through GitHub's API.
   unregistered=false
 ${TOKEN_ENV_NOTE.replace(/^/gm, "  ")}
-  if [ -f .runner ] && ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" runuser -u "$USER_NAME" -- ./config.sh remove >/dev/null 2>&1; then
+  if [ -f .runner ] && ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" ./config.sh remove >/dev/null 2>&1; then
     unregistered=true
   fi
   echo "runner.unregistered=$unregistered"
   cd /
   rm -rf "$DIR"
 fi
-unset RUNNER_TOKEN
-# The runners' parent goes too once it is empty.
-if [ -d "$RUNNERS_DIR" ] && [ -z "$(ls -A "$RUNNERS_DIR")" ]; then rmdir "$RUNNERS_DIR"; fi`,
-      failed: "The runner's folder is still on the server.",
+unset RUNNER_TOKEN`,
+      failed: "The runner's folder or its service's unit is still on the server.",
       runnerToken: "remove",
+      asDeploy: true,
+      ...(cleanup !== undefined ? { postApply: cleanup } : {}),
       doing: "removing the GitHub Actions runner",
       timeoutMs: 5 * MINUTE,
     });
   }
   const p = params(step, RunnerParams);
+  const prepare = root("github-runner.root", RUNNER_ROOT_SETUP);
   return scripts({
     name: "github-runner",
     params: {
@@ -1872,70 +1976,68 @@ if [ -d "$RUNNERS_DIR" ] && [ -z "$(ls -A "$RUNNERS_DIR")" ]; then rmdir "$RUNNE
     helpers: RUNNER_HELPERS,
     verify: `  [ -f "$DIR/.runner" ] || return 1
   [ "$(cat "$DIR/.opscrew-runner" 2>/dev/null)" = "$(printf 'label=%s\\nurl=%s' "$LABEL" "$URL")" ] || return 1
-  unit=$(head -n 1 "$DIR/.service" 2>/dev/null) || return 1
-  systemctl is-active --quiet "$unit" || return 1
-  at_least "$(as_deploy timeout 30 "$DIR/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1)" "$VERSION"`,
-    snapshot: `if [ -e "$DIR/.runner" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
+  [ "$(cat "$UNIT_FILE" 2>/dev/null)" = "$(unit_text)" ] || return 1
+  systemctl --user is-enabled --quiet "$UNIT" || return 1
+  systemctl --user is-active --quiet "$UNIT" || return 1
+  at_least "$(timeout 30 "$DIR/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1)" "$VERSION"`,
+    // Whether the runners' parent was there before OpsCrew (the host record keeps the first one).
+    snapshot: `if [ -e "$DIR/.runner" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if [ -e "$RUNNERS_DIR" ] || [ -L "$RUNNERS_DIR" ]; then echo prev.runners=present; else echo prev.runners=absent; fi`,
     apply: `read_token registration
 no_links "$RUNNERS_DIR" "$DIR"
-# 1. The runner's folder, for deploy only.
-install -d -m 0755 "$RUNNERS_DIR"
-install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$DIR"
+# What root prepared: at first boot on a server OpsCrew creates, or this step's root part on a
+# server you own.
+[ -d "$RUNNERS_DIR" ] && [ -w "$RUNNERS_DIR" ] ||
+  fail "$RUNNERS_DIR is missing or not deploy's, so OpsCrew did not install the runner."
+[ -e "/var/lib/systemd/linger/$USER_NAME" ] ||
+  fail "deploy's services stop when it logs out (it does not linger), so OpsCrew did not install the runner."
+user_manager
+# 1. The runner's folder, deploy's only.
+install -d -m 0750 "$DIR"
 # 2. The pinned archive, checked against its SHA-256 before anything in it runs.
-if ! command -v curl >/dev/null 2>&1; then apt_get update; apt_get install curl; fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL --retry 3 -o "$tmp/runner.tar.gz" "$ARCHIVE_URL" || fail 'The runner could not be downloaded from GitHub.'
 printf '%s  %s\\n' "$SHA256" "$tmp/runner.tar.gz" | sha256sum -c - >/dev/null 2>&1 ||
   fail 'The downloaded runner does not match its pinned SHA-256, so OpsCrew did not install it.'
-chmod 0755 "$tmp"
-chmod 0644 "$tmp/runner.tar.gz"
-# A runner already here is not the planned one: its service goes, and its registration's local
-# files, so config.sh registers it again (--replace takes its place on GitHub).
+# A runner already here is not the planned one: its service stops, and its registration's local
+# files go, so config.sh registers it again (--replace takes its place on GitHub).
+systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
 cd "$DIR"
-uninstall_service
 rm -f .runner .credentials .credentials_rsaparams .opscrew-runner
-# 3. Extracted as deploy, who owns everything in the folder.
-quiet as_deploy tar -xzf "$tmp/runner.tar.gz" -C "$DIR" || fail "The runner could not be unpacked ($last)."
-# 4. Its system packages, as root. deploy owns the script, and is in the docker group, which is
-# already root-equivalent: running it as root gives deploy nothing it did not have.
-install -d -m 0700 "$(dirname '${APT_LOG}')"
-# Another apt run may hold the lock (a fresh server's daily apt jobs): wait for it, as
-# package-repair does.
-i=0
-until "$DIR/bin/installdependencies.sh" >>'${APT_LOG}' 2>&1; do
-  i=$((i + 1))
-  if [ "$i" -ge 60 ]; then
-    tail -n 5 '${APT_LOG}' >&2 || true
-    fail "The runner's system packages could not be installed (bin/installdependencies.sh)."
-  fi
-  sleep 5
-done
-# 5. Registered as deploy, with the label the deploy job asks for. --replace takes over an old
-# registration of the same name (this runner before, or a server set up again).
+# 3. Extracted into its folder.
+quiet tar -xzf "$tmp/runner.tar.gz" -C "$DIR" || fail "The runner could not be unpacked ($last)."
+# 4. Registered, with the label the deploy job asks for. --replace takes over an old registration
+# of the same name (this runner before, or a server set up again).
 ${TOKEN_ENV_NOTE}
-if ! out=$(ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" runuser -u "$USER_NAME" -- ./config.sh --unattended --url "$URL" --name "$NAME" --labels "$LABEL" --work _work --replace 2>&1); then
+if ! out=$(ACTIONS_RUNNER_INPUT_TOKEN="$RUNNER_TOKEN" ./config.sh --unattended --url "$URL" --name "$NAME" --labels "$LABEL" --work _work --replace 2>&1); then
   fail "The runner could not register with GitHub ($(printf '%s\\n' "$out" | tail -n 1))."
 fi
 unset RUNNER_TOKEN
 # What it was registered with, for the next plan (the runner's .runner holds no labels).
 printf 'label=%s\\nurl=%s\\n' "$LABEL" "$URL" | write_file "$DIR/.opscrew-runner" 0644
-# 6. Its systemd service, run as deploy (svc.sh needs root and the runner's folder).
-quiet ./svc.sh install "$USER_NAME" || fail "The runner's service could not be installed (svc.sh install: $last)."
-quiet ./svc.sh start || fail "The runner's service did not start (svc.sh start: $last)."`,
+# 5. deploy's systemd user service, which starts it at boot and again whenever it stops.
+install -d -m 0755 "$(dirname "$UNIT_FILE")"
+unit_text | write_file "$UNIT_FILE" 0644
+quiet systemctl --user daemon-reload || fail "deploy's systemd user manager could not read the runner's unit ($last)."
+quiet systemctl --user enable --now "$UNIT" || fail "The runner's service did not start (systemctl --user enable --now $UNIT: $last)."`,
     failed: "The runner is not registered and running.",
     runnerToken: "registration",
+    asDeploy: true,
+    ...(prepare !== undefined ? { preApply: prepare } : {}),
     doing: "installing the GitHub Actions runner",
     timeoutMs: 15 * MINUTE,
   });
 }
 
 /**
- * How a step's scripts run: the Portainer and tunnel connector steps for Hetzner/DigitalOcean run
- * as the login (the deploy user); everything else as root.
+ * How a step's scripts run: the Portainer, tunnel connector and runner steps for Hetzner and
+ * DigitalOcean run as the login (the deploy user); everything else as root.
  */
 export function runAsOf(step: HostStep): RunAs {
-  return (step.id === "portainer" || step.id === "tunnel-connector") &&
+  return (step.id === "portainer" ||
+    step.id === "tunnel-connector" ||
+    step.id === "github-runner") &&
     step.params.runAs === "login"
     ? "login"
     : "root";

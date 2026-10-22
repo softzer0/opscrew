@@ -6,7 +6,7 @@ import { hostPlanHash } from "../hash";
 import { inspectHost } from "../inspect";
 import { planHost, planTeardown } from "../plan";
 import type { ApplyOptions, DesiredHost, DesiredRunner, HostPlan } from "../types";
-import type { FakeHost } from "./fake-host";
+import { FakeHost } from "./fake-host";
 
 /** A synthetic OpenSSH public key line (public keys are not secrets). */
 export const DEPLOY_KEY =
@@ -106,6 +106,16 @@ export function runnerDesired(overrides: Partial<DesiredRunner> = {}): DesiredRu
     asset,
     ...overrides,
   };
+}
+
+/**
+ * A server OpsCrew created (Hetzner, DigitalOcean): OpsCrew logs in as deploy, who has no sudo,
+ * and its first boot prepared the runner's root parts.
+ */
+export function cloudServer(): FakeHost {
+  const fake = new FakeHost({ login: "deploy", sudo: "none" });
+  fake.runnerPrepared = true;
+  return fake;
 }
 
 /** The project id of the test app "shop". */

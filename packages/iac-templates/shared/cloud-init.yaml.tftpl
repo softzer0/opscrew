@@ -1,7 +1,9 @@
 #cloud-config
 # Rendered by OpsCrew. Runs once at first boot: creates the deploy user, hardens SSH, installs
 # Docker Engine (28 or newer, from Docker's apt repository), fail2ban, automatic security updates
-# and the host firewall. /var/lib/opscrew-ready is written only when Docker installed correctly.
+# and the host firewall, and prepares what a GitHub Actions runner needs from root (so one can be
+# added later as deploy, which has no root). /var/lib/opscrew-ready is written only when Docker
+# installed correctly.
 users:
   - name: deploy
     shell: /bin/bash
@@ -18,6 +20,13 @@ packages:
   - unattended-upgrades
   - ufw
   - curl
+  # The GitHub Actions runner's system libraries, as its bin/installdependencies.sh (v2.338.0)
+  # picks them on Ubuntu 24.04.
+  - libicu74
+  - libkrb5-3
+  - liblttng-ust1t64
+  - libssl3t64
+  - zlib1g
 write_files:
   - path: /etc/ssh/sshd_config.d/10-opscrew.conf
     permissions: "0644"
@@ -111,9 +120,11 @@ write_files:
 runcmd:
   - [/usr/local/sbin/opscrew-install-docker]
   - [usermod, -aG, docker, deploy]
-  # The shared edge, the apps' folders and their data, as on servers the user owns; the first
-  # deploy brings up the edge.
-  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /srv/edge, /srv/apps, /srv/data]
+  # deploy's services (a GitHub Actions runner) run without a login, from boot on.
+  - [loginctl, enable-linger, deploy]
+  # The shared edge, the apps' folders and their data, as on servers the user owns, and the
+  # runners' parent; the first deploy brings up the edge.
+  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /srv/edge, /srv/apps, /srv/data, /srv/runners]
   - [ufw, default, deny, incoming]
   - [ufw, allow, 22/tcp]
   - [ufw, allow, 80/tcp]

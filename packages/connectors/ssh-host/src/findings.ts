@@ -1,6 +1,6 @@
 /** Blocking findings: what OpsCrew found and what the user can do. Plain English, no secrets. */
 import { listText, upperFirst } from "@opscrew/core";
-import { MIN_DOCKER_MAJOR, PORTAINER_PORT, TUNNEL_APP_PORT } from "./constants";
+import { MIN_DOCKER_MAJOR, PORTAINER_PORT, RUNNERS_DIR, TUNNEL_APP_PORT } from "./constants";
 import { type HostFacts, otherActiveApps, readableRecords } from "./facts";
 import type { AccessMode, HostFinding } from "./types";
 
@@ -273,6 +273,11 @@ export function hostFindings(command: string) {
       message:
         'A user named "deploy" already exists on this server and OpsCrew did not create it. OpsCrew does not take over existing users.',
       hint: `Rename or remove that user, ${rerun}.`,
+    }),
+    runnersDirTaken: (owner: string | undefined): HostFinding => ({
+      code: "runners-dir-taken",
+      message: `${RUNNERS_DIR} already exists on this server and is not the deploy user's folder (${owner === undefined ? "it is not a plain folder" : `its owner is ${owner}`}), so OpsCrew does not take it over for the GitHub Actions runner.`,
+      hint: `Move or rename it if nothing on the server uses it, or set environment.runner to github in the plan, ${rerun}.`,
     }),
     runtimeDirExists: (paths: readonly string[]): HostFinding => ({
       code: "runtime-dir-exists",

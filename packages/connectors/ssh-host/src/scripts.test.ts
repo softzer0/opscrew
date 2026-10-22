@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, scriptParams } from "./__fixtures__/fake-host";
 import {
   applyApproved,
+  cloudServer,
   DEPLOY_KEY,
   desiredFor,
   portainerDesired,
@@ -21,9 +22,15 @@ import {
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { sshdDropIn } from "./constants";
-import { inspectHost, inspectScript, privilegeProbeScript } from "./inspect";
-import { planHost, planPortainer, planTeardown, planUndo } from "./plan";
-import { asLogin, asRoot } from "./shell";
+import {
+  inspectHost,
+  inspectRunners,
+  inspectRunnersScript,
+  inspectScript,
+  privilegeProbeScript,
+} from "./inspect";
+import { planHost, planPortainer, planRunner, planTeardown, planUndo } from "./plan";
+import { asDeployUser, asLogin, asRoot } from "./shell";
 import {
   armScript,
   cancelScript,
@@ -183,6 +190,15 @@ async function everyPlan(): Promise<HostPlan[]> {
       disable: { deleteData: true },
     }),
   );
+  // The runner on a server OpsCrew created, as deploy: installed, then removed.
+  const cloud = cloudServer();
+  const cloudRunner = planRunner(await inspectRunners(cloud), {
+    app: "shop",
+    runner: runnerDesired(),
+  });
+  plans.push(cloudRunner);
+  await applyApproved(cloud, cloudRunner, tokens);
+  plans.push(planRunner(await inspectRunners(cloud), { app: "shop" }));
   return plans;
 }
 
@@ -237,6 +253,7 @@ describe("generated scripts", () => {
     async () => {
       const scripts = new Map<string, string>([
         ["inspect", inspectScript()],
+        ["runners.inspect", inspectRunnersScript()],
         ["privilege", privilegeProbeScript()],
         ["record.read", readRecordScript()],
         ["record.write", writeRecordScript(JSON.stringify({ app: "shop", note: "it's quoted" }))],
@@ -254,7 +271,16 @@ describe("generated scripts", () => {
       for (const [key, script] of scripts) {
         const alone = shSyntax(script);
         if (alone && !alone.ok) failures.push(`${key}: ${alone.stderr}`);
-        for (const command of [asRoot("root", script), asRoot("sudo", script), asLogin(script)]) {
+        // The runner's scripts also run as deploy from root.
+        const asDeploy = key.includes("github-runner")
+          ? [asRoot("sudo", asDeployUser(script))]
+          : [];
+        for (const command of [
+          asRoot("root", script),
+          asRoot("sudo", script),
+          asLogin(script),
+          ...asDeploy,
+        ]) {
           const wrapped = shSyntax(command);
           if (wrapped && !wrapped.ok) failures.push(`${key} (command): ${wrapped.stderr}`);
         }
