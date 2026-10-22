@@ -1,0 +1,271 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  addEnvironment,
+  listEnvironments,
+  type PromoteServices,
+  promote,
+  removeEnvironment,
+  setDeploySource,
+} from "@opscrew/agents";
+import type { ApprovalHandler, ComputeCatalog } from "@opscrew/contracts";
+import { formatMoney, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { z } from "zod";
+import type { ResolvedMcpDeps } from "../deps";
+import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
+import { projectDirInput, runTool, withHint } from "./shared";
+
+/** Test-only collaborators for the environment tools. */
+export interface EnvironmentToolOptions {
+  /** The price list `opscrew_env_add` designs with (production: the provider's, live or dated). */
+  catalog?: ComputeCatalog;
+  /** GitHub and the target's read-only check for `opscrew_promote`. */
+  promote?: PromoteServices;
+}
+
+const NAME_INPUT = z
+  .string()
+  .min(1)
+  .describe("The environment's name, for example staging or dev (lower-case letters, digits, -).");
+
+/**
+ * The environment tools (contracts/environments.md "Commands"): `opscrew_env_add`,
+ * `opscrew_env_set`, `opscrew_env_list`, `opscrew_env_remove`, and `opscrew_promote`, whose
+ * `promote` approval only the user grants, in a dialog that shows the promotion's hash.
+ * `options` is for tests only.
+ */
+export function registerEnvironmentTools(
+  server: McpServer,
+  deps: ResolvedMcpDeps,
+  options: EnvironmentToolOptions = {},
+): void {
+  server.registerTool(
+    "opscrew_env_list",
+    {
+      title: "List the app's environments",
+      description:
+        "List the app's environments (prod, then each one added beside it): where each runs, how it gets new versions (each push to main, or promoted from another environment), where its deploy job runs (GitHub's machines, a runner on the server or on the user's computer) and whether it is deployed. Writes nothing.",
+      inputSchema: { ...projectDirInput },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ projectDir }) =>
+      runTool(deps, "opscrew_env_list", projectDir, async (call) => {
+        const environments = await listEnvironments((await call.phaseDeps()).paths);
+        const lines = environments.map(
+          (env) =>
+            `- ${env.name}: runs on ${env.target}, ${env.from === "main" ? "deployed on each push" : `promoted from ${env.from}`}, deploy job on ${env.runner === "github" ? "GitHub's machines" : env.runner === "server" ? "a runner on the server" : "a runner on the user's computer"}, ${env.deployed ? "deployed" : "not deployed"}`,
+        );
+        return {
+          text:
+            environments.length === 0
+              ? "The app has no environment yet: design prod first (opscrew_design_options, opscrew_select_design)."
+              : ["The app's environments:", ...lines].join("\n"),
+          data: { environments },
+        };
+      }),
+  );
+
+  server.registerTool(
+    "opscrew_env_add",
+    {
+      title: "Add an environment",
+      description:
+        "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. It shares prod's build, components and port. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from) and runner (github, server or local). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
+      inputSchema: {
+        ...projectDirInput,
+        name: NAME_INPUT,
+        answers: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
+          .optional()
+          .describe(
+            "The user's answers by question id: provider, region, expectedMonthlyUsers, domain, from, runner (and a server's server.* or a Portainer's portainer.* follow-ups).",
+          ),
+        optionId: z
+          .string()
+          .optional()
+          .describe("The design option the user chose (default: the recommended one)."),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    ({ projectDir, name, answers, optionId }) =>
+      runTool(deps, "opscrew_env_add", projectDir, async (call) => {
+        const phase = await call.phaseDeps({ environment: name });
+        const { design } = await addEnvironment(phase, {
+          answers: answers ?? {},
+          design: {
+            ...(optionId === undefined ? {} : { optionId }),
+            ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+          },
+        });
+        const { chosen, plan } = design;
+        return {
+          text: [
+            `Added the ${name} environment: ${chosen.title} (${chosen.id}), about ${formatMoney(chosen.cost.monthly)} a month.`,
+            ...design.warnings.map((warning) => `Warning: ${warning}`),
+            `Next: the user provisions it with \`npx opscrew provision --env ${name}\` in a terminal, or call opscrew_plan with environment ${name}.`,
+          ].join("\n"),
+          data: {
+            environment: plan.environment,
+            option: chosen.id,
+            monthly: chosen.cost.monthly,
+            options: design.options.map((option) => option.id),
+          },
+        };
+      }),
+  );
+
+  server.registerTool(
+    "opscrew_env_set",
+    {
+      title: "Change how an environment gets new versions",
+      description:
+        "Change an environment's deploy source in its plan: from main (built and deployed on each push) or promoted from another existing environment (never itself, and never in a cycle). The change reaches GitHub with its next provision, which shows the workflow change first.",
+      inputSchema: {
+        ...projectDirInput,
+        name: NAME_INPUT,
+        from: z
+          .string()
+          .min(1)
+          .describe("main, or the environment it is promoted from (for example staging)."),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    ({ projectDir, name, from }) =>
+      runTool(deps, "opscrew_env_set", projectDir, async (call) => {
+        const plan = await setDeploySource(call.projectDir, name, from);
+        const source = plan.environment?.deploySource ?? { from: "main" as const };
+        return {
+          text: `The ${name} environment ${source.from === "promote" ? `is deployed only by opscrew_promote, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}. Next: apply the workflow change with \`npx opscrew provision --env ${name}\`, or opscrew_plan with environment ${name}.`,
+          data: { deploySource: source },
+        };
+      }),
+  );
+
+  server.registerTool(
+    "opscrew_env_remove",
+    {
+      title: "Remove an environment",
+      description:
+        "Remove an environment's files: its plan and answers, its infrastructure code and deploy workflow, and what OpsCrew keeps for it on this computer. Refused while it is deployed (the user destroys it first with `npx opscrew destroy --env <name>`) or while another environment is promoted from it. Never prod. Only when the user asks for it: the user confirms by typing the environment's name in a dialog. Refuses when the client cannot show dialogs.",
+      inputSchema: { ...projectDirInput, name: NAME_INPUT },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      _meta: REQUIRES_USER,
+    },
+    ({ projectDir, name }, extra: CallExtra) =>
+      runTool(deps, "opscrew_env_remove", projectDir, async (call) => {
+        requireDialogs(server, `npx opscrew env remove ${name}`);
+        const phase = await call.phaseDeps({
+          approvalHandler: dialogHandler(server, deps, extra),
+          environment: name,
+        });
+        // It deletes the environment's deploy key, passphrase and secrets: the user types its name.
+        // prod is refused by removeEnvironment before anything is asked.
+        if (name !== "prod") {
+          const approval = await phase.approvals.request({
+            kind: "repo-write",
+            title: `Remove the ${name} environment's files`,
+            details: `This removes the ${name} environment's files: its plan and answers, its infrastructure code and deploy workflow, and what OpsCrew keeps for it on this computer (its deploy key, state passphrase and generated secrets). OpsCrew refuses while it is deployed.`,
+            allowDestroy: true,
+            confirmPhrase: name,
+          });
+          if (!approval.approved) {
+            throw new OpsCrewError(
+              "APPROVAL_REFUSED",
+              `The user did not confirm removing the ${name} environment, so nothing was removed.`,
+              { hint: "Call opscrew_env_remove again only when the user asks." },
+            );
+          }
+        }
+        const removed = await removeEnvironment(phase);
+        return {
+          text: `Removed the ${name} environment's files${removed.length === 0 ? "; none were left" : `: ${removed.join(", ")}`}.`,
+          data: { removed },
+        };
+      }),
+  );
+
+  server.registerTool(
+    "opscrew_promote",
+    {
+      title: "Promote an image to an environment",
+      description:
+        "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, or with digest its previous image to roll back, without rebuilding. OpsCrew checks the image's build provenance (a push to the default branch of this repository), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
+      inputSchema: {
+        ...projectDirInput,
+        to: NAME_INPUT.describe("The environment to deploy to, for example prod."),
+        digest: z
+          .string()
+          .optional()
+          .describe(
+            "Only for a rollback the user asked for: the image digest (sha256:…) of the target's previous image, or the one its source runs.",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+      _meta: REQUIRES_USER,
+    },
+    ({ projectDir, to, digest }, extra: CallExtra) =>
+      runTool(deps, "opscrew_promote", projectDir, async (call) => {
+        requireDialogs(
+          server,
+          `npx opscrew promote --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}`,
+        );
+        const dialogs = dialogHandler(server, deps, extra);
+        // The hash the user's dialog shows, for the result.
+        let hash: string | undefined;
+        const approvals: ApprovalHandler = {
+          request: (request) => {
+            if (request.kind === "promote") hash = request.planHash;
+            return dialogs.request(request);
+          },
+        };
+        const phase = await call.phaseDeps({ approvalHandler: approvals, environment: to });
+        let result: Awaited<ReturnType<typeof promote>>;
+        try {
+          result = await promote(phase, {
+            target: to,
+            ...(digest === undefined ? {} : { digest }),
+            ...(options.promote === undefined ? {} : { services: options.promote }),
+          });
+        } catch (error) {
+          // Promote's own hint names `--approve <hash>` for a terminal: never offered here.
+          if (isUserFacingError(error) && error.code === "APPROVAL_REFUSED") {
+            withHint(
+              error,
+              `The user declined; nothing was deployed. Call opscrew_promote again only when the user asks, or ask them to run \`npx opscrew promote --to ${to}\` in their terminal.`,
+            );
+          }
+          throw error;
+        }
+        if (result.status === "waiting") {
+          // Not a failure or a timeout: GitHub holds the run for the environment's reviewer.
+          return {
+            text: `The deploy run for ${result.digest} to ${to} (promotion ${hash}) waits in GitHub for a required reviewer: ${result.runUrl}\nThe deploy goes on once the reviewer approves it in GitHub. Once the run succeeded, call opscrew_promote with to ${to} again: it records the image without a new deploy.`,
+            data: { ...result, promotionHash: hash, approvals: dialogs.decisions },
+          };
+        }
+        return {
+          text: `Deployed ${result.digest} to ${to} (promotion ${hash}): ${result.runUrl}\nNext: call opscrew_verify with environment ${to}.`,
+          data: { ...result, promotionHash: hash, approvals: dialogs.decisions },
+        };
+      }),
+  );
+}

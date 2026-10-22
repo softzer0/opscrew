@@ -17,7 +17,7 @@ import { exists, toPosixRelative } from "@opscrew/core";
 import { type DeployPlan, type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { hostKeyNeedsTerminal } from "./elicitation";
-import { projectDirInput, runTool, withHint } from "./shared";
+import { environmentInput, projectDirInput, runTool, toolEnvironment, withHint } from "./shared";
 
 /** The next planning step for the plugin flow, given which artefacts exist. */
 function nextStep(have: Record<string, boolean>): string {
@@ -104,12 +104,13 @@ export function registerStatusTool(
       title: "OpsCrew status",
       description:
         "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) and, once the app was deployed, whether each runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
-      inputSchema: { ...projectDirInput },
+      inputSchema: { ...projectDirInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir }) =>
+    ({ projectDir, environment }) =>
       runTool(deps, "opscrew_status", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const phase = await call.phaseDeps({ environment: name });
         const { paths, state } = phase;
         const current = await state
           .read()

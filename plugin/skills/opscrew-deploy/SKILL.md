@@ -15,8 +15,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   for this flow. Infrastructure changes happen only through OpsCrew, after the user approves a plan.
 - Never ask the user to paste tokens, passwords or `.env` values into this chat, and never print
   them. Secrets are entered in the user's own terminal by `opscrew provision`.
-- Do not edit files under `opscrew/`, `.opscrew/` or `.github/workflows/opscrew-deploy.yml`; OpsCrew
-  writes and validates those.
+- Do not edit files under `opscrew/`, `.opscrew/` or `.github/workflows/opscrew-deploy*.yml`;
+  OpsCrew writes and validates those.
 - Tell the user what each step will do and what it costs before doing it.
 
 ## Steps
@@ -340,6 +340,36 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   gone (the run says when). When the user removes them by hand it can take up to three runs. Never
   ask the user for tokens, API keys or contact details (name, address, email,
   phone): registrars use the account's own contact, and OpsCrew never collects one.
+- **Environments.** Beside prod, an app can have more environments (staging, dev, …), each with
+  its own plan, state, secrets and approvals, sharing prod's build and components.
+  `opscrew_env_list` shows them: where each runs, how it gets new versions, where its deploy job
+  runs and whether it is deployed. To add one, ask the user its few questions (where it runs, the
+  user's computer `localhost` included; its size; its hostname; whether it is built on each push
+  to main or promoted from another environment; where its deploy job runs: `github`, `server` or
+  `local`) and call `opscrew_env_add` with `name` and `answers`; it designs it and returns its
+  monthly cost. `opscrew_env_set` changes how it gets new versions (`from`: `main` or another
+  environment). `opscrew_env_remove` removes an environment that is not deployed, only when the
+  user asks. Every deploy, status, drift, secrets and design tool takes `environment`: once the
+  app has several, always pass the one the user means (a call without it fails with the names),
+  and in the terminal commands you pass on add `--env <name>`, for example
+  `npx opscrew provision --env staging`. Removing one stays in the terminal:
+  `npx opscrew destroy --env <name>`, then `opscrew_env_remove`.
+- **Promotion.** An environment promoted from another (for example prod from staging) gets no
+  build of its own: `opscrew_promote` with `to` deploys exactly the image its source runs, or with
+  `digest` its previous image for a rollback the user asks for. OpsCrew checks where the image was
+  built and that nothing waits for provision, then the user approves the promotion's hash in a
+  dialog; you never approve it, and a client without dialogs gets the terminal command
+  (`npx opscrew promote --to <env>`). Its result names the hash and the deploy run; call
+  `opscrew_verify` with that environment afterwards. Without image signing
+  (`supplyChain.sign`) the provenance check is a consistency check, not a security gate: say so if
+  the user relies on it.
+- **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at
+  `https://<app>.localhost`). Two steps stay in their terminal: `npx opscrew localhost trust`
+  (shows the command that trusts OpsCrew's local certificate authority and asks first;
+  `untrust` takes it back), and, for an environment whose deploy job runs on this computer,
+  `npx opscrew runner start --env <name>`, which keeps GitHub's runner in the foreground until
+  Ctrl+C and then removes it from GitHub. Such an environment has no DNS: never call
+  `npx opscrew dns` for it.
 - **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`

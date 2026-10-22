@@ -4,6 +4,7 @@ import {
   approveLaterHint,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
+  localChanges,
   type PhaseDeps,
   type ProvisionOptions,
   type ProvisionResult,
@@ -12,6 +13,7 @@ import {
   REPLACEABLE_TOKENS,
   REPOSITORY_TOKEN_VAR,
   type ReplaceableToken,
+  readSavedLocalPlan,
   readSavedPlanChanges,
   runProvision,
   type SavedPlanKind,
@@ -19,7 +21,7 @@ import {
   stackFollowsReason,
   stringOutput,
 } from "@opscrew/agents";
-import { exists, isPlanHash, OpsCrewError } from "@opscrew/core";
+import { exists, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { type Command, InvalidArgumentError, Option } from "commander";
 import { APPROVE_BY_HASH_KINDS, checkConfirmName, FlagConfirmation } from "../approval";
@@ -33,6 +35,7 @@ import {
   runPhaseCommand,
 } from "../ui/deploy";
 import { createEnvPrompt } from "../ui/env-prompt";
+import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { recoveryOptions, userPath } from "../ui/recovery";
 import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
@@ -60,6 +63,8 @@ export interface InfraFlags {
   replaceToken?: ReplaceableToken[];
   /** `--key-out <path>` (`provision` only): the file the recovery copy's first age key goes to. */
   keyOut?: string;
+  /** `--env <name>`: the app's environment. */
+  env?: string;
 }
 
 /** Commander parser of the repeatable `--replace-token repository|registry`. */
@@ -111,20 +116,24 @@ export function engineOption(): Option {
   ).choices(["tofu", "terraform"]);
 }
 
-/** The next step once the deployment is gone (the plan and the repository files stay). */
-export const DEPLOY_AGAIN_STEP =
-  "run `opscrew provision` to deploy again (the plan and the repository files are kept).";
+/**
+ * The next step once the deployment is gone (the plan and the repository files stay); `flag` is
+ * the environment's ` --env <name>` ({@link ChosenEnvironment}).
+ */
+export function deployAgainStep(flag: string): string {
+  return `run \`opscrew provision${flag}\` to deploy again (the plan and the repository files are kept).`;
+}
 
-/** The next step once the deploy run has finished: check the live site. */
-const VERIFY_STEP =
-  "when the deploy run in GitHub Actions has finished, run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.";
+/** The next step once the deploy run has finished, or with nothing to wait for: check the site. */
+function verifyStep(flag: string, runbook: string, deploys: boolean): string {
+  const check = `run \`opscrew verify${flag}\` to check the live site and write ${runbook}.`;
+  return deploys ? `when the deploy run in GitHub Actions has finished, ${check}` : check;
+}
 
-/** The next step when this run published nothing, so no deploy run follows from it. */
-const VERIFY_NOW_STEP = "run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.";
-
-/** The next step for a server: check its hardening. */
-export const SECURE_SERVER_STEP =
-  "run `opscrew secure` to check the server's hardening and write opscrew/SECURITY_REPORT.md.";
+/** The next step for a server: check its hardening (`report` is the environment's report). */
+export function secureServerStep(flag: string, report: string): string {
+  return `run \`opscrew secure${flag}\` to check the server's hardening and write ${report}.`;
+}
 
 /** Adds `--host-key <fingerprint>` (a server the user owns) to `command`. */
 export function addHostKeyOption(command: Command): Command {
@@ -188,6 +197,35 @@ export async function planChanges(
 }
 
 /**
+ * True when the saved local plan `hash` (this computer, the localhost target) creates, changes or
+ * removes something, so it needs its own approval; false when it keeps everything or none was
+ * saved. A damaged one stops with what to do.
+ */
+async function localPlanChanges(
+  deps: Pick<PhaseDeps, "paths">,
+  hash: string,
+  flag: string,
+): Promise<boolean> {
+  const saved = await readSavedLocalPlan(
+    deps.paths,
+    hash,
+    `Run \`opscrew provision${flag} --plan-only\` again to save a new local plan, then approve its hash.`,
+  );
+  return saved !== undefined && localChanges(saved).length > 0;
+}
+
+/** `opscrew dns` for an environment on this computer, which has no DNS to set. */
+function localhostHasNoDns(environment: ChosenEnvironment): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The ${environment.name} environment runs on this computer, which has no DNS: its https://<app>.localhost address needs no record, since this computer answers .localhost names itself. Nothing was changed.`,
+    {
+      hint: `Run \`opscrew provision${environment.flag}\` to run it on this computer; \`opscrew dns\` is for an environment on a server or in your Portainer.`,
+    },
+  );
+}
+
+/**
  * Runs `provision` or `dns` from the command line: checks the flags, builds the phase deps (with
  * the `--approve <hash>` / `--yes` approval handler when no human is present and the terminal
  * prompt for production values when one is), runs the phase, maps errors to exit codes 1/2 and
@@ -204,6 +242,7 @@ export async function runInfraCommand(
   // A wrong `--confirm` name is its own error, not a missing `--yes`.
   let wrongName = false;
   const yesHint = assumeYesHint(ctx, flags.yes, command);
+  let flag = "";
   const result = await runPhaseCommand(
     ctx,
     async () => {
@@ -211,10 +250,18 @@ export async function runInfraCommand(
       const publicImage = imageChoice(flags);
       const hostKey = flags.hostKey?.trim();
       const confirm = flags.confirm?.trim();
+      const environment = await chooseEnvironment(ctx, flags.env, command);
+      flag = environment.flag;
+      const planFile = createPhaseDeps(ctx, { ai: false, environment: environment.name }).paths
+        .files.plan;
+      if (command === "dns") {
+        const plan = await readArtifact("plan", planFile).catch(() => undefined);
+        if (plan?.target.provider === "localhost") throw localhostHasNoDns(environment);
+      }
       // `--confirm` exists on `provision` only; without a plan the phase explains what to run.
       const app =
         command === "provision"
-          ? await readArtifact("plan", createPhaseDeps(ctx, { ai: false }).paths.files.plan)
+          ? await readArtifact("plan", planFile)
               .then((plan) => plan.app.name)
               .catch((error: unknown) => {
                 if (confirm !== undefined) throw error;
@@ -227,11 +274,12 @@ export async function runInfraCommand(
           confirm,
           app,
           "the app's name",
-          `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command} --approve <hash> … --confirm ${app}\`.`,
+          `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command}${flag} --approve <hash> … --confirm ${app}\`.`,
         );
       }
       const deps = createPhaseDeps(ctx, {
         ai: false,
+        environment: environment.name,
         approveHashes: hashes,
         ...(flags.yes === true ? { assumeYes: true } : {}),
         ...(app === undefined
@@ -311,6 +359,13 @@ export async function runInfraCommand(
           planned.push({ label: "stack plan for your Portainer", hash: result.stackPlanHash });
         }
         if (portainer) stackFollows = stackFollowsReason(result, saved !== undefined);
+        // This computer: the local plan, approved by its hash like a host plan.
+        if (
+          result.localPlanHash !== undefined &&
+          (await localPlanChanges(deps, result.localPlanHash, flag))
+        ) {
+          planned.push({ label: "local plan for this computer", hash: result.localPlanHash });
+        }
       }
       return {
         result,
@@ -318,6 +373,8 @@ export async function runInfraCommand(
         own,
         portainer,
         plan,
+        runbook: toPosixRelative(deps.paths.root, deps.paths.files.runbook),
+        securityReport: toPosixRelative(deps.paths.root, deps.paths.files.securityReport),
         stackFollows,
         publicImage,
         confirmApp: removes ? app : undefined,
@@ -340,13 +397,13 @@ export async function runInfraCommand(
       if (result.dnsDeletes !== undefined) {
         // `opscrew dns` has no --confirm, so no command of it applies this plan in a script.
         const hashes = result.planned.map((plan) => plan.hash).join(" ");
-        ctx.stdout(`\n${approveLaterHint("opscrew dns", hashes, result.dnsDeletes)}\n`);
+        ctx.stdout(`\n${approveLaterHint(`opscrew dns${flag}`, hashes, result.dnsDeletes)}\n`);
       } else {
         printPlanHashes(
           ctx,
           result.planned,
           applyCommand(
-            command,
+            `${command}${flag}`,
             result.planned.map((plan) => plan.hash),
             {
               ...(flags.engine === undefined ? {} : { engine: flags.engine }),
@@ -376,10 +433,14 @@ export async function runInfraCommand(
         }
         if (result.stackFollows !== undefined) {
           ctx.stdout(
-            `The stack plan for your Portainer follows once ${result.stackFollows}. In a script that takes three runs: this one, the command above (it applies these plans and stops at the stack plan, printing its hash), then \`opscrew ${command} --approve <stack plan hash>\`.\n`,
+            `The stack plan for your Portainer follows once ${result.stackFollows}. In a script that takes three runs: this one, the command above (it applies these plans and stops at the stack plan, printing its hash), then \`opscrew ${command}${flag} --approve <stack plan hash>\`.\n`,
           );
         }
       }
+      return;
+    }
+    if (result.plan?.target.provider === "localhost") {
+      ctx.stdout("\nNothing to apply: the app on this computer already matches the local plan.\n");
       return;
     }
     const matched = result.own
@@ -389,7 +450,7 @@ export async function runInfraCommand(
         : "the infrastructure already matches the plan";
     ctx.stdout(`\nNothing to apply: ${matched}.\n`);
     printNextSteps(ctx, [
-      `run \`opscrew ${command}${flags.yes === true ? " --yes" : ""}\` to finish the remaining steps (${result.portainer ? "the deploy branch, GitHub secrets and the pull request" : "server readiness, GitHub secrets and the pull request"}).`,
+      `run \`opscrew ${command}${flag}${flags.yes === true ? " --yes" : ""}\` to finish the remaining steps (${result.portainer ? "the deploy branch, GitHub secrets and the pull request" : "server readiness, GitHub secrets and the pull request"}).`,
     ]);
     return;
   }
@@ -407,7 +468,14 @@ export async function runInfraCommand(
       : [];
   if (result.portainer) {
     printPortainerOutcome(ctx, result.result);
-    printNextSteps(ctx, [...push, ...portainerNextSteps(result.plan, deploys)]);
+    printNextSteps(ctx, [...push, ...portainerNextSteps(result, deploys, flag)]);
+    return;
+  }
+  if (result.plan?.target.provider === "localhost") {
+    printNextSteps(ctx, [
+      ...push,
+      `run \`opscrew verify${flag}\` to check the app on this computer and write ${result.runbook}.`,
+    ]);
     return;
   }
 
@@ -418,8 +486,8 @@ export async function runInfraCommand(
   }
   printNextSteps(ctx, [
     ...push,
-    deploys ? VERIFY_STEP : VERIFY_NOW_STEP,
-    SECURE_SERVER_STEP,
+    verifyStep(flag, result.runbook, deploys),
+    secureServerStep(flag, result.securityReport),
     ...(result.own
       ? [
           "back up your server and the app's data yourself: OpsCrew cannot turn on backups or snapshots on your own server.",
@@ -450,17 +518,20 @@ function printPortainerOutcome(ctx: CliContext, result: ProvisionResult): void {
 
 /**
  * The next steps after provisioning into the user's Portainer, by how visitors reach the app and
- * whether a deploy run follows (`deploys`).
+ * whether a deploy run follows (`deploys`), with the environment's `flag`, runbook and report.
  */
-function portainerNextSteps(plan: DeployPlan | undefined, deploys: boolean): string[] {
+function portainerNextSteps(
+  files: { plan: DeployPlan | undefined; runbook: string; securityReport: string },
+  deploys: boolean,
+  flag: string,
+): string[] {
+  const { plan, runbook } = files;
   const proxy = plan?.target.provider === "portainer" && plan.target.web.mode === "proxy";
   return [
     proxy
-      ? `${deploys ? "when the deploy run in GitHub Actions has finished and" : "when"} your reverse proxy routes to the app, run \`opscrew verify\` (add \`--url <address>\` to check the address your proxy serves it on) to check the live site and write opscrew/RUNBOOK.md.`
-      : deploys
-        ? VERIFY_STEP
-        : VERIFY_NOW_STEP,
-    "run `opscrew secure` to check the app's stack and write opscrew/SECURITY_REPORT.md (the host, its firewall, SSH and Portainer's own security stay yours).",
+      ? `${deploys ? "when the deploy run in GitHub Actions has finished and" : "when"} your reverse proxy routes to the app, run \`opscrew verify${flag}\` (add \`--url <address>\` to check the address your proxy serves it on) to check the live site and write ${runbook}.`
+      : verifyStep(flag, runbook, deploys),
+    `run \`opscrew secure${flag}\` to check the app's stack and write ${files.securityReport} (the host, its firewall, SSH and Portainer's own security stay yours).`,
     "back up the app's data volumes yourself: OpsCrew cannot back up a Portainer host.",
   ];
 }
@@ -483,6 +554,7 @@ export function register(program: Command, ctx: CliContext): void {
       "Plan and, after your approval, create the servers on your cloud, prepare your own server or set up the app in your Portainer",
     );
   addPlanApproveOptions(command);
+  addEnvOption(command);
   addHostKeyOption(command)
     .addOption(
       new Option(

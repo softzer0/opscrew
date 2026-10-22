@@ -13,6 +13,7 @@ import {
   readSecretsRecord,
   secretsEnvironment,
 } from "../provision/secrets";
+import { planWhere } from "../runners/words";
 import {
   approvalEntry,
   describeChanges,
@@ -24,6 +25,7 @@ import {
   planStop,
   recordServerAddress,
   refusalReason,
+  stateCopyPaths,
   stateFile,
   stateNotHere,
 } from "../shared";
@@ -102,10 +104,12 @@ export function nothingDeployed(plan: DeployPlan): OpsCrewError {
 
 /** 1. The infrastructure state is not on this computer: nothing can be planned, nothing changes. */
 export function teardownStateNotHere(plan: DeployPlan): OpsCrewError {
+  const { flag } = planWhere(plan);
+  const { folder, passphrase } = stateCopyPaths(plan);
   return stateNotHere(
     plan,
     "tell what to delete",
-    "Run `opscrew destroy` on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, its state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
+    `Run \`opscrew destroy${flag}\` on the computer that ran \`opscrew provision${flag}\`, or copy its ${folder} folder (and, with OpenTofu, its state passphrase from ${passphrase}) here, then try again.`,
   );
 }
 

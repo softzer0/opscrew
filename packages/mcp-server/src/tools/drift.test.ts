@@ -86,7 +86,8 @@ describe("moving between providers", () => {
   it("has no MCP tool: moves are terminal-only", async () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
-    for (const tool of tools) expect(tool.name).not.toMatch(/retarget|move|migrat/i);
+    // `opscrew_env_remove` removes an environment's files: no move.
+    for (const tool of tools) expect(tool.name).not.toMatch(/retarget|_move|migrat/i);
     const instructions = client.getInstructions() ?? "";
     expect(instructions).toContain("npx opscrew retarget");
   });

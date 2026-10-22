@@ -5,8 +5,13 @@ import {
   valueFingerprint,
 } from "@opscrew/connector-portainer";
 import type { CheckResult, Severity } from "@opscrew/contracts";
-import { exists, listText } from "@opscrew/core";
-import { portainerSecretVariables, portainerTarget, serviceSpec } from "@opscrew/iac-templates";
+import { exists, listText, toPosixRelative } from "@opscrew/core";
+import {
+  portainerDeployBranch,
+  portainerSecretVariables,
+  portainerTarget,
+  serviceSpec,
+} from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
@@ -20,6 +25,7 @@ import {
   requirePortainerToken,
 } from "../provision/portainer";
 import type { PortainerServices } from "../provision/types";
+import { planWhere } from "../runners/words";
 import {
   checkResult,
   editCheckText,
@@ -28,6 +34,7 @@ import {
   publishedPorts,
   readPortainerConnection,
   recordedStack,
+  serverAddressesFile,
 } from "../shared";
 
 /** Said in the report and the terminal for an app in the user's Portainer (FR-1015). */
@@ -51,7 +58,12 @@ function rolesFor(target: PortainerDeployTarget): Role[] {
 }
 
 /** Whether OpsCrew's stack of `role` is in Portainer, running, and as OpsCrew left it. */
-function stackState(role: Role, name: string, stack: PortainerStackFacts | undefined): CheckResult {
+function stackState(
+  role: Role,
+  name: string,
+  stack: PortainerStackFacts | undefined,
+  flag: string,
+): CheckResult {
   const id = `stack-${role}`;
   const title = `The ${ROLE_LABEL[role]} ${name} runs`;
   if (stack === undefined) {
@@ -62,8 +74,7 @@ function stackState(role: Role, name: string, stack: PortainerStackFacts | undef
       "fail",
       `Portainer has no ${ROLE_LABEL[role]} ${name} that OpsCrew created (it was removed, or this token cannot see it).`,
       {
-        remediation:
-          "Run `opscrew provision`: its stack plan creates it again (you approve it as usual).",
+        remediation: `Run \`opscrew provision${flag}\`: its stack plan creates it again (you approve it as usual).`,
       },
     );
   }
@@ -76,14 +87,13 @@ function stackState(role: Role, name: string, stack: PortainerStackFacts | undef
       "fail",
       `Portainer reports the last deploy of ${name} failed${last === undefined ? "" : ` ("${last}")`}.`,
       {
-        remediation:
-          "Look at the stack's containers and logs in Portainer, fix the cause, then run `opscrew provision` (it redeploys the stack) or merge a fix.",
+        remediation: `Look at the stack's containers and logs in Portainer, fix the cause, then run \`opscrew provision${flag}\` (it redeploys the stack) or merge a fix.`,
       },
     );
   }
   if (stack.status === 2) {
     return checkResult(id, title, "high", "fail", `Portainer reports ${name} as stopped.`, {
-      remediation: "Run `opscrew provision`: its stack plan starts it again.",
+      remediation: `Run \`opscrew provision${flag}\`: its stack plan starts it again.`,
     });
   }
   return checkResult(id, title, "high", "pass", `${name} is active in Portainer.`);
@@ -136,14 +146,17 @@ function mountsDockerSocket(volumes: unknown): boolean {
  * The hardening of a stack file, service by service: every service runs with
  * `no-new-privileges`, none is privileged, shares the host's network, PID or IPC namespace, adds
  * capabilities or mounts the Docker socket, each rotates its logs, and the stack publishes only the
- * host ports the plan's web mode needs.
+ * host ports the plan's web mode needs. `where` names the environment's ` --env <name>` and deploy
+ * branch for the remediations.
  */
 function fileChecks(
   role: Role,
   name: string,
   file: string | undefined,
   allowedPorts: readonly number[],
+  where: { flag: string; branch: string },
 ): CheckResult[] {
+  const { flag } = where;
   const id = `stack-${role}-file`;
   const title = `The ${ROLE_LABEL[role]} ${name} is hardened`;
   if (file === undefined) {
@@ -172,8 +185,7 @@ function fileChecks(
         "fail",
         `OpsCrew cannot read the stack file of ${name} in Portainer as a Compose file.`,
         {
-          remediation:
-            "Run `opscrew drift` to see how it differs from what OpsCrew set up, then `opscrew provision` (or merge a change, for the app stack).",
+          remediation: `Run \`opscrew drift${flag}\` to see how it differs from what OpsCrew set up, then \`opscrew provision${flag}\` (or merge a change, for the app stack).`,
         },
       ),
     ];
@@ -249,15 +261,18 @@ function fileChecks(
       {
         remediation:
           role === "app"
-            ? "The deploy workflow writes the app stack's file from OpsCrew's template: run `opscrew drift` to see what changed on the opscrew-deploy branch, and merge a change (or re-run the deploy) to write it again."
-            : "Run `opscrew drift` to see how it differs from what OpsCrew set up, then `opscrew provision` to put it back.",
+            ? `The deploy workflow writes the app stack's file from OpsCrew's template: run \`opscrew drift${flag}\` to see what changed on the ${where.branch} branch, and merge a change (or re-run the deploy) to write it again.`
+            : `Run \`opscrew drift${flag}\` to see how it differs from what OpsCrew set up, then \`opscrew provision${flag}\` to put it back.`,
       },
     ),
   ];
 }
 
 /** The app stack is redeployed only through its webhook, never by scheduled Git polling. */
-function redeployCheck(stack: PortainerStackFacts | undefined): CheckResult | undefined {
+function redeployCheck(
+  stack: PortainerStackFacts | undefined,
+  flag: string,
+): CheckResult | undefined {
   if (stack === undefined) return undefined;
   const auto = stack.autoUpdate;
   const id = "stack-app-redeploy";
@@ -279,7 +294,7 @@ function redeployCheck(stack: PortainerStackFacts | undefined): CheckResult | un
     auto?.webhook !== true
       ? "The app stack has no webhook, so merged changes do not reach Portainer."
       : "Portainer's redeploy settings of the app stack were changed (scheduled polling or forced image pulls).",
-    { remediation: "Run `opscrew provision`: its stack plan puts the webhook back." },
+    { remediation: `Run \`opscrew provision${flag}\`: its stack plan puts the webhook back.` },
   );
 }
 
@@ -288,6 +303,7 @@ function registryCheck(
   facts: PortainerFacts,
   connection: PortainerConnection,
   environmentId: number,
+  flag: string,
 ): CheckResult | undefined {
   const id = connection.created.registryId;
   if (id === undefined || facts.registryEntries === undefined) return undefined;
@@ -300,7 +316,7 @@ function registryCheck(
       "high",
       "fail",
       "Portainer no longer has the registry entry OpsCrew added, so it cannot pull the app's private image.",
-      { remediation: "Run `opscrew provision`: its stack plan adds it again." },
+      { remediation: `Run \`opscrew provision${flag}\`: its stack plan adds it again.` },
     );
   }
   return entry.environments.includes(environmentId)
@@ -317,7 +333,7 @@ function registryCheck(
         "high",
         "fail",
         `${entry.name} is no longer granted on the environment, so Portainer cannot pull the app's private image.`,
-        { remediation: "Run `opscrew provision`: its stack plan grants it again." },
+        { remediation: `Run \`opscrew provision${flag}\`: its stack plan grants it again.` },
       );
 }
 
@@ -363,8 +379,7 @@ function serviceLoginChecks(
         "fail",
         `The app stack's environment has no value for ${listText(missing)}, so ${who} runs without its login.`,
         {
-          remediation:
-            "Run `opscrew provision`: its stack plan sends the service's generated login to the app's stack again (you approve it as usual).",
+          remediation: `Run \`opscrew provision${planWhere(plan).flag}\`: its stack plan sends the service's generated login to the app's stack again (you approve it as usual).`,
         },
       );
     });
@@ -384,19 +399,19 @@ export async function portainerSecurityChecks(
   services: Pick<PortainerServices, "client"> = {},
 ): Promise<{ checks: CheckResult[]; skipped?: string }> {
   const target = portainerTarget(plan.target);
+  const { flag } = planWhere(plan);
   // Without the connection or the token there is nothing to ask Portainer: the checks are skipped
   // with the reason, and the rest of the report is written as usual.
   if ((await readPortainerConnection(deps.paths)) === undefined) {
     return {
       checks: [],
-      skipped:
-        "OpsCrew does not know how to reach your Portainer on this computer. Run `opscrew secure` on the computer that ran `opscrew provision` (its `.opscrew/server.json` holds Portainer's address and confirmed certificate).",
+      skipped: `OpsCrew does not know how to reach your Portainer on this computer. Run \`opscrew secure${flag}\` on the computer that ran \`opscrew provision${flag}\` (its \`${toPosixRelative(deps.paths.root, serverAddressesFile(deps.paths))}\` holds Portainer's address and confirmed certificate).`,
     };
   }
   if (!deps.env[PORTAINER_TOKEN_VAR]?.trim()) {
     return {
       checks: [],
-      skipped: `${PORTAINER_TOKEN_VAR} is not set, so OpsCrew cannot read the app's stacks from your Portainer. Set it to your Portainer access token and run \`opscrew secure\` again.`,
+      skipped: `${PORTAINER_TOKEN_VAR} is not set, so OpsCrew cannot read the app's stacks from your Portainer. Set it to your Portainer access token and run \`opscrew secure${flag}\` again.`,
     };
   }
   let connection: PortainerConnection;
@@ -453,17 +468,20 @@ export async function portainerSecurityChecks(
     const name =
       role === "app" ? names.app : role === "updater" ? names.updater : names.tunnelConnector;
     const stack = recordedStack(connection, facts, role);
-    checks.push(stackState(role, name, stack));
+    checks.push(stackState(role, name, stack, flag));
     if (stack !== undefined) {
       checks.push(
-        ...fileChecks(role, name, stack.file, role === "app" ? publishedPorts(target) : []),
+        ...fileChecks(role, name, stack.file, role === "app" ? publishedPorts(target) : [], {
+          flag,
+          branch: portainerDeployBranch(plan),
+        }),
       );
     }
   }
   const appStack = recordedStack(connection, facts, "app");
-  const redeploy = redeployCheck(appStack);
+  const redeploy = redeployCheck(appStack, flag);
   if (redeploy !== undefined) checks.push(redeploy);
-  const registry = registryCheck(facts, connection, target.environmentId);
+  const registry = registryCheck(facts, connection, target.environmentId, flag);
   if (registry !== undefined) checks.push(registry);
   if (appStack !== undefined) checks.push(...serviceLoginChecks(plan, appStack, valueKey));
   return { checks: checks.map(redacted) };

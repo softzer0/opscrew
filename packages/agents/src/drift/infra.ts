@@ -7,6 +7,7 @@ import { storageRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { environmentFlag } from "../environments/choice";
 import {
   providerBucket,
   type StorageKey,
@@ -39,12 +40,16 @@ export type StateKind = "plain" | "encrypted" | "unknown";
 export async function inspectState(deps: PhaseDeps, statePath: string): Promise<StateKind> {
   const relative = toPosixRelative(deps.paths.root, statePath);
   const text = await readTextIfExists(statePath);
-  const copyHint = `The state lives on the computer that ran \`opscrew provision\`, in ${relative} inside the project. Copy the .opscrew/tfstate folder from there into this project (with OpenTofu state encryption, also copy the state passphrase file; on this computer OpsCrew reads it from ${deps.paths.files.statePassphrase}), then run \`opscrew drift\` again.`;
+  // Only a refusal needs it, so the environments are read only then.
+  const copyHint = async () => {
+    const flag = await environmentFlag(deps.paths.root, deps.paths.environment);
+    return `The state lives on the computer that ran \`opscrew provision${flag}\`, in ${relative} inside the project. Copy the ${toPosixRelative(deps.paths.root, deps.paths.files.tfstateDir)} folder from there into this project (with OpenTofu state encryption, also copy the state passphrase file; on this computer OpsCrew reads it from ${deps.paths.files.statePassphrase}), then run \`opscrew drift${flag}\` again.`;
+  };
   if (text === undefined || text.trim() === "") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `No infrastructure state found at ${relative}, so OpsCrew cannot tell what it created. Nothing was checked.`,
-      { hint: copyHint },
+      { hint: await copyHint() },
     );
   }
   let parsed: z.infer<typeof StateFileSchema> | undefined;
@@ -62,7 +67,7 @@ export async function inspectState(deps: PhaseDeps, statePath: string): Promise<
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The infrastructure state at ${relative} is empty, so OpsCrew cannot tell what it created. Nothing was checked.`,
-      { hint: copyHint },
+      { hint: await copyHint() },
     );
   }
   return "plain";

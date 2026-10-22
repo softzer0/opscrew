@@ -50,7 +50,14 @@ import {
   REQUIRES_USER,
   requireDialogs,
 } from "./elicitation";
-import { appliedCloudflarePlan, IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
+import {
+  appliedCloudflarePlan,
+  environmentInput,
+  IDEMPOTENT_WRITE,
+  projectDirInput,
+  runTool,
+  toolEnvironment,
+} from "./shared";
 
 /**
  * Test-only collaborators for the deploy tools. Production leaves them unset, so every phase uses
@@ -325,12 +332,13 @@ export function registerDeployTools(
       title: "Preview the deployment files",
       description:
         "Preview the deployment files OpsCrew generates from opscrew/plan.yaml: the OpenTofu/Terraform code under opscrew/infra, the Docker Compose and Caddy files under opscrew/runtime and the GitHub Actions deploy workflow. Lists each file as new, changed or unchanged compared with the repository. Writes nothing (opscrew_plan writes the files). It reads the GitHub origin remote (and the Cloudflare zone when the plan has a Cloudflare domain) to fill in the files, and creates the project deploy key in the OpsCrew home when it is missing.",
-      inputSchema: { ...projectDirInput },
+      inputSchema: { ...projectDirInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir }) =>
+    ({ projectDir, environment }) =>
       runTool(deps, "opscrew_render", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const phase = await call.phaseDeps({ environment: name });
         const preview = await previewDeploymentFiles(phase, servicesOption(options));
         const kindOf = new Map(preview.files.map((f) => [f.path, f.kind]));
         const line = (status: string) => (path: string) =>
@@ -366,6 +374,7 @@ export function registerDeployTools(
         "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. When other users on that server log in with a password and no SSH key, OpsCrew stops until the user chooses: pass passwordLogins 'off' (turn password logins off anyway) or 'keep' (leave them on), the CLI's --password-logins, and pass the same value to opscrew_apply. In a Portainer the user already runs, it inspects Portainer read-only (with PORTAINER_API_KEY and the certificate the user confirmed in the interview) and returns the stack plan (the app's stacks, the registry entry, the repository access and the redeploy setting, each marked as already in place or a change) with its own hash, next to the Cloudflare infrastructure plan when the app uses a tunnel or Cloudflare redeploys; when the stack plan needs the tunnel's token it follows after the infrastructure apply. When the app uses a Cloudflare zone it also returns the Cloudflare plan (cloudflarePlanHash): what OpsCrew changes in its shared rules in the zone (the probe block and the strict TLS rule, which list the hostnames of every OpsCrew app there; rules OpsCrew did not create are never changed) and in the account's Zero Trust organization and one-time PIN login. It is approved on its own, before the other plans; when only it is returned, the infrastructure plan follows after it is applied. When the app keeps its files in a bucket on Cloudflare R2, DigitalOcean Spaces or Hetzner Object Storage, it also returns the bucket's plan (storagePlanHash, the opscrew/infra/storage root, with its monthly price), approved on its own; the bucket's key is the user's own and comes only from their terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, and in the user's Portainer the stack plan follows once the bucket exists. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean; none for the user's own server, whose SSH host key must have been confirmed once; PORTAINER_API_KEY for the user's Portainer) and GitHub access in the MCP server's environment.",
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         engine: z
           .enum(["auto", "tofu", "terraform"])
           .optional()
@@ -384,10 +393,12 @@ export function registerDeployTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, engine, passwordLogins, publicImage, replaceTokens }) =>
+    ({ projectDir, environment, engine, passwordLogins, publicImage, replaceTokens }) =>
       runTool(deps, "opscrew_plan", projectDir, async (call) => {
+        const { name, flag } = await toolEnvironment(call.projectDir, environment);
         const phase = await call.phaseDeps({
           approvalHandler: new PlanToolApprovalHandler(deps.clock),
+          environment: name,
         });
         const result = await (options.runProvision ?? runProvision)(phase, {
           planOnly: true,
@@ -453,7 +464,7 @@ export function registerDeployTools(
           ...(second !== undefined ? [second] : []),
         ];
         // The terminal run repeats this call's engine, password-logins and image choices.
-        const command = applyCommand("provision", hashes, {
+        const command = applyCommand(`provision${flag}`, hashes, {
           ...(engine === "tofu" || engine === "terraform" ? { engine } : {}),
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...(publicImage === undefined ? {} : { publicImage }),
@@ -466,7 +477,7 @@ export function registerDeployTools(
               ? "Cloudflare and the user's Portainer already match the plans"
               : "The infrastructure already matches the plan";
           return {
-            text: `${matched}; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run \`opscrew provision\` in a terminal to finish any remaining steps.`,
+            text: `${matched}; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run \`opscrew provision${flag}\` in a terminal to finish any remaining steps.`,
             data: {
               upToDate: true,
               ...(result.planHash ? { planHash: result.planHash } : {}),
@@ -513,7 +524,7 @@ export function registerDeployTools(
             : []),
           ...(stackFollows !== undefined
             ? [
-                `The stack plan for the user's Portainer follows once ${stackFollows}: opscrew_apply then shows it to the user in its own dialog. In a terminal script that takes three runs: \`opscrew provision --plan-only\`, the command above, then \`opscrew provision --approve <stack plan hash>\`.`,
+                `The stack plan for the user's Portainer follows once ${stackFollows}: opscrew_apply then shows it to the user in its own dialog. In a terminal script that takes three runs: \`opscrew provision${flag} --plan-only\`, the command above, then \`opscrew provision${flag} --approve <stack plan hash>\`.`,
               ]
             : []),
           ...(saved?.hasDestroy || result.cloudflarePlanDeletes
@@ -546,6 +557,7 @@ export function registerDeployTools(
         "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash), with the same passwordLogins choice given to opscrew_plan, if any. In a Portainer the user already runs, also pass stackPlanHash: the stack plan is shown and approved in its own dialog before OpsCrew changes anything in Portainer (when only a stack plan was returned, pass it as planHash; when the stack plan followed the infrastructure plan, it is shown in a dialog after that apply), with the same publicImage and replaceTokens given to opscrew_plan, if any. When opscrew_plan returned a Cloudflare plan, also pass its cloudflarePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog first, and a Cloudflare plan with another hash is refused before any dialog. A Cloudflare plan that deletes OpsCrew's rule asks the user to type the app's name in its dialog. When opscrew_plan returned a bucket plan, also pass its storagePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog. Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         planHash: z
           .string()
           .optional()
@@ -599,6 +611,7 @@ export function registerDeployTools(
     (
       {
         projectDir,
+        environment,
         planHash,
         cloudflarePlanHash,
         hostPlanHash,
@@ -633,7 +646,8 @@ export function registerDeployTools(
         const hashes = [cloudflareHash, storageHash, hash, hostHash, stackHash].filter(
           (value): value is string => value !== undefined,
         );
-        const terminal = applyCommand("provision", hashes, {
+        const { name, flag } = await toolEnvironment(call.projectDir, environment);
+        const terminal = applyCommand(`provision${flag}`, hashes, {
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...(publicImage === undefined ? {} : { publicImage }),
           ...(replaceTokens === undefined ? {} : { replaceTokens }),
@@ -645,11 +659,12 @@ export function registerDeployTools(
           cloudflareHash,
           {
             hash: storageHash,
-            plansDir: resolveProjectPaths(call.projectDir, { env: deps.env }).files.plansDir,
+            plansDir: resolveProjectPaths(call.projectDir, { env: deps.env, environment: name })
+              .files.plansDir,
           },
           deps.clock,
         );
-        const phase = await call.phaseDeps({ approvalHandler: gate });
+        const phase = await call.phaseDeps({ approvalHandler: gate, environment: name });
         const saved =
           hash === undefined ? undefined : await findSavedPlan(phase.paths.files.plansDir, hash);
         const plan = await readArtifact("plan", phase.paths.files.plan);
@@ -712,13 +727,13 @@ export function registerDeployTools(
             ...servicesOption(options),
           });
         } catch (error) {
-          throw refusalWithNextStep(error, handler, terminal, gate);
+          throw refusalWithNextStep(error, handler, terminal, gate, flag);
         }
         const secretsNote = secrets
           ? []
           : [
               "",
-              "The deploy secrets are NOT stored yet: OpsCrew never asks for production values through this chat. Ask the user to run `opscrew provision` in a terminal in the project directory. It finds no infrastructure changes, then asks for the production environment values and stores the GitHub Actions secrets.",
+              `The deploy secrets are NOT stored yet: OpsCrew never asks for production values through this chat. Ask the user to run \`opscrew provision${flag}\` in a terminal in the project directory. It finds no infrastructure changes, then asks for the production environment values and stores the GitHub Actions secrets.`,
             ];
         const text = [
           ...(result.cloudflarePlanHash !== undefined
@@ -782,7 +797,7 @@ export function registerDeployTools(
             approvals: handler.decisions,
             ...(result.prUrl ? { prUrl: result.prUrl } : {}),
             ...(result.branch ? { branch: result.branch } : {}),
-            ...(secrets ? {} : { nextStep: "opscrew provision" }),
+            ...(secrets ? {} : { nextStep: `opscrew provision${flag}` }),
           },
         };
       }),
@@ -796,6 +811,7 @@ export function registerDeployTools(
         "Re-scan the repository, re-check the applied plan against the security policies, run hardening checks on the server over SSH (password and root login, firewall, fail2ban, automatic updates, Docker exposure, listening ports, pending reboot, disk) and probe from outside that only the expected ports answer. In a Portainer the user already runs it checks the app's stack through Portainer's API instead (never the host: its firewall, SSH and Portainer's own security stay the user's, as do backups). With deep, it also runs three pinned audits, read-only: Lynis on the server (through Docker over SSH), and ssh-audit and testssl.sh in Docker on the user's computer (skipped with how to enable them when Docker is missing; in a Portainer only testssl.sh), each with its known noise set apart; this takes a few minutes. Writes opscrew/SECURITY_REPORT.md and returns every check result and the problems to fix. Changes nothing on the server or in Portainer.",
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         offline: z
           .boolean()
           .optional()
@@ -809,9 +825,10 @@ export function registerDeployTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, offline, deep }) =>
+    ({ projectDir, environment, offline, deep }) =>
       runTool(deps, "opscrew_secure", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const phase = await call.phaseDeps({ environment: name });
         const result = await runSecure(phase, {
           offline: offline ?? false,
           scanners: deps.scanners(),
@@ -862,6 +879,7 @@ export function registerDeployTools(
         "Check the live deployment from outside: DNS, HTTPS and certificate validity, the HTTP-to-HTTPS redirect, the health endpoint, security headers, that .env and .git are not served, that the origin is not reachable around Cloudflare, and the latest GitHub Actions deploy run. Writes opscrew/RUNBOOK.md (deploys, rollbacks, logs, SSH access, backups, secret rotation, costs) and returns every check result. Run it after the deploy pull request is merged. For an app in the user's Portainer behind their own reverse proxy, pass url: the address the proxy serves the app on (refused for every other deployment).",
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         url: z
           .string()
           .optional()
@@ -871,9 +889,10 @@ export function registerDeployTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, url }) =>
+    ({ projectDir, environment, url }) =>
       runTool(deps, "opscrew_verify", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const phase = await call.phaseDeps({ environment: name });
         const route = url?.trim();
         const result = await runVerify(phase, {
           ...options.verify,
@@ -916,6 +935,7 @@ function refusalWithNextStep(
   handler: ElicitationApprovalHandler,
   terminal: string,
   gate: Pick<CloudflarePlanGate, "refusedOther" | "refusedBucket">,
+  flag: string,
 ): unknown {
   if (!isUserFacingError(error) || error.code !== "APPROVAL_REFUSED") return error;
   // Cloudflare is changed once its shared plan or the infrastructure plan was approved.
@@ -957,12 +977,12 @@ function refusalWithNextStep(
       ? `The user declined the ${plan}. The Cloudflare changes are applied; nothing ${where} was changed.`
       : `The user declined the ${plan}; nothing ${where} was changed.`;
     return new OpsCrewError("APPROVAL_REFUSED", message, {
-      hint: "When the user is ready, call opscrew_plan again (it shows what is still missing) and opscrew_apply with its hashes, or ask them to run `opscrew provision` in a terminal in the project directory.",
+      hint: `When the user is ready, call opscrew_plan again (it shows what is still missing) and opscrew_apply with its hashes, or ask them to run \`opscrew provision${flag}\` in a terminal in the project directory.`,
       cause: error,
     });
   }
   const next = applyApproved
-    ? "Ask the user to run `opscrew provision` in a terminal in the project directory when ready; it continues where this stopped."
+    ? `Ask the user to run \`opscrew provision${flag}\` in a terminal in the project directory when ready; it continues where this stopped.`
     : `Nothing was applied. When the user is ready, call opscrew_apply again, or ask them to run \`${terminal}\` in a terminal.`;
   return new OpsCrewError("APPROVAL_REFUSED", error.message, { hint: next, cause: error });
 }

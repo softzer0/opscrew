@@ -3,11 +3,11 @@ import {
   type DestroyPreview,
   type DestroyResult,
   destroyConfirmPrompt,
-  localhostNotSupported,
   type PhaseDeps,
   providerBucket,
   runDestroy,
   savedHostPlanPurpose,
+  savedLocalPlanPurpose,
 } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest, Clock } from "@opscrew/contracts";
 import { approvalDecision, OpsCrewError, systemClock } from "@opscrew/core";
@@ -17,8 +17,9 @@ import { askTypedName, checkConfirmName, hashListed } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { collect, runPhaseCommand } from "../ui/deploy";
+import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
-import { addHostKeyOption, checkApproveFlags, DEPLOY_AGAIN_STEP, engineOption } from "./provision";
+import { addHostKeyOption, checkApproveFlags, deployAgainStep, engineOption } from "./provision";
 
 /** The flags of `opscrew destroy`. */
 export interface DestroyFlags {
@@ -32,6 +33,8 @@ export interface DestroyFlags {
   hostKey?: string;
   /** Repeated `--approve <hash>`: the undo host plan (`--undo-host`) in a script. */
   approve?: string[];
+  /** `--env <name>`: the app's environment. */
+  env?: string;
 }
 
 /** Where the undo host plan's own approval comes from (`--undo-host`). */
@@ -139,19 +142,22 @@ export class TypedConfirmationHandler implements ApprovalHandler {
  * scripts). In the user's Portainer (FR-1014) it removes only what OpsCrew created there (its
  * stacks, registry entry and repository access) and on Cloudflare, after the app's name is typed;
  * the stack teardown plan is approved with that name, the app's data volumes only with
- * `--delete-data`. Exit codes: 0 torn down, 1 refused or not confirmed, 2 error.
+ * `--delete-data`. On this computer (the localhost target) it removes the app's containers,
+ * networks and folders after the app's name is typed (the local teardown plan, approved by its
+ * hash), its data volumes only with `--delete-data`. `--env` picks the environment. Exit codes:
+ * 0 torn down, 1 refused or not confirmed, 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("destroy")
     .description(
-      "Delete the deployment's infrastructure, or remove the app from your own server or your Portainer (asks for the name)",
+      "Delete the deployment's infrastructure, or remove the app from your own server, your Portainer or this computer (asks for the name)",
     )
     .option("--snapshot", "Take a snapshot of the server first")
     .option("--no-snapshot", "Do not take a snapshot of the server first")
     .option(
       "--confirm <name>",
-      "The server name (on your own server or in your Portainer, the app's name), to run without prompts (for scripts and CI)",
+      "The server name (on your own server, in your Portainer or on this computer, the app's name), to run without prompts (for scripts and CI)",
     )
     .addOption(engineOption())
     .option(
@@ -160,13 +166,14 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--delete-data",
-      "Also delete the app's data: its Docker volumes and /srv/data on your own server or in your Portainer, and its bucket at a provider with its files; asks for the name",
+      "Also delete the app's data: its Docker volumes and /srv/data on your own server, in your Portainer or on this computer, and its bucket at a provider with its files; asks for the name",
     )
     .option(
       "--approve <hash>",
       "With --undo-host and --confirm <app> in a script: apply the undo host plan with this hash (printed by an earlier run)",
       collect,
     );
+  addEnvOption(command);
   addHostKeyOption(command).action((flags: DestroyFlags) => runDestroyCommand(ctx, flags));
 }
 
@@ -193,54 +200,66 @@ export async function runDestroyCommand(
 ): Promise<void> {
   let typed: string | undefined;
   let provider = "hetzner" as DeployPlan["target"]["provider"];
+  let flag = "";
   const result = await runPhaseCommand(ctx, async () => {
     const hashes = checkApproveFlags("destroy", flags);
     const hostKey = flags.hostKey?.trim();
-    const deps0 = createPhaseDeps(ctx, { ai: false });
+    const environment = await chooseEnvironment(ctx, flags.env, "destroy");
+    flag = environment.flag;
+    const deps0 = createPhaseDeps(ctx, { ai: false, environment: environment.name });
     const plan = await readArtifact("plan", deps0.paths.files.plan);
     const name = plan.app.name;
     provider = plan.target.provider;
-    if (provider === "localhost") throw localhostNotSupported("`opscrew destroy`");
     const own = provider === "own";
     const portainer = provider === "portainer";
-    const what = own || portainer ? "the app's name" : "the server name";
+    const local = provider === "localhost";
+    const app = own || portainer || local;
+    const what = app ? "the app's name" : "the server name";
     const scripted = flags.confirm !== undefined;
+    const again = `opscrew destroy${flag}`;
     checkConfirmName(
       flags.confirm,
       name,
       what,
-      `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : "delete the deployment"}, run \`opscrew destroy --confirm ${name}\`.`,
+      `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : "delete the deployment"}, run \`${again} --confirm ${name}\`.`,
     );
-    if (portainer && flags.undoHost === true) {
+    if ((portainer || local) && flags.undoHost === true) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        "--undo-host applies only to a server you already own; OpsCrew never changes the host your Portainer runs on, so there is nothing to undo there.",
-        { hint: "Run `opscrew destroy` without it (add --delete-data to delete the app's data)." },
+        portainer
+          ? "--undo-host applies only to a server you already own; OpsCrew never changes the host your Portainer runs on, so there is nothing to undo there."
+          : "--undo-host applies only to a server you already own; on this computer OpsCrew changes nothing outside its own folders and Docker objects, which the removal takes away.",
+        { hint: `Run \`${again}\` without it (add --delete-data to delete the app's data).` },
       );
     }
     // On a server OpsCrew created, --delete-data deletes only the app's bucket at a provider.
     const bucket = providerBucket(plan) !== undefined;
-    if (!own && !portainer && (flags.undoHost === true || (flags.deleteData === true && !bucket))) {
+    if (!app && (flags.undoHost === true || (flags.deleteData === true && !bucket))) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         bucket
           ? "--undo-host applies only to a server you already own; this deployment's server was created by OpsCrew and is deleted with its data."
-          : "--undo-host and --delete-data apply only to a server you already own, your Portainer or an app with a bucket at a provider; this deployment's server was created by OpsCrew and is deleted with its data.",
-        { hint: "Run `opscrew destroy` without them." },
+          : "--undo-host and --delete-data apply only to a server you already own, your Portainer, this computer or an app with a bucket at a provider; this deployment's server was created by OpsCrew and is deleted with its data.",
+        { hint: `Run \`${again}\` without them.` },
       );
     }
     if (!scripted && !ctx.isInteractive) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `${own || portainer ? "Removing the app" : "Deleting the deployment"} needs ${what} typed by a person, and this run is not interactive. Nothing was changed.`,
+        `${app ? "Removing the app" : "Deleting the deployment"} needs ${what} typed by a person, and this run is not interactive. Nothing was changed.`,
         {
-          hint: `Run \`opscrew destroy\` in a terminal, or \`opscrew destroy --confirm ${name}\` in a script.`,
+          hint: `Run \`${again}\` in a terminal, or \`${again} --confirm ${name}\` in a script.`,
         },
       );
     }
     if (scripted) typed = name;
+    // The typed name covers only a saved teardown plan: on this computer the local plan's, else
+    // the host plan's of the user's own server.
+    const purposeOf = (hash: string | undefined) =>
+      local ? savedLocalPlanPurpose(deps0.paths, hash) : savedHostPlanPurpose(deps0.paths, hash);
     const deps = createPhaseDeps(ctx, {
       ai: false,
+      environment: environment.name,
       approveHashes: hashes,
       wrapApprovals: (base, clock) =>
         new TypedConfirmationHandler(
@@ -250,7 +269,7 @@ export async function runDestroyCommand(
           scripted,
           ctx.stdout,
           what,
-          { purposeOf: (hash) => savedHostPlanPurpose(deps0.paths, hash), scripted, hashes },
+          { purposeOf, scripted, hashes },
           clock,
         ),
     });
@@ -276,13 +295,18 @@ export async function runDestroyCommand(
       ctx.stdout(`\nApplied the stack teardown plan ${result.stackPlan} to your Portainer.\n`);
     }
     printNextSteps(ctx, [
-      DEPLOY_AGAIN_STEP,
+      deployAgainStep(flag),
       "your Portainer, its other stacks and the host stay as they are; back up anything you keep yourself (OpsCrew cannot back up a Portainer host).",
     ]);
     return;
   }
+  if (provider === "localhost") {
+    ctx.stdout(`\nWhat remains:\n${result.remaining.map((item) => `  - ${item}`).join("\n")}\n`);
+    printNextSteps(ctx, [deployAgainStep(flag)]);
+    return;
+  }
   printNextSteps(ctx, [
-    DEPLOY_AGAIN_STEP,
+    deployAgainStep(flag),
     ...(provider === "own"
       ? [
           "your server stays as it is otherwise; back up anything on it yourself (OpsCrew cannot take snapshots of your own server).",

@@ -15,9 +15,11 @@ export {
   type LocalItem,
   type LocalPlan,
   LocalPlanSchema,
+  localChanges,
   localPlanFile,
   localPlanHash,
   planLocal,
+  readSavedLocalPlan,
   savedLocalPlanPurpose,
 } from "./plan";
 export { localPreflight } from "./preflight";

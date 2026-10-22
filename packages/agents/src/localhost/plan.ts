@@ -8,9 +8,11 @@ import { join } from "node:path";
 import {
   canonicalJson,
   exists,
+  OpsCrewError,
   type ProjectPaths,
   readTextIfExists,
   sha256Hex,
+  toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
 import { EDGE_PROJECT, type LocalhostSite } from "@opscrew/iac-templates";
@@ -94,7 +96,30 @@ export async function savedLocalPlanPurpose(
   return saved !== undefined && localPlanHash(saved) === hash ? saved.purpose : undefined;
 }
 
-/** True when the local plan changes something on this computer. */
+/**
+ * The saved local plan `hash` names, `undefined` when none was saved. A file that is not a local
+ * plan stops with `ARTIFACT_INVALID` and `hint`, so a damaged plan never passes for one that
+ * changes nothing.
+ */
+export async function readSavedLocalPlan(
+  paths: Pick<ProjectPaths, "root" | "files">,
+  hash: string,
+  hint: string,
+): Promise<LocalPlan | undefined> {
+  const file = localPlanFile(paths, hash);
+  if (!(await exists(file))) return undefined;
+  const saved = await readValidJson(file, LocalPlanSchema);
+  if (saved === undefined) {
+    throw new OpsCrewError(
+      "ARTIFACT_INVALID",
+      `The saved local plan ${hash} (${toPosixRelative(paths.root, file)}) is damaged, so OpsCrew cannot tell what it changes.`,
+      { hint },
+    );
+  }
+  return saved;
+}
+
+/** The items of the local plan that change something on this computer. */
 export function localChanges(plan: LocalPlan): LocalItem[] {
   return plan.items.filter((item) => item.action !== "keep");
 }

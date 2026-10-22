@@ -15,6 +15,14 @@ async function known(root: string, name: string): Promise<string> {
 }
 
 /**
+ * ` --env <name>` for the commands OpsCrew suggests for the environment `name` while the app has
+ * several environments (prod included: a bare command then asks, or stops in a script), else "".
+ */
+export async function environmentFlag(root: string, name: string): Promise<string> {
+  return (await environmentsOf(root)).length > 1 ? ` --env ${name}` : "";
+}
+
+/**
  * The environment a command acts on (`--env`, the MCP tools' `environment`): `requested`, which
  * must be one of the app's environments; else the only one (prod for an app without a plan yet);
  * else, with several, the one the user picks through `deps.choose`.

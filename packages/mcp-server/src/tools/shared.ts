@@ -1,9 +1,16 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { type PhaseDeps, portainerAddressNames, readServerAddresses } from "@opscrew/agents";
+import {
+  environmentFlag,
+  type PhaseDeps,
+  portainerAddressNames,
+  readServerAddresses,
+  resolveEnvironment,
+} from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, replaceNames, resolveProjectPaths } from "@opscrew/core";
+import { environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
 
@@ -17,6 +24,45 @@ export const projectDirInput = {
       "Absolute path of the project's repository root. Defaults to the MCP server's working directory.",
     ),
 };
+
+/** The `environment` input of the tools that act on one of the app's environments. */
+export const environmentInput = {
+  environment: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "The app's environment to act on, for example staging (opscrew_env_list names them). Leave it out while the app has only prod; with several, name the one the user means.",
+    ),
+};
+
+/** The environment a tool call acts on, and ` --env <name>` for the commands it suggests. */
+export interface ToolEnvironment {
+  name: string;
+  /** ` --env <name>` while the app has several environments (a terminal run needs it), else empty. */
+  flag: string;
+}
+
+/**
+ * The environment of a call (agents' `resolveEnvironment`, which asks no one here): `requested`,
+ * else the only one; with several and none named, `PHASE_PRECONDITION` with their names.
+ */
+export async function toolEnvironment(
+  projectDir: string,
+  requested: string | undefined,
+): Promise<ToolEnvironment> {
+  let name: string;
+  try {
+    name = await resolveEnvironment(projectDir, requested);
+  } catch (error) {
+    // Several environments and none named: the tools take `environment`, not `--env`.
+    if (requested !== undefined || !isUserFacingError(error)) throw error;
+    if (error.code !== "PHASE_PRECONDITION") throw error;
+    const names = await environmentsOf(projectDir);
+    withHint(error, `Pass environment, for example ${names.find((n) => n !== "prod")}.`);
+  }
+  return { name, flag: await environmentFlag(projectDir, name) };
+}
 
 /** The annotations of a tool that writes files but deletes nothing and can safely run again. */
 export const IDEMPOTENT_WRITE = {
@@ -43,8 +89,14 @@ export interface ToolCall {
   projectDir: string;
   /** Collects phase messages; they are returned as `messages` in the structured content. */
   reporter: CollectingReporter;
-  /** Builds (once) the `PhaseDeps` for this call with the collecting reporter. */
-  phaseDeps(extras?: { approvalHandler?: ApprovalHandler }): Promise<PhaseDeps>;
+  /**
+   * Builds (once) the `PhaseDeps` for this call with the collecting reporter, for `environment`
+   * ({@link toolEnvironment}; default prod).
+   */
+  phaseDeps(extras?: {
+    approvalHandler?: ApprovalHandler;
+    environment?: string;
+  }): Promise<PhaseDeps>;
 }
 
 /** Validates `projectDir` (absolute, an existing directory), defaulting to the server's cwd. */
@@ -139,21 +191,29 @@ interface HiddenNames {
   portainer: string[];
 }
 
-/** {@link HiddenNames} from `.opscrew/server.json` (local state only); none when it is unreadable. */
+/**
+ * {@link HiddenNames} from every environment's `server.json` (local state only); an environment
+ * whose record is unreadable adds none.
+ */
 async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<HiddenNames> {
-  try {
-    const { own, portainer } = await readServerAddresses(
-      resolveProjectPaths(projectDir, { env: deps.env }),
-    );
-    return {
-      server: [own?.host, own?.publicIpv4, own?.publicIpv6].filter(
-        (name): name is string => typeof name === "string" && name.trim() !== "",
-      ),
-      portainer: portainer === undefined ? [] : portainerAddressNames(portainer.url),
-    };
-  } catch {
-    return { server: [], portainer: [] };
+  const environments = await environmentsOf(projectDir).catch(() => ["prod"]);
+  const names: HiddenNames = { server: [], portainer: [] };
+  for (const environment of environments.length === 0 ? ["prod"] : environments) {
+    try {
+      const { own, portainer } = await readServerAddresses(
+        resolveProjectPaths(projectDir, { env: deps.env, environment }),
+      );
+      names.server.push(
+        ...[own?.host, own?.publicIpv4, own?.publicIpv6].filter(
+          (name): name is string => typeof name === "string" && name.trim() !== "",
+        ),
+      );
+      if (portainer !== undefined) names.portainer.push(...portainerAddressNames(portainer.url));
+    } catch {
+      // An unreadable record names nothing to hide.
+    }
   }
+  return names;
 }
 
 /**

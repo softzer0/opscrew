@@ -59,7 +59,7 @@ describe("opscrew destroy --delete-data on a server OpsCrew created", () => {
     expect(result.code).toBe(2);
     expect(result.options).toEqual([]);
     expect(result.errors).toContain(
-      "--undo-host and --delete-data apply only to a server you already own, your Portainer or an app with a bucket at a provider",
+      "--undo-host and --delete-data apply only to a server you already own, your Portainer, this computer or an app with a bucket at a provider",
     );
   });
 });

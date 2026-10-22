@@ -11,7 +11,7 @@ export {
   type EnvironmentQuestionId,
   environmentQuestions,
 } from "./add";
-export { type EnvironmentChoiceDeps, resolveEnvironment } from "./choice";
+export { type EnvironmentChoiceDeps, environmentFlag, resolveEnvironment } from "./choice";
 export { type EnvironmentSummary, environmentDeployed, listEnvironments } from "./list";
 export { environmentPaths } from "./paths";
 export { removeEnvironment } from "./remove";

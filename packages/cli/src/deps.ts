@@ -5,9 +5,12 @@ import {
   type DestroyServices,
   type DomainServices,
   type InitServices,
+  type LocalhostServices,
+  type LocalRunnerServices,
   type PhaseDeps,
   type PortainerAccess,
   type PortainerServices,
+  type PromoteServices,
   type ProvisionServices,
   type RetargetServices,
   type RunSecureOptions,
@@ -75,6 +78,12 @@ export interface CliServices {
   portainer?: PortainerServices;
   /** How `interview` reads the certificate of the user's Portainer and lists its environments. */
   portainerAccess?: PortainerAccess;
+  /** This computer's OS, CPU and folders for `localhost trust|untrust`. */
+  localhost?: LocalhostServices;
+  /** GitHub's runner API, this computer, the signals and the runner's process for `runner start`. */
+  localRunner?: LocalRunnerServices;
+  /** GitHub and the target's read-only check for `promote`. */
+  promote?: PromoteServices;
 }
 
 const services = new WeakMap<CliContext, CliServices>();
@@ -97,6 +106,8 @@ export function promptsOf(ctx: CliContext): UiPrompts {
 
 /** Per-command options for {@link createPhaseDeps}. */
 interface PhaseDepsOptions {
+  /** The app's environment the command acts on (`chooseEnvironment`); default prod. */
+  environment?: string;
   /** Allow a model for this run (`--no-ai` sets false). Default true. */
   ai?: boolean;
   /** Default model of the Claude runtime (phases usually name their own). */
@@ -155,6 +166,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     root: ctx.cwd,
     env: ctx.env,
     ...(extra.homedir === undefined ? {} : { homedir: extra.homedir }),
+    ...(options.environment === undefined ? {} : { environment: options.environment }),
     reporter: options.reporter ?? ctx.reporter,
     redactor: ctx.redactor,
     approvalHandler: options.wrapApprovals ? options.wrapApprovals(base, clock) : base,

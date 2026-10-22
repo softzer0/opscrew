@@ -7,12 +7,16 @@ import * as destroy from "./destroy";
 import * as dns from "./dns";
 import * as domain from "./domain";
 import * as drift from "./drift";
+import * as env from "./env";
 import * as init from "./init";
 import * as interview from "./interview";
+import * as localhost from "./localhost";
 import * as mcp from "./mcp";
 import * as portainer from "./portainer";
+import * as promote from "./promote";
 import * as provision from "./provision";
 import * as retarget from "./retarget";
+import * as runner from "./runner";
 import * as scan from "./scan";
 import * as secrets from "./secrets";
 import * as secure from "./secure";
@@ -31,8 +35,10 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   analyze,
   interview,
   design,
+  env,
   adapt,
   provision,
+  promote,
   dns,
   domain,
   secure,
@@ -42,6 +48,8 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   retarget,
   destroy,
   status,
+  localhost,
+  runner,
   secrets,
   mcp,
 ];

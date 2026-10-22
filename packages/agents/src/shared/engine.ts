@@ -47,6 +47,23 @@ export function stateNotHere(
   );
 }
 
+/**
+ * What a "copy the state here" hint names for the environment of `plan`: its state folder and,
+ * with OpenTofu, its state passphrase in the OpsCrew home.
+ */
+export function stateCopyPaths(plan: Pick<DeployPlan, "environment">): {
+  folder: string;
+  passphrase: string;
+} {
+  const name = plan.environment?.name;
+  return name === undefined
+    ? { folder: ".opscrew/tfstate", passphrase: "~/.opscrew/projects/<project>/state_passphrase" }
+    : {
+        folder: `.opscrew/environments/${name}/tfstate`,
+        passphrase: `~/.opscrew/projects/<project>/environments/${name}/state_passphrase`,
+      };
+}
+
 /** True when the environment's state file exists and is not empty. */
 export async function hasState(paths: ProjectPaths): Promise<boolean> {
   try {

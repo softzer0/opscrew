@@ -15,6 +15,7 @@ import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
+import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { cancelled } from "../ui/prompts";
 import { askKeyOut, userPath } from "../ui/recovery";
 
@@ -48,7 +49,18 @@ async function readIdentity(ctx: CliContext, keyFile: string | undefined): Promi
   return answer;
 }
 
-interface RestoreFlags {
+/** `--env <name>`, on every subcommand. */
+interface EnvFlags {
+  env?: string;
+}
+
+/** The phase deps of the environment `--env` names, and its ` --env <name>` for suggestions. */
+async function environmentDeps(ctx: CliContext, flags: EnvFlags) {
+  const { name, flag } = await chooseEnvironment(ctx, flags.env, "secrets");
+  return { deps: createPhaseDeps(ctx, { ai: false, environment: name }), flag };
+}
+
+interface RestoreFlags extends EnvFlags {
   keyFile?: string;
   from?: string;
   useCopy?: boolean;
@@ -61,7 +73,7 @@ async function restore(ctx: CliContext, flags: RestoreFlags): Promise<void> {
       hint: "--use-copy writes the copy's version of each file that differs; --keep-local keeps this computer's.",
     });
   }
-  const deps = createPhaseDeps(ctx, { ai: false });
+  const { deps, flag } = await environmentDeps(ctx, flags);
   const identity = await readIdentity(ctx, flags.keyFile);
   const result = await restoreRecoveryCopy(deps, {
     identity,
@@ -77,11 +89,11 @@ async function restore(ctx: CliContext, flags: RestoreFlags): Promise<void> {
   ctx.stdout(
     result.restored.length === 0
       ? "This computer already has every file in the recovery copy; nothing was written.\n"
-      : `Restored ${plural(result.restored.length, "file")} from the recovery copy: ${listText(result.restored)}.\nRun \`opscrew provision\` next: it reuses them, so nothing is generated again.\n`,
+      : `Restored ${plural(result.restored.length, "file")} from the recovery copy: ${listText(result.restored)}.\nRun \`opscrew provision${flag}\` next: it reuses them, so nothing is generated again.\n`,
   );
 }
 
-interface RotateFlags {
+interface RotateFlags extends EnvFlags {
   keyOut?: string;
   /** `--backup <age1…>`, or false with `--no-backup`. */
   backup?: string | false;
@@ -111,7 +123,7 @@ async function rotate(ctx: CliContext, flags: RotateFlags): Promise<void> {
       },
     );
   }
-  const deps = createPhaseDeps(ctx, { ai: false });
+  const { deps } = await environmentDeps(ctx, flags);
   const plan = await readArtifact("plan", deps.paths.files.plan);
   const git = await requireGitRepo(deps);
   const github = await setupGitHub(deps, git, servicesOf(ctx).provision ?? {});
@@ -140,20 +152,22 @@ export function register(program: Command, ctx: CliContext): void {
     .description(
       "Manage the encrypted recovery copy of the secrets and state OpsCrew keeps for this app on this computer",
     );
-  secrets
+  const status = secrets
     .command("status")
     .description(
       "Show when the recovery copy was last updated, how many keys open it, whether it is behind and the folder copy",
-    )
-    .action(async () => {
-      const lines = recoveryStatusLines(await recoveryStatus(createPhaseDeps(ctx, { ai: false })));
-      ctx.stdout(`${lines.join("\n")}\n`);
-    });
-  secrets
+    );
+  addEnvOption(status).action(async (flags: EnvFlags) => {
+    const { deps } = await environmentDeps(ctx, flags);
+    const lines = recoveryStatusLines(await recoveryStatus(deps));
+    ctx.stdout(`${lines.join("\n")}\n`);
+  });
+  const restoreCommand = secrets
     .command("restore")
     .description(
       "Rebuild OpsCrew's files on this computer from the recovery copy with your age key (asked without showing it, unless --key-file is given)",
-    )
+    );
+  addEnvOption(restoreCommand)
     .option("--key-file <path>", "The file with your age key")
     .option(
       "--from <file>",
@@ -162,27 +176,29 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--use-copy", "Where a file on this computer differs, write the copy's version")
     .option("--keep-local", "Where a file on this computer differs, keep it and restore the rest")
     .action((flags: RestoreFlags) => restore(ctx, flags));
-  secrets
+  const rotateCommand = secrets
     .command("rotate")
     .description(
       "Make a new age key, encrypt the copy to it and propose the copy in a pull request; the key goes only to a file",
-    )
+    );
+  addEnvOption(rotateCommand)
     .option("--key-out <path>", "The file to write the new key to, outside the repository")
     .option("--backup <recipient>", "Replace the backup key with this public key (age1…)")
     .option("--no-backup", "Drop the backup key")
     .action((flags: RotateFlags) => rotate(ctx, flags));
-  secrets
+  const folderCommand = secrets
     .command("folder")
     .description("Also write the recovery copy to a folder of yours, or stop with --none")
-    .argument("[path]", "The folder, outside the repository")
+    .argument("[path]", "The folder, outside the repository");
+  addEnvOption(folderCommand)
     .option("--none", "Stop writing the folder copy")
-    .action(async (folder: string | undefined, flags: { none?: boolean }) => {
+    .action(async (folder: string | undefined, flags: EnvFlags & { none?: boolean }) => {
       if ((folder === undefined) === (flags.none !== true)) {
         throw new OpsCrewError("INVALID_INPUT", "Give either a folder or --none.", {
           hint: "Run `opscrew secrets folder <path>` to set the folder, or `opscrew secrets folder --none` to stop writing the folder copy.",
         });
       }
-      const deps = createPhaseDeps(ctx, { ai: false });
+      const { deps } = await environmentDeps(ctx, flags);
       const full = folder === undefined ? undefined : userPath(ctx, folder);
       await setRecoveryFolder(deps, full);
       ctx.stdout(

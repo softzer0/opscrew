@@ -3,6 +3,8 @@ import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, upperFirst, writeFileAtomic } from "@opscrew/core";
 import {
+  portainerDeployBranch,
+  portainerStackTemplatePath,
   portainerTarget,
   type RenderedFile,
   runnerLabel,
@@ -12,6 +14,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { planProvider, providerProfile } from "../providers";
+import { planWhere } from "../runners/words";
 import {
   copyPath,
   keyHandoverNote,
@@ -49,16 +52,21 @@ export interface PublishResult {
 /**
  * The pull request's next step: merging it deploys the app to `where` once the deploy secrets are
  * stored; while OpsCrew has no record of them (`secretsStored` false), first `opscrew provision` in
- * a terminal. `ready` says what is set up already.
+ * a terminal. `ready` says what is set up already; `flag` is the environment's ` --env <name>`.
  */
-function nextStepLines(secretsStored: boolean | undefined, ready: string, where: string): string[] {
+function nextStepLines(
+  secretsStored: boolean | undefined,
+  ready: string,
+  where: string,
+  flag: string,
+): string[] {
   return secretsStored === false
     ? [
         `${ready}, but OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail.`,
-        `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds nothing to change, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${where}. When the first deploy finishes, run \`opscrew verify\`.`,
+        `**Before merging, run \`opscrew provision${flag}\` in a terminal in the project directory.** It finds nothing to change, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${where}. When the first deploy finishes, run \`opscrew verify${flag}\`.`,
       ]
     : [
-        `${ready} and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${where}.** After the first deploy finishes, run \`opscrew verify\`.`,
+        `${ready} and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${where}.** After the first deploy finishes, run \`opscrew verify${flag}\`.`,
       ];
 }
 
@@ -90,24 +98,26 @@ export function deploySetupPullRequestBody(
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
   const host = plan.dns.domain ?? (own ? "your server" : `the ${profile.serverNoun}`);
   const ready = own ? "Your server is prepared" : "The server is already running";
+  const { file, flag } = planWhere(plan);
+  const runtime = runtimeDir(plan);
   const infra = own
     ? tunnel
       ? "the Cloudflare Tunnel that serves the app, its DNS records and the Cloudflare Access application GitHub Actions deploys through (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself."
       : `${plan.dns.provider === "cloudflare" ? "the Cloudflare DNS records that point the domain at your server" : "the outputs that describe your server"} (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself.`
     : `infrastructure code for the ${profile.displayName} ${profile.serverNoun}${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`;
   return [
-    `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**:`,
+    `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**:`,
     "",
     `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: ${infra}`,
     tunnel
-      ? "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server, and the Cloudflare Tunnel connector (`cloudflared/compose.yaml`; its token is only on the server)."
-      : "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
+      ? `- \`${runtime}/\`: Docker Compose and Caddy configuration for the server, and the Cloudflare Tunnel connector (\`cloudflared/compose.yaml\`; its token is only on the server).`
+      : `- \`${runtime}/\`: Docker Compose and Caddy configuration for the server.`,
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
-    "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
+    `- \`${file}\`: the deployment plan. The server's IP address is not in the repository; \`opscrew status${flag}\` shows it on the computer that ran \`opscrew provision${flag}\`.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
     "",
-    ...nextStepLines(options.secretsStored, ready, host),
+    ...nextStepLines(options.secretsStored, ready, host, flag),
     ...(own
       ? [
           "",
@@ -135,17 +145,18 @@ function localPullRequestBody(
   options: DeploySetupBodyOptions,
 ): string {
   const start = `opscrew runner start --env ${plan.environment?.name ?? "prod"}`;
+  const { file, flag } = planWhere(plan);
   return [
-    `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**, which runs on your own computer:`,
+    `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**, which runs on your own computer:`,
     "",
     `- \`${runtimeDir(plan)}/\`: Docker Compose and the edge's configuration for your computer (on 127.0.0.1 only, with OpsCrew's local certificate authority).`,
     `- \`${plan.cicd.workflowPath}\`: builds the image on GitHub's machines, pushes it to GitHub Container Registry and, on every push to \`${plan.cicd.branch}\`, deploys it with the runner on your computer, rolling back when the health check fails.`,
-    "- `opscrew/plan.yaml`: the deployment plan.",
+    `- \`${file}\`: the deployment plan.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
     "",
     ...(options.secretsStored === false
-      ? nextStepLines(false, "The app runs on your computer", "your computer")
+      ? nextStepLines(false, "The app runs on your computer", "your computer", flag)
       : [
           `The app runs on your computer and the deploy secrets are stored in GitHub Actions. **After merging, each push to \`${plan.cicd.branch}\` deploys it there while \`${start}\` runs.**`,
         ]),
@@ -189,7 +200,7 @@ export function portainerDnsRecordNote(plan: DeployPlan): string | undefined {
 /**
  * The pull request body for the user's Portainer: the Cloudflare root only when the plan has one
  * (the app's tunnel, or the tunnel and Access in front of Portainer's webhook), the app's stack
- * template and the `opscrew-deploy` branch it is written to, how new versions reach Portainer, the
+ * template and the environment's deploy branch it is written to, how new versions reach Portainer, the
  * DNS record the user creates for `proxy` and `caddy`, and that OpsCrew does not change the host and
  * backups are the user's. Never Portainer's address.
  */
@@ -214,21 +225,28 @@ function portainerPullRequestBody(
       ? "the updater stack in your Portainer asks Portainer to redeploy it within about a minute"
       : "it asks Portainer to redeploy at once, through Cloudflare Access";
   const dns = portainerDnsRecordNote(plan);
+  const { file, flag } = planWhere(plan);
+  const branch = portainerDeployBranch(plan);
   return [
-    `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**, which runs as stacks in your Portainer:`,
+    `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**, which runs as stacks in your Portainer:`,
     "",
     ...(roots.length > 0
       ? [
           `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: ${roots.join(", and ")} (works with OpenTofu and Terraform).`,
         ]
       : []),
-    `- \`opscrew/runtime/compose.yaml\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`opscrew-deploy\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
-    `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`opscrew-deploy\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
-    "- `opscrew/plan.yaml`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran `opscrew provision`.",
+    `- \`${portainerStackTemplatePath(plan)}\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`${branch}\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
+    `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`${branch}\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
+    `- \`${file}\`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran \`opscrew provision${flag}\`.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
     "",
-    ...nextStepLines(options.secretsStored, "The app's stacks are set up in your Portainer", where),
+    ...nextStepLines(
+      options.secretsStored,
+      "The app's stacks are set up in your Portainer",
+      where,
+      flag,
+    ),
     ...(dns !== undefined ? ["", dns] : []),
     "",
     PORTAINER_HOST_NOTE,
@@ -570,7 +588,7 @@ export async function publishDeploySetup(
     chosen,
     files: recovery,
     paths,
-    commitMessage: `chore(opscrew): deployment infrastructure for ${plan.app.name}\n\nGenerated by OpsCrew ${deps.version} from opscrew/plan.yaml.`,
+    commitMessage: `chore(opscrew): deployment infrastructure for ${plan.app.name}\n\nGenerated by OpsCrew ${deps.version} from ${planWhere(plan).file}.`,
     what: "the deployment files",
     title: `OpsCrew: deployment infrastructure for ${plan.app.name}`,
     body,

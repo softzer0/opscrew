@@ -1,6 +1,7 @@
 import { runDns } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
+import { addEnvOption } from "../ui/environment";
 import {
   addHostKeyOption,
   addPlanApproveOptions,
@@ -27,6 +28,7 @@ export function register(program: Command, ctx: CliContext): void {
       "Hostname the app should use, for example app.example.com (default: the plan's domain)",
     );
   addPlanApproveOptions(command);
+  addEnvOption(command);
   addHostKeyOption(command)
     .option("--yes", YES_DESCRIPTION)
     .action(({ domain, ...flags }: DnsFlags) => {

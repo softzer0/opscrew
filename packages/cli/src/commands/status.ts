@@ -6,16 +6,25 @@ import {
   phaseStatusLines,
   type ServerAddress,
   serverAddress,
+  serverAddressesFile,
   supplyChainLines,
   tlsStatusReport,
 } from "@opscrew/agents";
-import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { errorText, isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
+import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { retargetStatusLine } from "../ui/retarget";
 import { addHostKeyOption, checkApproveFlags } from "./provision";
+
+interface StatusFlags {
+  ip?: boolean;
+  hostKey?: string;
+  /** `--env <name>`: the app's environment. */
+  env?: string;
+}
 
 /**
  * The server's address from OpsCrew's local state (or the infrastructure state), never from the
@@ -100,20 +109,23 @@ export function register(program: Command, ctx: CliContext): void {
       "--ip",
       "Print only the server's IPv4 address (for scripts, e.g. ssh deploy@$(opscrew status --ip))",
     );
-  addHostKeyOption(command).action(async (flags: { ip?: boolean; hostKey?: string }) => {
+  addEnvOption(command);
+  addHostKeyOption(command).action(async (flags: StatusFlags) => {
     checkApproveFlags("status", flags);
-    const deps = createPhaseDeps(ctx, { ai: false });
+    const { name, flag } = await chooseEnvironment(ctx, flags.env, "status");
+    const deps = createPhaseDeps(ctx, { ai: false, environment: name });
     const { paths } = deps;
     // A missing or unreadable plan simply means nothing is deployed and no move is recorded.
     const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);
     if (flags.ip === true) {
       const address = await addressOf(deps, plan);
       if (address === undefined) {
+        const record = toPosixRelative(paths.root, serverAddressesFile(paths));
         throw new OpsCrewError(
           "PHASE_PRECONDITION",
           "OpsCrew does not know the server's address on this computer.",
           {
-            hint: "Run `opscrew status --ip` on the computer that ran `opscrew provision` (the address is kept there, in .opscrew/server.json), or run `opscrew provision` here first.",
+            hint: `Run \`opscrew status${flag} --ip\` on the computer that ran \`opscrew provision${flag}\` (the address is kept there, in ${record}), or run \`opscrew provision${flag}\` here first.`,
           },
         );
       }

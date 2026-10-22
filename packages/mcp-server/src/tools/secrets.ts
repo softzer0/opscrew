@@ -18,7 +18,13 @@ import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
-import { IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
+import {
+  environmentInput,
+  IDEMPOTENT_WRITE,
+  projectDirInput,
+  runTool,
+  toolEnvironment,
+} from "./shared";
 
 /** Test-only collaborators for the secrets tools. */
 export interface SecretsToolOptions {
@@ -49,12 +55,13 @@ export function registerSecretsTools(
     {
       title: "Recovery copy status",
       description: `Show the encrypted recovery copy of what OpsCrew keeps on the user's computer for the app (its generated secrets, the deploy key, the infrastructure state and its records) in ${COPY_PATH}: when it was last updated, how many age keys open it, whether it is behind the files on this computer, and the folder it is also written to. Writes nothing.`,
-      inputSchema: { ...projectDirInput },
+      inputSchema: { ...projectDirInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ projectDir }) =>
+    ({ projectDir, environment }) =>
       runTool(deps, "opscrew_secrets_status", projectDir, async (call) => {
-        const copy = await recoveryStatus(await call.phaseDeps());
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const copy = await recoveryStatus(await call.phaseDeps({ environment: name }));
         return { text: recoveryStatusLines(copy).join("\n"), data: { ...copy } };
       }),
   );
@@ -66,6 +73,7 @@ export function registerSecretsTools(
       description: `Rebuild OpsCrew's files on the user's computer (generated secrets, deploy key, infrastructure state, records) from the encrypted recovery copy (${COPY_PATH}, or the folder copy passed as from), with the user's age key read from keyFile, a file the user names. Never read that file yourself, and never ask the user to paste the key into the chat. When files on this computer differ from the copy, nothing is written and the result lists their paths and the names of the generated values that differ (never values); ask the user which side to keep, then call again with onConflict. A wrong key changes nothing. The next provision reuses the restored files.`,
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         keyFile: z
           .string()
           .min(1)
@@ -91,8 +99,9 @@ export function registerSecretsTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, keyFile, from, onConflict }) =>
+    ({ projectDir, environment, keyFile, from, onConflict }) =>
       runTool(deps, "opscrew_secrets_restore", projectDir, async (call) => {
+        const { name } = await toolEnvironment(call.projectDir, environment);
         const file = fullPath(keyFile, "keyFile");
         let identity: string;
         try {
@@ -102,7 +111,7 @@ export function registerSecretsTools(
             hint: `Ask the user to check the path of their age key file (${errorText(error)}).`,
           });
         }
-        const result = await restoreRecoveryCopy(await call.phaseDeps(), {
+        const result = await restoreRecoveryCopy(await call.phaseDeps({ environment: name }), {
           identity,
           ...(from !== undefined ? { from: fullPath(from, "from") } : {}),
           ...(onConflict !== undefined ? { onConflict } : {}),
@@ -130,6 +139,7 @@ export function registerSecretsTools(
       description: `Make a new age key for the encrypted recovery copy, write it once to keyOut (a full path outside the repository that the user chose; never read that file), encrypt the copy to it (keeping, replacing or dropping the backup key) and propose ${COPY_PATH} and opscrew/.sops.yaml in a pull request, each step approved by the user in a dialog. The key is never returned. Older commits stay readable with the old key; the result says when to change the secrets themselves. Refuses when the client cannot show dialogs.`,
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         keyOut: z
           .string()
           .min(1)
@@ -150,12 +160,14 @@ export function registerSecretsTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, keyOut, backup }, extra: CallExtra) =>
+    ({ projectDir, environment, keyOut, backup }, extra: CallExtra) =>
       runTool(deps, "opscrew_secrets_rotate", projectDir, async (call) => {
+        const { name, flag } = await toolEnvironment(call.projectDir, environment);
         const file = fullPath(keyOut, "keyOut");
-        requireDialogs(server, `npx opscrew secrets rotate --key-out ${file}`);
+        requireDialogs(server, `npx opscrew secrets rotate${flag} --key-out ${file}`);
         const phase = await call.phaseDeps({
           approvalHandler: dialogHandler(server, deps, extra),
+          environment: name,
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
         const git = await requireGitRepo(phase);
@@ -190,6 +202,7 @@ export function registerSecretsTools(
         "Set the folder OpsCrew also writes the encrypted recovery copy to each time it changes (a full path outside the repository that the user chose, for example a backup drive or a synced folder), or stop with folder null. The setting is this computer's.",
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         folder: z
           .string()
           .min(1)
@@ -198,9 +211,10 @@ export function registerSecretsTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, folder }) =>
+    ({ projectDir, environment, folder }) =>
       runTool(deps, "opscrew_secrets_folder", projectDir, async (call) => {
-        await setRecoveryFolder(await call.phaseDeps(), folder ?? undefined);
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        await setRecoveryFolder(await call.phaseDeps({ environment: name }), folder ?? undefined);
         return {
           text:
             folder === null

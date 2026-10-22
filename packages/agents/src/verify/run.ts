@@ -10,9 +10,10 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, environmentsOf, readArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { environmentFlag } from "../environments/choice";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
 import { readOwnServerRecord } from "../provision";
@@ -305,15 +306,20 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   // uses sshd's own port, as the last provision committed it (`ssh_port`, written only there).
   const sshPort = current.target.provider === "own" ? await ownSshPort(deps, current) : undefined;
   const repo = github.repo ?? { owner: "<owner>", repo: "<repo>" };
+  // Beside other environments, prod's runbook names `--env prod` in its commands.
+  const environments = await environmentsOf(paths.root);
   const runbook = portainer
     ? renderPortainerRunbook(current, {
         opscrewVersion: deps.version,
         github: repo,
         projectId: paths.projectId,
+        environments,
+        flag: await environmentFlag(paths.root, paths.environment),
       })
     : renderRunbook(current, {
         opscrewVersion: deps.version,
         github: repo,
+        environments,
         deploySshPublicKey: (await readTextIfExists(paths.files.deployKeyPub))?.trim() ?? "",
         projectId: paths.projectId,
         ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),

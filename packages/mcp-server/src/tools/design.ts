@@ -10,6 +10,7 @@ import {
   previewDesignOptions,
   priceLabel,
   providerProfile,
+  readEnvironmentRequirements,
   readOwnServer,
   requestedProvider,
   runAnalyze,
@@ -27,7 +28,15 @@ import {
   dialogHandler,
   hostKeyNeedsTerminal,
 } from "./elicitation";
-import { IDEMPOTENT_WRITE, isMissingArtifact, projectDirInput, runTool, withHint } from "./shared";
+import {
+  environmentInput,
+  IDEMPOTENT_WRITE,
+  isMissingArtifact,
+  projectDirInput,
+  runTool,
+  toolEnvironment,
+  withHint,
+} from "./shared";
 
 const REQUIREMENTS_HINT =
   "Call opscrew_interview_questions, ask the user the questions, then call opscrew_save_requirements.";
@@ -36,7 +45,7 @@ const REQUIREMENTS_HINT =
 async function requireRequirements(phase: PhaseDeps): Promise<void> {
   const file = toPosixRelative(phase.paths.root, phase.paths.files.requirements);
   try {
-    await readArtifact("requirements", phase.paths.files.requirements);
+    await readEnvironmentRequirements(phase.paths);
   } catch (error) {
     if (isMissingArtifact(error)) {
       throw new OpsCrewError(
@@ -95,7 +104,7 @@ async function ownServerInput(
   phase: PhaseDeps,
   options: DesignToolOptions,
 ): Promise<OwnServerDesignInput | undefined> {
-  const requirements = await readArtifact("requirements", phase.paths.files.requirements);
+  const requirements = await readEnvironmentRequirements(phase.paths);
   if (requirements.provider !== "own") return undefined;
   const recorded = await readOwnServer(phase.paths).catch(() => undefined);
   const pinned = recorded?.hostKey !== undefined;
@@ -242,19 +251,23 @@ export function registerDesignTools(
       title: "Deployment options",
       description:
         "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
-      inputSchema: { ...projectDirInput },
+      inputSchema: { ...projectDirInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir }, extra: CallExtra) =>
+    ({ projectDir, environment }, extra: CallExtra) =>
       runTool(deps, "opscrew_design_options", projectDir, async (call) => {
-        const phase = await call.phaseDeps(designApprovals(server, deps, extra));
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const phase = await call.phaseDeps({
+          ...designApprovals(server, deps, extra),
+          environment: name,
+        });
         await requireRequirements(phase);
         const hasArchitecture = await checkArchitecture(phase);
         const ownServer = await ownServerInput(server, phase, options);
         const result = await previewDesign(deps, phase, hasArchitecture, ownServer);
         for (const warning of result.warnings) call.reporter.warn(warning);
         const recommended = result.options.find((o) => o.recommended);
-        const requirements = await readArtifact("requirements", phase.paths.files.requirements);
+        const requirements = await readEnvironmentRequirements(phase.paths);
         const unpriced =
           requirements.provider === "own" || requirements.provider === "portainer"
             ? requirements.provider
@@ -317,6 +330,7 @@ export function registerDesignTools(
         "Write opscrew/plan.yaml for the deployment option the user chose (an id from opscrew_design_options), including the code changes the app needs before it can be deployed. Returns the image builder, the deploy strategy and the supply-chain settings (image signing, deploy tags, image retention), each with its reason; settings the user changed in opscrew/plan.yaml (app.build.builder with app.build.chosen: user, deploy.strategy, supplyChain.sign, cicd.deployTags, cicd.imageRetention) are kept. Also writes opscrew/architecture.json from deterministic detection when it does not exist yet. Creates no infrastructure.",
       inputSchema: {
         ...projectDirInput,
+        ...environmentInput,
         optionId: z
           .string()
           .min(1)
@@ -324,9 +338,13 @@ export function registerDesignTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, optionId }, extra: CallExtra) =>
+    ({ projectDir, environment, optionId }, extra: CallExtra) =>
       runTool(deps, "opscrew_select_design", projectDir, async (call) => {
-        const phase = await call.phaseDeps(designApprovals(server, deps, extra));
+        const { name } = await toolEnvironment(call.projectDir, environment);
+        const phase = await call.phaseDeps({
+          ...designApprovals(server, deps, extra),
+          environment: name,
+        });
         await requireRequirements(phase);
         const hasArchitecture = await checkArchitecture(phase);
         const notes: string[] = [];

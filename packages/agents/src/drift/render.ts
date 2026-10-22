@@ -1,67 +1,87 @@
 import { engineLabel } from "@opscrew/iac-engine";
+import { PORTAINER_DEPLOY_BRANCH, portainerDeployBranch } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { planWhere } from "../runners/words";
 import { CHANGE_SYMBOL } from "../shared";
 import type { HostDifference } from "./host";
 import type { DriftReport } from "./types";
 
 const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
+/** How the report names the environment: its plan file, ` --env <name>` and Portainer's branch. */
+interface Where {
+  file: string;
+  flag: string;
+  branch: string;
+}
+
+/** {@link Where} of the environment `plan` belongs to; prod's without a plan. */
+function whereOf(plan: DeployPlan | undefined): Where {
+  return plan === undefined
+    ? { file: "opscrew/plan.yaml", flag: "", branch: PORTAINER_DEPLOY_BRANCH }
+    : { ...planWhere(plan), branch: portainerDeployBranch(plan) };
+}
+
 /**
  * The "next steps" after a drift report, for the terminal. On a server the user owns, changes are
  * made on the server (over SSH) or in the Cloudflare dashboard; there is no provider console, and
  * `opscrew provision` puts back only some of the server's differences (the report says which).
+ * `plan` is the checked environment's, whose plan file and `--env` the steps name (prod's without).
  */
 export function driftNextSteps(
   report: Pick<DriftReport, "clean" | "provider"> & Partial<Pick<DriftReport, "host">>,
+  plan?: DeployPlan,
 ): string[] {
+  const { file, flag, branch } = whereOf(plan);
+  const provision = `\`opscrew provision${flag}\``;
+  const again = `run \`opscrew drift${flag}\` again`;
   if (report.provider === "portainer") {
     return report.clean
       ? [
-          "nothing to do; run `opscrew drift` again after changes in Portainer, on the opscrew-deploy branch or in the Cloudflare dashboard.",
+          `nothing to do; ${again} after changes in Portainer, on the ${branch} branch or in the Cloudflare dashboard.`,
         ]
       : [
-          "to put back what OpsCrew set up in your Portainer and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval).",
-          "to keep a change made in Portainer or in the Cloudflare dashboard, update opscrew/plan.yaml to match before you provision again.",
+          `to put back what OpsCrew set up in your Portainer and apply pending code, run ${provision} (it shows the plans first and changes nothing without your approval).`,
+          `to keep a change made in Portainer or in the Cloudflare dashboard, update ${file} to match before you provision again.`,
         ];
   }
   if (report.provider === "localhost") {
     return report.clean
-      ? ["nothing to do; run `opscrew drift` again after changes to the stack on this computer."]
+      ? [`nothing to do; ${again} after changes to the stack on this computer.`]
       : [
-          "to put back what OpsCrew set up on this computer, run `opscrew provision` (it shows the local plan first and changes nothing without your approval).",
-          "to keep a change, make it in opscrew/plan.yaml before you provision again.",
+          `to put back what OpsCrew set up on this computer, run ${provision} (it shows the local plan first and changes nothing without your approval).`,
+          `to keep a change, make it in ${file} before you provision again.`,
         ];
   }
   if (report.provider === "own") {
     if (report.clean) {
       return [
-        "nothing to do; run `opscrew drift` again after changes on the server (ssh) or in the Cloudflare dashboard.",
+        `nothing to do; ${again} after changes on the server (ssh) or in the Cloudflare dashboard.`,
       ];
     }
     const leftAlone = (report.host?.differences ?? []).some((item) => !item.restoredByProvision);
     return [
       leftAlone
-        ? "to undo what the report lists as put back by `opscrew provision` and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval)."
-        : "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval).",
+        ? `to undo what the report lists as put back by ${provision} and apply pending code, run ${provision} (it shows the plans first and changes nothing without your approval).`
+        : `to undo changes made outside OpsCrew and apply pending code, run ${provision} (it shows the plans first and changes nothing without your approval).`,
       ...(leftAlone
         ? [
-            "for the differences on your server that `opscrew provision` leaves alone, follow the step the report gives with each.",
+            `for the differences on your server that ${provision} leaves alone, follow the step the report gives with each.`,
           ]
         : []),
-      "to keep a change made on the server (ssh) or in the Cloudflare dashboard, update opscrew/plan.yaml to match before you provision again.",
+      `to keep a change made on the server (ssh) or in the Cloudflare dashboard, update ${file} to match before you provision again.`,
     ];
   }
   const cloud = providerProfile(report.provider).displayName;
   return report.clean
-    ? [
-        `nothing to do; run \`opscrew drift\` again after changes in the ${cloud} or Cloudflare console.`,
-      ]
+    ? [`nothing to do; ${again} after changes in the ${cloud} or Cloudflare console.`]
     : [
-        "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plan first).",
+        `to undo changes made outside OpsCrew and apply pending code, run ${provision} (it shows the plan first).`,
         ...((report.host?.differences.length ?? 0) > 0
           ? ["for the app's containers on the server, follow the step the report gives with each."]
           : []),
-        "to keep a change made in the console, update opscrew/plan.yaml to match before you provision again.",
+        `to keep a change made in the console, update ${file} to match before you provision again.`,
       ];
 }
 
@@ -71,25 +91,26 @@ export function driftNextSteps(
  * files and containers, OpsCrew's record, what stops provision), each group with what that means.
  * Never promises that provision restores what it does not.
  */
-function hostSection(host: readonly HostDifference[]): string[] {
+function hostSection(host: readonly HostDifference[], flag: string): string[] {
+  const provision = `\`opscrew provision${flag}\``;
   const restored = host.filter((item) => item.restoredByProvision);
   const others = host.filter((item) => !item.restoredByProvision);
   const blocked = others.some((item) => item.area === "server");
   const lines = [`Your server differs from what OpsCrew set up (${host.length}).`];
   if (restored.length > 0) {
-    lines.push(`Put back by \`opscrew provision\` (${restored.length}):`);
+    lines.push(`Put back by ${provision} (${restored.length}):`);
     for (const item of restored) lines.push(`  ~ ${item.title}: ${item.detail}`);
     lines.push(
       blocked
-        ? "`opscrew provision` changes nothing on the server until what OpsCrew found (below) is fixed; then it shows a host plan for these, and nothing changes until you approve it. If you changed one of them on purpose, keep in mind that the next provision undoes it."
-        : "`opscrew provision` shows a host plan for these first, and nothing on the server changes until you approve it. If you changed one of them on purpose, keep in mind that the next provision undoes it.",
+        ? `${provision} changes nothing on the server until what OpsCrew found (below) is fixed; then it shows a host plan for these, and nothing changes until you approve it. If you changed one of them on purpose, keep in mind that the next provision undoes it.`
+        : `${provision} shows a host plan for these first, and nothing on the server changes until you approve it. If you changed one of them on purpose, keep in mind that the next provision undoes it.`,
     );
   }
   if (others.length > 0) {
-    lines.push(`Left alone by \`opscrew provision\` (${others.length}):`);
+    lines.push(`Left alone by ${provision} (${others.length}):`);
     for (const item of others) lines.push(`  ~ ${item.title}: ${item.detail}`);
     lines.push(
-      "`opscrew provision` does not change these; where something needs doing, it is said with each.",
+      `${provision} does not change these; where something needs doing, it is said with each.`,
     );
   }
   return lines;
@@ -98,9 +119,12 @@ function hostSection(host: readonly HostDifference[]): string[] {
 /**
  * Plain-text drift report for the terminal: resources changed outside OpsCrew (attribute names,
  * never values), pending infrastructure changes and generated files that differ, in the report's
- * (sorted) order; edited and missing files are listed together by path.
+ * (sorted) order; edited and missing files are listed together by path. `plan` is the checked
+ * environment's, whose plan file and `--env` the report names (prod's without).
  */
-export function renderDriftReport(report: DriftReport): string {
+export function renderDriftReport(report: DriftReport, plan?: DeployPlan): string {
+  const { file, flag } = whereOf(plan);
+  const provision = `\`opscrew provision${flag}\``;
   const lines = [
     report.engine === undefined
       ? `OpsCrew drift check (this computer, ${report.checkedAt})`
@@ -150,10 +174,10 @@ export function renderDriftReport(report: DriftReport): string {
     lines.push(
       `The stack on this computer differs from what OpsCrew set up (${host.length}):`,
       ...host.map((item) => `  ~ ${item.title}: ${item.detail}`),
-      "`opscrew provision` puts these back: it shows its local plan first, and nothing changes until you approve it.",
+      `${provision} puts these back: it shows its local plan first, and nothing changes until you approve it.`,
       "",
     );
-  } else if (host.length > 0) lines.push(...hostSection(host), "");
+  } else if (host.length > 0) lines.push(...hostSection(host, flag), "");
   if (stacks.length > 0) {
     const environment = report.portainer?.environment;
     lines.push(
@@ -164,7 +188,7 @@ export function renderDriftReport(report: DriftReport): string {
       if (item.detail !== undefined) lines.push(`      ${item.detail}`);
     }
     lines.push(
-      "`opscrew provision` shows a stack plan for what it puts back in Portainer, and nothing changes until you approve it; what it does not put back says what to do with it. Values are compared only as keyed fingerprints and never shown.",
+      `${provision} shows a stack plan for what it puts back in Portainer, and nothing changes until you approve it; what it does not put back says what to do with it. Values are compared only as keyed fingerprints and never shown.`,
       "",
     );
   }
@@ -192,8 +216,8 @@ export function renderDriftReport(report: DriftReport): string {
       }
     }
     lines.push(
-      "`opscrew provision` would undo these changes and restore what opscrew/plan.yaml describes.",
-      "To keep a change instead, update opscrew/plan.yaml to match it (for example with `opscrew design`), then run `opscrew provision` and review its plan.",
+      `${provision} would undo these changes and restore what ${file} describes.`,
+      `To keep a change instead, update ${file} to match it (for example with \`opscrew design${flag}\`), then run ${provision} and review its plan.`,
       "",
     );
   }
@@ -204,14 +228,14 @@ export function renderDriftReport(report: DriftReport): string {
     );
     for (const record of foreign) lines.push(`  ! ${record.type} ${record.name} ${record.content}`);
     lines.push(
-      "They can send visitors somewhere else than the server, and `opscrew provision` stops until they are gone: delete them in the Cloudflare dashboard (DNS → Records) unless you put them there on purpose.",
+      `They can send visitors somewhere else than the server, and ${provision} stops until they are gone: delete them in the Cloudflare dashboard (DNS → Records) unless you put them there on purpose.`,
       "",
     );
   }
 
   if (pending.length > 0) {
     const drifted = new Set(drift.map((d) => d.address));
-    lines.push(`Pending changes (${pending.length}), what \`opscrew provision\` would apply now:`);
+    lines.push(`Pending changes (${pending.length}), what ${provision} would apply now:`);
     for (const item of pending) {
       const why = drifted.has(item.address)
         ? "undoes the change outside OpsCrew"
@@ -224,12 +248,10 @@ export function renderDriftReport(report: DriftReport): string {
   }
 
   if (files.length > 0) {
+    lines.push(`Files that differ from what OpsCrew renders from ${file} (${files.length}):`);
+    for (const item of files) lines.push(`  ${item.label.padEnd(7)}  ${item.path}`);
     lines.push(
-      `Files that differ from what OpsCrew renders from opscrew/plan.yaml (${files.length}):`,
-    );
-    for (const file of files) lines.push(`  ${file.label.padEnd(7)}  ${file.path}`);
-    lines.push(
-      "OpsCrew regenerates these files: `opscrew provision` would overwrite the edits and add the missing files. To keep an edit, make the same change in opscrew/plan.yaml instead.",
+      `OpsCrew regenerates these files: ${provision} would overwrite the edits and add the missing files. To keep an edit, make the same change in ${file} instead.`,
       "",
     );
   }

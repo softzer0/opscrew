@@ -38,6 +38,7 @@ import {
   setupGitHub,
 } from "../provision";
 import { recordedEdge, withCloudflareZone } from "../provision/render";
+import { planWhere } from "../runners/words";
 import {
   approvalEntry,
   confirmChangedHostKey,
@@ -55,6 +56,7 @@ import {
   requireGitRepo,
   type ServerAddress,
   SshRemoteExec,
+  stateCopyPaths,
   stateFile,
   stateNotHere,
   writeRenderedFiles,
@@ -135,10 +137,11 @@ export async function moveBase(
 /** Stops unless the infrastructure state is on this computer. */
 export async function requireState(deps: PhaseDeps, plan: DeployPlan): Promise<void> {
   if (await hasState(deps.paths)) return;
+  const { folder, passphrase } = stateCopyPaths(plan);
   throw stateNotHere(
     plan,
     "move the deployment",
-    "Run OpsCrew on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, the state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
+    `Run OpsCrew on the computer that ran \`opscrew provision${planWhere(plan).flag}\`, or copy its ${folder} folder (and, with OpenTofu, the state passphrase from ${passphrase}) here, then try again.`,
   );
 }
 

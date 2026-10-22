@@ -4,6 +4,7 @@ import {
   isMaintenanceWindowRequest,
   type RetargetResult,
   type RetargetServices,
+  readEnvironmentRequirements,
   runRetarget,
 } from "@opscrew/agents";
 import type {
@@ -27,6 +28,7 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { runPhaseCommand } from "../ui/deploy";
+import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
 import { chooseOption } from "../ui/options";
 import { printNextSteps } from "../ui/output";
 import { startQuestion } from "../ui/retarget";
@@ -47,6 +49,8 @@ export interface RetargetFlags {
   snapshot?: boolean;
   confirm?: string;
   yes?: boolean;
+  /** `--env <name>`: the app's environment. */
+  env?: string;
 }
 
 export interface RetargetApprovalOptions {
@@ -153,8 +157,9 @@ export function flagProblems(flags: RetargetFlags): string[] {
 }
 
 /** Flags a scripted run repeats with every command it is told to run next. */
-function repeatedFlags(flags: RetargetFlags): string[] {
+function repeatedFlags(flags: RetargetFlags, environment: ChosenEnvironment): string[] {
   return [
+    ...(environment.flag !== "" ? [environment.flag.trim()] : []),
     ...(flags.engine !== undefined ? [`--engine ${flags.engine}`] : []),
     ...(flags.yes === true ? ["--yes"] : []),
   ];
@@ -175,7 +180,11 @@ function scriptHint(ctx: CliContext, flags: RetargetFlags): (error: unknown) => 
   };
 }
 
-async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<RetargetResult> {
+async function runCommand(
+  ctx: CliContext,
+  flags: RetargetFlags,
+  environment: ChosenEnvironment,
+): Promise<RetargetResult> {
   const problems = flagProblems(flags);
   if (problems.length > 0) {
     throw new OpsCrewError("INVALID_INPUT", problems.join(" "), {
@@ -184,7 +193,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   }
   const approve = flags.approve?.trim() || undefined;
   const mode = flags.finish ? "finish" : flags.abort ? "abort" : "run";
-  const deps0 = createPhaseDeps(ctx, { ai: false });
+  const deps0 = createPhaseDeps(ctx, { ai: false, environment: environment.name });
   // The key of the app's bucket, which stays where it is, when this computer has none yet.
   const services: RetargetServices = {
     ...(ctx.isInteractive
@@ -201,6 +210,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
 
   if (mode === "run") {
     const deps = createPhaseDeps(ctx, {
+      environment: environment.name,
       ai: false,
       approveHashes: approve === undefined ? [] : [approve],
       ...(flags.yes === true ? { assumeYes: true } : {}),
@@ -217,7 +227,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
     const option = flags.option?.trim() || undefined;
     let budget: Money | undefined;
     if (ctx.isInteractive && option === undefined) {
-      budget = await readArtifact("requirements", deps0.paths.files.requirements)
+      budget = await readEnvironmentRequirements(deps0.paths)
         .then((requirements) => requirements.budgetMonthly)
         .catch(() => undefined);
     }
@@ -253,7 +263,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
 
   // --finish and --abort delete a server: the app name, typed or given with --confirm.
   const name = (await readArtifact("plan", deps0.paths.files.plan)).app.name;
-  const command = `opscrew retarget --${mode}`;
+  const command = `opscrew retarget${environment.flag} --${mode}`;
   const scripted = flags.confirm !== undefined;
   checkConfirmName(
     flags.confirm,
@@ -272,6 +282,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   }
   let typed = scripted ? name : undefined;
   const deps = createPhaseDeps(ctx, {
+    environment: environment.name,
     ai: false,
     approveHashes: approve === undefined ? [] : [approve],
     ...(flags.yes === true ? { assumeYes: true } : {}),
@@ -313,7 +324,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
  * plan to approve, a flag to pass, a refusal), 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
-  program
+  const command = program
     .command("retarget")
     .description("Move the live deployment to another cloud provider, step by step")
     .addOption(
@@ -348,7 +359,8 @@ export function register(program: Command, ctx: CliContext): void {
       "--confirm <name>",
       "The app name, to run --finish or --abort without prompts (for scripts and CI)",
     )
-    .option("--yes", YES_DESCRIPTION)
+    .option("--yes", YES_DESCRIPTION);
+  addEnvOption(command)
     .addHelpText(
       "after",
       [
@@ -370,15 +382,19 @@ export function register(program: Command, ctx: CliContext): void {
       ].join("\n"),
     )
     .action(async (flags: RetargetFlags) => {
+      let environment: ChosenEnvironment = { name: "prod", flag: "" };
       const result = await runPhaseCommand(
         ctx,
-        () => runCommand(ctx, flags),
+        async () => {
+          environment = await chooseEnvironment(ctx, flags.env, "retarget");
+          return runCommand(ctx, flags, environment);
+        },
         scriptHint(ctx, flags),
       );
       if (result.pendingPlanHash !== undefined) {
         ctx.stdout(`\nPlan hash (SHA-256): ${result.pendingPlanHash}\n`);
       }
-      const repeat = repeatedFlags(flags);
+      const repeat = repeatedFlags(flags, environment);
       printNextSteps(ctx, [
         ...result.next,
         ...(!result.done && !ctx.isInteractive && repeat.length > 0

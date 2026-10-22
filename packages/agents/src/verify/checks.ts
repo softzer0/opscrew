@@ -2,10 +2,11 @@ import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
 import { tunnelProject } from "@opscrew/connector-ssh-host";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { normalizeHostName, upperFirst } from "@opscrew/core";
-import { tunnelMode } from "@opscrew/iac-templates";
+import { runtimeDir, tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CERTIFICATE_WARN_DAYS, daysLeft, type TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
+import { planWhere } from "../runners/words";
 import {
   checkResult,
   ipv6HttpsAnswers,
@@ -756,7 +757,11 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
 }
 
 /** Security headers set by Caddy are present (HSTS only over HTTPS). */
-export function checkSecurityHeaders(headers: Headers | undefined, url: string): CheckResult {
+export function checkSecurityHeaders(
+  headers: Headers | undefined,
+  url: string,
+  plan: DeployPlan,
+): CheckResult {
   const id = "security-headers";
   const title = "Security headers are set";
   const target = `${url}/`;
@@ -784,8 +789,7 @@ export function checkSecurityHeaders(headers: Headers | undefined, url: string):
     "fail",
     `Missing or weak headers: ${missing.join(", ")}.`,
     {
-      remediation:
-        "Restore the `header` block in opscrew/runtime/Caddyfile (re-run `opscrew provision` to regenerate it) and redeploy.",
+      remediation: `Restore the \`header\` block in ${runtimeDir(plan)}/Caddyfile (re-run \`opscrew provision${planWhere(plan).flag}\` to regenerate it) and redeploy.`,
       target,
     },
   );
@@ -1221,7 +1225,7 @@ export async function runVerifyChecks(base: VerifyCheckContext): Promise<VerifyC
   }
 
   checks.push(await checkHealth(url, ctx));
-  checks.push(checkSecurityHeaders(site.headers, url));
+  checks.push(checkSecurityHeaders(site.headers, url, plan));
   checks.push(await checkSensitiveFile(url, "/.env", ctx));
   checks.push(await checkSensitiveFile(url, "/.git/config", ctx));
   checks.push(await checkOriginBlocked(ctx));

@@ -5,6 +5,7 @@ import { registerDesignTools } from "./tools/design";
 import { registerDetectTool } from "./tools/detect";
 import { registerDomainCheckTool } from "./tools/domain";
 import { registerDriftTool } from "./tools/drift";
+import { registerEnvironmentTools } from "./tools/environments";
 import { registerInitCheckTool } from "./tools/init";
 import { registerInterviewTools } from "./tools/interview";
 import { registerPortainerTools } from "./tools/portainer";
@@ -54,5 +55,6 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerDomainCheckTool(server, resolved);
   registerPortainerTools(server, resolved);
   registerSecretsTools(server, resolved);
+  registerEnvironmentTools(server, resolved);
   return server;
 }

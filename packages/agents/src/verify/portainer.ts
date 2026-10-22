@@ -6,6 +6,7 @@ import {
   externalDatabaseCell,
   objectStorageSection,
   portainerConnectorStackName,
+  portainerDeployBranch,
   portainerStackName,
   portainerStackVolumes,
   portainerUpdaterStackName,
@@ -20,6 +21,7 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { portainerDnsRecordNote } from "../provision/publish";
+import { planWhere } from "../runners/words";
 import { addressNames, hidePortainerAddress, readPortainerConnection } from "../shared";
 
 /**
@@ -99,11 +101,12 @@ export function portainerVerifyUrl(plan: DeployPlan, given: string | undefined):
     return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
   }
   if (plan.dns.domain !== undefined) return `https://${plan.dns.domain}`;
+  const { file, flag } = planWhere(plan);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    "opscrew/plan.yaml has no domain, and OpsCrew does not know where your reverse proxy serves the app, so there is nothing to verify.",
+    `${file} has no domain, and OpsCrew does not know where your reverse proxy serves the app, so there is nothing to verify.`,
     {
-      hint: "Run `opscrew verify --url <the address your reverse proxy serves the app on>`, or give the app a domain with `opscrew dns --domain <hostname>`.",
+      hint: `Run \`opscrew verify${flag} --url <the address your reverse proxy serves the app on>\`, or give the app a domain with \`opscrew dns${flag} --domain <hostname>\`.`,
     },
   );
 }
@@ -121,7 +124,7 @@ function webLine(plan: DeployPlan, target: PortainerDeployTarget): string {
 
 function redeployLines(plan: DeployPlan, target: PortainerDeployTarget): string[] {
   const branch = plan.cicd.branch;
-  const write = `Every push to \`${branch}\` runs \`${plan.cicd.workflowPath}\`: it builds the image, pushes it to GitHub Container Registry and writes \`compose.yaml\` with the new image to the \`opscrew-deploy\` branch.`;
+  const write = `Every push to \`${branch}\` runs \`${plan.cicd.workflowPath}\`: it builds the image, pushes it to GitHub Container Registry and writes \`compose.yaml\` with the new image to the \`${portainerDeployBranch(plan)}\` branch.`;
   return target.redeploy === "updater"
     ? [
         write,
@@ -137,13 +140,13 @@ function redeployLines(plan: DeployPlan, target: PortainerDeployTarget): string[
  * "Origin protection" when the stack's Caddy serves the app's hostnames behind Cloudflare's proxy:
  * the origin certificate, the client certificate it requires, and who replaces them.
  */
-function originTlsLines(plan: DeployPlan): string[] {
+function originTlsLines(plan: DeployPlan, flag: string): string[] {
   const hostnames = originTlsHostnames(plan);
   if (hostnames.length === 0) return [];
   return [
     "## Origin protection",
     "",
-    `The stack's Caddy serves a Cloudflare origin certificate (valid for 15 years) for ${hostnames.map((name) => `\`${name}\``).join(", ")} and refuses any connection without this app's own client certificate, which only Cloudflare sends for your zone. \`opscrew status\` shows both and when they expire; \`opscrew provision\` replaces the origin certificate when fewer than 30 days remain. Without the Cloudflare token's SSL and Certificates permission the stack keeps a public certificate, and \`opscrew secure\` lists the gap.`,
+    `The stack's Caddy serves a Cloudflare origin certificate (valid for 15 years) for ${hostnames.map((name) => `\`${name}\``).join(", ")} and refuses any connection without this app's own client certificate, which only Cloudflare sends for your zone. \`opscrew status${flag}\` shows both and when they expire; \`opscrew provision${flag}\` replaces the origin certificate when fewer than 30 days remain. Without the Cloudflare token's SSL and Certificates permission the stack keeps a public certificate, and \`opscrew secure${flag}\` lists the gap.`,
     "",
   ];
 }
@@ -152,10 +155,19 @@ function originTlsLines(plan: DeployPlan): string[] {
  * `opscrew/RUNBOOK.md` for an app in the user's Portainer: how it runs and deploys, where its logs
  * are, how to roll back and rotate secrets, how to remove it, and that OpsCrew does not change the
  * host and backups are the user's. Committed: never Portainer's address, a token or a value.
+ * Its commands name the environment's `--env` (prod's too, beside the app's other `environments`).
  */
 export function renderPortainerRunbook(
   plan: DeployPlan,
-  ctx: { opscrewVersion: string; github: { owner: string; repo: string }; projectId?: string },
+  ctx: {
+    opscrewVersion: string;
+    github: { owner: string; repo: string };
+    projectId?: string;
+    /** The app's environments, for the runbook's shared sections. */
+    environments?: readonly string[];
+    /** ` --env <name>` for its commands (`environmentFlag`); "" with prod only. */
+    flag?: string;
+  },
 ): RenderedFile {
   if (plan.target.provider !== "portainer") {
     throw new Error(`Expected a plan for your Portainer, got ${plan.target.provider}.`);
@@ -178,6 +190,8 @@ export function renderPortainerRunbook(
     ? `PostgreSQL in the app's stack, data in the volume \`${app}_${postgres.name}_data\``
     : externalDatabaseCell(plan);
   const dns = portainerDnsRecordNote(plan);
+  const { environments, flag = "" } = ctx;
+  const branch = portainerDeployBranch(plan);
   const lines = [
     ...runbookHead(plan, ctx, url),
     `| Runs on | ${cell(`Your Portainer, environment ${target.environmentId} (${target.arch}), as the stack \`${app}\``)} |`,
@@ -188,26 +202,31 @@ export function renderPortainerRunbook(
     "## How a change reaches your Portainer",
     "",
     ...redeployLines(plan, target).map((line) => `- ${line}`),
-    "- The workflow reports success only once the site answers its health check with the new version; otherwise it writes the previous image back to the `opscrew-deploy` branch, so the previous version returns.",
+    `- The workflow reports success only once the site answers its health check with the new version; otherwise it writes the previous image back to the \`${branch}\` branch, so the previous version returns.`,
     "",
     "## Rolling back",
     "",
-    `Re-run an earlier successful run of \`${plan.cicd.workflowPath}\` in GitHub Actions: it writes that run's image to the \`opscrew-deploy\` branch, and your Portainer deploys it.`,
+    `Re-run an earlier successful run of \`${plan.cicd.workflowPath}\` in GitHub Actions: it writes that run's image to the \`${branch}\` branch, and your Portainer deploys it.`,
     "",
-    ...componentsSection(plan),
-    ...objectStorageSection(plan, `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`),
+    ...componentsSection(plan, environments),
+    // The environment's own folder in the OpsCrew home, where its bucket's key is kept.
+    ...objectStorageSection(
+      plan,
+      `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}${plan.environment?.name === undefined ? "" : `/environments/${plan.environment.name}`}`,
+      environments,
+    ),
     "## Logs and status",
     "",
-    `In your Portainer: Stacks → \`${app}\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.`,
+    `In your Portainer: Stacks → \`${app}\` → a container → Logs. \`opscrew verify${flag}\` checks the site from outside, \`opscrew drift${flag}\` compares the stacks with what OpsCrew sets up, and \`opscrew secure${flag}\` checks the app and its stack.`,
     "",
     ...(dns !== undefined ? ["## DNS", "", dns, ""] : []),
     "## Secrets",
     "",
-    "The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran `opscrew provision`; they are never in the repository, the pull requests or GitHub Actions.",
-    "To change one, update the production values and run `opscrew provision`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run `opscrew provision --replace-token repository` or `--replace-token registry`.",
+    `The app's values live only in the stack's environment in your Portainer, set through its API from the computer that ran \`opscrew provision${flag}\`; they are never in the repository, the pull requests or GitHub Actions.`,
+    `To change one, update the production values and run \`opscrew provision${flag}\`: its stack plan names the variables that change (never their values). After rotating the repository or registry token, run \`opscrew provision${flag} --replace-token repository\` or \`--replace-token registry\`.`,
     "",
-    ...originTlsLines(plan),
-    ...recoverySection(),
+    ...originTlsLines(plan, flag),
+    ...recoverySection(plan, environments),
     "## What OpsCrew does not do here",
     "",
     `- ${PORTAINER_HOST_NOTE}`,
@@ -216,7 +235,7 @@ export function renderPortainerRunbook(
     "",
     "## Removing the app",
     "",
-    `\`opscrew destroy\` removes the app's stacks, the registry entry OpsCrew added, the deploy secrets and the app's Cloudflare resources, after approvals and a typed confirmation of the app's name. The app's volumes${bucket === undefined ? "" : ` and its bucket \`${bucket}\``} stay unless you add \`--delete-data\`.`,
+    `\`opscrew destroy${flag}\` removes the app's stacks, the registry entry OpsCrew added, the deploy secrets and the app's Cloudflare resources, after approvals and a typed confirmation of the app's name. The app's volumes${bucket === undefined ? "" : ` and its bucket \`${bucket}\``} stay unless you add \`--delete-data\`.`,
     "",
   ];
   return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };

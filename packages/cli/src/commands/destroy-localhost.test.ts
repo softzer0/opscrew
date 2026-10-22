@@ -10,9 +10,8 @@ afterEach(async () => {
   project = undefined;
 });
 
-// Feature 015: the localhost target is in the schema (T1501a) before its flows (T1510).
 describe("opscrew destroy for the localhost target", () => {
-  it("refuses plainly before checking its flags or asking for a name", async () => {
+  it("in a script, needs the app's name with --confirm before anything runs", async () => {
     project = await tempProject();
     const plan = DeployPlanSchema.parse({
       ...testPlan({ deployed: true }),
@@ -25,12 +24,15 @@ describe("opscrew destroy for the localhost target", () => {
       },
     });
     await writeArtifact("plan", path.join(project.root, "opscrew", "plan.yaml"), plan);
-    for (const flags of [[], ["--delete-data"], ["--undo-host"], ["--confirm", "shop"]]) {
+    for (const [flags, message] of [
+      [[], "Removing the app needs the app's name typed by a person"],
+      [["--delete-data"], "Removing the app needs the app's name typed by a person"],
+      [["--undo-host"], "on this computer OpsCrew changes nothing outside its own folders"],
+      [["--confirm", "other"], "--confirm other does not match the app's name"],
+    ] as const) {
       const ctx = projectContext(project);
       expect(await run(ctx, "destroy", ...flags), flags.join(" ")).not.toBe(0);
-      expect(ctx.errors, flags.join(" ")).toContain(
-        "`opscrew destroy` is not supported for the localhost target yet.",
-      );
+      expect(ctx.errors, flags.join(" ")).toContain(message);
       expect(ctx.fetchUrls).toEqual([]);
     }
   });
