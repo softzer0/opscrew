@@ -299,6 +299,10 @@ Effort`.
     - **`planServerRunner`** checks the repository's visibility and, for a public one, the fork-PR policy (setting it is a `github-settings` change). It adds the `github-runner` step to the host plan, and at apply fetches the registration token through the connector for the step.
     - **`startLocalRunner`** downloads and checks the pinned asset for this computer, configures it `--ephemeral` with the label, runs it in the foreground, and removes itself through the API on exit or a signal. Its environment (the runner's `.env`) sets `OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR` and `OPSCREW_LOCAL_CA_FILE` for the deploy job (T1505).
     - **`runner: local` with `image: local-build` is refused** plainly: the workflow deploys the image CI built, which `pull_policy: never` would never pull. Use `image: registry`, or provision from the computer without the runner (T1506b).
+    - **The local runner's workflow and secrets** (T1510's report):
+      - provision commits and pushes the rendered workflow, and stores the environment's deploy secrets, as for the other runners;
+      - the local runner's deploys take OpsCrew's local deploy lock;
+      - iac-templates' `buildArch` builds for the localhost target's CPU. That iac-templates file and the snapshots it changes are in T1511's Owns for this change.
     - **`runnerStatus`** in `status` and `secure`:
       - offline is a warning;
       - more than 21 days behind GitHub's latest release is a warning;
@@ -326,6 +330,11 @@ Effort`.
     - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
     - **Messages that name a command** for a named environment include `--env <env>`: the Portainer template error, the edge-check hint and similar (T1506b's review).
     - **Agents' text that names prod's branch or runtime folder** says the environment's own: `provision/publish.ts`, `verify/portainer.ts`, `secure/portainer.ts`, `drift/render.ts`, and `destroy/types.ts`'s doc comment. Use `portainerDeployBranch(plan)` and `runtimeDir(plan)`. Those agents files are in T1512's Owns for this change (T1508c's report).
+    - **Localhost in the CLI** (T1510's report):
+      - `--plan-only` prints `localPlanHash`;
+      - `destroy --confirm <app>` covers the local teardown, through `savedLocalPlanPurpose`;
+      - `localhost trust|untrust` call `localTrust`;
+      - `opscrew dns` says plainly that a localhost environment has no DNS, instead of "not supported yet".
     - **More of the same** (T1508a's report):
       - with `--env`, the recovery status passes `copyPath(deps.paths)` to `recoveryStatusLines`;
       - the deploy-setup pull request's body lists the environment's runtime folder and plan file, not `opscrew/runtime/` and `opscrew/plan.yaml`;
@@ -381,6 +390,7 @@ Effort`.
     - `provision/origin-tls.ts`: when GitHub accepted the dispatch but no run appeared in time, the warning still says "could not start the deploy workflow"; say it was accepted, and where to look (T1504).
     - Remove iac-templates' `PORTAINER_STACK_TEMPLATE_PATH` and `ORIGIN_PULL_PEM` once only their own tests use them (T1508c). The connector's `DEPLOY_BRANCH` and `DEPLOY_REFERENCE` stay for the Portainer live test.
     - The generic error helpers `reasonOf`, `codeOf` and `hintOf` live in `retarget/` and are imported by promote: move them to `shared/` (T1509's review).
+    - Localhost's `shellWord` duplicates the unexported `shellQuote` helpers; and its runbook (`localhost/runbook.ts`) belongs beside `renderRunbook` in iac-templates (T1510).
     - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
