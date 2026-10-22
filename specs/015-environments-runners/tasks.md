@@ -468,7 +468,7 @@ Effort`.
 - [ ] T1513 [P] The localhost Docker pass, and OpsCrew's own CI workflow, in `packages/cli/test/e2e/**`, `examples/**`, `.github/workflows/localhost.yml` (new)
   - Owns: those paths
   - Reads: quickstart.md "1." and "6."; research.md R5 and "Spike results" 7, 8
-  - Depends: T1510, T1511b, T1512a, T1517e
+  - Depends: T1510, T1511b, T1512a, T1517c
   - Accept:
     - **The Docker pass** (`OPSCREW_DOCKER_TESTS=1`): quickstart "1." with the real CLI on this computer, plus a second localhost environment beside the first.
       - The site answers through the local CA (trusted only inside the test, with `NODE_EXTRA_CA_CERTS`).
