@@ -185,7 +185,7 @@ Effort`.
 
 ## Phase 4: The agents
 
-- [ ] T1508a [US2] Environments in agents: `env add/list/remove`, design per environment, the environment choice, and the shared-parts check, in `packages/agents/src/{environments,shared,design,interview}/**`, and every phase's paths
+- [X] T1508a [US2] Environments in agents: `env add/list/remove`, design per environment, the environment choice, and the shared-parts check, in `packages/agents/src/{environments,shared,design,interview}/**`, and every phase's paths
   - Owns: `packages/agents/src/environments/**` (new); the design and interview changes; the phases' path resolution (`shared/phase-deps.ts`, `shared/engine.ts`, and an `environment` in their inputs); provision's preflight and the dependabot rendering; tests. Not T1508c's files.
   - Reads: contracts/environments.md "The environment choice", "Commands"; data-model.md "Environment"; plan.md "9."; spec US2, FR-1510–FR-1513, FR-1515–FR-1516
   - Depends: T1503, T1506b
