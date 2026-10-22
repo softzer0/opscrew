@@ -222,6 +222,11 @@ The developer has a machine they control: a home server, a spare PC or a VM. The
 - **FR-1533**: An environment on a target reached over SSH (a cloud or own server) MUST be able to choose a runner machine for its deploy job. The job then deploys to the target over SSH from the runner machine, as a GitHub-hosted job does today.
 - **FR-1534**: An environment that follows main MUST be able to build its image on its self-hosted runner when that runner is the local runner or a runner machine, never the production server's runner. The build keeps its provenance, SBOM and optional signature. A runner whose architecture differs from the target's is refused, naming the server types that match.
 - **FR-1535**: Destroying an environment MUST remove only its runner from a runner machine. Removing the machine MUST be refused while an environment uses it. A runner folder that belongs to another repository is never replaced.
+- **FR-1536**: A runner machine MAY be hardened, only when the user asks, never by default, each part chosen on its own (the founder, 2026-10-22):
+  - **SSH:** the own server's SSH hardening (key-only logins, no passwords, no root login), with its revert timer, refused when OpsCrew's own login would stop working;
+  - **Firewall:** an nftables table of OpsCrew's own that restricts inbound SSH (port 22) to the sources the user names, and changes no other port, rule or default policy of the machine. Removing it deletes only that table.
+
+  Each part is in the machine's host plan, approved by its hash, and undone when the user turns it off or removes the machine.
 
 **Coverage**
 

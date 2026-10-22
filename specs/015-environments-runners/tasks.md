@@ -442,6 +442,34 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
+- [ ] T1517f [US6] Opt-in hardening for runner machines in ssh-host: the `sshd` step and an isolated `ssh-firewall` step (FR-1536)
+  - Owns: `packages/connectors/ssh-host/src/**` (+ tests)
+  - Reads: spec FR-1536; data-model.md "Runner machine" (Hardening); plan.md "16."
+  - Depends: T1517b
+  - Accept:
+    - **`planRunnerHost`** takes `harden?: { ssh?: true; firewall?: { sshFrom: string[] } }`. Without it, the plan is byte-identical to today's.
+    - **`harden.ssh`** adds the own server's `sshd` step, with its revert timer. It is refused (a blocking finding) when OpsCrew's own login would stop working: a password login, or root.
+    - **`harden.firewall`** adds a new `ssh-firewall` step: an nftables table `inet opscrew` with an input chain that accepts port 22 from `sshFrom` (IPv4 and IPv6) and drops other port-22 traffic. It changes no other port, rule, table or default policy.
+      - The plan says which source it is applied from, and the step checks that the connection's own source address is among `sshFrom`, refusing otherwise so it can't lock OpsCrew out.
+      - It needs `nft`; without it, a plain finding.
+    - **Undo** deletes the table, or restores the recorded SSH settings. Turning a part off removes only that part.
+    - **Tests:** a fake host for each part; the lockout refusals; undo; a plan with no hardening unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
+  - Effort: high
+
+- [ ] T1517g [US6] Opt-in hardening for runner machines in agents, the CLI, MCP and the guide (FR-1536)
+  - Owns: agents' `runners/**` (the machine record and its host plan); `packages/cli/src/**` and `packages/mcp-server/src/**` for the flags; `docs/guide/runners.md` (+ tests)
+  - Reads: spec FR-1536; data-model.md "Runner machine"; plan.md "16."
+  - Depends: T1517f
+  - Accept:
+    - **The record** stores `harden`, and the machine's host plan includes it.
+    - **CLI:** `runner host add|set <name> --harden ssh|firewall` (either or both) `[--ssh-from <cidr> …]`, and `--no-harden ssh|firewall` to turn one off. `--harden firewall` without `--ssh-from` is refused with a plain message.
+    - **MCP:** the matching inputs, through the host plan's approval dialog.
+    - **The guide** (`runners.md`): hardening is optional and off by default; what each part does; the firewall touches only port 22 in OpsCrew's own table; the lockout safeguards; how to undo.
+    - **Tests:** add with each part, set to turn one off, the refusal without sources, and `runner host list` showing what is hardened.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
+  - Effort: high
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text

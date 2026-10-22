@@ -98,6 +98,7 @@ Retention keeps every version with an `opscrew-<env>` or `opscrew-<env>-previous
 | Name | `^[a-z][a-z0-9-]{0,31}$`, unique in the project |
 | Host plan | the deploy user, the runner prerequisites (as on own servers), Docker (the deploy job's edge check uses it), and one `github-runner` step per environment that uses it. No edge, app, firewall or SSH hardening steps. |
 | Runner per environment | as the server runner: `/srv/runners/<app>` as `deploy`'s user service, label `opscrew-<app>-<env>`, name `<8 hex of sha256(host)>-<app>-<env>` |
+| Hardening (FR-1536) | off by default. `harden.ssh: true` adds the own server's `sshd` step; `harden.firewall: { sshFrom: [CIDR, …] }` adds the `ssh-firewall` step, an nftables table `inet opscrew` that accepts port 22 only from `sshFrom` and leaves every other port and rule alone. `sshFrom` has no default: a guess at this computer's address could lock the user out when it changes. |
 | Another repository's runner folder | refused, never replaced |
 | Removal | refused while an environment uses the machine |
 

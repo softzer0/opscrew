@@ -386,6 +386,7 @@ deploy of the target already running (it waits instead).
 - **Ownership:** a runner folder whose `.opscrew-runner` names another repository is refused, on runner machines and own servers alike, never replaced.
 - **The workflow (T1517c):** the deploy job on a runner machine runs on its label with the same SSH deploy steps and secrets a GitHub-hosted job uses. With `build: runner`, the build job runs on the environment's self-hosted label with Buildx, provenance and SBOM unchanged.
 - **Surfaces (T1517e):** `opscrew runner host add|remove|list`, and `env add|set --runner host --runner-host <name> --build runner`.
+- **Hardening, opt-in (FR-1536, T1517f and T1517g):** `--harden ssh` reuses the own server's `sshd` step (with its revert timer). `--harden firewall --ssh-from <cidr>…` adds a new `ssh-firewall` step: an nftables table `inet opscrew` with an input chain that accepts port 22 from the named sources and drops the rest of port 22, so the machine's own firewall (ufw, firewalld, other nftables tables) and its default policy stay as they are. Undo deletes the table, or restores the SSH settings it recorded.
 - **Later (016):** runner machines and every self-hosted runner reach servers over 016's private network, so public SSH can close.
 
 ## Order
