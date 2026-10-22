@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   HostApplyError,
   HostFactsSchema,
+  type HostPlan,
   HostPlanSchema,
   hostPlanHash,
   planTeardown,
@@ -388,6 +389,51 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(result.remaining.join("\n")).toContain("Docker stays installed");
   });
 
+  it("without a GitHub remote, leaves the server's runner and names it once; the destroy and its undo complete", async () => {
+    const s = await deployed();
+    s.host.facts = HostFactsSchema.parse({
+      ...s.host.facts,
+      runners: [
+        {
+          app: "shop",
+          registered: true,
+          active: true,
+          version: "2.338.0",
+          label: "opscrew-shop-prod",
+          repositoryUrl: "https://github.com/acme/shop",
+        },
+      ],
+    });
+    await s.git(s.root, "remote", "remove", "origin");
+    const before = s.host.applies.length;
+    const result = await runDestroy(s.deps, { services: services(s), undoHost: true });
+
+    const applied = s.host.applies.slice(before).map((apply) => apply.plan);
+    expect(applied.map((plan) => plan.purpose)).toEqual(["teardown", "undo"]);
+    for (const plan of applied) {
+      expect(plan.steps.filter((step) => step.id === "github-runner")).toEqual([
+        expect.objectContaining({ state: "in-place", params: { app: "shop", keep: true } }),
+      ]);
+    }
+    const note =
+      "This project has no GitHub remote named origin, so OpsCrew cannot tell which repository the runner in /srv/runners/shop belongs to, and leaves it there. Remove it under the repository's Settings → Actions → Runners and delete /srv/runners/shop, or add the origin remote and run opscrew destroy --undo-host again.";
+    const records =
+      "OpsCrew's records stay on the server until the runner is gone; add the origin remote and run opscrew destroy --undo-host again to finish.";
+    for (const text of [note, records]) {
+      expect(s.deps.reporter.text().split(text).length - 1).toBe(1);
+    }
+    expect(s.host.facts.runners.map((runner) => runner.app)).toEqual(["shop"]);
+    expect(s.host.facts.deployUser).not.toBeNull();
+    // The rest of the destroy and the undo went ahead as before; OpsCrew's records stay for the
+    // runner, so an undo with the remote can finish.
+    expect(s.host.facts.apps.filter((app) => app.record?.state === "active")).toEqual([]);
+    expect(s.host.facts.record).not.toBeNull();
+    expect(result.hostPlans).toEqual({
+      teardown: hostPlanHash(applied[0] as HostPlan),
+      undo: hostPlanHash(applied[1] as HostPlan),
+    });
+  });
+
   it("--undo-host needs the typed app name: a wrong name changes nothing on the server", async () => {
     const s = await deployed();
     await runDestroy(s.deps, { services: services(s) });
@@ -474,7 +520,12 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     const plan = {
       ...planTeardown(
         s.host.facts,
-        { deleteData: false, app: "shop", projectId: s.deps.paths.projectId },
+        {
+          deleteData: false,
+          app: "shop",
+          projectId: s.deps.paths.projectId,
+          repositoryUrl: "https://github.com/acme/shop",
+        },
         "opscrew destroy",
       ),
       app: "blog",

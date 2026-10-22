@@ -12,6 +12,7 @@ import {
   provision,
   removeApp,
   SHOP_PROJECT,
+  SHOP_REPOSITORY,
   TUNNEL_COMPOSE,
   TUNNEL_ID,
   tunnelDesired,
@@ -540,14 +541,19 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
       hints(
         planTeardown(
           facts,
-          { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+          {
+            deleteData: false,
+            app: "shop",
+            projectId: SHOP_PROJECT,
+            repositoryUrl: SHOP_REPOSITORY,
+          },
           "opscrew destroy",
         ),
       ),
     ).toEqual([expect.stringMatching(/, then run opscrew destroy again\.$/)]);
-    expect(hints(planUndo(facts, "opscrew destroy --undo-host"))).toEqual([
-      expect.stringMatching(/, then run opscrew destroy --undo-host again\.$/),
-    ]);
+    expect(
+      hints(planUndo(facts, { repositoryUrl: SHOP_REPOSITORY }, "opscrew destroy --undo-host")),
+    ).toEqual([expect.stringMatching(/, then run opscrew destroy --undo-host again\.$/)]);
     const firewalled = new FakeHost();
     firewalled.firewalld = true;
     const enable = planHost(
@@ -581,7 +587,7 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
       fake,
       planTeardown(
         await inspectHost(fake),
-        { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+        { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
         "opscrew destroy",
       ),
     );
@@ -779,7 +785,7 @@ describe("planTeardown and planUndo", () => {
     const facts = await inspectHost(fake);
     const keep = planTeardown(
       facts,
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(keep.purpose).toBe("teardown");
@@ -798,7 +804,7 @@ describe("planTeardown and planUndo", () => {
     });
     const wipe = planTeardown(
       facts,
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(wipe.steps[0]?.params).toEqual({ app: "shop", deleteData: true });
@@ -822,7 +828,7 @@ describe("planTeardown and planUndo", () => {
 
     const plan = planTeardown(
       facts,
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.app).toBe("shop");
@@ -850,7 +856,7 @@ describe("planTeardown and planUndo", () => {
     const facts = await inspectHost(fake);
     const plan = planTeardown(
       facts,
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
@@ -867,7 +873,7 @@ describe("planTeardown and planUndo", () => {
     const facts = await inspectHost(fake);
     const other = planTeardown(
       facts,
-      { deleteData: true, app: "blog", projectId: "blog-1" },
+      { deleteData: true, app: "blog", projectId: "blog-1", repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(codes(other)).toEqual([]);
@@ -876,7 +882,12 @@ describe("planTeardown and planUndo", () => {
     expect(() =>
       planTeardown(
         facts,
-        { deleteData: false, app: "Not An App", projectId: SHOP_PROJECT },
+        {
+          deleteData: false,
+          app: "Not An App",
+          projectId: SHOP_PROJECT,
+          repositoryUrl: SHOP_REPOSITORY,
+        },
         "opscrew destroy",
       ),
     ).toThrow(/lower-case letters/);
@@ -885,7 +896,11 @@ describe("planTeardown and planUndo", () => {
   it("refuses to undo the host while the app is still there", async () => {
     const fake = new FakeHost();
     await provision(fake);
-    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const plan = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(codes(plan)).toEqual(["app-still-deployed"]);
   });
 
@@ -895,7 +910,11 @@ describe("planTeardown and planUndo", () => {
     fake.ufwRules = [{ rule: "allow 8080/tcp", comment: null }];
     await provision(fake);
     await removeApp(fake);
-    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const plan = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(codes(plan)).toEqual([]);
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
       ["runtime-dirs", "change"],
@@ -958,9 +977,15 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
       "e78d00e243f016ca472bbbf7d68be5a6fc2a01eeb68b0f47d6081c489f347391",
     );
     await removeApp(used);
-    expect(hostPlanHash(planUndo(await inspectHost(used), "opscrew destroy --undo-host"))).toBe(
-      "f1478d592e0984ba35ec1bd560699c01afbb9380f005ae088fe1dce4cae7fc5a",
-    );
+    expect(
+      hostPlanHash(
+        planUndo(
+          await inspectHost(used),
+          { repositoryUrl: SHOP_REPOSITORY },
+          "opscrew destroy --undo-host",
+        ),
+      ),
+    ).toBe("f1478d592e0984ba35ec1bd560699c01afbb9380f005ae088fe1dce4cae7fc5a");
   });
 
   it("plans the IPv4 filter after ufw, with the ranges sorted, and leaves ufw as it is", async () => {
@@ -1092,7 +1117,11 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     const undone = new FakeHost();
     await provision(undone, filtered(undone));
     await removeApp(undone);
-    const undo = planUndo(await inspectHost(undone), "opscrew destroy --undo-host");
+    const undo = planUndo(
+      await inspectHost(undone),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(undo.steps.map((s) => s.id)).toContain("web-filter");
     await applyApproved(undone, undo);
     expect(undone.web4.chain).toBeNull();
@@ -1154,7 +1183,11 @@ describe("planHost: the kernel settings the app's services need", () => {
     const fake = new FakeHost();
     await provision(fake, desiredFor(fake, { sysctl }));
     await removeApp(fake);
-    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const plan = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(plan.steps.find((step) => step.id === "sysctl")).toMatchObject({
       title:
         "Remove OpsCrew's kernel settings (/etc/sysctl.d/90-opscrew.conf) and put back vm.max_map_count = 65530",

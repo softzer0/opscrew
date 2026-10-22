@@ -4,7 +4,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { FakeHost } from "./__fixtures__/fake-host";
-import { applyApproved, planFor, provision, removeApp } from "./__fixtures__/helpers";
+import {
+  applyApproved,
+  planFor,
+  provision,
+  removeApp,
+  SHOP_REPOSITORY,
+} from "./__fixtures__/helpers";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { planUndo } from "./plan";
@@ -139,7 +145,11 @@ describe("ufw that is on but lets everything in (T927)", () => {
     const fake = activeUfw("allow");
     await provision(fake);
     await removeApp(fake);
-    const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const undo = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     const ufw = stepOf(undo, "ufw");
     expect(ufw?.state).toBe("change");
     expect(ufw?.params).toEqual({

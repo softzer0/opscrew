@@ -28,6 +28,7 @@ import {
   planServerRunner,
   type RunnerRepository,
   removeKeptRegistrations,
+  repositoryUrl,
   runnerRepository,
   runnerTokens,
 } from "../runners";
@@ -37,6 +38,8 @@ import {
   approveAndApplyHostPlan,
   committedText,
   ensureSecretFile,
+  gitClient,
+  githubCoordinates,
   type HostAdapterApi,
   type HostPlanOutcome,
   infrastructureOutputs,
@@ -216,7 +219,8 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
 }
 
 /**
- * The desired state of the server for the plan: the app, the admin login, the deploy key, SSH and
+ * The desired state of the server for the plan: the app and the project's repository (the
+ * `origin` remote: no host plan touches another repository's runner), the admin login, the deploy key, SSH and
  * firewall settings for the access mode, the tunnel connector (with the tunnel's id) whenever the
  * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode), Portainer
  * when the plan turns it on, and the web filter with Cloudflare's ranges (`run.webSources`) when
@@ -226,7 +230,7 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
  * must never drop the filter because the ranges were not read.
  */
 export async function desiredHost(
-  deps: Pick<PhaseDeps, "paths">,
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
   run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner">,
   input: {
     plan: DeployPlan;
@@ -271,6 +275,7 @@ export async function desiredHost(
   return {
     app: plan.app.name,
     projectId: deps.paths.projectId,
+    repositoryUrl: repositoryUrl(await githubCoordinates(gitClient(deps))),
     hostnames: siteHosts(plan),
     services: plan.services.filter((service) => service.enabled).map((service) => service.name),
     memoryMb: appMemoryMb(plan),

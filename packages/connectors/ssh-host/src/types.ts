@@ -94,6 +94,7 @@ export type HostFinding = z.infer<typeof HostFindingSchema>;
 export const HostPlanSchema = z.strictObject({
   schemaVersion: z.literal(HOST_PLAN_SCHEMA_VERSION),
   purpose: z.enum(["setup", "teardown", "undo"]),
+  /** The app the plan is for; "" for a plan that is no one app's (an undo, a runner machine's). */
   app: z.string().max(64),
   steps: z.array(HostStepSchema),
   findings: z.array(HostFindingSchema),
@@ -123,6 +124,18 @@ export const TunnelIdSchema = z.string().regex(/^[0-9A-Fa-f-]{8,64}$/, {
   message: "must be a Cloudflare Tunnel id",
 });
 
+/** A GitHub repository's URL, `https://github.com/<owner>/<repo>`. */
+export const RepositoryUrlSchema = z
+  .string()
+  .regex(/^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/, {
+    message: "must be https://github.com/<owner>/<repo>",
+  });
+
+/** The two URLs name one repository: GitHub's owner and repository names ignore case. */
+export function sameRepository(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 /**
  * The app's GitHub Actions runner on the server (`DesiredHost.runner`): the pinned release, its
  * archive's SHA-256, and how it registers with the repository. Never a token: the registration
@@ -137,11 +150,7 @@ export const DesiredRunnerSchema = z.strictObject({
   name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, {
     message: "must be letters, digits, dots, dashes and underscores",
   }),
-  repositoryUrl: z
-    .string()
-    .regex(/^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/, {
-      message: "must be https://github.com/<owner>/<repo>",
-    }),
+  repositoryUrl: RepositoryUrlSchema,
   version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,4}$/, {
     message: "must be a pinned version such as 2.338.0",
   }),
@@ -159,6 +168,34 @@ export const DesiredRunnerSchema = z.strictObject({
 });
 export type DesiredRunner = z.infer<typeof DesiredRunnerSchema>;
 
+/**
+ * A runner machine's part of the project (`planRunnerHost`): the project's repository, and the
+ * runners of the environments the plan names, each by its app name (`<app>-<env>`): installed
+ * with `runner`, removed without. Runners it does not name are left alone.
+ */
+export const DesiredRunnerHostSchema = z
+  .strictObject({
+    /** A runner folder whose `.opscrew-runner` names another repository is never touched. */
+    repositoryUrl: RepositoryUrlSchema,
+    runners: z.array(
+      z.strictObject({ app: AppNameSchema, runner: DesiredRunnerSchema.optional() }),
+    ),
+  })
+  .refine((host) => new Set(host.runners.map((item) => item.app)).size === host.runners.length, {
+    message: "must name each app once",
+    path: ["runners"],
+  })
+  .refine(
+    (host) =>
+      host.runners.every(
+        (item) =>
+          item.runner === undefined ||
+          sameRepository(item.runner.repositoryUrl, host.repositoryUrl),
+      ),
+    { message: "must be the project's repository", path: ["runners"] },
+  );
+export type DesiredRunnerHost = z.infer<typeof DesiredRunnerHostSchema>;
+
 /** More IPv4 ranges than Cloudflare has ever published. */
 export const MAX_WEB_FILTER_RANGES = 100;
 
@@ -171,6 +208,11 @@ export const DesiredHostSchema = z
   .strictObject({
     app: AppNameSchema,
     projectId: ProjectIdSchema,
+    /**
+     * The project's repository: a runner folder whose `.opscrew-runner` names another is never
+     * replaced or removed.
+     */
+    repositoryUrl: RepositoryUrlSchema,
     /** The app's hostnames; no other app on the server may hold one of them. */
     hostnames: z.array(HostnameSchema).max(50),
     /** The app's backing services (plan.yaml's `services` names: db, cache ...), kept in its record. */
@@ -264,7 +306,13 @@ export const DesiredHostSchema = z
   .refine((desired) => desired.access === "public" || desired.webFilter === undefined, {
     message: "the web filter is only for a site served directly (public mode)",
     path: ["webFilter"],
-  });
+  })
+  .refine(
+    (desired) =>
+      desired.runner === undefined ||
+      sameRepository(desired.runner.repositoryUrl, desired.repositoryUrl),
+    { message: "must be the project's repository", path: ["runner"] },
+  );
 export type DesiredHost = z.infer<typeof DesiredHostSchema>;
 
 export interface ApplyOptions {

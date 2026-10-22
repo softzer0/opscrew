@@ -99,7 +99,7 @@ export function runnerDesired(overrides: Partial<DesiredRunner> = {}): DesiredRu
   return {
     label: "opscrew-shop-prod",
     name: "home-shop-prod",
-    repositoryUrl: "https://github.com/acme/shop",
+    repositoryUrl: SHOP_REPOSITORY,
     version,
     url: `https://github.com/actions/runner/releases/download/v${version}/actions-runner-${asset}-${version}.tar.gz`,
     sha256: sha256Hex(RUNNER_ARCHIVE),
@@ -121,10 +121,14 @@ export function cloudServer(): FakeHost {
 /** The project id of the test app "shop". */
 export const SHOP_PROJECT = "shop-0123456789ab";
 
+/** The repository of the test app "shop" (the project's `origin`). */
+export const SHOP_REPOSITORY = "https://github.com/acme/shop";
+
 export function desiredFor(fake: FakeHost, overrides: Partial<DesiredHost> = {}): DesiredHost {
   const base: DesiredHost = {
     app: "shop",
     projectId: SHOP_PROJECT,
+    repositoryUrl: SHOP_REPOSITORY,
     hostnames: ["shop.example.com", "www.shop.example.com"],
     services: ["web"],
     memoryMb: 512,
@@ -187,7 +191,11 @@ export async function provision(
 export async function removeApp(fake: FakeHost, app = "shop", deleteData = true) {
   const facts = await inspectHost(fake);
   const projectId = facts.apps.find((item) => item.name === app)?.record?.projectId ?? SHOP_PROJECT;
-  const plan = planTeardown(facts, { deleteData, app, projectId }, "opscrew destroy");
+  const plan = planTeardown(
+    facts,
+    { deleteData, app, projectId, repositoryUrl: SHOP_REPOSITORY },
+    "opscrew destroy",
+  );
   return applyApproved(fake, plan, { command: "opscrew destroy" });
 }
 

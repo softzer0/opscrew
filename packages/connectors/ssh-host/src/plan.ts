@@ -3,6 +3,7 @@
  * blocked, plus blocking findings. No I/O; the plan holds no secrets.
  */
 import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
+import { z } from "zod";
 import {
   APPS_DIR,
   appDirs,
@@ -64,6 +65,8 @@ import {
   type DesiredHost,
   DesiredHostSchema,
   type DesiredRunner,
+  type DesiredRunnerHost,
+  DesiredRunnerHostSchema,
   DesiredRunnerSchema,
   HOST_PLAN_SCHEMA_VERSION,
   type HostFinding,
@@ -71,6 +74,8 @@ import {
   type HostStep,
   type HostStepId,
   ProjectIdSchema,
+  RepositoryUrlSchema,
+  sameRepository,
 } from "./types";
 import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-filter";
 
@@ -85,17 +90,41 @@ function parseFacts(facts: HostFacts): HostFacts {
   return parsed.data;
 }
 
-function parseDesired(desired: DesiredHost): DesiredHost {
-  const parsed = DesiredHostSchema.safeParse(desired);
+/**
+ * `input` as `schema` reads it, or an INVALID_INPUT error: `what` ("The settings for this server
+ * are not valid") with the first problem, and `hint`.
+ */
+function parseInput<T extends z.ZodType>(
+  schema: T,
+  input: unknown,
+  what: string,
+  hint: string,
+): z.infer<T> {
+  const parsed = schema.safeParse(input);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The settings for this server are not valid (${issue?.path.join(".") || "input"}: ${issue?.message ?? "invalid"}).`,
-      { hint: "Run opscrew interview again to fix the server settings.", cause: parsed.error },
+      `${what} (${issue?.path.join(".") || "input"}: ${issue?.message ?? "invalid"}).`,
+      { hint, cause: parsed.error },
     );
   }
   return parsed.data;
+}
+
+const RepositoryInputSchema = z.object({ repositoryUrl: RepositoryUrlSchema.optional() });
+
+/**
+ * The project's repository a teardown or an undo is for (`input.repositoryUrl`); undefined when
+ * it is unknown (the project has no GitHub remote named origin).
+ */
+function projectRepository(input: { repositoryUrl?: string }): string | undefined {
+  return parseInput(
+    RepositoryInputSchema,
+    input,
+    "The project's repository is not valid",
+    "Check that the project's origin remote is its GitHub repository, then try again.",
+  ).repositoryUrl;
 }
 
 function setupEntry(facts: HostFacts, step: HostStepId): HostRecordEntry | undefined {
@@ -338,7 +367,10 @@ interface SetupContext {
   conflict: string | undefined;
 }
 
-function dockerStep({ facts, found, findings }: SetupContext): HostStep {
+/** What the steps a runner machine's plan shares with a server's read and add to. */
+type MachineContext = Pick<SetupContext, "facts" | "found" | "findings">;
+
+function dockerStep({ facts, found, findings }: MachineContext): HostStep {
   const docker = facts.docker;
   const base = { distro: facts.os.id };
   const blocked = (finding: HostFinding, reason: string) => {
@@ -534,8 +566,8 @@ function foreignDeployUser(facts: HostFacts): boolean {
   return facts.deployUser !== null && setupEntry(facts, "deploy-user")?.previous.existed !== false;
 }
 
-function deployUserStep({ facts, desired, found, findings }: SetupContext): HostStep {
-  const params = { user: desired.deploy.user };
+function deployUserStep({ facts, found, findings }: MachineContext): HostStep {
+  const params = { user: "deploy" };
   const existing = facts.deployUser;
   if (existing === null) {
     return step(
@@ -1188,19 +1220,69 @@ function runnersDirMade(facts: HostFacts): boolean {
 }
 
 /**
- * The runner's step on a server the user owns ({@link runnerStep}, run as root): a removal takes
- * `/srv/runners` too when OpsCrew made it, and an install is blocked while `/srv/runners` is
- * there but not deploy's folder, which OpsCrew never takes over.
+ * `item`, a step that installs or removes the runner of `item.params.app`, blocked with the
+ * `runner-other-repository` finding when that runner's `.opscrew-runner` names a repository other
+ * than `repository` (the project's): another repository's runner is never replaced or removed.
  */
-function ownRunnerStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
-  const item = runnerStep(facts, desired.app, desired.runner, "root");
-  if (item?.params.remove === true) {
-    return { ...item, params: { ...item.params, removeParent: runnersDirMade(facts) } };
-  }
+function ownedRunner(
+  { facts, found, findings }: MachineContext,
+  item: HostStep,
+  repository: string,
+): HostStep {
+  const app = String(item.params.app);
+  const theirs = runnerOf(facts, app)?.repositoryUrl ?? null;
+  if (theirs === null || sameRepository(theirs, repository)) return item;
+  found.push(findings.runnerOtherRepository(app, theirs));
+  return {
+    ...item,
+    state: "blocked",
+    reason: `${runnerDir(app)} holds the runner of another repository.`,
+  };
+}
+
+/**
+ * The runner of `app`, left where it is because the project's repository is unknown (it has no
+ * GitHub remote named origin): it may be another repository's. The step changes nothing
+ * (`keep`); its reason is the note that says what to do.
+ */
+function keptRunner(app: string, command: string, scope: HostStep["scope"]): HostStep {
+  return step(
+    "github-runner",
+    `Leave the GitHub Actions runner of "${app}" on this server`,
+    "in-place",
+    { app, keep: true },
+    `This project has no GitHub remote named origin, so OpsCrew cannot tell which repository the runner in ${runnerDir(app)} belongs to, and leaves it there. Remove it under the repository's Settings → Actions → Runners and delete ${runnerDir(app)}, or add the origin remote and run ${command} again.`,
+    scope,
+  );
+}
+
+/**
+ * The runner of `app` on a server the user owns or a runner machine ({@link runnerStep}, run as
+ * root), never another repository's ({@link ownedRunner}). A removal takes `/srv/runners` too when
+ * OpsCrew made it, and an install is blocked while `/srv/runners` is there but not deploy's folder,
+ * which OpsCrew never takes over.
+ */
+function ownRunnerStep(
+  ctx: MachineContext,
+  app: string,
+  runner: DesiredRunner | undefined,
+  repository: string,
+): HostStep | undefined {
+  const { facts, found, findings } = ctx;
+  const planned = runnerStep(facts, app, runner, "root");
+  if (planned === undefined) return undefined;
+  const item = ownedRunner(
+    ctx,
+    planned.params.remove === true
+      ? { ...planned, params: { ...planned.params, removeParent: runnersDirMade(facts) } }
+      : planned,
+    repository,
+  );
+  if (item.state === "blocked" || item.params.remove === true) return item;
   const dir = facts.dirs.find((entry) => entry.path === RUNNERS_DIR);
   const free =
     dir === undefined || dir.kind === "absent" || (dir.kind === "dir" && dir.owner === "deploy");
-  if (item?.state !== "change" || free) return item;
+  if (item.state !== "change" || free) return item;
   found.push(findings.runnersDirTaken(dir.kind === "dir" ? dir.owner : undefined));
   return { ...item, state: "blocked", reason: `${RUNNERS_DIR} is not the deploy user's folder.` };
 }
@@ -1439,7 +1521,12 @@ function conflicts(
  */
 export function planHost(facts: HostFacts, desired: DesiredHost, command: string): HostPlan {
   const f = parseFacts(facts);
-  const d = parseDesired(desired);
+  const d = parseInput(
+    DesiredHostSchema,
+    desired,
+    "The settings for this server are not valid",
+    "Run opscrew interview again to fix the server settings.",
+  );
   if (f.privilege === "root" || f.privilege === "sudo") {
     if (d.admin.isRoot !== (f.privilege === "root") || d.admin.user !== f.user) {
       throw new OpsCrewError(
@@ -1512,7 +1599,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
     runtimeStep(ctx),
     appDirsStep(ctx),
     appRecordStep(ctx),
-    ownRunnerStep(ctx),
+    ownRunnerStep(ctx, d.app, d.runner, d.repositoryUrl),
     tunnelStep(ctx),
     portainerStep(ctx),
   ].filter((item): item is HostStep => item !== undefined);
@@ -1531,11 +1618,14 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
  * it), and Portainer (its data only with `deleteData`). The server itself and OpsCrew's host
  * settings stay (`planUndo` reverses those).
  * Nothing is removed when the app's record names another project (`opts.projectId` is this
- * one's). Findings say to run `command` (for example `opscrew destroy`) again once fixed.
+ * one's), and a runner registered with a repository other than `opts.repositoryUrl` (the
+ * project's) blocks the plan rather than going. Without `opts.repositoryUrl` (the project has no
+ * GitHub remote) the app's runner stays, named in a step that changes nothing. Findings say to
+ * run `command` (for example `opscrew destroy`) again once fixed.
  */
 export function planTeardown(
   facts: HostFacts,
-  opts: { deleteData: boolean; app: string; projectId: string },
+  opts: { deleteData: boolean; app: string; projectId: string; repositoryUrl?: string },
   command: string,
 ): HostPlan {
   const f = parseFacts(facts);
@@ -1548,6 +1638,7 @@ export function planTeardown(
       "The app name must be lower-case letters, digits and dashes, with a project id.",
     );
   }
+  const repository = projectRepository(opts);
   const { app, deleteData, projectId } = opts;
   const findings = hostFindings(command);
   const listed = f.record?.apps ?? [];
@@ -1582,13 +1673,19 @@ export function planTeardown(
   // The runner goes first, so no deploy job runs while the app is removed.
   if (runnerOf(f, app) !== undefined) {
     steps.push(
-      step(
-        "github-runner",
-        TITLES.removeRunner(app),
-        "change",
-        { app, remove: true, removeParent: runnersDirMade(f) },
-        runnerRemoval(app),
-      ),
+      repository === undefined
+        ? keptRunner(app, command, "app")
+        : ownedRunner(
+            { facts: f, found, findings },
+            step(
+              "github-runner",
+              TITLES.removeRunner(app),
+              "change",
+              { app, remove: true, removeParent: runnersDirMade(f) },
+              runnerRemoval(app),
+            ),
+            repository,
+          ),
     );
   }
 
@@ -1717,12 +1814,22 @@ function rulesToRemove(
  * folders when empty, automatic updates, firewall rules, SSH settings and the deploy user, then
  * OpsCrew's records.
  * Refused while an app is still set up on the server (an app removed with its data kept is not:
- * its data folder stays). Anything OpsCrew did not install is left alone, and Docker stays
- * installed (other software may use it). Findings say to run `command` (for example
+ * its data folder stays), and while a runner registered with a repository other than
+ * `opts.repositoryUrl` (the project's) is there: it is another project's, and it runs as the deploy
+ * user. Without `opts.repositoryUrl` (the project has no GitHub remote) no runner is removed: each
+ * is named in a step that changes nothing, and the deploy user and OpsCrew's records stay while any
+ * is there, so that an undo with the repository can finish. Anything
+ * OpsCrew did not install is left alone, and Docker stays installed (other software may use it).
+ * A runner machine is taken back with this plan too. Findings say to run `command` (for example
  * `opscrew destroy --undo-host`) again once fixed.
  */
-export function planUndo(facts: HostFacts, command: string): HostPlan {
+export function planUndo(
+  facts: HostFacts,
+  opts: { repositoryUrl?: string },
+  command: string,
+): HostPlan {
   const f = parseFacts(facts);
+  const repository = projectRepository(opts);
   const findings = hostFindings(command);
   const listed = f.record?.apps ?? [];
   const found = [
@@ -1775,21 +1882,26 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
       );
     }
   }
-  // Each app's teardown removes its runner; one left behind goes here.
-  if (entry("github-runner")) {
-    for (const runner of f.runners) {
-      steps.push(
-        step(
-          "github-runner",
-          TITLES.removeRunner(runner.app),
-          "change",
-          { app: runner.app, remove: true, removeParent: runnersDirMade(f) },
-          runnerRemoval(runner.app),
-          "shared",
+  // Each app's teardown removes its runner; one left behind goes here. Another repository's
+  // runner blocks the undo, whether OpsCrew's record lists the runners or not; with the
+  // repository unknown, each runner stays and is named.
+  const runners = f.runners.map((runner) =>
+    repository === undefined
+      ? keptRunner(runner.app, command, "shared")
+      : ownedRunner(
+          { facts: f, found, findings },
+          step(
+            "github-runner",
+            TITLES.removeRunner(runner.app),
+            "change",
+            { app: runner.app, remove: true, removeParent: runnersDirMade(f) },
+            runnerRemoval(runner.app),
+            "shared",
+          ),
+          repository,
         ),
-      );
-    }
-  }
+  );
+  if (repository === undefined || entry("github-runner")) steps.push(...runners);
   const runtime = entry("runtime-dirs");
   if (runtime) {
     const created: string[] = SHARED_DIRS.filter(
@@ -1923,14 +2035,24 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
     );
   }
   const deploy = entry("deploy-user");
+  // The runners left above run as deploy: it stays while any is there.
+  const kept = repository === undefined ? f.runners.map((runner) => `"${runner.app}"`) : [];
   if (deploy && deploy.previous.existed === false) {
     steps.push(
-      step(
-        "deploy-user",
-        "Remove the deploy user OpsCrew created (and its home directory)",
-        f.deployUser === null ? "in-place" : "change",
-        {},
-      ),
+      kept.length > 0
+        ? step(
+            "deploy-user",
+            "Keep the deploy user OpsCrew created: the GitHub Actions runners left on this server run as it",
+            "in-place",
+            { keep: true },
+            `The ${kept.length === 1 ? "runner" : "runners"} of ${listText(kept)} ${kept.length === 1 ? "runs" : "run"} as deploy, so the user stays while ${kept.length === 1 ? "it is" : "they are"} there.`,
+          )
+        : step(
+            "deploy-user",
+            "Remove the deploy user OpsCrew created (and its home directory)",
+            f.deployUser === null ? "in-place" : "change",
+            {},
+          ),
     );
   }
   const daemon = entry("docker-daemon");
@@ -1969,15 +2091,25 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
       ),
     );
   }
+  // What it keeps needs OpsCrew's records, so that a later undo can finish the job.
   steps.push(
-    step(
-      "app-record",
-      "Remove OpsCrew's records of the apps and of its changes (/etc/opscrew)",
-      "change",
-      {},
-      undefined,
-      "shared",
-    ),
+    kept.length > 0
+      ? step(
+          "app-record",
+          "Keep OpsCrew's records of its changes (/etc/opscrew) while a runner is left",
+          "in-place",
+          { keep: true },
+          `OpsCrew's records stay on the server until the ${kept.length === 1 ? "runner is" : "runners are"} gone; add the origin remote and run ${command} again to finish.`,
+          "shared",
+        )
+      : step(
+          "app-record",
+          "Remove OpsCrew's records of the apps and of its changes (/etc/opscrew)",
+          "change",
+          {},
+          undefined,
+          "shared",
+        ),
   );
   return {
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
@@ -2108,4 +2240,51 @@ export function planRunner(
   };
   for (const each of plan.steps) stepScripts(plan, each);
   return plan;
+}
+
+/**
+ * The host plan of a runner machine: a machine the user owns, reached over SSH with sudo like a
+ * server of theirs, that serves only as the GitHub Actions runner of the project's environments.
+ * It holds Docker (the deploy job's edge check and the builds use it), the deploy user, and the
+ * `github-runner` step of each environment `desired.runners` names (by app name, sorted): its
+ * runner installed with `runner`, as deploy's user service as on a server the user owns, or
+ * removed without. A plan that only removes runners installs nothing. Runners it does not name
+ * are left alone, and a runner folder of another repository is never replaced or removed. There
+ * is no edge, app record, firewall, SSH or web-filter step: the machine may be the user's desktop,
+ * and OpsCrew does not harden it. The plan is no one app's (`app` is ""); findings say to run
+ * `command` again once fixed. {@link planUndo} takes the machine back.
+ */
+export function planRunnerHost(
+  facts: HostFacts,
+  desired: DesiredRunnerHost,
+  command: string,
+): HostPlan {
+  const f = parseFacts(facts);
+  const d = parseInput(
+    DesiredRunnerHostSchema,
+    desired,
+    "The runner machine's settings are not valid",
+    "Make the plan again with OpsCrew; if this keeps happening, report it.",
+  );
+  const runners = [...d.runners].sort((a, b) => a.app.localeCompare(b.app));
+  const onlyRemovals = runners.length > 0 && runners.every((item) => item.runner === undefined);
+  const plan = (steps: (HostStep | undefined)[], found: HostFinding[]): HostPlan => ({
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app: "",
+    steps: steps.filter((item): item is HostStep => item !== undefined),
+    findings: found,
+  });
+  const findings = hostFindings(command);
+  // The rest of the facts are unreliable: the findings say why nothing can be planned.
+  const fatal = fatalFindings(f, findings);
+  if (fatal.length > 0) return plan([], fatal);
+  const ctx: MachineContext = { facts: f, found: [], findings };
+  return plan(
+    [
+      ...(onlyRemovals ? [] : [packageRepairStep(f), dockerStep(ctx), deployUserStep(ctx)]),
+      ...runners.map(({ app, runner }) => ownRunnerStep(ctx, app, runner, d.repositoryUrl)),
+    ],
+    ctx.found,
+  );
 }

@@ -13,6 +13,7 @@ import {
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
+  type HostStepId,
   hostPlanHash,
   planHost,
   SHARED_DIRS,
@@ -486,6 +487,7 @@ export function withOtherApp(o: OtherAppOptions = {}): HostFacts {
   const desired: DesiredHost = {
     app,
     projectId: `${app}-project`,
+    repositoryUrl: `https://github.com/acme/${app}`,
     hostnames: o.hostnames ?? [`${app}.example.com`],
     services: [],
     memoryMb: o.memoryMb ?? 512,
@@ -561,6 +563,14 @@ export function preparedServerFacts(projectId: string): HostFacts {
   });
 }
 
+/** The plan changes its `id` step (of `app`, for a step that names one). */
+function changes(plan: HostPlan, id: HostStepId, app?: string): boolean {
+  return plan.steps.some(
+    (step) =>
+      step.id === id && step.state === "change" && (app === undefined || step.params.app === app),
+  );
+}
+
 /**
  * The facts after the teardown `plan`: only what OpsCrew set up for the app goes (its Compose
  * project, its folder, its tunnel connector and deploy key, Portainer and the edge with the last
@@ -588,6 +598,7 @@ function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
     );
   f.runtimeFiles = f.runtimeFiles.filter((file) => file.app !== plan.app);
   f.tunnels = f.tunnels.filter((tunnel) => tunnel.app !== plan.app);
+  f.runners = f.runners.filter((runner) => !changes(plan, "github-runner", runner.app));
   if (paramsOf(plan, "portainer") !== undefined) {
     f.portainer = { ...ADDON, dataVolume: deleteData ? false : f.portainer.dataVolume };
   }
@@ -618,10 +629,14 @@ function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
   return HostFactsSchema.parse(f);
 }
 
-/** The facts after an undo plan: OpsCrew's host settings are reversed (Docker stays). */
-function undoneFacts(before: HostFacts): HostFacts {
+/**
+ * The facts after an undo plan: OpsCrew's host settings are reversed (Docker stays), and the
+ * runners, the deploy user and OpsCrew's records go when the plan removes them.
+ */
+function undoneFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const f = structuredClone(before);
-  f.deployUser = null;
+  if (changes(plan, "deploy-user")) f.deployUser = null;
+  f.runners = f.runners.filter((runner) => !changes(plan, "github-runner", runner.app));
   f.sshd = f.sshd === null ? null : { ...f.sshd, dropIn: null, permitRootLogin: "yes" };
   f.firewall = { ...f.firewall, ufw: "inactive", ufwRules: [] };
   f.fail2ban = { active: false, jail: null, sshdJail: false };
@@ -630,10 +645,13 @@ function undoneFacts(before: HostFacts): HostFacts {
   f.dirs = f.dirs.map((dir) =>
     (dir.entries ?? 0) === 0 ? { path: dir.path, kind: "absent" as const } : dir,
   );
-  // /etc/opscrew goes, the records of apps removed with their data kept too.
-  f.apps = [];
-  f.record = null;
-  f.ready = false;
+  // /etc/opscrew goes, the records of apps removed with their data kept too, unless the undo keeps
+  // them for what it leaves.
+  if (changes(plan, "app-record")) {
+    f.apps = [];
+    f.record = null;
+    f.ready = false;
+  }
   return HostFactsSchema.parse(f);
 }
 
@@ -678,7 +696,7 @@ export class FakeHostServer implements HostAdapterApi {
       record.verified = await options.verifyLogin();
     }
     if (plan.purpose === "teardown") this.facts = tornDownFacts(this.facts, plan);
-    else if (plan.purpose === "undo") this.facts = undoneFacts(this.facts);
+    else if (plan.purpose === "undo") this.facts = undoneFacts(this.facts, plan);
     else if (paramsOf(plan, "app-record") !== undefined) {
       this.facts = preparedFacts(this.facts, plan);
     }

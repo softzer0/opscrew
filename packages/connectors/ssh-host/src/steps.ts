@@ -1880,8 +1880,9 @@ const RunnerParams = DesiredRunnerSchema.extend({
 });
 
 /**
- * The app's runner (`params.app`, in `runnerDir(app)`): installed by a setup plan, removed by a
- * setup plan without one (`remove: true`), a teardown, or an undo (any app's left behind). It is
+ * The app's runner (`params.app`, in `runnerDir(app)`): installed by a setup plan (the app's, or a
+ * runner machine's, which holds one per environment), removed by a setup plan without one
+ * (`remove: true`), a teardown, or an undo (any app's left behind). It is
  * deploy's systemd user service `runnerUnit(app)` (`Restart=always`), on the servers OpsCrew
  * creates and on those the user owns alike, and every runner command runs as deploy (see
  * `StepScripts.asDeploy`): the pinned archive checked by its SHA-256 and extracted, `config.sh`
@@ -1896,7 +1897,8 @@ const RunnerParams = DesiredRunnerSchema.extend({
  */
 function runnerScripts(plan: HostPlan, step: HostStep): StepScripts {
   const { app } = params(step, z.object({ app: AppNameSchema }));
-  if (plan.purpose !== "undo" && app !== plan.app) throw invalid(step, "app");
+  // A plan of one app holds that app's runner only; an undo or a runner machine's plan, any app's.
+  if (plan.app !== "" && app !== plan.app) throw invalid(step, "app");
   const base = {
     APP: app,
     DIR: runnerDir(app),

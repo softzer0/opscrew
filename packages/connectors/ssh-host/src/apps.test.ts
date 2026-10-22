@@ -15,6 +15,7 @@ import {
   provision,
   removeApp,
   SHOP_PROJECT,
+  SHOP_REPOSITORY,
   TUNNEL_COMPOSE,
   TUNNEL_ID,
   tunnelDesired,
@@ -416,7 +417,7 @@ describe("removing an app", () => {
     const fake = await withTwo();
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(codes(plan)).toEqual([]);
@@ -474,7 +475,7 @@ describe("removing an app", () => {
     deployApp(fake, "blog", "tunnel");
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.steps.map((step) => [step.id, step.scope])).toEqual([
@@ -500,7 +501,7 @@ describe("removing an app", () => {
     const fake = await withShop();
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.steps.map((step) => [step.id, step.scope])).toEqual([
@@ -528,7 +529,7 @@ describe("removing an app", () => {
       fake,
       planTeardown(
         await inspectHost(fake),
-        { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+        { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
         "opscrew destroy",
       ),
     );
@@ -551,7 +552,11 @@ describe("removing an app", () => {
 
   it("undoes the host only once no app is left, naming the apps still there", async () => {
     const fake = await withTwo();
-    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const plan = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(codes(plan)).toEqual(["app-still-deployed"]);
     expect(plan.findings[0]?.message).toContain('"blog" and "shop"');
   });
@@ -622,7 +627,7 @@ describe("a plan made for other apps than are on the server now", () => {
     const fake = await withShop();
     const teardown = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(teardown.otherApps).toEqual([]);
@@ -681,7 +686,7 @@ describe("removals leave what is not the app's own", () => {
     deployApp(fake, "shop");
     const teardown = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     const edge = teardown.steps.find((step) => step.id === "edge");
@@ -697,7 +702,7 @@ describe("removals leave what is not the app's own", () => {
     const fake = await withShop();
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: "shop-other" },
+      { deleteData: true, app: "shop", projectId: "shop-other", repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(codes(plan)).toEqual(["app-name-taken"]);
@@ -714,7 +719,7 @@ describe("removals leave what is not the app's own", () => {
     expect(appRecord(fake, "shop")?.state).toBe("data-kept");
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.steps.find((step) => step.id === "app-dirs")?.state).toBe("change");
@@ -729,7 +734,7 @@ describe("removals leave what is not the app's own", () => {
     fake.files.set("/etc/opscrew/host.json", JSON.stringify({ ...host, apps: ["news", "shop"] }));
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(codes(plan)).toEqual(["app-record-damaged"]);
@@ -739,7 +744,7 @@ describe("removals leave what is not the app's own", () => {
     fake.files.set("/etc/opscrew/host.json", JSON.stringify({ ...host, apps: ["shop"] }));
     const again = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(codes(again)).toEqual([]);

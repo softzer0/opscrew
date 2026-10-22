@@ -16,6 +16,7 @@ import {
   runnerToken,
   SH_AVAILABLE,
   SHOP_PROJECT,
+  SHOP_REPOSITORY,
   shSyntax,
   tunnelDesired,
   tunnelToken,
@@ -122,7 +123,7 @@ async function everyPlan(): Promise<HostPlan[]> {
   plans.push(
     planTeardown(
       await inspectHost(used),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     ),
   );
@@ -130,7 +131,7 @@ async function everyPlan(): Promise<HostPlan[]> {
     used,
     planTeardown(
       await inspectHost(used),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     ),
     tokens,
@@ -141,9 +142,16 @@ async function everyPlan(): Promise<HostPlan[]> {
     active: false,
     version: "2.338.0",
     label: "opscrew-old-prod",
-    url: "https://github.com/acme/old",
+    // This project's: an undo never removes another repository's runner.
+    url: SHOP_REPOSITORY,
   });
-  plans.push(planUndo(await inspectHost(used), "opscrew destroy --undo-host"));
+  plans.push(
+    planUndo(
+      await inspectHost(used),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    ),
+  );
 
   // Two apps on one server: removing one takes its deploy key too.
   const shared = new FakeHost();
@@ -160,7 +168,7 @@ async function everyPlan(): Promise<HostPlan[]> {
   plans.push(
     planTeardown(
       await inspectHost(shared),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     ),
   );
@@ -177,7 +185,13 @@ async function everyPlan(): Promise<HostPlan[]> {
   await applyApproved(filtered, withFilter);
   plans.push(planHost(await inspectHost(filtered), desiredFor(filtered), "opscrew provision"));
   await removeApp(filtered);
-  plans.push(planUndo(await inspectHost(filtered), "opscrew destroy --undo-host"));
+  plans.push(
+    planUndo(
+      await inspectHost(filtered),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    ),
+  );
   plans.push(
     planPortainer({
       app: "shop",
@@ -553,7 +567,7 @@ ufw() {
     deployApp(fake, "shop");
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     const step = plan.steps.find((item) => item.id === "app-dirs");
@@ -613,7 +627,7 @@ esac`;
     deployApp(fake, "shop");
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     const step = plan.steps.find((item) => item.id === "app-dirs");

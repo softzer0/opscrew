@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { parseGitHubRepo } from "@opscrew/connector-github";
 import {
   appDirs,
   applyHostPlan,
@@ -29,6 +30,7 @@ import {
 import {
   type RunnerRepository,
   removeKeptRegistrations,
+  repositoryUrl,
   runnerRepository,
   runnerTokens,
 } from "../runners";
@@ -36,6 +38,7 @@ import {
   adapterBlocked,
   approvalEntry,
   approveAndApplyHostPlan,
+  gitClient,
   type HostAdapterApi,
   type HostPlanOutcome,
   hasDeployment,
@@ -465,6 +468,20 @@ export async function destroyOwnServer(
   };
   const facts = inspected.facts;
   requireOwnApp(plan, deps.paths.projectId, facts);
+  // The host plans never touch a runner another repository registered on the server. Without a
+  // GitHub remote named origin the repository is unknown: they leave every runner, and say so.
+  const remote = parseGitHubRepo((await gitClient(deps).remoteUrl("origin")) ?? "");
+  const project = remote === undefined ? {} : { repositoryUrl: repositoryUrl(remote) };
+  // What a host plan leaves on the server, and why (a step that keeps it), said once each.
+  const noted = new Set<string>();
+  const noteKept = (hostPlan: HostPlan | undefined) => {
+    for (const item of hostPlan?.steps ?? []) {
+      if (item.params.keep !== true || item.reason === undefined || noted.has(item.reason))
+        continue;
+      noted.add(item.reason);
+      deps.reporter.warn(item.reason);
+    }
+  };
 
   // 4. What the teardown removes: checked before anything changes, shown, confirmed once
   let iac: DeletionSession | undefined;
@@ -484,11 +501,16 @@ export async function destroyOwnServer(
   }
   // Without its record (deleted on the server) the plan names the app (T931).
   const teardown = removeApp
-    ? planTeardown(facts, { deleteData, app: name, projectId: deps.paths.projectId }, command)
+    ? planTeardown(
+        facts,
+        { deleteData, app: name, projectId: deps.paths.projectId, ...project },
+        command,
+      )
     : undefined;
   if (teardown !== undefined) {
     requireNoHostBlockers(teardown, `remove ${name} from your server`, command);
   }
+  noteKept(teardown);
   const hostSteps = (teardown?.steps ?? []).filter((step) => step.state === "change");
   // The teardown deletes the app's data (with `deleteData`) in its step that removes the app.
   const deletesData =
@@ -680,13 +702,14 @@ export async function destroyOwnServer(
           })
         : facts;
     requireOwnApp(plan, deps.paths.projectId, after);
-    const undo = planUndo(after, command);
+    const undo = planUndo(after, project, command);
     requireNoHostBlockers(
       undo,
       "undo its changes to your server",
       command,
       removeApp ? ` (the app itself is removed already)` : "",
     );
+    noteKept(undo);
     const undoSteps = undo.steps.filter((step) => step.state === "change");
     if (undoSteps.length === 0) {
       // An undo removes OpsCrew's record last, so a missing record usually means it ran before.

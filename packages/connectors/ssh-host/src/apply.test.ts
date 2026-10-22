@@ -12,6 +12,7 @@ import {
   provision,
   removeApp,
   SHOP_PROJECT,
+  SHOP_REPOSITORY,
   TUNNEL_COMPOSE,
   TUNNEL_ID,
   tunnelDesired,
@@ -336,7 +337,11 @@ describe("docker daemon settings", () => {
     await provision(fake);
     await removeApp(fake);
     fake.files.set("/etc/docker/daemon.json", '{ "log-driver": "journald" }\n');
-    const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const undo = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(undo.steps.find((step) => step.id === "docker-daemon")).toMatchObject({
       state: "in-place",
     });
@@ -397,7 +402,14 @@ describe("ufw default policies", () => {
       defaultRouted: "reject",
     });
     await removeApp(fake);
-    await applyApproved(fake, planUndo(await inspectHost(fake), "opscrew destroy --undo-host"));
+    await applyApproved(
+      fake,
+      planUndo(
+        await inspectHost(fake),
+        { repositoryUrl: SHOP_REPOSITORY },
+        "opscrew destroy --undo-host",
+      ),
+    );
     expect(fake.ufwDefaults).toEqual({ incoming: "allow", outgoing: "allow", routed: "reject" });
     expect(fake.ufwActive).toBe(false);
   });
@@ -719,7 +731,7 @@ describe("teardown", () => {
     const fake = await deployed(true);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: false, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     const result = await applyApproved(fake, plan);
@@ -746,7 +758,7 @@ describe("teardown", () => {
     const fake = await deployed(true);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     await applyApproved(fake, plan);
@@ -772,12 +784,16 @@ describe("undo", () => {
       fake,
       planTeardown(
         await inspectHost(fake),
-        { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+        { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
         "opscrew destroy",
       ),
     );
 
-    const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const undo = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     expect(undo.findings).toEqual([]);
     const result = await applyApproved(fake, undo);
     expect(result).toEqual({
@@ -818,7 +834,14 @@ describe("undo", () => {
     await provision(fake);
     expect(fake.files.get("/etc/opscrew/backup/10-opscrew.conf")).toBe("X11Forwarding no\n");
     await removeApp(fake);
-    await applyApproved(fake, planUndo(await inspectHost(fake), "opscrew destroy --undo-host"));
+    await applyApproved(
+      fake,
+      planUndo(
+        await inspectHost(fake),
+        { repositoryUrl: SHOP_REPOSITORY },
+        "opscrew destroy --undo-host",
+      ),
+    );
     expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe("X11Forwarding no\n");
   });
 });

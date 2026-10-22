@@ -5,7 +5,9 @@
  * Several OpsCrew apps share a server (feature 013): each has its own record, folders, deploy key
  * and Cloudflare Tunnel connector, and the shared edge goes with the last one. An app's GitHub
  * Actions runner (feature 015) is deploy's systemd user service there and, through `planRunner`
- * as the deploy user, on the servers OpsCrew creates.
+ * as the deploy user, on the servers OpsCrew creates. A runner machine (a machine of the user's
+ * that only runs the environments' runners) has a host plan of its own, `planRunnerHost`, and is
+ * taken back with `planUndo`. No plan replaces or removes another repository's runner.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md` and
  * `specs/015-environments-runners/contracts/runners.md`.
@@ -47,12 +49,20 @@ export { hostPlanHash } from "./hash";
 export { inspectHost, inspectRunners } from "./inspect";
 export { localExec } from "./local";
 export { isPublicAddress } from "./parse";
-export { planHost, planPortainer, planRunner, planTeardown, planUndo } from "./plan";
+export {
+  planHost,
+  planPortainer,
+  planRunner,
+  planRunnerHost,
+  planTeardown,
+  planUndo,
+} from "./plan";
 export {
   type ApplyOptions,
   type ApplyResult,
   type DesiredHost,
   type DesiredRunner,
+  type DesiredRunnerHost,
   type HostPlan,
   HostPlanSchema,
   type HostStep,

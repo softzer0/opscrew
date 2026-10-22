@@ -12,6 +12,7 @@ import {
   runnerDesired,
   runnerToken,
   SHOP_PROJECT,
+  SHOP_REPOSITORY,
   tunnelDesired,
 } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
@@ -192,12 +193,8 @@ describe("the github-runner step", () => {
       change: { label: "opscrew-shop-staging" },
       why: "it has the label opscrew-shop-staging, not opscrew-shop-prod",
     },
-    {
-      what: "a changed repository",
-      change: { url: "https://github.com/acme/old-shop" },
-      why: "it is registered with https://github.com/acme/old-shop, not https://github.com/acme/shop",
-    },
     { what: "a stopped service", change: { active: false }, why: "its service is not running" },
+    // Another repository's runner is never installed over: see runner-host.test.ts.
   ])(
     "installs it again over its folder for $what, with a token fetched only then",
     async ({ change, why }) => {
@@ -288,7 +285,7 @@ describe("removing the runner", () => {
     const registration = await withRunner(fake);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.steps[0]).toEqual({
@@ -346,7 +343,7 @@ describe("removing the runner", () => {
     arrange(fake);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     const result = await applyApproved(fake, plan, {
@@ -370,7 +367,7 @@ describe("removing the runner", () => {
     });
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(runnerStepOf(plan).params).toEqual({ app: "shop", remove: true, removeParent: false });
@@ -406,7 +403,7 @@ describe("removing the runner", () => {
     await withRunner(fake);
     const plan = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "blog", projectId: "blog-1" },
+      { deleteData: true, app: "blog", projectId: "blog-1", repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(plan.steps.map((step) => step.id)).not.toContain("github-runner");
@@ -442,19 +439,24 @@ describe("removing the runner", () => {
       active: false,
       version: "2.337.0",
       label: "opscrew-old-prod",
-      url: "https://github.com/acme/old",
+      // This project's: an undo never removes another repository's runner.
+      url: SHOP_REPOSITORY,
     });
     await applyApproved(
       fake,
       planTeardown(
         await inspectHost(fake),
-        { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+        { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
         "opscrew destroy",
       ),
       { command: "opscrew destroy", runnerToken: tokens().fetch },
     );
     expect(fake.runnerPrepared).toBe(true);
-    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
+    const plan = planUndo(
+      await inspectHost(fake),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
     const ids = plan.steps.map((step) => step.id);
     expect(ids.indexOf("github-runner")).toBeLessThan(ids.indexOf("runtime-dirs"));
     expect(runnerStepOf(plan, "old")).toMatchObject({
@@ -722,7 +724,7 @@ describe("the runner's scripts", () => {
     await withRunner(fake);
     const teardown = planTeardown(
       await inspectHost(fake),
-      { deleteData: true, app: "shop", projectId: SHOP_PROJECT },
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     const removal = runnerStepOf(teardown);

@@ -1,6 +1,12 @@
 /** Blocking findings: what OpsCrew found and what the user can do. Plain English, no secrets. */
 import { listText, upperFirst } from "@opscrew/core";
-import { MIN_DOCKER_MAJOR, PORTAINER_PORT, RUNNERS_DIR, TUNNEL_APP_PORT } from "./constants";
+import {
+  MIN_DOCKER_MAJOR,
+  PORTAINER_PORT,
+  RUNNERS_DIR,
+  runnerDir,
+  TUNNEL_APP_PORT,
+} from "./constants";
 import { type HostFacts, otherActiveApps, readableRecords } from "./facts";
 import type { AccessMode, HostFinding } from "./types";
 
@@ -278,6 +284,11 @@ export function hostFindings(command: string) {
       code: "runners-dir-taken",
       message: `${RUNNERS_DIR} already exists on this server and is not the deploy user's folder (${owner === undefined ? "it is not a plain folder" : `its owner is ${owner}`}), so OpsCrew does not take it over for the GitHub Actions runner.`,
       hint: `Move or rename it if nothing on the server uses it, or set environment.runner to github in the plan, ${rerun}.`,
+    }),
+    runnerOtherRepository: (app: string, repositoryUrl: string): HostFinding => ({
+      code: "runner-other-repository",
+      message: `The runner folder ${runnerDir(app)} holds the GitHub Actions runner of another repository (${repositoryUrl}), and OpsCrew never replaces or removes another repository's runner.`,
+      hint: `Remove that runner in its own project first (with opscrew destroy there, or by setting its environment's runner back to github). If it was this project's runner before the repository was renamed or transferred, unregister it in the old repository's settings (Settings, Actions, Runners), then run "sudo rm -rf ${runnerDir(app)}" there. ${upperFirst(rerun)}.`,
     }),
     runtimeDirExists: (paths: readonly string[]): HostFinding => ({
       code: "runtime-dir-exists",
