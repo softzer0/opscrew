@@ -399,7 +399,8 @@ export async function destroyPortainer(
   const dataOnly = !removeApp && deleteData && record.volumes.length > 0;
   if (!removeApp && !dataOnly) throw nothingDeployed(plan);
   const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
-  if (removeApp && (root.appTunnel || root.webhook) && !stateHere) throw teardownStateNotHere(plan);
+  if (removeApp && (root.appTunnel || root.webhook) && !stateHere)
+    throw await teardownStateNotHere(deps.paths.root, plan);
   const cloudflareState = removeApp && stateHere;
   if (cloudflareState) {
     await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");

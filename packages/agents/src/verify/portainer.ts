@@ -21,7 +21,7 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { portainerDnsRecordNote } from "../provision/publish";
-import { planWhere } from "../runners/words";
+import { namedEnvironmentFlag, planFile } from "../runners/words";
 import { addressNames, hidePortainerAddress, readPortainerConnection } from "../shared";
 
 /**
@@ -101,7 +101,8 @@ export function portainerVerifyUrl(plan: DeployPlan, given: string | undefined):
     return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
   }
   if (plan.dns.domain !== undefined) return `https://${plan.dns.domain}`;
-  const { file, flag } = planWhere(plan);
+  const file = planFile(plan);
+  const flag = namedEnvironmentFlag(plan);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `${file} has no domain, and OpsCrew does not know where your reverse proxy serves the app, so there is nothing to verify.`,

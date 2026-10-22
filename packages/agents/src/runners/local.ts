@@ -91,10 +91,10 @@ const KILL_AFTER_MS = 30_000;
  * would never pull.
  * @throws OpsCrewError `PHASE_PRECONDITION`.
  */
-export function requireLocalRunnerImage(plan: DeployPlan): void {
+export async function requireLocalRunnerImage(root: string, plan: DeployPlan): Promise<void> {
   if (plan.environment?.runner !== "local") return;
   if (plan.target.provider !== "localhost" || plan.target.image !== "local-build") return;
-  const { file, flag } = planWhere(plan);
+  const { file, flag } = await planWhere(root, plan);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     "The local runner deploys the image GitHub Actions built, but this environment builds its image on this computer (image: local-build), which the deploy would never pull. Nothing was changed.",
@@ -314,7 +314,7 @@ export async function startLocalRunner(
       },
     );
   }
-  requireLocalRunnerImage(plan);
+  await requireLocalRunnerImage(deps.paths.root, plan);
   const local = computer(deps, services.computer);
   const platform = runnerPlatform(local.platform, local.arch);
   if (platform === undefined) {

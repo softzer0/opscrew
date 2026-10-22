@@ -24,7 +24,10 @@ export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
  * implementation built from `PhaseDeps` (env, fetch, runner); tests replace them with fakes.
  */
 export interface DestroyServices
-  extends Pick<ProvisionServices, "engine" | "provider" | "sharedCloudflare" | "runnerGitHub"> {
+  extends Pick<
+    ProvisionServices,
+    "engine" | "provider" | "sharedCloudflare" | "runnerGitHub" | "runnerMachine"
+  > {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */

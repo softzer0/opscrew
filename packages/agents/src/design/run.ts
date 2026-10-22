@@ -125,10 +125,13 @@ export interface RunDesignOptions {
   /** A server the user owns: what inspection found and how the internet reaches it. */
   ownServer?: OwnServerDesignInput;
   /**
-   * A new environment's deploy source and runner (`opscrew env add`), written into its first
-   * plan; a later design keeps the plan's own.
+   * A new environment's deploy source and runner (`opscrew env add`), with its runner machine and
+   * where it builds, written into its first plan; a later design keeps the plan's own.
    */
-  environment?: Pick<NonNullable<DeployPlan["environment"]>, "deploySource" | "runner">;
+  environment?: Pick<
+    NonNullable<DeployPlan["environment"]>,
+    "deploySource" | "runner" | "runnerHost" | "build"
+  >;
   /** This computer (the localhost target): its CPU and the port probe (fakes in tests). */
   localhost?: Pick<LocalhostServices, "arch" | "portFree">;
 }

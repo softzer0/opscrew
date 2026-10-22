@@ -2,7 +2,7 @@ import { engineLabel } from "@opscrew/iac-engine";
 import { PORTAINER_DEPLOY_BRANCH, portainerDeployBranch } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { planWhere } from "../runners/words";
+import { namedEnvironmentFlag, planFile } from "../runners/words";
 import { CHANGE_SYMBOL } from "../shared";
 import type { HostDifference } from "./host";
 import type { DriftReport } from "./types";
@@ -20,7 +20,11 @@ interface Where {
 function whereOf(plan: DeployPlan | undefined): Where {
   return plan === undefined
     ? { file: "opscrew/plan.yaml", flag: "", branch: PORTAINER_DEPLOY_BRANCH }
-    : { ...planWhere(plan), branch: portainerDeployBranch(plan) };
+    : {
+        file: planFile(plan),
+        flag: namedEnvironmentFlag(plan),
+        branch: portainerDeployBranch(plan),
+      };
 }
 
 /**

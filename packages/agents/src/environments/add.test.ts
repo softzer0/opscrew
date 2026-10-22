@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { exists, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -22,11 +22,16 @@ import {
 } from "../shared";
 import {
   createTestPhaseDeps,
+  ED25519_FINGERPRINT,
   euCatalog,
+  FakeHostServer,
+  freshFacts,
   makeRequirements,
   nextPostgresFacts,
+  ownRunner,
   PORTAINER_URL,
   portainerPlan,
+  readyRemote,
   type TestPhaseDeps,
 } from "../testing";
 import {
@@ -34,6 +39,7 @@ import {
   environmentQuestions,
   listEnvironments,
   setDeploySource,
+  setEnvironmentRunner,
   sharedPartsDiffer,
 } from "./index";
 
@@ -164,7 +170,11 @@ describe("addEnvironment", () => {
       "domain",
       "from",
       "runner",
+      "build",
     ]);
+    // Where to build is optional: GitHub's machines unless answered.
+    expect(questions.at(-1)).toMatchObject({ required: false });
+    expect(questions.at(-1)?.default).toBeUndefined();
     const defaults = Object.fromEntries(questions.map((q) => [q.id, q.default]));
     expect(defaults).toEqual({
       provider: "hetzner",
@@ -461,6 +471,246 @@ describe("design per environment", () => {
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.hint).toBe(
       "Run `opscrew design` for prod first, then `opscrew design --env staging`.",
+    );
+  });
+});
+
+const MACHINE_IPV4 = "192.168.1.30";
+
+/** Records the runner machine `name` on this computer, as `opscrew runner host add` leaves it. */
+async function recordMachine(
+  deps: TestPhaseDeps,
+  name: string,
+  o: { arch?: "amd64" | "arm64"; host?: string } = {},
+): Promise<void> {
+  const dir = join(deps.paths.homeDir, "projects", deps.paths.projectId, "runner-hosts");
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, `${name}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      name,
+      login: {
+        host: o.host ?? MACHINE_IPV4,
+        port: 22,
+        user: "ana",
+        agent: true,
+        hostKey: HOST_KEY,
+      },
+      arch: o.arch ?? "amd64",
+      docker: true,
+      environments: [],
+    })}\n`,
+  );
+}
+
+describe("an environment on a runner machine", () => {
+  it("is added with its runner machine and builds there, offered with the questions which machine and where to build", async () => {
+    const { prod, staging } = await prodApp();
+    await recordMachine(staging, "home");
+    const prodPlan = await readArtifact("plan", prod.paths.files.plan);
+    const base = await readArtifact("requirements", prod.paths.files.requirements);
+    const facts = nextPostgresFacts({ name: "shop" });
+    const questions = environmentQuestions(
+      "staging",
+      { prodPlan, base, environments: ["prod"], runnerHosts: ["home"] },
+      facts,
+    );
+    expect(questions.map((q) => q.id)).toEqual([
+      "provider",
+      "region",
+      "expectedMonthlyUsers",
+      "domain",
+      "from",
+      "runner",
+      "runnerHost",
+      "build",
+    ]);
+    expect(questions.find((q) => q.id === "runner")?.options?.map((o) => o.value)).toEqual([
+      "github",
+      "server",
+      "local",
+      "host",
+    ]);
+    // "This computer" is offered once, among the interview's targets.
+    const targets = questions[0]?.options?.map((o) => o.value) ?? [];
+    expect(targets.filter((value) => value === "localhost")).toHaveLength(1);
+
+    const { design } = await addEnvironment(staging, {
+      answers: { provider: "hetzner", runner: "host", build: "runner" },
+      design: { catalog: euCatalog() },
+    });
+    expect(design.plan.environment).toEqual({
+      name: "staging",
+      deploySource: { from: "main" },
+      runner: "host",
+      runnerHost: { name: "home", arch: "amd64" },
+      build: "runner",
+    });
+    // The plan names the machine, never its address.
+    expect(await readFile(staging.paths.files.plan, "utf8")).not.toContain(MACHINE_IPV4);
+  });
+
+  it("refuses a build on a machine whose CPU is not the server's, naming the server types that match, and writes nothing", async () => {
+    const { staging } = await prodApp();
+    await recordMachine(staging, "pi", { arch: "arm64" });
+    const error = await failure(
+      addEnvironment(staging, {
+        answers: { provider: "hetzner", runner: "host", runnerHost: "pi", build: "runner" },
+        design: { catalog: euCatalog() },
+      }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "The runner machine pi is arm64, and every server type OpsCrew offers at Hetzner Cloud is amd64 (x86-64): an image built on pi would not run on the server, so it cannot build the staging environment's image.",
+    );
+    expect(error.hint).toContain("build github");
+    expect(await exists(staging.paths.files.requirements)).toBe(false);
+    // Its deploy job alone may run there: GitHub's machines build the image for the server.
+    const { design } = await addEnvironment(staging, {
+      answers: { provider: "hetzner", runner: "host", runnerHost: "pi" },
+      design: { catalog: euCatalog() },
+    });
+    expect(design.plan.environment?.runnerHost).toEqual({ name: "pi", arch: "arm64" });
+    expect(design.plan.environment?.build).toBeUndefined();
+  });
+
+  it("refuses a runner machine that is the environment's own server, pointing to the server's runner", async () => {
+    const { region: _region, ...ownRequirements } = {
+      ...makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }),
+      provider: "own" as const,
+    };
+    const { staging } = await prodApp(
+      ownRequirements,
+      { ownServer: { facts: SERVER } },
+      {
+        host: IPV4,
+        port: 22,
+        user: "root",
+        agent: true,
+        reachable: true,
+        serve: "dns-only",
+        hostKey: HOST_KEY,
+      },
+    );
+    await recordMachine(staging, "box", { host: IPV4 });
+    const error = await failure(
+      addEnvironment(staging, {
+        answers: { provider: "own", runner: "host", runnerHost: "box" },
+        design: { ownServer: { facts: SERVER } },
+      }),
+    );
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The runner machine box is the staging environment's own server, so a runner there would be the server's runner.",
+    });
+    expect(error.hint).toContain("`opscrew env set staging --runner server`");
+  });
+
+  it("refuses a runner machine the project does not have, or several without a name", async () => {
+    const { staging } = await prodApp();
+    const none = await failure(addEnvironment(staging, { answers: { runner: "host" } }));
+    expect(none.message).toBe(
+      "runner host runs the deploy job on a runner machine, and this computer knows none for the project.",
+    );
+    await recordMachine(staging, "home");
+    await recordMachine(staging, "pi", { arch: "arm64" });
+    const several = await failure(addEnvironment(staging, { answers: { runner: "host" } }));
+    expect(several.message).toBe(
+      "runner host needs the runner machine's name: this project has home and pi.",
+    );
+    const unknown = await failure(
+      addEnvironment(staging, { answers: { runner: "host", runnerHost: "nas" } }),
+    );
+    expect(unknown.code).toBe("PHASE_PRECONDITION");
+    expect(await exists(staging.paths.files.requirements)).toBe(false);
+
+    // Asked in a terminal, with both machines: GitHub's machines need no machine chosen.
+    const asked: string[] = [];
+    const { design } = await addEnvironment(staging, {
+      ask: async (questions) => {
+        const machine = questions.find((q) => q.id === "runnerHost");
+        expect(machine).toMatchObject({ required: false });
+        expect(machine?.default).toBeUndefined();
+        asked.push(...(machine?.options ?? []).map((o) => o.value));
+        return { runner: "github" };
+      },
+      design: { catalog: euCatalog() },
+    });
+    expect(asked).toEqual(["home", "pi"]);
+    expect(design.plan.environment).toEqual({
+      name: "staging",
+      deploySource: { from: "main" },
+      runner: "github",
+    });
+  });
+
+  it("inspects a server of the user's before design, as `opscrew design` does", async () => {
+    const { region: _region, ...ownRequirements } = {
+      ...makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }),
+      provider: "own" as const,
+    };
+    const { staging } = await prodApp(
+      ownRequirements,
+      { ownServer: { facts: SERVER } },
+      {
+        host: IPV4,
+        port: 22,
+        user: "root",
+        agent: true,
+        reachable: true,
+        serve: "dns-only",
+        hostKey: ED25519_FINGERPRINT,
+      },
+    );
+    staging.runner = ownRunner();
+    const host = new FakeHostServer(freshFacts({ arch: "arm64" }));
+    const { design } = await addEnvironment(staging, {
+      answers: { provider: "own" },
+      ownServer: { services: { host, remote: (connection) => readyRemote(connection.host) } },
+    });
+    expect(host.inspections).toBe(1);
+    expect(design.plan.target).toMatchObject({ provider: "own", arch: "arm64" });
+  });
+});
+
+describe("setEnvironmentRunner (env set --runner)", () => {
+  it("moves an environment's jobs to a runner machine and back, keeping its build only where it fits", async () => {
+    const { staging } = await prodApp();
+    await addEnvironment(staging, { design: { catalog: euCatalog() } });
+    await recordMachine(staging, "home");
+    const before = await readFile(staging.paths.files.plan, "utf8");
+
+    const onMachine = await setEnvironmentRunner(staging.paths, {
+      runner: "host",
+      runnerHost: "home",
+      build: "runner",
+    });
+    expect(onMachine.environment).toMatchObject({
+      name: "staging",
+      runner: "host",
+      runnerHost: { name: "home", arch: "amd64" },
+      build: "runner",
+    });
+    expect(await readArtifact("plan", staging.paths.files.plan)).toEqual(onMachine);
+    // The same machine again, without --build, keeps the build there and changes nothing.
+    const written = await readFile(staging.paths.files.plan, "utf8");
+    await setEnvironmentRunner(staging.paths, { runner: "host", runnerHost: "home" });
+    expect(await readFile(staging.paths.files.plan, "utf8")).toBe(written);
+
+    const back = await setEnvironmentRunner(staging.paths, { runner: "github" });
+    expect(back.environment).toEqual({
+      name: "staging",
+      deploySource: { from: "main" },
+      runner: "github",
+    });
+    expect(await readFile(staging.paths.files.plan, "utf8")).toBe(before);
+    const server = await failure(
+      setEnvironmentRunner(staging.paths, { runner: "server", build: "runner" }),
+    );
+    expect(server.message).toBe(
+      "The server's runner never builds: the app's build scripts would then run on the server the app serves from.",
     );
   });
 });

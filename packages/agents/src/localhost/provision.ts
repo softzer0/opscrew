@@ -105,7 +105,7 @@ export async function provisionLocalhost(
   const services = options.services ?? {};
   const local = services.localhost;
   const target = localTarget(requested);
-  requireLocalRunnerImage(requested);
+  await requireLocalRunnerImage(deps.paths.root, requested);
   await requireSharedParts(deps.paths, requested);
   await requireOwnHostnames(deps.paths, requested);
 
@@ -119,7 +119,7 @@ export async function provisionLocalhost(
       "Fix what is listed above, then run `opscrew provision` again.",
     );
   }
-  const envFlag = planWhere(requested).flag;
+  const envFlag = (await planWhere(deps.paths.root, requested)).flag;
   // The local runner's workflow reads the deploy secrets where the repository keeps them, so where
   // that is comes before it is rendered.
   let github: { git: GitClient; setup: GitHubSetup } | undefined;

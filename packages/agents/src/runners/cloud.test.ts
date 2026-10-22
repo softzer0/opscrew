@@ -320,12 +320,19 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
     expect(s.host.applies).toEqual([]);
     expect(s.runnerGitHub.calls).toEqual([]);
 
-    // A named environment's commands name it.
+    // Beside another environment, each one's commands name it, prod's too.
     const staging = DeployPlanSchema.parse({
       ...testPlan(),
       app: { ...testPlan().app, name: "shop-staging" },
       environment: { name: "staging", runner: "server" },
     });
+    await writeArtifact(
+      "plan",
+      join(s.root, "opscrew", "environments", "staging", "plan.yaml"),
+      staging,
+    );
+    const prod = (await provision(s).catch((e: unknown) => e)) as OpsCrewError;
+    expect(prod.hint).toContain("run `opscrew destroy --env prod` (it deletes the server");
     const run = { phase: "provision" as const, command: "opscrew provision", planOnly: false };
     const named = (await checkCloudRunner(s.deps, staging, s.services, run).catch(
       (e: unknown) => e,

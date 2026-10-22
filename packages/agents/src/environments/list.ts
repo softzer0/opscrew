@@ -18,6 +18,8 @@ export interface EnvironmentSummary {
   from: string;
   /** Where its deploy job runs. */
   runner: NonNullable<DeployPlan["environment"]>["runner"];
+  /** The runner machine of `runner: host`, by its name. */
+  runnerHost?: string;
   /** Whether something of it may be running or left behind ({@link environmentDeployed}). */
   deployed: boolean;
 }
@@ -60,6 +62,9 @@ export async function listEnvironments(paths: ProjectPaths): Promise<Environment
         target: plan.target.provider,
         from: source?.from === "promote" ? source.source : "main",
         runner: plan.environment?.runner ?? "github",
+        ...(plan.environment?.runnerHost !== undefined
+          ? { runnerHost: plan.environment.runnerHost.name }
+          : {}),
         deployed: await environmentDeployed(own, plan),
       };
     }),

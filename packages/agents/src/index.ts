@@ -16,13 +16,20 @@ export * from "./providers";
 export * from "./provision";
 export * from "./retarget";
 export {
+  type AddRunnerHostInput,
+  addRunnerHost,
+  applyRunnerHost,
   type GithubSettingsChange,
   type LocalRunner,
   type LocalRunnerServices,
+  listRunnerHosts,
   planServerRunner,
   type RunnerGitHubApi,
+  type RunnerHostServices,
+  type RunnerHostSummary,
   type RunnerProcess,
   type RunnerStatus,
+  removeRunnerHost,
   runnerStatus,
   type StartRunnerProcess,
   startLocalRunner,

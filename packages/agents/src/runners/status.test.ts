@@ -1,5 +1,6 @@
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { resolveProjectPaths } from "@opscrew/core";
+import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { createTestPhaseDeps, ownPlan, ScriptedRunner } from "../testing";
@@ -139,5 +140,54 @@ describe("runnerStatusLines", () => {
       "  repository: private",
     ]);
     expect(await runnerStatusLines(await deps(), ownPlan(), api)).toEqual([]);
+  });
+});
+
+describe("a runner on a runner machine", () => {
+  const machine = DeployPlanSchema.parse({
+    ...ownPlan(),
+    environment: { runner: "host", runnerHost: { name: "home", arch: "amd64" } },
+  });
+
+  it("is named as the runner machine's in status and secure", async () => {
+    const api = new FakeRunnerGitHub();
+    api.visibility = "public";
+    api.runners = [listedRunner(2, "1a2b3c4d-shop-prod", LABEL, { status: "offline" })];
+    expect(await runnerStatusLines(await deps(), machine, api)).toEqual([
+      "Self-hosted runner (opscrew-shop-prod, on the runner machine home):",
+      "  offline (check the runner machine home, then run `opscrew provision`)",
+      "  version 2.338.0 (GitHub's newest: 2.338.0)",
+      "  repository: public, and outside contributors' workflow runs need no approval: run `opscrew provision` to require it",
+    ]);
+    const checks = await runnerChecks(await deps(), machine, api);
+    expect(statusOf(checks, "runner-online")).toMatchObject({
+      status: "warn",
+      message:
+        "GitHub lists the runner on the runner machine home as offline, so the environment's deploy jobs wait.",
+      remediation:
+        "Check that the runner machine home is up, then run `opscrew provision`, which starts it again.",
+    });
+    expect(statusOf(checks, "runner-public-repository")?.message).toContain(
+      "could run its own code on the runner machine home.",
+    );
+  });
+
+  it("names --env prod in its commands while the app has other environments", async () => {
+    const d = await deps();
+    await writeArtifact("plan", d.paths.files.plan, machine);
+    const staging = resolveProjectPaths(d.paths.root, { env: d.env, environment: "staging" });
+    await writeArtifact(
+      "plan",
+      staging.files.plan,
+      DeployPlanSchema.parse({
+        ...machine,
+        app: { ...machine.app, name: "shop-staging" },
+        environment: { ...machine.environment, name: "staging" },
+      }),
+    );
+    const [missing] = await runnerChecks(d, machine, new FakeRunnerGitHub());
+    expect(missing?.remediation).toBe(
+      "Run `opscrew provision --env prod`, which installs it again.",
+    );
   });
 });

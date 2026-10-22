@@ -11,7 +11,13 @@ import { requireSharedParts } from "../environments/shared-parts";
 import { provisionLocalhost } from "../localhost/provision";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
-import { applyCloudRunner, checkCloudRunner, type RunnerRepository } from "../runners";
+import {
+  applyCloudRunner,
+  checkCloudRunner,
+  checkMachineRunner,
+  provisionRunnerMachines,
+  type RunnerRepository,
+} from "../runners";
 import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
 import {
   addressFromOutputs,
@@ -483,6 +489,13 @@ async function provisionFlow(
       planOnly: options.planOnly === true,
     });
   }
+  // A runner machine (`runner: host`), before any change: recorded here, not the environment's own
+  // server, and allowed for the repository (a public one needs its own approval, FR-1527).
+  const machineRepository = await checkMachineRunner(deps, plan, services, {
+    phase,
+    command,
+    planOnly: options.planOnly === true,
+  });
 
   // 3c. OpsCrew's shared Cloudflare change (its rules in the zone, the account's Zero Trust
   // organization and one-time PIN login) before the infrastructure plan of this setup (after a
@@ -694,12 +707,23 @@ async function provisionFlow(
         })
       )?.hash;
     }
+    // The environment's runner on the runner machines it leaves and on its own: their host plans,
+    // shown and saved.
+    const machines = await provisionRunnerMachines(deps, {
+      plan,
+      services,
+      phase,
+      command,
+      planOnly: true,
+      repository: machineRepository,
+    });
     if (learned.zoneLearned) await writePlanIfChanged(deps, persisted(plan));
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
       ...storageHash,
       ...cloudflareHash,
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
+      ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
       applied: false,
       outputs: {},
     };
@@ -797,6 +821,22 @@ async function provisionFlow(
       await writePlanIfChanged(deps, persisted(plan));
     }
   }
+  // 7c. The environment's runner: removed from each runner machine it left, then installed on its
+  // own (`runner: host`), each machine's host plan approved by its hash; the server is ready for
+  // the deploy job's SSH from there now.
+  const machines = await provisionRunnerMachines(deps, {
+    plan,
+    services,
+    phase,
+    command,
+    repository: machineRepository,
+  });
+  const machineApprovals = machines.flatMap((m) => (m.approval ? [m.approval] : []));
+  if (machineApprovals.length > 0) {
+    for (const approval of machineApprovals) approvals.push(approvalEntry(approval));
+    plan = record(machines.some((m) => m.applied) || host?.applied === true);
+    await writePlanIfChanged(deps, persisted(plan));
+  }
 
   // 8–9. Production environment and GitHub Actions secrets
   const secretsStored = await deploySecretsStep(deps, {
@@ -875,6 +915,7 @@ async function provisionFlow(
     ...cloudflareHash,
     applied: applied.applied,
     ...(host !== undefined ? { hostPlanHash: host.hash, hostApplied: host.applied } : {}),
+    ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
     outputs: publicOutputs(applied.outputs),
     branch: published.published.branch,
     ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),

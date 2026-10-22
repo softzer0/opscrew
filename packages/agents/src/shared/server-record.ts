@@ -41,6 +41,41 @@ const KeyPathSchema = z
     message: "must be an absolute path such as ~/.ssh/id_ed25519",
   });
 
+/** The fields of an SSH login with the user's own key (a server they own, a runner machine). */
+const SSH_LOGIN = {
+  /** IP address or host name the CLI connects to. */
+  host: z.union([z.ipv4(), z.ipv6(), HostNameSchema]),
+  /** SSH port. */
+  port: z.int().min(1).max(65535).default(22),
+  /** The admin login: root or a user with passwordless sudo. */
+  user: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/),
+  /** Path to the private key; absent when the SSH agent holds the key. */
+  keyPath: KeyPathSchema.optional(),
+  /** Use the SSH agent. */
+  agent: z.boolean(),
+  /**
+   * The pinned host key fingerprint the user confirmed, for example `SHA256:` and 43 characters.
+   * Absent until the first connection: the interview records the login, provision pins the key.
+   */
+  hostKey: z
+    .string()
+    .regex(/^SHA256:[A-Za-z0-9+/]{43}$/)
+    .optional(),
+};
+
+const KEY_OR_AGENT = {
+  path: ["keyPath"],
+  message: "is required unless the SSH agent is used",
+};
+
+/**
+ * An SSH login with the user's own key to a machine of theirs: its address, port, admin user, key
+ * file (or the SSH agent) and pinned host key. Never a password or passphrase. Local only.
+ */
+export const SshLoginSchema = z
+  .strictObject(SSH_LOGIN)
+  .refine((login) => login.agent || login.keyPath !== undefined, KEY_OR_AGENT);
+
 /**
  * How OpsCrew reaches a server the user owns over SSH. Local only: the address and the login never
  * reach `opscrew/plan.yaml`, pull requests or commit messages. No passwords or passphrases: the key
@@ -48,24 +83,7 @@ const KeyPathSchema = z
  */
 const OwnServerSchema = z
   .strictObject({
-    /** IP address or host name the CLI connects to. */
-    host: z.union([z.ipv4(), z.ipv6(), HostNameSchema]),
-    /** SSH port. */
-    port: z.int().min(1).max(65535).default(22),
-    /** The admin login: root or a user with passwordless sudo. */
-    user: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/),
-    /** Path to the private key; absent when the SSH agent holds the key. */
-    keyPath: KeyPathSchema.optional(),
-    /** Use the SSH agent. */
-    agent: z.boolean(),
-    /**
-     * The pinned host key fingerprint the user confirmed, for example `SHA256:` and 43 characters.
-     * Absent until the first connection: the interview records the login, provision pins the key.
-     */
-    hostKey: z
-      .string()
-      .regex(/^SHA256:[A-Za-z0-9+/]{43}$/)
-      .optional(),
+    ...SSH_LOGIN,
     /**
      * True when the internet reaches the server directly; false means a Cloudflare Tunnel (the
      * interview's answer, which design turns into the plan's `target.access`).
@@ -83,10 +101,10 @@ const OwnServerSchema = z
     publicIpv4: z.ipv4().optional(),
     publicIpv6: z.ipv6().optional(),
   })
-  .refine((own) => own.agent || own.keyPath !== undefined, {
-    path: ["keyPath"],
-    message: "is required unless the SSH agent is used",
-  });
+  .refine((own) => own.agent || own.keyPath !== undefined, KEY_OR_AGENT);
+
+/** An SSH login with the user's own key ({@link SshLoginSchema}); `port` is 22 by default. */
+export type SshLogin = z.output<typeof SshLoginSchema>;
 
 /** How OpsCrew connects to a server the user owns (`.opscrew/server.json` → `own`). */
 export type OwnServerConnection = z.output<typeof OwnServerSchema>;

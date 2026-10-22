@@ -25,6 +25,7 @@ import {
   OpsCrewError,
   type ProjectPaths,
   resolveProjectPaths,
+  tfstateFile,
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
@@ -785,7 +786,7 @@ export function fakeSharedCloudflare(zone: FakeZone = new FakeZone()): Cloudflar
 /** Writes a non-empty (fake) infrastructure state file, as an apply leaves one. */
 export async function writeFakeState(paths: ProjectPaths): Promise<void> {
   await mkdir(paths.files.tfstateDir, { recursive: true });
-  await writeFile(join(paths.files.tfstateDir, "prod.tfstate"), JSON.stringify({ fake: true }));
+  await writeFile(tfstateFile(paths), JSON.stringify({ fake: true }));
 }
 
 /**

@@ -25,11 +25,11 @@ import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-
 import type { PhaseDeps } from "../context";
 import {
   applyRunnerSettings,
+  lazyRepository,
   planServerRunner,
   type RunnerRepository,
   removeKeptRegistrations,
   repositoryUrl,
-  runnerRepository,
   runnerTokens,
 } from "../runners";
 import {
@@ -369,11 +369,7 @@ export async function prepareOwnServer(
     );
   }
   requireMongoAvx(plan, facts);
-  let repository: Promise<RunnerRepository> | undefined;
-  const repo = () => {
-    repository ??= runnerRepository(deps, input.services.runnerGitHub);
-    return repository;
-  };
+  const repo = lazyRepository(deps, input.services.runnerGitHub);
   // The server's runner, after the repository's check (a public one needs its own approval).
   const runner =
     plan.environment?.runner === "server"

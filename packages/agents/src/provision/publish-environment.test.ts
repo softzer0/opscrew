@@ -24,6 +24,7 @@ describe("the deploy-setup pull request of a named environment", () => {
   it("names its own runtime folder, plan file and --env", () => {
     const body = deploySetupPullRequestBody(inEnvironment(testPlan(), "staging"), "1.2.3", {
       secretsStored: false,
+      flag: " --env staging",
     });
     expect(body).toContain(`\`${STAGING}/runtime/\``);
     expect(body).toContain(`\`${STAGING}/plan.yaml\``);

@@ -28,10 +28,12 @@ import {
   providerBucket,
 } from "../provision";
 import {
+  lazyRepository,
+  planWhere,
   type RunnerRepository,
   removeKeptRegistrations,
+  removeMachineRunners,
   repositoryUrl,
-  runnerRepository,
   runnerTokens,
 } from "../runners";
 import {
@@ -426,7 +428,8 @@ export async function destroyOwnServer(
   // infrastructure code that matches it. Without the state OpsCrew cannot remove the DNS records or
   // the tunnel, so it changes nothing, not even on the server.
   const managesCloudflare = plan.dns.provider === "cloudflare" || usesTunnel(plan);
-  if (removeApp && managesCloudflare && !stateHere) throw teardownStateNotHere(plan);
+  if (removeApp && managesCloudflare && !stateHere)
+    throw await teardownStateNotHere(deps.paths.root, plan);
   if (removeApp && stateHere) {
     await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");
   }
@@ -448,7 +451,6 @@ export async function destroyOwnServer(
     detail: "destroy",
   });
   const { session } = inspected;
-  let repository: Promise<RunnerRepository> | undefined;
   const host: OwnHost = {
     session,
     apply: (remote, hostPlan, applyOptions) =>
@@ -461,10 +463,7 @@ export async function destroyOwnServer(
         deployKeyFile: deps.paths.files.deployKey,
         ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
       }),
-    repository: () => {
-      repository ??= runnerRepository(deps, services.runnerGitHub);
-      return repository;
-    },
+    repository: lazyRepository(deps, services.runnerGitHub),
   };
   const facts = inspected.facts;
   requireOwnApp(plan, deps.paths.projectId, facts);
@@ -578,6 +577,21 @@ export async function destroyOwnServer(
     });
   }
 
+  // 4a. The environment's runner comes off its runner machine (`runner: host`) and any other
+  // machine that has it, first and alone, with its own approval; a machine it cannot reach stops
+  // the run before anything is deleted.
+  const machines = removeApp
+    ? await removeMachineRunners(deps, {
+        plan,
+        services,
+        phase: "provision",
+        command: `${COMMAND}${(await planWhere(deps.paths.root, plan)).flag}`,
+      }).catch(async (error: unknown) => {
+        if (bucket !== undefined) await discardBucketDeletion(bucket);
+        throw error;
+      })
+    : [];
+
   // 4b. The app's bucket: R2's first, since Cloudflare refuses a bucket that holds files and then
   // nothing else is deleted yet; any other after the app (at the end of the block below).
   let bucketDeleted: BucketDeleted | undefined;
@@ -668,6 +682,7 @@ export async function destroyOwnServer(
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
     const approvals = [
+      ...machines.map((outcome) => outcome.approval),
       bucketDeleted?.approval,
       removal?.approval,
       teardownApproval,

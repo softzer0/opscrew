@@ -16,5 +16,12 @@ export { type EnvironmentSummary, environmentDeployed, listEnvironments } from "
 export { environmentPaths } from "./paths";
 export { removeEnvironment } from "./remove";
 export { readEnvironmentRequirements } from "./requirements";
+export {
+  type RunnerAnswer,
+  type RunnerChoice,
+  requireMachineFits,
+  runnerChoice,
+  setEnvironmentRunner,
+} from "./runner";
 export { requireSharedParts, sharedPartsDiffer, withSharedParts } from "./shared-parts";
 export { type DeploySource, setDeploySource } from "./source";

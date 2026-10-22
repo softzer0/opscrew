@@ -138,10 +138,11 @@ export async function moveBase(
 export async function requireState(deps: PhaseDeps, plan: DeployPlan): Promise<void> {
   if (await hasState(deps.paths)) return;
   const { folder, passphrase } = stateCopyPaths(plan);
+  const { flag } = await planWhere(deps.paths.root, plan);
   throw stateNotHere(
     plan,
     "move the deployment",
-    `Run OpsCrew on the computer that ran \`opscrew provision${planWhere(plan).flag}\`, or copy its ${folder} folder (and, with OpenTofu, the state passphrase from ${passphrase}) here, then try again.`,
+    `Run OpsCrew on the computer that ran \`opscrew provision${flag}\`, or copy its ${folder} folder (and, with OpenTofu, the state passphrase from ${passphrase}) here, then try again.`,
   );
 }
 

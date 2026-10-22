@@ -1,4 +1,5 @@
-import { OpsCrewError } from "@opscrew/core";
+import { join } from "node:path";
+import { exists, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
 import { environmentsOf, resolveEnvironmentPaths } from "@opscrew/plan-schema";
 
 /** How {@link resolveEnvironment} asks which environment to act on. */
@@ -19,6 +20,10 @@ async function known(root: string, name: string): Promise<string> {
  * several environments (prod included: a bare command then asks, or stops in a script), else "".
  */
 export async function environmentFlag(root: string, name: string): Promise<string> {
+  // Skips reading the plans while prod is alone (no environments folder): a hint is then never
+  // stopped by a plan that cannot be read, as requireOwnHostnames does.
+  const folder = join(resolveProjectPaths(root, { env: {} }).artefactsDir, "environments");
+  if (!(await exists(folder))) return "";
   return (await environmentsOf(root)).length > 1 ? ` --env ${name}` : "";
 }
 

@@ -66,6 +66,22 @@ export async function runnerRepository(
   return { api: client, ...coordinates };
 }
 
+/**
+ * {@link runnerRepository}, read once and only when first needed (a runner's token or
+ * registration), so a run that needs neither never asks for a GitHub token; `known` when given.
+ */
+export function lazyRepository(
+  deps: PhaseDeps,
+  api?: RunnerGitHubApi,
+  known?: RunnerRepository,
+): () => Promise<RunnerRepository> {
+  let repository: Promise<RunnerRepository> | undefined;
+  return () => {
+    repository ??= known !== undefined ? Promise.resolve(known) : runnerRepository(deps, api);
+    return repository;
+  };
+}
+
 /** `https://github.com/<owner>/<repo>`, which a runner registers with. */
 export function repositoryUrl(repository: Pick<RunnerRepository, "owner" | "repo">): string {
   return `https://github.com/${repository.owner}/${repository.repo}`;

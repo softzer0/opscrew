@@ -348,6 +348,8 @@ function serviceLoginChecks(
   plan: DeployPlan,
   stack: PortainerStackFacts,
   valueKey: Uint8Array | undefined,
+  /** ` --env <name>` for the commands the checks name (`planWhere`). */
+  flag: string,
 ): CheckResult[] {
   const variables = portainerSecretVariables(plan);
   return plan.services
@@ -379,7 +381,7 @@ function serviceLoginChecks(
         "fail",
         `The app stack's environment has no value for ${listText(missing)}, so ${who} runs without its login.`,
         {
-          remediation: `Run \`opscrew provision${planWhere(plan).flag}\`: its stack plan sends the service's generated login to the app's stack again (you approve it as usual).`,
+          remediation: `Run \`opscrew provision${flag}\`: its stack plan sends the service's generated login to the app's stack again (you approve it as usual).`,
         },
       );
     });
@@ -399,7 +401,7 @@ export async function portainerSecurityChecks(
   services: Pick<PortainerServices, "client"> = {},
 ): Promise<{ checks: CheckResult[]; skipped?: string }> {
   const target = portainerTarget(plan.target);
-  const { flag } = planWhere(plan);
+  const { flag } = await planWhere(deps.paths.root, plan);
   // Without the connection or the token there is nothing to ask Portainer: the checks are skipped
   // with the reason, and the rest of the report is written as usual.
   if ((await readPortainerConnection(deps.paths)) === undefined) {
@@ -483,6 +485,6 @@ export async function portainerSecurityChecks(
   if (redeploy !== undefined) checks.push(redeploy);
   const registry = registryCheck(facts, connection, target.environmentId, flag);
   if (registry !== undefined) checks.push(registry);
-  if (appStack !== undefined) checks.push(...serviceLoginChecks(plan, appStack, valueKey));
+  if (appStack !== undefined) checks.push(...serviceLoginChecks(plan, appStack, valueKey, flag));
   return { checks: checks.map(redacted) };
 }

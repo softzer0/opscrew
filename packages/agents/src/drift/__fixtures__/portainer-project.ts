@@ -6,7 +6,7 @@ import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { fillPortainerStack, portainerStackTemplatePath } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../../provision/portainer";
 import { runProvision } from "../../provision/run";
 import type { ProvisionServices } from "../../provision/types";
@@ -115,6 +115,18 @@ export class PortainerLifecycleGitHub extends FakeGitHub {
   }
 }
 
+/** Prod's plan beside the environment `name`'s `plan`: the same app, on a hostname of its own. */
+function prodBeside(plan: DeployPlan, name: string): DeployPlan {
+  const { name: _name, ...environment } = plan.environment ?? {};
+  const domain = plan.dns.domain;
+  return DeployPlanSchema.parse({
+    ...plan,
+    environment,
+    app: { ...plan.app, name: plan.app.name.slice(0, -`-${name}`.length) },
+    dns: domain === undefined ? plan.dns : { ...plan.dns, domain: `prod-${domain}` },
+  });
+}
+
 export interface PortainerProjectOptions {
   plan?: DeployPlan;
   portainer?: Partial<FakePortainerOptions>;
@@ -131,7 +143,11 @@ export interface PortainerProjectOptions {
 export async function portainerProject(o: PortainerProjectOptions = {}) {
   const secrets = portainerSecrets();
   const plan = o.plan ?? portainerPlan();
-  const project = await createProject(plan);
+  // A named environment's plan sits in its own folder beside prod's, as `opscrew env add` leaves it.
+  const environment = plan.environment?.name;
+  const project = await createProject(
+    environment === undefined ? plan : prodBeside(plan, environment),
+  );
   await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${secrets.stripe}\n`);
   const fake = fakePortainer({ token: secrets.portainerToken, ...o.portainer });
   const github = new PortainerLifecycleGitHub(project.bare);
@@ -160,7 +176,9 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
     env,
     runner: projectRunner(),
     approvalHandler: handler,
+    ...(environment !== undefined ? { environment } : {}),
   });
+  if (environment !== undefined) await writeArtifact("plan", deps.paths.files.plan, plan);
   const target = plan.target.provider === "portainer" ? plan.target : undefined;
   await recordPortainerConnection(deps.paths, {
     url: PORTAINER_URL,

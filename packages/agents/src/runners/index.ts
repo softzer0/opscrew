@@ -1,7 +1,8 @@
 /**
  * Self-hosted runners (feature 015, contracts/runners.md "Agents"): the server's runner as a step
  * of the host plan (on a server OpsCrew created, a host plan of its own, as deploy), the local
- * runner on this computer, and their state in status and secure.
+ * runner on this computer, runner machines (contracts/runners.md "Runner machines"), and their
+ * state in status and secure.
  */
 export {
   applyCloudRunner,
@@ -15,6 +16,7 @@ export {
   checkRunnerRepository,
   deleteRegistrations,
   type GithubSettingsChange,
+  lazyRepository,
   type RunnerGitHubApi,
   type RunnerRepository,
   repositoryUrl,
@@ -32,6 +34,24 @@ export {
   startLocalRunner,
 } from "./local";
 export {
+  type AddRunnerHostInput,
+  addRunnerHost,
+  applyMachineRunner,
+  applyRunnerHost,
+  checkMachineRunner,
+  listRunnerHosts,
+  type MachineRunnerServices,
+  provisionRunnerMachines,
+  type RunnerHostRecord,
+  type RunnerHostServices,
+  type RunnerHostSummary,
+  readRunnerHost,
+  removeMachineRunners,
+  removeRunnerHost,
+  requireOtherMachine,
+  requireRunnerHost,
+} from "./machine";
+export {
   planServerRunner,
   removeKeptRegistrations,
   runnerTokens,
@@ -39,4 +59,4 @@ export {
   serverRunnerName,
 } from "./server";
 export { type RunnerStatus, runnerChecks, runnerStatus, runnerStatusLines } from "./status";
-export { planWhere, runnerSuffix } from "./words";
+export { namedEnvironmentFlag, planFile, planWhere, runnerSuffix } from "./words";

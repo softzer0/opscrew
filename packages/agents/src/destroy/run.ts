@@ -7,7 +7,13 @@ import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
-import { deleteRegistrations, runnerRepository, serverRunnerName } from "../runners";
+import {
+  deleteRegistrations,
+  planWhere,
+  removeMachineRunners,
+  runnerRepository,
+  serverRunnerName,
+} from "../runners";
 import {
   describeChanges,
   hasDeployment,
@@ -127,7 +133,7 @@ function moveInProgress(plan: DeployPlan): OpsCrewError {
 async function requirePreconditions(deps: PhaseDeps, plan: DeployPlan) {
   if (!(await exists(stateFile(deps.paths)))) {
     if (!hasDeployment(plan)) throw nothingDeployed(plan);
-    throw teardownStateNotHere(plan);
+    throw await teardownStateNotHere(deps.paths.root, plan);
   }
   await requireInfraCode(deps, plan, "the teardown");
 }
@@ -615,6 +621,19 @@ export async function runDestroy(
     throw error;
   });
 
+  // 4a. The environment's runner comes off its runner machine (`runner: host`) and any other
+  // machine that has it, first and alone, with its own approval; a machine it cannot reach stops
+  // the run before anything is deleted.
+  const machines = await removeMachineRunners(deps, {
+    plan,
+    services,
+    phase: "provision",
+    command: `opscrew destroy${(await planWhere(deps.paths.root, plan)).flag}`,
+  }).catch(async (error: unknown) => {
+    if (bucket !== undefined) await discardBucketDeletion(bucket);
+    throw error;
+  });
+
   // 4b–7b. The app's bucket: R2's first, since Cloudflare refuses a bucket that holds files and then
   // nothing else is deleted yet; a Hetzner or Spaces bucket after the server, like its other data.
   // Its planned deletion never outlives this run.
@@ -673,6 +692,7 @@ export async function runDestroy(
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
   const approvals = [
+    ...machines.map((outcome) => outcome.approval),
     bucketDeleted?.approval,
     protection.approval,
     destroyApproval,

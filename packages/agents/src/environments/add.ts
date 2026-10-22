@@ -32,32 +32,37 @@ import {
 } from "../interview/portainer";
 import { buildQuestions, type InterviewAnswers } from "../interview/questions";
 import { portainerAnswers } from "../interview/run";
+import type { OwnServerServices } from "../provision/types";
+import { listRunnerHosts } from "../runners/machine";
 import { readOwnServer, readPortainerConnection } from "../shared";
+import { inspectOwnServerForDesign } from "../shared/own-server-design";
 import { environmentPaths } from "./paths";
 import { writeEnvironmentRequirements } from "./requirements";
+import { requireMachineFits, runnerChoice } from "./runner";
 
-/** What `opscrew env add` asks: the target, its size, hostname, deploy source and runner. */
+/**
+ * What `opscrew env add` asks: the target, its size, hostname, deploy source, runner (with the
+ * runner machine when the project has runner machines) and where the image is built.
+ */
 export type EnvironmentQuestionId =
   | Extract<QuestionId, "provider" | "region" | "expectedMonthlyUsers" | "domain">
   | "from"
-  | "runner";
+  | "runner"
+  | "runnerHost"
+  | "build";
 
 /** One question of `opscrew env add` (same shape as a `Question`). */
 export interface EnvironmentQuestion extends Omit<Question, "id"> {
   id: EnvironmentQuestionId;
 }
 
-type Runner = NonNullable<DeployPlan["environment"]>["runner"];
-
-const RUNNERS: readonly Runner[] = ["github", "server", "local"];
-
 /** Options of {@link addEnvironment}. */
 export interface AddEnvironmentOptions {
   /**
    * Answers given up front (the CLI's flags, the MCP tool's input) by question id (`provider`,
-   * `region`, `expectedMonthlyUsers`, `domain`, `from`, `runner`), with a server's `server.*` or a
-   * Portainer's `portainer.*` follow-ups. A question left out takes its default; `ask` is then not
-   * called.
+   * `region`, `expectedMonthlyUsers`, `domain`, `from`, `runner`, `runnerHost`, `build`), with a
+   * server's `server.*` or a Portainer's `portainer.*` follow-ups. A question left out takes its
+   * default; `ask` is then not called.
    */
   answers?: InterviewAnswers;
   /** Asks the environment's questions interactively. */
@@ -68,8 +73,16 @@ export interface AddEnvironmentOptions {
   askPortainer?: (questions: PortainerQuestion[]) => Promise<InterviewAnswers>;
   /** How OpsCrew reaches a Portainer (as for `opscrew interview`). */
   portainer?: PortainerInterviewOptions;
-  /** Design's choices: the option (the server's size), a catalogue, the server's inspection. */
+  /**
+   * Design's choices: the option (the server's size), a catalogue, the server's inspection (by
+   * default a server the user owns is inspected over SSH first, as for `opscrew design`).
+   */
   design?: Omit<RunDesignOptions, "environment">;
+  /**
+   * A server the user owns: `--host-key` for its first connection when nobody can confirm it, and
+   * its shell and host adapter (fakes in tests).
+   */
+  ownServer?: { hostKey?: string; services?: OwnServerServices };
 }
 
 /** What {@link addEnvironment} wrote: the environment's requirements, and its design. */
@@ -96,31 +109,31 @@ function defaultHostname(name: string, base: Requirements): string | undefined {
  * default, this computer for `dev`), the region for a cloud server, its size (the expected users,
  * the fewest by default), its hostname (`<name>.<domain>`), how it gets new versions (from main by
  * default, or promoted from an existing environment) and where its deploy job runs (GitHub's
- * machines by default).
+ * machines by default), with the project's `runnerHosts` (its runner machines' names) a runner
+ * machine too and the question which one, and where its image is built.
  */
 export function environmentQuestions(
   name: string,
-  context: { prodPlan: DeployPlan; base: Requirements; environments: readonly string[] },
+  context: {
+    prodPlan: DeployPlan;
+    base: Requirements;
+    environments: readonly string[];
+    runnerHosts?: readonly string[];
+  },
   facts: ProjectFacts,
 ): EnvironmentQuestion[] {
   const { prodPlan, base, environments } = context;
+  const machines = context.runnerHosts ?? [];
   const interview = buildQuestions(facts, base);
   const asked = (id: QuestionId) => interview.find((q) => q.id === id) as Question;
   const provider = asked("provider");
   const hostname = defaultHostname(name, base);
   return [
     {
+      // The interview's targets, this computer among them.
       ...provider,
       id: "provider",
       prompt: `Where should the ${name} environment run?`,
-      options: [
-        ...(provider.options ?? []),
-        {
-          value: "localhost",
-          label: "This computer",
-          hint: "the app's production stack in this computer's Docker, at a .localhost address",
-        },
-      ],
       default: name === "dev" ? "localhost" : prodPlan.target.provider,
     },
     { ...asked("region"), id: "region" },
@@ -168,26 +181,64 @@ export function environmentQuestions(
           hint: "a server OpsCrew creates or your own; GitHub then never connects to it over SSH",
         },
         { value: "local", label: "On a runner on this computer", hint: "this computer only" },
+        ...(machines.length > 0
+          ? [
+              {
+                value: "host",
+                label: "On a runner machine of yours",
+                hint: "a machine you added with `opscrew runner host add`; it deploys to the server over SSH",
+              },
+            ]
+          : []),
       ],
       default: "github",
       required: true,
     },
+    // Optional, with no default: `runnerChoice` fills them in (the only machine, GitHub's
+    // machines), so answering github never asks for a machine.
+    ...(machines.length > 0
+      ? [
+          {
+            id: "runnerHost",
+            prompt: `Which runner machine should run the ${name} environment's jobs?`,
+            help: "Only when its deploy job runs on a runner machine; with one machine, that one.",
+            kind: "single-select",
+            options: machines.map((machine) => ({ value: machine, label: machine })),
+            required: false,
+          } satisfies EnvironmentQuestion,
+        ]
+      : []),
+    {
+      // Offered with every target: a runner machine, or this computer with its own runner.
+      id: "build",
+      prompt: `Where should the ${name} environment's image be built?`,
+      help: "On its own runner only with a runner machine of the server's CPU, or with this computer's runner; GitHub's machines otherwise.",
+      kind: "single-select",
+      options: [
+        { value: "github", label: "On GitHub's machines", hint: "as for prod" },
+        {
+          value: "runner",
+          label: "On its own runner",
+          hint: "a runner machine or this computer's runner; never the server's",
+        },
+      ],
+      required: false,
+    },
   ];
 }
 
-/** The answer `id` as trimmed lower-case text, `undefined` when not text. */
-function choice(answers: InterviewAnswers, id: string): string | undefined {
+/** The answer `id` as trimmed text, `undefined` when not text. */
+function text(answers: InterviewAnswers, id: string): string | undefined {
   const value = answers[id];
-  return typeof value === "string" ? value.trim().toLowerCase() : undefined;
+  return typeof value === "string" ? value.trim() : undefined;
 }
 
-/** The deploy source and runner answered, checked against the app's environments and the target. */
-function environmentBlock(
+/** The deploy source answered, checked against the app's environments. */
+function deploySourceOf(
   answers: InterviewAnswers,
-  provider: Requirements["provider"],
   environments: readonly string[],
-): NonNullable<RunDesignOptions["environment"]> {
-  const from = choice(answers, "from");
+): NonNullable<DeployPlan["environment"]>["deploySource"] {
+  const from = text(answers, "from")?.toLowerCase();
   if (from === undefined || (from !== "main" && !environments.includes(from))) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -195,39 +246,19 @@ function environmentBlock(
       { hint: "Answer main, or the environment whose releases this one takes." },
     );
   }
-  const runner = choice(answers, "runner") as Runner | undefined;
-  if (runner === undefined || !RUNNERS.includes(runner)) {
-    throw new OpsCrewError("INVALID_INPUT", "runner must be github, server or local.", {
-      hint: "Answer github (GitHub's machines), server or local.",
-    });
-  }
-  const fits =
-    runner === "github" ||
-    (runner === "local"
-      ? provider === "localhost"
-      : provider !== "portainer" && provider !== "localhost");
-  if (!fits) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      runner === "local"
-        ? "runner local runs the deploy on this computer, so it needs this computer (localhost) as the target."
-        : "runner server needs a server OpsCrew creates or your own server as the target: a Portainer redeploys by itself, and this computer has no server.",
-      { hint: "Answer github, or choose a target that takes this runner." },
-    );
-  }
-  return {
-    deploySource: from === "main" ? { from: "main" } : { from: "promote", source: from },
-    runner,
-  };
+  return from === "main" ? { from: "main" } : { from: "promote", source: from };
 }
 
 /**
  * `opscrew env add <name>` for the environment `deps.paths` belong to: asks only its own questions
  * ({@link environmentQuestions}, defaults filling what `answers` leaves out), with prod's
  * connection as the default for a server the user owns or a Portainer and the interview's
- * follow-ups for another one; writes its own answers (only those that differ from prod's) and how
- * OpsCrew reaches its server; then designs it (`runDesign`, which shows its monthly cost).
- * Nothing is written when an answer is invalid.
+ * follow-ups for another one; checks its runner (`runnerChoice`: a runner machine of the project
+ * with the server's CPU when it builds there, never the environment's own server); writes its own
+ * answers (only those that differ from prod's) and how OpsCrew reaches its server; inspects a
+ * server the user owns over SSH, as `opscrew design` does; then designs it (`runDesign`, which
+ * shows its monthly cost). Nothing is written when an answer is invalid, apart from a runner
+ * machine that does not fit the user's own server, which only its inspection shows.
  * @throws OpsCrewError `INVALID_INPUT` for prod or an invalid answer, `PHASE_PRECONDITION` when
  * the environment exists or prod's plan does not yet.
  */
@@ -259,7 +290,12 @@ export async function addEnvironment(
   }
   const base = await readArtifact("requirements", paths.files.shared.requirementsBase);
   const { facts } = await readArtifact("architecture", paths.files.architecture);
-  const questions = environmentQuestions(name, { prodPlan, base, environments }, facts);
+  const runnerHosts = (await listRunnerHosts(deps)).map((machine) => machine.name);
+  const questions = environmentQuestions(
+    name,
+    { prodPlan, base, environments, runnerHosts },
+    facts,
+  );
   const given = options.answers ?? (options.ask === undefined ? {} : await options.ask(questions));
   const answers: InterviewAnswers = {
     ...Object.fromEntries(
@@ -270,13 +306,34 @@ export async function addEnvironment(
 
   let server = splitFollowUps(answers, "server", SERVER_FIELDS);
   const portainerSplit = splitFollowUps(server.rest, "portainer", PORTAINER_FIELDS);
-  const { from: _from, runner: _runner, ...rest } = portainerSplit.rest;
+  const {
+    from: _from,
+    runner: _runner,
+    runnerHost: _runnerHost,
+    build: _build,
+    ...rest
+  } = portainerSplit.rest;
   const requirements = answersToRequirements(rest, {
     now: deps.clock.now(),
     facts,
     previous: base,
   });
-  const environment = environmentBlock(answers, requirements.provider, environments);
+  const deploySource = deploySourceOf(answers, environments);
+  const runnerHost = text(answers, "runnerHost");
+  const build = text(answers, "build");
+  const runner = await runnerChoice(
+    paths,
+    {
+      runner: text(answers, "runner") ?? "",
+      ...(runnerHost !== undefined ? { runnerHost } : {}),
+      ...(build !== undefined ? { build } : {}),
+    },
+    { provider: requirements.provider, deploySource },
+  );
+  // A server OpsCrew creates is amd64; the user's own server is checked once it is inspected.
+  if (requirements.provider !== "own") {
+    await requireMachineFits(paths, runner, { provider: requirements.provider, arch: "amd64" });
+  }
   const cloudflareDomain =
     requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined;
   const domain = requirements.domain === undefined ? {} : { domain: requirements.domain };
@@ -311,6 +368,30 @@ export async function addEnvironment(
   deps.reporter.success(
     `Wrote ${toPosixRelative(paths.root, paths.files.requirements)}: the ${name} environment's own answers.`,
   );
-  const design = await runDesign(deps, { ...options.design, environment });
+  // A server the user owns is inspected before design, as `opscrew design` does (its size, the
+  // apps on it, its CPU); the host key is confirmed at the first connection.
+  const inspected =
+    options.design?.ownServer ??
+    (requirements.provider === "own"
+      ? await inspectOwnServerForDesign(deps, {
+          ...(options.ownServer?.hostKey !== undefined
+            ? { hostKey: options.ownServer.hostKey }
+            : {}),
+          ...(options.ownServer?.services !== undefined
+            ? { services: options.ownServer.services }
+            : {}),
+        })
+      : undefined);
+  if (requirements.provider === "own") {
+    await requireMachineFits(paths, runner, {
+      provider: "own",
+      arch: inspected?.facts?.arch ?? "amd64",
+    });
+  }
+  const design = await runDesign(deps, {
+    ...options.design,
+    ...(inspected !== undefined ? { ownServer: inspected } : {}),
+    environment: { deploySource, ...runner },
+  });
   return { requirements, design };
 }

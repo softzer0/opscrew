@@ -22,6 +22,7 @@ import type { TcpConnect } from "@opscrew/secops";
 import type { LocalhostServices } from "../localhost/services";
 import type { CloudRunnerHost } from "../runners/cloud";
 import type { RunnerGitHubApi } from "../runners/github";
+import type { RunnerHostServices } from "../runners/machine";
 import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
 import type { StorageKey, StorageKeyQuestion } from "./storage";
@@ -125,6 +126,11 @@ export interface ProvisionServices {
    * `inspectRunners` and `applyHostPlan`; a fake in tests).
    */
   runnerHost?: CloudRunnerHost;
+  /**
+   * The runner machine of `runner: host`: its admin login's shell and the host adapter (default:
+   * SSH with its recorded login, `inspectHost` and `applyHostPlan`; fakes in tests).
+   */
+  runnerMachine?: RunnerHostServices;
 }
 
 /**
@@ -243,6 +249,12 @@ export interface ProvisionResult {
   hostPlanHash?: string;
   /** A server the user owns: true when this run applied host changes. */
   hostApplied?: boolean;
+  /**
+   * The runner machines' host plan hashes (each file is `.opscrew/plans/host-<hash>.json`): the
+   * environment's runner removed from each machine it left, then, with `runner: host`, installed on
+   * its machine. With `--plan-only` they are the hashes to approve.
+   */
+  runnerHostPlanHashes?: string[];
   /**
    * The user's Portainer: the stack plan's SHA-256 hash (its file is
    * `.opscrew/plans/stack-<hash>.json`). With `--plan-only` it is the hash to approve.

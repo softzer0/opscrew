@@ -375,7 +375,9 @@ describe("startLocalRunner", () => {
     const error = await expectError(built.start(), "PHASE_PRECONDITION");
     expect(error.message).toContain("image: local-build");
     expect(error.hint).toContain("opscrew/environments/dev/plan.yaml");
-    expect(() => requireLocalRunnerImage(devPlan())).not.toThrow();
+    await expect(
+      requireLocalRunnerImage(built.deps.paths.root, devPlan()),
+    ).resolves.toBeUndefined();
     expect(built.github.calls).toEqual([]);
   });
 });

@@ -21,6 +21,7 @@ import { deployShell } from "../status/certificates";
 import {
   applyRunnerSettings,
   checkRunnerRepository,
+  lazyRepository,
   type RunnerRepository,
   runnerRepository,
 } from "./github";
@@ -76,7 +77,8 @@ export async function checkCloudRunner(
 ): Promise<RunnerRepository | undefined> {
   if (plan.environment?.runner !== "server") return undefined;
   const read = await readCloudRunners(deps, plan, services);
-  if (read !== undefined && !read.facts.prepared) throw unpreparedServer(plan);
+  if (read !== undefined && !read.facts.prepared)
+    throw await unpreparedServer(deps.paths.root, plan);
   const repository = await runnerRepository(deps, services.runnerGitHub);
   const { settings, refusal } = await checkRunnerRepository(repository);
   if (settings !== undefined && refusal !== undefined) {
@@ -121,8 +123,8 @@ export async function cloudRunnerPlan(
  * The stop for the server's runner on a server whose first boot did not prepare it (one created
  * before OpsCrew's first boot did, which later applies never change): deploy has no root to do it.
  */
-function unpreparedServer(plan: DeployPlan): OpsCrewError {
-  const { file, flag } = planWhere(plan);
+async function unpreparedServer(root: string, plan: DeployPlan): Promise<OpsCrewError> {
+  const { file, flag } = await planWhere(root, plan);
   const other = plan.target.provider === "hetzner" ? "digitalocean" : "hetzner";
   return new OpsCrewError(
     "PHASE_PRECONDITION",
@@ -159,14 +161,7 @@ export async function applyCloudRunner(
 ): Promise<HostPlanOutcome | undefined> {
   const { plan, services, command } = input;
   const installs = plan.environment?.runner === "server";
-  let repository: Promise<RunnerRepository> | undefined;
-  const repo = () => {
-    repository ??=
-      input.repository !== undefined
-        ? Promise.resolve(input.repository)
-        : runnerRepository(deps, services.runnerGitHub);
-    return repository;
-  };
+  const repo = lazyRepository(deps, services.runnerGitHub, input.repository);
   const planned = await cloudRunnerPlan(deps, plan, services, repo);
   if (planned === undefined) {
     // Without the server's address there is no runner of this computer's to remove either.
@@ -185,7 +180,7 @@ export async function applyCloudRunner(
   }
   // On GitHub's machines with no runner of this app on the server: nothing to show.
   if (!installs && planned.plan.steps.length === 0) return undefined;
-  if (installs && !planned.facts.prepared) throw unpreparedServer(plan);
+  if (installs && !planned.facts.prepared) throw await unpreparedServer(deps.paths.root, plan);
   const outcome = await approveAndApplyHostPlan(deps, {
     plan: planned.plan,
     remote: planned.remote,

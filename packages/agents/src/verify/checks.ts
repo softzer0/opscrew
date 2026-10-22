@@ -6,7 +6,7 @@ import { runtimeDir, tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CERTIFICATE_WARN_DAYS, daysLeft, type TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
-import { planWhere } from "../runners/words";
+import { namedEnvironmentFlag } from "../runners/words";
 import {
   checkResult,
   ipv6HttpsAnswers,
@@ -789,7 +789,7 @@ export function checkSecurityHeaders(
     "fail",
     `Missing or weak headers: ${missing.join(", ")}.`,
     {
-      remediation: `Restore the \`header\` block in ${runtimeDir(plan)}/Caddyfile (re-run \`opscrew provision${planWhere(plan).flag}\` to regenerate it) and redeploy.`,
+      remediation: `Restore the \`header\` block in ${runtimeDir(plan)}/Caddyfile (re-run \`opscrew provision${namedEnvironmentFlag(plan)}\` to regenerate it) and redeploy.`,
       target,
     },
   );

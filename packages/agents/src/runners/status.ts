@@ -137,17 +137,37 @@ export async function runnerStatus(
   };
 }
 
-/** `the server's runner` or `the local runner`. */
+/** `the runner machine <name>` for `runner: host`; undefined on another runner. */
+function machineOf(plan: DeployPlan): string | undefined {
+  const name = plan.environment?.runnerHost?.name;
+  return plan.environment?.runner === "host" && name !== undefined
+    ? `the runner machine ${name}`
+    : undefined;
+}
+
+/** `the server's runner`, `the local runner` or `the runner on the runner machine <name>`. */
 function runnerWords(plan: DeployPlan): string {
+  const machine = machineOf(plan);
+  if (machine !== undefined) return `the runner on ${machine}`;
   return plan.environment?.runner === "local" ? "the local runner" : "the server's runner";
 }
 
+/** The machine the runner runs on: the runner machine, else `<the runner>'s machine`. */
+function runnerMachine(plan: DeployPlan): string {
+  return machineOf(plan) ?? `${runnerWords(plan)}'s machine`;
+}
+
+/** What to check while the runner is offline: the server, or the runner machine. */
+function offlineCheck(plan: DeployPlan): string {
+  return machineOf(plan) ?? "the server";
+}
+
 /** The command that brings the runner back. */
-function fix(plan: DeployPlan): string {
+async function fixOf(root: string, plan: DeployPlan): Promise<string> {
   const env = plan.environment?.name ?? "prod";
   return plan.environment?.runner === "local"
     ? `\`opscrew runner start --env ${env}\``
-    : `\`opscrew provision${planWhere(plan).flag}\``;
+    : `\`opscrew provision${(await planWhere(root, plan)).flag}\``;
 }
 
 /**
@@ -196,6 +216,7 @@ export async function runnerChecks(
   }
   const results: CheckResult[] = [];
   const local = plan.environment?.runner === "local";
+  const fix = await fixOf(deps.paths.root, plan);
   const online = `The self-hosted runner ${label} is online`;
   if (!status.registered) {
     results.push(
@@ -205,7 +226,7 @@ export async function runnerChecks(
             online,
             "low",
             "pass",
-            `The local runner is not running; it runs only while ${fix(plan)} does.`,
+            `The local runner is not running; it runs only while ${fix} does.`,
           )
         : checkResult(
             "runner-online",
@@ -213,7 +234,7 @@ export async function runnerChecks(
             "medium",
             "warn",
             "GitHub lists no runner for this environment, so its deploy jobs wait.",
-            { remediation: `Run ${fix(plan)}, which installs it again.` },
+            { remediation: `Run ${fix}, which installs it again.` },
           ),
     );
   } else if (status.online === false) {
@@ -226,8 +247,8 @@ export async function runnerChecks(
         `GitHub lists ${which} as offline, so the environment's deploy jobs wait.`,
         {
           remediation: local
-            ? `Start it with ${fix(plan)}.`
-            : `Check that the server is up, then run ${fix(plan)}, which starts it again.`,
+            ? `Start it with ${fix}.`
+            : `Check that ${offlineCheck(plan)} is up, then run ${fix}, which starts it again.`,
         },
       ),
     );
@@ -245,7 +266,7 @@ export async function runnerChecks(
         "warn",
         `${upperFirst(which)} runs ${status.version}, over ${plural(BEHIND_DAYS, "day")} behind a newer release (GitHub's newest is ${status.latest}); GitHub stops sending it jobs 30 days after a release.`,
         {
-          remediation: `Run ${fix(plan)}: it installs the pinned runner, which then updates itself.`,
+          remediation: `Run ${fix}: it installs the pinned runner, which then updates itself.`,
         },
       ),
     );
@@ -260,11 +281,11 @@ export async function runnerChecks(
         safe ? "pass" : "fail",
         safe
           ? "The repository is public, and every outside contributor's workflow runs need your approval first."
-          : `The repository is public, and outside contributors' workflow runs need no approval from you (its policy is ${status.forkPrApproval}): a pull request from a fork could run its own code on ${which}'s machine.`,
+          : `The repository is public, and outside contributors' workflow runs need no approval from you (its policy is ${status.forkPrApproval}): a pull request from a fork could run its own code on ${runnerMachine(plan)}.`,
         safe
           ? {}
           : {
-              remediation: `Run ${fix(plan)}, which asks to require approval for every outside contributor, make the repository private, or set environment.runner to github.`,
+              remediation: `Run ${fix}, which asks to require approval for every outside contributor, make the repository private, or set environment.runner to github.`,
             },
       ),
     );
@@ -280,28 +301,31 @@ export async function runnerStatusLines(
 ): Promise<string[]> {
   const status = await readRunner(deps, plan, api);
   if (status === undefined) return [];
-  const heading = `Self-hosted runner (${runnerLabel(plan)}, ${plan.environment?.runner === "local" ? "on this computer" : "on the server"}):`;
+  const local = plan.environment?.runner === "local";
+  const where = local ? "this computer" : (machineOf(plan) ?? "the server");
+  const heading = `Self-hosted runner (${runnerLabel(plan)}, on ${where}):`;
   if ("unreadable" in status) {
     return [heading, deps.redactor.redact(`  OpsCrew could not read it. ${status.unreadable}`)];
   }
+  const fix = await fixOf(deps.paths.root, plan);
   const state = !status.registered
-    ? plan.environment?.runner === "local"
-      ? `not running (start it with ${fix(plan)})`
-      : `not registered (run ${fix(plan)})`
+    ? local
+      ? `not running (start it with ${fix})`
+      : `not registered (run ${fix})`
     : status.online
       ? "online"
-      : `offline (${plan.environment?.runner === "local" ? `start it with ${fix(plan)}` : `check the server, then run ${fix(plan)}`})`;
+      : `offline (${local ? `start it with ${fix}` : `check ${offlineCheck(plan)}, then run ${fix}`})`;
   const lines = [heading, `  ${state}`];
   if (status.version !== undefined) {
     lines.push(
-      `  version ${status.version}${status.latest !== undefined ? ` (GitHub's newest: ${status.latest})` : ""}${status.behind === true ? `, over ${BEHIND_DAYS} days behind: run ${fix(plan)}` : ""}`,
+      `  version ${status.version}${status.latest !== undefined ? ` (GitHub's newest: ${status.latest})` : ""}${status.behind === true ? `, over ${BEHIND_DAYS} days behind: run ${fix}` : ""}`,
     );
   }
   lines.push(
     status.visibility === "public"
       ? status.forkPrApproval === SAFE_FORK_PR_POLICY
         ? "  repository: public; outside contributors' workflow runs need your approval"
-        : `  repository: public, and outside contributors' workflow runs need no approval: run ${fix(plan)} to require it`
+        : `  repository: public, and outside contributors' workflow runs need no approval: run ${fix} to require it`
       : `  repository: ${status.visibility}`,
   );
   return lines.map((line) => deps.redactor.redact(line));

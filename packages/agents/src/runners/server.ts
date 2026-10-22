@@ -104,9 +104,12 @@ export async function removeKeptRegistrations(
     stillRegistered: readonly string[];
     /** The login's host on this computer, which the runner's name is made from. */
     host: string;
+    /** The runner machine the runner was removed from, by name; the server's runner without. */
+    machine?: string;
   },
 ): Promise<void> {
   const others = run.stillRegistered.filter((app) => app !== plan.app.name);
+  const { machine } = run;
   if (run.stillRegistered.includes(plan.app.name)) {
     const repo = await repository();
     const deleted = await deleteRegistrations(deps, repo, plan, {
@@ -114,14 +117,18 @@ export async function removeKeptRegistrations(
       name: serverRunnerName(plan, run.host),
     });
     if (deleted > 0) {
+      const which =
+        machine === undefined
+          ? `the server's runner of ${plan.app.name}`
+          : `the runner of ${plan.app.name} on the runner machine ${machine}`;
       deps.reporter.info(
-        `GitHub still listed the server's runner of ${plan.app.name}, so OpsCrew removed its registration through GitHub's API.`,
+        `GitHub still listed ${which}, so OpsCrew removed its registration through GitHub's API.`,
       );
     }
   }
   if (others.length > 0) {
     deps.reporter.warn(
-      `GitHub may still list the runners of ${listText(others)} that OpsCrew removed from your server. Remove them under the repository's Settings → Actions → Runners.`,
+      `GitHub may still list the runners of ${listText(others)} that OpsCrew removed from ${machine === undefined ? "your server" : `the runner machine ${machine}`}. Remove them under the repository's Settings → Actions → Runners.`,
     );
   }
 }

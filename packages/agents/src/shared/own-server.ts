@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type HostFacts, inspectHost, isPublicAddress } from "@opscrew/connector-ssh-host";
 import type { CommandResult, PhaseName, RemoteExec } from "@opscrew/contracts";
-import { errorMessage, OpsCrewError } from "@opscrew/core";
+import { errorMessage, OpsCrewError, upperFirst } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
@@ -126,11 +126,30 @@ export function ownServerLogin(connection: OwnServerConnection): OwnServerLogin 
   };
 }
 
+/** How the messages of {@link connectPinnedLogin} name the machine and the fix for its login. */
+export interface LoginWords {
+  /** The machine: `your server`, `the runner machine home`. */
+  noun: string;
+  /** The command that records the login again, in backticks: `` `opscrew interview` ``. */
+  fix: string;
+  /** What to do when the login's key file is missing: a sentence. */
+  missingKey: string;
+}
+
+/** The words for the user's own server, whose login the interview records. */
+const OWN_SERVER_WORDS: LoginWords = {
+  noun: "your server",
+  fix: "`opscrew interview`",
+  missingKey:
+    "Run `opscrew interview` again and give the path of your private key (or `agent` to use the key in your SSH agent), then try again.",
+};
+
 /** Stops with a plain message when the login's key file is not on this computer. */
 export async function requireOwnServerKey(
-  connection: OwnServerConnection,
+  connection: Pick<OwnServerConnection, "agent" | "keyPath">,
   env: Record<string, string | undefined>,
   homeDir?: string,
+  words: Pick<LoginWords, "noun" | "missingKey"> = OWN_SERVER_WORDS,
 ): Promise<void> {
   const file = ownServerKeyFile(connection, env, homeDir);
   if (file === undefined) return;
@@ -139,9 +158,9 @@ export async function requireOwnServerKey(
   } catch {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The SSH key ${connection.keyPath} that OpsCrew should log in to your server with is not on this computer.`,
+      `The SSH key ${connection.keyPath} that OpsCrew should log in to ${words.noun} with is not on this computer.`,
       {
-        hint: "Run `opscrew interview` again and give the path of your private key (or `agent` to use the key in your SSH agent), then try again. OpsCrew never asks for a password or passphrase.",
+        hint: `${words.missingKey} OpsCrew never asks for a password or passphrase.`,
       },
     );
   }
@@ -189,29 +208,65 @@ function describeKey(key: ScannedHostKey): string {
 /**
  * Connects to the server the user owns with the login recorded by the interview
  * (`.opscrew/server.json` → `own`: address, SSH port, user, key file or SSH agent; never a
- * password) and makes sure it is the right server (FR-903):
- *
- * - First connection: shows the host key's SHA-256 fingerprint and asks the user to confirm it
- *   (`remote-exec` approval), or takes the fingerprint given with `--host-key` (required when
- *   nobody can answer a prompt). The confirmed key is pinned in the project's known_hosts and in
- *   `own.hostKey`.
- * - Later connections: the server must present the pinned key; a different key stops everything
- *   with a plain warning and changes nothing. A new key named with `--host-key` (after the user
- *   reinstalled the server) replaces the pinned one.
- *
- * Then it logs in once (`true`) as the admin login: a host key ssh refuses stops like a changed
- * key, a refused login names the user and key (and `ssh-add` for a key with a passphrase), and an
- * unreachable server says so; in each case the earlier known_hosts comes back and nothing is
- * recorded. A key this connection pinned is said. Returns the admin login's shell, which only ever
- * talks to the pinned key.
+ * password) and makes sure it is the right server (FR-903), through {@link connectPinnedLogin}:
+ * the confirmed key is pinned in the project's known_hosts and in `own.hostKey`.
  */
 export async function connectOwnServer(
   deps: OwnServerDeps,
   options: ConnectOwnServerOptions = {},
 ): Promise<OwnServerSession> {
-  const homeDir = options.services?.homeDir;
   const connection = await readOwnServerRecord(deps.paths);
   if (connection === undefined) throw ownServerNotSetUp();
+  return connectPinnedLogin(
+    deps,
+    {
+      connection,
+      knownHostsFile: deps.paths.files.knownHosts,
+      pin: (hostKey) => recordOwnServer(deps.paths, { ...connection, hostKey }),
+      words: OWN_SERVER_WORDS,
+    },
+    options,
+  );
+}
+
+/** A machine of the user's that OpsCrew logs in to with their own SSH key ({@link connectPinnedLogin}). */
+export interface PinnedLogin {
+  /** The recorded login, with the host key confirmed earlier (none before the first connection). */
+  connection: OwnServerConnection;
+  /** The known_hosts file the pinned key is written to. */
+  knownHostsFile: string;
+  /** Records the host key this connection confirmed with the login. */
+  pin(hostKey: string): Promise<void>;
+  words: LoginWords;
+}
+
+/**
+ * Connects to a machine of the user's (their own server, a runner machine) with their recorded
+ * login (address, SSH port, user, key file or SSH agent; never a password) and makes sure it is the
+ * right machine (FR-903):
+ *
+ * - First connection: shows the host key's SHA-256 fingerprint and asks the user to confirm it
+ *   (`remote-exec` approval), or takes the fingerprint given with `--host-key` (required when
+ *   nobody can answer a prompt). The confirmed key is written to `knownHostsFile` and recorded
+ *   with `pin`.
+ * - Later connections: the machine must present the pinned key; a different key stops everything
+ *   with a plain warning and changes nothing. A new key named with `--host-key` (after the user
+ *   reinstalled the machine) replaces the pinned one.
+ *
+ * Then it logs in once (`true`) as the admin login: a host key ssh refuses stops like a changed
+ * key, a refused login names the user and key (and `ssh-add` for a key with a passphrase), and an
+ * unreachable machine says so; in each case the earlier known_hosts comes back and nothing is
+ * recorded. A key this connection pinned is said. Returns the admin login's shell, which only ever
+ * talks to the pinned key.
+ */
+export async function connectPinnedLogin(
+  deps: Omit<OwnServerDeps, "paths">,
+  login: PinnedLogin,
+  options: ConnectOwnServerOptions = {},
+): Promise<OwnServerSession> {
+  const homeDir = options.services?.homeDir;
+  const { connection, knownHostsFile, words } = login;
+  const { noun, fix } = words;
   const given = options.hostKey?.trim();
   if (given !== undefined && !HOST_KEY_FINGERPRINT.test(given)) {
     throw new OpsCrewError(
@@ -220,7 +275,7 @@ export async function connectOwnServer(
       { hint: `${CHECK_ON_SERVER} Pass the SHA256:… part it prints.` },
     );
   }
-  await requireOwnServerKey(connection, deps.env, homeDir);
+  await requireOwnServerKey(connection, deps.env, homeDir, words);
 
   const where = `${connection.host} (SSH port ${connection.port})`;
   const keys = await scanHostKeys({
@@ -231,9 +286,9 @@ export async function connectOwnServer(
   if (keys.length === 0) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `OpsCrew could not reach SSH on your server at ${where}, so it could not read the server's host key.`,
+      `OpsCrew could not reach SSH on ${noun} at ${where}, so it could not read its host key.`,
       {
-        hint: "Check that the server is on and that this computer can reach it on that port. If the address or port is wrong, fix them with `opscrew interview`, then try again.",
+        hint: `Check that ${noun} is on and that this computer can reach it on that port. If the address or port is wrong, fix them with ${fix}, then try again.`,
       },
     );
   }
@@ -256,7 +311,7 @@ export async function connectOwnServer(
       }
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The SSH host key of your server at ${where} changed since you confirmed it (confirmed: ${pinned}; now: ${presented}). OpsCrew stopped and changed nothing.`,
+        `The SSH host key of ${noun} at ${where} changed since you confirmed it (confirmed: ${pinned}; now: ${presented}). OpsCrew stopped and changed nothing.`,
         {
           hint: CHANGED_KEY_HINT,
         },
@@ -272,7 +327,7 @@ export async function connectOwnServer(
     if (!deps.interactive) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `This is OpsCrew's first connection to your server at ${where}, and its SSH host key must be confirmed before OpsCrew trusts it. The server presents ${describeKey(first)}.`,
+        `This is OpsCrew's first connection to ${noun} at ${where}, and its SSH host key must be confirmed before OpsCrew trusts it. The server presents ${describeKey(first)}.`,
         {
           hint: `${CHECK_ON_SERVER} If it matches, run the command again with --host-key ${first.fingerprint}, or run it in a terminal to confirm it there.`,
         },
@@ -281,9 +336,9 @@ export async function connectOwnServer(
     // The title is audited: it names no address (the details, shown only in the terminal, do).
     const decision = await deps.approvals.request({
       kind: "remote-exec",
-      title: "Trust the SSH host key of your server",
+      title: `Trust the SSH host key of ${noun}`,
       details: [
-        `This is OpsCrew's first connection to your server at ${where}. It presents this host key:`,
+        `This is OpsCrew's first connection to ${noun} at ${where}. It presents this host key:`,
         `  ${describeKey(first)}`,
         ...(keys.length > 1
           ? ["Other keys it offers:", ...keys.slice(1).map((key) => `  ${describeKey(key)}`)]
@@ -304,7 +359,6 @@ export async function connectOwnServer(
     chosen = first;
   }
 
-  const knownHostsFile = deps.paths.files.knownHosts;
   const before = await readFile(knownHostsFile, "utf8").catch(() => undefined);
   // Always (re)write the entry: the known_hosts file may be missing on this computer.
   await writeKnownHost(knownHostsFile, knownHostsName(connection.host, connection.port), [chosen]);
@@ -312,7 +366,7 @@ export async function connectOwnServer(
   const remote =
     options.services?.remote?.(session) ?? adminRemote(deps, session, knownHostsFile, homeDir);
   try {
-    await testLogin(deps, remote, session, where);
+    await testLogin(deps, remote, session, { where, words });
   } catch (error) {
     // Nothing changes when the login does not work: the earlier known_hosts comes back.
     if (before === undefined) await rm(knownHostsFile, { force: true });
@@ -321,16 +375,16 @@ export async function connectOwnServer(
   }
   const changed = chosen.fingerprint !== pinned;
   if (changed) {
-    await recordOwnServer(deps.paths, { ...connection, hostKey: chosen.fingerprint });
-    deps.reporter.success(`Pinned your server's SSH host key ${chosen.fingerprint}.`);
+    await login.pin(chosen.fingerprint);
+    deps.reporter.success(`Pinned ${noun}'s SSH host key ${chosen.fingerprint}.`);
   }
   return { connection: session, remote, hostKey: chosen, knownHostsFile, pinned: changed };
 }
 
 /**
- * Inspects the user's own server read-only through the host adapter of `services` (default
- * `inspectHost`: fixed commands that change nothing) and audits it without the server's address:
- * `detail` says for what, `phase` when the command has one.
+ * Inspects the user's own server (or `machine`, another machine of theirs) read-only through the
+ * host adapter of `services` (default `inspectHost`: fixed commands that change nothing) and audits
+ * it without the address: `detail` says for what, `phase` when the command has one.
  */
 export async function inspectOwnHost(
   deps: Pick<PhaseDeps, "reporter" | "audit">,
@@ -339,9 +393,11 @@ export async function inspectOwnHost(
     services?: Pick<OwnServerServices, "host"> | undefined;
     phase?: PhaseName;
     detail?: string;
+    /** Another machine than the user's own server: its words, and its audit target (no address). */
+    machine?: { noun: string; target: string };
   },
 ): Promise<HostFacts> {
-  deps.reporter.step("Inspecting your server (read-only)");
+  deps.reporter.step(`Inspecting ${options.machine?.noun ?? "your server"} (read-only)`);
   const host = options.services?.host;
   const facts = host ? await host.inspect(session.remote) : await inspectHost(session.remote);
   await deps.audit.append({
@@ -349,7 +405,7 @@ export async function inspectOwnHost(
     actor: "opscrew",
     action: "inspect host (read-only)",
     ...(options.phase !== undefined ? { phase: options.phase } : {}),
-    target: "own server",
+    target: options.machine?.target ?? "own server",
     decision: "allow",
     ...(options.detail !== undefined ? { detail: options.detail } : {}),
   });
@@ -397,14 +453,15 @@ async function testLogin(
   deps: Pick<OwnServerDeps, "redactor">,
   remote: RemoteExec,
   connection: OwnServerConnection & { hostKey: string },
-  where: string,
+  { where, words }: { where: string; words: LoginWords },
 ): Promise<void> {
+  const { noun, fix } = words;
   const unreachable = (detail: string) =>
     new OpsCrewError(
       "COMMAND_FAILED",
-      `OpsCrew could not reach SSH on your server at ${where}. Nothing was changed.`,
+      `OpsCrew could not reach SSH on ${noun} at ${where}. Nothing was changed.`,
       {
-        hint: `Check that the server is on and that this computer can reach it on that port (a firewall or router may block it). If the address or port is wrong, fix them with \`opscrew interview\`, then try again.${detail}`,
+        hint: `Check that ${noun} is on and that this computer can reach it on that port (a firewall or router may block it). If the address or port is wrong, fix them with ${fix}, then try again.${detail}`,
       },
     );
   let result: CommandResult;
@@ -418,7 +475,7 @@ async function testLogin(
   if (HOST_KEY_FAILED.test(result.stderr)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The SSH host key of your server at ${where} is not the one you confirmed (${connection.hostKey}), so ssh refused to log in. OpsCrew stopped and changed nothing.`,
+      `The SSH host key of ${noun} at ${where} is not the one you confirmed (${connection.hostKey}), so ssh refused to log in. OpsCrew stopped and changed nothing.`,
       {
         hint: `${CHANGED_KEY_HINT}${detail}`,
       },
@@ -431,16 +488,16 @@ async function testLogin(
         : `If the key has a passphrase, add it to your SSH agent first (\`ssh-add ${connection.keyPath}\`): OpsCrew never asks for a passphrase.`;
     throw new OpsCrewError(
       "CREDENTIALS_INVALID",
-      `Your server at ${where} refused the login as ${connection.user} with ${sshKeyWords(connection)}. Nothing was changed.`,
+      `${upperFirst(noun)} at ${where} refused the login as ${connection.user} with ${sshKeyWords(connection)}. Nothing was changed.`,
       {
-        hint: `Check that ${connection.user} may log in with this key (its public key must be in that user's ~/.ssh/authorized_keys on the server). ${add} If the user or key is wrong, fix them with \`opscrew interview\`.${detail}`,
+        hint: `Check that ${connection.user} may log in with this key (its public key must be in that user's ~/.ssh/authorized_keys on ${noun}). ${add} If the user or key is wrong, fix them with ${fix}.${detail}`,
       },
     );
   }
   if (result.timedOut === true || UNREACHABLE.test(result.stderr)) throw unreachable(detail);
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `The test login to your server at ${where} as ${connection.user} failed (exit code ${result.exitCode}). Nothing was changed.`,
+    `The test login to ${noun} at ${where} as ${connection.user} failed (exit code ${result.exitCode}). Nothing was changed.`,
     {
       hint: `Try \`ssh -p ${connection.port} ${connection.user}@${connection.host} true\` yourself to see what goes wrong, fix it, then run the command again.${detail}`,
     },

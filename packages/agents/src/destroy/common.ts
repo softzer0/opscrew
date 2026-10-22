@@ -103,8 +103,8 @@ export function nothingDeployed(plan: DeployPlan): OpsCrewError {
 }
 
 /** 1. The infrastructure state is not on this computer: nothing can be planned, nothing changes. */
-export function teardownStateNotHere(plan: DeployPlan): OpsCrewError {
-  const { flag } = planWhere(plan);
+export async function teardownStateNotHere(root: string, plan: DeployPlan): Promise<OpsCrewError> {
+  const { flag } = await planWhere(root, plan);
   const { folder, passphrase } = stateCopyPaths(plan);
   return stateNotHere(
     plan,
