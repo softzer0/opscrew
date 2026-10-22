@@ -6,7 +6,7 @@
 
 | Field | Type | Rule |
 |---|---|---|
-| `name` | `^[a-z][a-z0-9-]{0,15}$`, not a name Windows reserves (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`, which Git for Windows cannot check out), optional | Never `prod`; absent for prod. Unique per app (the folder name). A named environment's `app.name` ends with `-<name>`. |
+| `name` | `^[a-z][a-z0-9-]{0,15}$`, not a name Windows reserves (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`, which Git for Windows cannot check out), and not `production`, `storage`, `storage-*`, or a name with `service` as one of its hyphen-separated parts, optional | Never `prod`; absent for prod. Unique per app (the folder name). A named environment's `app.name` ends with `-<name>`. |
 | `deploySource` | `{ from: "main" }` or `{ from: "promote", source: <env> }` | `source` names an existing environment of the app, never the environment itself, and the sources form no cycle. Prod's own default is `{ from: "main" }` while it is the only environment. |
 | `runner` | `github`, `server` or `local` | `server` only for cloud and own-server targets, `local` only for localhost. Default `github`. |
 | `secrets` | `environment` or `prefixed` | Written by provision after the capability check (R1). Prod's names stay unprefixed in both cases. |

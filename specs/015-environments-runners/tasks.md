@@ -238,6 +238,10 @@ Effort`.
     - **A change of capability** shows the move of the secrets as a planned change.
     - **Destroying an environment** removes only its secrets and its GitHub environment (`github-settings`), and keeps every other environment's.
     - **Destroy's text names the environment's own files:** Portainer's "What remains" lists `plan.cicd.workflowPath` (`opscrew-deploy-<env>.yml`), not prod's workflow file (T1508c).
+    - **Lead decisions (T1508b's report):**
+      - the name rule also refuses `production` (prod's GitHub environment) and any name with `service` as one of its hyphen-separated parts, whose prefixed names would equal a service's env-file secret (`OPSCREW_SERVICE_APP_ENV`). Core's `paths.ts` and plan-schema's name tests and schema are in T1508b's Owns for this;
+      - `--no-secrets` after a move warns, as a missing secret does;
+      - `--plan-only` makes no GitHub change: it uses the recorded placement, or `prefixed` with a note.
     - **Tests:** both kinds, the move, destroy keeping the others, and no secret value in any output.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
   - Effort: high
