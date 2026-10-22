@@ -381,7 +381,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1517c [P] [US6] The workflow for runner machines and builds on self-hosted runners, in `packages/iac-templates/src/workflow/**`
+- [X] T1517c [P] [US6] The workflow for runner machines and builds on self-hosted runners, in `packages/iac-templates/src/workflow/**`
   - Owns: those paths (+ tests and snapshots)
   - Reads: contracts/runners.md "Runner machines"; plan.md "16."
   - Depends: T1517a
