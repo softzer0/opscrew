@@ -326,7 +326,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1511b [US4] The server's runner on cloud servers: the root parts in cloud-init, and the runner as deploy's user service, in `packages/iac-templates/shared/cloud-init.yaml.tftpl` (and its renderer), `packages/connectors/ssh-host/src/**` (the runner step) and agents' runner wiring
+- [X] T1511b [US4] The server's runner on cloud servers: the root parts in cloud-init, and the runner as deploy's user service, in `packages/iac-templates/shared/cloud-init.yaml.tftpl` (and its renderer), `packages/connectors/ssh-host/src/**` (the runner step) and agents' runner wiring
   - Owns: the cloud-init template, its rendering and the snapshots it changes; ssh-host's runner step, facts and plan (+ tests); agents' `runners/**` and the cloud provision, drift, status and destroy call sites for the cloud runner (+ tests)
   - Reads: plan.md "8." (with its cloud part); spec FR-1524–FR-1528; T1511's `runners/` code
   - Depends: T1511
