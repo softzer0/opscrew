@@ -224,21 +224,22 @@ Effort`.
   - Effort: high
 
 - [ ] T1508b [P] [US2] Secrets and destroy per environment, in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/destroy/**` (+ the GitHub settings change)
-  - Owns: those paths (+ tests)
+  - Owns: those paths (+ tests); iac-templates' `src/workflow/shared.ts` (`deploySecretName`) and the tests and snapshots it changes
   - Reads: data-model.md "Deploy secrets per environment"; plan.md "9."; research.md R1 and "Spike results" 1; FR-1514, FR-1515
   - Depends: T1508a, T1504
   - Accept:
-    - **The capability check** runs once per environment, and its answer is written to `plan.environment.secrets`.
+    - **The capability check** runs at each environment's own provision, once the app has more than one environment, and its answer is written to that plan's `environment.secrets`. A prod-only app is unchanged: no probe, no settings change. Each provision places and moves only its own environment's secrets.
+    - **A named environment's names are always `OPSCREW_<ENV>_*`**, in its GitHub environment or as repository secrets: `deploySecretName` drops today's names for `environment: environment`. GitHub falls back from an environment secret to a repository secret of the same name, so a missing staging secret would otherwise resolve to prod's (the lead, wave 4).
     - **`environment`:** the GitHub environment is created (or updated) under a `github-settings` approval, and the secrets go into it.
     - **`prefixed`:** `OPSCREW_<ENV>_*` repository secrets. Prod keeps today's names.
     - **The secret list per environment** comes from iac-templates' `deploySecretNamesFor(plan)` (T1505). A self-hosted environment has no host, SSH key or known-hosts secret.
     - **Build values** (`OPSCREW_BUILD_ENV`, `OPSCREW_BUILD_SECRETS`) are always repository secrets: `OPSCREW_<ENV>_BUILD_*` for a named environment, even when its other secrets live in a GitHub environment, since the build job runs in none (T1505).
-    - **Moving prod's secrets into the `production` environment** deletes prod's old repository secrets of the same names. Otherwise a missing environment secret would fall back to them (T1505).
+    - **Moving prod's secrets into the `production` environment** happens at prod's own provision. It deletes prod's old repository secrets of the same names. Otherwise a missing environment secret would fall back to them (T1505).
     - **A change of capability** shows the move of the secrets as a planned change.
     - **Destroying an environment** removes only its secrets and its GitHub environment (`github-settings`), and keeps every other environment's.
     - **Destroy's text names the environment's own files:** Portainer's "What remains" lists `plan.cicd.workflowPath` (`opscrew-deploy-<env>.yml`), not prod's workflow file (T1508c).
     - **Tests:** both kinds, the move, destroy keeping the others, and no secret value in any output.
-  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
   - Effort: high
 
 - [ ] T1509 [P] [US3] `opscrew promote`, in `packages/agents/src/promote/**` (new)

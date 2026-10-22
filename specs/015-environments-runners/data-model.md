@@ -56,7 +56,7 @@ Shared by every environment: `architecture.json`, `ARCHITECTURE.md`, the scan re
 
 | `secrets` | Where | Names |
 |---|---|---|
-| `environment` | the GitHub environment `<env>` (prod: `production`) | today's names (`OPSCREW_HOST`, …) |
+| `environment` | the GitHub environment `<env>` (prod: `production`) | prod: today's names (`OPSCREW_HOST`, …); others: `OPSCREW_<ENV>_HOST`, … as below, so a missing secret never falls back to prod's repository secret of the same name |
 | `prefixed` | repository secrets | prod: today's names; others: `OPSCREW_<ENV>_HOST`, … (`<ENV>` upper-cased, `-` as `_`) |
 
 ## Promotion
