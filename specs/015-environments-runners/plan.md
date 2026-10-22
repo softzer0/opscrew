@@ -276,6 +276,10 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
 - **Inspect** reads the service's state and the runner's version.
 - **Teardown:** `svc.sh stop` and `uninstall`, then `config.sh remove --token <stdin>`, then the folder is removed.
 - **Tests:** a fake host, the script snapshot, and the token absent from the plan, its hash and every log.
+- **On cloud servers (T1511b, the lead after T1511's report):** servers OpsCrew creates have only `deploy`, with no sudo and no root login, so steps 4 and 6 have no root to run as. So:
+  - cloud-init on every cloud server, whatever the runner choice, installs the runner's OS packages, makes `/srv/runners` owned by `deploy`, and runs `loginctl enable-linger deploy`. Choosing a runner later never changes `user_data`, so it never replaces the server;
+  - the runner runs as deploy's systemd user service (`opscrew-runner-<app>.service`, `Restart=always`, `systemctl --user enable --now`) on cloud and own servers alike. There is no `svc.sh` and no `installdependencies.sh` at apply; on own servers the host plan's root part installs the packages and enables linger;
+  - on a cloud target, the host plan holds only the `github-runner` step, inspected and applied over SSH as `deploy`, approved by its hash as `host-apply`.
 
 ### 9. Agents: environments (T1508a, T1508b)
 

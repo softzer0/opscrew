@@ -312,12 +312,40 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
   - Effort: high
 
+- [ ] T1511b [US4] The server's runner on cloud servers: the root parts in cloud-init, and the runner as deploy's user service, in `packages/iac-templates/shared/cloud-init.yaml.tftpl` (and its renderer), `packages/connectors/ssh-host/src/**` (the runner step) and agents' runner wiring
+  - Owns: the cloud-init template, its rendering and the snapshots it changes; ssh-host's runner step, facts and plan (+ tests); agents' `runners/**` and the cloud provision, drift, status and destroy call sites for the cloud runner (+ tests)
+  - Reads: plan.md "8." (with its cloud part); spec FR-1524–FR-1528; T1511's `runners/` code
+  - Depends: T1511
+  - Accept:
+    - **Cloud-init on every cloud server**, whatever the runner choice:
+      - the runner's OS packages, the ones `installdependencies.sh` installs on the pinned images;
+      - `/srv/runners` owned by `deploy`;
+      - `loginctl enable-linger deploy`.
+
+      Choosing a runner later never changes `user_data`. Existing servers' `user_data` changes once, since OpsCrew is unreleased.
+    - **The runner is deploy's systemd user service** on cloud and own servers alike. The step runs as `deploy`:
+      - the download, checked by SHA-256, and the extraction;
+      - `config.sh`, with the token from stdin through `ACTIONS_RUNNER_INPUT_TOKEN`;
+      - the user unit `opscrew-runner-<app>.service` with `Restart=always`, started with `systemctl --user enable --now` and `XDG_RUNTIME_DIR` set.
+
+      No `svc.sh`, and no `installdependencies.sh` at apply. On own servers the host plan's root part installs the packages and enables linger.
+    - **On cloud targets**, `runner: server` is a host plan with only the `github-runner` step, inspected and applied over SSH as `deploy` with the deploy key and the recorded host key, and approved as `host-apply`. T1511's refusal goes.
+    - **Teardown and switching back** stop and disable the unit, run `config.sh remove` as deploy, and remove the folder. Destroying a cloud server unregisters its runner before the server is deleted.
+    - **Tests:**
+      - the cloud-init snapshot, the same with and without a runner;
+      - the step as deploy, with no root command;
+      - a cloud provision with `runner: server` that plans, approves and applies the step;
+      - teardown;
+      - the token absent from every plan, hash, log and file.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [ ] T1512 [P] Surfaces and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ tests)
   - Reads: contracts/environments.md "Commands"; plan.md "13."; quickstart.md
-  - Depends: T1508b, T1509, T1510, T1511
+  - Depends: T1508b, T1509, T1510, T1511, T1511b
   - Accept:
     - **The CLI:**
       - `--env` on provision, destroy, drift, status, verify, secure, retarget, secrets and promote;
@@ -330,6 +358,7 @@ Effort`.
     - **The token templates:** `GITHUB_TOKEN_PERMISSIONS` (shown by `init` and the guide) lists Administration (Read and write), Environments (Read and write) and Deployments (Read). Each is marked as needed only for environments or self-hosted runners. `OPSCREW_GHCR_READ_TOKEN` (classic, `read:packages`) is named for `promote`, since GitHub's container registry may not accept fine-grained tokens (T1504).
     - **Messages that name a command** for a named environment include `--env <env>`: the Portainer template error, the edge-check hint and similar (T1506b's review).
     - **Agents' text that names prod's branch or runtime folder** says the environment's own: `provision/publish.ts`, `verify/portainer.ts`, `secure/portainer.ts`, `drift/render.ts`, and `destroy/types.ts`'s doc comment. Use `portainerDeployBranch(plan)` and `runtimeDir(plan)`. Those agents files are in T1512's Owns for this change (T1508c's report).
+    - **Runners in the CLI** (T1511's report): `runner start` awaits `startLocalRunner`'s `finished` in the foreground and stops it on Ctrl+C; `status` and `secure` show `runnerStatusLines`.
     - **Localhost in the CLI** (T1510's report):
       - `--plan-only` prints `localPlanHash`;
       - `destroy --confirm <app>` covers the local teardown, through `savedLocalPlanPurpose`;
@@ -392,6 +421,7 @@ Effort`.
     - Remove iac-templates' `PORTAINER_STACK_TEMPLATE_PATH` and `ORIGIN_PULL_PEM` once only their own tests use them (T1508c). The connector's `DEPLOY_BRANCH` and `DEPLOY_REFERENCE` stay for the Portainer live test.
     - The generic error helpers `reasonOf`, `codeOf` and `hintOf` live in `retarget/` and are imported by promote: move them to `shared/` (T1509's review).
     - Localhost's `shellWord` duplicates the unexported `shellQuote` helpers; and its runbook (`localhost/runbook.ts`) belongs beside `renderRunbook` in iac-templates (T1510).
+    - Agents' `localhost/image.ts` keeps a private `buildArch`; use iac-templates' (T1511).
     - Core's `signedLeafCertificate` takes a `commonName` option, so a long localhost hostname needs no extra short SAN name (`<16 hex>.localhost`) (T1510).
     - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
@@ -402,13 +432,13 @@ Effort`.
 ## Dependencies
 
 {T1501a, T1501b} with T1502 (lead) alongside → {T1503, T1504, T1505, T1506, T1507} → {T1508a, T1508c} →
-{T1508b, T1509, T1510} → T1511 → {T1512, then T1513} → T1514 → T1515 → T1516.
+{T1508b, T1509, T1510} → T1511 → T1511b → {T1512, then T1513} → T1514 → T1515 → T1516.
 
 **User stories:**
 - **US1:** T1501a, T1501b, T1506, T1507, T1510, T1513.
 - **US2:** T1501a, T1503, T1504, T1505, T1508a, T1508b, T1508c.
 - **US3:** T1504, T1505, T1509.
-- **US4:** T1501b, T1504, T1505, T1507, T1511.
+- **US4:** T1501b, T1504, T1505, T1507, T1511, T1511b.
 - **US5:** T1511, T1512.
 
 ## Parallel waves
@@ -418,7 +448,7 @@ Effort`.
    Then T1506b: the runtime folder and Portainer's branch per environment, across iac-templates.
 3. T1508a, T1508c: environments, design and the phases' paths; the Portainer and origin-TLS names.
 4. T1508b, T1509, T1510: provision secrets with destroy; promote/; localhost/ with its branches.
-5. T1511.
+5. T1511, then T1511b (the runner on cloud servers).
 6. T1512, then T1513.
 7. T1514, then T1515, then T1516.
 
