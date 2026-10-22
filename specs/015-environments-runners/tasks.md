@@ -301,7 +301,7 @@ Effort`.
     - **`runner: local` with `image: local-build` is refused** plainly: the workflow deploys the image CI built, which `pull_policy: never` would never pull. Use `image: registry`, or provision from the computer without the runner (T1506b).
     - **The local runner's workflow and secrets** (T1510's report):
       - provision commits and pushes the rendered workflow, and stores the environment's deploy secrets, as for the other runners;
-      - the local runner's deploys take OpsCrew's local deploy lock;
+      - the local runner's deploys take OpsCrew's local deploy lock, the same lock `applyLocal` takes. If that needs the job's script to take it, change only the local runner's branch of iac-templates' workflow (in T1511's Owns for this); prod and every server stay byte-identical;
       - iac-templates' `buildArch` builds for the localhost target's CPU. That iac-templates file and the snapshots it changes are in T1511's Owns for this change.
     - **`runnerStatus`** in `status` and `secure`:
       - offline is a warning;
@@ -309,7 +309,7 @@ Effort`.
       - a public repository whose fork-PR policy isn't `all_external_contributors` is high.
     - **Destroy, or a switch back to `runner: github`,** unregisters and removes the runner. When `config.sh remove` failed or found no registration, `applyHostPlan`'s `ApplyResult.stillRegistered` lists the app, and the flow deletes its registration through the API (`deleteRunner`), as T1507's step doesn't stop on it.
     - **Tests:** a public repository refused, and allowed after the policy change; the token reaching only the step; the local runner's start, stop and signal; the status findings.
-  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
   - Effort: high
 
 ## Phase 5: Surfaces, the Docker pass and live tests
