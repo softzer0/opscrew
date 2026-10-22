@@ -376,7 +376,7 @@ Effort`.
   - Accept:
     - **A runner machine's host plan:** the deploy user, the runner's prerequisites, Docker (always: the deploy job's edge check runs `docker compose` there; T1517c), and one `github-runner` step per environment. No edge, app-record, firewall, SSH or web-filter step.
     - **Ownership:** the runner step refuses a folder whose `.opscrew-runner` names another repository, on runner machines and own servers alike, instead of replacing it.
-    - **Removal:** an environment's runner comes off on its own. The machine's teardown removes OpsCrew's runners, and what OpsCrew installed, as for an own server.
+    - **Removal:** an environment's runner comes off on its own. The machine's teardown removes OpsCrew's runners and the deploy user if OpsCrew created it, as an own server's undo does. Docker stays, as there: removing it could stop containers the user started since (T1517b).
     - **Tests:** a fake host for each, and the token absent from every plan, hash and log.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
   - Effort: xhigh
