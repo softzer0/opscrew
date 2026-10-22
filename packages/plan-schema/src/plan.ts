@@ -134,10 +134,24 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
   LocalhostTargetSchema,
 ]);
 
+/**
+ * The CPU architecture the app runs on, and its image is built for: the target's `arch`, or
+ * `amd64` on a server OpsCrew creates (design offers x86 server types only).
+ */
+export function targetArch(target: z.output<typeof DeployTargetSchema>): "amd64" | "arm64" {
+  return "arch" in target ? target.arch : "amd64";
+}
+
 /** An environment's name: lower-case letters, digits and hyphens, starting with a letter. */
 export const EnvironmentNameSchema = z.string().regex(ENVIRONMENT_NAME_PATTERN, {
   message: ENVIRONMENT_NAME_MESSAGE,
 });
+
+/** A runner machine's name, unique in the project (`environment.runnerHost.name`). */
+export const RUNNER_HOST_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** Why a name does not match {@link RUNNER_HOST_NAME_PATTERN}, starting with "must be". */
+export const RUNNER_HOST_NAME_MESSAGE =
+  "must be 1-32 lower-case letters, digits or hyphens and start with a letter: the name of a runner machine of the project, never its address";
 
 /**
  * `plan.environment`: which of the app's environments this plan deploys, and how. Absent, or
@@ -162,9 +176,25 @@ export const EnvironmentSchema = z.strictObject({
     .default(() => ({ from: "main" as const })),
   /**
    * Where the deploy job runs: `github` (GitHub's machines), `server` (a runner OpsCrew installs on
-   * the server) or `local` (a runner on the user's computer, for the localhost target).
+   * the server), `local` (a runner on the user's computer, for the localhost target) or `host` (a
+   * runner on a runner machine of the project, `runnerHost`, which deploys over SSH).
    */
-  runner: z.enum(["github", "server", "local"]).default("github"),
+  runner: z.enum(["github", "server", "local", "host"]).default("github"),
+  /**
+   * The runner machine of `runner: host`, by name (its address and SSH login stay in the project's
+   * home folder), and its CPU architecture from inspection.
+   */
+  runnerHost: z
+    .strictObject({
+      name: z.string().regex(RUNNER_HOST_NAME_PATTERN, { message: RUNNER_HOST_NAME_MESSAGE }),
+      arch: z.enum(["amd64", "arm64"]),
+    })
+    .optional(),
+  /**
+   * Where the image is built: on GitHub's machines (`github`, also when absent) or on the
+   * environment's own runner (`runner`, a local runner or a runner machine).
+   */
+  build: z.enum(["github", "runner"]).optional(),
   /**
    * Where the deploy secrets live, written by provision after it checked what the repository's
    * GitHub plan supports: a GitHub environment of this name, or repository secrets prefixed with it.
@@ -474,7 +504,8 @@ function checkEnvironment(
     });
   }
   const { provider } = plan.target;
-  if (runner === "server" && (provider === "portainer" || provider === "localhost")) {
+  const onServer = provider !== "portainer" && provider !== "localhost";
+  if (runner === "server" && !onServer) {
     ctx.addIssue({
       code: "custom",
       path: ["environment", "runner"],
@@ -482,6 +513,30 @@ function checkEnvironment(
         'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own); use "github" here',
     });
   }
+  if (runner === "host" && !onServer) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["environment", "runner"],
+      message:
+        'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own): a runner machine deploys to the server over SSH; use "github" here',
+    });
+  }
+  if (runner === "host" && environment.runnerHost === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["environment", "runnerHost"],
+      message:
+        'is required when runner is "host": the runner machine the deploy job runs on, by its name (opscrew runner host list)',
+    });
+  }
+  if (runner !== "host" && environment.runnerHost !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["environment", "runnerHost"],
+      message: 'is only allowed when runner is "host"',
+    });
+  }
+  if (environment.build === "runner") checkRunnerBuild(environment, plan, ctx);
   if (runner === "local" && provider !== "localhost") {
     ctx.addIssue({
       code: "custom",
@@ -495,6 +550,50 @@ function checkEnvironment(
       code: "custom",
       path: ["app", "name"],
       message: `must end with "-${environment.name}" in the ${environment.name} environment's plan: the app's name, then the environment's`,
+    });
+  }
+}
+
+/**
+ * The rules of `build: runner`: only a local runner or a runner machine builds (never GitHub's
+ * runner choice or the server's runner), only for an environment that follows main, and only for
+ * the target's architecture.
+ */
+function checkRunnerBuild(
+  environment: NonNullable<DeployPlanFields["environment"]>,
+  plan: DeployPlanFields,
+  ctx: z.RefinementCtx,
+): void {
+  const { runner, runnerHost } = environment;
+  const path = ["environment", "build"];
+  if (runner === "github" || runner === "server") {
+    ctx.addIssue({
+      code: "custom",
+      path,
+      message: `can be "runner" only when runner is "local" or "host": ${
+        runner === "github"
+          ? 'with runner "github" the deploy job already runs on GitHub\'s machines, so build there too (build "github")'
+          : 'the server\'s runner never builds, since the app\'s build scripts would then run on the server the app serves from; build on GitHub\'s machines (build "github") or on a runner machine (runner "host")'
+      }`,
+    });
+    return;
+  }
+  if (environment.deploySource.from !== "main") {
+    ctx.addIssue({
+      code: "custom",
+      path,
+      message:
+        'can be "runner" only for an environment that follows main (deploySource.from "main"): a promoted environment deploys the image its source built and builds none; leave build out',
+    });
+  }
+  // A local runner builds on the localhost target's own computer, so only a runner machine can
+  // differ.
+  const target = targetArch(plan.target);
+  if (runnerHost !== undefined && runnerHost.arch !== target) {
+    ctx.addIssue({
+      code: "custom",
+      path,
+      message: `can be "runner" only when the runner machine's architecture (${runnerHost.arch}) is the server's (${target}): an image built there would not run on the server; use a runner machine with ${target}, or build on GitHub's machines (build "github")`,
     });
   }
 }

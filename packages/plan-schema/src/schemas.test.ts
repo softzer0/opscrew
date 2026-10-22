@@ -34,9 +34,12 @@ import {
   QuestionSchema,
   RepoPathSchema,
   RequirementsSchema,
+  RUNNER_HOST_NAME_MESSAGE,
+  RUNNER_HOST_NAME_PATTERN,
   SelfHostedServiceKindSchema,
   ServiceKindSchema,
   serializeArtifact,
+  targetArch,
   VpsProviderSchema,
 } from "./index";
 
@@ -1508,6 +1511,197 @@ describe("DeployPlan environment", () => {
     }
   });
 
+  it('runs the deploy job on a runner machine only on a cloud or own server ("host")', async () => {
+    const runnerHost = { name: "home-box", arch: "amd64" };
+    const plan = await staging({ runner: "host", runnerHost });
+    for (const target of [plan.target, own]) {
+      const parsed = DeployPlanSchema.parse({ ...plan, target });
+      expect(parsed.environment?.runnerHost, target.provider).toEqual(runnerHost);
+      const text = serializeArtifact("plan", parsed);
+      expect(text).toContain(
+        "  runner: host\n  runnerHost:\n    name: home-box\n    arch: amd64\n",
+      );
+      expect(parseArtifact("plan", text, "plan.yaml")).toEqual(parsed);
+    }
+    const message =
+      'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own): a runner machine deploys to the server over SSH; use "github" here';
+    for (const target of [portainer, local]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, target, dns: noDns });
+      expect(issue(result), target.provider).toEqual([{ path: "environment.runner", message }]);
+    }
+  });
+
+  it("names the runner machine with runner host, and only then", async () => {
+    expect(issue(DeployPlanSchema.safeParse(await staging({ runner: "host" })))).toEqual([
+      {
+        path: "environment.runnerHost",
+        message:
+          'is required when runner is "host": the runner machine the deploy job runs on, by its name (opscrew runner host list)',
+      },
+    ]);
+    const runnerHost = { name: "home-box", arch: "amd64" };
+    for (const runner of ["github", "server"]) {
+      const result = DeployPlanSchema.safeParse(await staging({ runner, runnerHost }));
+      expect(issue(result), runner).toEqual([
+        { path: "environment.runnerHost", message: 'is only allowed when runner is "host"' },
+      ]);
+    }
+    const result = DeployPlanSchema.safeParse({
+      ...(await staging({ runner: "local", runnerHost })),
+      target: local,
+      dns: noDns,
+    });
+    expect(issue(result)).toEqual([
+      { path: "environment.runnerHost", message: 'is only allowed when runner is "host"' },
+    ]);
+  });
+
+  it("names a runner machine by its name, never its address", async () => {
+    for (const name of ["a", "home-box", "nas2", `r${"x".repeat(31)}`]) {
+      const plan = await staging({ runner: "host", runnerHost: { name, arch: "arm64" } });
+      expect(DeployPlanSchema.safeParse(plan).success, name).toBe(true);
+    }
+    const message =
+      "must be 1-32 lower-case letters, digits or hyphens and start with a letter: the name of a runner machine of the project, never its address";
+    for (const name of ["", "Home", "2box", "-box", "box_1", "192.168.1.5", `r${"x".repeat(32)}`]) {
+      const plan = await staging({ runner: "host", runnerHost: { name, arch: "amd64" } });
+      expect(issue(DeployPlanSchema.safeParse(plan)), name).toEqual([
+        { path: "environment.runnerHost.name", message },
+      ]);
+      expect(RUNNER_HOST_NAME_PATTERN.test(name), name).toBe(false);
+    }
+    expect(RUNNER_HOST_NAME_MESSAGE).toBe(message);
+    for (const runnerHost of [
+      { name: "box", arch: "armhf" },
+      { name: "box" },
+      { name: "box", arch: "amd64", host: "box.lan" },
+    ]) {
+      const result = DeployPlanSchema.safeParse(await staging({ runner: "host", runnerHost }));
+      expect(pathsOf(result)[0], JSON.stringify(runnerHost)).toMatch(/^environment\.runnerHost/);
+    }
+  });
+
+  it("builds on GitHub's machines by default, and never writes it", async () => {
+    const plan = DeployPlanSchema.parse(await staging());
+    expect(plan.environment?.build).toBeUndefined();
+    const parsed = DeployPlanSchema.parse(await staging({ build: "github" }));
+    expect(parsed.environment?.build).toBe("github");
+  });
+
+  it('builds on the runner ("runner") with a local runner or a runner machine', async () => {
+    const onLocal = {
+      ...(await staging({ runner: "local", build: "runner" })),
+      target: local,
+      dns: noDns,
+    };
+    expect(DeployPlanSchema.parse(onLocal).environment?.build).toBe("runner");
+    for (const arch of ["amd64", "arm64"] as const) {
+      const target = { ...local, arch };
+      expect(DeployPlanSchema.safeParse({ ...onLocal, target }).success, arch).toBe(true);
+    }
+    const onHost = await staging({
+      runner: "host",
+      runnerHost: { name: "home-box", arch: "amd64" },
+      build: "runner",
+    });
+    for (const target of [onHost.target, own]) {
+      const parsed = DeployPlanSchema.parse({ ...onHost, target });
+      expect(parsed.environment?.build, target.provider).toBe("runner");
+      const text = serializeArtifact("plan", parsed);
+      expect(text).toContain("    arch: amd64\n  build: runner\n");
+      expect(parseArtifact("plan", text, "plan.yaml")).toEqual(parsed);
+    }
+  });
+
+  it("never builds on GitHub's runner choice or the server's runner", async () => {
+    expect(
+      issue(DeployPlanSchema.safeParse(await staging({ runner: "github", build: "runner" }))),
+    ).toEqual([
+      {
+        path: "environment.build",
+        message:
+          'can be "runner" only when runner is "local" or "host": with runner "github" the deploy job already runs on GitHub\'s machines, so build there too (build "github")',
+      },
+    ]);
+    expect(
+      issue(DeployPlanSchema.safeParse(await staging({ runner: "server", build: "runner" }))),
+    ).toEqual([
+      {
+        path: "environment.build",
+        message:
+          'can be "runner" only when runner is "local" or "host": the server\'s runner never builds, since the app\'s build scripts would then run on the server the app serves from; build on GitHub\'s machines (build "github") or on a runner machine (runner "host")',
+      },
+    ]);
+  });
+
+  it("builds on the runner only for an environment that follows main", async () => {
+    const plan = await staging({
+      deploySource: { from: "promote", source: "dev" },
+      runner: "host",
+      runnerHost: { name: "home-box", arch: "amd64" },
+      build: "runner",
+    });
+    expect(issue(DeployPlanSchema.safeParse(plan))).toEqual([
+      {
+        path: "environment.build",
+        message:
+          'can be "runner" only for an environment that follows main (deploySource.from "main"): a promoted environment deploys the image its source built and builds none; leave build out',
+      },
+    ]);
+  });
+
+  it("reads the target's architecture: its arch, else amd64 on a server OpsCrew creates", async () => {
+    const { target } = await validPlan();
+    expect(targetArch(target)).toBe("amd64");
+    for (const arch of ["amd64", "arm64"] as const) {
+      const edge = "caddy" as const;
+      for (const other of [{ ...own, edge }, portainer, { ...local, edge }]) {
+        expect(targetArch({ ...other, arch }), other.provider).toBe(arch);
+      }
+    }
+  });
+
+  it("builds on a runner machine only of the target's architecture", async () => {
+    const onHost = (arch: string) =>
+      staging({ runner: "host", runnerHost: { name: "home-box", arch }, build: "runner" });
+    // A server OpsCrew creates is amd64: design offers x86 server types only.
+    expect(issue(DeployPlanSchema.safeParse(await onHost("arm64")))).toEqual([
+      {
+        path: "environment.build",
+        message:
+          'can be "runner" only when the runner machine\'s architecture (arm64) is the server\'s (amd64): an image built there would not run on the server; use a runner machine with amd64, or build on GitHub\'s machines (build "github")',
+      },
+    ]);
+    const arm = { ...own, arch: "arm64" } as const;
+    expect(DeployPlanSchema.safeParse({ ...(await onHost("arm64")), target: arm }).success).toBe(
+      true,
+    );
+    expect(issue(DeployPlanSchema.safeParse({ ...(await onHost("amd64")), target: arm }))).toEqual([
+      {
+        path: "environment.build",
+        message:
+          'can be "runner" only when the runner machine\'s architecture (amd64) is the server\'s (arm64): an image built there would not run on the server; use a runner machine with arm64, or build on GitHub\'s machines (build "github")',
+      },
+    ]);
+    // A deploy-only runner machine may differ: it reaches the server over SSH and builds nothing.
+    const deployOnly = await staging({
+      runner: "host",
+      runnerHost: { name: "home-box", arch: "arm64" },
+    });
+    expect(DeployPlanSchema.safeParse(deployOnly).success).toBe(true);
+  });
+
+  it("leaves an existing environment's plan byte for byte as it was", async () => {
+    const text = serializeArtifact(
+      "plan",
+      DeployPlanSchema.parse(await staging({ runner: "server", secrets: "prefixed" })),
+    );
+    expect(text).toContain(
+      "environment:\n  name: staging\n  deploySource:\n    from: main\n  runner: server\n  secrets: prefixed\napp:\n",
+    );
+    expect(serializeArtifact("plan", parseArtifact("plan", text, "plan.yaml"))).toBe(text);
+  });
+
   it("names the app <app>-<env> outside prod", async () => {
     const plan = await staging();
     const app = { ...plan.app, name: "acme-web" };
@@ -1523,6 +1717,7 @@ describe("DeployPlan environment", () => {
   it("rejects unknown fields and values", async () => {
     for (const [environment, path] of [
       [{ runner: "self-hosted" }, "environment.runner"],
+      [{ build: "local" }, "environment.build"],
       [{ secrets: "repository" }, "environment.secrets"],
       [{ order: 1 }, "environment"],
     ] as const) {

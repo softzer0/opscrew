@@ -65,7 +65,16 @@ describe("JSON Schema export", () => {
                 { properties: { from: { const: "promote" }, source: { type: "string" } } },
               ],
             },
-            runner: { enum: ["github", "server", "local"], default: "github" },
+            runner: { enum: ["github", "server", "local", "host"], default: "github" },
+            runnerHost: {
+              properties: {
+                name: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
+                arch: { enum: ["amd64", "arm64"] },
+              },
+              required: ["name", "arch"],
+              additionalProperties: false,
+            },
+            build: { enum: ["github", "runner"] },
             secrets: { enum: ["environment", "prefixed"] },
           },
         },
