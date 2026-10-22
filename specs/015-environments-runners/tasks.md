@@ -512,7 +512,7 @@ Effort`.
   - Verify: the unit tests on this computer; `OPSCREW_DOCKER_TESTS=1` for the localhost pass here; and a new CI run on GitHub (the lead pushes)
   - Effort: high
 
-- [ ] T1514 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1514 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md "2."–"5."; plan.md "15."
   - Depends: T1512a, T1512b, T1513
