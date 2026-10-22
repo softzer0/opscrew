@@ -89,7 +89,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core` and `pnpm lint`
   - Effort: high
 
-- [ ] T1504 [P] [US2] [US3] [US4] The GitHub connector: environments, environment secrets, runners, the fork-PR policy, dispatch, GHCR tags and provenance, in `packages/connectors/github/**`
+- [X] T1504 [P] [US2] [US3] [US4] The GitHub connector: environments, environment secrets, runners, the fork-PR policy, dispatch, GHCR tags and provenance, in `packages/connectors/github/**`
   - Owns: that path (+ tests and fakes)
   - Reads: contracts/environments.md "GitHub connector"; contracts/runners.md "GitHub connector"; research.md R1–R3 and "Spike results"; plan.md "5."
   - Depends: T1501a, T1502
@@ -321,6 +321,9 @@ Effort`.
   - Accept: the items collected below during the waves; a duplication sweep over 015's change (merged, and what was left and why); no behaviour change
   - Items collected during the waves:
     - `waitForWorkflowRun`'s search branch (no run id given) is dead once `dispatchWorkflow` always returns a run id: make `runId` required and drop the search, `since`, `floorToSecond` and `CLOCK_SKEW_ALLOWANCE_MS` (T1504's review).
+    - `retarget/steps.ts`: the `runId !== undefined` check is always true now; drop it (T1504).
+    - `provision/origin-tls.ts`: when GitHub accepted the dispatch but no run appeared in time, the warning still says "could not start the deploy workflow"; say it was accepted, and where to look (T1504).
+    - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
 
