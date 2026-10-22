@@ -1,0 +1,124 @@
+# OpsCrew's own check of the localhost target (FR-1531, quickstart "6."): the localhost Docker pass
+# with real Docker on Linux, the same pass and the off-Linux Buildpacks build on Intel macOS with
+# Colima (non-blocking), and the localhost unit and command tests, with Docker faked, on Windows and
+# Apple silicon (whose runners cannot run Linux containers). No GitHub runner is ever registered.
+name: Localhost
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - packages/agents/src/localhost/**
+      - packages/iac-templates/src/edge/**
+      - packages/iac-templates/src/runtime/**
+      - packages/connectors/ssh-host/src/local.ts
+      - packages/connectors/ssh-host/src/local.test.ts
+      - packages/core/src/crypto/x509.ts
+      - packages/core/src/crypto/x509.test.ts
+      - examples/**
+      - packages/cli/test/e2e/localhost*.ts
+      - packages/cli/test/e2e/off-linux-build.test.ts
+      - .github/workflows/localhost.yml
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: localhost-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-linux:
+    name: Docker pass (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The localhost Docker pass
+        env:
+          OPSCREW_DOCKER_TESTS: "1"
+        run: pnpm turbo run test --filter=opscrew -- test/e2e/localhost.test.ts
+
+  docker-macos-intel:
+    name: Docker pass and off-Linux build (Intel macOS, Colima)
+    runs-on: macos-15-intel
+    # Intel macOS runners have a shelf life and Colima takes about 6 minutes to start (research R5).
+    continue-on-error: true
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start Docker in Colima
+        run: |
+          set -euo pipefail
+          brew install colima docker docker-compose docker-buildx
+          mkdir -p "$HOME/.docker/cli-plugins"
+          for plugin in docker-compose docker-buildx; do
+            ln -sfn "$(brew --prefix)/opt/$plugin/bin/$plugin" "$HOME/.docker/cli-plugins/$plugin"
+          done
+          colima start --cpu 3 --memory 6
+          docker info --format '{{.ServerVersion}} {{.OSType}} {{.MemTotal}}'
+          docker compose version
+          # Colima shares the home folder with its VM, so the stack's bind mounts resolve there.
+          mkdir -p "$HOME/opscrew-test-tmp"
+          echo "OPSCREW_TEST_TMP=$HOME/opscrew-test-tmp" >> "$GITHUB_ENV"
+      - name: The localhost Docker pass
+        env:
+          OPSCREW_DOCKER_TESTS: "1"
+        run: pnpm turbo run test --filter=opscrew -- test/e2e/localhost.test.ts
+      - name: The off-Linux Buildpacks build (pack in a Linux container through Docker)
+        if: ${{ !cancelled() }}
+        env:
+          OPSCREW_DOCKER_TESTS: "1"
+        run: pnpm turbo run test --filter=opscrew -- test/e2e/off-linux-build.test.ts
+
+  unit:
+    name: Localhost unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Agents (the localhost target)
+        run: pnpm --filter @opscrew/agents exec vitest run src/localhost
+      - name: Templates (the localhost Compose file and edge)
+        run: pnpm --filter @opscrew/iac-templates exec vitest run src/edge/localhost
+      - name: The local executor
+        run: pnpm --filter @opscrew/connector-ssh-host exec vitest run src/local.test.ts
+      - name: The local CA's certificates
+        run: pnpm --filter @opscrew/core exec vitest run src/crypto/x509.test.ts
+      - name: The CLI's localhost commands
+        run: pnpm --filter opscrew exec vitest run src/commands/environments.test.ts src/commands/destroy-localhost.test.ts

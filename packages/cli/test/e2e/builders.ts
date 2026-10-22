@@ -9,7 +9,7 @@ import { readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type PinArch,
-  type RenderContext,
+  type RuntimeContext,
   renderWorkflow,
   SECRET_FILE_PATTERNS,
   TOOLS,
@@ -39,15 +39,19 @@ export type WorkflowBuild =
       sealLines: string[];
     };
 
-interface Step {
+/** A step of the deploy workflow's build job. */
+export interface Step {
   id?: string;
   name?: string;
   run?: string;
   with?: Record<string, unknown>;
 }
 
-/** The build job reads nothing from the context but the SSH port (default 22). */
-const CONTEXT: RenderContext = {
+/**
+ * The build job reads nothing from the context but the SSH port (default 22); a localhost plan's
+ * workflow needs the app's hostname there too (`ctx.localhost`).
+ */
+const CONTEXT: RuntimeContext = {
   opscrewVersion: "0.0.0-test",
   github: { owner: "opscrew-test", repo: "app" },
   deploySshPublicKey: "",
@@ -64,15 +68,20 @@ function read(text: string, match: RegExp, what: string): string {
   return found;
 }
 
+/** The steps of the build job in the deploy workflow OpsCrew renders for `plan`. */
+export function buildSteps(plan: DeployPlan, ctx: RuntimeContext = CONTEXT): Step[] {
+  const workflow = parse(renderWorkflow(plan, ctx).content) as {
+    jobs: { build: { steps: Step[] } };
+  };
+  return workflow.jobs.build.steps;
+}
+
 /**
  * The Buildpacks or Railpack steps of the deploy workflow OpsCrew renders for `plan`, so the
  * local pass builds with the same builder images, runtime version and seal as CI.
  */
-export function workflowBuild(plan: DeployPlan): WorkflowBuild {
-  const workflow = parse(renderWorkflow(plan, CONTEXT).content) as {
-    jobs: { build: { steps: Step[] } };
-  };
-  const steps = workflow.jobs.build.steps;
+export function workflowBuild(plan: DeployPlan, ctx: RuntimeContext = CONTEXT): WorkflowBuild {
+  const steps = buildSteps(plan, ctx);
   const script = (match: (step: Step) => boolean) => steps.find(match)?.run ?? "";
   // printf '%s\n' "FROM $BASE" 'line' 'line' > "$RUNNER_TEMP/seal/Dockerfile"
   const sealed = read(

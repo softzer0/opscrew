@@ -34,6 +34,37 @@ export function docker(args: string[], timeoutMs = 60_000) {
   return runner.run(DOCKER ?? "docker", args, { timeoutMs });
 }
 
+/** The ids of every image Docker has now (`sha256:…`). */
+export async function imageIds(): Promise<Set<string>> {
+  const listed = await docker(["image", "ls", "-a", "-q", "--no-trunc"]);
+  if (listed.exitCode !== 0) throw new Error(`docker image ls failed:\n${tail(listed.stderr)}`);
+  return new Set(listed.stdout.split(/\s+/).filter((id) => id !== ""));
+}
+
+/**
+ * Removes the images `refs` name (tags, digests or bare repositories) that were not among
+ * `before`, Docker's images when the test started: those the test pulled or built, never one the
+ * computer already had.
+ */
+export async function removeNewImages(
+  before: ReadonlySet<string>,
+  refs: Iterable<string>,
+): Promise<void> {
+  const ids = new Set<string>();
+  for (const ref of new Set(refs)) {
+    const listed = await docker(["image", "ls", "-q", "--no-trunc", ref]);
+    const inspected = await docker(["image", "inspect", "--format", "{{.Id}}", ref]);
+    for (const id of `${listed.stdout}\n${inspected.exitCode === 0 ? inspected.stdout : ""}`
+      .split(/\s+/)
+      .filter((id) => id.startsWith("sha256:"))) {
+      if (!before.has(id)) ids.add(id);
+    }
+  }
+  if (ids.size === 0) return;
+  const removed = await docker(["image", "rm", "-f", ...ids]);
+  if (removed.exitCode !== 0) console.warn(`Removing the test's images:\n${tail(removed.stderr)}`);
+}
+
 /** The last `lines` lines of a log (build output, container output). */
 export function tail(text: string, lines = 60): string {
   return text.trimEnd().split(/\r?\n/).slice(-lines).join("\n");
