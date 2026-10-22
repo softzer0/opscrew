@@ -480,6 +480,20 @@ describe("ownServerLoginCheck", () => {
     expect(admin?.args).not.toContain("-i");
   });
 
+  it("checks only the admin login without a deploy key (a runner machine)", async () => {
+    const runner = new ScriptedRunner(() => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const check = ownServerLoginCheck(
+      { runner, env: {} },
+      {
+        connection: { host: OWN_IPV4, port: 22, user: "ana", agent: true, hostKey: "x" },
+        knownHostsFile: "kh",
+      },
+      {},
+    );
+    expect(await check()).toBe(true);
+    expect(runner.calls.map((call) => call.args.at(-2))).toEqual([`ana@${OWN_IPV4}`]);
+  });
+
   it("is false when either login fails", async () => {
     const runner = new ScriptedRunner((_command, args) => ({
       exitCode: args.includes(`root@${OWN_IPV4}`) ? 255 : 0,

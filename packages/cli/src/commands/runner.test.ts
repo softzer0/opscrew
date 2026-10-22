@@ -110,6 +110,7 @@ function machineFakes() {
       apply: (remote, plan, options) => host.apply(remote, plan, options),
     },
     remote: (login) => readyRemote(login.host),
+    verifyLogin: async () => true,
   };
   return { host, machine, github: new FakeRunnerGitHub(), runner: new MachineRunner() };
 }
@@ -198,8 +199,8 @@ describe.skipIf(GIT === undefined)("opscrew runner host", () => {
     const list = context(project, fakes);
     expect(await run(list, "runner", "host", "list"), list.errors).toBe(0);
     const lines = list.output.trim().split("\n");
-    expect(lines[0]).toMatch(/^Machine\s+CPU\s+Docker\s+Environments$/);
-    expect(lines[1]).toMatch(/^home\s+amd64\s+yes\s+none$/);
+    expect(lines[0]).toMatch(/^Machine\s+CPU\s+Docker\s+Hardening chosen\s+Environments$/);
+    expect(lines[1]).toMatch(/^home\s+amd64\s+yes\s+none\s+none$/);
     expect(list.output).not.toContain(MACHINE);
   });
 
@@ -371,5 +372,119 @@ describe.skipIf(GIT === undefined)("opscrew runner host", () => {
     expect(await run(approved, "provision", "--approve", hash, "--yes"), approved.errors).toBe(0);
     expect(fakes.host.applies.map((a) => a.options.approvedHash).at(-1)).toBe(hash);
     expect(fakes.host.applies).toHaveLength(2);
+  });
+});
+
+/** The address this computer reaches the machine from, which the SSH firewall lets in. */
+const CLIENT = "203.0.113.7";
+
+/** The machine has nft, and OpsCrew reaches it from {@link CLIENT}. */
+function withNft(fakes: Fakes): void {
+  fakes.host.facts = {
+    ...fakes.host.facts,
+    sshFirewall: { ...fakes.host.facts.sshFirewall, nft: true },
+    sshClient: { address: CLIENT, port: 22 },
+  };
+}
+
+/** `runner host list`'s row for home. */
+async function listedHome(p: DeployProject, fakes: Fakes): Promise<string> {
+  const list = context(p, fakes);
+  expect(await run(list, "runner", "host", "list"), list.errors).toBe(0);
+  const row = list.output.trim().split("\n")[1] ?? "";
+  // The column shows the choice, which the next approved host plan applies.
+  expect(list.output.includes("is applied with the machine's next approved host plan")).toBe(
+    !/\snone\s+\S+$/.test(row),
+  );
+  return row;
+}
+
+describe.skipIf(GIT === undefined)("opscrew runner host --harden", () => {
+  it("add --harden ssh firewall --ssh-from: the host plan has both parts, applied by its hash, and list shows them", async () => {
+    project = await deployProject();
+    const fakes = machineFakes();
+    withNft(fakes);
+    const first = context(project, fakes);
+    const flags = ["--harden", "ssh", "firewall", "--ssh-from", CLIENT];
+    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT, ...flags];
+    expect(await run(first, "runner", "host", "add", "home", ...ssh)).toBe(1);
+    expect(first.output).toContain("Harden SSH");
+    expect(first.output).toContain(`SSH firewall: port 22 only from ${CLIENT}`);
+    const hash = hashAfter(first.output, "Host plan hash");
+    const second = context(project, fakes);
+    expect(
+      await run(second, "runner", "host", "add", "home", "--approve", hash),
+      second.errors,
+    ).toBe(0);
+    const applied = fakes.host.applies.at(-1);
+    expect(applied?.options.approvedHash).toBe(hash);
+    expect(applied?.plan.steps.map((step) => step.id)).toEqual([
+      "docker",
+      "deploy-user",
+      "sshd",
+      "ssh-firewall",
+    ]);
+    expect(applied?.verified).toBe(true);
+    expect(await listedHome(project, fakes)).toMatch(
+      new RegExp(`^home\\s+amd64\\s+yes\\s+SSH, firewall from ${CLIENT}\\s+none$`),
+    );
+  });
+
+  it("set --no-harden firewall turns only the firewall off", async () => {
+    project = await deployProject();
+    const fakes = machineFakes();
+    withNft(fakes);
+    const add = context(project, fakes);
+    const flags = ["--harden", "ssh", "--harden", "firewall", "--ssh-from", CLIENT];
+    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT, ...flags];
+    expect(await run(add, "runner", "host", "add", "home", ...ssh)).toBe(1);
+    const added = ["--approve", hashAfter(add.output, "Host plan hash")];
+    const apply = context(project, fakes);
+    expect(await run(apply, "runner", "host", "add", "home", ...added), apply.errors).toBe(0);
+    // OpsCrew's table is on the machine now.
+    fakes.host.facts = {
+      ...fakes.host.facts,
+      sshFirewall: { ...fakes.host.facts.sshFirewall, table: "table inet opscrew {}" },
+    };
+
+    const first = context(project, fakes);
+    expect(await run(first, "runner", "host", "set", "home", "--no-harden", "firewall")).toBe(1);
+    expect(first.output).toContain("Remove OpsCrew's SSH firewall");
+    const hash = hashAfter(first.output, "Host plan hash");
+    expect(first.errors).toContain(`opscrew runner host set home --approve ${hash}`);
+    const second = context(project, fakes);
+    expect(
+      await run(second, "runner", "host", "set", "home", "--approve", hash),
+      second.errors,
+    ).toBe(0);
+    const removal = fakes.host.applies.at(-1)?.plan.steps.find((s) => s.id === "ssh-firewall");
+    expect(removal?.params.remove).toBe(true);
+    expect(await listedHome(project, fakes)).toMatch(/^home\s+amd64\s+yes\s+SSH\s+none$/);
+  });
+
+  it("refuses --harden firewall without --ssh-from plainly, and set without a change", async () => {
+    project = await deployProject();
+    const fakes = machineFakes();
+    const bare = context(project, fakes);
+    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT];
+    expect(await run(bare, "runner", "host", "add", "home", ...ssh, "--harden", "firewall")).toBe(
+      2,
+    );
+    expect(bare.errors).toContain("The SSH firewall needs the addresses that may still reach");
+    expect(bare.errors).toContain("--ssh-from");
+    expect(fakes.host.inspections).toBe(0);
+
+    const other = context(project, fakes);
+    expect(await run(other, "runner", "host", "add", "home", ...ssh, "--harden", "disk")).toBe(2);
+    expect(other.errors).toContain('--harden takes ssh or firewall, not "disk".');
+
+    await addHome(project, fakes);
+    const nothing = context(project, fakes);
+    expect(await run(nothing, "runner", "host", "set", "home")).toBe(2);
+    expect(nothing.errors).toContain("Name what to change on the runner machine.");
+    const sources = context(project, fakes);
+    expect(await run(sources, "runner", "host", "set", "home", "--harden", "firewall")).toBe(2);
+    expect(sources.errors).toContain("OpsCrew never guesses them");
+    expect(await listedHome(project, fakes)).toMatch(/^home\s+amd64\s+yes\s+none\s+none$/);
   });
 });

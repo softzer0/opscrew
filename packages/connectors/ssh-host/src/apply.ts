@@ -307,8 +307,8 @@ async function guardedApply(
     throw new OpsCrewError(
       "COMMAND_FAILED",
       restored
-        ? `New SSH logins (as deploy and as your own login) did not work after ${scripts.doing}, so OpsCrew put the previous ${what} back.`
-        : `New SSH logins (as deploy and as your own login) did not work after ${scripts.doing}, and OpsCrew could not reach the server to undo it right away. The server puts the previous ${what} back on its own within ${seconds} seconds.`,
+        ? `New SSH logins did not work after ${scripts.doing}, so OpsCrew put the previous ${what} back.`
+        : `New SSH logins did not work after ${scripts.doing}, and OpsCrew could not reach the server to undo it right away. The server puts the previous ${what} back on its own within ${seconds} seconds.`,
       {
         hint: `Wait ${restored ? "a moment" : `${seconds} seconds`}, check that you can still log in, then ${nextStep(ctx.command)}.`,
       },

@@ -26,6 +26,9 @@ export {
   listRunnerHosts,
   planServerRunner,
   type RunnerGitHubApi,
+  type RunnerHardening,
+  type RunnerHardeningChange,
+  type RunnerHardeningPart,
   type RunnerHostServices,
   type RunnerHostSummary,
   type RunnerProcess,
@@ -34,6 +37,7 @@ export {
   runnerHostAddresses,
   runnerStatus,
   type StartRunnerProcess,
+  setRunnerHost,
   startLocalRunner,
 } from "./runners";
 export * from "./secrets";

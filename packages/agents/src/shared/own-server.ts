@@ -507,13 +507,14 @@ async function testLogin(
 /**
  * A function that opens NEW SSH connections (never a reused one: `ControlMaster=no`,
  * `ControlPath=none`) as the deploy user with the project's deploy key and as the user's own
- * admin login, and resolves true only when both log in. The host adapter calls it after an SSH or
- * firewall change and lets the server undo the change on its own otherwise.
+ * admin login, and resolves true only when both log in. Without `deployKeyFile` (a runner machine,
+ * where deploy has no SSH key) only the admin login is checked. The host adapter calls it after an
+ * SSH or firewall change and lets the server undo the change on its own otherwise.
  */
 export function ownServerLoginCheck(
   deps: Pick<OwnServerDeps, "runner" | "env">,
   session: Pick<OwnServerSession, "connection" | "knownHostsFile">,
-  options: { deployKeyFile: string; homeDir?: string },
+  options: { deployKeyFile?: string; homeDir?: string },
 ): () => Promise<boolean> {
   const { connection, knownHostsFile } = session;
   const login = async (user: string, keyFile: string | undefined) => {
@@ -533,7 +534,7 @@ export function ownServerLoginCheck(
     }
   };
   return async () =>
-    (await login("deploy", options.deployKeyFile)) &&
+    (options.deployKeyFile === undefined || (await login("deploy", options.deployKeyFile))) &&
     (await login(connection.user, ownServerKeyFile(connection, deps.env, options.homeDir)));
 }
 

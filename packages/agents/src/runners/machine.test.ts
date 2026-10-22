@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError, sha256Hex } from "@opscrew/core";
@@ -16,7 +16,7 @@ import type { DestroyServices } from "../destroy/types";
 import { environmentPaths } from "../environments/paths";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { ensureStatePassphrase, hostKeyFingerprint, stateFile } from "../shared";
+import { ensureStatePassphrase, hostKeyFingerprint, hostPlanFile, stateFile } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -46,6 +46,8 @@ import {
   readRunnerHost,
   removeMachineRunners,
   removeRunnerHost,
+  runnerHostAddresses,
+  setRunnerHost,
 } from "./machine";
 
 /** The fingerprint of the host key the fake `ssh-keyscan` answers with (a public key). */
@@ -86,11 +88,12 @@ async function machineProject(
     HCLOUD_TOKEN: "hcloud-test-token-not-a-real-value",
   };
   const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
+  const runner = projectRunner();
   const deps = (environment?: string) =>
     createTestPhaseDeps({
       root: project.root,
       env,
-      runner: projectRunner(),
+      runner,
       approvalHandler: handler,
       ...(environment === undefined ? {} : { environment }),
     });
@@ -119,6 +122,7 @@ async function machineProject(
     prod,
     deps,
     handler,
+    runner,
     machine,
     runnerGitHub,
     runnerMachine,
@@ -811,5 +815,314 @@ describe.skipIf(!findExecutable("git"))("destroying an environment on a runner m
     expect(elsewhere.prod.reporter.text()).toContain(
       "This computer has no record of the runner machine home, so OpsCrew cannot remove the runner of shop-staging from it.",
     );
+  });
+});
+
+/** The address this computer reaches the runner machine from, as the machine sees it. */
+const CLIENT = "203.0.113.7";
+
+/** A network that holds {@link CLIENT}. */
+const NETWORK = "203.0.113.0/24";
+
+/** Each step of `plan` as `[id, state]`. */
+const outline = (plan: { steps: readonly { id: string; state: string }[] }) =>
+  plan.steps.map((step) => [step.id, step.state]);
+
+/** The runner machine has nft, and OpsCrew reaches it from {@link CLIENT}. */
+function withNft(s: MachineProject): void {
+  s.machine.facts = {
+    ...s.machine.facts,
+    sshFirewall: { ...s.machine.facts.sshFirewall, nft: true },
+    sshClient: { address: CLIENT, port: 22 },
+  };
+}
+
+/** `opscrew runner host add home` with `harden`, and its apply. */
+async function addHardened(
+  s: MachineProject,
+  harden: NonNullable<Parameters<typeof addRunnerHost>[1]["harden"]>,
+  services: RunnerHostServices = s.runnerMachine,
+) {
+  const added = await addRunnerHost(s.prod, {
+    name: "home",
+    ssh: { user: "ana", host: MACHINE_IPV4 },
+    hostKey: FINGERPRINT,
+    harden,
+    services,
+  });
+  await applyRunnerHost(s.prod, { name: "home", approvedHash: added.hash, services });
+  return added;
+}
+
+/** The users the SSH login checks logged in as (new connections, ControlMaster=no). */
+function loginChecks(s: MachineProject): string[] {
+  return s.runner.calls
+    .filter((call) => call.command === "ssh" && call.args.includes("ControlMaster=no"))
+    .map((call) => call.args.find((arg) => arg.endsWith(`@${MACHINE_IPV4}`)) ?? "");
+}
+
+describe.skipIf(!findExecutable("git"))("a runner machine's hardening (FR-1536)", () => {
+  it("is off by default: the plan has no SSH or firewall step", async () => {
+    const s = await machineProject();
+    withNft(s);
+    const added = await addHome(s);
+    expect(outline(added.plan)).toEqual([
+      ["docker", "change"],
+      ["deploy-user", "change"],
+    ]);
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toBeUndefined();
+    expect(s.handler.requests[0]?.details).toContain(
+      "OpsCrew hardens its SSH and firewall only when you ask: it may be your desktop.",
+    );
+  });
+
+  it("hardens SSH when asked, with its automatic undo, checked by a new login as the admin alone", async () => {
+    const s = await machineProject();
+    // No login check injected: the machine's own, through the project's SSH.
+    const services: RunnerHostServices = { host: s.machine, remote: s.runnerMachine.remote };
+    const added = await addHardened(s, { on: ["ssh"] }, services);
+    expect(outline(added.plan)).toEqual([
+      ["docker", "change"],
+      ["deploy-user", "change"],
+      ["sshd", "change"],
+    ]);
+    expect(added.plan.steps[2]?.reason).toContain("unless a new login as ana works afterwards");
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toEqual({ ssh: true });
+    const request = s.handler.requests[0];
+    expect(request?.title).toBe(
+      "Set up the runner machine home: Docker, the deploy user, SSH hardening",
+    );
+    expect(request?.details).toContain(
+      "The change of its SSH settings undoes itself on the machine unless a new login as ana works afterwards.",
+    );
+    expect(s.machine.applies[0]?.logins).toEqual([true]);
+    // deploy has no SSH key on a runner machine: only the admin login is checked.
+    expect(loginChecks(s)).toEqual([`ana@${MACHINE_IPV4}`]);
+  });
+
+  it("adds the SSH firewall for the named sources; its plans hold them only in the gitignored .opscrew/, never in a committed file or pull request", async () => {
+    const prodPlan = onMachine(testPlan({ userSecret: false }));
+    const s = await machineProject({ plan: prodPlan });
+    withNft(s);
+    const added = await addHardened(s, { on: ["ssh", "firewall"], sshFrom: [NETWORK] });
+    expect(outline(added.plan)).toEqual([
+      ["docker", "change"],
+      ["deploy-user", "change"],
+      ["sshd", "change"],
+      ["ssh-firewall", "change"],
+    ]);
+    expect(added.plan.steps[3]?.params).toMatchObject({ sources: NETWORK, from: CLIENT });
+    expect(s.handler.requests[0]?.title).toBe(
+      "Set up the runner machine home: Docker, the deploy user, SSH hardening and an SSH firewall",
+    );
+    expect(s.handler.requests[0]?.details).toContain(
+      "The change of its SSH settings and SSH firewall undoes itself on the machine unless a new login as ana works afterwards.",
+    );
+    expect(s.machine.applies[0]?.logins).toEqual([true, true]);
+    expect(await listRunnerHosts(s.prod)).toEqual([
+      {
+        name: "home",
+        arch: "amd64",
+        docker: true,
+        harden: { ssh: true, firewall: { sshFrom: [NETWORK] } },
+        environments: ["prod"],
+      },
+    ]);
+    // The MCP server hides the sources, as it hides the machine's address.
+    expect(await runnerHostAddresses(s.prod.paths)).toEqual({
+      machines: [MACHINE_IPV4, `ana@${MACHINE_IPV4}`],
+      sources: [NETWORK, "203.0.113.0"],
+    });
+
+    // Provision's plan for the machine keeps the hardening beside the runner.
+    s.handler.requests.length = 0;
+    const result = await runProvision(s.prod, { services: s.services() });
+    const install = s.machine.applies.at(-1);
+    expect(install?.options.approvedHash).toBe(result.runnerHostPlanHashes?.[0]);
+    expect(install?.plan.steps.map((step) => step.id)).toEqual([
+      "docker",
+      "deploy-user",
+      "sshd",
+      "ssh-firewall",
+      "github-runner",
+    ]);
+
+    // The saved plans hold the sources, in .opscrew/, which git ignores.
+    for (const hash of [added.hash, result.runnerHostPlanHashes?.[0] as string]) {
+      const file = hostPlanFile(s.prod.paths, hash);
+      expect(relative(s.root, file).split(sep)[0]).toBe(".opscrew");
+      expect(await readFile(file, "utf8")).toContain(NETWORK);
+      expect(await s.git(s.root, "check-ignore", file)).not.toBe("");
+    }
+    const kept = [
+      await allFiles(s.root, [".home-opscrew", ".opscrew"]),
+      await s.git(s.root, "log", "--all", "-p", "--format=%B"),
+      ...s.github.pulls.map((pull) => `${pull.title}\n${pull.body}`),
+    ].join("\n");
+    for (const address of ["203.0.113.", MACHINE_IPV4]) expect(kept).not.toContain(address);
+
+    // A runner-only removal leaves the hardening as it is.
+    const removed = await removeMachineRunners(s.prod, {
+      plan: prodPlan,
+      services: s.services(),
+      phase: "provision",
+      command: "opscrew destroy",
+    });
+    expect(removed.map((outcome) => outline(outcome.plan))).toEqual([
+      [["github-runner", "change"]],
+    ]);
+  });
+
+  it("set turns one part off, and the plan removes only that part", async () => {
+    const s = await machineProject();
+    withNft(s);
+    await addHardened(s, { on: ["ssh", "firewall"], sshFrom: [CLIENT] });
+    expect(s.machine.facts.sshFirewall.table).not.toBeNull();
+
+    const off = await setRunnerHost(s.prod, {
+      name: "home",
+      harden: { off: ["firewall"] },
+      services: s.runnerMachine,
+    });
+    const firewall = off.plan.steps.find((step) => step.id === "ssh-firewall");
+    expect(firewall).toMatchObject({ state: "change", params: { remove: true } });
+    expect(off.plan.steps.find((step) => step.id === "sshd")?.params.remove).toBeUndefined();
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toEqual({ ssh: true });
+    await applyRunnerHost(s.prod, {
+      name: "home",
+      approvedHash: off.hash,
+      services: s.runnerMachine,
+    });
+    expect(s.machine.facts.sshFirewall.table).toBeNull();
+    expect((await listRunnerHosts(s.prod))[0]?.harden).toEqual({ ssh: true });
+
+    const none = await setRunnerHost(s.prod, {
+      name: "home",
+      harden: { off: ["ssh"] },
+      services: s.runnerMachine,
+    });
+    expect(none.plan.steps.find((step) => step.id === "sshd")).toMatchObject({
+      state: "change",
+      params: { remove: true },
+    });
+    expect(none.plan.steps.some((step) => step.id === "ssh-firewall")).toBe(false);
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toBeUndefined();
+    expect((await listRunnerHosts(s.prod))[0]?.harden).toBeUndefined();
+  });
+
+  it("refuses the firewall without sources, sources without it, a part both on and off, and a source that is no address, before connecting", async () => {
+    const s = await machineProject();
+    withNft(s);
+    const add = (harden: NonNullable<Parameters<typeof addRunnerHost>[1]["harden"]>) =>
+      failure(
+        addRunnerHost(s.prod, {
+          name: "home",
+          ssh: { user: "ana", host: MACHINE_IPV4 },
+          hostKey: FINGERPRINT,
+          harden,
+          services: s.runnerMachine,
+        }),
+      );
+    const bare = await add({ on: ["firewall"] });
+    expect(bare).toMatchObject({ code: "INVALID_INPUT" });
+    expect(bare.message).toContain("OpsCrew never guesses them");
+    expect(bare.hint).toContain("--ssh-from");
+    expect(await add({ on: ["ssh"], sshFrom: [CLIENT] })).toMatchObject({
+      message: "--ssh-from goes with --harden firewall.",
+    });
+    expect(await add({ on: ["ssh"], off: ["ssh"] })).toMatchObject({
+      message: "--harden and --no-harden both name ssh.",
+    });
+    const special = ["::1", "::ffff:203.0.113.7", "fe80::1%eth0"];
+    for (const source of [
+      "home",
+      "203.0.113.0/0",
+      "203.0.113.0/33",
+      "203.0.113.0/24/1",
+      ...special,
+    ]) {
+      const bad = await add({ on: ["firewall"], sshFrom: [source] });
+      expect(bad.message, source).toContain("is not an address or network");
+    }
+    const many = Array.from({ length: 33 }, (_, i) => `203.0.113.${i + 1}`);
+    expect(await add({ on: ["firewall"], sshFrom: many })).toMatchObject({
+      code: "INVALID_INPUT",
+      message: "The SSH firewall takes at most 32 sources, and --ssh-from names 33.",
+    });
+    expect(s.machine.inspections).toBe(0);
+    expect(await readRunnerHost(s.prod.paths, "home")).toBeUndefined();
+
+    await addHome(s);
+    const set = await failure(
+      setRunnerHost(s.prod, {
+        name: "home",
+        harden: { on: ["firewall"] },
+        services: s.runnerMachine,
+      }),
+    );
+    expect(set).toMatchObject({ code: "INVALID_INPUT" });
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toBeUndefined();
+  });
+
+  it("refuses a firewall that would lock OpsCrew out, and the record keeps the earlier hardening", async () => {
+    const s = await machineProject();
+    withNft(s);
+    await addHardened(s, { on: ["ssh"] });
+    const applies = s.machine.applies.length;
+    const error = await failure(
+      setRunnerHost(s.prod, {
+        name: "home",
+        harden: { on: ["firewall"], sshFrom: ["198.51.100.0/24"] },
+        services: s.runnerMachine,
+      }),
+    );
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect(error.message).toContain(`OpsCrew connects to this machine from ${CLIENT}`);
+    // The fix is to run set again, the command that planned it.
+    expect(error.hint).toContain("then run opscrew runner host set home again");
+    expect(error.hint).not.toContain("runner host add");
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toEqual({ ssh: true });
+    expect(s.machine.applies).toHaveLength(applies);
+  });
+
+  it("is taken off with the machine, checked by a new admin login", async () => {
+    const s = await machineProject();
+    withNft(s);
+    await addHardened(s, { on: ["ssh", "firewall"], sshFrom: [CLIENT] });
+    s.handler.requests.length = 0;
+    await removeRunnerHost(s.prod, { name: "home", services: s.runnerMachine });
+    const undo = s.machine.applies.at(-1);
+    expect(undo?.plan.purpose).toBe("undo");
+    expect(undo?.plan.steps.map((step) => step.id)).toEqual(
+      expect.arrayContaining(["ssh-firewall", "sshd"]),
+    );
+    expect(undo?.logins).toEqual([true, true]);
+    const details = s.handler.requests[0]?.details;
+    expect(details).toContain("It also takes off OpsCrew's SSH hardening and SSH firewall.");
+    // Removing the firewall has no automatic undo; the SSH settings' removal has.
+    expect(details).toContain(
+      "The change of its SSH settings undoes itself on the machine unless a new login as ana works afterwards.",
+    );
+    expect(s.machine.facts.sshFirewall.table).toBeNull();
+  });
+
+  it("names only the hardening on the machine when it is taken back", async () => {
+    const s = await machineProject();
+    await addHardened(s, { on: ["ssh"] });
+    s.handler.requests.length = 0;
+    await removeRunnerHost(s.prod, { name: "home", services: s.runnerMachine });
+    const details = s.handler.requests[0]?.details;
+    expect(details).toContain("It also takes off OpsCrew's SSH hardening.");
+    expect(details).not.toContain("SSH firewall");
+  });
+
+  it("stores a network given with host bits in the form nft prints it", async () => {
+    const s = await machineProject();
+    withNft(s);
+    await addHardened(s, { on: ["firewall"], sshFrom: ["203.0.113.7/24", " 203.0.113.0/24 "] });
+    expect((await readRunnerHost(s.prod.paths, "home"))?.harden).toEqual({
+      firewall: { sshFrom: [NETWORK] },
+    });
+    expect((await runnerHostAddresses(s.prod.paths)).sources).toEqual([NETWORK, "203.0.113.0"]);
   });
 });

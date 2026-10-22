@@ -2,8 +2,10 @@
  * A runner machine as the runner machine tests answer it: a desktop the user reaches as "ana" with
  * passwordless sudo, at a LAN address, as `inspectHost` reports it, and a host adapter whose apply
  * refuses another plan than the approved one, asks for a runner token only when a runner step
- * runs, and leaves the machine as the plan would: Docker and the deploy user after its setup, each
- * runner installed or removed, and nothing of OpsCrew's after its undo. Nothing reaches a machine.
+ * runs, checks new logins after an SSH or firewall change, and leaves the machine as the plan
+ * would: Docker and the deploy user after its setup, its SSH settings and SSH firewall on or off,
+ * each runner installed or removed, and nothing of OpsCrew's after its undo. Nothing reaches a
+ * machine.
  */
 import {
   type ApplyOptions,
@@ -27,6 +29,8 @@ export interface MachineApply {
   plan: HostPlan;
   options: ApplyOptions;
   tokens: { kind: "registration" | "remove"; token: string }[];
+  /** What `verifyLogin` answered after each SSH or firewall change, in order. */
+  logins: boolean[];
 }
 
 /** The fake runner machine and its host adapter. */
@@ -53,12 +57,12 @@ export class FakeRunnerMachine implements HostAdapterApi {
 
   apply = async (_remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult> => {
     if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
-    const record: MachineApply = { plan, options, tokens: [] };
+    const record: MachineApply = { plan, options, tokens: [], logins: [] };
     this.applies.push(record);
     const changes = plan.steps.filter((step) => step.state === "change");
     const removed: string[] = [];
     let f = this.facts;
-    const changesOf = f.record?.changes ?? [];
+    let changesOf = f.record?.changes ?? [];
     type Entry = (typeof changesOf)[number];
     const entry = (step: Entry["step"], previous: Entry["previous"]): Entry => ({
       step,
@@ -87,6 +91,26 @@ export class FakeRunnerMachine implements HostAdapterApi {
         else {
           f = { ...f, deployUser: { groups: ["deploy", "docker"], keys: [] } };
           if (!recorded.has("deploy-user")) added.push(entry("deploy-user", { existed: false }));
+        }
+      } else if (step.id === "sshd" || step.id === "ssh-firewall") {
+        record.logins.push(await options.verifyLogin());
+        const removes = plan.purpose === "undo" || step.params.remove === true;
+        if (step.id === "sshd") {
+          const dropIn = removes ? null : "# Managed by OpsCrew\nPermitRootLogin no\n";
+          f = { ...f, sshd: f.sshd === null ? null : { ...f.sshd, dropIn } };
+          if (removes) changesOf = changesOf.filter((item) => item.step !== "sshd");
+          else if (!recorded.has("sshd")) added.push(entry("sshd", { dropIn: "absent" }));
+        } else {
+          const on = !removes;
+          f = {
+            ...f,
+            sshFirewall: {
+              ...f.sshFirewall,
+              table: on ? "table inet opscrew {}" : null,
+              files: { rules: on ? "1".repeat(64) : null, unit: on ? "2".repeat(64) : null },
+              enabled: on,
+            },
+          };
         }
       } else if (step.id === "github-runner") {
         if (options.runnerToken === undefined) throw new Error("no runner token callback");

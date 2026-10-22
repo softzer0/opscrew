@@ -2,19 +2,24 @@
  * Runner machines (FR-1532–FR-1535, contracts/runners.md "Runner machines"): a machine of the
  * user's (a home server, a spare PC, a VM) that runs only the GitHub Actions runners of the
  * project's environments. It is set up over SSH with the user's key like their own server, the
- * host key pinned at first contact, through a host plan of its own approved by its hash; OpsCrew
- * does not harden it (it may be a desktop). Its record (the login, the pinned host key, its CPU,
- * Docker and the environments whose runners it holds) stays in the project's home folder: plans
- * name the machine only by its name.
+ * host key pinned at first contact, through a host plan of its own approved by its hash. It is
+ * hardened only when the user asks (FR-1536), each part on its own: SSH (key-only logins, no root)
+ * and OpsCrew's own SSH firewall. Its record (the login, the pinned host key, its CPU, Docker, the
+ * hardening and the environments whose runners it holds) stays in the project's home folder:
+ * plans name the machine only by its name. Its host plans with the SSH firewall hold the user's
+ * addresses, and are saved only in the gitignored `.opscrew/plans/`.
  */
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { parseGitHubRepo } from "@opscrew/connector-github";
 import {
   applyHostPlan,
+  canonicalSshSource,
+  type DesiredRunnerHost,
   type HostFacts,
   type HostPlan,
   hostPlanHash,
+  MAX_SSH_SOURCES,
   planRunnerHost,
   planUndo,
 } from "@opscrew/connector-ssh-host";
@@ -58,6 +63,7 @@ import {
   inspectOwnHost,
   type LoginWords,
   type OwnServerSession,
+  ownServerLoginCheck,
 } from "../shared/own-server";
 import {
   applyRunnerSettings,
@@ -72,8 +78,14 @@ import {
 import { removeKeptRegistrations, runnerTokens, serverRunner, serverRunnerName } from "./server";
 import { planWhere } from "./words";
 
-/** A runner machine's shell and host adapter, and the home folder of `~/` key paths (fakes in tests). */
-export type RunnerHostServices = Pick<OwnServerServices, "remote" | "host" | "homeDir">;
+/**
+ * A runner machine's shell and host adapter, the home folder of `~/` key paths, and the check that
+ * new logins still work after an SSH or firewall change (fakes in tests).
+ */
+export type RunnerHostServices = Pick<
+  OwnServerServices,
+  "remote" | "host" | "homeDir" | "verifyLogin"
+>;
 
 /** What the runner machine flows use: the machine's services and GitHub's runner API. */
 export interface MachineRunnerServices {
@@ -82,6 +94,20 @@ export interface MachineRunnerServices {
   /** GitHub's runner API (default: the client of the user's token). */
   runnerGitHub?: RunnerGitHubApi;
 }
+
+/**
+ * A runner machine's hardening (FR-1536), off by default and each part on its own: `ssh`, the own
+ * server's SSH hardening; `firewall`, OpsCrew's nftables table that lets only `sshFrom` reach SSH.
+ */
+export type RunnerHardening = NonNullable<DesiredRunnerHost["harden"]>;
+
+/** A part of {@link RunnerHardening}. */
+export type RunnerHardeningPart = keyof RunnerHardening;
+
+const RunnerHardeningSchema = z.strictObject({
+  ssh: z.literal(true).optional(),
+  firewall: z.strictObject({ sshFrom: z.array(z.string()).min(1) }).optional(),
+});
 
 const RunnerHostRecordSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -92,6 +118,8 @@ const RunnerHostRecordSchema = z.strictObject({
   arch: z.enum(["amd64", "arm64"]),
   /** Docker was installed when OpsCrew last looked (the machine's host plan installs it). */
   docker: z.boolean(),
+  /** The hardening the user chose; absent: none. */
+  harden: RunnerHardeningSchema.optional(),
   /**
    * The environments whose runners OpsCrew installed there, by name: a provision of one that no
    * longer names the machine finds its runner here and removes it.
@@ -233,20 +261,26 @@ async function runnerHostNames(paths: ProjectPaths): Promise<string[]> {
 }
 
 /**
- * The address and the `user@host` login of every runner machine this computer records for the
- * project: what the MCP server's replies hide. A damaged record hides nothing, and never stops
- * the others from being hidden.
+ * What the MCP server's replies hide of the runner machines this computer records for the
+ * project: each one's address and `user@host` login (`machines`), and the addresses its SSH
+ * firewall lets in (`sources`, each also without its prefix length). A damaged record hides
+ * nothing, and never stops the others from being hidden.
  */
-export async function runnerHostAddresses(paths: ProjectPaths): Promise<string[]> {
-  const addresses: string[] = [];
+export async function runnerHostAddresses(
+  paths: ProjectPaths,
+): Promise<{ machines: string[]; sources: string[] }> {
+  const machines: string[] = [];
+  const sources: string[] = [];
   for (const name of await runnerHostNames(paths)) {
-    const login = await readRunnerHost(paths, name).then(
-      (record) => record?.login,
-      () => undefined,
-    );
-    if (login !== undefined) addresses.push(login.host, `${login.user}@${login.host}`);
+    const record = await readRunnerHost(paths, name).catch(() => undefined);
+    if (record === undefined) continue;
+    const { login } = record;
+    machines.push(login.host, `${login.user}@${login.host}`);
+    for (const source of record.harden?.firewall?.sshFrom ?? []) {
+      sources.push(source, source.split("/")[0] as string);
+    }
   }
-  return addresses;
+  return { machines, sources };
 }
 
 /** The machine's CPU from inspection: amd64 or arm64, as GitHub's runner and OpsCrew support. */
@@ -313,13 +347,146 @@ async function projectRepositoryUrl(deps: PhaseDeps): Promise<string> {
   return repositoryUrl(await githubCoordinates(gitClient(deps)));
 }
 
-/** The machine's own setup (Docker and the deploy user), leaving every runner on it as it is. */
-function setupPlan(facts: HostFacts, url: string, name: string): HostPlan {
-  return planRunnerHost(
-    facts,
-    { repositoryUrl: url, runners: [] },
-    `opscrew runner host add ${name}`,
+/** A change of a runner machine's hardening (`--harden`, `--no-harden` and `--ssh-from`). */
+export interface RunnerHardeningChange {
+  /** The parts to turn on; `firewall` needs `sshFrom`. */
+  on?: readonly RunnerHardeningPart[];
+  /** The parts to turn off. */
+  off?: readonly RunnerHardeningPart[];
+  /** With `firewall` on: the IPv4 or IPv6 addresses or networks that may reach SSH. */
+  sshFrom?: readonly string[];
+}
+
+/**
+ * `current` with `change`: each part turned on or off, the firewall's sources replaced by
+ * `sshFrom` in the form nft prints them (ssh-host's `canonicalSshSource`); undefined when nothing
+ * stays hardened.
+ * @throws OpsCrewError `INVALID_INPUT` for a part both turned on and off, the firewall without
+ * sources (there is no default: a guess at this computer's address could lock the user out), and
+ * sources without the firewall, that are no address or network, or more than ssh-host takes.
+ */
+function changedHardening(
+  current: RunnerHardening | undefined,
+  change: RunnerHardeningChange,
+): RunnerHardening | undefined {
+  const on = new Set(change.on ?? []);
+  const off = new Set(change.off ?? []);
+  const both = [...on].filter((part) => off.has(part));
+  if (both.length > 0) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `--harden and --no-harden both name ${listText(both)}.`,
+      {
+        hint: "Name each part once: --harden turns it on, --no-harden turns it off.",
+      },
+    );
+  }
+  const given = (change.sshFrom ?? []).map((source) => source.trim());
+  if (on.has("firewall") && given.length === 0) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "The SSH firewall needs the addresses that may still reach the machine's SSH, and OpsCrew never guesses them: a guessed address could lock you out when it changes.",
+      {
+        hint: "Name them with --ssh-from, for example --harden firewall --ssh-from 203.0.113.7 (the address this computer reaches the machine from) or --ssh-from 192.168.1.0/24 (your home network).",
+      },
+    );
+  }
+  if (!on.has("firewall") && given.length > 0) {
+    throw new OpsCrewError("INVALID_INPUT", "--ssh-from goes with --harden firewall.", {
+      hint: "Give --harden firewall --ssh-from <address or network> …; the sources replace the firewall's earlier ones.",
+    });
+  }
+  const bad = given.filter((source) => canonicalSshSource(source) === null);
+  if (bad.length > 0) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${listText(bad)} ${bad.length === 1 ? "is not an address or network" : "are not addresses or networks"} for --ssh-from.`,
+      {
+        hint: "Give public or private IPv4 or IPv6 addresses or networks, such as 203.0.113.7, 198.51.100.0/24 or 2001:db8::/32 (not every address, /0, nor a special IPv6 form such as ::1 or ::ffff:203.0.113.7).",
+      },
+    );
+  }
+  const sshFrom = [...new Set(given.map((source) => canonicalSshSource(source) as string))];
+  if (sshFrom.length > MAX_SSH_SOURCES) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The SSH firewall takes at most ${MAX_SSH_SOURCES} sources, and --ssh-from names ${sshFrom.length}.`,
+      { hint: "Name networks that hold several addresses, such as 198.51.100.0/24." },
+    );
+  }
+  const ssh = on.has("ssh") || (!off.has("ssh") && current?.ssh === true);
+  const firewall = on.has("firewall")
+    ? { sshFrom }
+    : off.has("firewall")
+      ? undefined
+      : current?.firewall;
+  if (!ssh && firewall === undefined) return undefined;
+  return { ...(ssh ? { ssh: true } : {}), ...(firewall !== undefined ? { firewall } : {}) };
+}
+
+/**
+ * What every host plan of the machine but a runner-only removal takes: its hardening, and with
+ * SSH hardening the pinned host key's algorithm (the SSH settings keep that key).
+ */
+function hardeningOf(
+  harden: RunnerHardening | undefined,
+  session: OwnServerSession,
+): Pick<DesiredRunnerHost, "harden" | "hostKeyType"> {
+  if (harden === undefined) return {};
+  return {
+    harden,
+    ...(harden.ssh
+      ? { hostKeyType: session.hostKey.type as DesiredRunnerHost["hostKeyType"] }
+      : {}),
+  };
+}
+
+/**
+ * The check after an SSH or firewall change: a new login as the machine's admin works. The deploy
+ * user only runs the runners there, with no SSH key, so its login is not checked.
+ */
+function loginCheck(
+  deps: PhaseDeps,
+  session: OwnServerSession,
+  services: RunnerHostServices | undefined,
+): () => Promise<boolean> {
+  return (
+    services?.verifyLogin ??
+    ownServerLoginCheck(deps, session, {
+      ...(services?.homeDir !== undefined ? { homeDir: services.homeDir } : {}),
+    })
   );
+}
+
+/**
+ * What `plan` says about the changes the machine undoes on its own unless a new login as `user`
+ * works afterwards: its SSH settings, and its SSH firewall unless the plan removes it.
+ */
+function undoSentence(plan: HostPlan, user: string): string[] {
+  const guarded = plan.steps
+    .filter(
+      (step) =>
+        step.state === "change" &&
+        (step.id === "sshd" || (step.id === "ssh-firewall" && step.params.remove !== true)),
+    )
+    .map((step) => (step.id === "sshd" ? "SSH settings" : "SSH firewall"));
+  if (guarded.length === 0) return [];
+  return [
+    `The change of its ${listText(guarded)} undoes itself on the machine unless a new login as ${user} works afterwards.`,
+  ];
+}
+
+/**
+ * The machine's own setup (Docker, the deploy user and the hardening `machine` names), leaving
+ * every runner on it as it is; its findings say to run `command` again once fixed.
+ */
+function setupPlan(
+  facts: HostFacts,
+  url: string,
+  machine: Pick<DesiredRunnerHost, "harden" | "hostKeyType">,
+  command: string,
+): HostPlan {
+  return planRunnerHost(facts, { repositoryUrl: url, runners: [], ...machine }, command);
 }
 
 /** Options of {@link addRunnerHost}. */
@@ -332,6 +499,8 @@ export interface AddRunnerHostInput {
   keyFile?: string;
   /** `--host-key SHA256:…`: the fingerprint to trust at first contact when nobody can be asked. */
   hostKey?: string;
+  /** The change of the machine's hardening (default: as an earlier record of it has it, else none). */
+  harden?: RunnerHardeningChange;
   services?: RunnerHostServices;
 }
 
@@ -339,11 +508,12 @@ export interface AddRunnerHostInput {
  * `opscrew runner host add <name>`: checks the login, connects with the pinned host key (confirmed
  * at first contact; for the same address and port as an earlier record, the key confirmed then),
  * inspects the machine read-only, and plans its setup with ssh-host's `planRunnerHost`: Docker and
- * the deploy user, no environment's runner yet. A plan with blocking findings stops before
- * anything is recorded; otherwise the record is written (never committed) and the plan returned
- * with its hash, which {@link applyRunnerHost} applies once approved.
- * @throws OpsCrewError `INVALID_INPUT` for a bad name or login, `PHASE_PRECONDITION` without a
- * GitHub remote, an unsupported CPU, or a plan that cannot be applied.
+ * the deploy user, the hardening `input.harden` asks for, no environment's runner yet. A plan with
+ * blocking findings (a hardening that would lock OpsCrew out among them) stops before anything is
+ * recorded; otherwise the record is written (never committed) and the plan returned with its
+ * hash, which {@link applyRunnerHost} applies once approved.
+ * @throws OpsCrewError `INVALID_INPUT` for a bad name, login or hardening, `PHASE_PRECONDITION`
+ * without a GitHub remote, an unsupported CPU, or a plan that cannot be applied.
  */
 export async function addRunnerHost(
   deps: PhaseDeps,
@@ -378,6 +548,7 @@ export async function addRunnerHost(
     );
   }
   const earlier = await readRunnerHost(deps.paths, name);
+  const harden = changedHardening(earlier?.harden, input.harden ?? {});
   const sameAddress =
     earlier !== undefined &&
     normalizeHostName(earlier.login.host) === normalizeHostName(parsed.data.host) &&
@@ -389,7 +560,7 @@ export async function addRunnerHost(
       : login;
   const url = await projectRepositoryUrl(deps);
   let pinned = known.hostKey;
-  const { facts } = await connectMachine(
+  const { session, facts } = await connectMachine(
     deps,
     { name, login: known },
     {
@@ -403,20 +574,59 @@ export async function addRunnerHost(
     },
   );
   const arch = machineArch(facts, name);
-  const plan = setupPlan(facts, url, name);
-  requireNoBlockers(plan, {
-    server: `the runner machine ${name}`,
-    command: `opscrew runner host add ${name}`,
-  });
+  const command = `opscrew runner host add ${name}`;
+  const plan = setupPlan(facts, url, hardeningOf(harden, session), command);
+  requireNoBlockers(plan, { server: `the runner machine ${name}`, command });
   await writeRunnerHost(deps.paths, {
     schemaVersion: 1,
     name,
     login: { ...known, ...(pinned !== undefined ? { hostKey: pinned } : {}) },
     arch,
     docker: facts.docker.kind !== "absent",
+    ...(harden !== undefined ? { harden } : {}),
     environments: earlier?.environments ?? [],
   });
   return { plan, hash: hostPlanHash(plan) };
+}
+
+/**
+ * `opscrew runner host set <name>`: changes the recorded machine's hardening as `input.harden`
+ * says, then connects with the pinned host key, inspects the machine read-only and plans its setup
+ * with that hardening: a part turned off is removed. A plan with blocking findings (a hardening
+ * that would lock OpsCrew out among them) stops before the record changes; otherwise the record is
+ * written and the plan returned with its hash, which {@link applyRunnerHost} applies once approved
+ * (with `command: opscrew runner host set <name>`, as this plan has it). The record holds the
+ * chosen hardening from then on, applied with the machine's next approved host plan.
+ * @throws OpsCrewError `INVALID_INPUT` for a bad hardening, `PHASE_PRECONDITION` for a machine
+ * this computer does not know or a plan that cannot be applied.
+ */
+export async function setRunnerHost(
+  deps: PhaseDeps,
+  input: { name: string; harden: RunnerHardeningChange; services?: RunnerHostServices },
+): Promise<{ plan: HostPlan; hash: string }> {
+  const record = await requireRunnerHost(deps.paths, input.name);
+  const { name } = record;
+  const harden = changedHardening(record.harden, input.harden);
+  const url = await projectRepositoryUrl(deps);
+  const { session, facts } = await connectRecorded(deps, record, {
+    services: input.services,
+    phase: "provision",
+  });
+  const command = `opscrew runner host set ${name}`;
+  const plan = setupPlan(facts, url, hardeningOf(harden, session), command);
+  requireNoBlockers(plan, { server: `the runner machine ${name}`, command });
+  // Read again: the connection may have pinned the host key in the record.
+  const { harden: _earlier, ...current } = await requireRunnerHost(deps.paths, name);
+  await writeRunnerHost(deps.paths, { ...current, ...(harden !== undefined ? { harden } : {}) });
+  return { plan, hash: hostPlanHash(plan) };
+}
+
+/** The parts of `harden` in words: `SSH hardening and an SSH firewall`. */
+function hardeningWords(harden: RunnerHardening): string {
+  return listText([
+    ...(harden.ssh ? ["SSH hardening"] : []),
+    ...(harden.firewall !== undefined ? ["an SSH firewall"] : []),
+  ]);
 }
 
 /**
@@ -431,6 +641,11 @@ export async function applyRunnerHost(
   input: {
     name: string;
     approvedHash: string;
+    /**
+     * The command that planned it (`opscrew runner host add <name>`, the default, or `set`): the
+     * plan's findings and the messages name it.
+     */
+    command?: string;
     services?: RunnerHostServices;
   },
 ): Promise<void> {
@@ -441,8 +656,9 @@ export async function applyRunnerHost(
     services: input.services,
     phase: "provision",
   });
-  const plan = setupPlan(facts, url, name);
-  const command = `opscrew runner host add ${name}`;
+  const { harden } = record;
+  const command = input.command ?? `opscrew runner host add ${name}`;
+  const plan = setupPlan(facts, url, hardeningOf(harden, session), command);
   if (hostPlanHash(plan) !== input.approvedHash.toLowerCase()) {
     throw new OpsCrewError(
       "PLAN_HASH_MISMATCH",
@@ -455,15 +671,15 @@ export async function applyRunnerHost(
     plan,
     remote: session.remote,
     apply: input.services?.host?.apply ?? applyHostPlan,
-    // The plan changes no SSH or firewall setting: the machine is the user's, OpsCrew does not harden it.
-    verifyLogin: async () => true,
-    title: `Set up the runner machine ${name}: Docker and the deploy user`,
+    verifyLogin: loginCheck(deps, session, input.services),
+    title: `Set up the runner machine ${name}: Docker${harden === undefined ? " and the deploy user" : `, the deploy user, ${hardeningWords(harden)}`}`,
     server: machine,
     upToDate: `The runner machine ${name} is set up; nothing on it changes.`,
     command,
     phase: "provision",
     intro: [
-      `This prepares ${machine} for the GitHub Actions runners of this project's environments. OpsCrew does not change its SSH settings or firewall: it may be your desktop.`,
+      `This prepares ${machine} for the GitHub Actions runners of this project's environments. ${harden === undefined ? "OpsCrew hardens its SSH and firewall only when you ask: it may be your desktop." : `As you chose, OpsCrew sets up ${hardeningWords(harden)} there.`}`,
+      ...undoSentence(plan, record.login.user),
     ],
     secrets: async () => ({}),
     applying: `Setting up ${machine} (installing Docker can take a few minutes)`,
@@ -565,7 +781,7 @@ export async function removeRunnerHost(
     plan,
     remote: session.remote,
     apply: input.services?.host?.apply ?? applyHostPlan,
-    verifyLogin: async () => true,
+    verifyLogin: loginCheck(deps, session, input.services),
     title: `Take back what OpsCrew set up on the runner machine ${name}`,
     server: machine,
     upToDate: `Nothing of OpsCrew's is left on ${machine}.`,
@@ -575,6 +791,8 @@ export async function removeRunnerHost(
     confirmPhrase: name,
     intro: [
       `This removes this project's GitHub Actions runners from ${machine}, and the deploy user OpsCrew created with its home folder and everything in it; this cannot be undone. Docker stays installed (other software may use it), and the machine itself stays.`,
+      ...takenOff(plan),
+      ...undoSentence(plan, record.login.user),
     ],
     auditAs: "host undo",
     secrets: async () => ({}),
@@ -589,6 +807,16 @@ export async function removeRunnerHost(
   deps.reporter.success(
     `Removed the runner machine ${name}; this computer no longer keeps its login.`,
   );
+}
+
+/** What of OpsCrew's hardening the undo `plan` takes off the machine, in words. */
+function takenOff(plan: HostPlan): string[] {
+  const removes = (id: string) => plan.steps.some((s) => s.id === id && s.state === "change");
+  const parts = [
+    ...(removes("sshd") ? ["SSH hardening"] : []),
+    ...(removes("ssh-firewall") ? ["SSH firewall"] : []),
+  ];
+  return parts.length === 0 ? [] : [`It also takes off OpsCrew's ${listText(parts)}.`];
 }
 
 /** Forgets the runner machine `name` on this computer: its record and its pinned host key. */
@@ -662,6 +890,8 @@ export interface RunnerHostSummary {
   arch: "amd64" | "arm64";
   /** Docker was installed when OpsCrew last looked. */
   docker: boolean;
+  /** The hardening the user chose; absent: none. */
+  harden?: RunnerHardening;
   /** The environments whose deploy job runs on it. */
   environments: string[];
 }
@@ -671,10 +901,11 @@ export async function listRunnerHosts(
   deps: Pick<PhaseDeps, "paths">,
 ): Promise<RunnerHostSummary[]> {
   const plans = await environmentPlans(deps.paths.root);
-  return (await runnerHostRecords(deps.paths)).map(({ name, arch, docker }) => ({
+  return (await runnerHostRecords(deps.paths)).map(({ name, arch, docker, harden }) => ({
     name,
     arch,
     docker,
+    ...(harden !== undefined ? { harden } : {}),
     environments: plans
       .filter(({ plan }) => runsOn(plan, name))
       .map((environment) => environment.name),
@@ -844,7 +1075,11 @@ export async function applyMachineRunner(
   const app = plan.app.name;
   const hostPlan = planRunnerHost(
     facts,
-    { repositoryUrl: repositoryUrl(repository), runners: [{ app, runner }] },
+    {
+      repositoryUrl: repositoryUrl(repository),
+      runners: [{ app, runner }],
+      ...hardeningOf(record.harden, session),
+    },
     command,
   );
   const machine = `the runner machine ${name}`;
@@ -852,7 +1087,7 @@ export async function applyMachineRunner(
     plan: hostPlan,
     remote: session.remote,
     apply: services.runnerMachine?.host?.apply ?? applyHostPlan,
-    verifyLogin: async () => true,
+    verifyLogin: loginCheck(deps, session, services.runnerMachine),
     title: `Install the GitHub Actions runner of ${app} on the runner machine ${name}, run as deploy`,
     server: machine,
     upToDate: `The runner of ${app} on ${machine} is installed and running as planned; nothing on it changes.`,
@@ -910,13 +1145,14 @@ async function removeRunnerFrom(
     return undefined;
   }
   const { session, facts } = connected;
+  // A runner-only removal leaves the machine's hardening as it is.
   const hostPlan = planRunnerHost(facts, { repositoryUrl: url, runners: [{ app }] }, command);
   const machine = `the runner machine ${name}`;
   const outcome = await approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote: session.remote,
     apply: services.runnerMachine?.host?.apply ?? applyHostPlan,
-    verifyLogin: async () => true,
+    verifyLogin: loginCheck(deps, session, services.runnerMachine),
     title: `Remove the GitHub Actions runner of ${app} from the runner machine ${name}`,
     server: machine,
     upToDate: `${upperFirst(machine)} has no runner of ${app}; nothing on it changes.`,

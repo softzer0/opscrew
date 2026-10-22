@@ -384,6 +384,14 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   production server never builds: with `runner` `server`, `build` stays `github`.
   `opscrew_runner_host_remove` only when the user asks: they type the machine's name in its dialog,
   and it is refused while an environment's deploy job runs there.
+- **Hardening a runner machine.** Off by default: offer it only when the user asks.
+  `opscrew_runner_host_add` takes `harden` (`ssh`, `firewall`) and `sshFrom`;
+  `opscrew_runner_host_set` takes `harden`, `noHarden` and `sshFrom`. `ssh` means key-only SSH
+  logins with no passwords or root; `firewall` is OpsCrew's own nftables table that lets only
+  `sshFrom` reach SSH. `sshFrom` must come from the user (their address or network): never guess
+  it, and know that it replaces the earlier sources. Each change goes through the host plan's
+  dialog, and OpsCrew refuses a firewall that leaves out the address it connects from. `noHarden`
+  removes only that part, and `opscrew_runner_host_remove` takes both off.
 - **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`

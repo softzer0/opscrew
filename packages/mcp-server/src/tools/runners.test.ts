@@ -153,12 +153,16 @@ async function known(h: { paths: Parameters<typeof listRunnerHosts>[0]["paths"] 
 }
 
 describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
-  it("lists add, remove and list; add and remove ask the user on every call", async () => {
+  it("lists add, set, remove and list; add, set and remove ask the user on every call", async () => {
     const h = await connect();
     const { tools } = await h.client.listTools();
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get("opscrew_runner_host_list")?.annotations?.readOnlyHint).toBe(true);
-    for (const name of ["opscrew_runner_host_add", "opscrew_runner_host_remove"]) {
+    for (const name of [
+      "opscrew_runner_host_add",
+      "opscrew_runner_host_set",
+      "opscrew_runner_host_remove",
+    ]) {
       expect(byName.get(name)?._meta, name).toMatchObject({
         "anthropic/requiresUserInteraction": true,
       });
@@ -167,7 +171,10 @@ describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
     // Nobody passes a host key for the user: it is confirmed in a dialog.
     expect(
       Object.keys(byName.get("opscrew_runner_host_add")?.inputSchema.properties ?? {}).sort(),
-    ).toEqual(["host", "keyFile", "name", "port", "projectDir", "user"]);
+    ).toEqual(["harden", "host", "keyFile", "name", "port", "projectDir", "sshFrom", "user"]);
+    expect(
+      Object.keys(byName.get("opscrew_runner_host_set")?.inputSchema.properties ?? {}).sort(),
+    ).toEqual(["harden", "name", "noHarden", "projectDir", "sshFrom"]);
   });
 
   it("sets a machine up once the user confirms its host key and approves its host plan", async () => {
@@ -188,7 +195,7 @@ describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
 
     const listed = await h.call("opscrew_runner_host_list");
     expect(textOf(listed)).toContain(
-      "- home: amd64, Docker installed, no environment's deploy job",
+      "- home: amd64, Docker installed, no hardening chosen, no environment's deploy job",
     );
     expect(JSON.stringify(listed)).not.toContain(MACHINE);
   });
@@ -259,5 +266,113 @@ describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
     expect(ok.host.applies.at(-1)?.plan.purpose).toBe("undo");
     expect(textOf(removed)).toContain("OpsCrew no longer keeps the runner machine home");
     expect(await known(ok)).toEqual([]);
+  });
+});
+
+/** The address OpsCrew reaches the machine from, which the SSH firewall lets in. */
+const CLIENT = "203.0.113.7";
+
+describe.skipIf(!findExecutable("git"))("a runner machine's hardening through MCP", () => {
+  /** The machine has nft, and OpsCrew reaches it from {@link CLIENT}. */
+  function withNft(h: Awaited<ReturnType<typeof connect>>): void {
+    h.host.facts = {
+      ...h.host.facts,
+      sshFirewall: { ...h.host.facts.sshFirewall, nft: true },
+      sshClient: { address: CLIENT, port: 22 },
+    };
+  }
+
+  it("adds SSH hardening and the SSH firewall through the host plan's dialog, and hides the sources in replies", async () => {
+    const h = await connect({ elicit: approveAll });
+    withNft(h);
+    const added = await h.call("opscrew_runner_host_add", {
+      ...HOME,
+      harden: ["ssh", "firewall"],
+      sshFrom: [CLIENT],
+    });
+    expect(added.isError, textOf(added)).toBeFalsy();
+    const dialog = h.elicited[1];
+    expect(dialog).toContain(
+      "Set up the runner machine home: Docker, the deploy user, SSH hardening and an SSH firewall",
+    );
+    // The user sees the sources in their own dialog; the replies never name them.
+    expect(dialog).toContain(`SSH firewall: port 22 only from ${CLIENT}`);
+    const plan = h.host.applies[0]?.plan;
+    expect(plan?.steps.map((step) => step.id)).toEqual([
+      "docker",
+      "deploy-user",
+      "sshd",
+      "ssh-firewall",
+    ]);
+    expect(JSON.stringify(added)).not.toContain(CLIENT);
+    expect(JSON.stringify(added)).toContain("your address");
+
+    const listed = await h.call("opscrew_runner_host_list");
+    expect(textOf(listed)).toContain(
+      "- home: amd64, Docker installed, hardening chosen: SSH and SSH firewall",
+    );
+    expect(dataOf(listed).machines[0].hardened).toEqual(["ssh", "firewall"]);
+    expect(JSON.stringify(listed)).not.toContain(CLIENT);
+  });
+
+  it("set turns one part off through the host plan's dialog, removing only that part", async () => {
+    const h = await connect({ elicit: approveAll });
+    withNft(h);
+    const both = { ...HOME, harden: ["ssh", "firewall"], sshFrom: [CLIENT] };
+    expect((await h.call("opscrew_runner_host_add", both)).isError).toBeFalsy();
+    // OpsCrew's table is on the machine now.
+    h.host.facts = {
+      ...h.host.facts,
+      sshFirewall: { ...h.host.facts.sshFirewall, table: "table inet opscrew {}" },
+    };
+    const set = await h.call("opscrew_runner_host_set", { name: "home", noHarden: ["firewall"] });
+    expect(set.isError, textOf(set)).toBeFalsy();
+    const removal = h.host.applies.at(-1)?.plan.steps.find((step) => step.id === "ssh-firewall");
+    expect(removal?.params.remove).toBe(true);
+    expect(h.elicited.at(-1)).toContain("Remove OpsCrew's SSH firewall");
+    expect(textOf(set)).toContain("Hardening chosen: SSH.");
+    expect((await listRunnerHosts(h))[0]?.harden).toEqual({ ssh: true });
+  });
+
+  it("stores a network given with host bits as nft prints it, and hides it in replies", async () => {
+    const h = await connect({ elicit: approveAll });
+    withNft(h);
+    const added = await h.call("opscrew_runner_host_add", {
+      ...HOME,
+      harden: ["firewall"],
+      sshFrom: ["203.0.113.7/24"],
+    });
+    expect(added.isError, textOf(added)).toBeFalsy();
+    expect((await listRunnerHosts(h))[0]?.harden).toEqual({
+      firewall: { sshFrom: ["203.0.113.0/24"] },
+    });
+    expect(h.elicited[1]).toContain("SSH firewall: port 22 only from 203.0.113.0/24");
+    for (const source of ["203.0.113.0/24", "203.0.113.7/24"]) {
+      expect(JSON.stringify(added)).not.toContain(source);
+    }
+  });
+
+  it("set names set in its plan and hints", async () => {
+    const h = await connect({ elicit: approveAll });
+    withNft(h);
+    expect((await h.call("opscrew_runner_host_add", HOME)).isError).toBeFalsy();
+    const locked = await h.call("opscrew_runner_host_set", {
+      name: "home",
+      harden: ["firewall"],
+      sshFrom: ["198.51.100.0/24"],
+    });
+    expect(locked.isError).toBe(true);
+    expect(textOf(locked)).toContain("then run opscrew runner host set home again");
+  });
+
+  it("refuses the firewall without sources plainly, before any dialog", async () => {
+    const h = await connect({ elicit: approveAll });
+    const refused = await h.call("opscrew_runner_host_add", { ...HOME, harden: ["firewall"] });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("OpsCrew never guesses them");
+    expect(h.elicited).toEqual([]);
+    expect(await known(h)).toEqual([]);
+    const nothing = await h.call("opscrew_runner_host_set", { name: "home" });
+    expect(textOf(nothing)).toContain("Name what to change: harden or noHarden.");
   });
 });

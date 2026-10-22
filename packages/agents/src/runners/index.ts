@@ -42,6 +42,9 @@ export {
   listRunnerHosts,
   type MachineRunnerServices,
   provisionRunnerMachines,
+  type RunnerHardening,
+  type RunnerHardeningChange,
+  type RunnerHardeningPart,
   type RunnerHostRecord,
   type RunnerHostServices,
   type RunnerHostSummary,
@@ -51,6 +54,7 @@ export {
   requireOtherMachine,
   requireRunnerHost,
   runnerHostAddresses,
+  setRunnerHost,
 } from "./machine";
 export {
   planServerRunner,

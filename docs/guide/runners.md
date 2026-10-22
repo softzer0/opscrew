@@ -139,8 +139,9 @@ OpsCrew sets it up the way it sets up [a server you already have](own-server.md)
    the plan and its hash, and `npx opscrew runner host add home --approve <hash>` applies exactly
    that plan.
 
-OpsCrew does not change the machine's SSH settings or firewall, and does not harden it: it may be
-your desktop. Its address and login stay on your computer, in OpsCrew's folder for the project
+OpsCrew leaves the machine's SSH settings and firewall as they are unless you ask it to harden
+them (see [Hardening a runner machine](#hardening-a-runner-machine)): the machine may be your
+desktop. Its address and login stay on your computer, in OpsCrew's folder for the project
 (`~/.opscrew/projects/<project>/runner-hosts/`); plans and every file in your repository name the
 machine only as `home`. Run the commands that use it from the computer that added it.
 
@@ -164,8 +165,75 @@ never connect to the server. The server keeps accepting SSH, now from your machi
   [Portainer](portainer-target.md) redeploys by itself, and an environment on your computer uses
   the local runner.
 - `npx opscrew runner host list` shows the machines this computer knows, their CPU, whether Docker
-  is installed, and the environments on each. `status` and `secure` report their runners like the
-  others (see [Status and updates](#status-and-updates)).
+  is installed, the hardening chosen for it, and the environments on each. `status` and `secure`
+  report their runners like the others (see [Status and updates](#status-and-updates)).
+
+### Hardening a runner machine
+
+Hardening is optional and off by default. You choose each part on its own, when you add the machine
+or later:
+
+```bash
+npx opscrew runner host add home --ssh ana@192.168.1.30 --harden ssh
+npx opscrew runner host set home --harden firewall --ssh-from 203.0.113.7 192.168.1.0/24
+```
+
+Each part is a step of the machine's host plan, applied only after you approve that plan's hash. In
+a script, the first run shows the plan and its hash, and
+`npx opscrew runner host set home --approve <hash>` applies exactly that plan.
+
+OpsCrew records your choice when it shows the plan, so the next approved host plan for the machine
+(`runner host set`, `runner host add` or a `provision` that installs a runner there) applies it.
+`npx opscrew runner host list` shows the hardening chosen, not a check of the machine; if you
+decline a plan, choose again with `runner host set` to change the choice.
+
+**SSH (`--harden ssh`)** is the SSH hardening OpsCrew applies to
+[a server you already have](own-server.md): logins with SSH keys only (password and
+keyboard-interactive logins off), no root login over SSH, and modern algorithms only. OpsCrew writes
+its own settings file, `/etc/ssh/sshd_config.d/10-opscrew.conf`, checks it with `sshd -t` and
+reloads SSH. The plan refuses it while OpsCrew logs in as root, since root could no longer log in,
+and while a user logs in with a password and no SSH key, whom the plan names.
+
+**The SSH firewall (`--harden firewall --ssh-from <address or network> …`)** lets only the addresses
+and networks you name reach SSH, over IPv4 and IPv6. OpsCrew adds its own nftables table,
+`inet opscrew`, whose input chain accepts the ports sshd listens on (port 22, or the ports sshd is
+set up for, which the plan names) from those sources, and drops other traffic to those ports. No
+other port, rule, table or default policy changes: ufw, firewalld and your own nftables tables stay
+as they are. The service `opscrew-ssh-firewall.service` loads the table at boot from
+`/etc/opscrew/nftables-ssh.nft`. The machine needs `nft` (the `nftables` package); without it the
+plan says so and changes nothing.
+
+`--ssh-from` is required with `--harden firewall`, and has no default: a guess at your computer's
+address could lock you out when that address changes. Name the address your computer reaches the
+machine from, or your network, and any other place you log in from. Giving `--ssh-from` again
+replaces the earlier sources. It takes up to 32 of them; a network written with host bits, such as
+`192.168.1.30/24`, is kept as `192.168.1.0/24`.
+
+Two safeguards keep OpsCrew, and you, from being locked out:
+
+- **The address guard.** The plan names the address OpsCrew connects to the machine from, and is
+  refused when your sources leave it out. When OpsCrew applies the firewall, it checks that address
+  again and changes nothing if it now connects from another one.
+- **The revert timer.** Before each SSH or firewall change, the machine schedules its own undo,
+  three minutes later. Afterwards OpsCrew opens a new SSH connection with your login, and cancels
+  the undo only when that login works. If it does not, the machine puts the previous settings back
+  by itself, even when OpsCrew lost its connection. The timer needs `flock` (from `util-linux`).
+
+The sources are your addresses, so they stay on your computer: in the machine's record, and in the
+host plans OpsCrew saves in `.opscrew/plans/`, which `.gitignore` keeps out of your repository. No
+committed file or pull request holds them. OpsCrew's MCP server shows them only in your approval
+dialogs; its replies to the coding agent say "your address" instead.
+
+To undo a part, turn it off:
+
+```bash
+npx opscrew runner host set home --no-harden firewall   # deletes OpsCrew's table, its service and its rules file
+npx opscrew runner host set home --no-harden ssh        # puts back the SSH settings from before OpsCrew
+```
+
+Each removes only that part, through the machine's host plan approved by its hash; removing the SSH
+hardening runs under the same revert timer. Adding or removing an environment's runner leaves the
+hardening as it is, and `npx opscrew runner host remove home` takes both parts off with the rest.
 
 ### Removing an environment's runner, or the machine
 
@@ -178,8 +246,8 @@ npx opscrew runner host remove home
 ```
 
 removes the machine itself. It is refused while an environment's deploy job runs there. Otherwise
-it takes back what OpsCrew set up: this project's runners (unregistered from GitHub), and the
-`deploy` user and its home folder when OpsCrew created them. Docker stays, since other software may
+it takes back what OpsCrew set up: this project's runners (unregistered from GitHub), its SSH
+hardening and SSH firewall, and the `deploy` user and its home folder when OpsCrew created them. Docker stays, since other software may
 use it, and so does the machine. Because it deletes a user's home folder, you type the machine's
 name to approve it; in a script, run it once to see the plan and its hash, then
 `npx opscrew runner host remove home --approve <hash> --confirm home`.

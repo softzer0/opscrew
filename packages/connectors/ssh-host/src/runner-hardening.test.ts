@@ -303,7 +303,7 @@ describe("harden.firewall on a runner machine", () => {
     await expect(
       applyApproved(fake, plan, { command: ADD, verifyLogin: async () => false }),
     ).rejects.toThrow(
-      "New SSH logins (as deploy and as your own login) did not work after turning on OpsCrew's SSH firewall, so OpsCrew put the previous SSH firewall settings back.",
+      "New SSH logins did not work after turning on OpsCrew's SSH firewall, so OpsCrew put the previous SSH firewall settings back.",
     );
     expect(fake.armedSeconds).toEqual([180]);
     expect(fake.sshFirewall).toEqual({ table: null, enabled: false });

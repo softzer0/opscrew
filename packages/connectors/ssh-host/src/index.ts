@@ -49,7 +49,7 @@ export {
 export { hostPlanHash } from "./hash";
 export { inspectHost, inspectRunners } from "./inspect";
 export { localExec } from "./local";
-export { isPublicAddress } from "./parse";
+export { canonicalSshSource, isPublicAddress } from "./parse";
 export {
   planHost,
   planPortainer,
@@ -68,5 +68,6 @@ export {
   HostPlanSchema,
   type HostStep,
   type HostStepId,
+  MAX_SSH_SOURCES,
 } from "./types";
 export { webFilterFileHashes } from "./web-filter";

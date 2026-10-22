@@ -537,7 +537,7 @@ describe("dead-man switch around SSH and firewall changes", () => {
       provision(fake, desiredFor(fake), { verifyLogin: async () => false }),
     );
     expect(error.message).toMatch(
-      /New SSH logins .* did not work after changing the SSH settings, so OpsCrew put the previous SSH settings back/,
+      /New SSH logins did not work after changing the SSH settings, so OpsCrew put the previous SSH settings back/,
     );
     expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe("PermitRootLogin yes\n");
     expect(fake.names()).toContain("deadman.trigger.sshd");

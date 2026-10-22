@@ -192,6 +192,8 @@ interface HiddenNames {
   portainer: string[];
   /** The address and login of each runner machine of the user's. */
   runner: string[];
+  /** The addresses the SSH firewall of a runner machine of the user's lets in. */
+  sources: string[];
 }
 
 /**
@@ -200,7 +202,7 @@ interface HiddenNames {
  */
 async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<HiddenNames> {
   const environments = await environmentsOf(projectDir).catch(() => ["prod"]);
-  const names: HiddenNames = { server: [], portainer: [], runner: [] };
+  const names: HiddenNames = { server: [], portainer: [], runner: [], sources: [] };
   for (const environment of environments.length === 0 ? ["prod"] : environments) {
     try {
       const { own, portainer } = await readServerAddresses(
@@ -216,9 +218,9 @@ async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<H
       // An unreadable record names nothing to hide.
     }
   }
-  names.runner.push(
-    ...(await runnerHostAddresses(resolveProjectPaths(projectDir, { env: deps.env }))),
-  );
+  const machines = await runnerHostAddresses(resolveProjectPaths(projectDir, { env: deps.env }));
+  names.runner.push(...machines.machines);
+  names.sources.push(...machines.sources);
   return names;
 }
 
@@ -233,18 +235,18 @@ export function withoutPortainer(text: string, names: readonly string[]): string
 }
 
 /**
- * `value` with every own-server name replaced by "your server" and every Portainer name by
- * "your Portainer" in every string, deeply.
+ * `value` with every own-server name replaced by "your server", every Portainer name by "your
+ * Portainer", every runner machine's by "your runner machine" and every address its SSH firewall
+ * lets in by "your address", in every string, deeply.
  */
 function hideNames<T>(value: T, names: HiddenNames): T {
-  if (names.server.length === 0 && names.portainer.length === 0 && names.runner.length === 0) {
-    return value;
-  }
+  if (Object.values(names).every((list) => list.length === 0)) return value;
   const walk = (item: unknown): unknown => {
     if (typeof item === "string") {
       // A runner machine's user@host login, then its address alone (replaceNames: longest first).
       const machines = replaceNames(item, names.runner, "your runner machine");
-      return withoutPortainer(replaceNames(machines, names.server, "your server"), names.portainer);
+      const sources = replaceNames(machines, names.sources, "your address");
+      return withoutPortainer(replaceNames(sources, names.server, "your server"), names.portainer);
     }
     if (Array.isArray(item)) return item.map(walk);
     if (item !== null && typeof item === "object") {
