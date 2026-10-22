@@ -371,7 +371,8 @@ Effort`.
       - a rollback;
       - staging's destroy leaves prod working.
     - **The server's runner** (`OPSCREW_E2E_RUNNER=1`): quickstart "4.", with the firewall refusing SSH from GitHub's address ranges during the deploy.
-    - **The Free private repository case** is recorded as found (prefixed secrets, or GitHub environments).
+    - **The Free private repository case** is recorded as found: GitHub environments with secrets but no rules (spike result 1).
+    - **The public repository** `OPSCREW_E2E_GITHUB_REPO_C` (throwaway, the founder, 2026-10-22) covers the path with every environment rule: provision creates the environment with its branch rule, and destroy removes it. No self-hosted runner is ever registered there: a runner for a public repository is checked only as far as the refusal and the fork-PR policy change, as a plan, never applied.
     - **The leak search** covers the runner token, every environment's generated values, and the local CA key.
     - **The docs:** `docs/e2e.md` sections, and the coverage page's rows as "Not run yet".
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
