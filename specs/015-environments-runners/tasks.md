@@ -236,7 +236,7 @@ Effort`.
     - **Build values** (`OPSCREW_BUILD_ENV`, `OPSCREW_BUILD_SECRETS`) are always repository secrets: `OPSCREW_<ENV>_BUILD_*` for a named environment, even when its other secrets live in a GitHub environment, since the build job runs in none (T1505).
     - **Moving prod's secrets into the `production` environment** happens at prod's own provision. It deletes prod's old repository secrets of the same names. Otherwise a missing environment secret would fall back to them (T1505).
     - **A change of capability** shows the move of the secrets as a planned change.
-    - **Destroying an environment** removes only its secrets and its GitHub environment (`github-settings`), and keeps every other environment's.
+    - **Destroying an environment** removes only its secrets and its GitHub environment (`github-settings`), and keeps every other environment's. It deletes the GitHub environment only when OpsCrew created it (recorded at creation); in one the user made, it deletes only OpsCrew's own secrets (T1508b's review).
     - **Destroy's text names the environment's own files:** Portainer's "What remains" lists `plan.cicd.workflowPath` (`opscrew-deploy-<env>.yml`), not prod's workflow file (T1508c).
     - **Lead decisions (T1508b's report):**
       - the name rule also refuses `production` (prod's GitHub environment) and any name with `service` as one of its hyphen-separated parts, whose prefixed names would equal a service's env-file secret (`OPSCREW_SERVICE_APP_ENV`). Core's `paths.ts` and plan-schema's name tests and schema are in T1508b's Owns for this;
