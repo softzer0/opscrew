@@ -186,7 +186,7 @@ Effort`.
 ## Phase 4: The agents
 
 - [ ] T1508a [US2] Environments in agents: `env add/list/remove`, design per environment, the environment choice, and the shared-parts check, in `packages/agents/src/{environments,shared,design,interview}/**`, and every phase's paths
-  - Owns: `packages/agents/src/environments/**` (new); the design and interview changes; the phases' path resolution (an `environment` in their inputs); tests
+  - Owns: `packages/agents/src/environments/**` (new); the design and interview changes; the phases' path resolution (`shared/phase-deps.ts`, `shared/engine.ts`, and an `environment` in their inputs); provision's preflight and the dependabot rendering; tests. Not T1508c's files.
   - Reads: contracts/environments.md "The environment choice", "Commands"; data-model.md "Environment"; plan.md "9."; spec US2, FR-1510–FR-1513, FR-1515–FR-1516
   - Depends: T1503, T1506b
   - Accept:
@@ -200,14 +200,23 @@ Effort`.
     - **`listEnvironments`** gives each environment's name, target, source, runner and deployed state. **`removeEnvironment`** refuses while the environment is deployed, and removes its files.
     - **`supplyChain.sign` is a shared part** too, copied and compared like the others. The promoted environment's verify job checks the signature by its own plan, while the source's workflow is what signs (T1505's review).
     - **One `dependabot.yml` for every environment:** design and provision render it with every environment's runtime folder (from `environmentsOf`), so prod's and staging's provisions write the same file (T1506b).
-    - **Portainer's stack Git ref per environment:** `packages/connectors/portainer` (`names.ts` `DEPLOY_BRANCH` and `DEPLOY_REFERENCE`, and `plan.ts`'s `branch: z.literal(DEPLOY_BRANCH)`) takes the environment's deploy branch from iac-templates' `portainerDeployBranch(plan)`, as do agents' `provision/deploy-branch.ts`, `provision/stack-plan.ts`, `provision/types.ts` and `provision/portainer-flow.ts`. Otherwise a staging stack would follow prod's branch while its workflow writes `opscrew-deploy-staging` (T1506b's review). These connector files are in T1508a's Owns for this change.
-    - **The storage root per environment** comes from iac-templates' `storageRootDir(plan)` (`opscrew/infra/storage-<env>` outside prod), so agents' storage callers need no change. Since an environment's infrastructure root is `opscrew/infra/<env>`, the name rule refuses `storage` and names starting with `storage-`: core's `ENVIRONMENT_NAME_PATTERN` and `ENVIRONMENT_NAME_MESSAGE` in `packages/core/src/paths.ts`, with a test (T1506b). That file is in T1508a's Owns for this change.
-    - **Agents use the per-environment helpers** `originPullPem(plan)`, `portainerStackTemplatePath(plan)` and `portainerDeployBranch(plan)`, instead of the prod-only constants `ORIGIN_PULL_PEM`, `PORTAINER_STACK_TEMPLATE_PATH` and agents' own `DEPLOY_BRANCH` (in `provision/origin-tls.ts`, `drift/portainer.ts`, `shared/portainer-stacks.ts`, `destroy/portainer.ts`). Then remove the constants (T1506b).
     - **`sharedPartsDiffer(prodPlan, envPlan)`** runs in provision's preflight: `PHASE_PRECONDITION` naming the fields, with the hint `opscrew design --env <env>`.
     - **Every phase** (provision, destroy, drift, status, verify, secure, retarget, secrets) resolves its paths through the environment. Agents' `stateFile()` (`shared/engine.ts`) uses core's `tfstateFile(paths)`, since today it hard-codes `prod.tfstate` (T1503's review).
     - **Tests:** an existing prod app is unchanged, with nothing to apply; adding staging; two environments on one own server; the shared-parts refusal; the choice in scripts.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
+
+- [ ] T1508c [P] [US2] Per-environment names for Portainer and origin TLS, in `packages/connectors/portainer/src/**` and agents' Portainer and origin-TLS files, and the storage names in core's name rule
+  - Owns: `packages/connectors/portainer/src/**`; agents' `provision/{deploy-branch,stack-plan,types,portainer-flow,origin-tls}.ts`, `drift/portainer.ts`, `drift/__fixtures__/portainer-project.ts`, `shared/portainer-stacks.ts`, `destroy/portainer.ts`; `packages/core/src/paths.ts`; their tests
+  - Reads: data-model.md "Paths per environment"; iac-templates' `portainerDeployBranch`, `portainerStackTemplatePath`, `originPullPem`, `storageRootDir` (T1506b)
+  - Depends: T1503, T1506b
+  - Accept:
+    - **Portainer's stack Git ref per environment:** `packages/connectors/portainer` (`names.ts` `DEPLOY_BRANCH` and `DEPLOY_REFERENCE`, and `plan.ts`'s `branch: z.literal(DEPLOY_BRANCH)`) takes the environment's deploy branch from iac-templates' `portainerDeployBranch(plan)`, as do agents' `provision/deploy-branch.ts`, `provision/stack-plan.ts`, `provision/types.ts` and `provision/portainer-flow.ts`. Otherwise a staging stack would follow prod's branch while its workflow writes `opscrew-deploy-staging` (T1506b's review).
+    - **The storage names:** iac-templates' `storageRootDir(plan)` is `opscrew/infra/storage-<env>` outside prod, and agents' storage callers need no change. Since an environment's infrastructure root is `opscrew/infra/<env>`, the name rule refuses `storage` and names starting with `storage-`: core's `ENVIRONMENT_NAME_PATTERN` and `ENVIRONMENT_NAME_MESSAGE` in `packages/core/src/paths.ts`, with a test (T1506b).
+    - **Agents use the per-environment helpers** `originPullPem(plan)`, `portainerStackTemplatePath(plan)` and `portainerDeployBranch(plan)`, instead of the prod-only constants `ORIGIN_PULL_PEM`, `PORTAINER_STACK_TEMPLATE_PATH` and agents' own `DEPLOY_BRANCH` (in `provision/origin-tls.ts`, `drift/portainer.ts`, `shared/portainer-stacks.ts`, `destroy/portainer.ts`). Then remove the constants (T1506b).
+    - **Tests:** a staging Portainer stack follows `opscrew-deploy-staging` in its plan, apply and drift; prod's stack plan and its hash are unchanged; the names `storage` and `storage-x` are refused; prod's origin files are unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-portainer --filter=@opscrew/core --concurrency=2` and `pnpm lint`
+  - Effort: high
 
 - [ ] T1508b [P] [US2] Secrets and destroy per environment, in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/destroy/**` (+ the GitHub settings change)
   - Owns: those paths (+ tests)
@@ -345,12 +354,12 @@ Effort`.
 
 ## Dependencies
 
-{T1501a, T1501b} with T1502 (lead) alongside → {T1503, T1504, T1505, T1506, T1507} → T1508a →
+{T1501a, T1501b} with T1502 (lead) alongside → {T1503, T1504, T1505, T1506, T1507} → {T1508a, T1508c} →
 {T1508b, T1509, T1510} → T1511 → {T1512, then T1513} → T1514 → T1515 → T1516.
 
 **User stories:**
 - **US1:** T1501a, T1501b, T1506, T1507, T1510, T1513.
-- **US2:** T1501a, T1503, T1504, T1505, T1508a, T1508b.
+- **US2:** T1501a, T1503, T1504, T1505, T1508a, T1508b, T1508c.
 - **US3:** T1504, T1505, T1509.
 - **US4:** T1501b, T1504, T1505, T1507, T1511.
 - **US5:** T1511, T1512.
@@ -360,7 +369,7 @@ Effort`.
 1. T1501a, T1501b (and T1502, the lead's spike).
 2. T1503, T1504, T1505, T1506, T1507. Their Owns are disjoint: core paths; the GitHub connector; the workflow files except `switch.ts`; the edge, runtime and `switch.ts`; ssh-host.
    Then T1506b: the runtime folder and Portainer's branch per environment, across iac-templates.
-3. T1508a.
+3. T1508a, T1508c: environments, design and the phases' paths; the Portainer and origin-TLS names.
 4. T1508b, T1509, T1510: provision secrets with destroy; promote/; localhost/ with its branches.
 5. T1511.
 6. T1512, then T1513.
