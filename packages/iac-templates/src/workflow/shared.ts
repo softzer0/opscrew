@@ -147,6 +147,17 @@ export function environmentName(plan: DeployPlan): string {
   return plan.environment?.name ?? "prod";
 }
 
+/**
+ * The form of the image tag `tag` that `environment`'s build pushes: `tag` itself for prod,
+ * `<tag>-<env>` for any other environment. Two environments that follow the same branch build each
+ * commit separately, at the same time, and a shared tag would move to the later build. So each
+ * environment has its own commit tag (`<commit>`, `tag` a commit or the shell or GitHub Actions
+ * expression of one), seal intermediate (`build-<commit>`) and Buildpacks cache (`buildcache`).
+ */
+export function environmentTag(tag: string, environment: string): string {
+  return environment === "prod" ? tag : `${tag}-${environment}`;
+}
+
 /** `opscrew provision`, with `--env <env>` for an environment other than prod. */
 export function provisionCommand(plan: DeployPlan): string {
   const name = plan.environment?.name;
@@ -159,8 +170,8 @@ export function promoted(plan: DeployPlan): boolean {
 }
 
 /**
- * The job whose outputs `image` (`<name>@<digest>`) and `tag` (`<name>:<commit>`) the deploy
- * takes: `verify` for a promoted environment, else `build`.
+ * The job whose outputs `image` (`<name>@<digest>`) and `tag` (`<name>:<commit tag>`, see
+ * {@link environmentTag}) the deploy takes: `verify` for a promoted environment, else `build`.
  */
 export function imageJob(plan: DeployPlan): "build" | "verify" {
   return promoted(plan) ? "verify" : "build";
@@ -268,7 +279,11 @@ export function promotedAbout(plan: DeployPlan): string[] {
   ];
 }
 
-/** A promoted environment's trigger: `opscrew promote` dispatches the workflow with the digest. */
+/**
+ * A promoted environment's trigger: `opscrew promote` dispatches the workflow with the digest and
+ * the image's commit tag ({@link environmentTag} of the environment that built it, which may be the
+ * source's own source).
+ */
 const DISPATCH_WITH_DIGEST = [
   "  workflow_dispatch:",
   "    inputs:",
@@ -276,14 +291,18 @@ const DISPATCH_WITH_DIGEST = [
   "        description: The image to deploy, by its digest (sha256:…); `opscrew promote` fills it in.",
   "        required: true",
   "        type: string",
+  "      tag:",
+  "        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); `opscrew promote` fills it in.",
+  "        required: true",
+  "        type: string",
 ];
 
 /**
  * The workflow's header comment (`about`), triggers, default permissions and concurrency. An
  * environment that follows the branch deploys on each push to it (and by hand); a promoted one only
- * through a dispatch with the image's digest. Each environment's runs queue in a group of their own
- * (prod's `opscrew-deploy`, any other's `opscrew-deploy-<app>-<env>`), so one environment never
- * deploys twice at once and no run is cancelled.
+ * through a dispatch with the image's digest and commit tag. Each environment's runs queue in a
+ * group of their own (prod's `opscrew-deploy`, any other's `opscrew-deploy-<app>-<env>`), so one
+ * environment never deploys twice at once and no run is cancelled.
  */
 export function workflowStart(plan: DeployPlan, about: readonly string[]): string[] {
   const name = plan.environment?.name;

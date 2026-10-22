@@ -11,6 +11,8 @@ import {
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
   DOCKER_CONTEXT_HOST,
+  environmentName,
+  environmentTag,
   GHCR_LOGIN,
   hasCronJobs,
   job,
@@ -96,8 +98,9 @@ export const RAILPACK_USER = "10001:10001";
 const uses = (key: keyof typeof ACTIONS) => `  uses: ${ACTIONS[key]}`;
 
 /**
- * `name` (`ghcr.io/<owner>/<repo>`) and `image` (`<name>:<commit>`), lower case as GHCR needs. On
- * the environment's own runner without bash 4's `${…,,}` (macOS's bash 3.2), with `tr`.
+ * `name` (`ghcr.io/<owner>/<repo>`) and `image` (`<name>:<commit tag>`, {@link environmentTag}),
+ * lower case as GHCR needs. On the environment's own runner without bash 4's `${…,,}` (macOS's
+ * bash 3.2), with `tr`.
  */
 function imageName(plan: DeployPlan): string[] {
   return [
@@ -109,9 +112,18 @@ function imageName(plan: DeployPlan): string[] {
         ? `repo="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"`
         : 'repo="${GITHUB_REPOSITORY,,}"',
       'echo "name=ghcr.io/${repo}" >> "$GITHUB_OUTPUT"',
-      'echo "image=ghcr.io/${repo}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"',
+      `echo "image=ghcr.io/\${repo}:${environmentTag("${GITHUB_SHA}", environmentName(plan))}" >> "$GITHUB_OUTPUT"`,
     ]),
   ];
+}
+
+/**
+ * `<name>:build-<commit tag>`, the intermediate image a seal build starts from, tagged per
+ * environment as the final image is, so that another environment's image retention never takes
+ * it for its own.
+ */
+function intermediateImage(plan: DeployPlan): string {
+  return `\${{ steps.image.outputs.name }}:build-${environmentTag("${{ github.sha }}", environmentName(plan))}`;
 }
 
 const SETUP_BUILDX = [
@@ -124,7 +136,7 @@ const SETUP_BUILDX = [
 ];
 
 /**
- * The final `build-push-action` step (`push`): pushed as `<name>:<commit>` with a mode=max
+ * The final `build-push-action` step (`push`): pushed as `<name>:<commit tag>` with a mode=max
  * provenance and an SBOM; its `digest` output is the image index digest the deploy uses.
  */
 function finalBuild(name: string, inputs: readonly string[], cache: string): string[] {
@@ -216,11 +228,11 @@ function dockerfileSteps(plan: DeployPlan): string[] {
     "  with:",
     ...[...source, ...values].map((line) => `    ${line}`),
     "    push: true",
-    "    tags: ${{ steps.image.outputs.name }}:build-${{ github.sha }}",
+    `    tags: ${intermediateImage(plan)}`,
     "    provenance: false",
     "    cache-from: type=gha",
     "    cache-to: type=gha,mode=max",
-    ...sealSteps("own", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
+    ...sealSteps(plan, "own", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
   ];
 }
 
@@ -228,12 +240,12 @@ function dockerfileSteps(plan: DeployPlan): string[] {
  * Writes the seal's Dockerfile, `FROM` the intermediate image by digest (`$BASE`), plus `extra`
  * lines, outside the checkout so that it stays clean for the provenance's commit.
  */
-function sealSteps(digestOf: string, extra: readonly string[]): string[] {
+function sealSteps(plan: DeployPlan, digestOf: string, extra: readonly string[]): string[] {
   const lines = ['"FROM $BASE"', ...extra.map((line) => `'${line}'`)].join(" ");
   return [
     "- name: Write the seal Dockerfile",
     "  env:",
-    `    BASE: \${{ steps.image.outputs.name }}:build-\${{ github.sha }}@\${{ steps.${digestOf}.outputs.digest }}`,
+    `    BASE: ${intermediateImage(plan)}@\${{ steps.${digestOf}.outputs.digest }}`,
     ...run([
       "set -euo pipefail",
       'mkdir -p "$RUNNER_TEMP/seal"',
@@ -399,8 +411,9 @@ function removeSecretFiles(context: string): string[] {
 
 /**
  * Buildpacks: the secret files leave the checkout, then pack builds `build-<commit>` with the
- * version setting and the non-secret build values (`--env`), pushes it with its cache image, and
- * reports its digest in `report.toml`; then the seal. pack has no secret mounts, so it never reads
+ * version setting and the non-secret build values (`--env`), pushes it with its cache image (the
+ * environment's own, `buildcache` or `buildcache-<env>`: {@link environmentTag}), and reports its
+ * digest in `report.toml`; then the seal. pack has no secret mounts, so it never reads
  * the secret build values. pack uploads the whole context, where `.git` would keep every committed
  * file, the removed secret files too, so `.git` waits in `$RUNNER_TEMP` while pack runs; the trap
  * puts it back even when pack fails, before the seal, whose provenance reads it.
@@ -430,10 +443,10 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       // pack writes a file instead when the folder is missing.
       'report="$RUNNER_TEMP/pack-report"',
       'mkdir -p "$report"',
-      `pack build "$NAME:build-$GITHUB_SHA" --path ${JSON.stringify(context)} \\`,
+      `pack build "$NAME:build-${environmentTag("$GITHUB_SHA", environmentName(plan))}" --path ${JSON.stringify(context)} \\`,
       `  --builder ${IMAGES.paketoBuilder.ref} \\`,
       `  --run-image ${IMAGES.paketoRun.ref} \\`,
-      `  ${arrayArgs(plan, "settings")} --publish --cache-image "$NAME:buildcache" --report-output-dir "$report"`,
+      `  ${arrayArgs(plan, "settings")} --publish --cache-image "$NAME:${environmentTag("buildcache", environmentName(plan))}" --report-output-dir "$report"`,
       'digest="$(sed -nE \'s/^[[:space:]]*digest = "(sha256:[0-9a-f]{64})".*/\\1/p\' "$report/report.toml" | head -n 1)"',
       'if [[ -z "$digest" ]]; then',
       '  echo "::error::pack did not report the digest of the image it pushed; re-run the workflow."',
@@ -441,7 +454,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       "fi",
       'echo "digest=$digest" >> "$GITHUB_OUTPUT"',
     ]),
-    ...sealSteps("pack", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
+    ...sealSteps(plan, "pack", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
   ];
 }
 
@@ -504,7 +517,7 @@ function railpackSteps(plan: DeployPlan): string[] {
     `    context: ${context}`,
     "    file: ${{ runner.temp }}/railpack-plan.json",
     "    push: true",
-    "    tags: ${{ steps.image.outputs.name }}:build-${{ github.sha }}",
+    `    tags: ${intermediateImage(plan)}`,
     "    provenance: false",
     "    build-args: |",
     `      BUILDKIT_SYNTAX=${IMAGES.railpackFrontend.ref}`,
@@ -516,7 +529,7 @@ function railpackSteps(plan: DeployPlan): string[] {
     `      ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
     "    cache-from: type=gha,scope=railpack",
     "    cache-to: type=gha,mode=min,scope=railpack",
-    ...sealSteps("railpack", [
+    ...sealSteps(plan, "railpack", [
       ...(writable.length === 0
         ? []
         : [
@@ -530,23 +543,26 @@ function railpackSteps(plan: DeployPlan): string[] {
 }
 
 /** Checks the final digest and records `<name>@<digest>` as `ref`, which every deploy uses. */
-const RECORD = [
-  "- id: final",
-  "  name: Record the image digest",
-  "  env:",
-  "    NAME: ${{ steps.image.outputs.name }}",
-  "    DIGEST: ${{ steps.push.outputs.digest }}",
-  ...run([
-    "set -euo pipefail",
-    'ref="$NAME@$DIGEST"',
-    `if [[ ! "$ref" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    '  echo "::error::Could not read the digest of the pushed image; re-run the workflow."',
-    "  exit 1",
-    "fi",
-    'echo "ref=$ref" >> "$GITHUB_OUTPUT"',
-    'echo "Pushed \\`$NAME:$GITHUB_SHA\\` as \\`$ref\\`." >> "$GITHUB_STEP_SUMMARY"',
-  ]),
-];
+function record(plan: DeployPlan): string[] {
+  const tag = environmentTag("$GITHUB_SHA", environmentName(plan));
+  return [
+    "- id: final",
+    "  name: Record the image digest",
+    "  env:",
+    "    NAME: ${{ steps.image.outputs.name }}",
+    "    DIGEST: ${{ steps.push.outputs.digest }}",
+    ...run([
+      "set -euo pipefail",
+      'ref="$NAME@$DIGEST"',
+      `if [[ ! "$ref" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+      '  echo "::error::Could not read the digest of the pushed image; re-run the workflow."',
+      "  exit 1",
+      "fi",
+      'echo "ref=$ref" >> "$GITHUB_OUTPUT"',
+      `echo "Pushed \\\`$NAME:${tag}\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"`,
+    ]),
+  ];
+}
 
 /**
  * The report-only scan. On the environment's own runner the socket's path reaches Docker as it is
@@ -594,11 +610,12 @@ const OWN_DOCKER_CONFIG = [
 /**
  * The `build` job: builds the image with the plan's builder on a runner of the server's
  * architecture and pushes it to GHCR (`app.build` absent: the Dockerfile, as before). Buildpacks,
- * Railpack and, with cron jobs or SQLite, the user's own Dockerfile push `<name>:build-<commit>`
- * first, then a seal build, which adds supercronic when the plan has cron jobs and makes the SQLite
- * folder the app's user's ({@link sqliteSeal}). Every builder ends in one
- * `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
- * index digest reference, and `tag`, `<name>:<commit>`. Then the optional report-only scan.
+ * Railpack and, with cron jobs or SQLite, the user's own Dockerfile push
+ * `<name>:build-<commit tag>` first, then a seal build, which adds supercronic when the plan has
+ * cron jobs and makes the SQLite folder the app's user's ({@link sqliteSeal}). Every builder ends
+ * in one `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
+ * index digest reference, and `tag`, `<name>:<commit tag>` (the commit for prod, `<commit>-<env>`
+ * for another environment: {@link environmentTag}). Then the optional report-only scan.
  *
  * With `environment.build` `runner` it runs on the environment's own runner ({@link buildRunner}),
  * every step with bash, and with the same steps in forms macOS's bash 3.2 and Git Bash run; pack
@@ -630,7 +647,7 @@ export function buildJob(plan: DeployPlan): string[] {
       ...SETUP_BUILDX,
       ...GHCR_LOGIN,
       ...steps,
-      ...RECORD,
+      ...record(plan),
       ...(plan.security.imageScan ? scan(plan) : []),
     ],
   });

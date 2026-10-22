@@ -60,7 +60,9 @@ class FakePromoteGitHub implements PromoteGitHubApi {
     return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
   }
   async taggedDigest(_owner: string, _image: string, tag: string) {
-    return tag === "opscrew-staging" || tag === STAGING_COMMIT ? STAGING_IMAGE : undefined;
+    return tag === "opscrew-staging" || tag === `${STAGING_COMMIT}-staging`
+      ? STAGING_IMAGE
+      : undefined;
   }
   async imageProvenance() {
     return {

@@ -33,7 +33,7 @@ exports[`the build job on the environment's runner (build: runner) > runs on the
           set -euo pipefail
           repo="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           echo "name=ghcr.io/\${repo}" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}-staging" >> "$GITHUB_OUTPUT"
       # Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the
       # workflow run, and the repository and commit of the checkout.
       - name: Set up Docker Buildx
@@ -74,7 +74,7 @@ exports[`the build job on the environment's runner (build: runner) > runs on the
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Pushed \\\`$NAME:$GITHUB_SHA\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \\\`$NAME:$GITHUB_SHA-staging\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
       # The scan runs after the registry logout, so it never holds the job's packages: write token.
       - name: Scan the image (report only)
         env:

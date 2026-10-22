@@ -2,7 +2,7 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
 import { buildJob, sealsImage } from "./build";
-import { RETENTION_SCRIPT } from "./retention";
+import { retentionScript } from "./retention";
 import {
   block,
   CHECK_IMAGE,
@@ -58,8 +58,10 @@ const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
  * (`docker buildx imagetools inspect`) must name exactly one GitHub Actions run, as buildx records
  * it in `runDetails.builder.id`; that run must be this repository's, its API record must show a
  * `push` of this repository's own commits to the default branch (`$DEFAULT_BRANCH`), and the image
- * tagged with the run's commit must be this digest. Outputs `image`, `tag` (`<name>:<commit>`) and `identity`, the signing identity of the
- * run's workflow on that branch.
+ * with the commit tag `$TAG` must be this digest. `$TAG` is the run's commit, or `<commit>-<env>`
+ * ({@link environmentTag} of the environment that built it, which this workflow cannot know: the
+ * source may itself be promoted from another). Outputs `image`, `tag` (`<name>:<commit tag>`) and
+ * `identity`, the signing identity of the run's workflow on that branch.
  */
 const PROVENANCE_CHECK = [
   "set -euo pipefail",
@@ -105,13 +107,18 @@ const PROVENANCE_CHECK = [
   '  echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."',
   "  exit 1",
   "fi",
-  'if [[ "$(docker buildx imagetools inspect "$name:$commit" --format \'{{.Manifest.Digest}}\')" != "$DIGEST" ]]; then',
-  '  echo "::error::The image is not the one tagged with its build\'s commit ($commit): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."',
+  "# prod's build tags its commit, another environment's <commit>-<env>.",
+  'if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then',
+  '  echo "::error::The tag input is not a commit tag of the image\'s build ($commit, or $commit-<environment>). Start this workflow with \\`opscrew promote\\`, which fills it in."',
+  "  exit 1",
+  "fi",
+  'if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format \'{{.Manifest.Digest}}\')" != "$DIGEST" ]]; then',
+  '  echo "::error::The image is not the one tagged with its build\'s commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."',
   "  exit 1",
   "fi",
   "{",
   '  echo "image=$image"',
-  '  echo "tag=$name:$commit"',
+  '  echo "tag=$name:$TAG"',
   '  echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"',
   '} >> "$GITHUB_OUTPUT"',
   'echo "Deploying \\`$image\\`, built by run $run_id from \\`$commit\\` on \\`$branch\\`." >> "$GITHUB_STEP_SUMMARY"',
@@ -138,6 +145,7 @@ function verifyJob(plan: DeployPlan): string[] {
       "  name: Check the image's provenance",
       "  env:",
       "    DIGEST: ${{ inputs.digest }}",
+      "    TAG: ${{ inputs.tag }}",
       "    DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
       "    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
       ...run(PROVENANCE_CHECK),
@@ -241,9 +249,10 @@ function deployTagsJob(plan: DeployPlan): string[] {
 
 /**
  * Image retention (FR-1229), after a healthy deploy, holding only `packages: write`: deletes the
- * intermediate `build-<commit>` versions a seal build leaves ({@link sealsImage}) and, with
- * `cicd.imageRetention.enabled`, every `<commit>` version but the newest `keep`, never the running or
- * the previous image, nor one an environment's label tags (see {@link RETENTION_SCRIPT}).
+ * environment's intermediate `build-<commit tag>` versions a seal build leaves ({@link sealsImage})
+ * and, with `cicd.imageRetention.enabled`, every version with its commit tag but the newest `keep`,
+ * never the running or the previous image, one an environment's label tags, nor another
+ * environment's builds (see {@link retentionScript}).
  */
 function retentionJob(plan: DeployPlan): string[] {
   const { enabled, keep } = plan.cicd.imageRetention;
@@ -261,7 +270,7 @@ function retentionJob(plan: DeployPlan): string[] {
       "    PREVIOUS: ${{ needs.deploy.outputs.previous }}",
       ...(enabled ? [`    KEEP: "${keep}"`] : []),
       "  run: |",
-      ...block([...RETENTION_SCRIPT.split("\n"), "main();"], 4),
+      ...block([...retentionScript(environmentName(plan)).split("\n"), "main();"], 4),
     ],
   });
 }

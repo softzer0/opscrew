@@ -10,7 +10,12 @@ import {
   sha256Hex,
   toPosixRelative,
 } from "@opscrew/core";
-import { type DeployPlan, readArtifact, resolveEnvironmentPaths } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  environmentsOf,
+  readArtifact,
+  resolveEnvironmentPaths,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
 import { environmentPaths } from "../environments";
@@ -209,12 +214,14 @@ function promotionDetails(input: {
  * 1. The image: the source's `opscrew-<source>` label, or the requested digest, which must be that
  *    image or the target's `opscrew-<target>-previous`.
  * 2. Its provenance: the SLSA v1 build run is a push of this repository's own commits to the
- *    default branch, at the commit the image is tagged with.
+ *    default branch, at the commit the image is tagged with (in the form of the environment that
+ *    built it: `<commit>` for prod, `<commit>-<env>` for another).
  * 3. The target: provisioned, with nothing `opscrew provision` would apply (read-only drift), and
  *    the workflow on the default branch the one its plan generates (by git blob hash).
  * 4. The `promote` approval, bound to {@link promotionHash} of both environments, the digest and
  *    the target plan's hash; never granted by `--yes`.
- * 5. The target's workflow, dispatched on the default branch with the digest, and its run; the
+ * 5. The target's workflow, dispatched on the default branch with the digest and that commit tag
+ *    (which its verify job checks again), and its run; the
  *    digest is recorded in the target's state once the run succeeded. With `supplyChain.sign`, the
  *    workflow's verify job checks the signature before its deploy job runs. A run that waits for
  *    a required reviewer of the target's GitHub environment is reported as waiting, with its link;
@@ -283,7 +290,8 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   });
   const { digest } = chosen;
   deps.reporter.step("Checking where the image was built (its build provenance)");
-  const build = await checkProvenance(image, digest, defaultBranch);
+  const environments = await environmentsOf(deps.paths.root);
+  const build = await checkProvenance(image, digest, defaultBranch, environments);
 
   // 3. The target: nothing pending, and the workflow on the default branch the one it generates.
   deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
@@ -378,7 +386,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
       repo,
       workflowFile,
       defaultBranch,
-      { digest },
+      { digest, tag: build.tag },
       async () => {
         accepted = true;
         await deps.audit.append({

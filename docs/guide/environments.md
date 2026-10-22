@@ -176,7 +176,8 @@ npx opscrew promote --to prod
 1. OpsCrew finds the image staging runs, by its digest.
 2. It checks the image's [build provenance](supply-chain.md#what-is-in-an-image-and-where-it-came-from):
    the image must come from a push to this repository's default branch, built by this repository's
-   own workflow run, at the commit the image is tagged with. A pull request from a fork never passes.
+   own workflow run, at the commit the image is tagged with (`<commit>`, or `<commit>-<env>` for the
+   environment that built it). A pull request from a fork never passes.
 3. It checks that prod has no change waiting for `npx opscrew provision --env prod` (infrastructure,
    generated files, the server, Cloudflare rules or the Portainer stack), and that prod's workflow on
    the default branch is the one its plan generates. Otherwise it stops and says to provision prod

@@ -1,5 +1,6 @@
 import type { RegistryCredential } from "@opscrew/connector-github";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
+import { environmentTag } from "@opscrew/iac-templates";
 import type { PromoteGitHubApi } from "./types";
 
 /** The app's image on GHCR: `ghcr.io/<owner>/<repo>`, read with `credential` when given. */
@@ -23,6 +24,8 @@ export interface ImageBuild {
   runUrl: string;
   branch: string;
   commit: string;
+  /** The image's commit tag: `commit`, or `<commit>-<env>` when another environment than prod built it. */
+  tag: string;
 }
 
 /** `ghcr.io/<owner>/<repo>@<digest>`, as GHCR names it (lower case). */
@@ -100,13 +103,17 @@ export async function chooseImage(
  * Step 2: the image's SLSA v1 provenance names its build run (`runDetails.builder.id`), which must
  * be this repository's; GitHub's record of the run must show a `push` of this repository's own
  * commits (a fork's pull request runs here too) to the default branch; and the image tagged with
- * the run's commit must be this digest. A builder id that is no run URL is never printed.
+ * the run's commit must be this digest. Each environment that builds tags its own form of the
+ * commit ({@link environmentTag}), and the one that built the image may be the source's own
+ * source, so the tag is looked up in the forms of the app's `environments`, in their order. A
+ * builder id that is no run URL is never printed.
  * @throws OpsCrewError `PHASE_PRECONDITION` saying which check failed.
  */
 export async function checkProvenance(
   image: AppImage,
   digest: string,
   defaultBranch: string,
+  environments: readonly string[],
 ): Promise<ImageBuild> {
   const repository = `${image.owner}/${image.repo}`;
   const reference = imageReference(image, digest);
@@ -155,10 +162,13 @@ export async function checkProvenance(
       `The image was built from the branch ${run.headBranch}, not from the default branch ${defaultBranch}.`,
     );
   }
-  if ((await digestOfTag(image, run.headSha)) !== digest) {
-    throw refuse(
-      `The image is not the one tagged with its build's commit (${run.headSha}): a later build of that commit replaced the tag, or the image was pushed another way.`,
-    );
+  for (const environment of environments) {
+    const tag = environmentTag(run.headSha, environment);
+    if ((await digestOfTag(image, tag)) === digest) {
+      return { runUrl: provenance.builderId, branch: run.headBranch, commit: run.headSha, tag };
+    }
   }
-  return { runUrl: provenance.builderId, branch: run.headBranch, commit: run.headSha };
+  throw refuse(
+    `The image is not the one tagged with its build's commit (${run.headSha}, or ${run.headSha}-<environment> for an environment other than prod): a later build of that commit replaced the tag, or the image was pushed another way.`,
+  );
 }

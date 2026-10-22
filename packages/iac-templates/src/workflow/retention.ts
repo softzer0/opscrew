@@ -1,10 +1,20 @@
 import { MANIFEST_ACCEPT } from "../registry";
-import { DIGEST_REF_PATTERN } from "./shared";
+import { DIGEST_REF_PATTERN, environmentTag } from "./shared";
 
 /**
- * The image retention step's program (FR-1229), run with the runner's Node.js (`shell: node {0}`,
- * followed by `main();`). It is plain JavaScript in the committed workflow, so the user can read it
- * and it needs no action or download; the tests run this exact text.
+ * The image retention step's program (FR-1229) in `environment`'s workflow, run with the runner's
+ * Node.js (`shell: node {0}`, followed by `main();`). It is plain JavaScript in the committed
+ * workflow, so the user can read it and it needs no action or download; the tests run this exact
+ * text.
+ *
+ * It deletes only the environment's own builds: the versions with its commit tag
+ * ({@link environmentTag}: `<commit>` in prod's workflow, `<commit>-<env>` in another's) and its
+ * `build-<commit tag>` intermediates. Another environment's builds and Buildpacks caches carry
+ * tags it does not know, so it keeps them as it keeps the user's own: each environment's workflow
+ * deletes its own, and keeps its newest `keep` however many the others build. Untagged versions
+ * nothing kept lists go too, but only once they are 30 minutes old (unless a deleted version lists
+ * them): two environments build at the same time, and another one's push has its platform
+ * manifests untagged for a few seconds before the index that lists them arrives.
  *
  * `prunable` is the pure selection, which never deletes a version an environment's label tags
  * (`opscrew-<env>` or `opscrew-<env>-previous`, from the label job). `main` reads `IMAGE` (the
@@ -16,26 +26,31 @@ import { DIGEST_REF_PATTERN } from "./shared";
  * pattern and the manifest types are OpsCrew's own ({@link DIGEST_REF_PATTERN},
  * {@link MANIFEST_ACCEPT}), written into the program as literals.
  */
-export const RETENTION_SCRIPT = String.raw`// OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+export function retentionScript(environment: string): string {
+  const own = (commit: string) => environmentTag(commit, environment);
+  return String.raw`// OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
 // this repository's image from GitHub Container Registry.
 
 /**
  * The ids of the package versions to delete.
  * versions: [{ id, digest, tags, created }], as the GitHub API lists them.
  * children: by digest, the digests an image index lists (its platform manifests and attestations).
- * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
- * the build-<commit> intermediates and what only they list.
+ * keep: how many ${own("<commit>")} versions to keep, newest first; undefined (retention off) deletes only
+ * the build-${own("<commit>")} intermediates and what only they list.
  * protect: digests never deleted: the running and the previous image.
+ * recent: a time (milliseconds since 1970): an untagged version created since then stays unless
+ * a version deleted here lists it, since another environment's build may be pushing it right now.
  *
  * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
- * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
- * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
- * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
- * <commit> versions with their signatures, and untagged versions nothing kept lists.
+ * it runs, and opscrew-<env>-previous, the one before), the newest keep ${own("<commit>")} versions, versions
+ * with a tag this environment's builds did not push (yours, Buildpacks' caches, another
+ * environment's images), signatures of kept images, and whatever a kept index lists, tagged or
+ * not. Deleted: build-${own("<commit>")} intermediates, older ${own("<commit>")} versions with their signatures,
+ * and untagged versions nothing kept lists, once they are older than recent.
  */
-function prunable(versions, children, keep, protect) {
-  const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
-  const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+function prunable(versions, children, keep, protect, recent) {
+  const commit = (tag) => /^${own("[0-9a-f]{40}")}$/.test(tag);
+  const build = (tag) => /^build-${own("[0-9a-f]{40}")}$/.test(tag);
   const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
   const subject = (tag) => {
     const match = /^sha256-([0-9a-f]{64})(\.[a-z]+)?$/.exec(tag);
@@ -70,8 +85,11 @@ function prunable(versions, children, keep, protect) {
   }
   const goes = (v) => !reachable.has(v.digest);
   const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+  // Another environment's build pushes its platform manifests and attestations untagged, moments
+  // before the index that lists them: until then nothing lists them, so a recent one stays.
+  const old = (v) => Date.parse(v.created) < recent;
   return versions
-    .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+    .filter((v) => goes(v) && (v.tags.length > 0 || listedByDeleted.has(v.digest) || (keep !== undefined && old(v))))
     .map((v) => v.id);
 }
 
@@ -90,6 +108,8 @@ async function main() {
   }
   const protect = previous === null ? [running] : [running, previous];
   const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+  // Untagged versions younger than 30 minutes stay: another environment may be pushing them.
+  const recent = Date.now() - 30 * 60 * 1000;
   const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
   const token = process.env.TOKEN;
   const read = async (response, what) => {
@@ -142,7 +162,7 @@ async function main() {
       children[digest] = (manifest.manifests || []).map((m) => m.digest);
     }
 
-    const ids = new Set(prunable(versions, children, keep, protect));
+    const ids = new Set(prunable(versions, children, keep, protect, recent));
     console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
     deleting = true;
     let failed = 0;
@@ -166,3 +186,4 @@ async function main() {
     );
   }
 }`;
+}

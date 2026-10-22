@@ -11,6 +11,7 @@ import {
   DEPLOY_RUN_URL,
   digestOf,
   inEnvironment,
+  PREVIOUS_COMMIT,
   PREVIOUS_IMAGE,
   PROD_IMAGE,
   type PromoteWorld,
@@ -84,9 +85,14 @@ describe("promote", () => {
     expect(request.details).toContain(
       "guards against mistakes, not against someone with write access",
     );
-    // The dispatch: prod's own workflow on the default branch, with the digest; nothing rebuilt.
+    // The dispatch: prod's own workflow on the default branch, with the digest and the commit tag
+    // staging's build gave it; nothing rebuilt.
     expect(github.dispatches).toEqual([
-      { workflowFile: "opscrew-deploy.yml", ref: "main", inputs: { digest: STAGING_IMAGE } },
+      {
+        workflowFile: "opscrew-deploy.yml",
+        ref: "main",
+        inputs: { digest: STAGING_IMAGE, tag: `${STAGING_COMMIT}-staging` },
+      },
     ]);
     // The drift check ran with the target's paths.
     expect(world.driftPaths.map((paths) => paths.environment)).toEqual(["prod"]);
@@ -151,7 +157,10 @@ describe("promote", () => {
         targetPlanHash: planHash(world.prodPlan),
       }),
     );
-    expect(world.github.dispatches[0]?.inputs).toEqual({ digest: PREVIOUS_IMAGE });
+    expect(world.github.dispatches[0]?.inputs).toEqual({
+      digest: PREVIOUS_IMAGE,
+      tag: `${PREVIOUS_COMMIT}-staging`,
+    });
     expect(await recordedPromotion(world.deps.paths)).toMatchObject({ digest: PREVIOUS_IMAGE });
   });
 
@@ -187,6 +196,75 @@ describe("promote", () => {
     });
     expect(shown).not.toContain(token);
     expect(world.deps.redactor.redact(`x ${token} y`)).not.toContain(token);
+  });
+
+  describe("the commit tag of the environment that built the image (T1515's live run)", () => {
+    const STAGING_BUILD = digestOf("staging's build");
+    const PROD_BUILD = digestOf("prod's build");
+
+    /** prod and staging both follow main and built one commit; qa is promoted from staging, uat from prod. */
+    async function twoBuilders() {
+      const world = await promoteWorld({
+        prod: (plan) =>
+          DeployPlanSchema.parse({ ...plan, environment: { deploySource: { from: "main" } } }),
+      });
+      for (const [name, source] of [
+        ["qa", "staging"],
+        ["uat", "prod"],
+      ] as const) {
+        const plan = inEnvironment(world.prodPlan, name, {
+          deploySource: { from: "promote", source },
+        });
+        await world.writePlan(name, plan);
+      }
+      const uat = ".github/workflows/opscrew-deploy-uat.yml";
+      const text = "name: OpsCrew deploy (uat)\n# promoted from prod\n";
+      await world.writeRepoFile(uat, text);
+      world.github.onMain.set(uat, blobOf(text));
+      // One push built the commit twice: each build has a digest and a tag of its own.
+      const commit = commitOf("one push");
+      world.github.build(STAGING_BUILD, { runId: 601, commit });
+      world.github.build(PROD_BUILD, { runId: 602, commit, environment: "prod" });
+      world.github.tags.set("opscrew-staging", STAGING_BUILD);
+      world.github.tags.set("opscrew-prod", PROD_BUILD);
+      return { world, commit };
+    }
+
+    it("passes for each of the two images of one commit, from staging and from prod", async () => {
+      const { world, commit } = await twoBuilders();
+      expect(world.github.tags.get(`${commit}-staging`)).toBe(STAGING_BUILD);
+      expect(world.github.tags.get(commit)).toBe(PROD_BUILD);
+
+      const fromStaging = await promote(world.deps, { target: "qa", services: world.services });
+      const fromProd = await promote(world.deps, { target: "uat", services: world.services });
+
+      expect([fromStaging.digest, fromProd.digest]).toEqual([STAGING_BUILD, PROD_BUILD]);
+      expect(world.github.dispatches.map((d) => [d.workflowFile, d.inputs])).toEqual([
+        ["opscrew-deploy-qa.yml", { digest: STAGING_BUILD, tag: `${commit}-staging` }],
+        ["opscrew-deploy-uat.yml", { digest: PROD_BUILD, tag: commit }],
+      ]);
+    });
+
+    it("finds the tag of the environment the source itself was promoted from", async () => {
+      // dev follows main; staging is promoted from dev, and prod from staging.
+      const world = await promoteWorld({
+        staging: (plan) =>
+          DeployPlanSchema.parse({
+            ...plan,
+            environment: { ...plan.environment, deploySource: { from: "promote", source: "dev" } },
+          }),
+      });
+      await world.writePlan("dev", inEnvironment(world.prodPlan, "dev"));
+      const commit = commitOf("dev");
+      const built = digestOf("dev's build");
+      world.github.build(built, { runId: 701, commit, environment: "dev" });
+      world.github.tags.set("opscrew-staging", built);
+
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+
+      expect(result.digest).toBe(built);
+      expect(world.github.dispatches[0]?.inputs).toEqual({ digest: built, tag: `${commit}-dev` });
+    });
   });
 
   describe("the approval", () => {
@@ -545,13 +623,18 @@ describe("promote", () => {
 
     it("an image that is not the one tagged with its build's commit", async () => {
       const world = await promoteWorld();
-      world.github.tags.set(STAGING_COMMIT, digestOf("rebuilt"));
+      world.github.tags.set(`${STAGING_COMMIT}-staging`, digestOf("rebuilt"));
+      // prod's form of the commit names another image too.
+      world.github.tags.set(STAGING_COMMIT, digestOf("prod's build"));
       const error = await failure(
         promote(world.deps, { target: "prod", services: world.services }),
       );
       expect(error.code).toBe("PHASE_PRECONDITION");
-      expect(error.message).toContain(STAGING_COMMIT);
+      expect(error.message).toContain(
+        `The image is not the one tagged with its build's commit (${STAGING_COMMIT}, or ${STAGING_COMMIT}-<environment> for an environment other than prod)`,
+      );
       expect(world.handler.requests).toEqual([]);
+      expect(world.github.dispatches).toEqual([]);
     });
 
     it("pending infrastructure changes in the target", async () => {

@@ -41,6 +41,7 @@ export {
   buildRunner,
   DEPLOY_SECRETS,
   deploySecretName,
+  environmentTag,
   githubEnvironment,
   runnerLabel,
   serviceEnvSecret,

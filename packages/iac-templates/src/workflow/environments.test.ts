@@ -10,7 +10,15 @@ import { testContext, testPlan } from "../__fixtures__/plans";
 import { ACTIONS, TOOLS } from "../pins";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { renderEdgeSite, renderRuntimeFiles } from "../runtime";
-import { inEnvironment, jobYaml, localhostPlan, serverPlan, withPlan } from "./__fixtures__/plans";
+import {
+  inEnvironment,
+  jobYaml,
+  localhostPlan,
+  serverPlan,
+  withBuild,
+  withPlan,
+  withSqlite,
+} from "./__fixtures__/plans";
 import {
   DEPLOY_SECRETS,
   deploySecretName,
@@ -95,6 +103,11 @@ describe("a workflow per environment", () => {
             required: true,
             type: "string",
           },
+          tag: {
+            description: expect.stringContaining("<commit>-<env>"),
+            required: true,
+            type: "string",
+          },
         },
       },
     });
@@ -150,6 +163,66 @@ describe("a workflow per environment", () => {
     expect(doc.jobs.verify).toEqual(workflow(promotedProd).jobs.verify);
     expect(doc.jobs.deploy?.needs).toBe("verify");
     expect(stepOf(doc.jobs.deploy, "write").env?.IMAGE).toBe("${{ needs.verify.outputs.image }}");
+  });
+});
+
+describe("commit tags per environment (T1515's live run)", { timeout: 60_000 }, () => {
+  const SHA = "f".repeat(40);
+  const build = (plan: DeployPlan) => workflow(plan).jobs.build as Job;
+
+  it("tags prod's image with the commit and another environment's with <commit>-<env>", () => {
+    expect(stepOf(build(prod), "image").run).toContain(
+      'echo "image=ghcr.io/${repo}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"',
+    );
+    expect(stepOf(build(staging), "image").run).toContain(
+      'echo "image=ghcr.io/${repo}:${GITHUB_SHA}-staging" >> "$GITHUB_OUTPUT"',
+    );
+    for (const plan of [prod, staging]) {
+      expect(stepOf(build(plan), "push").with?.tags).toBe("${{ steps.image.outputs.image }}");
+      expect(build(plan).outputs?.tag).toBe("${{ steps.image.outputs.image }}");
+    }
+    expect(stepOf(build(staging), "final").run).toContain(
+      'echo "Pushed \\`$NAME:$GITHUB_SHA-staging\\` as \\`$ref\\`." >> "$GITHUB_STEP_SUMMARY"',
+    );
+  });
+
+  it.skipIf(!bashWorks())(
+    "gives two environments that build the same commit a tag each, so neither loses its image",
+    () => {
+      const tags = [prod, staging].map((plan) => {
+        const result = runScript(stepOf(build(plan), "image").run ?? "", "", { GITHUB_SHA: SHA });
+        expect(result.status, result.out).toBe(0);
+        return result.outputs.image;
+      });
+      expect(tags).toEqual([`ghcr.io/acme/shop:${SHA}`, `ghcr.io/acme/shop:${SHA}-staging`]);
+    },
+  );
+
+  it("gives another environment's Buildpacks build a cache image of its own, and prod's as before", () => {
+    expect(stepOf(build(withBuild(staging, "buildpacks")), "pack").run).toContain(
+      '--publish --cache-image "$NAME:buildcache-staging" --report-output-dir',
+    );
+    expect(stepOf(build(withBuild(prod, "buildpacks")), "pack").run).toContain(
+      '--publish --cache-image "$NAME:buildcache" --report-output-dir',
+    );
+  });
+
+  it("tags another environment's intermediate images build-<commit>-<env>, for its own retention", () => {
+    const own = "${{ steps.image.outputs.name }}:build-${{ github.sha }}-staging";
+    for (const builder of ["buildpacks", "railpack", "own-dockerfile"] as const) {
+      const plan = withSqlite(withBuild(staging, builder), { workdir: "/app" });
+      const steps = build(plan).steps;
+      const base = stepOf(build(plan), "Write the seal Dockerfile").env?.BASE;
+      expect(base?.startsWith(`${own}@`), `${builder}: ${base}`).toBe(true);
+      const intermediate = steps.find((s) => s.id === "own" || s.id === "railpack");
+      if (builder !== "buildpacks") expect(intermediate?.with?.tags, builder).toBe(own);
+    }
+    expect(stepOf(build(withBuild(staging, "buildpacks")), "pack").run).toContain(
+      'pack build "$NAME:build-$GITHUB_SHA-staging"',
+    );
+    expect(stepOf(build(withBuild(prod, "buildpacks")), "pack").run).toContain(
+      'pack build "$NAME:build-$GITHUB_SHA" ',
+    );
   });
 });
 
@@ -340,7 +413,7 @@ describe("the verify job", { timeout: 60_000 }, () => {
     `    "buildx imagetools inspect|ghcr.io/acme/shop@$DIGEST|--format {{json .Provenance}}")`,
     '      [[ -n "${PROVENANCE:-}" ]] || { echo "ERROR: not found" >&2; return 1; }',
     "      printf '%s\\n' \"$PROVENANCE\" ;;",
-    `    "buildx imagetools inspect|ghcr.io/acme/shop:${COMMIT}|--format {{.Manifest.Digest}}")`,
+    '    "buildx imagetools inspect|ghcr.io/acme/shop:$TAG|--format {{.Manifest.Digest}}")',
     "      printf '%s' \"$TAGGED\" ;;",
     '    *) echo "unexpected docker call" >&2; return 1 ;;',
     "  esac",
@@ -351,8 +424,10 @@ describe("the verify job", { timeout: 60_000 }, () => {
     "  printf '%s\\n' \"$RUN_RECORD\"",
     "}",
   ].join("\n");
+  // staging built the image: its commit tag is <commit>-staging.
   const good = {
     DIGEST,
+    TAG: `${COMMIT}-staging`,
     DEFAULT_BRANCH: "main",
     PROVENANCE: provenance(RUN),
     RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
@@ -363,6 +438,7 @@ describe("the verify job", { timeout: 60_000 }, () => {
   it("runs the provenance check with the job's token and the repository's default branch", () => {
     expect(stepOf(verify(promotedProd), "provenance").env).toEqual({
       DIGEST: "${{ inputs.digest }}",
+      TAG: "${{ inputs.tag }}",
       DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}",
       GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
     });
@@ -377,15 +453,25 @@ describe("the verify job", { timeout: 60_000 }, () => {
       expect(result.status, result.out).toBe(0);
       expect(result.outputs).toEqual({
         image: IMAGE,
-        tag: `ghcr.io/acme/shop:${COMMIT}`,
+        tag: `ghcr.io/acme/shop:${COMMIT}-staging`,
         identity:
           "https://github.com/Acme/Shop/.github/workflows/opscrew-deploy-staging.yml@refs/heads/main",
       });
       expect(result.calls).toEqual([
         `docker buildx imagetools inspect ${IMAGE} --format {{json .Provenance}}`,
         `gh api repos/Acme/Shop/actions/runs/4242 --jq "\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"`,
-        `docker buildx imagetools inspect ghcr.io/acme/shop:${COMMIT} --format {{.Manifest.Digest}}`,
+        `docker buildx imagetools inspect ghcr.io/acme/shop:${COMMIT}-staging --format {{.Manifest.Digest}}`,
       ]);
+      // An image prod built carries the commit itself.
+      const fromProd = run({
+        TAG: COMMIT,
+        RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy.yml`,
+      });
+      expect(fromProd.status, fromProd.out).toBe(0);
+      expect(fromProd.outputs.tag).toBe(`ghcr.io/acme/shop:${COMMIT}`);
+      expect(fromProd.calls.at(-1)).toBe(
+        `docker buildx imagetools inspect ghcr.io/acme/shop:${COMMIT} --format {{.Manifest.Digest}}`,
+      );
       // A run's path can carry its ref; the signing identity names the branch once.
       const withRef = run({
         RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml@refs/heads/main`,
@@ -485,6 +571,31 @@ describe("the verify job", { timeout: 60_000 }, () => {
     expect(foreign.calls.filter((call) => call.startsWith("gh "))).toEqual([]);
     expect(run({ DIGEST: "latest" }).calls).toEqual([]);
   });
+
+  it.skipIf(!bashWorks())(
+    "refuses a tag input that is no commit tag of the build's commit, without printing it",
+    () => {
+      for (const TAG of [
+        "",
+        "latest",
+        "d".repeat(40),
+        `${"d".repeat(40)}-staging`,
+        `${COMMIT}-`,
+        `${COMMIT}-Staging`,
+        `x${COMMIT}`,
+        `${COMMIT}-staging\n::warning::injected`,
+      ]) {
+        const result = run({ TAG });
+        expect(result.status, JSON.stringify(TAG)).toBe(1);
+        expect(result.out).toContain(
+          `::error::The tag input is not a commit tag of the image's build (${COMMIT}, or ${COMMIT}-<environment>). Start this workflow with \`opscrew promote\`, which fills it in.`,
+        );
+        expect(result.out).not.toContain("injected");
+        expect(result.calls.filter((call) => call.includes("Manifest.Digest"))).toEqual([]);
+        expect(result.outputs).toEqual({});
+      }
+    },
+  );
 
   it("checks the cosign signature for the build run's workflow when the app signs images", () => {
     expect(verify(promotedProd).steps.map((s) => s.name)).toEqual([

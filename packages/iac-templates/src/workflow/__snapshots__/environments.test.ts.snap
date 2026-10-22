@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           repo="\${GITHUB_REPOSITORY,,}"
           echo "name=ghcr.io/\${repo}" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}-staging" >> "$GITHUB_OUTPUT"
       # Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the
       # workflow run, and the repository and commit of the checkout.
       - name: Set up Docker Buildx
@@ -77,7 +77,7 @@ jobs:
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Pushed \\\`$NAME:$GITHUB_SHA\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \\\`$NAME:$GITHUB_SHA-staging\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
       # The scan runs after the registry logout, so it never holds the job's packages: write token.
       - name: Scan the image (report only)
         env:
@@ -328,19 +328,22 @@ jobs:
            * The ids of the package versions to delete.
            * versions: [{ id, digest, tags, created }], as the GitHub API lists them.
            * children: by digest, the digests an image index lists (its platform manifests and attestations).
-           * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
-           * the build-<commit> intermediates and what only they list.
+           * keep: how many <commit>-staging versions to keep, newest first; undefined (retention off) deletes only
+           * the build-<commit>-staging intermediates and what only they list.
            * protect: digests never deleted: the running and the previous image.
+           * recent: a time (milliseconds since 1970): an untagged version created since then stays unless
+           * a version deleted here lists it, since another environment's build may be pushing it right now.
            *
            * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
-           * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
-           * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
-           * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
-           * <commit> versions with their signatures, and untagged versions nothing kept lists.
+           * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit>-staging versions, versions
+           * with a tag this environment's builds did not push (yours, Buildpacks' caches, another
+           * environment's images), signatures of kept images, and whatever a kept index lists, tagged or
+           * not. Deleted: build-<commit>-staging intermediates, older <commit>-staging versions with their signatures,
+           * and untagged versions nothing kept lists, once they are older than recent.
            */
-          function prunable(versions, children, keep, protect) {
-            const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
-            const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+          function prunable(versions, children, keep, protect, recent) {
+            const commit = (tag) => /^[0-9a-f]{40}-staging$/.test(tag);
+            const build = (tag) => /^build-[0-9a-f]{40}-staging$/.test(tag);
             const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
             const subject = (tag) => {
               const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
@@ -375,8 +378,11 @@ jobs:
             }
             const goes = (v) => !reachable.has(v.digest);
             const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            // Another environment's build pushes its platform manifests and attestations untagged, moments
+            // before the index that lists them: until then nothing lists them, so a recent one stays.
+            const old = (v) => Date.parse(v.created) < recent;
             return versions
-              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .filter((v) => goes(v) && (v.tags.length > 0 || listedByDeleted.has(v.digest) || (keep !== undefined && old(v))))
               .map((v) => v.id);
           }
 
@@ -395,6 +401,8 @@ jobs:
             }
             const protect = previous === null ? [running] : [running, previous];
             const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            // Untagged versions younger than 30 minutes stay: another environment may be pushing them.
+            const recent = Date.now() - 30 * 60 * 1000;
             const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
             const token = process.env.TOKEN;
             const read = async (response, what) => {
@@ -447,7 +455,7 @@ jobs:
                 children[digest] = (manifest.manifests || []).map((m) => m.digest);
               }
 
-              const ids = new Set(prunable(versions, children, keep, protect));
+              const ids = new Set(prunable(versions, children, keep, protect, recent));
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
               deleting = true;
               let failed = 0;
@@ -522,6 +530,10 @@ on:
         description: The image to deploy, by its digest (sha256:…); \`opscrew promote\` fills it in.
         required: true
         type: string
+      tag:
+        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); \`opscrew promote\` fills it in.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -551,6 +563,7 @@ jobs:
         name: Check the image's provenance
         env:
           DIGEST: \${{ inputs.digest }}
+          TAG: \${{ inputs.tag }}
           DEFAULT_BRANCH: \${{ github.event.repository.default_branch }}
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -597,13 +610,18 @@ jobs:
             echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."
             exit 1
           fi
-          if [[ "$(docker buildx imagetools inspect "$name:$commit" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
-            echo "::error::The image is not the one tagged with its build's commit ($commit): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."
+          # prod's build tags its commit, another environment's <commit>-<env>.
+          if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then
+            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\`, which fills it in."
+            exit 1
+          fi
+          if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
+            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."
             exit 1
           fi
           {
             echo "image=$image"
-            echo "tag=$name:$commit"
+            echo "tag=$name:$TAG"
             echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
           } >> "$GITHUB_OUTPUT"
           echo "Deploying \\\`$image\\\`, built by run $run_id from \\\`$commit\\\` on \\\`$branch\\\`." >> "$GITHUB_STEP_SUMMARY"
@@ -1606,6 +1624,7 @@ exports[`the verify job > runs the provenance check with the job's token and the
         name: Check the image's provenance
         env:
           DIGEST: \${{ inputs.digest }}
+          TAG: \${{ inputs.tag }}
           DEFAULT_BRANCH: \${{ github.event.repository.default_branch }}
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1652,13 +1671,18 @@ exports[`the verify job > runs the provenance check with the job's token and the
             echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."
             exit 1
           fi
-          if [[ "$(docker buildx imagetools inspect "$name:$commit" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
-            echo "::error::The image is not the one tagged with its build's commit ($commit): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."
+          # prod's build tags its commit, another environment's <commit>-<env>.
+          if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then
+            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\`, which fills it in."
+            exit 1
+          fi
+          if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
+            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."
             exit 1
           fi
           {
             echo "image=$image"
-            echo "tag=$name:$commit"
+            echo "tag=$name:$TAG"
             echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
           } >> "$GITHUB_OUTPUT"
           echo "Deploying \\\`$image\\\`, built by run $run_id from \\\`$commit\\\` on \\\`$branch\\\`." >> "$GITHUB_STEP_SUMMARY""

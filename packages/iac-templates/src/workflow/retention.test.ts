@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { MANIFEST_ACCEPT } from "../registry";
-import { jobYaml, serverPlan, withBuild, withPlan } from "./__fixtures__/plans";
+import { inEnvironment, jobYaml, serverPlan, withBuild, withPlan } from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
-import { RETENTION_SCRIPT } from "./retention";
+import { retentionScript } from "./retention";
 
 interface Version {
   id: number;
@@ -19,6 +19,7 @@ type Prunable = (
   children: Record<string, string[]>,
   keep: number | undefined,
   protect: string[],
+  recent: number,
 ) => number[];
 type FakeProcess = { env: Record<string, string>; exitCode?: number };
 type Fetch = (
@@ -30,26 +31,53 @@ type Fetch = (
   json: () => Promise<unknown>;
 }>;
 
-/** Runs `script` (the step's program) with fakes; returns `prunable` and `main`. */
+/** `hour` hours into October 2026, in milliseconds. */
+const at = (hour: number) => Date.UTC(2026, 9, 1) + hour * 3_600_000;
+/** November 2026: after every version the tests make, so none of them is recent. */
+const LATER = Date.UTC(2026, 10, 1);
+
+/**
+ * Runs `script` (the step's program) with fakes, its clock (`Date.now()`) at `now` (default
+ * {@link LATER}); returns `prunable` and `main`.
+ */
 function load(
   script: string,
-  fakes: { process?: FakeProcess; fetch?: Fetch; log?: string[] } = {},
+  fakes: { process?: FakeProcess; fetch?: Fetch; log?: string[]; now?: number } = {},
 ) {
   const console = { log: (line: string) => fakes.log?.push(line) };
+  const now = fakes.now ?? LATER;
+  const FakeDate = class extends Date {
+    static override now() {
+      return now;
+    }
+  };
   // The workflow runs this text with Node.js; here it gets fake globals instead.
   const factory = new Function(
     "process",
     "fetch",
     "console",
+    "Date",
     `${script.replace(/main\(\);\s*$/, "")}\nreturn { prunable, main };`,
   );
-  return factory(fakes.process, fakes.fetch, console) as {
+  return factory(fakes.process, fakes.fetch, console, FakeDate) as {
     prunable: Prunable;
     main: () => Promise<void>;
   };
 }
 
-const { prunable } = load(RETENTION_SCRIPT);
+/** `prunable` of `environment`'s program, with no version recent unless `recent` says so. */
+function selection(environment: string) {
+  const loaded = load(retentionScript(environment)).prunable;
+  return (
+    versions: Version[],
+    children: Record<string, string[]>,
+    keep: number | undefined,
+    protect: string[],
+    recent = LATER,
+  ) => loaded(versions, children, keep, protect, recent);
+}
+
+const prunable = selection("prod");
 
 const commit = (n: number) => n.toString(16).padStart(40, "0");
 /** A digest starting with `prefix`, filled with `fill`. */
@@ -60,7 +88,7 @@ const version = (d: string, tags: string[], hour: number): Version => ({
   id: nextId++,
   digest: d,
   tags,
-  created: new Date(Date.UTC(2026, 9, 1) + hour * 3_600_000).toISOString(),
+  created: new Date(at(hour)).toISOString(),
 });
 /**
  * A sealed push of commit `hour`: the tagged index plus its two untagged children (the platform
@@ -218,6 +246,121 @@ describe("prunable", () => {
   });
 });
 
+describe("prunable with two environments that follow main (T1515's live run)", () => {
+  // Both build every commit: prod's build tags <commit>, staging's <commit>-staging.
+  const prodPrunable = prunable;
+  const stagingPrunable = selection("staging");
+  const staged = (n: number) => `${commit(n)}-staging`;
+  const prod = [1, 2, 3, 4, 5].map((n) => push(`a${n}`, n));
+  const staging = [1, 2, 3, 4, 5].map((n) => push(`b${n}`, n, [staged(n)]));
+  const both = [...prod, ...staging];
+  const versions = both.flatMap((p) => p.versions);
+  const children = Object.assign({}, ...both.map((p) => p.children));
+  const newest = (pushes: ReturnType<typeof push>[]) => pushes.at(-1)?.index.digest ?? "";
+
+  it("prod's retention keeps every staging image and deletes only prod's older ones", () => {
+    const deleted = prodPrunable(versions, children, 2, [newest(prod)]);
+    expect(deleted.sort((x, y) => x - y)).toEqual(ids(prod.slice(0, 3).flatMap((p) => p.versions)));
+  });
+
+  it("staging's retention keeps every prod image and deletes only staging's older ones", () => {
+    const deleted = stagingPrunable(versions, children, 2, [newest(staging)]);
+    expect(deleted.sort((x, y) => x - y)).toEqual(
+      ids(staging.slice(0, 3).flatMap((p) => p.versions)),
+    );
+  });
+
+  it("keeps another environment's fresh build, before its deploy labels or protects it", () => {
+    // staging pushed commit 6 and has not deployed it; prod's deploy of commit 6 prunes first.
+    const fresh = push("b6", 6, [staged(6)]);
+    const prodSix = push("a6", 6);
+    const all = [...versions, ...fresh.versions, ...prodSix.versions];
+    const listed = { ...children, ...fresh.children, ...prodSix.children };
+    const deleted = prodPrunable(all, listed, 1, [prodSix.index.digest]);
+    expect(deleted).not.toContain(fresh.index.id);
+    expect(deleted.sort((x, y) => x - y)).toEqual(ids(prod.flatMap((p) => p.versions)));
+  });
+
+  it("never keeps fewer of one environment because another builds more", () => {
+    // prod built two commits long ago; staging built five since.
+    const old = [push("c1", 0, [commit(80)]), push("c2", 0, [commit(81)])];
+    const all = [...old, ...staging];
+    const flat = all.flatMap((p) => p.versions);
+    const listed = Object.assign({}, ...all.map((p) => p.children));
+    expect(prodPrunable(flat, listed, 2, [newest(old)])).toEqual([]);
+    expect(stagingPrunable(flat, listed, 2, [newest(staging)]).sort((x, y) => x - y)).toEqual(
+      ids(staging.slice(0, 3).flatMap((p) => p.versions)),
+    );
+  });
+
+  it("deletes only its own environment's intermediate images, with retention on or off", () => {
+    const prodBuild = version(digest("9", "0"), [`build-${commit(6)}`], 6);
+    const stagingBuild = version(digest("9", "1"), [`build-${commit(6)}-staging`], 6);
+    const all = [...versions, prodBuild, stagingBuild];
+    for (const keep of [undefined, 10]) {
+      expect(prodPrunable(all, children, keep, [newest(prod)])).toEqual([prodBuild.id]);
+      expect(stagingPrunable(all, children, keep, [newest(staging)])).toEqual([stagingBuild.id]);
+    }
+  });
+
+  it("keeps every environment's label tags in each environment's retention", () => {
+    const stagingRuns = push("d1", 0, [staged(90), "opscrew-staging"]);
+    const prodRuns = push("d2", 0, [commit(91), "opscrew-prod", "opscrew-qa-previous"]);
+    const all = [...both, stagingRuns, prodRuns];
+    const flat = all.flatMap((p) => p.versions);
+    const listed = Object.assign({}, ...all.map((p) => p.children));
+    for (const [select, own] of [
+      [prodPrunable, prod],
+      [stagingPrunable, staging],
+    ] as const) {
+      const deleted = select(flat, listed, 1, [newest(own)]);
+      expect(deleted.sort((x, y) => x - y)).toEqual(
+        ids(own.slice(0, 4).flatMap((p) => p.versions)),
+      );
+    }
+  });
+
+  it("keeps every environment's Buildpacks cache in each environment's retention", () => {
+    const caches = [
+      version(digest("8", "1"), ["buildcache"], 1),
+      version(digest("8", "2"), ["buildcache-staging"], 1),
+    ];
+    for (const [select, own] of [
+      [prodPrunable, prod],
+      [stagingPrunable, staging],
+    ] as const) {
+      const deleted = select([...versions, ...caches], children, 2, [newest(own)]);
+      expect(deleted.sort((x, y) => x - y)).toEqual(
+        ids(own.slice(0, 3).flatMap((p) => p.versions)),
+      );
+    }
+  });
+
+  it("keeps another environment's fresh untagged manifests until the index listing them arrives", () => {
+    // staging is pushing commit 6: its platform image and attestation are up, its index not yet.
+    const pushing = push("b6", 6, [staged(6)]);
+    // An untagged version from an hour ago that nothing lists still goes.
+    const orphan = version(digest("7", "3"), [], 5);
+    // prod's own intermediate of commit 6 goes at once, with the child only it lists.
+    const intermediate = push("96", 6, [`build-${commit(6)}`]);
+    const all = [...versions, pushing.image, pushing.attestation, orphan, ...intermediate.versions];
+    const listed = { ...children, ...intermediate.children };
+    const recent = at(6) - 30 * 60_000;
+    const deleted = prodPrunable(all, listed, 2, [newest(prod)], recent);
+    expect(deleted.sort((x, y) => x - y)).toEqual(
+      ids([...prod.slice(0, 3).flatMap((p) => p.versions), orphan, ...intermediate.versions]),
+    );
+    // Once they are older than recent and still listed by nothing, they go.
+    expect(prodPrunable(all, listed, 2, [newest(prod)], at(7))).toEqual(
+      expect.arrayContaining([pushing.image.id, pushing.attestation.id]),
+    );
+    // With retention off, only what a deleted intermediate lists goes, recent or not.
+    expect(
+      prodPrunable(all, listed, undefined, [newest(prod)], recent).sort((x, y) => x - y),
+    ).toEqual(ids(intermediate.versions));
+  });
+});
+
 describe("the retention step's program", () => {
   const RUNNING = `ghcr.io/acme/shop@${digest("e", "0")}`;
   const PREVIOUS = `ghcr.io/acme/shop@${digest("d", "0")}`;
@@ -225,7 +368,7 @@ describe("the retention step's program", () => {
   /** A fake GitHub API and registry for `pushes` of package `acme/shop`. */
   function github(o: {
     type?: "User" | "Organization";
-    pushes: ReturnType<typeof push>[];
+    pushes: { versions: Version[]; children: Record<string, string[]> }[];
     failManifest?: boolean;
     failDelete?: number[];
   }) {
@@ -304,11 +447,23 @@ describe("the retention step's program", () => {
     return steps[0]?.run ?? "";
   };
   const script = program(serverPlan());
+  const staging = inEnvironment(serverPlan(), { name: "staging" });
 
-  async function runMain(api: ReturnType<typeof github>, extra: Record<string, string> = {}) {
+  /** Runs `main` of prod's program (or `text`), its clock at `now` (default {@link LATER}). */
+  async function runMain(
+    api: ReturnType<typeof github>,
+    extra: Record<string, string> = {},
+    o: { text?: string; now?: number } = {},
+  ) {
     const process: FakeProcess = { env: env(extra) };
     const log: string[] = [];
-    await load(script, { process, fetch: api.fetch, log }).main();
+    const fakes = {
+      process,
+      fetch: api.fetch,
+      log,
+      ...(o.now === undefined ? {} : { now: o.now }),
+    };
+    await load(o.text ?? script, fakes).main();
     return { exitCode: process.exitCode, log };
   }
 
@@ -316,8 +471,27 @@ describe("the retention step's program", () => {
   const pushes = [a, b, c, push("d", 4), push("e", 5)];
   const base = "https://api.github.com/users/acme/packages/container/shop/versions";
 
-  it("is the tested program followed by main()", () => {
-    expect(script).toBe(`${RETENTION_SCRIPT}\nmain();\n`);
+  it("is the tested program followed by main(), with the environment's own commit tag", () => {
+    expect(script).toBe(`${retentionScript("prod")}\nmain();\n`);
+    expect(program(staging)).toBe(`${retentionScript("staging")}\nmain();\n`);
+    expect(program(staging)).toContain("/^[0-9a-f]{40}-staging$/");
+    expect(program(staging)).toContain("/^build-[0-9a-f]{40}-staging$/");
+  });
+
+  it("deletes only staging's older images in staging's workflow, never prod's", async () => {
+    // Both environments followed main and built the same commits 1 to 5.
+    const staged = [1, 2, 3, 4, 5].map((n) => push(`f${n}`, n, [`${commit(n)}-staging`]));
+    const api = github({ pushes: [...pushes, ...staged] });
+    const running = staged[4]?.index.digest;
+    const result = await runMain(
+      api,
+      { IMAGE: `ghcr.io/acme/shop@${running}`, PREVIOUS: "" },
+      { text: program(staging) },
+    );
+    expect(result.exitCode).toBeUndefined();
+    expect(api.deleted()).toEqual(
+      staged.slice(0, 3).flatMap((p) => p.versions.map((v) => `DELETE ${base}/${v.id}`)),
+    );
   });
 
   it("deletes what prunable selects through the user's packages API", async () => {
@@ -329,6 +503,18 @@ describe("the retention step's program", () => {
     );
     expect(result.log[0]).toBe("The package has 15 image versions; deleting 9.");
     expect(result.log).toContain(`Deleted ${a.index.digest} (${commit(1)})`);
+  });
+
+  it("keeps untagged versions from the last 30 minutes, which another environment's push may still list", async () => {
+    // Another environment's build pushed its platform manifest a minute ago, its index not yet.
+    const pushing = version(digest("6", "4"), [], 10 - 1 / 60);
+    const stale = version(digest("6", "5"), [], 10 - 31 / 60);
+    const api = github({ pushes: [...pushes, { versions: [pushing, stale], children: {} }] });
+    const result = await runMain(api, {}, { now: at(10) });
+    expect(result.exitCode).toBeUndefined();
+    expect(api.deleted()).toEqual(
+      [...a.versions, ...b.versions, ...c.versions, stale].map((v) => `DELETE ${base}/${v.id}`),
+    );
   });
 
   it("never deletes a version an environment's label tags", async () => {

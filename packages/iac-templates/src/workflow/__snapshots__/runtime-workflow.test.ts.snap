@@ -333,14 +333,17 @@ jobs:
            * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
            * the build-<commit> intermediates and what only they list.
            * protect: digests never deleted: the running and the previous image.
+           * recent: a time (milliseconds since 1970): an untagged version created since then stays unless
+           * a version deleted here lists it, since another environment's build may be pushing it right now.
            *
            * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
            * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
-           * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
-           * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
-           * <commit> versions with their signatures, and untagged versions nothing kept lists.
+           * with a tag this environment's builds did not push (yours, Buildpacks' caches, another
+           * environment's images), signatures of kept images, and whatever a kept index lists, tagged or
+           * not. Deleted: build-<commit> intermediates, older <commit> versions with their signatures,
+           * and untagged versions nothing kept lists, once they are older than recent.
            */
-          function prunable(versions, children, keep, protect) {
+          function prunable(versions, children, keep, protect, recent) {
             const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
             const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
             const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
@@ -377,8 +380,11 @@ jobs:
             }
             const goes = (v) => !reachable.has(v.digest);
             const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            // Another environment's build pushes its platform manifests and attestations untagged, moments
+            // before the index that lists them: until then nothing lists them, so a recent one stays.
+            const old = (v) => Date.parse(v.created) < recent;
             return versions
-              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .filter((v) => goes(v) && (v.tags.length > 0 || listedByDeleted.has(v.digest) || (keep !== undefined && old(v))))
               .map((v) => v.id);
           }
 
@@ -397,6 +403,8 @@ jobs:
             }
             const protect = previous === null ? [running] : [running, previous];
             const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            // Untagged versions younger than 30 minutes stay: another environment may be pushing them.
+            const recent = Date.now() - 30 * 60 * 1000;
             const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
             const token = process.env.TOKEN;
             const read = async (response, what) => {
@@ -449,7 +457,7 @@ jobs:
                 children[digest] = (manifest.manifests || []).map((m) => m.digest);
               }
 
-              const ids = new Set(prunable(versions, children, keep, protect));
+              const ids = new Set(prunable(versions, children, keep, protect, recent));
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
               deleting = true;
               let failed = 0;
@@ -847,14 +855,17 @@ jobs:
            * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
            * the build-<commit> intermediates and what only they list.
            * protect: digests never deleted: the running and the previous image.
+           * recent: a time (milliseconds since 1970): an untagged version created since then stays unless
+           * a version deleted here lists it, since another environment's build may be pushing it right now.
            *
            * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
            * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
-           * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
-           * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
-           * <commit> versions with their signatures, and untagged versions nothing kept lists.
+           * with a tag this environment's builds did not push (yours, Buildpacks' caches, another
+           * environment's images), signatures of kept images, and whatever a kept index lists, tagged or
+           * not. Deleted: build-<commit> intermediates, older <commit> versions with their signatures,
+           * and untagged versions nothing kept lists, once they are older than recent.
            */
-          function prunable(versions, children, keep, protect) {
+          function prunable(versions, children, keep, protect, recent) {
             const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
             const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
             const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
@@ -891,8 +902,11 @@ jobs:
             }
             const goes = (v) => !reachable.has(v.digest);
             const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            // Another environment's build pushes its platform manifests and attestations untagged, moments
+            // before the index that lists them: until then nothing lists them, so a recent one stays.
+            const old = (v) => Date.parse(v.created) < recent;
             return versions
-              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .filter((v) => goes(v) && (v.tags.length > 0 || listedByDeleted.has(v.digest) || (keep !== undefined && old(v))))
               .map((v) => v.id);
           }
 
@@ -911,6 +925,8 @@ jobs:
             }
             const protect = previous === null ? [running] : [running, previous];
             const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            // Untagged versions younger than 30 minutes stay: another environment may be pushing them.
+            const recent = Date.now() - 30 * 60 * 1000;
             const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
             const token = process.env.TOKEN;
             const read = async (response, what) => {
@@ -963,7 +979,7 @@ jobs:
                 children[digest] = (manifest.manifests || []).map((m) => m.digest);
               }
 
-              const ids = new Set(prunable(versions, children, keep, protect));
+              const ids = new Set(prunable(versions, children, keep, protect, recent));
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
               deleting = true;
               let failed = 0;

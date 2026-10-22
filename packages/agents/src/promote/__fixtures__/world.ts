@@ -9,6 +9,7 @@ import type {
 } from "@opscrew/connector-github";
 import type { ProjectPaths } from "@opscrew/core";
 import { sha256Hex } from "@opscrew/core";
+import { environmentTag } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../../context";
 import type { DriftReport } from "../../drift";
@@ -169,14 +170,21 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
   }
 
   /**
-   * An image this repository's deploy workflow built: its provenance names run `runId`, GitHub's
-   * record of that run shows a push of `commit` to `branch`, and GHCR tags the image with the
-   * commit. `run` changes the record.
+   * An image the deploy workflow of `environment` (default staging) built: its provenance names
+   * run `runId`, GitHub's record of that run shows a push of `commit` to `main` from that
+   * environment's workflow, and GHCR tags the image with the environment's commit tag (`<commit>`
+   * for prod, `<commit>-<env>` for another). `run` changes the record.
    */
   build(
     digest: string,
-    build: { runId: number; commit: string; run?: Partial<WorkflowRunSource> },
+    build: {
+      runId: number;
+      commit: string;
+      environment?: string;
+      run?: Partial<WorkflowRunSource>;
+    },
   ): void {
+    const environment = build.environment ?? "staging";
     this.provenance.set(digest, {
       builderId: buildRunUrl(build.runId),
       runId: build.runId,
@@ -188,10 +196,10 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
       event: "push",
       headBranch: "main",
       headSha: build.commit,
-      path: ".github/workflows/opscrew-deploy-staging.yml",
+      path: `.github/workflows/opscrew-deploy${environment === "prod" ? "" : `-${environment}`}.yml`,
       ...build.run,
     });
-    this.tags.set(build.commit, digest);
+    this.tags.set(environmentTag(build.commit, environment), digest);
   }
 }
 

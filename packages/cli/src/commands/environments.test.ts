@@ -238,7 +238,7 @@ describe("opscrew promote", () => {
       fileSha: async () => blob,
       getEnvironment: async () => undefined,
       taggedDigest: async (_owner, _image, tag) =>
-        tag === "opscrew-staging" || tag === commit ? digest : undefined,
+        tag === "opscrew-staging" || tag === `${commit}-staging` ? digest : undefined,
       imageProvenance: async () => ({
         builderId: "https://github.com/acme/shop/actions/runs/501/attempts/1",
         runId: 501,

@@ -20,9 +20,11 @@ docker buildx imagetools inspect ghcr.io/<owner>/<repo>:<commit> --format '{{jso
 docker buildx imagetools inspect ghcr.io/<owner>/<repo>:<commit> --format '{{json .SBOM}}'
 ```
 
-`<owner>/<repo>` is your repository in lower case, and `<commit>` the full commit hash. The deploy
-run's summary also shows the image's digest, which you can use instead of the tag
-(`ghcr.io/<owner>/<repo>@sha256:…`).
+`<owner>/<repo>` is your repository in lower case, and `<commit>` the full commit hash. An image
+another [environment](environments.md) than prod built is tagged `<commit>-<env>` instead (for
+example `<commit>-staging`), so two environments that build the same commit each keep their own
+image. The deploy run's summary shows the image's tag and its digest; you can use the digest
+instead of the tag (`ghcr.io/<owner>/<repo>@sha256:…`).
 
 The provenance never holds a secret value or GitHub's event data, such as commit messages or email
 addresses. Build values that are not secret can appear in it (see
@@ -113,7 +115,11 @@ Each deploy adds an image to GitHub Container Registry. After each healthy deplo
 newest 10 deployed images, with their SBOM, provenance and signature, and deletes older ones. It
 never deletes the image that is running or the one before it, so the previous version stays
 available. Images you tagged yourself are kept too. The intermediate images that Buildpacks and
-Railpack builds leave behind are always deleted.
+Railpack builds leave behind are always deleted. Each environment's deploy deletes only the images
+its own builds made, so it never deletes another environment's, and each environment keeps its
+newest 10 however many the others build. Leftover parts of images with no tag are deleted only once
+they are 30 minutes old, so an image another environment is pushing at that moment is never
+touched.
 
 Each healthy deploy also labels the image its [environment](environments.md) now runs
 `opscrew-<env>` (`opscrew-prod` for prod) and the one before it `opscrew-<env>-previous`.

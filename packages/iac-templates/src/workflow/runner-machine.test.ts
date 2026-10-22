@@ -427,7 +427,7 @@ describe("the build job on the environment's runner (build: runner)", () => {
       });
       expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
-        "name=ghcr.io/acme/shop\nimage=ghcr.io/acme/shop:abc\n",
+        "name=ghcr.io/acme/shop\nimage=ghcr.io/acme/shop:abc-dev\n",
       );
     },
   );
