@@ -74,7 +74,7 @@ Effort`.
 
 ## Phase 3: Packages (parallel)
 
-- [ ] T1503 [P] [US2] Paths per environment, in `packages/core/src/paths.ts`, `packages/core/src/environments.ts` (new)
+- [X] T1503 [P] [US2] Paths per environment, in `packages/core/src/paths.ts`, `packages/core/src/environments.ts` (new)
   - Owns: those paths (+ tests); `packages/core/src/index.ts` for the new exports only; `packages/plan-schema/src/environments.ts` (new), its tests and `index.ts` export, and `plan.ts` for the shared name rule (moved there by the lead, 2026-10-22, since core has no YAML parser)
   - Reads: data-model.md "Paths per environment"; contracts/environments.md "Paths"; plan.md "4."
   - Depends: T1501a
