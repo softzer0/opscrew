@@ -496,6 +496,17 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new file>` and `pnpm lint`
   - Effort: high
 
+- [ ] T1513b [US1] The localhost CI's first run on GitHub: fix what it found on macOS and Windows
+  - Owns: `packages/agents/src/localhost/**`, `packages/cli/test/e2e/**`, `.github/workflows/localhost.yml` (+ tests)
+  - Reads: the CI run (`gh run view 39790397663 --repo softzer0/opscrew --log`); quickstart.md "1."; research.md "Spike results" 8
+  - Depends: T1513
+  - Accept:
+    - **Linux** passed all 7 Docker-pass tests in CI; it stays green.
+    - **Windows unit tests:** `localhost/trust.test.ts` builds the macOS command with the host's path separators. Each OS's trust command is built with that OS's path rules (`path.posix` for macOS and Linux, `path.win32` for Windows), whichever computer renders it.
+    - **Intel macOS with Colima:** `provision --approve` exits 2 after the local plan, and later tests fail from it (ECONNREFUSED, timeouts). The off-Linux Buildpacks build fails too. Find each cause from the log and fix it in OpsCrew's code or the job, so the macOS job passes, or say plainly what Colima on GitHub's Intel runner cannot do.
+  - Verify: the unit tests on this computer; `OPSCREW_DOCKER_TESTS=1` for the localhost pass here; and a new CI run on GitHub (the lead pushes)
+  - Effort: high
+
 - [ ] T1514 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md "2."–"5."; plan.md "15."
