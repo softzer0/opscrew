@@ -223,7 +223,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-portainer --filter=@opscrew/core --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1508b [P] [US2] Secrets and destroy per environment, in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/destroy/**` (+ the GitHub settings change)
+- [X] T1508b [P] [US2] Secrets and destroy per environment, in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/destroy/**` (+ the GitHub settings change)
   - Owns: those paths (+ tests); iac-templates' `src/workflow/shared.ts` (`deploySecretName`) and the tests and snapshots it changes
   - Reads: data-model.md "Deploy secrets per environment"; plan.md "9."; research.md R1 and "Spike results" 1; FR-1514, FR-1515
   - Depends: T1508a, T1504
