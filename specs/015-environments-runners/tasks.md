@@ -406,7 +406,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: high
 
-- [ ] T1517d [US6] Runner machines in agents, in `packages/agents/src/runners/**` and the provision, destroy, design, status and secure wiring
+- [X] T1517d [US6] Runner machines in agents, in `packages/agents/src/runners/**` and the provision, destroy, design, status and secure wiring
   - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
   - Reads: contracts/runners.md "Runner machines"; plan.md "16."; spec US6
   - Depends: T1517a, T1517b, T1517c, T1508b
