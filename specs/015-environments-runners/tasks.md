@@ -420,14 +420,13 @@ Effort`.
   - Accept:
     - **The CLI:** `opscrew runner host add <name> --ssh <user@host[:port]> [--key <file>]`, `runner host remove <name>` and `runner host list`, plus `env add|set --runner host --runner-host <name> [--build runner]`.
     - **MCP:** matching tools, with the host plan's approval dialog. `opscrew_plan` and `opscrew_apply` handle a localhost environment's local plan and its hash (T1512a's report).
-    - **`promote`'s `waiting` result** (T1508d) shows as waiting in the CLI and `opscrew_promote`, with the run's URL and the command to record it after the reviewer approves. It is never shown as a failure.
     - **The guide:** `runners.md` explains runner machines and builds on your own hardware: the architecture rule, why the production server never builds, and that 016's private network will let them reach servers without public SSH.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
 ## Phase 5: Surfaces, the Docker pass and live tests
 
-- [ ] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
+- [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
   - Owns: those paths (+ tests); the agents files named below, for their text only
   - Reads: contracts/environments.md "Commands", contracts/runners.md, contracts/localhost.md; plan.md "13."; quickstart.md
   - Depends: T1508b, T1509, T1510, T1511
@@ -455,7 +454,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/agents`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
-- [ ] T1512b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`, and the token permission list
+- [X] T1512b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`, and the token permission list
   - Owns: those paths (+ tests); `GITHUB_TOKEN_PERMISSIONS` in `packages/connectors/github/src/github.ts` (+ its test)
   - Reads: contracts/environments.md, contracts/runners.md, contracts/localhost.md; plan.md "8." (with its cloud part) and "13."; quickstart.md; research.md "Spike results"
   - Depends: T1508b, T1509, T1510, T1511
