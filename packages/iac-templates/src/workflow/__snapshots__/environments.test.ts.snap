@@ -577,13 +577,22 @@ jobs:
             echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
             exit 1
           fi
-          if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.head_branch) \\(.head_sha) \\(.path)"')"; then
+          if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"')"; then
             echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew promotes only images this repository built."
             exit 1
           fi
-          read -r branch commit workflow <<< "$record"
+          read -r event head_repo branch commit workflow <<< "$record"
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
+          # A fork's pull request runs in this repository too, with its own branch name: only a push counts.
+          if [[ "$event" != "push" ]]; then
+            echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to the default branch built."
+            exit 1
+          fi
+          if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
+            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
+            exit 1
+          fi
           if [[ "$branch" != "$DEFAULT_BRANCH" ]]; then
             echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."
             exit 1
@@ -1582,13 +1591,22 @@ exports[`the verify job > runs the provenance check with the job's token and the
             echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
             exit 1
           fi
-          if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.head_branch) \\(.head_sha) \\(.path)"')"; then
+          if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"')"; then
             echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew promotes only images this repository built."
             exit 1
           fi
-          read -r branch commit workflow <<< "$record"
+          read -r event head_repo branch commit workflow <<< "$record"
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
+          # A fork's pull request runs in this repository too, with its own branch name: only a push counts.
+          if [[ "$event" != "push" ]]; then
+            echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to the default branch built."
+            exit 1
+          fi
+          if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
+            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
+            exit 1
+          fi
           if [[ "$branch" != "$DEFAULT_BRANCH" ]]; then
             echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."
             exit 1

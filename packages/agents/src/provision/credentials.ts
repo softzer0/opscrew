@@ -60,7 +60,8 @@ export interface GitHubSetup {
   defaultBranch: string;
 }
 
-function missing(service: string, requirement: CredentialRequirement): OpsCrewError {
+/** The stop when no `service` token was found, naming its variables and what it needs. */
+export function missing(service: string, requirement: CredentialRequirement): OpsCrewError {
   return new OpsCrewError(
     "CREDENTIALS_MISSING",
     `No ${service} token found: set ${requirement.envVars.join(" or ")}.`,

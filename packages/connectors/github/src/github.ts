@@ -98,9 +98,17 @@ const FORK_PR_APPROVAL_POLICIES = [
 /** Which outside contributors' pull requests need an approval before workflows run. */
 export type ForkPrApprovalPolicy = (typeof FORK_PR_APPROVAL_POLICIES)[number];
 
-/** The source of a workflow run: its repository (`owner/repo`), branch, commit and workflow file. */
+/**
+ * The source of a workflow run: its repository (`owner/repo`), the event that started it, the
+ * repository its commit came from (a fork's, for a pull request from one), its branch, commit and
+ * workflow file.
+ */
 export interface WorkflowRunSource {
   repository: string;
+  /** `owner/repo` the head commit came from. */
+  headRepository: string;
+  /** What started the run: `push`, `pull_request`, `workflow_dispatch`… */
+  event: string;
   headBranch: string;
   headSha: string;
   path: string;
@@ -129,6 +137,8 @@ export interface WorkflowRun {
   createdAt: string;
 }
 
+/** A file's entry in the contents API: just its git blob SHA. */
+const ContentSchema = z.looseObject({ sha: z.string().regex(/^[0-9a-f]{40,64}$/) });
 const RepoSchema = z.looseObject({
   default_branch: z.string(),
   private: z.boolean(),
@@ -146,6 +156,8 @@ const RunSchema = z.looseObject({
 });
 const RunsSchema = z.looseObject({ workflow_runs: z.array(RunSchema) });
 const RunSourceSchema = z.looseObject({
+  event: z.string(),
+  head_repository: z.looseObject({ full_name: z.string() }),
   head_branch: z.string(),
   head_sha: z.string(),
   path: z.string(),
@@ -530,6 +542,29 @@ export class GitHubClient {
       private: data.private,
       canPush: data.permissions?.push ?? false,
     };
+  }
+
+  /**
+   * The git blob SHA of `path` (repository-relative, `/`-separated) on `ref`, from
+   * `GET /repos/{owner}/{repo}/contents/{path}?ref={ref}`; `undefined` when GitHub answers 404.
+   */
+  async fileSha(
+    owner: string,
+    repo: string,
+    path: string,
+    ref: string,
+  ): Promise<string | undefined> {
+    const what = `read ${path} on ${ref}`;
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    const query = new URLSearchParams({ ref });
+    const { status, json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/contents/${encoded}?${query}`,
+      what,
+      { ok: [404] },
+    );
+    if (status === 404) return undefined;
+    return this.#parse(ContentSchema, json, what).sha;
   }
 
   /** Refuses input that is not a repository, a branch, one root file and a message. */
@@ -1154,6 +1189,8 @@ export class GitHubClient {
     const run = this.#parse(RunSourceSchema, json, what);
     return {
       repository: run.repository.full_name,
+      headRepository: run.head_repository.full_name,
+      event: run.event,
       headBranch: run.head_branch,
       headSha: run.head_sha,
       path: run.path,
@@ -1189,6 +1226,8 @@ export class GitHubClient {
    * 204 answer, it is the first dispatch run of that file on that branch created since the
    * dispatch by GitHub's clock (the answer's `Date`), polled until it shows up. `onAccepted` runs
    * as soon as GitHub has accepted the dispatch, before any wait, so a caller can record it.
+   * GitHub's 404 or 422 (no such workflow on the default branch, no `workflow_dispatch` trigger for
+   * these inputs) is `PHASE_PRECONDITION`.
    */
   async dispatchWorkflow(
     owner: string,
@@ -1203,8 +1242,19 @@ export class GitHubClient {
       "POST",
       `/repos/${owner}/${repo}/actions/workflows/${workflowId(workflowFile)}/dispatches`,
       what,
-      { body: { ref, inputs } },
+      { body: { ref, inputs }, ok: [404, 422] },
     );
+    // 404: GitHub knows no such workflow (its file is not on the default branch); 422: the file on
+    // `ref` has no `workflow_dispatch` trigger taking these inputs, or there is no such ref.
+    if (status === 404 || status === 422) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `GitHub cannot ${what}: ${messageOf(json, `HTTP ${status}`)}.`,
+        {
+          hint: `GitHub starts a workflow by hand only when its file is on the default branch, with a workflow_dispatch trigger that takes the inputs given. Check ${workflowFile} on ${ref}, then try again.`,
+        },
+      );
+    }
     await onAccepted?.();
     if (status !== 204) {
       const named = this.#parse(DispatchSchema, json, what);

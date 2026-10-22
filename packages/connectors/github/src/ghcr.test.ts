@@ -353,15 +353,17 @@ describe("imageProvenance", () => {
 });
 
 describe("workflowRun", () => {
-  it("reads the run's repository, branch, commit and workflow file", async () => {
+  it("reads the run's repository, event, head repository, branch, commit and workflow file", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /repos/acme/shop/actions/runs/123456": {
         body: {
           id: 123456,
+          event: "pull_request",
           head_branch: "main",
           head_sha: "b".repeat(40),
           path: ".github/workflows/opscrew-deploy.yml",
           repository: { id: 1, full_name: "acme/shop" },
+          head_repository: { id: 2, full_name: "mallory/shop" },
         },
       },
     });
@@ -369,11 +371,31 @@ describe("workflowRun", () => {
       await new GitHubClient({ token: TOKEN, fetch }).workflowRun("acme", "shop", 123456),
     ).toEqual({
       repository: "acme/shop",
+      headRepository: "mallory/shop",
+      event: "pull_request",
       headBranch: "main",
       headSha: "b".repeat(40),
       path: ".github/workflows/opscrew-deploy.yml",
     });
     expect(calls[0]?.path).toBe("/repos/acme/shop/actions/runs/123456");
+  });
+
+  it("refuses a run record without its event or head repository", async () => {
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/7": {
+        body: {
+          id: 7,
+          head_branch: "main",
+          head_sha: "b".repeat(40),
+          path: ".github/workflows/opscrew-deploy.yml",
+          repository: { id: 1, full_name: "acme/shop" },
+        },
+      },
+    });
+    const error = await new GitHubClient({ token: TOKEN, fetch })
+      .workflowRun("acme", "shop", 7)
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
   });
 
   it("is undefined for a run GitHub does not have (404)", async () => {

@@ -52,6 +52,52 @@ describe("GitHubClient", () => {
     expect(calls[0]?.headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
   });
 
+  it("reads a file's blob SHA on a branch through the contents API", async () => {
+    const CONTENTS = "GET /repos/acme/shop/contents/.github/workflows/opscrew-deploy-qa.yml";
+    const blob = "ce013625030ba8dba906f756967f9e9ca394464a";
+    const found = fakeFetch({
+      [CONTENTS]: {
+        body: { type: "file", path: ".github/workflows/opscrew-deploy-qa.yml", sha: blob },
+      },
+    });
+    const client = (fetch: typeof found.fetch) => new GitHubClient({ token: TOKEN, fetch });
+    expect(
+      await client(found.fetch).fileSha(
+        "acme",
+        "shop",
+        ".github/workflows/opscrew-deploy-qa.yml",
+        "release/2",
+      ),
+    ).toBe(blob);
+    expect(found.calls[0]?.method).toBe("GET");
+    expect(found.calls[0]?.path).toBe(
+      "/repos/acme/shop/contents/.github/workflows/opscrew-deploy-qa.yml?ref=release%2F2",
+    );
+
+    const missing = fakeFetch({ [CONTENTS]: { status: 404, body: { message: "Not Found" } } });
+    expect(
+      await client(missing.fetch).fileSha(
+        "acme",
+        "shop",
+        ".github/workflows/opscrew-deploy-qa.yml",
+        "main",
+      ),
+    ).toBeUndefined();
+
+    for (const reply of [
+      { status: 500, body: { message: "Server Error" } },
+      { body: { message: "not a file entry" } },
+    ]) {
+      const other = fakeFetch({ [CONTENTS]: reply });
+      const error = await client(other.fetch)
+        .fileSha("acme", "shop", ".github/workflows/opscrew-deploy-qa.yml", "main")
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
+      expect(JSON.stringify(error)).not.toContain(TOKEN);
+    }
+  });
+
   it("finds and opens pull requests", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /repos/acme/shop/pulls?": { body: [] },

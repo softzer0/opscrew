@@ -12,8 +12,11 @@ const GHCR = "GET https://ghcr.io/v2/acme/shop/manifests";
 const DIGEST = `sha256:${"c".repeat(64)}`;
 const credential = { username: "deployer", token: READ_TOKEN };
 
-/** What a call gives: a named permission in the hint, the generic hint, GHCR's hint, or a value. */
-type Outcome = { permission: string } | "generic" | "ghcr" | "undefined";
+/**
+ * What a call gives: a named permission in the hint, the generic hint, GHCR's hint, a precondition
+ * (`PHASE_PRECONDITION`), or a value.
+ */
+type Outcome = { permission: string } | "generic" | "ghcr" | "precondition" | "undefined";
 
 interface Row {
   method: string;
@@ -161,7 +164,15 @@ const ROWS: Row[] = [
     call: (c) => c.dispatchWorkflow("acme", "shop", "opscrew-deploy.yml", "main"),
     withHeader: ADMIN_WRITE,
     withoutHeader: "generic",
-    notFound: "generic",
+    notFound: "precondition",
+  },
+  {
+    method: "fileSha",
+    route: `GET ${API}/contents/.github/workflows/opscrew-deploy.yml?ref=main`,
+    call: (c) => c.fileSha("acme", "shop", ".github/workflows/opscrew-deploy.yml", "main"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: "generic",
+    notFound: "undefined",
   },
   {
     method: "workflowRun",
@@ -221,7 +232,10 @@ describe("every call's answer to a 403 with the permission header, a 403 without
         const { code, message, hint = "" } = error as OpsCrewError;
         expect(`${message} ${hint}`).not.toContain(TOKEN);
         expect(`${message} ${hint}`).not.toContain(READ_TOKEN);
-        expect(code).toBe("CREDENTIALS_INVALID");
+        expect(code).toBe(
+          expected === "precondition" ? "PHASE_PRECONDITION" : "CREDENTIALS_INVALID",
+        );
+        if (expected === "precondition") return;
         if (expected === "generic") expect(hint).toContain("Secrets: Read and write");
         else if (expected === "ghcr") expect(hint).toContain("OPSCREW_GHCR_READ_TOKEN");
         else expect(hint).toContain(`Give the token ${expected.permission} on this repository`);

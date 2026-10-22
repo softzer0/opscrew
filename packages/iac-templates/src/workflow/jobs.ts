@@ -56,9 +56,9 @@ const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
 /**
  * The provenance check of a promoted environment's digest (`$DIGEST`): the image's SLSA provenance
  * (`docker buildx imagetools inspect`) must name exactly one GitHub Actions run, as buildx records
- * it in `runDetails.builder.id`; that run must be this repository's, its API record must show the
- * default branch (`$DEFAULT_BRANCH`), and the image tagged with the run's commit must be this
- * digest. Outputs `image`, `tag` (`<name>:<commit>`) and `identity`, the signing identity of the
+ * it in `runDetails.builder.id`; that run must be this repository's, its API record must show a
+ * `push` of this repository's own commits to the default branch (`$DEFAULT_BRANCH`), and the image
+ * tagged with the run's commit must be this digest. Outputs `image`, `tag` (`<name>:<commit>`) and `identity`, the signing identity of the
  * run's workflow on that branch.
  */
 const PROVENANCE_CHECK = [
@@ -85,13 +85,22 @@ const PROVENANCE_CHECK = [
   '  echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."',
   "  exit 1",
   "fi",
-  'if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq \'"\\(.head_branch) \\(.head_sha) \\(.path)"\')"; then',
+  'if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq \'"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"\')"; then',
   '  echo "::error::GitHub shows no run $run_id in this repository, which the image\'s provenance names as its build. OpsCrew promotes only images this repository built."',
   "  exit 1",
   "fi",
-  'read -r branch commit workflow <<< "$record"',
+  'read -r event head_repo branch commit workflow <<< "$record"',
   "# The run's path can end with @<ref>, which the signing identity carries separately.",
   'workflow="${workflow%%@*}"',
+  "# A fork's pull request runs in this repository too, with its own branch name: only a push counts.",
+  'if [[ "$event" != "push" ]]; then',
+  '  echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to the default branch built."',
+  "  exit 1",
+  "fi",
+  'if [[ "${head_repo,,}" != "${GITHUB_REPOSITORY,,}" ]]; then',
+  '  echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."',
+  "  exit 1",
+  "fi",
   'if [[ "$branch" != "$DEFAULT_BRANCH" ]]; then',
   '  echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."',
   "  exit 1",

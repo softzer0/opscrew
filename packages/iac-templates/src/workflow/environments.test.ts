@@ -355,7 +355,7 @@ describe("the verify job", { timeout: 30_000 }, () => {
     DIGEST,
     DEFAULT_BRANCH: "main",
     PROVENANCE: provenance(RUN),
-    RUN_RECORD: `main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
+    RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
     TAGGED: DIGEST,
   };
   const run = (env: Partial<typeof good>) => runScript(script, fakes, { ...good, ...env });
@@ -383,17 +383,22 @@ describe("the verify job", { timeout: 30_000 }, () => {
       });
       expect(result.calls).toEqual([
         `docker buildx imagetools inspect ${IMAGE} --format {{json .Provenance}}`,
-        `gh api repos/Acme/Shop/actions/runs/4242 --jq "\\(.head_branch) \\(.head_sha) \\(.path)"`,
+        `gh api repos/Acme/Shop/actions/runs/4242 --jq "\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"`,
         `docker buildx imagetools inspect ghcr.io/acme/shop:${COMMIT} --format {{.Manifest.Digest}}`,
       ]);
       // A run's path can carry its ref; the signing identity names the branch once.
       const withRef = run({
-        RUN_RECORD: `main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml@refs/heads/main`,
+        RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml@refs/heads/main`,
       });
       expect(withRef.status, withRef.out).toBe(0);
       expect(withRef.outputs.identity).toBe(
         "https://github.com/Acme/Shop/.github/workflows/opscrew-deploy-staging.yml@refs/heads/main",
       );
+      // GitHub's names are compared without case.
+      const lower = run({
+        RUN_RECORD: `push acme/shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
+      });
+      expect(lower.status, lower.out).toBe(0);
     },
   );
 
@@ -446,8 +451,23 @@ describe("the verify job", { timeout: 30_000 }, () => {
       ],
       [{ RUN_RECORD: "" }, /GitHub shows no run 4242 in this repository/],
       [
-        { RUN_RECORD: `feature ${COMMIT} .github/workflows/opscrew-deploy-staging.yml` },
+        {
+          RUN_RECORD: `push Acme/Shop feature ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
+        },
         /built from the branch feature, not from the default branch main/,
+      ],
+      // A fork's pull request named main runs in this repository too.
+      [
+        {
+          RUN_RECORD: `pull_request evil/fork main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
+        },
+        /built by a pull_request run, not by a push/,
+      ],
+      [
+        {
+          RUN_RECORD: `push evil/fork main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
+        },
+        /built from the commits of evil\/fork, not of this repository \(Acme\/Shop\)/,
       ],
       [{ TAGGED: `sha256:${"d".repeat(64)}` }, /is not the one tagged with its build's commit/],
     ];

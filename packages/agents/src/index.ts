@@ -10,6 +10,7 @@ export * from "./environments";
 export * from "./init";
 export * from "./interview";
 export * from "./portainer";
+export * from "./promote";
 export * from "./providers";
 export * from "./provision";
 export * from "./retarget";

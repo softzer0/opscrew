@@ -185,19 +185,34 @@ describe("dispatchWorkflow", () => {
 
   it("reports failures plainly without the token", async () => {
     const { fetch, calls } = fakeFetch({
-      "POST /repos/acme/shop/actions/workflows/opscrew-deploy.yml/dispatches": [
-        { status: 422, body: { message: "Workflow does not have 'workflow_dispatch' trigger" } },
-      ],
+      [DISPATCH]: [{ status: 500, body: { message: "Server Error" } }],
     });
     const error = await client(fetch)
       .dispatchWorkflow("acme", "shop", FILE, "main")
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
-    expect((error as Error).message).toContain("workflow_dispatch");
+    expect((error as Error).message).toContain("Server Error");
     expect(calls).toHaveLength(1);
     expect(JSON.stringify(error)).not.toContain(TOKEN);
     expect(String((error as Error).message)).not.toContain(TOKEN);
+  });
+
+  it("is a precondition when GitHub has no such workflow or no dispatch trigger for it", async () => {
+    for (const [status, message] of [
+      [404, "Not Found"],
+      [422, "Workflow does not have 'workflow_dispatch' trigger"],
+    ] as const) {
+      const { fetch } = fakeFetch({ [DISPATCH]: [{ status, body: { message } }] });
+      const error = await client(fetch)
+        .dispatchWorkflow("acme", "shop", FILE, "main", { digest: "sha256:a" })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+      expect((error as OpsCrewError).message).toContain(message);
+      expect((error as OpsCrewError).hint).toContain("default branch");
+      expect(JSON.stringify(error)).not.toContain(TOKEN);
+    }
   });
 });
 
