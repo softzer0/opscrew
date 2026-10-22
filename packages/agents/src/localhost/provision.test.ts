@@ -166,6 +166,24 @@ describe("provision on this computer", () => {
     expect(deps.reporter.text()).toContain("`opscrew localhost trust`");
   });
 
+  it("gives every script the daemon of Docker's current context (Colima's socket), at deploy and destroy", async () => {
+    const computer = new FakeComputer();
+    computer.dockerHost = "unix:///Users/me/.colima/default/docker.sock";
+    const { deps, run } = await project(localPlan(), computer);
+    await run();
+    computer.deployed();
+    await destroyLocalhost(
+      deps,
+      await readArtifact("plan", deps.paths.files.plan),
+      {},
+      computer.services(),
+    );
+    const shells = computer.runner.calls.filter((c) => c.command === "/bin/sh");
+    expect(shells.some((c) => c.options?.input?.includes("docker compose pull"))).toBe(true);
+    expect(shells.some((c) => c.options?.input?.includes("docker ps -a -q"))).toBe(true);
+    for (const call of shells) expect(call.options?.env?.DOCKER_HOST).toBe(computer.dockerHost);
+  });
+
   it("never shows the local CA's key, a leaf's key or a secret anywhere", async () => {
     const { deps, run, computer, approve } = await project(localPlan({ image: "registry" }));
     const result = await run();

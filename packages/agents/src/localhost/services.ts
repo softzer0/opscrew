@@ -119,12 +119,24 @@ export async function requireShell(local: Pick<Computer, "platform" | "which">):
   return shell;
 }
 
-/** The local executor: the scripts piped to `shell -s` with this computer's roots. */
-export function localShell(
+/**
+ * The local executor: the scripts piped to `shell -s` with this computer's roots, and with
+ * `DOCKER_HOST` set to the daemon of Docker's current context. The start script uses the app's
+ * own Docker settings (`DOCKER_CONFIG`), which have no contexts, so without it Docker would look
+ * for its default socket, which Colima, for one, does not have.
+ */
+export async function localShell(
   deps: Pick<PhaseDeps, "runner" | "env" | "paths">,
   shell: string,
-): RemoteExec {
-  return localExec({ runner: deps.runner, shell, env: deps.env, homeDir: deps.paths.homeDir });
+): Promise<RemoteExec> {
+  const context = await deps.runner.run(
+    "docker",
+    ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+    { env: deps.env, timeoutMs: 30_000 },
+  );
+  const host = context.exitCode === 0 ? context.stdout.trim() : "";
+  const env = host === "" ? deps.env : { ...deps.env, DOCKER_HOST: host };
+  return localExec({ runner: deps.runner, shell, env, homeDir: deps.paths.homeDir });
 }
 
 /** The folders the local executor gives the scripts: `<OpsCrew home>/local/srv/apps` and `/edge`. */

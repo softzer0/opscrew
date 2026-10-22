@@ -69,6 +69,8 @@ export class FakeComputer {
     Architecture: "x86_64",
   };
   compose: string | undefined = "2.38.2";
+  /** The daemon of Docker's current context, as `docker context inspect` prints it. */
+  dockerHost = "unix:///var/run/docker.sock";
   containers: FakeContainer[] = [];
   networks: DockerObject[] = [];
   volumes: DockerObject[] = [];
@@ -150,6 +152,7 @@ export class FakeComputer {
     if (first === "compose" && second === "version") {
       return this.compose === undefined ? { exitCode: 1, stdout: "", stderr: "" } : ok(`${this.compose}\n`);
     }
+    if (first === "context" && second === "inspect") return ok(`${this.dockerHost}\n`);
     const project = this.project(args);
     const named = (objects: DockerObject[]) =>
       objects.filter((o) => project === undefined || o.project === project).map((o) => o.name);

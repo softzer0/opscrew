@@ -207,7 +207,7 @@ export async function destroyLocalhost(
       });
     }
     await deps.approvals.assertApprovedHostPlan(first.hash, { allowDestroy: true });
-    const shell = await requireShell(local);
+    const exec = await localShell(deps, await requireShell(local));
     await withLocalLock(deps.paths, local.sleep, async () => {
       // Planned again under the lock: a stale plan could remove an edge another app now uses.
       const again = await teardownPlan(deps, plan, deleteData);
@@ -228,10 +228,9 @@ export async function destroyLocalhost(
           decision,
         });
       await audit("local teardown started", "approved");
-      const result = await localShell(deps, shell).run(
-        teardownScript(plan, { last: again.last, deleteData }),
-        { timeoutMs: 600_000 },
-      );
+      const result = await exec.run(teardownScript(plan, { last: again.last, deleteData }), {
+        timeoutMs: 600_000,
+      });
       if (result.exitCode !== 0) {
         await audit("local teardown failed", "refused");
         throw new OpsCrewError(

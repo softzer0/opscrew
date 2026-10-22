@@ -153,7 +153,7 @@ export async function applyLocal(
   },
 ): Promise<{ image: string }> {
   const local = computer(deps, options.services);
-  const exec = localShell(deps, await requireShell(local));
+  const exec = await localShell(deps, await requireShell(local));
   const { plan, site } = deploy;
   const target = localTarget(plan);
 

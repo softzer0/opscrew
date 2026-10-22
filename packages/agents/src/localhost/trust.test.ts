@@ -21,12 +21,14 @@ async function computerOn(platform: NodeJS.Platform, interactive: boolean, agree
 
 describe("localTrust", () => {
   it("in scripts only prints the OS's command, per OS, and changes nothing", async () => {
+    // Each OS's paths in its own form, whichever computer runs the test; the CA's file is this
+    // computer's path, quoted when it has characters such as Windows' `RUNNER~1`.
     const expected: Record<string, RegExp> = {
       darwin:
-        /^security add-trusted-cert -r trustRoot -k \/home\/me\/Library\/Keychains\/login\.keychain-db .+ca\.pem$/,
-      win32: /^certutil -user -addstore Root .+ca\.pem$/,
+        /^security add-trusted-cert -r trustRoot -k \/home\/me\/Library\/Keychains\/login\.keychain-db .+ca\.pem"?$/,
+      win32: /^certutil -user -addstore Root .+ca\.pem"?$/,
       linux:
-        /^certutil -d sql:\/home\/me\/\.pki\/nssdb -A -t "C,," -n "OpsCrew local CA" -i .+ca\.pem$/,
+        /^certutil -d sql:\/home\/me\/\.pki\/nssdb -A -t "C,," -n "OpsCrew local CA" -i .+ca\.pem"?$/,
     };
     for (const [platform, command] of Object.entries(expected)) {
       const { deps, computer, approve, trust } = await computerOn(
@@ -35,7 +37,7 @@ describe("localTrust", () => {
       );
       const result = await trust("trust");
       expect(result.done).toBe(false);
-      expect(result.command.replaceAll("\\", "/")).toMatch(command);
+      expect(result.command).toMatch(command);
       expect(computer.commands).toEqual([]);
       expect(approve.requests).toEqual([]);
       expect(await caTrusted(deps.paths)).toBe(false);
@@ -86,13 +88,12 @@ describe("localTrust", () => {
     const fingerprint = new X509Certificate(
       await readFile(caFiles(mac.deps.paths).certificate, "utf8"),
     ).fingerprint.replaceAll(":", "");
-    // Paths are joined with this test computer's separator.
-    expect((await mac.trust("untrust")).command.replaceAll("\\", "/")).toBe(
+    expect((await mac.trust("untrust")).command).toBe(
       `security delete-certificate -Z ${fingerprint} /home/me/Library/Keychains/login.keychain-db`,
     );
     const linux = await computerOn("linux", true);
     await linux.trust("trust");
-    expect((await linux.trust("untrust")).command.replaceAll("\\", "/")).toBe(
+    expect((await linux.trust("untrust")).command).toBe(
       'certutil -d sql:/home/me/.pki/nssdb -D -n "OpsCrew local CA"',
     );
   });

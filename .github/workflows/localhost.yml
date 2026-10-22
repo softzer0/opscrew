@@ -98,6 +98,15 @@ jobs:
         env:
           OPSCREW_DOCKER_TESTS: "1"
         run: pnpm turbo run test --filter=opscrew -- test/e2e/off-linux-build.test.ts
+      # When a pass fails, what Colima's VM and its Docker say: a daemon that crashed or ran out of
+      # memory, or a full disk, shows here (the first run's `error waiting for container:
+      # unexpected EOF` in the Buildpacks build left no other trace).
+      - name: Colima's VM and its Docker after a failure
+        if: ${{ failure() }}
+        run: |
+          colima status || true
+          docker info --format '{{.ServerVersion}} {{.MemTotal}} {{.Containers}} containers' || true
+          colima ssh -- sh -c 'uptime; free -m; df -h / /var/lib/docker; sudo dmesg | tail -n 60; sudo journalctl -u docker -u containerd --no-pager -n 200' || true
 
   unit:
     name: Localhost unit tests (${{ matrix.os }})

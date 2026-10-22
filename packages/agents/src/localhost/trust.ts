@@ -5,7 +5,7 @@
  */
 import { X509Certificate } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { posix } from "node:path";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { caFiles, caName, ensureLocalCa, readLocalCa } from "./ca";
@@ -32,6 +32,7 @@ function commandText(commands: readonly TrustCommand[]): string {
 /**
  * The OS's commands that trust (or untrust) the CA certificate `certificate` (its file `file`):
  * macOS's login keychain, Windows' current-user Root store, Linux's NSS database (the browsers').
+ * macOS's and Linux's paths are joined with POSIX rules, whichever computer renders them.
  */
 function trustCommands(
   action: "trust" | "untrust",
@@ -39,7 +40,7 @@ function trustCommands(
 ): TrustCommand[] {
   const cert = new X509Certificate(o.certificate);
   if (o.platform === "darwin") {
-    const keychain = join(o.homedir, "Library", "Keychains", "login.keychain-db");
+    const keychain = posix.join(o.homedir, "Library", "Keychains", "login.keychain-db");
     return action === "trust"
       ? [
           {
@@ -59,7 +60,7 @@ function trustCommands(
       ? [{ command: "certutil", args: ["-user", "-addstore", "Root", o.file] }]
       : [{ command: "certutil", args: ["-user", "-delstore", "Root", cert.serialNumber] }];
   }
-  const db = `sql:${join(o.homedir, ".pki", "nssdb")}`;
+  const db = `sql:${posix.join(o.homedir, ".pki", "nssdb")}`;
   return action === "trust"
     ? [
         {
