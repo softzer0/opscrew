@@ -401,6 +401,7 @@ Effort`.
   - Accept:
     - **`addRunnerHost`, `applyRunnerHost`, `removeRunnerHost` and `listRunnerHosts`** follow the contract:
       - inspect over SSH, pinning the host key at first contact as for an own server;
+      - ssh-host's `planRunnerHost` for the machine's setup and one environment's add or removal, and `planUndo(facts, { repositoryUrl }, command)` for the machine's teardown (T1517b);
       - the host plan approved by its hash as `host-apply`;
       - the record in the project's home folder;
       - removal refused while an environment uses the machine.
