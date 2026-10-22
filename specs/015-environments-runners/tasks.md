@@ -305,7 +305,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
+- [X] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
   - Owns: that path (+ tests)
   - Reads: quickstart.md "1."; spec US1
   - Depends: T1510
@@ -477,7 +477,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-github` and `pnpm lint`
   - Effort: high
 
-- [ ] T1513 [P] The localhost Docker pass, and OpsCrew's own CI workflow, in `packages/cli/test/e2e/**`, `examples/**`, `.github/workflows/localhost.yml` (new)
+- [X] T1513 [P] The localhost Docker pass, and OpsCrew's own CI workflow, in `packages/cli/test/e2e/**`, `examples/**`, `.github/workflows/localhost.yml` (new)
   - Owns: those paths
   - Reads: quickstart.md "1." and "6."; research.md R5 and "Spike results" 7, 8
   - Depends: T1510, T1511b, T1512a, T1517c
