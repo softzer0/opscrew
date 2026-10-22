@@ -305,13 +305,14 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [X] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
+- [ ] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
   - Owns: that path (+ tests)
   - Reads: quickstart.md "1."; spec US1
   - Depends: T1510
   - Accept:
     - **`init` passes with Docker and no cloud token,** for a user who deploys only to this computer (T1513's Docker pass found it exits 1). A missing cloud token is a note that names localhost, a server the user already has, and the cloud providers, never a failure.
     - **Docker's absence** is a note too, unless the project already targets localhost.
+    - **The GitHub token** is a note, not a failure, while the project has no target yet or targets localhost without the local runner; it stays a failure for every target that deploys through GitHub Actions (the lead, after the Docker pass on main, 2026-10-22).
     - **Tests:** no cloud token with Docker; no cloud token and no Docker; an existing check unchanged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: medium
