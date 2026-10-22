@@ -277,7 +277,7 @@ export async function runInitChecks(
     ),
     guard("provider", providerTitle(choice), true, () =>
       withBudget(
-        checkProviderToken(deps, offline, choice, portainer, services.portainerClient),
+        checkProviderToken(deps, offline, choice, which, portainer, services.portainerClient),
         budget,
         providerService(choice),
         true,
@@ -595,18 +595,24 @@ function scopeNote(profile: ProviderProfile, requirement: CredentialRequirement)
   return ` ${profile.displayName} cannot report which scopes a token has, so make sure it has these (${requirement.scopes.join(", ")}).`;
 }
 
+const DOCKER_INSTALL =
+  "Install Docker Desktop (Windows, macOS), Docker Engine (Linux) or Colima (macOS) and start it.";
+
 const ONLY_ONE =
   "OpsCrew needs only one cloud provider token; `opscrew interview` asks where to run the app.";
 
 /**
  * The cloud provider token check: the chosen provider's token (verified online unless `offline`;
  * the other provider's token is never checked), or before a choice either token. A server the
- * user owns and the user's Portainer have their own checks and no cloud provider token.
+ * user owns and the user's Portainer have their own checks and no cloud provider token. Before a
+ * choice, no token is only a note: this computer (localhost) and a server the user already has
+ * need none. The localhost target needs Docker; before a choice, its absence is only noted.
  */
 async function checkProviderToken(
   deps: PhaseDeps,
   offline: boolean,
   choice: ProviderChoice,
+  which: (name: string) => string | undefined,
   portainer: PortainerRecord | undefined,
   portainerClient: InitPortainerClient | undefined,
 ): Promise<CheckResult> {
@@ -624,17 +630,26 @@ async function checkProviderToken(
       const profile = providerProfile(id);
       return `For ${profile.displayName}, ${lowerFirst(providerFix(profile, vpsConnector(id, deps).credentials))}`;
     });
+    const docker = which("docker");
     return {
-      status: "fail",
-      message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${providerProfile(id).tokenVars[0]} for ${providerProfile(id).displayName}`).join(" or ")}).`,
-      fix: `OpsCrew needs one. ${fixes.join(" ")} To deploy to a server you already have instead, no token is needed: choose it in \`opscrew interview\`.`,
+      status: "warn",
+      message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${providerProfile(id).tokenVars[0]} for ${providerProfile(id).displayName}`).join(" or ")}). OpsCrew can deploy to this computer (localhost; ${docker === undefined ? "Docker is not installed" : `Docker found at ${docker}`}), to a server you already have, or to a cloud provider with its token.`,
+      fix: `Choose where in \`opscrew interview\`. This computer and a server you already have need no token${docker === undefined ? `; this computer needs Docker: ${DOCKER_INSTALL}` : "."} For a cloud provider, set one token. ${fixes.join(" ")}`,
     };
   }
   if (provider === "own") return checkOwnServerLogin(deps, choice);
   if (provider === "localhost") {
+    const docker = which("docker");
+    if (docker === undefined) {
+      return {
+        status: "fail",
+        message: `${choice.source === "plan" ? "The plan deploys" : "Your interview answers deploy"} to this computer (the localhost target), but Docker is not installed.`,
+        fix: `${DOCKER_INSTALL} Then run \`opscrew init\` again.`,
+      };
+    }
     return {
-      status: "skip",
-      message: "Not needed: the app runs on this computer (the localhost target), with no token.",
+      status: "pass",
+      message: `Docker found at ${docker}. The app runs on this computer (the localhost target), with no token.`,
     };
   }
   if (provider === "portainer") {

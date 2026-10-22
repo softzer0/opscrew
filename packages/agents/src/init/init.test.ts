@@ -345,9 +345,9 @@ describe("runInitChecks", () => {
     expect(ssh.fix).toContain("OpenSSH");
   });
 
-  it("fails a missing or rejected Hetzner token with the env var and create link", async () => {
+  it("notes a missing cloud token and fails a rejected Hetzner token, with the env var and create link", async () => {
     const missing = await check("provider", { env: { GITHUB_TOKEN: GITHUB } });
-    expect(missing.status).toBe("fail");
+    expect(missing.status).toBe("warn");
     expect(missing.fix).toContain("HCLOUD_TOKEN");
     expect(missing.fix).toContain("https://console.hetzner.cloud/");
     const rejected = await check("provider", { net: { hetzner: 401 } });
@@ -391,6 +391,55 @@ describe("runInitChecks", () => {
 
     await expect(runInitChecks(deps, { services: services() })).rejects.toMatchObject({
       code: "EISDIR",
+    });
+  });
+
+  describe("a localhost-only user", () => {
+    const env = { GITHUB_TOKEN: GITHUB };
+    const withDocker = [...ALL_TOOLS, "docker"];
+
+    it("passes with Docker and no cloud token, naming the three ways to deploy", async () => {
+      const { deps } = await setup({ env, tools: withDocker });
+      const checks = await runInitChecks(deps, { services: services({ tools: withDocker }) });
+      const provider = checks.find((c) => c.id === "provider");
+      expect(provider?.status).toBe("warn");
+      expect(provider?.message).toContain("No cloud provider token is set");
+      expect(provider?.message).toContain("this computer (localhost;");
+      expect(provider?.message).toContain("Docker found at /usr/bin/docker");
+      expect(provider?.message).toContain("a server you already have");
+      expect(provider?.message).toContain("a cloud provider");
+      expect(provider?.fix).toContain("HCLOUD_TOKEN");
+      expect(provider?.fix).toContain("DIGITALOCEAN_TOKEN");
+      expect(provider?.fix).not.toContain("Docker Desktop");
+      expect(initPassed(checks)).toBe(true);
+    });
+
+    it("notes a missing Docker without failing when no target is chosen", async () => {
+      const { deps } = await setup({ env });
+      const checks = await runInitChecks(deps, { services: services() });
+      const provider = checks.find((c) => c.id === "provider");
+      expect(provider?.status).toBe("warn");
+      expect(provider?.message).toContain("Docker is not installed");
+      expect(provider?.fix).toContain("Docker Desktop");
+      expect(initPassed(checks)).toBe(true);
+    });
+
+    it("needs Docker once the project targets localhost", async () => {
+      const { deps } = await setup({ env });
+      await writeRequirements(deps, { provider: "localhost" });
+      const without = await runInitChecks(deps, { services: services() });
+      const missing = without.find((c) => c.id === "provider");
+      expect(missing?.title).toBe("This computer");
+      expect(missing?.status).toBe("fail");
+      expect(missing?.message).toContain("Docker is not installed");
+      expect(missing?.fix).toContain("Docker Desktop");
+      expect(initPassed(without)).toBe(false);
+
+      const ready = await runInitChecks(deps, { services: services({ tools: withDocker }) });
+      const found = ready.find((c) => c.id === "provider");
+      expect(found?.status).toBe("pass");
+      expect(found?.message).toContain("Docker found at /usr/bin/docker");
+      expect(initPassed(ready)).toBe(true);
     });
   });
 
@@ -522,10 +571,10 @@ describe("runInitChecks", () => {
       expect(digitaloceanCalled).toBe(false);
     });
 
-    it("fails without any provider token and explains both", async () => {
+    it("notes no provider token and explains both", async () => {
       const { check } = await providerCheck({ env: { GITHUB_TOKEN: GITHUB } });
       expect(check.title).toBe("Cloud provider token");
-      expect(check.status).toBe("fail");
+      expect(check.status).toBe("warn");
       for (const text of [
         "HCLOUD_TOKEN",
         "https://console.hetzner.cloud/",
@@ -883,7 +932,7 @@ describe("runInitChecks", () => {
 
     const { deps: empty } = await setup({ env: {} });
     const missing = await runInitChecks(empty, { offline: true, services: services() });
-    expect(missing.find((c) => c.id === "provider")?.status).toBe("fail");
+    expect(missing.find((c) => c.id === "provider")?.status).toBe("warn");
     expect(missing.find((c) => c.id === "github")?.status).toBe("fail");
   });
 });

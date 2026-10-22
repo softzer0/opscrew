@@ -167,12 +167,16 @@ describe("the localhost target in steps that do not support it yet", () => {
     const deps = await localhostProject();
     const checks = await runInitChecks(deps, {
       offline: true,
-      services: { which: () => undefined, nodeVersion: "22.12.0" },
+      services: {
+        which: (name) => (name === "docker" ? "/usr/bin/docker" : undefined),
+        nodeVersion: "22.12.0",
+      },
     });
     expect(checks.find((check) => check.id === "provider")).toMatchObject({
       title: "This computer",
-      status: "skip",
-      message: "Not needed: the app runs on this computer (the localhost target), with no token.",
+      status: "pass",
+      message:
+        "Docker found at /usr/bin/docker. The app runs on this computer (the localhost target), with no token.",
     });
   });
 });
