@@ -433,6 +433,11 @@ Effort`.
   - Accept:
     - **The CLI:** `opscrew runner host add <name> --ssh <user@host[:port]> [--key <file>]`, `runner host remove <name>` and `runner host list`, plus `env add|set --runner host --runner-host <name> [--build runner]`.
     - **MCP:** matching tools, with the host plan's approval dialog. `opscrew_plan` and `opscrew_apply` handle a localhost environment's local plan and its hash (T1512a's report).
+    - **From T1517d's report:**
+      - `--host-key <fingerprint>` on `runner host add` and `env add`, for runs without a terminal;
+      - the env table shows each environment's runner machine;
+      - `runner host remove` asks for the machine's name typed back, or `--confirm <name>` in scripts;
+      - drift's and verify's rendered hints get `--env prod` beside other environments: the CLI and MCP pass the environment flag (agents' `environmentFlag`), or `VerifyCheckContext` carries it.
     - **The guide:** `runners.md` explains runner machines and builds on your own hardware: the architecture rule, why the production server never builds, and that 016's private network will let them reach servers without public SSH.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
