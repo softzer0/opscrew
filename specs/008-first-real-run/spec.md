@@ -71,8 +71,8 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   (T814, ADR 0010).
 - **FR-810**: A move between providers MUST identify its old and new servers by provider (the
   `servers` output) and stop when it cannot tell them apart (T815).
-- **FR-806**: Every live run is recorded in `docs/e2e.md` ("Live results": date, pass, outcome,
-  findings).
+- **FR-806**: Every live run is recorded in `docs/e2e-coverage.md` ("Live results": date, pass,
+  outcome, findings).
 - **FR-811**: The live Hetzner pass MUST run for any app in `examples/` or a public GitHub
   repository at a pinned commit (copied into the throwaway repository; the source is never
   written to), and an opt-in local Docker pass MUST build and start every example's image and get
