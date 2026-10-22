@@ -246,7 +246,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1509 [P] [US3] `opscrew promote`, in `packages/agents/src/promote/**` (new)
+- [X] T1509 [P] [US3] `opscrew promote`, in `packages/agents/src/promote/**` (new)
   - Owns: that path (+ tests); `packages/agents/src/index.ts` for the new exports only; the GitHub connector's `fileSha` and `workflowRun` (`packages/connectors/github/src/{github,connector}.ts` and their tests); iac-templates' verify job in `src/workflow/jobs.ts` (the run's event and head repository) and the snapshots it changes
   - Reads: contracts/environments.md "Promotion"; data-model.md "Promotion"; plan.md "10."; spec US3, FR-1517–FR-1523
   - Depends: T1508a, T1504, T1505
