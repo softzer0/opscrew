@@ -146,7 +146,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1507 [P] [US4] [US1] The `github-runner` host step, and the local executor, in `packages/connectors/ssh-host/**`
+- [X] T1507 [P] [US4] [US1] The `github-runner` host step, and the local executor, in `packages/connectors/ssh-host/**`
   - Owns: that path (+ tests, fake host)
   - Reads: contracts/runners.md "The host step"; contracts/localhost.md "Local executor"; plan.md "8."; research.md R3 and "Spike results" 4, 6
   - Depends: T1501a, T1501b, T1502
@@ -259,7 +259,7 @@ Effort`.
       - offline is a warning;
       - more than 21 days behind GitHub's latest release is a warning;
       - a public repository whose fork-PR policy isn't `all_external_contributors` is high.
-    - **Destroy, or a switch back to `runner: github`,** unregisters and removes the runner. When `config.sh remove` failed on the server, the flow deletes the registration through the API (`deleteRunner`), as T1507's step doesn't stop on it.
+    - **Destroy, or a switch back to `runner: github`,** unregisters and removes the runner. When `config.sh remove` failed or found no registration, `applyHostPlan`'s `ApplyResult.stillRegistered` lists the app, and the flow deletes its registration through the API (`deleteRunner`), as T1507's step doesn't stop on it.
     - **Tests:** a public repository refused, and allowed after the policy change; the token reaching only the step; the local runner's start, stop and signal; the status findings.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high
