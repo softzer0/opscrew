@@ -390,6 +390,7 @@ Effort`.
     - **`build: runner`:** the build job runs on the environment's self-hosted label, with Buildx (pinned), provenance, SBOM and the optional signing as on GitHub's machines.
     - **A runner machine deploys over SSH**, unlike the server's and the local runner, which deploy on their own machine. `selfHosted(plan)` (`workflow/shared.ts`) counts every runner but `github` as deploying in place; split the two cases. `buildArch` uses plan-schema's `targetArch` (T1517a).
     - **Prod and every existing environment** render byte-identically.
+    - **Lead additions (T1517c's reports and review):** a Buildpacks or Railpack build on a non-Linux local runner runs the pinned Linux CLIs in a pinned Linux image with Docker's socket; the steps run under bash 3.2 and Git Bash; the local runner's build uses its own `DOCKER_CONFIG`, never the user's login; real-shell tests get 60 s.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: high
 
