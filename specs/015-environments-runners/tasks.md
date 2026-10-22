@@ -267,6 +267,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
+- [ ] T1508d [US3] Required reviewers and the branch rule where GitHub enforces them (FR-1521), in `packages/agents/src/provision/secrets.ts`, `packages/agents/src/promote/**` and the GitHub connector
+  - Owns: those paths (+ tests); `packages/connectors/github/src/{github,connector}.ts` for the branch rule's calls (+ tests)
+  - Reads: spec FR-1514 and FR-1521; research.md "Spike results" 1 (the public repository); data-model.md "Approval kinds"
+  - Depends: T1508b, T1509
+  - Accept:
+    - **Where the capability check reports `reviewers`:** an environment that is promoted to is offered required reviewers. An interactive run asks, defaulting to the repository's owner. A script keeps none and says how to add them. The rule is set under a `github-settings` approval.
+    - **Where it reports `branchPolicies`:** every environment OpsCrew created gets the branch rule "the default branch only", under the same approval.
+    - **Never in a user's own environment:** OpsCrew changes no rule of an environment the user made, and says so.
+    - **Elsewhere,** OpsCrew says plainly once that its own approval guards against mistakes, not against someone with write access.
+    - **`promote` with required reviewers:** a run waiting for a reviewer is reported as waiting, with its URL. It is never a timeout or a failure, and the digest is recorded only after the run succeeds.
+    - **Tests:** the offer and its approval, a refusal, a user's own environment left alone, the branch rule, a promotion waiting for a reviewer, and Free private repositories (no rules) unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github --concurrency=2` and `pnpm lint`
+  - Effort: high
+
 - [X] T1510 [P] [US1] Localhost in agents: the provider, the preflight, the local plan, the deploy, the local CA and trust, verify/status/drift/destroy, in `packages/agents/src/localhost/**` (new), `packages/agents/src/providers/**` (the profile), and the localhost branches in provision, verify, status, drift and destroy
   - Owns: those paths (+ tests); `packages/agents/src/index.ts` for the new exports only
   - Reads: contracts/localhost.md "Agents"; plan.md "11."; research.md R4 and "Spike results" 6, 7, 10; spec US1, FR-1501–FR-1509
@@ -501,6 +515,7 @@ Effort`.
     - Agents' `localhost/image.ts` keeps a private `buildArch`; use iac-templates' (T1511).
     - Core's `signedLeafCertificate` takes a `commonName` option, so a long localhost hostname needs no extra short SAN name (`<16 hex>.localhost`) (T1510).
     - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
+    - The runbook's `workflowName` and plan-file path rebuild what `workflow/shared.ts` builds inline (`workflowStart`): export one helper (T1512b).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
