@@ -72,8 +72,10 @@ Shared by every environment: `architecture.json`, `ARCHITECTURE.md`, the scan re
 | `targetPlanHash` | the target's plan hash with no pending change |
 | approval | kind `promote`, `planHash` = SHA-256 of the canonical `{ target, source, digest, targetPlanHash }` |
 
+**Commit tags per environment** (T1515's live run, 2026-10-22): prod's build tags `<commit>`; a named environment's build tags `<commit>-<env>`. Two environments that both follow main build the same commit separately, and a shared `<commit>` tag would move to the later build, leaving the other untagged (retention then deleted it) and failing promotion's commit-tag check.
+
 GHCR label tags after a healthy deploy: `opscrew-<env>` (running) and `opscrew-<env>-previous`.
-Retention keeps every version with an `opscrew-<env>` or `opscrew-<env>-previous` tag.
+Retention keeps every version with an `opscrew-<env>` or `opscrew-<env>-previous` tag, and the newest `keep` commit versions of each environment (by its tag form), never fewer for one environment because another builds more.
 
 ## Self-hosted runner
 

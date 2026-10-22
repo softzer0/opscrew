@@ -531,6 +531,19 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
+- [ ] T1515a [US3] Commit tags per environment, found by the live run (T1515)
+  - Owns: iac-templates' `src/workflow/**` (the build's tags, the verify job's commit-tag check, retention) with its tests and snapshots; agents' `promote/**` (the commit-tag check); any reader of the commit tag (search for it)
+  - Reads: data-model.md "Promotion"; research.md R2; the live run's finding below
+  - Depends: T1509, T1505
+  - Accept:
+    - **The finding:** prod and staging both followed main, so one push built the same commit twice into one package. The later push took the `<commit>` tag; the other image was left untagged; prod's retention deleted it; staging's label and retention jobs then failed ("not found", HTTP 404). Promotion's check (the image tagged with the run's commit is this digest) would also fail for the untagged one.
+    - **Tags:** prod's build tags `<commit>` as today; a named environment's build tags `<commit>-<env>`. Prod's workflow renders byte-identically.
+    - **The verify job and `promote`** check the source environment's own commit tag form.
+    - **Retention** keeps every environment's label tags and the newest `keep` commit versions of each environment by its tag form, and never deletes another environment's fresh build.
+    - **Tests:** two environments following main build the same commit: both keep their own tagged digests; retention keeps both; promotion from either passes its commit-tag check.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
 - [ ] T1515 Live runs (lead): the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e.md` and `docs/e2e-coverage.md`. Windows localhost runs by hand on the founder's computer.
 
 ## End-of-feature simplify pass (after T1515)
