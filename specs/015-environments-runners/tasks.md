@@ -109,7 +109,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github` and `pnpm lint`
   - Effort: high
 
-- [ ] T1505 [P] [US2] [US3] [US4] Workflows per environment, in `packages/iac-templates/src/workflow/{index,shared,jobs,retention,build,portainer}.ts`
+- [X] T1505 [P] [US2] [US3] [US4] Workflows per environment, in `packages/iac-templates/src/workflow/{index,shared,jobs,retention,build,portainer}.ts`
   - Owns: those files (+ tests, snapshots); `packages/iac-templates/src/index.ts` for the new exports only
   - Reads: plan.md "6."; data-model.md "Deploy secrets per environment", "Promotion"; research.md R2 and "Spike results" 2–3
   - Depends: T1501a, T1502
