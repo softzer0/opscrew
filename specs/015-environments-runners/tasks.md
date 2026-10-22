@@ -442,7 +442,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
-- [ ] T1517f [US6] Opt-in hardening for runner machines in ssh-host: the `sshd` step and an isolated `ssh-firewall` step (FR-1536)
+- [X] T1517f [US6] Opt-in hardening for runner machines in ssh-host: the `sshd` step and an isolated `ssh-firewall` step (FR-1536)
   - Owns: `packages/connectors/ssh-host/src/**` (+ tests)
   - Reads: spec FR-1536; data-model.md "Runner machine" (Hardening); plan.md "16."
   - Depends: T1517b
