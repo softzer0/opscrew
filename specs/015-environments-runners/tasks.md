@@ -199,6 +199,8 @@ Effort`.
     - **Design for an environment** copies the shared parts from prod's plan, sets `app.name` to `<app>-<env>`, derives the hostnames, and writes `plan.environment`.
     - **`listEnvironments`** gives each environment's name, target, source, runner and deployed state. **`removeEnvironment`** refuses while the environment is deployed, and removes its files.
     - **`supplyChain.sign` is a shared part** too, copied and compared like the others. The promoted environment's verify job checks the signature by its own plan, while the source's workflow is what signs (T1505's review).
+    - **One `dependabot.yml` for every environment:** design and provision render it with every environment's runtime folder (from `environmentsOf`), so prod's and staging's provisions write the same file (T1506b).
+    - **Agents use the per-environment helpers** `originPullPem(plan)`, `portainerStackTemplatePath(plan)` and `portainerDeployBranch(plan)`, instead of the prod-only constants `ORIGIN_PULL_PEM`, `PORTAINER_STACK_TEMPLATE_PATH` and agents' own `DEPLOY_BRANCH` (in `provision/origin-tls.ts`, `drift/portainer.ts`, `shared/portainer-stacks.ts`, `destroy/portainer.ts`). Then remove the constants (T1506b).
     - **`sharedPartsDiffer(prodPlan, envPlan)`** runs in provision's preflight: `PHASE_PRECONDITION` naming the fields, with the hint `opscrew design --env <env>`.
     - **Every phase** (provision, destroy, drift, status, verify, secure, retarget, secrets) resolves its paths through the environment. Agents' `stateFile()` (`shared/engine.ts`) uses core's `tfstateFile(paths)`, since today it hard-codes `prod.tfstate` (T1503's review).
     - **Tests:** an existing prod app is unchanged, with nothing to apply; adding staging; two environments on one own server; the shared-parts refusal; the choice in scripts.
@@ -259,6 +261,7 @@ Effort`.
   - Accept:
     - **`planServerRunner`** checks the repository's visibility and, for a public one, the fork-PR policy (setting it is a `github-settings` change). It adds the `github-runner` step to the host plan, and at apply fetches the registration token through the connector for the step.
     - **`startLocalRunner`** downloads and checks the pinned asset for this computer, configures it `--ephemeral` with the label, runs it in the foreground, and removes itself through the API on exit or a signal. Its environment (the runner's `.env`) sets `OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR` and `OPSCREW_LOCAL_CA_FILE` for the deploy job (T1505).
+    - **`runner: local` with `image: local-build` is refused** plainly: the workflow deploys the image CI built, which `pull_policy: never` would never pull. Use `image: registry`, or provision from the computer without the runner (T1506b).
     - **`runnerStatus`** in `status` and `secure`:
       - offline is a warning;
       - more than 21 days behind GitHub's latest release is a warning;
