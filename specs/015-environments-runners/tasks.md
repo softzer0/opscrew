@@ -165,12 +165,24 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
   - Effort: high
 
+- [ ] T1506b [US2] The runtime folder and Portainer's deploy branch per environment, in `packages/iac-templates/src/**` (the paths only)
+  - Owns: every `opscrew/runtime/…` path and Portainer's deploy branch name in `packages/iac-templates/src/**` (+ tests, snapshots)
+  - Reads: data-model.md "Paths per environment"; T1505's and T1506's reports
+  - Depends: T1505, T1506
+  - Accept:
+    - **One helper, `runtimeDir(plan)`:** `opscrew/runtime` for prod, and `opscrew/environments/<env>/runtime` for a named environment. Every renderer and every workflow step that names a runtime file uses it: the workflow's uploads, `edge-check.ts`, `switch.ts` and the runtime and edge renderers.
+    - **Portainer's deploy branch:** `opscrew-deploy` for prod, `opscrew-deploy-<env>` for a named environment (`portainer-target/stack.ts` and every reader).
+    - **Prod's rendered output is byte-identical** (snapshots).
+    - **Tests:** two environments' rendered files never share a path; a Portainer staging stack points at its own branch.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --concurrency=2` and `pnpm lint`
+  - Effort: medium
+
 ## Phase 4: The agents
 
 - [ ] T1508a [US2] Environments in agents: `env add/list/remove`, design per environment, the environment choice, and the shared-parts check, in `packages/agents/src/{environments,shared,design,interview}/**`, and every phase's paths
   - Owns: `packages/agents/src/environments/**` (new); the design and interview changes; the phases' path resolution (an `environment` in their inputs); tests
   - Reads: contracts/environments.md "The environment choice", "Commands"; data-model.md "Environment"; plan.md "9."; spec US2, FR-1510–FR-1513, FR-1515–FR-1516
-  - Depends: T1503
+  - Depends: T1503, T1506b
   - Accept:
     - **`resolveEnvironment`:** the only environment by default. With several, an interactive run asks; a script gets `PHASE_PRECONDITION` with the names and `--env`.
     - **`addEnvironment`** asks only the environment's own questions:
@@ -194,6 +206,9 @@ Effort`.
     - **The capability check** runs once per environment, and its answer is written to `plan.environment.secrets`.
     - **`environment`:** the GitHub environment is created (or updated) under a `github-settings` approval, and the secrets go into it.
     - **`prefixed`:** `OPSCREW_<ENV>_*` repository secrets. Prod keeps today's names.
+    - **The secret list per environment** comes from iac-templates' `deploySecretNamesFor(plan)` (T1505). A self-hosted environment has no host, SSH key or known-hosts secret.
+    - **Build values** (`OPSCREW_BUILD_ENV`, `OPSCREW_BUILD_SECRETS`) are always repository secrets: `OPSCREW_<ENV>_BUILD_*` for a named environment, even when its other secrets live in a GitHub environment, since the build job runs in none (T1505).
+    - **Moving prod's secrets into the `production` environment** deletes prod's old repository secrets of the same names. Otherwise a missing environment secret would fall back to them (T1505).
     - **A change of capability** shows the move of the secrets as a planned change.
     - **Destroying an environment** removes only its secrets and its GitHub environment (`github-settings`), and keeps every other environment's.
     - **Tests:** both kinds, the move, destroy keeping the others, and no secret value in any output.
@@ -325,6 +340,7 @@ Effort`.
 
 1. T1501a, T1501b (and T1502, the lead's spike).
 2. T1503, T1504, T1505, T1506, T1507. Their Owns are disjoint: core paths; the GitHub connector; the workflow files except `switch.ts`; the edge, runtime and `switch.ts`; ssh-host.
+   Then T1506b: the runtime folder and Portainer's branch per environment, across iac-templates.
 3. T1508a.
 4. T1508b, T1509, T1510: provision secrets with destroy; promote/; localhost/ with its branches.
 5. T1511.
