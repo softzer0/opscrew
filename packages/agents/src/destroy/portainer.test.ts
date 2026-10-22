@@ -16,6 +16,7 @@ import {
   portainerPlan,
   portainerProject,
   provisionPortainerProject,
+  writeBranch,
 } from "../drift/__fixtures__/portainer-project";
 import {
   bucketChanges,
@@ -613,6 +614,59 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       "OpsCrew also deletes the branch opscrew-deploy of acme/shop, which holds the stack's file.",
     );
     expect(result.remaining.join("\n")).not.toContain("The opscrew-deploy branch");
+  });
+
+  it("a staging environment deletes only opscrew-deploy-staging, and says so", async () => {
+    const base = portainerPlan({ web: { mode: "proxy", port: 8080 } });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, name: `${base.app.name}-staging` },
+      environment: { name: "staging" },
+    });
+    const s = await deployed({ plan });
+    // Prod's branch, which the staging teardown must leave alone.
+    await writeBranch(s.bare, "opscrew-deploy", "services: {}\n");
+    const asked = withBranchDeletion(s);
+    const result = await destroy(s);
+
+    expect(asked).toEqual(["acme/shop:opscrew-deploy-staging"]);
+    expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy-staging")).toBe("");
+    expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy")).toContain("opscrew-deploy");
+    const teardown = s.handler.requests.find((request) => request.kind === "stack-apply");
+    expect(teardown?.details).toContain(
+      "OpsCrew also deletes the branch opscrew-deploy-staging of acme/shop, which holds the stack's file.",
+    );
+    expect(s.deps.reporter.text()).toContain(
+      "Deleted the branch opscrew-deploy-staging of acme/shop.",
+    );
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        action: "delete branch",
+        target: "acme/shop:opscrew-deploy-staging",
+      }),
+    );
+    expect(result.remaining.join("\n")).not.toMatch(/opscrew-deploy[-a-z]* branch/);
+  });
+
+  it("a staging environment whose stacks were removed by hand names its own branch in what remains", async () => {
+    const base = portainerPlan({ web: { mode: "proxy", port: 8080 } });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, name: `${base.app.name}-staging` },
+      environment: { name: "staging" },
+    });
+    const s = await deployed({ plan });
+    const asked = withBranchDeletion(s);
+    for (const name of ["opscrew-shop-staging", "opscrew-shop-staging-updater"]) {
+      const index = s.fake.stacks.findIndex((stack) => stack.Name === name);
+      s.fake.stacks.splice(index, 1);
+    }
+    s.fake.registries.splice(0);
+    const result = await destroy(s);
+    expect(asked).toEqual([]);
+    const remains = result.remaining.join("\n");
+    expect(remains).toContain("The opscrew-deploy-staging branch of acme/shop");
+    expect(remains).toContain("git push origin --delete opscrew-deploy-staging`");
   });
 
   it("the app's stacks removed by hand: nothing to approve, so the branch stays and what remains says why", async () => {

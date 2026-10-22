@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { ENVIRONMENT_NAME_PATTERN, OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 
 /** The Compose label that names a container's or volume's project (Portainer's stack name). */
@@ -8,10 +8,35 @@ export const COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
 /** The Compose label of a one-off container (`docker compose run`): `True`. */
 export const COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff";
 
-/** The branch of the app's repository Portainer builds the app stack from (research R5). */
+/**
+ * Prod's branch of the app's repository, which Portainer builds the app stack from (research R5);
+ * another environment's is `opscrew-deploy-<env>` ({@link isDeployBranch}).
+ */
 export const DEPLOY_BRANCH = "opscrew-deploy";
-/** Its full reference, as Portainer stores it. */
+/** Prod's full reference, as Portainer stores it. */
 export const DEPLOY_REFERENCE = `refs/heads/${DEPLOY_BRANCH}`;
+
+/** A deploy branch OpsCrew writes: prod's `opscrew-deploy`, or `opscrew-deploy-<env>`. */
+export type DeployBranch = typeof DEPLOY_BRANCH | `${typeof DEPLOY_BRANCH}-${string}`;
+
+/**
+ * True for an OpsCrew deploy branch: `opscrew-deploy` (prod), or `opscrew-deploy-<env>` with a
+ * valid environment name other than `prod` (iac-templates' `portainerDeployBranch`).
+ */
+export function isDeployBranch(branch: string): branch is DeployBranch {
+  if (branch === DEPLOY_BRANCH) return true;
+  const prefix = `${DEPLOY_BRANCH}-`;
+  if (!branch.startsWith(prefix)) return false;
+  const environment = branch.slice(prefix.length);
+  return environment !== "prod" && ENVIRONMENT_NAME_PATTERN.test(environment);
+}
+
+/** True for the full reference of an OpsCrew deploy branch (`refs/heads/opscrew-deploy…`). */
+export function isDeployReference(reference: string): boolean {
+  const heads = "refs/heads/";
+  return reference.startsWith(heads) && isDeployBranch(reference.slice(heads.length));
+}
+
 /** The compose file on the deploy branch. */
 export const DEPLOY_COMPOSE_FILE = "compose.yaml";
 

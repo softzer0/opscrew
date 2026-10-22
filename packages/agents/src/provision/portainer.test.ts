@@ -10,12 +10,7 @@ import {
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import {
-  IMAGES,
-  PORTAINER_STACK_TEMPLATE_PATH,
-  renderPortainerStack,
-  serviceSpec,
-} from "@opscrew/iac-templates";
+import { IMAGES, renderPortainerStack, serviceSpec } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -83,6 +78,8 @@ import { STORAGE_KEY_VARS } from "./storage";
 import type { ProvisionOptions, ProvisionServices } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
 
+/** Prod's committed stack template (iac-templates' `portainerStackTemplatePath`). */
+const STACK_TEMPLATE = "opscrew/runtime/compose.yaml";
 const STRIPE = fakeSecret("stripe-live-key");
 const PORTAINER_TOKEN = fakeSecret("generic-password", "portainer-token");
 const REPO_TOKEN = fakeSecret("github-pat", "repository read token");
@@ -540,7 +537,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     const newer = IMAGES.cloudflared.ref.replace(/sha256:[0-9a-f]{64}/, `sha256:${"e".repeat(64)}`);
     await mkdir(join(s.root, "opscrew/runtime"), { recursive: true });
     await writeFile(
-      join(s.root, PORTAINER_STACK_TEMPLATE_PATH),
+      join(s.root, STACK_TEMPLATE),
       template.content.replace(IMAGES.cloudflared.ref, newer),
     );
     await s.git(s.root, "add", "-A");
@@ -561,7 +558,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     // template there (the `opscrew-deploy` branch only gets the copy with each new image).
     const committed = await s.git(s.root, "show", "--name-only", "--format=", "HEAD");
     expect(committed.split("\n")).toEqual(
-      expect.arrayContaining([".github/dependabot.yml", PORTAINER_STACK_TEMPLATE_PATH]),
+      expect.arrayContaining([".github/dependabot.yml", STACK_TEMPLATE]),
     );
     const writes = s.handler.requests.filter((request) => request.kind === "repo-write");
     expect(writes.map((request) => request.details).join("\n")).toContain(
@@ -1100,7 +1097,7 @@ describe.skipIf(!findExecutable("git"))("the components in the user's Portainer"
       expect(published).not.toContain(values[name]);
     }
     // The stack's template holds the replica set's one-shot setup, never a value.
-    const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+    const template = await readFile(join(s.root, STACK_TEMPLATE), "utf8");
     expect(template).toContain("mongodb-init:");
     expect(template).not.toContain(values.OPSCREW_SVC_MONGODB_PASSWORD);
   });
@@ -1118,7 +1115,7 @@ describe.skipIf(!findExecutable("git"))("the components in the user's Portainer"
     expect(s.handler.requests).toEqual([]);
     expect(s.fake.mutations()).toEqual([]);
     expect(s.engine.calls).toEqual([]);
-    await expect(readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8")).rejects.toThrow();
+    await expect(readFile(join(s.root, STACK_TEMPLATE), "utf8")).rejects.toThrow();
   });
 
   it("creates an R2 bucket through its own approved plan, then gives the app its key in the stack", async () => {
@@ -1862,7 +1859,7 @@ describe.skipIf(!findExecutable("git"))(
 
       // The stack template serves the origin certificate and requires the client certificate,
       // from the variable it writes to a tmpfs; Portainer holds the variable's value.
-      const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      const template = await readFile(join(s.root, STACK_TEMPLATE), "utf8");
       expect(template).toContain("client_auth");
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a Compose variable, not a JavaScript template.
       expect(template).toContain("OPSCREW_ORIGIN_TLS: ${OPSCREW_ORIGIN_TLS}");
@@ -1938,7 +1935,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(s.github.pulls).toEqual([]);
       // The files in the working copy are those of the plan shown: the template serves the origin
       // certificate and requires the client certificate.
-      const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      const template = await readFile(join(s.root, STACK_TEMPLATE), "utf8");
       expect(template).toContain("client_auth");
       // The Cloudflare record and the values on this computer are saved before the stop, so the next
       // run renders the same certificate (and creates no other).
@@ -1963,7 +1960,7 @@ describe.skipIf(!findExecutable("git"))(
       );
       // The committed template is the one the stack plan was made for. The deploy writes it to the
       // deploy branch: the stack's Caddyfile then requires the client certificate.
-      const committed = await s.git(s.root, "show", `HEAD:${PORTAINER_STACK_TEMPLATE_PATH}`);
+      const committed = await s.git(s.root, "show", `HEAD:${STACK_TEMPLATE}`);
       expect(committed).toBe(template.trimEnd());
       const app = appStack(s);
       if (app === undefined) throw new Error("no app stack");
@@ -1992,7 +1989,7 @@ describe.skipIf(!findExecutable("git"))(
       const infrastructure = planned.planHash as string;
       // The stack plan needs the webhook tunnel's token: it follows the infrastructure apply.
       expect(planned.stackPlanHash).toBeUndefined();
-      const before = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      const before = await readFile(join(s.root, STACK_TEMPLATE), "utf8");
       expect(before).not.toContain("client_auth");
 
       approved.push(cloudflare, infrastructure);
@@ -2003,7 +2000,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(s.engine.applied).toHaveLength(1);
       expect(s.fake.mutations()).toEqual([]);
       // The infrastructure code stays as the saved plan was made from; the template is the new one.
-      const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+      const template = await readFile(join(s.root, STACK_TEMPLATE), "utf8");
       expect(template).toContain("client_auth");
 
       // The infrastructure is applied: the next run plans no change there.
@@ -2012,9 +2009,7 @@ describe.skipIf(!findExecutable("git"))(
       const result = await s.run({ approveHashes: [hintedHash(stopped)] });
       expect(result).toMatchObject({ stackApplied: true, stackPlanHash: hintedHash(stopped) });
       expect(appStack(s)?.Env.some((entry) => entry.name === "OPSCREW_ORIGIN_TLS")).toBe(true);
-      expect(await s.git(s.root, "show", `HEAD:${PORTAINER_STACK_TEMPLATE_PATH}`)).toBe(
-        template.trimEnd(),
-      );
+      expect(await s.git(s.root, "show", `HEAD:${STACK_TEMPLATE}`)).toBe(template.trimEnd());
     });
 
     it("an approving run with no origin TLS change applies the stack plan it was shown, as before", async () => {

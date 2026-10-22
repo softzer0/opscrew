@@ -5,12 +5,16 @@ import { type PortainerClientDeps, portainerClient } from "@opscrew/connector-po
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { fillPortainerStack, PORTAINER_STACK_TEMPLATE_PATH } from "@opscrew/iac-templates";
+import { fillPortainerStack, portainerStackTemplatePath } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../../provision/portainer";
 import { runProvision } from "../../provision/run";
 import type { ProvisionServices } from "../../provision/types";
-import { type PortainerConnectionInput, recordPortainerConnection } from "../../shared";
+import {
+  deployBranchOf,
+  type PortainerConnectionInput,
+  recordPortainerConnection,
+} from "../../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -225,14 +229,14 @@ export async function provisionPortainerProject(s: PortainerProject): Promise<vo
 }
 
 /**
- * Writes what the deploy workflow writes to the deploy branch: the committed stack template with
- * `image` filled in. Returns the file.
+ * Writes what the deploy workflow writes to the plan's deploy branch: the committed stack template
+ * with `image` filled in. Returns the file.
  */
 export async function deployImage(s: PortainerProject, image = APP_IMAGE): Promise<string> {
-  const template = await readFile(join(s.root, PORTAINER_STACK_TEMPLATE_PATH), "utf8");
+  const template = await readFile(join(s.root, portainerStackTemplatePath(s.plan)), "utf8");
   const content = `${fillPortainerStack(template.trimEnd(), image)}\n`;
-  await writeBranch(s.bare, "opscrew-deploy", content);
-  const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");
+  await writeBranch(s.bare, deployBranchOf(s.plan), content);
+  const app = s.fake.stacks.find((stack) => stack.Name === `opscrew-${s.plan.app.name}`);
   if (app !== undefined) app.file = content;
   return content;
 }

@@ -1,21 +1,22 @@
 import type { GitClient } from "@opscrew/connector-github";
-import { DEPLOY_BRANCH, DEPLOY_COMPOSE_FILE } from "@opscrew/connector-portainer";
+import { DEPLOY_COMPOSE_FILE, type DeployBranch } from "@opscrew/connector-portainer";
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { renderPlaceholderStack } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { deployBranchOf } from "../shared";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionPhase } from "./steps";
 
 /** True when GitHub has the deploy branch (read through git, which reaches the repository). */
-async function deployBranchExists(git: GitClient): Promise<boolean> {
+async function deployBranchExists(git: GitClient, branch: DeployBranch): Promise<boolean> {
   try {
-    return (await git.remoteBranchSha(DEPLOY_BRANCH)) !== undefined;
+    return (await git.remoteBranchSha(branch)) !== undefined;
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     throw new OpsCrewError(
       "PROVIDER_ERROR",
-      `OpsCrew could not check GitHub for the ${DEPLOY_BRANCH} branch, which Portainer deploys the app from. Nothing in Portainer was changed.`,
+      `OpsCrew could not check GitHub for the ${branch} branch, which Portainer deploys the app from. Nothing in Portainer was changed.`,
       {
         hint: "Check that this computer can reach GitHub (`git ls-remote origin`), then try again.",
       },
@@ -33,9 +34,10 @@ export async function deployBranchState(
   github: GitHubSetup,
   plan: DeployPlan,
 ): Promise<"absent" | "placeholder" | "other"> {
-  if (!(await deployBranchExists(git))) return "absent";
+  const branch = deployBranchOf(plan);
+  if (!(await deployBranchExists(git, branch))) return "absent";
   const placeholder = renderPlaceholderStack(plan);
-  const only = await github.api.branchHoldsOnly(github.owner, github.repo, DEPLOY_BRANCH, {
+  const only = await github.api.branchHoldsOnly(github.owner, github.repo, branch, {
     path: placeholder.path,
     content: placeholder.content,
   });
@@ -48,7 +50,8 @@ export async function deployBranchState(
  * exists. A missing branch is created; one that exists already (left by an earlier deployment,
  * perhaps of another setup, whose stack file Portainer would otherwise deploy as it is) is pointed
  * at a new commit holding only the placeholder (the ref is force-updated; its earlier commits leave
- * the branch). Either way behind its own `git-push` approval, and only for `refs/heads/opscrew-deploy`.
+ * the branch). Either way behind its own `git-push` approval, and only for the plan's deploy branch
+ * (`opscrew-deploy`, or `opscrew-deploy-<env>` in another environment).
  */
 export async function startDeployBranch(
   deps: PhaseDeps,
@@ -63,11 +66,12 @@ export async function startDeployBranch(
 ): Promise<void> {
   const { github, plan } = input;
   const { api } = github;
+  const branch = deployBranchOf(plan);
   const state = await deployBranchState(input.git, github, plan);
   if (state === "placeholder") {
     // An earlier run of this setup already started it (for example its stack-apply was refused).
     deps.reporter.info(
-      `The branch ${DEPLOY_BRANCH} already holds only the placeholder ${DEPLOY_COMPOSE_FILE}; it stays as it is.`,
+      `The branch ${branch} already holds only the placeholder ${DEPLOY_COMPOSE_FILE}; it stays as it is.`,
     );
     return;
   }
@@ -80,12 +84,12 @@ export async function startDeployBranch(
   const approval = await deps.approvals.request({
     kind: "git-push",
     title: replace
-      ? `Replace the branch ${DEPLOY_BRANCH} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`
-      : `Create the branch ${DEPLOY_BRANCH} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`,
+      ? `Replace the branch ${branch} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`
+      : `Create the branch ${branch} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`,
     details: [
       replace
-        ? `Portainer builds the app's stack from the ${DEPLOY_BRANCH} branch, which still holds the stack file of an earlier deployment (perhaps of another setup), and the stack is created anew. So that Portainer does not start that file, OpsCrew points the branch at a new commit holding only this placeholder (its earlier commits leave the branch), which runs one small container that only sleeps (no ports, no secrets) until the deploy workflow's next run writes the app:`
-        : `Portainer builds the app's stack from the ${DEPLOY_BRANCH} branch. Until the deploy workflow's first run writes the app there, the branch holds only this placeholder, which runs one small container that only sleeps (no ports, no secrets):`,
+        ? `Portainer builds the app's stack from the ${branch} branch, which still holds the stack file of an earlier deployment (perhaps of another setup), and the stack is created anew. So that Portainer does not start that file, OpsCrew points the branch at a new commit holding only this placeholder (its earlier commits leave the branch), which runs one small container that only sleeps (no ports, no secrets) until the deploy workflow's next run writes the app:`
+        : `Portainer builds the app's stack from the ${branch} branch. Until the deploy workflow's first run writes the app there, the branch holds only this placeholder, which runs one small container that only sleeps (no ports, no secrets):`,
       "",
       placeholder.content,
     ].join("\n"),
@@ -94,15 +98,15 @@ export async function startDeployBranch(
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       replace
-        ? `The ${DEPLOY_BRANCH} branch was not replaced, so OpsCrew does not create the app's stack in Portainer from its earlier file. ${nothingYet}`
-        : `The ${DEPLOY_BRANCH} branch was not created, so OpsCrew cannot create the app's stack in Portainer. ${nothingYet}`,
+        ? `The ${branch} branch was not replaced, so OpsCrew does not create the app's stack in Portainer from its earlier file. ${nothingYet}`
+        : `The ${branch} branch was not created, so OpsCrew cannot create the app's stack in Portainer. ${nothingYet}`,
       { hint: `Run \`opscrew ${input.phase}\` again when you are ready; it continues from here.` },
     );
   }
   const change: Parameters<GitHubSetup["api"]["createOrphanBranch"]>[0] = {
     owner: github.owner,
     repo: github.repo,
-    branch: DEPLOY_BRANCH,
+    branch,
     path: placeholder.path,
     content: placeholder.content,
     message: "OpsCrew: placeholder until the first deploy",
@@ -119,13 +123,13 @@ export async function startDeployBranch(
     actor: "opscrew",
     action: "push",
     phase: input.phase,
-    target: `${repo}:${DEPLOY_BRANCH}`,
+    target: `${repo}:${branch}`,
     decision: "approved",
     detail,
   });
   deps.reporter.success(
     replace
-      ? `Replaced the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}; the deploy workflow's next run writes the app there.`
-      : `Created the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}.`,
+      ? `Replaced the branch ${branch} with a placeholder ${DEPLOY_COMPOSE_FILE}; the deploy workflow's next run writes the app there.`
+      : `Created the branch ${branch} with a placeholder ${DEPLOY_COMPOSE_FILE}.`,
   );
 }

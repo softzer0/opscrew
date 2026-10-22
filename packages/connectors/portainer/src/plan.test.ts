@@ -12,6 +12,7 @@ import {
   world,
 } from "./__fixtures__/scenario";
 import type { PortainerFacts } from "./facts";
+import type { DeployBranch } from "./names";
 import {
   type CreatedRecord,
   CreatedRecordSchema,
@@ -380,6 +381,64 @@ describe("planStacks", () => {
     ];
     for (const [label, value] of bad) {
       expect(() => planStacks(facts, value as never), label).toThrow();
+    }
+  });
+});
+
+describe("planStacks: the deploy branch per environment", () => {
+  // Typed as a deploy branch so the refused ones reach the schema.
+  const onBranch = (branch: string, overrides: Partial<DesiredStacks> = {}) =>
+    desired({
+      repository: { ...desired().repository, branch: branch as DeployBranch },
+      ...overrides,
+    });
+
+  it("keeps prod's stack plan and its hash", async () => {
+    const plan = planStacks(await world().inspect(), desired());
+    const app = plan.changes.find((change) => change.id === "app-stack");
+    expect(app?.params.reference).toBe("refs/heads/opscrew-deploy");
+    expect(app?.title).toBe(
+      "Create the Git stack opscrew-shop from the branch opscrew-deploy (compose.yaml), redeployed through its webhook",
+    );
+    expect(stackPlanHash(plan)).toBe(
+      "11dfd13c4954b58e97c8e2f4b62496e34c677cc42651fbdc0671c51ab19625e3",
+    );
+  });
+
+  it("makes a staging stack follow opscrew-deploy-staging", async () => {
+    const facts = await world().inspect();
+    const plan = planStacks(facts, onBranch("opscrew-deploy-staging"));
+    const app = plan.changes.find((change) => change.id === "app-stack");
+    expect(app?.params.reference).toBe("refs/heads/opscrew-deploy-staging");
+    expect(app?.title).toBe(
+      "Create the Git stack opscrew-shop from the branch opscrew-deploy-staging (compose.yaml), redeployed through its webhook",
+    );
+    // A stack that follows prod's branch is moved to the environment's own.
+    const moved = planStacks(setUp(facts), onBranch("opscrew-deploy-staging", { record }));
+    const update = moved.changes.find((change) => change.id === "app-stack");
+    expect(update?.params).toMatchObject({
+      action: "update",
+      reference: "refs/heads/opscrew-deploy-staging",
+      differences: ["the branch"],
+    });
+    expect(update?.title).toMatch(/redeployed from opscrew-deploy-staging\)$/);
+  });
+
+  it("refuses a branch that is not an OpsCrew deploy branch", async () => {
+    const facts = await world().inspect();
+    for (const branch of [
+      "main",
+      "opscrew-deployx",
+      "opscrew-deploy-",
+      "opscrew-deploy-prod",
+      "opscrew-deploy-Staging",
+      "opscrew-deploy-storage",
+      "opscrew-deploy-a-name-longer-than-16",
+      "refs/heads/opscrew-deploy",
+    ]) {
+      expect(() => planStacks(facts, onBranch(branch)), branch).toThrow(
+        /repository\.branch: must be an OpsCrew deploy branch/,
+      );
     }
   });
 });

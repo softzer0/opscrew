@@ -1,7 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import {
-  DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
   type DesiredValueFingerprints,
   inspectCertificate,
@@ -15,10 +14,10 @@ import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { exists, OpsCrewError, readTextIfExists } from "@opscrew/core";
 import {
   fillPortainerStack,
-  PORTAINER_STACK_TEMPLATE_PATH,
   PORTAINER_STACK_VARIABLES,
   portainerSecretVariables,
   portainerStackEnvKeys,
+  portainerStackTemplatePath,
   portainerTarget,
   renderPlaceholderStack,
 } from "@opscrew/iac-templates";
@@ -60,6 +59,7 @@ import {
   adapterBlocked,
   assembleAppEnv,
   committedStackPins,
+  deployBranchOf,
   desiredStacks,
   diffRenderedFiles,
   gitClient,
@@ -357,7 +357,11 @@ function imageIn(file: string): string | undefined {
  * The deploy branch's `compose.yaml` at `sha`, read with git (read-only: the commit is fetched from
  * where pushes go, no branch or ref is written). `undefined` when it cannot be read.
  */
-async function deployBranchFile(deps: PhaseDeps, sha: string): Promise<string | undefined> {
+async function deployBranchFile(
+  deps: PhaseDeps,
+  branch: string,
+  sha: string,
+): Promise<string | undefined> {
   const root = deps.paths.root;
   // Never a prompt for a login, never a lock that could get in the user's way, bounded in time.
   const options = {
@@ -381,7 +385,7 @@ async function deployBranchFile(deps: PhaseDeps, sha: string): Promise<string | 
       // No remote-tracking ref is updated either, whatever the remote's fetch refspecs say.
       "--refmap=",
       source,
-      `refs/heads/${DEPLOY_BRANCH}`,
+      `refs/heads/${branch}`,
     ],
     options,
   );
@@ -410,10 +414,11 @@ async function deployBranchDifferences(
   },
   notes: string[],
 ): Promise<PortainerDifference[]> {
-  const where = `${DEPLOY_BRANCH} branch of ${input.repo}`;
+  const branch = deployBranchOf(input.plan);
+  const where = `${branch} branch of ${input.repo}`;
   let sha: string | undefined;
   try {
-    sha = await input.git.remoteBranchSha(DEPLOY_BRANCH);
+    sha = await input.git.remoteBranchSha(branch);
   } catch {
     notes.push(
       `OpsCrew could not read the ${where} (check that this computer can reach GitHub with \`git ls-remote origin\`), so it did not compare it.`,
@@ -432,7 +437,7 @@ async function deployBranchDifferences(
         ]
       : [];
   }
-  const file = await deployBranchFile(deps, sha);
+  const file = await deployBranchFile(deps, branch, sha);
   if (file === undefined) {
     notes.push(
       `OpsCrew could not read ${DEPLOY_COMPOSE_FILE} on the ${where}, so it did not compare it.`,
@@ -538,7 +543,7 @@ export async function portainerDrift(
   const changedFiles = diff.changed.map((file) => file.path);
   // With the committed copy's newer pins kept, as the deploy workflow writes the branch from it.
   const template = [...diff.created, ...diff.changed, ...diff.unchanged].find(
-    (file) => file.path === PORTAINER_STACK_TEMPLATE_PATH,
+    (file) => file.path === portainerStackTemplatePath(current),
   )?.content;
 
   // 3. The Cloudflare root: refresh-only and normal plans, both discarded.
@@ -653,7 +658,7 @@ export async function portainerDrift(
   const desired = desiredStacks(current, {
     connection,
     github,
-    committed: await committedStackPins(deps.paths.root),
+    committed: await committedStackPins(deps.paths.root, current),
     repositoryPrivate: repository.private,
     imagePrivate: !publicImage,
     ...(fingerprints !== undefined ? { fingerprints } : {}),

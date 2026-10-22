@@ -4,9 +4,8 @@ import type { PortainerFacts, PortainerFinding, PortainerStackFacts } from "./fa
 import { findings as finding } from "./findings";
 import {
   AppNameSchema,
-  DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
-  DEPLOY_REFERENCE,
+  isDeployBranch,
   OpsCrewNameSchema,
   type OpsCrewNames,
   opscrewNames,
@@ -189,7 +188,11 @@ const DesiredStacksSchema = z
     repository: z.strictObject({
       /** `https://` without a login (the token is supplied at apply). */
       url: RepositoryUrlSchema,
-      branch: z.literal(DEPLOY_BRANCH),
+      /** The environment's deploy branch (iac-templates' `portainerDeployBranch`). */
+      branch: z.string().refine(isDeployBranch, {
+        message:
+          "must be an OpsCrew deploy branch (opscrew-deploy, or opscrew-deploy-<environment>)",
+      }),
       composeFile: z.literal(DEPLOY_COMPOSE_FILE),
       private: z.boolean(),
       /** User name sent with the read-only token (default `x-access-token`). */
@@ -813,10 +816,12 @@ function appChange(
 ): StackChange {
   const located = locate(facts, record, "app", names.app);
   const envKeys = [...d.envKeys].sort();
+  const { branch } = d.repository;
+  const reference = `refs/heads/${branch}`;
   const params: Record<string, StackParamValue> = {
     name: names.app,
     repository: d.repository.url,
-    reference: DEPLOY_REFERENCE,
+    reference,
     composeFile: DEPLOY_COMPOSE_FILE,
     repositoryAuthentication: d.repository.private,
     ...(d.repository.private && { repositoryUsername: d.repository.username ?? "x-access-token" }),
@@ -841,7 +846,7 @@ function appChange(
     if (recreated !== undefined) reasons.unshift(recreated);
     return {
       id: "app-stack",
-      title: `Create the Git stack ${names.app} from the branch ${DEPLOY_BRANCH} (${DEPLOY_COMPOSE_FILE}), redeployed through its webhook`,
+      title: `Create the Git stack ${names.app} from the branch ${branch} (${DEPLOY_COMPOSE_FILE}), redeployed through its webhook`,
       state: "change",
       ...reason(reasons),
       params: { action: "create", ...params },
@@ -854,7 +859,7 @@ function appChange(
   // only what it can see (the live test, T1008, checks the shape).
   if (git !== undefined) {
     if (!sameRepository(git.url, d.repository.url)) differences.push("the repository");
-    if (git.referenceName !== DEPLOY_REFERENCE) differences.push("the branch");
+    if (git.referenceName !== reference) differences.push("the branch");
     if (git.configFilePath !== DEPLOY_COMPOSE_FILE) differences.push("the compose file path");
     if (git.authenticated !== d.repository.private) differences.push("the repository access");
   }
@@ -878,7 +883,7 @@ function appChange(
   if (differences.length > 0) {
     return {
       id: "app-stack",
-      title: `Update the Git stack ${names.app}: ${differences.join(", ")} (the full environment is sent again and the stack is redeployed from ${DEPLOY_BRANCH})`,
+      title: `Update the Git stack ${names.app}: ${differences.join(", ")} (the full environment is sent again and the stack is redeployed from ${branch})`,
       state: "change",
       ...reason(reasons),
       params: {
@@ -891,7 +896,7 @@ function appChange(
       },
     };
   }
-  const recovery = recover(stack, `the Git stack ${names.app}`, `from the branch ${DEPLOY_BRANCH}`);
+  const recovery = recover(stack, `the Git stack ${names.app}`, `from the branch ${branch}`);
   if (recovery !== undefined) {
     return {
       id: "app-stack",
@@ -903,7 +908,7 @@ function appChange(
   }
   return {
     id: "app-stack",
-    title: `Git stack ${names.app} from the branch ${DEPLOY_BRANCH}`,
+    title: `Git stack ${names.app} from the branch ${branch}`,
     state: "in-place",
     reason: ["Already set up as planned.", ...reasons].join(" "),
     params: { action: "keep", ...params, stackId: stack.id },

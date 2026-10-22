@@ -56,7 +56,8 @@ describe("JSON Schema export", () => {
         environment: {
           properties: {
             name: {
-              pattern: "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z][a-z0-9-]{0,15}$",
+              pattern:
+                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)(?!storage(?:-|$))[a-z][a-z0-9-]{0,15}$",
             },
             deploySource: {
               oneOf: [

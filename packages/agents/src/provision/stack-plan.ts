@@ -4,7 +4,6 @@ import type {
   StackChange,
   StackPlan,
 } from "@opscrew/connector-portainer";
-import { DEPLOY_BRANCH } from "@opscrew/connector-portainer";
 import type { ApprovalRecord } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { PortainerDeployTarget, PortainerWeb } from "@opscrew/plan-schema";
@@ -124,15 +123,19 @@ export function registryTokenHint(then: string): string {
 /** How a stop of the stack plan ends the token hints. */
 const RUN_AGAIN = "and run the command again";
 
-/** Stops plainly when a change sends a token that is not set (nothing in Portainer changed). */
+/**
+ * Stops plainly when a change sends a token that is not set (nothing in Portainer changed);
+ * `branch` is the deploy branch Portainer fetches.
+ */
 export function requireTokens(
   sends: { repository: boolean; registry: boolean },
   present: { repository: boolean; registry: boolean },
+  branch: string,
 ): void {
   if (sends.repository && !present.repository) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
-      `Your repository is private, so Portainer needs a read-only token to fetch the ${DEPLOY_BRANCH} branch, and ${REPOSITORY_TOKEN_VAR} is not set. Nothing in Portainer was changed.`,
+      `Your repository is private, so Portainer needs a read-only token to fetch the ${branch} branch, and ${REPOSITORY_TOKEN_VAR} is not set. Nothing in Portainer was changed.`,
       { hint: repositoryTokenHint(RUN_AGAIN, "this stack") },
     );
   }

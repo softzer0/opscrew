@@ -2,7 +2,7 @@ import { durationText, isPlanHash, OpsCrewError, realSleep, upperFirst } from "@
 import type { EnvPair, PortainerClient, StackDetails } from "./client";
 import {
   DEPLOY_COMPOSE_FILE,
-  DEPLOY_REFERENCE,
+  isDeployReference,
   opscrewNames,
   ROLE_NAMES,
   ROLES,
@@ -354,7 +354,7 @@ function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinn
   const sendsEnv = action === "create" || action === "update" || action === "redeploy";
   if (change.id === "app-stack" && sendsEnv) {
     if (
-      str(change.params, "reference") !== DEPLOY_REFERENCE ||
+      !isDeployReference(str(change.params, "reference")) ||
       str(change.params, "composeFile") !== DEPLOY_COMPOSE_FILE
     ) {
       throw notOurs();
@@ -587,6 +587,7 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
   }
 
   if (role === "app") {
+    const reference = str(params, "reference");
     const keys = list(params, "envKeys");
     const env = pairs(secrets.env, keys);
     const authentication = bool(params, "repositoryAuthentication")
@@ -596,7 +597,7 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
       const created = await client.createGitStack(envId, {
         name,
         repositoryUrl: str(params, "repository"),
-        referenceName: DEPLOY_REFERENCE,
+        referenceName: reference,
         composeFile: DEPLOY_COMPOSE_FILE,
         ...(authentication !== undefined && { authentication }),
         webhookId: secrets.webhookId as string,
@@ -614,7 +615,7 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
     if (action === "update") {
       await client.updateGitStack(stackId, envId, {
         repositoryUrl: str(params, "repository"),
-        referenceName: DEPLOY_REFERENCE,
+        referenceName: reference,
         composeFile: DEPLOY_COMPOSE_FILE,
         ...(authentication !== undefined && { authentication }),
         webhookId: secrets.webhookId as string,
@@ -623,7 +624,7 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
       ctx.done(`Saved the Git settings and environment of the stack ${name}`);
     }
     const started = await client.redeployGitStack(stackId, envId, {
-      referenceName: DEPLOY_REFERENCE,
+      referenceName: reference,
       ...(authentication !== undefined && { authentication }),
       env,
     });

@@ -76,13 +76,17 @@ export interface ResolveProjectPathsOptions {
   environment?: string;
 }
 
-/** The rule for an environment's name; plan-schema's `EnvironmentNameSchema` checks it too. */
+/**
+ * The rule for an environment's name; plan-schema's `EnvironmentNameSchema` checks it too. Never
+ * `storage` or `storage-…`: an environment's infrastructure root `opscrew/infra/<env>` would be a
+ * storage root (`opscrew/infra/storage` for prod, `opscrew/infra/storage-<env>` otherwise).
+ */
 export const ENVIRONMENT_NAME_PATTERN =
-  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z][a-z0-9-]{0,15}$/;
+  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)(?!storage(?:-|$))[a-z][a-z0-9-]{0,15}$/;
 
 /** What {@link ENVIRONMENT_NAME_PATTERN} asks for, worded to follow a name. */
 export const ENVIRONMENT_NAME_MESSAGE =
-  "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…)";
+  "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…), storage, or a name starting with storage-";
 
 /**
  * Resolves all OpsCrew paths for the project at `root` (relative roots resolve against cwd).

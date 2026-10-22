@@ -3,7 +3,6 @@ import type { SharedPlan } from "@opscrew/connector-cloudflare";
 import type { GitClient } from "@opscrew/connector-github";
 import {
   type ApplySecrets,
-  DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
   type DesiredStacks,
   type DesiredValueFingerprints,
@@ -34,6 +33,7 @@ import {
   approvalEntry,
   approveAndWriteRenderedFiles,
   committedStackPins,
+  deployBranchOf,
   desiredStacks,
   infrastructureOutputs,
   inspectAudited,
@@ -236,6 +236,8 @@ export async function provisionPortainer(
   const command = `opscrew ${phase}`;
   const root = deps.paths.root;
   let plan = input.plan;
+  /** The branch Portainer builds the app stack from. */
+  const stackBranch = deployBranchOf(plan);
   const target = portainerTarget(plan.target);
   const cloudflareRoot = portainerCloudflare(plan) ?? {
     appTunnel: false,
@@ -386,7 +388,7 @@ export async function provisionPortainer(
   // The user's word on the image's visibility, as given now or recorded by an earlier run.
   const publicImage = options.publicImage ?? connection.publicImage ?? false;
   const imagePrivate = !publicImage;
-  const committed = await committedStackPins(root);
+  const committed = await committedStackPins(root, plan);
   /** The stack Caddy's origin TLS as rendered (known once the Cloudflare change is applied). */
   let siteOrigin: RuntimeContext["originTls"];
   const desired = (fingerprints?: DesiredValueFingerprints): DesiredStacks =>
@@ -415,6 +417,7 @@ export async function provisionPortainer(
       repository: Boolean(deps.env[REPOSITORY_TOKEN_VAR]?.trim()),
       registry: Boolean(deps.env[REGISTRY_TOKEN_VAR]?.trim()),
     },
+    stackBranch,
   );
   const createsAppStack = preliminary.changes.some(
     (change) =>
@@ -629,10 +632,14 @@ export async function provisionPortainer(
     deps.reporter.info(details);
     requireNoStackBlockers(stackPlan);
     const sends = sentTokens(stackPlan);
-    requireTokens(sends, {
-      repository: stack.repositoryToken !== undefined,
-      registry: stack.registryToken !== undefined,
-    });
+    requireTokens(
+      sends,
+      {
+        repository: stack.repositoryToken !== undefined,
+        registry: stack.registryToken !== undefined,
+      },
+      stackBranch,
+    );
     const work = stackPlan.changes.filter((change) => change.state === "change");
     if (work.length === 0) {
       deps.reporter.success("Your Portainer is already set up as planned; nothing in it changes.");
@@ -790,8 +797,8 @@ export async function provisionPortainer(
       if (state !== "placeholder") {
         deps.reporter.info(
           state === "other"
-            ? `Applying replaces the branch ${DEPLOY_BRANCH} in ${github.owner}/${github.repo}, which holds the stack file of an earlier deployment, with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the deploy workflow's next run writes the app.`
-            : `Applying creates the branch ${DEPLOY_BRANCH} in ${github.owner}/${github.repo} with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the first run of the deploy workflow writes the app.`,
+            ? `Applying replaces the branch ${stackBranch} in ${github.owner}/${github.repo}, which holds the stack file of an earlier deployment, with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the deploy workflow's next run writes the app.`
+            : `Applying creates the branch ${stackBranch} in ${github.owner}/${github.repo} with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the first run of the deploy workflow writes the app.`,
         );
       }
     }

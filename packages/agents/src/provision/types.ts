@@ -3,7 +3,7 @@ import type { GitHubClient } from "@opscrew/connector-github";
 import type {
   ApplyStackOptions,
   CertificateDetails,
-  DEPLOY_BRANCH,
+  DeployBranch,
   PortainerClient,
   PortainerClientDeps,
   PortainerEndpoint,
@@ -32,14 +32,17 @@ export type CloudflareApi = Pick<
   "verifyToken" | "findZone" | "listDnsRecords" | "getIpRanges" | "listAccounts"
 >;
 
-/** A one-file branch OpsCrew writes: only ever `opscrew-deploy` (the type allows no other name). */
+/**
+ * A one-file branch OpsCrew writes: only ever a deploy branch, `opscrew-deploy` or
+ * `opscrew-deploy-<env>` (the type allows no other name).
+ */
 type DeployBranchInput = Parameters<GitHubClient["createOrphanBranch"]>[0] & {
-  branch: typeof DEPLOY_BRANCH;
+  branch: DeployBranch;
 };
 
 /**
  * The GitHub calls provisioning needs (a `GitHubClient` or a test fake). The branch calls are
- * used only for the user's Portainer, and only on its `opscrew-deploy` branch.
+ * used only for the user's Portainer, and only on the environment's deploy branch.
  */
 export type GitHubApi = Pick<
   GitHubClient,
@@ -56,7 +59,7 @@ export type GitHubApi = Pick<
   branchHoldsOnly(
     owner: string,
     repo: string,
-    branch: typeof DEPLOY_BRANCH,
+    branch: DeployBranch,
     file: { path: string; content: string },
   ): Promise<boolean>;
 };

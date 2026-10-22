@@ -9,6 +9,7 @@ import {
   CONNECTOR_COMPOSE,
   desired,
   fingerprintsFor,
+  PLACEHOLDER,
   REPO,
   secrets,
   UPDATER_COMPOSE,
@@ -533,6 +534,94 @@ describe("applyStackPlan: setup", () => {
     );
     expect(result.applied).toEqual(["app-stack", "updater-stack"]);
     expect(w.fake.state.stacks.filter((stack) => stack.ownerId === 2)).toHaveLength(2);
+  });
+});
+
+describe("applyStackPlan: another environment's deploy branch", () => {
+  const STAGING = "opscrew-deploy-staging";
+  const onStaging: Partial<DesiredStacks> = {
+    repository: { ...desired().repository, branch: STAGING },
+  };
+  const stagingWorld = () =>
+    world({
+      git: {
+        [`${REPO}#refs/heads/${STAGING}`]: {
+          commit: "s1",
+          file: PLACEHOLDER,
+          password: secrets().repositoryToken,
+        },
+      },
+    });
+
+  it("creates, updates and redeploys a staging stack from opscrew-deploy-staging", async () => {
+    const w = stagingWorld();
+    const { s, result } = await setupApplied(w, onStaging);
+    const app = w.fake.state.stacks.find((stack) => stack.Name === "opscrew-shop");
+    expect(app?.GitConfig?.ReferenceName).toBe(`refs/heads/${STAGING}`);
+    expect(app?.file).toBe(PLACEHOLDER);
+    // Run again, nothing changes: Portainer's branch is the one planned.
+    const again = planStacks(await w.inspect(), bound(s, { ...onStaging, record: result.record }));
+    expect(again.changes.map((change) => change.state)).toEqual([
+      "in-place",
+      "in-place",
+      "in-place",
+    ]);
+    const env = { ...s.env, SENTRY_DSN: "https://example.invalid/1" };
+    const plan = planStacks(
+      await w.inspect(),
+      bound(
+        { ...s, env },
+        {
+          ...onStaging,
+          record: result.record,
+          envKeys: ["DATABASE_URL", "STRIPE_KEY", "SENTRY_DSN"],
+        },
+      ),
+    );
+    const start = w.fake.calls.length;
+    const clock = fakeClock();
+    await apply(w.client(), plan, {
+      approvedHash: stackPlanHash(plan),
+      secrets: { ...s, env },
+      wait: { now: clock.now, sleep: clock.sleep },
+    });
+    const calls = mutating(w, start);
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /api/stacks/101/git",
+      "PUT /api/stacks/101/git/redeploy",
+    ]);
+    for (const call of calls) {
+      expect(call.body).toMatchObject({ RepositoryReferenceName: `refs/heads/${STAGING}` });
+    }
+  });
+
+  it("refuses an approved plan whose app stack follows a branch OpsCrew does not write", async () => {
+    const w = world();
+    const s = secrets();
+    const plan = planStacks(await w.inspect(), bound(s));
+    const start = w.fake.calls.length;
+    for (const reference of [
+      "refs/heads/main",
+      "refs/heads/opscrew-deploy-prod",
+      "refs/heads/opscrew-deploy-",
+      "refs/tags/opscrew-deploy",
+      "opscrew-deploy",
+    ]) {
+      const bad: StackPlan = {
+        ...plan,
+        changes: plan.changes.map((change) =>
+          change.id === "app-stack"
+            ? { ...change, params: { ...change.params, reference } }
+            : change,
+        ),
+      };
+      const error = await failure(
+        apply(w.client(), bad, { approvedHash: stackPlanHash(bad), secrets: s }),
+      );
+      expect(error.code, reference).toBe("INVALID_INPUT");
+      expect(error.message).toMatch(/record does not list \(app-stack\)/);
+    }
+    expect(w.fake.calls.length).toBe(start);
   });
 });
 

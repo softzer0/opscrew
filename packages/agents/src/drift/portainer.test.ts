@@ -209,6 +209,29 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     ]);
   });
 
+  it("follows a staging environment's own deploy branch, opscrew-deploy-staging", async () => {
+    const base = portainerPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, name: `${base.app.name}-staging` },
+      environment: { name: "staging" },
+    });
+    const s = await deployed({ plan });
+    // Provision started the environment's own branch, and its stack follows it.
+    expect(s.github.branches.map((item) => item.branch)).toEqual(["opscrew-deploy-staging"]);
+    const app = s.fake.stacks.find((stack) => stack.Name === `opscrew-${plan.app.name}`);
+    expect(app?.GitConfig?.ReferenceName).toBe("refs/heads/opscrew-deploy-staging");
+    let report = await drift(s);
+    expect(report.portainer?.differences).toEqual([]);
+    expect(report.clean).toBe(true);
+
+    await s.git(s.bare, "update-ref", "-d", "refs/heads/opscrew-deploy-staging");
+    report = await drift(s);
+    expect(titles(report)).toEqual([
+      "The opscrew-deploy-staging branch of acme/shop is missing, but the app's stack in Portainer deploys from it",
+    ]);
+  });
+
   it("without the value key compares names only, says so, and creates no key", async () => {
     const s = await deployed();
     await rm(portainerValueKeyFile(s.deps.paths));

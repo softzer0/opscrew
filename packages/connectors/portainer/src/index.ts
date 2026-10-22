@@ -31,6 +31,8 @@ export {
   DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
   DEPLOY_REFERENCE,
+  type DeployBranch,
+  isDeployBranch,
   opscrewNames,
   opscrewStackNames,
 } from "./names";

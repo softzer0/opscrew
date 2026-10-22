@@ -1,12 +1,13 @@
 import {
   applyStackPlan,
   type CreatedRecord,
-  DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
+  type DeployBranch,
   type DesiredStacks,
   type DesiredValueFingerprints,
   type inspectCertificate,
   inspectPortainer,
+  isDeployBranch,
   normalizeCertFingerprint,
   opscrewStackNames,
   PortainerCertificateError,
@@ -20,10 +21,12 @@ import {
   type StackPlan,
 } from "@opscrew/connector-portainer";
 import type { PhaseName } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import {
   keepNewerPins,
-  PORTAINER_STACK_TEMPLATE_PATH,
+  portainerDeployBranch,
   portainerStackEnvKeys,
+  portainerStackTemplatePath,
   portainerStackVolumes,
   portainerTarget,
   type RuntimeContext,
@@ -36,13 +39,29 @@ import { committedText } from "./files";
 import type { PortainerConnection } from "./server-record";
 
 /**
- * The committed stack template (`opscrew/runtime/compose.yaml`) of the project at `root`, for
- * {@link desiredStacks}: in tunnel web mode it names the cloudflared image the connector stack
- * (which lives only in Portainer) runs too, and Dependabot keeps it current. Empty when the
- * repository has none yet.
+ * The plan's deploy branch, which Portainer builds the app's stack from and the deploy workflow
+ * writes (`portainerDeployBranch`: `opscrew-deploy`, or `opscrew-deploy-<env>`), checked to be one,
+ * since it is the only branch OpsCrew writes.
  */
-export function committedStackPins(root: string): Promise<string> {
-  return committedText(root, [PORTAINER_STACK_TEMPLATE_PATH]);
+export function deployBranchOf(plan: DeployPlan): DeployBranch {
+  const branch = portainerDeployBranch(plan);
+  if (!isDeployBranch(branch)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${branch} is not a branch OpsCrew deploys from, so OpsCrew changes nothing.`,
+    );
+  }
+  return branch;
+}
+
+/**
+ * The committed stack template (`portainerStackTemplatePath`, `opscrew/runtime/compose.yaml` for
+ * prod) of the project at `root`, for {@link desiredStacks}: in tunnel web mode it names the
+ * cloudflared image the connector stack (which lives only in Portainer) runs too, and Dependabot
+ * keeps it current. Empty when the repository has none yet.
+ */
+export function committedStackPins(root: string, plan: DeployPlan): Promise<string> {
+  return committedText(root, [portainerStackTemplatePath(plan)]);
 }
 
 /** The host ports the app's stack publishes in the plan's web mode (none through the tunnel). */
@@ -94,7 +113,7 @@ export function desiredStacks(
     environmentId: target.environmentId,
     repository: {
       url: `https://github.com/${opts.github.owner}/${opts.github.repo}`,
-      branch: DEPLOY_BRANCH,
+      branch: deployBranchOf(plan),
       composeFile: DEPLOY_COMPOSE_FILE,
       private: opts.repositoryPrivate,
     },
