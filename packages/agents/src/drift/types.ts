@@ -84,11 +84,15 @@ export interface DriftReport {
   cloudflareRules?: CloudflareRuleDifference[];
   /** True when nothing drifted, nothing is pending and every file (and the server) matches. */
   clean: boolean;
-  engine: IacEngineInfo;
+  /** The IaC engine of the check; absent on this computer (the localhost target has none). */
+  engine?: IacEngineInfo;
   /** ISO time of the check. */
   checkedAt: string;
-  /** Provider of the deployment, named in the report: `portainer` for the user's Portainer. */
-  provider: VpsProviderId | "portainer";
+  /**
+   * Provider of the deployment, named in the report: `portainer` for the user's Portainer,
+   * `localhost` for this computer.
+   */
+  provider: VpsProviderId | "portainer" | "localhost";
   /**
    * Plain-English remarks about the check itself, for example that the provider schemas could
    * not be read, so values the cloud maintains itself may show as drift. Absent when there are none.

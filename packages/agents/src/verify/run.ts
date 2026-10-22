@@ -13,6 +13,8 @@ import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import type { LocalhostServices } from "../localhost/services";
+import { verifyLocalhost } from "../localhost/verify";
 import { readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
@@ -24,7 +26,6 @@ import {
   githubClientFromToken,
   hasDeployment,
   hidesServerAddress,
-  localhostNotSupported,
   lookupPublicAddresses,
   type ServerAddress,
   serverAddress,
@@ -97,6 +98,8 @@ export interface RunVerifyOptions {
    * certbot's last renewal when a DNS-only certificate is not renewed in time.
    */
   remote?: (host: string) => RemoteExec;
+  /** The localhost target: this computer's requests and Docker (fakes in tests). */
+  localhost?: LocalhostServices;
 }
 
 /** Outcome of {@link runVerify}. */
@@ -133,7 +136,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   reporter.step("Verifying the deployment");
 
   const plan = await readArtifact("plan", paths.files.plan);
-  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew verify`");
+  if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
   if (!ownProxy && options.url !== undefined) {

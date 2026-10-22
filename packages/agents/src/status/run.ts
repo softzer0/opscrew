@@ -2,6 +2,7 @@ import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { portainerStackName, portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { localComponentStatus } from "../localhost/status";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { localhostNotSupported, portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
@@ -159,7 +160,8 @@ export async function componentStatusReport(
 
 /**
  * Each of the plan's components and whether it runs (FR-1331): on a server, from its containers
- * ({@link readServerContainers}); in the user's Portainer, from the app's stack through its API.
+ * ({@link readServerContainers}); in the user's Portainer, from the app's stack through its API;
+ * on this computer, from the app's Compose project in its Docker.
  */
 export async function readComponentStatus(
   deps: PhaseDeps,
@@ -169,6 +171,7 @@ export async function readComponentStatus(
   if (plan.target.provider === "portainer") {
     return componentStatus(plan, await readStackContainers(deps, plan, options.services));
   }
+  if (plan.target.provider === "localhost") return localComponentStatus(deps, plan);
   const containers = await readServerContainers(deps, plan, options);
   return componentStatus(plan, serviceContainers(plan.app.name, containers));
 }

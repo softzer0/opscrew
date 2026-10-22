@@ -25,6 +25,7 @@ import {
   type ServiceKind,
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
+import { localhostHostSettingProblem } from "../localhost/preflight";
 import { appMemoryLimits, appMemoryMb, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
@@ -956,12 +957,21 @@ export function designComponents(input: {
   const answeredLater =
     previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const keeps = keepsExternal(facts, requirements.keepExternalServices);
-  // A Portainer target cannot run the engines that need a setting of the Docker host: they stay
-  // where the app reaches them, with the line that says why.
+  // A Portainer target and this computer cannot run the engines that need a setting of the Docker
+  // host: they stay where the app reaches them, with the line that says why.
   const portainer = requirements.provider === "portainer";
+  const local = requirements.provider === "localhost";
+  const settingProblem = portainer
+    ? portainerHostSettingProblem
+    : local
+      ? localhostHostSettingProblem
+      : undefined;
   const kept = (kind: ServiceKind) => {
     const runs = RUNS[kind];
-    return keeps(kind) || (portainer && runs !== undefined && hostSettingProblem(runs));
+    return (
+      keeps(kind) ||
+      (settingProblem !== undefined && runs !== undefined && settingProblem(runs) !== undefined)
+    );
   };
 
   const storage = objectStorageFor({
@@ -984,14 +994,16 @@ export function designComponents(input: {
         ]
       : [];
   // Whether the server has the vCPUs Dragonfly needs: OpsCrew sizes a server it creates for it,
-  // the user's own server has its inspected count, and a Portainer host is not known.
-  const dragonflyFits = portainer
-    ? undefined
-    : requirements.provider !== "own"
-      ? true
-      : input.vcpus === undefined
-        ? undefined
-        : input.vcpus >= DRAGONFLY_MIN_VCPUS;
+  // the user's own server has its inspected count, and a Portainer host or this computer is not
+  // known.
+  const dragonflyFits =
+    portainer || local
+      ? undefined
+      : requirements.provider !== "own"
+        ? true
+        : input.vcpus === undefined
+          ? undefined
+          : input.vcpus >= DRAGONFLY_MIN_VCPUS;
   const fresh = [...freshServices(facts, kept, dragonflyFits === true), ...garage];
   const before =
     dragonflyFits === false
@@ -1049,7 +1061,7 @@ export function designComponents(input: {
   };
 
   lines.push(...componentLines(components, facts));
-  lines.push(...externalLines(facts, externalServices, portainer));
+  lines.push(...externalLines(facts, externalServices, settingProblem));
   if (facts.objectStorage !== undefined) {
     const text = storageText(components, storage.offers);
     const { client } = facts.objectStorage;
@@ -1122,25 +1134,20 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
   return lines;
 }
 
-/** True when a Portainer target cannot run `kind` ({@link portainerHostSettingProblem}). */
-function hostSettingProblem(kind: SelfHostedServiceKind): boolean {
-  return portainerHostSettingProblem(kind) !== undefined;
-}
-
 /**
- * What the app keeps using where it is hosted, and why OpsCrew does not run it (in `portainer`,
- * also for the engines a Portainer target cannot run).
+ * What the app keeps using where it is hosted, and why OpsCrew does not run it (with
+ * `settingProblem`, a Portainer's or this computer's, also for the engines the target cannot run).
  */
 function externalLines(
   facts: ProjectFacts,
   external: readonly ServiceKind[],
-  portainer: boolean,
+  settingProblem: ((kind: SelfHostedServiceKind) => string | undefined) | undefined,
 ): string[] {
   const lines: string[] = [];
   for (const kind of external) {
     const hosted = (facts.hostedServices ?? []).filter((h) => h.kind === kind);
     const runs = RUNS[kind];
-    const problem = portainer && runs !== undefined ? portainerHostSettingProblem(runs) : undefined;
+    const problem = runs === undefined ? undefined : settingProblem?.(runs);
     if (hosted.length > 0) {
       const providers = [...new Set(hosted.map((h) => h.provider))];
       lines.push(

@@ -21,7 +21,7 @@ const ROLLING_MIN_MEMORY_GB = 1;
  * How a new version replaces the running one (FR-1215, FR-1217, FR-1313): `recreate` in a
  * Portainer, which recreates the stack, for an app on SQLite (`sqlite`), and on a server with less
  * than 1 GiB of memory (the provider's server type, or what inspection read on the user's own
- * server); `rolling` otherwise. The reason is present only for `recreate`.
+ * server); `rolling` otherwise, also on this computer. The reason is present only for `recreate`.
  */
 export function deployStrategyFor(
   option: Pick<DesignOption, "target">,
@@ -32,6 +32,8 @@ export function deployStrategyFor(
     return { strategy: "recreate", reason: PORTAINER_RECREATE_NOTE };
   }
   if (sqlite) return { strategy: "recreate", reason: SQLITE_RECREATE_NOTE };
+  // This computer runs the stack as production does; the preflight checks Docker's memory.
+  if (target.provider === "localhost") return { strategy: "rolling" };
   if (target.memoryGb >= ROLLING_MIN_MEMORY_GB) return { strategy: "rolling" };
   const mb = Math.round(target.memoryGb * 1024);
   // The own-server option records a placeholder when inspection could not read the memory.

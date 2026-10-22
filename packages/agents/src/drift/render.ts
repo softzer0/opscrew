@@ -24,6 +24,14 @@ export function driftNextSteps(
           "to keep a change made in Portainer or in the Cloudflare dashboard, update opscrew/plan.yaml to match before you provision again.",
         ];
   }
+  if (report.provider === "localhost") {
+    return report.clean
+      ? ["nothing to do; run `opscrew drift` again after changes to the stack on this computer."]
+      : [
+          "to put back what OpsCrew set up on this computer, run `opscrew provision` (it shows the local plan first and changes nothing without your approval).",
+          "to keep a change, make it in opscrew/plan.yaml before you provision again.",
+        ];
+  }
   if (report.provider === "own") {
     if (report.clean) {
       return [
@@ -94,14 +102,17 @@ function hostSection(host: readonly HostDifference[]): string[] {
  */
 export function renderDriftReport(report: DriftReport): string {
   const lines = [
-    `OpsCrew drift check (${engineLabel(report.engine.name)} ${report.engine.version}, ${report.checkedAt})`,
+    report.engine === undefined
+      ? `OpsCrew drift check (this computer, ${report.checkedAt})`
+      : `OpsCrew drift check (${engineLabel(report.engine.name)} ${report.engine.version}, ${report.checkedAt})`,
     "",
   ];
   const { drift, pending, foreignDnsRecords: foreign } = report;
   const portainer = report.provider === "portainer";
+  const local = report.provider === "localhost";
   // The user's Portainer, like their own server, has only Cloudflare's dashboard as a console.
   const cloud =
-    report.provider === "own" || report.provider === "portainer"
+    report.provider === "own" || report.provider === "portainer" || report.provider === "localhost"
       ? undefined
       : providerProfile(report.provider).displayName;
   const ownServer = cloud === undefined;
@@ -123,17 +134,26 @@ export function renderDriftReport(report: DriftReport): string {
     rules.length === 0
   ) {
     lines.push(
-      portainer
-        ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-        : ownServer
-          ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-          : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
+      local
+        ? "The deployment matches the plan: the stack on this computer is as OpsCrew set it up, and the generated files agree."
+        : portainer
+          ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+          : ownServer
+            ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+            : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
       ...notes,
     );
     return lines.join("\n");
   }
 
-  if (host.length > 0) lines.push(...hostSection(host), "");
+  if (host.length > 0 && local) {
+    lines.push(
+      `The stack on this computer differs from what OpsCrew set up (${host.length}):`,
+      ...host.map((item) => `  ~ ${item.title}: ${item.detail}`),
+      "`opscrew provision` puts these back: it shows its local plan first, and nothing changes until you approve it.",
+      "",
+    );
+  } else if (host.length > 0) lines.push(...hostSection(host), "");
   if (stacks.length > 0) {
     const environment = report.portainer?.environment;
     lines.push(

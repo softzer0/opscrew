@@ -26,6 +26,7 @@ import {
   renewalAdvice,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { localStatusLines } from "../localhost/status";
 import { clientCertificateWarning, deployLogin } from "../provision/origin-tls";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
@@ -183,13 +184,19 @@ export interface TlsStatusOptions {
  * certificate OpsCrew manages with its expiry (the origin and client certificates from the
  * record; once the app was deployed, the certificates of DNS-only hostnames from a TLS handshake),
  * a warning for each with fewer than 30 days left (with certbot's reason on nginx), and the
- * secrets copy's last update, how many keys open it and whether it is behind. Redacted.
+ * secrets copy's last update, how many keys open it and whether it is behind. On this computer
+ * (the localhost target), `localStatusLines` instead. Redacted.
  */
 export async function tlsStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: TlsStatusOptions = {},
 ): Promise<{ lines: string[] }> {
+  if (plan.target.provider === "localhost") {
+    return {
+      lines: (await localStatusLines(deps, plan)).map((line) => deps.redactor.redact(line)),
+    };
+  }
   const now = deps.clock.now();
   const record = await readCloudflareRecord(deps.paths).catch(() => undefined);
   const lines = [proxyLine(plan)];

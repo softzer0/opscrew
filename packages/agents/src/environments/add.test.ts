@@ -390,11 +390,18 @@ describe("addEnvironment", () => {
     expect(await exists(staging.paths.files.requirements)).toBe(false);
   });
 
-  it("offers this computer, whose design comes with the localhost target's own task", async () => {
+  it("designs this computer as the environment's target, without prod's domain", async () => {
     const { staging } = await prodApp();
-    const error = await failure(addEnvironment(staging, { answers: { provider: "localhost" } }));
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toContain("not supported for the localhost target yet");
+    const { design } = await addEnvironment(staging, {
+      answers: { provider: "localhost" },
+      design: { localhost: { arch: "x64", portFree: async () => true } },
+    });
+    expect(design.plan.target).toMatchObject({
+      provider: "localhost",
+      ports: { https: 443, http: 80 },
+    });
+    expect(design.plan.dns).toMatchObject({ provider: "none" });
+    expect(design.plan.dns.domain).toBeUndefined();
   });
 
   it("stops for prod, for an environment that exists, and before prod's plan", async () => {

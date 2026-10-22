@@ -16,6 +16,7 @@ import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { readEnvironmentRequirements } from "../environments/requirements";
+import { previewLocalStack } from "../localhost/stack";
 import {
   diffRenderedFiles,
   ensureDeployKey,
@@ -245,6 +246,7 @@ export function withCloudflareZone(
  * No server is contacted and no Cloudflare plan is made: the one-time PIN login's id comes from the
  * committed `terraform.tfvars.json` of the last run, and a server the user owns gets the SSH port
  * provision used (the recorded login port in public mode, sshd's committed port in tunnel mode).
+ * On this computer (the localhost target), the local stack's files (`previewLocalStack`).
  */
 export async function previewDeploymentFiles(
   deps: PhaseDeps,
@@ -256,6 +258,7 @@ export async function previewDeploymentFiles(
   } = {},
 ): Promise<DeploymentPreview> {
   let plan = await readArtifact("plan", deps.paths.files.plan);
+  if (plan.target.provider === "localhost") return previewLocalStack(deps, plan);
   const requirements = await readRequirements(deps);
   const git = await requireGitRepo(deps);
   const github = await githubCoordinates(git);

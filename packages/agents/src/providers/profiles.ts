@@ -211,6 +211,24 @@ const PORTAINER: PortainerProfile = {
   tokenVars: [PORTAINER_TOKEN_VAR],
 };
 
+/**
+ * What the phases need to know about this computer as the target (`localhost`): it is no
+ * provider OpsCrew calls, so there is no token, no API and no price.
+ */
+export interface LocalhostProfile {
+  id: "localhost";
+  /** `This computer`. */
+  displayName: string;
+  /** None: the app runs in this computer's Docker. */
+  tokenVars: readonly string[];
+}
+
+const LOCALHOST: LocalhostProfile = {
+  id: "localhost",
+  displayName: "This computer",
+  tokenVars: [],
+};
+
 const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
   hetzner: HETZNER,
   digitalocean: DIGITALOCEAN,
@@ -224,15 +242,18 @@ const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
 export const VPS_PROVIDERS: readonly CloudProvider[] = ["hetzner", "digitalocean"];
 
 /**
- * The provider's profile, including `own` ("Your own server") and `portainer` ("My existing
- * Portainer", see {@link PortainerProfile}).
+ * The provider's profile, including `own` ("Your own server"), `portainer` ("My existing
+ * Portainer", see {@link PortainerProfile}) and `localhost` ("This computer", see
+ * {@link LocalhostProfile}).
  */
 export function providerProfile(id: "portainer"): PortainerProfile;
+export function providerProfile(id: "localhost"): LocalhostProfile;
 export function providerProfile(id: VpsProviderId): ProviderProfile;
 export function providerProfile(
-  id: VpsProviderId | "portainer",
-): ProviderProfile | PortainerProfile {
+  id: VpsProviderId | "portainer" | "localhost",
+): ProviderProfile | PortainerProfile | LocalhostProfile {
   if (id === "portainer") return PORTAINER;
+  if (id === "localhost") return LOCALHOST;
   const profile = PROFILES[id];
   if (profile === undefined) {
     throw new OpsCrewError("INVALID_INPUT", `OpsCrew does not know the server provider "${id}".`, {

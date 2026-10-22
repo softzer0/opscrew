@@ -8,6 +8,7 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
+import { provisionLocalhost } from "../localhost/provision";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
 import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
@@ -259,7 +260,10 @@ async function provisionFlow(
   const root = deps.paths.root;
   let plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
   const command = `opscrew ${phase}`;
-  if (plan.target.provider === "localhost") throw localhostNotSupported(`\`${command}\``);
+  if (plan.target.provider === "localhost") {
+    if (phase !== "provision") throw localhostNotSupported(`\`${command}\``);
+    return provisionLocalhost(deps, plan, options);
+  }
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
 

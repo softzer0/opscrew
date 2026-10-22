@@ -34,18 +34,14 @@ import {
   type TcpConnect,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { LOCAL_PROBES_SKIPPED, LOCAL_SECURE_NOTES, localSecurityChecks } from "../localhost/secure";
+import type { LocalhostServices } from "../localhost/services";
 import { planProvider, providerProfile } from "../providers";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { PortainerServices } from "../provision/types";
-import {
-  hidesServerAddress,
-  localhostNotSupported,
-  SshRemoteExec,
-  serverAddress,
-  withoutServerAddress,
-} from "../shared";
+import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import {
   proxyCertificateHosts,
@@ -96,6 +92,8 @@ export interface RunSecureOptions {
   docker?: LocalDocker;
   /** Cloudflare, for the zone's CAA records and minimum TLS (default: `CLOUDFLARE_API_TOKEN`'s). */
   cloudflare?: CloudflareClient;
+  /** The localhost target: this computer's OS (a fake in tests). */
+  localhost?: LocalhostServices;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -281,6 +279,18 @@ const PORTAINER_DEEP_SKIPPED =
 const PORTAINER_DEEP_HINT =
   "Run Lynis and ssh-audit on the Portainer host yourself if you manage it.";
 
+/** The deeper checks on this computer: a local stack has no server, SSH or public TLS to audit. */
+function localDeepSkipped(): DeepToolResult[] {
+  return (["lynis", "ssh-audit", "testssl"] as const).map((tool) =>
+    skippedTool(
+      tool,
+      DEEP_PINS,
+      "A local stack has no server, SSH or public TLS to audit: it listens on 127.0.0.1 only, with OpsCrew's local CA.",
+      "Nothing to do on this computer: the audits run for an environment on a server.",
+    ),
+  );
+}
+
 /**
  * The deeper checks (FR-1420–FR-1424), after today's checks: Lynis on the server over SSH,
  * ssh-audit and testssl.sh (per public hostname, labelled Cloudflare's edge when proxied) from this
@@ -372,12 +382,15 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
-  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew secure`");
   // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the
-  // user's Portainer through its API (see `portainerSecurityChecks`), never its host.
+  // user's Portainer through its API (see `portainerSecurityChecks`), never its host; this
+  // computer through its Docker (see `localSecurityChecks`).
   const portainer = plan.target.provider === "portainer";
+  const localhost = plan.target.provider === "localhost";
   const address =
-    plan.target.provider === "own" || portainer ? undefined : await serverAddress(deps, plan);
+    plan.target.provider === "own" || portainer || localhost
+      ? undefined
+      : await serverAddress(deps, plan);
   const host = address?.ipv4;
 
   reporter.step("Scanning the repository");
@@ -408,6 +421,8 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     const checked = await portainerSecurityChecks(deps, plan, options.portainer);
     hostChecks = checked.checks;
     hostChecksSkipped = checked.skipped;
+  } else if (localhost) {
+    hostChecks = await localSecurityChecks(deps, plan, options.localhost);
   } else if (sshHost === undefined) {
     hostChecksSkipped =
       plan.target.provider === "own"
@@ -427,21 +442,23 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     options.cloudflare !== undefined ? { cloudflare: options.cloudflare } : {},
   );
 
-  const deep = options.deep
-    ? await deepChecks(
-        deps,
-        plan,
-        portainer
-          ? undefined
-          : {
-              ...(remote !== undefined ? { remote } : {}),
-              ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
-              ...(sshHost !== undefined ? { sshHost } : {}),
-              sshPort: own?.sshPort ?? 22,
-            },
-        options.docker ?? localDocker(deps.runner),
-      )
-    : undefined;
+  const deep = !options.deep
+    ? undefined
+    : localhost
+      ? localDeepSkipped()
+      : await deepChecks(
+          deps,
+          plan,
+          portainer
+            ? undefined
+            : {
+                ...(remote !== undefined ? { remote } : {}),
+                ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
+                ...(sshHost !== undefined ? { sshHost } : {}),
+                sshPort: own?.sshPort ?? 22,
+              },
+          options.docker ?? localDocker(deps.runner),
+        );
 
   const shownHost = plan.target.provider === "own" ? own?.probeHost : host;
   const input: SecurityReportInput = {
@@ -458,6 +475,9 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(deep !== undefined ? { deep } : {}),
     ...(portainer
       ? { portainer: { notes: PORTAINER_SECURE_NOTES, probesSkipped: PORTAINER_PROBES_SKIPPED } }
+      : {}),
+    ...(localhost
+      ? { localhost: { notes: LOCAL_SECURE_NOTES, probesSkipped: LOCAL_PROBES_SKIPPED } }
       : {}),
   };
   // A server the user owns: the report and the terminal say "your server", never its address or
@@ -491,6 +511,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   else reporter.error(headline);
   for (const line of details) reporter.info(line);
   if (portainer) reporter.info(PORTAINER_SECURE_NOTES.join(" "));
+  if (localhost) reporter.info(LOCAL_SECURE_NOTES.join(" "));
   if (hostChecksSkipped !== undefined)
     reporter.warn(
       say(

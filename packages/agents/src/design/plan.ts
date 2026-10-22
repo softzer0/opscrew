@@ -14,12 +14,12 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { type LocalhostDesignChoice, localhostTarget } from "../localhost/design";
 import { providerProfile } from "../providers";
 import {
   deepDomainProblem,
   FRAMEWORK_ENV,
   hostListKind,
-  localhostNotSupported,
   STORAGE_VARIABLES,
   serviceAppVariables,
   serviceUrlKind,
@@ -66,6 +66,8 @@ export interface OptionToPlanInput {
    * redeploy and web modes from the interview's answers.
    */
   portainer?: PortainerDesignChoice;
+  /** This computer only (required there): its CPU, the edge's ports and the image's source. */
+  localhost?: LocalhostDesignChoice;
   /** Who builds the image (`chooseBuilder`). */
   build: BuilderChoice;
   /** What runs next to the app (`designComponents`); by default designed from the facts. */
@@ -75,14 +77,15 @@ export interface OptionToPlanInput {
 /**
  * The plan's target for the chosen option: a cloud server with the provider's default image and
  * the option's backups, the user's own server with its architecture and access mode (never its
- * address or login, which stay in local state), or the user's Portainer with the environment and
- * the chosen modes (never its address).
+ * address or login, which stay in local state), the user's Portainer with the environment and
+ * the chosen modes (never its address), or this computer with its CPU, ports and image source.
  */
 function targetFor(
   option: DesignOption,
-  access: OwnServerAccess | undefined,
-  portainer: PortainerDesignChoice | undefined,
+  input: Pick<OptionToPlanInput, "access" | "portainer" | "localhost" | "build">,
+  components: Components,
 ) {
+  const { access, portainer } = input;
   const { target } = option;
   if (target.provider === "own") {
     if (access === undefined) {
@@ -95,8 +98,16 @@ function targetFor(
       access,
     } as const;
   }
-  // Design offers no option for the localhost target yet.
-  if (target.provider === "localhost") throw localhostNotSupported("Designing an app");
+  if (target.provider === "localhost") {
+    if (input.localhost === undefined) {
+      throw new Error("A design for this computer needs its CPU and the edge's ports.");
+    }
+    return localhostTarget(input.localhost, {
+      builder: input.build.builder,
+      cron: components.processes.cron.some((job) => job.enabled),
+      sqlite: components.storage?.sqlite !== undefined,
+    });
+  }
   if (target.provider === "portainer") {
     if (portainer === undefined) {
       throw new Error("A design for an existing Portainer needs the interview's answers.");
@@ -138,13 +149,15 @@ export function appPortFor(facts: ProjectFacts): number {
 
 /**
  * The services with each Dragonfly's most threads (`options.threads`) set to the chosen server's
- * vCPUs, unless plan.yaml already sets them (an edit is kept). A Portainer host's are not known.
+ * vCPUs, unless plan.yaml already sets them (an edit is kept). A Portainer host's and this
+ * computer's are not known.
  */
 function withServerThreads(services: readonly PlanService[], option: DesignOption): PlanService[] {
   return services.map((service) =>
     service.kind === "dragonfly" &&
     service.options.threads === undefined &&
-    option.target.provider !== "portainer"
+    option.target.provider !== "portainer" &&
+    option.target.provider !== "localhost"
       ? { ...service, options: { ...service.options, threads: option.target.vcpus } }
       : service,
   );
@@ -275,7 +288,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
           : {}),
       },
     },
-    target: targetFor(option, input.access, input.portainer),
+    target: targetFor(option, input, components),
     deploy: deployStrategyFor(option, components.storage?.sqlite !== undefined),
     processes: components.processes,
     services: withServerThreads(components.services, option),

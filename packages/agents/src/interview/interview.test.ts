@@ -247,6 +247,11 @@ describe("provider question", () => {
           label: "My existing Portainer",
           hint: "a Portainer you already run, for example on a NAS or a home server; OpsCrew deploys the app as a stack through Portainer's API and changes nothing else on the host",
         },
+        {
+          value: "localhost",
+          label: "This computer",
+          hint: "the app's production stack in this computer's Docker, at a .localhost address only this computer reaches; no server, domain or price",
+        },
       ],
     });
   });

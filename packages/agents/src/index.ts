@@ -9,6 +9,7 @@ export * from "./drift";
 export * from "./environments";
 export * from "./init";
 export * from "./interview";
+export * from "./localhost";
 export * from "./portainer";
 export * from "./promote";
 export * from "./providers";

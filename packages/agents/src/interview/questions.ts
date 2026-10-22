@@ -54,16 +54,12 @@ export function signingPublicLog(repositoryPrivate: boolean | undefined): string
     : `If your repository is private, ${log} once images are signed.`;
 }
 
-/**
- * The provider default: the previous answer, else the one inferred from tokens, else Hetzner. A
- * previous `localhost` is no default: the question does not offer it yet.
- */
+/** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): DeployProvider {
-  const answered = previous?.provider === "localhost" ? undefined : previous?.provider;
-  return answered ?? context.inferredProvider ?? "hetzner";
+  return previous?.provider ?? context.inferredProvider ?? "hetzner";
 }
 
 /**
@@ -105,7 +101,8 @@ function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
  * one to deploy (`appDir`). The provider question offers Hetzner Cloud, DigitalOcean and a server
  * the user already has (`own`, whose follow-ups come from `buildServerQuestions`) and an existing
  * Portainer (`portainer`, whose follow-ups come from `buildPortainerQuestions`); for both the
- * region is ignored. It defaults to the previous answer, then `context.inferredProvider`, then
+ * region is ignored. This computer (`localhost`) ignores the region, the domain and its DNS. It
+ * defaults to the previous answer, then `context.inferredProvider`, then
  * `hetzner`. The last two offer image signing (saying what a private repository makes public,
  * from `context.repositoryPrivate`) and deploy tags, both off by default. The questions about the
  * app's components (its hosted services, its workers' commands) come from
@@ -182,6 +179,11 @@ export function buildQuestions(
           value: "portainer",
           label: "My existing Portainer",
           hint: "a Portainer you already run, for example on a NAS or a home server; OpsCrew deploys the app as a stack through Portainer's API and changes nothing else on the host",
+        },
+        {
+          value: "localhost",
+          label: "This computer",
+          hint: "the app's production stack in this computer's Docker, at a .localhost address only this computer reaches; no server, domain or price",
         },
       ],
       default: defaultProvider(previous, context),

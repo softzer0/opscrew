@@ -9,7 +9,7 @@ import {
   RequirementsSchema,
 } from "@opscrew/plan-schema";
 import { hostedKinds } from "../design/components";
-import { deepDomainProblem, localhostNotSupported } from "../shared";
+import { deepDomainProblem } from "../shared";
 import { isBlank } from "./follow-ups";
 import {
   defaultProvider,
@@ -211,15 +211,16 @@ export function answersToRequirements(
   // for or recorded.
   const provider = given("provider") ? answers.provider : (previous?.provider ?? inferred.provider);
   const chosenProvider = typeof provider === "string" ? provider.trim().toLowerCase() : undefined;
-  // The schema knows the localhost target, but the interview does not offer it yet.
-  if (chosenProvider === "localhost") throw localhostNotSupported("`opscrew interview`");
-  const ownServer = chosenProvider === "own" || chosenProvider === "portainer";
+  // This computer has no region, domain or DNS either: the app is served at its .localhost address.
+  const localhost = chosenProvider === "localhost";
+  const ownServer = chosenProvider === "own" || chosenProvider === "portainer" || localhost;
   const required: readonly QuestionId[] = [
     ...REQUIRED.filter((id) => !(ownServer && id === "region")),
     ...(appCandidates.length > 1 ? (["appDir"] as const) : []),
   ];
   const pick = (id: QuestionId): unknown => {
     if (ownServer && id === "region") return undefined;
+    if (localhost && (id === "domain" || id === "dnsProvider")) return undefined;
     if (given(id)) return answers[id];
     // An explicit empty answer clears an optional field instead of reusing the previous value.
     if (Object.hasOwn(answers, id) && !required.includes(id)) return undefined;

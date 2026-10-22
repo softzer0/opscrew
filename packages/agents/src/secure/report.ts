@@ -48,6 +48,12 @@ export interface SecurityReportInput {
    * (the host, backups).
    */
   portainer?: { notes: readonly string[]; probesSkipped: string };
+  /**
+   * The app runs on this computer (the localhost target): `hostChecks` are the read-only checks of
+   * its stack in this computer's Docker, there are no outside probes, and `notes` say which of a
+   * server's checks do not apply.
+   */
+  localhost?: { notes: readonly string[]; probesSkipped: string };
   /** The deeper checks (`--deep`), one per tool; absent without it. */
   deep?: readonly DeepToolResult[];
   /**
@@ -66,6 +72,7 @@ export interface SecurityProblem {
     | "Infrastructure policy"
     | "Server"
     | "Portainer stacks"
+    | "The stack on this computer"
     | "Outside probe"
     | "Deeper checks"
     | "TLS and the secrets copy";
@@ -146,7 +153,11 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
       ),
     ...checkProblems(
       input.hostChecks,
-      input.portainer !== undefined ? "Portainer stacks" : "Server",
+      input.portainer !== undefined
+        ? "Portainer stacks"
+        : input.localhost !== undefined
+          ? "The stack on this computer"
+          : "Server",
     ),
     ...checkProblems(input.probes, "Outside probe"),
     ...checkProblems(input.settings ?? [], "TLS and the secrets copy"),
@@ -283,7 +294,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
         ? "not evaluated (no infrastructure plan available)"
         : `${input.policies.filter((p) => p.passed).length} passed, ${input.policies.filter((p) => !p.passed).length} failed`
     } |`,
-    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
+    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : input.localhost !== undefined ? "The stack on this computer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
     `| Outside probes | ${input.probes.length === 0 ? "skipped" : summarizeChecks(input.probes)} |`,
     ...(input.settings !== undefined
       ? [`| TLS and the secrets copy | ${summarizeChecks(input.settings)} |`]
@@ -355,20 +366,29 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     out.push("");
   }
 
-  if (input.portainer !== undefined) {
-    out.push("## The app's stacks in your Portainer", "");
+  // OpsCrew checks the app's stacks in the user's Portainer and on this computer, never the host.
+  const unmanaged = input.portainer ?? input.localhost;
+  if (unmanaged !== undefined) {
+    out.push(
+      input.portainer !== undefined
+        ? "## The app's stacks in your Portainer"
+        : "## The stack on this computer",
+      "",
+    );
     if (input.hostChecksSkipped !== undefined) {
       out.push(`Skipped: ${prose(input.hostChecksSkipped)}`, "");
     } else {
       out.push(
-        "Checked read-only through Portainer's API, with the certificate you confirmed.",
+        input.portainer !== undefined
+          ? "Checked read-only through Portainer's API, with the certificate you confirmed."
+          : "Checked read-only with this computer's Docker and files.",
         "",
         ...checkTable(input.hostChecks),
         "",
       );
     }
-    out.push(...input.portainer.notes.map((note) => prose(note)), "");
-    out.push("## Outside probes", "", `Skipped: ${prose(input.portainer.probesSkipped)}`, "");
+    out.push(...unmanaged.notes.map((note) => prose(note)), "");
+    out.push("## Outside probes", "", `Skipped: ${prose(unmanaged.probesSkipped)}`, "");
   } else {
     out.push("## Server hardening", "");
     if (input.hostChecksSkipped !== undefined) {
@@ -384,8 +404,8 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     out.push("## Outside probes", "");
   }
 
-  if (input.portainer !== undefined) {
-    // The user's Portainer host is never probed (said above).
+  if (unmanaged !== undefined) {
+    // The user's Portainer host and this computer are never probed (said above).
   } else if (input.probes.length === 0) {
     out.push(`Skipped: ${UNKNOWN_SERVER_ADDRESS}`, "");
   } else {

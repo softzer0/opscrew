@@ -4,12 +4,12 @@ import { exists, lowerFirst, OpsCrewError, plural } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { destroyLocalhost } from "../localhost/destroy";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
 import {
   describeChanges,
   hasDeployment,
-  localhostNotSupported,
   planStop,
   refusalReason,
   serverAddress,
@@ -477,7 +477,7 @@ export async function runDestroy(
   const plan = await readArtifact("plan", deps.paths.files.plan);
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
-  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew destroy`");
+  if (plan.target.provider === "localhost") return destroyLocalhost(deps, plan, options);
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
   if (plan.target.provider === "portainer") return destroyPortainer(deps, plan, options);
   const name = plan.app.name;

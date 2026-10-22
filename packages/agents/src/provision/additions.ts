@@ -79,6 +79,9 @@ async function runProxyChecker(
     await writeFile(join(tls, "origin.pem"), origin.certificate);
     await writeFile(join(tls, "origin.key"), origin.key);
     await writeFile(join(tls, "pull.pem"), origin.certificate);
+    // On this computer the site serves the leaf of OpsCrew's local CA instead.
+    await writeFile(join(tls, "local.pem"), origin.certificate);
+    await writeFile(join(tls, "local.key"), origin.key);
     const live = join(dir, "letsencrypt", "live", app);
     await mkdir(live, { recursive: true });
     if (certbotHosts(plan, ctx).length > 0) {
@@ -177,7 +180,8 @@ export async function checkAdditions(
   if (text === undefined) return false;
   const refusals = scanProxyAdditions(text, {
     proxy,
-    hostnames: siteHosts(plan),
+    // On this computer the site serves its .localhost hostname.
+    hostnames: ctx.localhost !== undefined ? [ctx.localhost.hostname] : siteHosts(plan),
     upstream: EDGE_PROXIES[proxy].upstream,
   });
   if (refusals.length > 0) {

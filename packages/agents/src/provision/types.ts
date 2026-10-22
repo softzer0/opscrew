@@ -19,6 +19,7 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
+import type { LocalhostServices } from "../localhost/services";
 import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
 import type { StorageKey, StorageKeyQuestion } from "./storage";
@@ -109,6 +110,8 @@ export interface ProvisionServices {
   portainer?: PortainerServices;
   /** Finds an optional tool on `PATH`, such as gixy-ng (default: `findExecutable`). */
   which?: (name: string) => string | undefined;
+  /** The localhost target: this computer's OS, CPU, ports, requests and GHCR (fakes in tests). */
+  localhost?: LocalhostServices;
 }
 
 /**
@@ -239,6 +242,13 @@ export interface ProvisionResult {
   stackFollowsOriginTls?: true;
   /** The user's Portainer: true when this run changed something in Portainer. */
   stackApplied?: boolean;
+  /**
+   * The localhost target: the local plan's SHA-256 hash (its file is
+   * `.opscrew/plans/local-<hash>.json`). With `--plan-only` it is the hash to approve.
+   */
+  localPlanHash?: string;
+  /** The localhost target: true when this run changed the stack on this computer. */
+  localApplied?: boolean;
   /** Root-module outputs after the run (server IPs, id, name, url). */
   outputs: Record<string, unknown>;
   /** Pull request with the generated files, when one was opened or already open. */

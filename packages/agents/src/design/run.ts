@@ -34,6 +34,15 @@ import {
 import { readEnvironmentRequirements } from "../environments/requirements";
 import { withSharedParts } from "../environments/shared-parts";
 import {
+  buildLocalhostOption,
+  LOCALHOST_PRICE_NOTE,
+  type LocalhostDesignChoice,
+  localhostDesignChoice,
+  localhostImageWarnings,
+  onThisComputer,
+} from "../localhost/design";
+import type { LocalhostServices } from "../localhost/services";
+import {
   type OwnServerFacts,
   providerProfile,
   requestedProvider,
@@ -46,7 +55,6 @@ import {
   designOptionLine,
   hasDeployment,
   hasState,
-  localhostNotSupported,
   memoryHeadroom,
   readOwnServer,
   readPortainerConnection,
@@ -121,6 +129,8 @@ export interface RunDesignOptions {
    * plan; a later design keeps the plan's own.
    */
   environment?: Pick<NonNullable<DeployPlan["environment"]>, "deploySource" | "runner">;
+  /** This computer (the localhost target): its CPU and the port probe (fakes in tests). */
+  localhost?: Pick<LocalhostServices, "arch" | "portFree">;
 }
 
 /**
@@ -195,6 +205,8 @@ export interface PreviewDesignOptions {
   facts?: ProjectFacts;
   /** A server the user owns: what inspection found and how the internet reaches it. */
   ownServer?: OwnServerDesignInput;
+  /** This computer (the localhost target): its CPU and the port probe (fakes in tests). */
+  localhost?: Pick<LocalhostServices, "arch" | "portFree">;
 }
 
 export interface DesignPreview {
@@ -209,6 +221,8 @@ export interface DesignPreview {
   serving?: OwnServerServing;
   /** An existing Portainer: the environment, its architecture and the chosen modes. */
   portainer?: PortainerDesignChoice;
+  /** This computer: its CPU, the edge's ports and where the image comes from. */
+  localhost?: LocalhostDesignChoice;
   /** What runs next to the app, with the previous plan's edits kept. */
   components: Components;
   /** One plain sentence per component, licence, storage choice and kept edit. */
@@ -261,6 +275,7 @@ export async function previewDesignOptions(
   return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer, {
     previous,
     shared,
+    localhost: { services: options.localhost, environment: previous ?? {} },
   });
 }
 
@@ -423,8 +438,9 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   deps.reporter.step("Designing deployment options");
   const resolvedFacts =
     facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
-  const requirements = await readEnvironmentRequirements(paths);
-  if (requirements.provider === "localhost") throw localhostNotSupported("`opscrew design`");
+  const answered = await readEnvironmentRequirements(paths);
+  // This computer has no region, domain or DNS, whatever prod's answers say.
+  const requirements = answered.provider === "localhost" ? onThisComputer(answered) : answered;
   await requireChosenApp(paths.root, resolvedFacts, requirements);
   return { facts: resolvedFacts, requirements };
 }
@@ -456,6 +472,53 @@ async function componentsFor(
 interface PlanBasis {
   previous: DeployPlan | undefined;
   shared: DeployPlan | undefined;
+  /**
+   * This computer: its CPU and port probe, and the environment block whose deploy source decides
+   * where the image comes from (the new environment's, else the previous plan's).
+   */
+  localhost?: {
+    services: Pick<LocalhostServices, "arch" | "portFree"> | undefined;
+    environment: Pick<DeployPlan, "environment">;
+  };
+}
+
+/**
+ * The single option on this computer: no price, the computer's CPU and the edge's ports
+ * (`localhostDesignChoice`), with the app's warnings.
+ */
+async function priceLocalhost(
+  deps: PhaseDeps,
+  { facts, requirements }: DesignInputs,
+  warnings: string[],
+  designed: Designed,
+  basis: PlanBasis,
+): Promise<DesignPreview> {
+  const choice = await localhostDesignChoice(
+    deps,
+    { previous: basis.previous, environment: basis.localhost?.environment ?? basis.previous ?? {} },
+    basis.localhost?.services,
+  );
+  const option = buildLocalhostOption({
+    facts,
+    requirements,
+    arch: choice.arch,
+    now: deps.clock.now(),
+  });
+  deps.reporter.info(
+    deps.redactor.redact(
+      `${option.title} (${option.id}): ${lowerFirst(LOCALHOST_PRICE_NOTE)} — recommended`,
+    ),
+  );
+  appWarnings(facts, designed.components, warner(deps, warnings));
+  return {
+    options: [option],
+    priceSource: "live",
+    warnings,
+    facts,
+    requirements,
+    localhost: choice,
+    ...designed,
+  };
 }
 
 async function priceOptions(
@@ -464,8 +527,9 @@ async function priceOptions(
   override: ComputeCatalog | undefined,
   warnings: string[],
   ownServer: OwnServerDesignInput | undefined,
-  { previous, shared }: PlanBasis,
+  basis: PlanBasis,
 ): Promise<DesignPreview> {
+  const { previous, shared } = basis;
   const { facts, requirements } = inputs;
   // The user's own server is the catalogue's only offer; its vCPUs decide whether Dragonfly is
   // offered there.
@@ -487,6 +551,9 @@ async function priceOptions(
   );
   if (requirements.provider === "portainer") {
     return pricePortainer(deps, inputs, warnings, designed);
+  }
+  if (requirements.provider === "localhost") {
+    return priceLocalhost(deps, inputs, warnings, designed, basis);
   }
   // The server's proxy carries over from the earlier plan (`keepPlanSettings`).
   const edge = previous === undefined ? "caddy" : edgeProxy(previous);
@@ -606,6 +673,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer, {
     previous,
     shared,
+    localhost: {
+      services: options.localhost,
+      environment:
+        options.environment === undefined ? (previous ?? {}) : { environment: options.environment },
+    },
   });
   const { facts, requirements, priceSource, components } = preview;
   const designOptions = preview.options;
@@ -641,6 +713,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ...(preview.access !== undefined ? { access: preview.access } : {}),
       ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
       ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
+      ...(preview.localhost !== undefined ? { localhost: preview.localhost } : {}),
       build,
       components: planned,
     });
@@ -686,22 +759,29 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     const owner = sqliteOwnerWarning(previous, plan);
     if (owner !== undefined) warn(owner);
   }
+  if (plan.target.provider === "localhost" && preview.localhost !== undefined) {
+    for (const warning of localhostImageWarnings(plan.target, preview.localhost)) warn(warning);
+  }
   await requireOwnHostnames(paths, plan);
   if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
-  const inPortainer = chosen.target.provider === "portainer";
+  const onComputer = chosen.target.provider === "localhost";
+  // Neither a Portainer host nor this computer is sized by OpsCrew: no memory line or headroom.
+  const inPortainer = chosen.target.provider === "portainer" || onComputer;
   const ownsServer = chosen.target.provider === "own" || inPortainer;
   const cost = formatMoney(chosen.cost.monthly);
   const inBudget =
     chosen.cost.monthly.currency === budget.currency
       ? ""
       : ` (about ${formatMoney(convertMoney(chosen.cost.monthly, budget.currency))})`;
-  const price = inPortainer
-    ? "no server cost (you already run this Portainer)"
-    : ownsServer
-      ? "no server cost (you already pay for this server)"
-      : `${cost}/month${inBudget}`;
+  const price = onComputer
+    ? "no server cost (it runs in this computer's Docker)"
+    : inPortainer
+      ? "no server cost (you already run this Portainer)"
+      : ownsServer
+        ? "no server cost (you already pay for this server)"
+        : `${cost}/month${inBudget}`;
   reporter.success(
     say(
       `${plan === previous ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,

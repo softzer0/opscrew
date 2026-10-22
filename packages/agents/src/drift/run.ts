@@ -3,13 +3,14 @@ import { OpsCrewError } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { localDrift } from "../localhost/drift";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
-import { hasDeployment, localhostNotSupported, stateFile, stringOutput } from "../shared";
+import { hasDeployment, stateFile, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
@@ -62,7 +63,6 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   const ownServer = plan.target.provider === "own";
 
   // 1. Preconditions: no move in progress, a deployment and its state (no network yet)
-  if (plan.target.provider === "localhost") throw localhostNotSupported("`opscrew drift`");
   requireNoMoveInProgress(plan);
   if (!hasDeployment(plan)) {
     throw new OpsCrewError(
@@ -72,6 +72,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     );
   }
   if (plan.target.provider === "portainer") return portainerDrift(deps, plan, options);
+  if (plan.target.provider === "localhost") return localDrift(deps, plan);
   const statePath = stateFile(deps.paths);
   const cloudResources = !(await ownWithoutCloudResources(plan, statePath));
   const stateKind = cloudResources ? await inspectState(deps, statePath) : undefined;
