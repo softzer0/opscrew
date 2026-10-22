@@ -211,6 +211,7 @@ class RunnerHost extends FakeHostServer {
       app,
       registered: true,
       active: true,
+      unitCurrent: true,
       version: String(step.params.version),
       label: String(step.params.label),
       repositoryUrl: String(step.params.repositoryUrl),

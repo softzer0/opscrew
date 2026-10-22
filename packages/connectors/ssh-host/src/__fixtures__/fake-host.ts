@@ -31,6 +31,7 @@ import {
   TUNNELS_DIR,
 } from "../constants";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
+import { runnerUnitText } from "../runner-unit";
 import { WEB_FILTER_DROP_IN, WEB_FILTER_SCRIPT, WEB_FILTER_UNIT } from "../web-filter";
 
 /** One address family's filter state: OpsCrew's chain (null when absent) and DOCKER-USER. */
@@ -140,7 +141,8 @@ export interface FakeFile {
 
 /**
  * An app's GitHub Actions runner: registered (`.runner`), its service active, its version, and
- * the label and repository URL it was registered with (`.opscrew-runner`).
+ * the label and repository URL it was registered with (`.opscrew-runner`), and whether its unit
+ * is an older one OpsCrew wrote (`oldUnit`; otherwise it is `runnerUnitText(app)`).
  */
 export interface FakeRunner {
   registered: boolean;
@@ -148,6 +150,12 @@ export interface FakeRunner {
   version: string;
   label: string;
   url: string;
+  oldUnit?: boolean;
+}
+
+/** The SHA-256 of `app`'s runner unit on the fake. */
+function runnerUnitSha256(app: string, runner: FakeRunner): string {
+  return sha256(runner.oldUnit ? "an older unit" : runnerUnitText(app));
 }
 
 export interface FakeCall {
@@ -566,7 +574,7 @@ export class FakeHost implements RemoteExec {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
         ([app, runner]) =>
-          `${app} ${runner.registered ? "yes" : "no"} ${runner.active ? "active" : "inactive"} ${runner.version} ${runner.label} ${runner.url}`,
+          `${app} ${runner.registered ? "yes" : "no"} ${runner.active ? "active" : "inactive"} ${runner.version} ${runner.label} ${runner.url} ${runnerUnitSha256(app, runner)}`,
       )
       .join("\n");
   }
@@ -1584,6 +1592,7 @@ export class FakeHost implements RemoteExec {
           runner !== undefined &&
           runner.registered &&
           runner.active &&
+          runnerUnitSha256(app, runner) === p.UNIT_SHA256 &&
           newEnough &&
           runner.label === p.LABEL &&
           runner.url === p.URL;

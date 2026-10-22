@@ -52,6 +52,7 @@ import {
 } from "./constants";
 import type { AppRecord } from "./facts";
 import { canonicalIpv4Cidr } from "./parse";
+import { runnerUnitText } from "./runner-unit";
 import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
 import {
   type AccessMode,
@@ -1789,8 +1790,8 @@ const NO_LINKS = `no_links() {
  * home. `quiet <command…>` runs a command with its output kept back, and leaves its last line in
  * `$last` when it fails. `read_token` reads the token from stdin into `RUNNER_TOKEN` (a shell
  * variable, not exported), then gives every later command an empty stdin. `at_least <version>
- * <pinned>` compares two `2.338.0` versions, `unit_text` prints the unit as OpsCrew writes it, and
- * `user_manager` waits for deploy's user manager (it starts once deploy lingers).
+ * <pinned>` compares two `2.338.0` versions, and `user_manager` waits for deploy's user manager
+ * (it starts once deploy lingers).
  */
 const RUNNER_HELPERS = `${NO_LINKS}
 XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -1812,14 +1813,6 @@ read_token() {
   exec </dev/null
   [ -n "$RUNNER_TOKEN" ] || fail "No $1 token arrived on standard input, so OpsCrew did not change the runner."
 }
-# KillMode, KillSignal and TimeoutStopSec as GitHub's own service unit has them: a stop reaches
-# run.sh alone, which stops the runner its own way.
-unit_text() {
-  printf '%s\\n' '[Unit]' "Description=GitHub Actions runner of $APP (OpsCrew)" '' '[Service]' \\
-    "ExecStart=$DIR/run.sh" "WorkingDirectory=$DIR" 'Restart=always' 'RestartSec=5' \\
-    'KillMode=process' 'KillSignal=SIGTERM' 'TimeoutStopSec=5min' '' '[Install]' \\
-    'WantedBy=default.target'
-}
 user_manager() {
   i=0
   until systemctl --user show-environment >/dev/null 2>&1; do
@@ -1839,8 +1832,9 @@ const TOKEN_ENV_NOTE = `# The token is never on a command line: the runner reads
 
 /**
  * As root, on a server the user owns: the runner's system libraries (no script from the archive
- * runs as root), deploy's lingering, so its services run without a login from boot on, and the
- * runners' parent for deploy. The servers OpsCrew creates have them from their first boot.
+ * runs as root), deploy's lingering, so its services run without a login from boot on, deploy's
+ * user manager restarted when it lacks the docker group, and the runners' parent for deploy. The
+ * servers OpsCrew creates have them from their first boot.
  */
 const RUNNER_ROOT_SETUP = `no_links "$RUNNERS_DIR"
 # The runner's system libraries, each the first of its candidates this release offers, as GitHub's
@@ -1859,6 +1853,16 @@ done
 apt_get install $libs || fail "The runner's system libraries could not be installed; see ${APT_LOG} on the server."
 # deploy's services run without a login, from boot on.
 loginctl enable-linger "$USER_NAME" || fail "OpsCrew could not let deploy's services run without a login (loginctl enable-linger)."
+# deploy's user manager keeps the groups it started with: one started before deploy joined the
+# docker group is restarted, so the services it starts have it. Only then, since a restart stops
+# every service of deploy's, other runners too.
+uid=$(id -u "$USER_NAME")
+pid=$(systemctl show -p MainPID --value "user@$uid.service" 2>/dev/null) || pid=0
+gid=$(getent group docker | cut -d: -f3)
+if [ -n "$gid" ] && [ "\${pid:-0}" != 0 ] &&
+  ! awk '$1 == "Groups:" { for (i = 2; i <= NF; i++) print $i }' "/proc/$pid/status" 2>/dev/null | grep -qx "$gid"; then
+  systemctl restart "user@$uid.service" || fail "OpsCrew could not restart deploy's systemd user manager (systemctl restart user@$uid.service)."
+fi
 # The runners' parent, deploy's, as on the servers OpsCrew creates.
 install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$RUNNERS_DIR"`;
 
@@ -1964,6 +1968,7 @@ unset RUNNER_TOKEN`,
   }
   const p = params(step, RunnerParams);
   const prepare = root("github-runner.root", RUNNER_ROOT_SETUP);
+  const unit = runnerUnitText(app);
   return scripts({
     name: "github-runner",
     params: {
@@ -1974,11 +1979,13 @@ unset RUNNER_TOKEN`,
       VERSION: p.version,
       SHA256: p.sha256,
       ARCHIVE_URL: p.url,
+      UNIT_B64: base64(unit),
+      UNIT_SHA256: sha256Hex(unit),
     },
     helpers: RUNNER_HELPERS,
     verify: `  [ -f "$DIR/.runner" ] || return 1
   [ "$(cat "$DIR/.opscrew-runner" 2>/dev/null)" = "$(printf 'label=%s\\nurl=%s' "$LABEL" "$URL")" ] || return 1
-  [ "$(cat "$UNIT_FILE" 2>/dev/null)" = "$(unit_text)" ] || return 1
+  [ -f "$UNIT_FILE" ] && [ "$(sha256sum "$UNIT_FILE" | cut -d ' ' -f 1)" = "$UNIT_SHA256" ] || return 1
   systemctl --user is-enabled --quiet "$UNIT" || return 1
   systemctl --user is-active --quiet "$UNIT" || return 1
   at_least "$(timeout 30 "$DIR/bin/Runner.Listener" --version </dev/null 2>/dev/null | tail -n 1)" "$VERSION"`,
@@ -2020,7 +2027,7 @@ unset RUNNER_TOKEN
 printf 'label=%s\\nurl=%s\\n' "$LABEL" "$URL" | write_file "$DIR/.opscrew-runner" 0644
 # 5. deploy's systemd user service, which starts it at boot and again whenever it stops.
 install -d -m 0755 "$(dirname "$UNIT_FILE")"
-unit_text | write_file "$UNIT_FILE" 0644
+printf '%s' "$UNIT_B64" | base64 -d | write_file "$UNIT_FILE" 0644
 quiet systemctl --user daemon-reload || fail "deploy's systemd user manager could not read the runner's unit ($last)."
 quiet systemctl --user enable --now "$UNIT" || fail "The runner's service did not start (systemctl --user enable --now $UNIT: $last)."`,
     failed: "The runner is not registered and running.",

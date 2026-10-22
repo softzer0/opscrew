@@ -124,6 +124,8 @@ const RunnerSchema = z.object({
   registered: z.boolean(),
   /** deploy's systemd user service `opscrew-runner-<app>.service` is active. */
   active: z.boolean(),
+  /** That service's unit is the one OpsCrew writes now (`runnerUnitText`); false without one. */
+  unitCurrent: z.boolean(),
   /** `bin/Runner.Listener --version`, null when it could not be read. */
   version: z.string().nullable(),
   /** The label and repository it was registered with (OpsCrew's `.opscrew-runner`), or null. */

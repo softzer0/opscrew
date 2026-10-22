@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
-import { canonicalJson, OpsCrewError } from "@opscrew/core";
+import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { FakeHost } from "./__fixtures__/fake-host";
 import {
@@ -20,6 +20,7 @@ import { hostPlanHash } from "./hash";
 import { inspectHost, inspectRunners, inspectRunnersScript, inspectScript } from "./inspect";
 import { parseRunners, splitSections } from "./parse";
 import { planHost, planRunner, planTeardown, planUndo } from "./plan";
+import { runnerUnitText } from "./runner-unit";
 import { stepScripts } from "./steps";
 import type { DesiredRunner, HostPlan, HostStep } from "./types";
 
@@ -79,7 +80,7 @@ describe("the github-runner step", () => {
       'Install the GitHub Actions runner 2.338.0 for "shop", run as deploy, with the label opscrew-shop-prod',
     );
     expect(step.reason).toContain(
-      "As root, installs the runner's system libraries (those GitHub's installdependencies.sh picks for this release) and lets deploy's services run without a login (loginctl enable-linger deploy). Then, as deploy, it downloads actions-runner-linux-x64-2.338.0.tar.gz",
+      "As root, installs the runner's system libraries (those GitHub's installdependencies.sh picks for this release), lets deploy's services run without a login (loginctl enable-linger deploy), and restarts deploy's systemd user manager, and with it deploy's services, if it started before deploy joined the docker group. Then, as deploy, it downloads actions-runner-linux-x64-2.338.0.tar.gz",
     );
     expect(step.reason).toContain(`SHA-256 ${runner.sha256}`);
     expect(step.reason).toContain("extracts it to /srv/runners/shop,");
@@ -154,6 +155,7 @@ describe("the github-runner step", () => {
         app: "shop",
         registered: true,
         active: true,
+        unitCurrent: true,
         version: "2.338.0",
         label: "opscrew-shop-prod",
         repositoryUrl: "https://github.com/acme/shop",
@@ -194,6 +196,11 @@ describe("the github-runner step", () => {
       why: "it has the label opscrew-shop-staging, not opscrew-shop-prod",
     },
     { what: "a stopped service", change: { active: false }, why: "its service is not running" },
+    {
+      what: "an older unit (run.sh outside the docker group)",
+      change: { oldUnit: true },
+      why: "its service's unit is not the one OpsCrew writes now",
+    },
     // Another repository's runner is never installed over: see runner-host.test.ts.
   ])(
     "installs it again over its folder for $what, with a token fetched only then",
@@ -550,6 +557,7 @@ describe("the runner on a server OpsCrew created", () => {
         app: "shop",
         registered: true,
         active: true,
+        unitCurrent: true,
         version: "2.338.0",
         label: "opscrew-shop-prod",
         repositoryUrl: "https://github.com/acme/shop",
@@ -557,6 +565,21 @@ describe("the runner on a server OpsCrew created", () => {
     ]);
     const again = planRunner(facts, { app: "shop", runner: runnerDesired() });
     expect(runnerStepOf(again).state).toBe("in-place");
+  });
+
+  it("installs a runner with an older unit again, so its service gets the docker group", async () => {
+    const fake = cloudServer();
+    await applyApproved(fake, await cloudPlan(fake), { runnerToken: tokens().fetch });
+    const runner = fake.runners.get("shop");
+    if (runner) runner.oldUnit = true;
+    expect((await inspectRunners(fake)).runners[0]?.unitCurrent).toBe(false);
+    const plan = await cloudPlan(fake);
+    expect(runnerStepOf(plan).state).toBe("change");
+    expect(runnerStepOf(plan).reason).toContain(
+      "(its service's unit is not the one OpsCrew writes now)",
+    );
+    await applyApproved(fake, plan, { runnerToken: tokens().fetch });
+    expect(runnerStepOf(await cloudPlan(fake)).state).toBe("in-place");
   });
 
   it("removes it as deploy with a remove token once the plan has none, and leaves the first boot's parts", async () => {
@@ -621,21 +644,24 @@ describe("inspecting the runners", () => {
   it("parses each runner's line", () => {
     expect(
       parseRunners(
-        "shop yes active 2.338.0 opscrew-shop-prod https://github.com/acme/shop\nblog no inactive - - -\nnotes yes failed 2.x Notes ftp://x\n",
+        `shop yes active 2.338.0 opscrew-shop-prod https://github.com/acme/shop ${sha256Hex(runnerUnitText("shop"))}\nblog no inactive - - - -\nnotes yes failed 2.x Notes ftp://x ${sha256Hex(runnerUnitText("blog"))}\n`,
       ),
     ).toEqual([
       {
         app: "shop",
         registered: true,
         active: true,
+        unitCurrent: true,
         version: "2.338.0",
         label: "opscrew-shop-prod",
         repositoryUrl: "https://github.com/acme/shop",
       },
+      // notes has another app's unit.
       ...["blog", "notes"].map((app) => ({
         app,
         registered: app === "notes",
         active: false,
+        unitCurrent: false,
         version: null,
         label: null,
         repositoryUrl: null,
@@ -665,11 +691,22 @@ describe("inspecting the runners", () => {
         );
         h.write("/srv/runners/blog/config.sh", "#!/bin/sh\n");
         h.write("/srv/runners/Bad Name/.runner", "{}\n");
+        // The units in deploy's home: shop's is the current one, blog's an older one.
+        h.stub("getent", `echo "deploy:x:1000:1000::${h.root}/home/deploy:/bin/bash"`, {
+          log: false,
+        });
+        const units = "/home/deploy/.config/systemd/user";
+        h.write(`${units}/opscrew-runner-shop.service`, runnerUnitText("shop"));
+        h.write(
+          `${units}/opscrew-runner-blog.service`,
+          runnerUnitText("blog").replace(/^ExecStart=.*$/m, "ExecStart=/srv/runners/blog/run.sh"),
+        );
         const expected = [
           {
             app: "blog",
             registered: false,
             active: false,
+            unitCurrent: false,
             version: null,
             label: null,
             repositoryUrl: null,
@@ -678,6 +715,7 @@ describe("inspecting the runners", () => {
             app: "shop",
             registered: true,
             active: true,
+            unitCurrent: true,
             version: "2.338.0",
             label: "opscrew-shop-prod",
             repositoryUrl: "https://github.com/acme/shop",
@@ -832,25 +870,27 @@ echo '{}' > .runner
         return h;
       }
 
-      /** The unit OpsCrew writes for the runner in `dir`. */
-      const unitText = (dir: string) =>
-        [
-          "[Unit]",
-          "Description=GitHub Actions runner of shop (OpsCrew)",
-          "",
-          "[Service]",
-          `ExecStart=${dir}/run.sh`,
-          `WorkingDirectory=${dir}`,
-          "Restart=always",
-          "RestartSec=5",
-          "KillMode=process",
-          "KillSignal=SIGTERM",
-          "TimeoutStopSec=5min",
-          "",
-          "[Install]",
-          "WantedBy=default.target",
-          "",
-        ].join("\n");
+      /**
+       * The unit OpsCrew writes for shop's runner: run.sh through `sg docker`, so the runner has
+       * the docker group whatever groups deploy's user manager started with.
+       */
+      const UNIT_TEXT = [
+        "[Unit]",
+        "Description=GitHub Actions runner of shop (OpsCrew)",
+        "",
+        "[Service]",
+        `ExecStart=/usr/bin/sg docker -c "exec '/srv/runners/shop/run.sh'"`,
+        "WorkingDirectory=/srv/runners/shop",
+        "Restart=always",
+        "RestartSec=5",
+        "KillMode=control-group",
+        "KillSignal=SIGTERM",
+        "TimeoutStopSec=5min",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+      ].join("\n");
 
       it("checks the archive, gives the token to config.sh alone, and runs it as deploy's user service", async () => {
         const { setup, remove, keep } = await scriptsOf();
@@ -877,7 +917,8 @@ echo '{}' > .runner
           expect(h.read("/srv/runners/shop/.opscrew-runner")).toBe(
             "label=opscrew-shop-prod\nurl=https://github.com/acme/shop\n",
           );
-          expect(h.read(UNIT)).toBe(unitText(h.posix("/srv/runners/shop")));
+          expect(h.read(UNIT)).toBe(UNIT_TEXT);
+          expect(h.read(UNIT)).not.toContain(token);
           expect(h.run(setup.verify).status).toBe(0);
           expect(h.run(setup.check).stdout).toContain("state=in-place");
           // A newer version (updated by itself) is fine; an older one, another label or another
@@ -897,8 +938,14 @@ echo '{}' > .runner
           }
           h.write("/srv/runners/shop/.opscrew-runner", record);
           const unit = h.read(UNIT) ?? "";
-          h.write(UNIT, unit.replace("Restart=always", "Restart=no"));
-          expect(h.run(setup.check).stdout).toContain("state=change");
+          for (const changed of [
+            unit.replace("Restart=always", "Restart=no"),
+            // The unit OpsCrew wrote before: run.sh straight, without the docker group.
+            unit.replace(/^ExecStart=.*$/m, "ExecStart=/srv/runners/shop/run.sh"),
+          ]) {
+            h.write(UNIT, changed);
+            expect(h.run(setup.check).stdout).toContain("state=change");
+          }
           h.write(UNIT, unit);
           for (const state of ["/state/enabled", "/state/active"]) {
             rmSync(h.native(state));
@@ -1061,6 +1108,56 @@ echo '{}' > .runner
             "This server's release offers none of liblttng-ust1t64 liblttng-ust1 liblttng-ust0, which the GitHub Actions runner needs.",
           );
           expect(installed()).toEqual([]);
+        } finally {
+          h.dispose();
+        }
+      });
+
+      it("as root on a server you own: restarts deploy's user manager only when it runs without the docker group", async () => {
+        const { setup } = await scriptsOf();
+        const h = harness();
+        try {
+          h.stub("apt-get", "exit 0");
+          h.stub("apt-cache", "exit 0", { log: false });
+          h.stub("loginctl", "exit 0");
+          h.stub(
+            "getent",
+            '[ "$1" = group ] && [ "$2" = docker ] && echo "docker:x:988:deploy" && exit 0\nexit 2',
+            { log: false },
+          );
+          h.stub(
+            "systemctl",
+            '[ "$*" = "show -p MainPID --value user@1000.service" ] && cat "$S/manager-pid"\nexit 0',
+          );
+          const manager = (pid: string, groups: string) => {
+            h.write("/state/manager-pid", `${pid}\n`);
+            h.write(
+              "/proc/4242/status",
+              `Name:\tsystemd\nUid:\t1000\t1000\t1000\t1000\nGroups:\t${groups}\n`,
+            );
+          };
+          const restarts = () =>
+            h.calls().filter((call) => call === "systemctl restart user@1000.service");
+          // Started before deploy joined docker (a login while the server was set up).
+          manager("4242", "1000 ");
+          const run = h.run(setup.preApply ?? "");
+          expect(run.status, run.stderr).toBe(0);
+          expect(restarts()).toHaveLength(1);
+          const calls = h.calls();
+          expect(calls.indexOf("loginctl enable-linger deploy")).toBeLessThan(
+            calls.indexOf("systemctl restart user@1000.service"),
+          );
+          // With the group, or with no user manager running, it is left alone: a restart stops
+          // every service of deploy's, other runners too.
+          for (const [pid, groups] of [
+            ["4242", "988 1000 "],
+            ["0", "1000 "],
+          ] as const) {
+            manager(pid, groups);
+            h.clearCalls();
+            expect(h.run(setup.preApply ?? "").status).toBe(0);
+            expect(restarts()).toEqual([]);
+          }
         } finally {
           h.dispose();
         }

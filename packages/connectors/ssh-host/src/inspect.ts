@@ -241,7 +241,7 @@ addon portainer ${PORTAINER_DIR} admin_password`;
  * Each app's GitHub Actions runner in its folder of /srv/runners: whether it registered, the
  * state of deploy's user service `opscrew-runner-<app>.service`, its version, and the label and
  * repository OpsCrew registered it with (in its own `.opscrew-runner`: the runner's `.runner`
- * holds no labels). The service's state and the version (from the runner's own binary) are read as
+ * holds no labels), and the SHA-256 of its unit in deploy's home. The service's state and the version (from the runner's own binary) are read as
  * deploy, its owner: through `runuser` when inspection runs as root, directly when the login is
  * deploy (a server OpsCrew created). Not yet checked on a real server (spike item 4): `.runner`,
  * and that `--version` prints only the version.
@@ -249,6 +249,7 @@ addon portainer ${PORTAINER_DIR} admin_password`;
 const RUNNERS_SNIPPET = `${APP_NAME_FN}
 if [ "$(id -u)" = 0 ]; then as_deploy() { runuser -u deploy -- "$@"; }; else as_deploy() { "$@"; }; fi
 uid=$(id -u deploy 2>/dev/null) || uid=''
+units="$(getent passwd deploy | cut -d: -f6)/.config/systemd/user"
 if [ -n "$uid" ] && [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
   for d in "${RUNNERS_DIR}"/*; do
     app_name "\${d##*/}" || continue
@@ -262,7 +263,11 @@ if [ -n "$uid" ] && [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
     fi
     label=$(sed -n 's/^label=//p' "$d/.opscrew-runner" 2>/dev/null) || label=''
     url=$(sed -n 's/^url=//p' "$d/.opscrew-runner" 2>/dev/null) || url=''
-    echo "\${d##*/} $registered \${state:-inactive} \${version:--} \${label:--} \${url:--}"
+    unit=-
+    if [ -f "$units/opscrew-runner-\${d##*/}.service" ]; then
+      unit=$(sha256sum "$units/opscrew-runner-\${d##*/}.service" | cut -d ' ' -f 1)
+    fi
+    echo "\${d##*/} $registered \${state:-inactive} \${version:--} \${label:--} \${url:--} $unit"
   done
 fi`;
 

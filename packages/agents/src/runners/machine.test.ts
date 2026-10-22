@@ -302,6 +302,7 @@ describe.skipIf(!findExecutable("git"))("a runner machine", () => {
           app: "shop",
           registered: true,
           active: true,
+          unitCurrent: true,
           version: "2.338.0",
           label: "opscrew-shop-prod",
           repositoryUrl: "https://github.com/someone/shop",

@@ -199,10 +199,15 @@ describe("cloud-init template", () => {
       expect.arrayContaining(["libicu74", "libkrb5-3", "liblttng-ust1t64", "libssl3t64", "zlib1g"]),
     );
     const commands = config.runcmd.map((c) => (Array.isArray(c) ? c.join(" ") : c));
-    expect(commands).toContain("loginctl enable-linger deploy");
-    expect(commands.indexOf("loginctl enable-linger deploy")).toBeGreaterThan(
-      commands.indexOf("usermod -aG docker deploy"),
-    );
+    // Docker, then deploy in its group, then lingering: the user manager lingering starts then
+    // has the docker group (it keeps the groups it started with).
+    const order = [
+      "/usr/local/sbin/opscrew-install-docker",
+      "usermod -aG docker deploy",
+      "loginctl enable-linger deploy",
+    ].map((command) => commands.indexOf(command));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(commands).toContain(
       "install -d -m 0750 -o deploy -g deploy /srv/edge /srv/apps /srv/data /srv/runners",
     );

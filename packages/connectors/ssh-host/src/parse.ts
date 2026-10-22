@@ -3,6 +3,7 @@
  * output: unknown lines are ignored and missing values fall back to "unknown" defaults, which
  * the planner treats conservatively.
  */
+import { sha256Hex } from "@opscrew/core";
 import {
   APPS_DIR,
   DATA_DIR,
@@ -23,6 +24,7 @@ import {
   ServiceEnvFileSchema,
   type WebFilterRules,
 } from "./facts";
+import { runnerUnitText } from "./runner-unit";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -581,18 +583,19 @@ export function parseAddons(text: string): Map<string, AddonLine> {
 }
 
 /**
- * The runners section: `<app> <yes|no> <systemctl is-active> <version|-> <label|-> <url|->` for
- * each app's runner (see `RUNNERS_SNIPPET`).
+ * The runners section: `<app> <yes|no> <systemctl is-active> <version|-> <label|-> <url|->
+ * <unit sha256|->` for each app's runner (see `RUNNERS_SNIPPET`).
  */
 export function parseRunners(text: string): RunnerFact[] {
   return linesOf(text).flatMap((line) => {
-    const [app, registered, state, version, label, url] = line.split(/\s+/);
+    const [app, registered, state, version, label, url, unit] = line.split(/\s+/);
     if (!app || !registered) return [];
     return [
       {
         app,
         registered: registered === "yes",
         active: state === "active",
+        unitCurrent: unit === sha256Hex(runnerUnitText(app)),
         version: version && /^\d+\.\d+\.\d+$/.test(version) ? version : null,
         label: label && /^opscrew-[a-z0-9-]+$/.test(label) ? label : null,
         repositoryUrl:

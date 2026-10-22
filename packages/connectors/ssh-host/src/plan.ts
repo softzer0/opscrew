@@ -344,9 +344,9 @@ function runnerInstall(app: string, runner: DesiredRunner, runAs: RunAs): string
   const archive = `actions-runner-${runner.asset}-${runner.version}.tar.gz`;
   const first =
     runAs === "root"
-      ? "As root, installs the runner's system libraries (those GitHub's installdependencies.sh picks for this release) and lets deploy's services run without a login (loginctl enable-linger deploy). Then, as deploy, it downloads"
+      ? "As root, installs the runner's system libraries (those GitHub's installdependencies.sh picks for this release), lets deploy's services run without a login (loginctl enable-linger deploy), and restarts deploy's systemd user manager, and with it deploy's services, if it started before deploy joined the docker group. Then, as deploy, it downloads"
       : "As deploy (the server's first boot installed the runner's system libraries and lets deploy's services run without a login), it downloads";
-  return `${first} ${archive} from GitHub and checks it against the SHA-256 ${runner.sha256}, extracts it to ${runnerDir(app)}, registers it with ${runner.repositoryUrl} as ${runner.name} with a registration token fetched while this plan is applied (never part of this plan), and runs it as deploy's systemd user service ${runnerUnit(app)}. The deploy job then runs on this server, and GitHub never connects to it. The runner updates itself.`;
+  return `${first} ${archive} from GitHub and checks it against the SHA-256 ${runner.sha256}, extracts it to ${runnerDir(app)}, registers it with ${runner.repositoryUrl} as ${runner.name} with a registration token fetched while this plan is applied (never part of this plan), and runs it as deploy's systemd user service ${runnerUnit(app)} in the docker group (sg docker). The deploy job then runs on this server, and GitHub never connects to it. The runner updates itself.`;
 }
 
 interface SetupContext {
@@ -1144,6 +1144,7 @@ function runnerDifferences(found: RunnerFact, runner: DesiredRunner): string[] {
     );
   }
   if (!found.active) why.push("its service is not running");
+  if (!found.unitCurrent) why.push("its service's unit is not the one OpsCrew writes now");
   return why;
 }
 
@@ -1151,7 +1152,7 @@ function runnerDifferences(found: RunnerFact, runner: DesiredRunner): string[] {
  * The app's GitHub Actions runner (`runner: server`): installed when the caller passes one, and
  * removed when it does not and the app has one (its deploy job runs elsewhere now).
  * It is in place once registered with the planned label and repository, at the pinned version or
- * newer (it updates itself), with its service active. Otherwise it is installed again over its
+ * newer (it updates itself), with its service active and its unit OpsCrew's current one. Otherwise it is installed again over its
  * folder, registered again with `--replace`, and its service restarted. `runAs` is how the step
  * runs: as root on a server the user owns, as the login (deploy) on a server OpsCrew created.
  */

@@ -35,6 +35,7 @@ const MOVED = [
   "/var/log/opscrew",
   "/usr/local/sbin/opscrew-web-filter",
   "/etc/systemd/system",
+  "/proc/",
 ];
 
 const SCRIPT_PATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
