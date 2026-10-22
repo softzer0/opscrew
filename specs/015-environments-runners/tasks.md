@@ -405,6 +405,8 @@ Effort`.
       - removal refused while an environment uses the machine.
     - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. On a local runner that isn't Linux, the workflow runs the pinned Linux `pack` and `railpack` inside a pinned Linux container with Docker's socket, so every builder works there (the founder, 2026-10-22; T1517c). `env add`'s target question offers "This computer" once (today `interview/questions.ts` and `environments/add.ts` both add it; T1512b's review). An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
     - **Provision and destroy** of an environment with `runner: host` add and remove its `github-runner` step on the machine's host plan, approved by that plan's hash. Its deploy secrets include the SSH connection secrets, as for a GitHub-hosted job.
+    - **`env add` with an own server** inspects it as the interview does, before design, rather than only recording it (T1512a's report).
+    - **`planWhere`** gives `--env prod` when the app has several environments, as the CLI's commands do (T1512a's report).
     - **`status` and `secure`** report the machine's runners through `runnerStatus`. Its wording (`runners/status.ts`) names the runner machine for `runner: host`, not "the server's runner" (T1517a's report).
     - **Tests:** add, apply and remove a machine; two environments on one machine; destroy removing only one environment's runner; the refusals; no token or address in any plan or committed file.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
@@ -416,7 +418,8 @@ Effort`.
   - Depends: T1517d, T1512a, T1512b
   - Accept:
     - **The CLI:** `opscrew runner host add <name> --ssh <user@host[:port]> [--key <file>]`, `runner host remove <name>` and `runner host list`, plus `env add|set --runner host --runner-host <name> [--build runner]`.
-    - **MCP:** matching tools, with the host plan's approval dialog.
+    - **MCP:** matching tools, with the host plan's approval dialog. `opscrew_plan` and `opscrew_apply` handle a localhost environment's local plan and its hash (T1512a's report).
+    - **`promote`'s `waiting` result** (T1508d) shows as waiting in the CLI and `opscrew_promote`, with the run's URL and the command to record it after the reviewer approves. It is never shown as a failure.
     - **The guide:** `runners.md` explains runner machines and builds on your own hardware: the architecture rule, why the production server never builds, and that 016's private network will let them reach servers without public SSH.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
