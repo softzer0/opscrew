@@ -6,8 +6,10 @@ import { DIGEST_REF_PATTERN } from "./shared";
  * followed by `main();`). It is plain JavaScript in the committed workflow, so the user can read it
  * and it needs no action or download; the tests run this exact text.
  *
- * `prunable` is the pure selection. `main` reads `IMAGE` (the running image), `PREVIOUS` (the image
- * that ran before, empty on the first deploy), `KEEP` (absent: delete only the intermediate
+ * `prunable` is the pure selection, which never deletes a version an environment's label tags
+ * (`opscrew-<env>` or `opscrew-<env>-previous`, from the label job). `main` reads `IMAGE` (the
+ * running image), `PREVIOUS` (the image that ran before, empty on the first deploy), `KEEP`
+ * (absent: delete only the intermediate
  * images), `TOKEN`, `GITHUB_REPOSITORY` and `GITHUB_ACTOR`; lists the package's versions through
  * the GitHub API and the image indexes' children from GitHub Container Registry, and deletes what
  * `prunable` selects. Any error before the first deletion deletes nothing. The image reference
@@ -25,14 +27,16 @@ export const RETENTION_SCRIPT = String.raw`// OpsCrew image retention (opscrew/p
  * the build-<commit> intermediates and what only they list.
  * protect: digests never deleted: the running and the previous image.
  *
- * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
- * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
- * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
- * signatures, and untagged versions nothing kept lists.
+ * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
+ * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
+ * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
+ * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
+ * <commit> versions with their signatures, and untagged versions nothing kept lists.
  */
 function prunable(versions, children, keep, protect) {
   const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
   const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+  const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
   const subject = (tag) => {
     const match = /^sha256-([0-9a-f]{64})(\.[a-z]+)?$/.exec(tag);
     return match ? "sha256:" + match[1] : undefined;
@@ -41,6 +45,7 @@ function prunable(versions, children, keep, protect) {
   const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
 
   const kept = new Set(protect);
+  for (const v of versions) if (v.tags.some(label)) kept.add(v.digest);
   if (keep === undefined) {
     for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
   } else {

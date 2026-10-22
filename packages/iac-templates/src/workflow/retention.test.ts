@@ -149,6 +149,21 @@ describe("prunable", () => {
     );
   });
 
+  it("keeps every version an environment's label tags, however old, with what it lists", () => {
+    // prod runs an old image and ran an older one before; another environment's previous one is
+    // labelled only (its commit tag moved to a rebuild).
+    const prodRuns = push("9", 0, [commit(90), "opscrew-prod"]);
+    const prodBefore = push("8", 0, [commit(80), "opscrew-prod-previous"]);
+    const labelOnly = push("7", 0, ["opscrew-eu-staging-previous"]);
+    const labelled = [prodRuns, prodBefore, labelOnly];
+    const all = [...versions, ...labelled.flatMap((p) => p.versions)];
+    const listed = Object.assign({}, children, ...labelled.map((p) => p.children));
+    expect(
+      prunable(all, listed, 2, [e.index.digest, d.index.digest]).sort((x, y) => x - y),
+    ).toEqual(ids([...a.versions, ...b.versions, ...c.versions]));
+    expect(prunable(all, listed, undefined, [e.index.digest])).toEqual([]);
+  });
+
   it("deletes untagged versions nothing kept lists, such as an old buildcache", () => {
     const stale = version(digest("7", "1"), [], 2);
     const deleted = prunable([...versions, stale], children, 10, [e.index.digest]);
@@ -316,6 +331,17 @@ describe("the retention step's program", () => {
     expect(result.log).toContain(`Deleted ${a.index.digest} (${commit(1)})`);
   });
 
+  it("never deletes a version an environment's label tags", async () => {
+    // The package as GitHub lists it after prod was promoted twice from staging.
+    const prodRuns = push("a", 1, [commit(1), "opscrew-prod"]);
+    const prodBefore = push("b", 2, [commit(2), "opscrew-prod-previous"]);
+    const api = github({ pushes: [prodRuns, prodBefore, c, push("d", 4), push("e", 5)] });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(api.deleted()).toEqual(c.versions.map((v) => `DELETE ${base}/${v.id}`));
+    expect(result.log[0]).toBe("The package has 15 image versions; deleting 3.");
+  });
+
   it("uses the organization's packages API for an organization", async () => {
     const api = github({ type: "Organization", pushes });
     expect((await runMain(api)).exitCode).toBeUndefined();
@@ -404,7 +430,11 @@ describe("the retention job", () => {
   it("when off, runs only to delete Buildpacks' and Railpack's intermediate images", () => {
     const off = withPlan(serverPlan(), { imageRetention: { enabled: false } });
     expect(jobs(off).prune).toBeUndefined();
-    expect(Object.keys(jobs(withBuild(off, "own-dockerfile")))).toEqual(["build", "deploy"]);
+    expect(Object.keys(jobs(withBuild(off, "own-dockerfile")))).toEqual([
+      "build",
+      "deploy",
+      "label",
+    ]);
     for (const builder of ["buildpacks", "railpack"] as const) {
       const prune = jobs(withBuild(off, builder)).prune;
       expect(prune.steps[0].name).toBe("Delete the intermediate build images");

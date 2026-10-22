@@ -98,6 +98,50 @@ export function serverPlan(): DeployPlan {
   return testPlan({ domain: "shop.example.com" });
 }
 
+/** The shared test plan on the localhost target (edge ports 8443 and 8080), without DNS. */
+export function localhostPlan(): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...testPlan(),
+    target: {
+      provider: "localhost",
+      mode: "local-compose",
+      arch: "amd64",
+      ports: { https: 8443, http: 8080 },
+      image: "registry",
+      edge: "caddy",
+    },
+  });
+}
+
+/**
+ * `plan` as one environment's plan, as design writes it: with a `name`, the app name
+ * `<app>-<name>`, the domain `<name>-<domain>` and the workflow `opscrew-deploy-<name>.yml`;
+ * without one, prod's plan with its `environment` block.
+ */
+export function inEnvironment(
+  plan: DeployPlan,
+  environment: {
+    name?: string;
+    deploySource?: NonNullable<DeployPlan["environment"]>["deploySource"];
+    runner?: NonNullable<DeployPlan["environment"]>["runner"];
+    secrets?: NonNullable<DeployPlan["environment"]>["secrets"];
+  },
+): DeployPlan {
+  const { name } = environment;
+  const { domain } = plan.dns;
+  return DeployPlanSchema.parse({
+    ...plan,
+    environment,
+    ...(name === undefined
+      ? {}
+      : {
+          app: { ...plan.app, name: `${plan.app.name}-${name}` },
+          dns: { ...plan.dns, ...(domain === undefined ? {} : { domain: `${name}-${domain}` }) },
+          cicd: { ...plan.cicd, workflowPath: `.github/workflows/opscrew-deploy-${name}.yml` },
+        }),
+  });
+}
+
 /**
  * `plan` on SQLite: `storage.sqlite.dir` `dir` (default `storage`), the `recreate` strategy it
  * needs, and for the user's own Dockerfile the folder the app runs in (`workdir`).

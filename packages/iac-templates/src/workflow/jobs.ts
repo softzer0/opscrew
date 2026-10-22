@@ -1,19 +1,33 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
-import { sealsImage } from "./build";
+import { buildJob, sealsImage } from "./build";
 import { RETENTION_SCRIPT } from "./retention";
-import { block, DIGEST_REF_PATTERN, GHCR_LOGIN, job, run } from "./shared";
+import {
+  block,
+  CHECK_IMAGE,
+  DIGEST_REF_PATTERN,
+  environmentName,
+  GHCR_LOGIN,
+  imageJob,
+  imageOutput,
+  job,
+  promoted,
+  run,
+} from "./shared";
 
 const IMAGE_ENV = "    IMAGE: ${{ needs.build.outputs.image }}";
 
-/** Stops a step whose `$IMAGE` is not a GHCR digest reference. */
-const CHECK_IMAGE = [
-  `if [[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-  '  echo "::error::The build job did not report the image digest; re-run the workflow."',
-  "  exit 1",
-  "fi",
+/** The pinned cosign, from Sigstore's installer action. */
+const INSTALL_COSIGN = [
+  "- name: Install cosign",
+  `  uses: ${ACTIONS.cosignInstaller}`,
+  "  with:",
+  `    cosign-release: ${TOOLS.cosign.version}`,
 ];
+
+/** The issuer of the keyless signatures GitHub Actions makes. */
+const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 
 /**
  * `supplyChain.sign`: a keyless cosign signature of the image digest, from the only job that holds
@@ -26,15 +40,158 @@ function signJob(): string[] {
     needs: "build",
     permissions: ["id-token: write", "packages: write"],
     steps: [
-      "- name: Install cosign",
-      `  uses: ${ACTIONS.cosignInstaller}`,
-      "  with:",
-      `    cosign-release: ${TOOLS.cosign.version}`,
+      ...INSTALL_COSIGN,
       ...GHCR_LOGIN,
       "- name: Sign the image (keyless, recorded in the public Sigstore log)",
       "  env:",
       IMAGE_ENV,
       ...run(["set -euo pipefail", ...CHECK_IMAGE, 'cosign sign --yes "$IMAGE"']),
+    ],
+  });
+}
+
+/** jq's filter for every `runDetails.builder.id` in the provenance, at any depth (per platform). */
+const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
+
+/**
+ * The provenance check of a promoted environment's digest (`$DIGEST`): the image's SLSA provenance
+ * (`docker buildx imagetools inspect`) must name exactly one GitHub Actions run, as buildx records
+ * it in `runDetails.builder.id`; that run must be this repository's, its API record must show the
+ * default branch (`$DEFAULT_BRANCH`), and the image tagged with the run's commit must be this
+ * digest. Outputs `image`, `tag` (`<name>:<commit>`) and `identity`, the signing identity of the
+ * run's workflow on that branch.
+ */
+const PROVENANCE_CHECK = [
+  "set -euo pipefail",
+  'if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then',
+  '  echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\`opscrew promote\\`, which fills it in."',
+  "  exit 1",
+  "fi",
+  'name="ghcr.io/${GITHUB_REPOSITORY,,}"',
+  'image="$name@$DIGEST"',
+  'if ! provenance="$(docker buildx imagetools inspect "$image" --format \'{{json .Provenance}}\')"; then',
+  '  echo "::error::GitHub Container Registry has no image $image. Promote an image another environment runs: \\`opscrew promote\\` reads it from that environment\'s label."',
+  "  exit 1",
+  "fi",
+  "# buildx names the run that built the image in runDetails.builder.id (per platform).",
+  `mapfile -t runs < <(jq -r '${BUILDER_ID_FILTER}' <<< "$provenance" | sort -u)`,
+  'if [[ "${#runs[@]}" -ne 1 || ! "${runs[0]}" =~ ^https://github\\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)/attempts/[0-9]+$ ]]; then',
+  "  echo \"::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. Promote only an image this repository's deploy workflow built.\"",
+  "  exit 1",
+  "fi",
+  'built_in="${BASH_REMATCH[1]}"',
+  'run_id="${BASH_REMATCH[2]}"',
+  'if [[ "${built_in,,}" != "${GITHUB_REPOSITORY,,}" ]]; then',
+  '  echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."',
+  "  exit 1",
+  "fi",
+  'if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq \'"\\(.head_branch) \\(.head_sha) \\(.path)"\')"; then',
+  '  echo "::error::GitHub shows no run $run_id in this repository, which the image\'s provenance names as its build. OpsCrew promotes only images this repository built."',
+  "  exit 1",
+  "fi",
+  'read -r branch commit workflow <<< "$record"',
+  "# The run's path can end with @<ref>, which the signing identity carries separately.",
+  'workflow="${workflow%%@*}"',
+  'if [[ "$branch" != "$DEFAULT_BRANCH" ]]; then',
+  '  echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."',
+  "  exit 1",
+  "fi",
+  'if [[ "$(docker buildx imagetools inspect "$name:$commit" --format \'{{.Manifest.Digest}}\')" != "$DIGEST" ]]; then',
+  '  echo "::error::The image is not the one tagged with its build\'s commit ($commit): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."',
+  "  exit 1",
+  "fi",
+  "{",
+  '  echo "image=$image"',
+  '  echo "tag=$name:$commit"',
+  '  echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"',
+  '} >> "$GITHUB_OUTPUT"',
+  'echo "Deploying \\`$image\\`, built by run $run_id from \\`$commit\\` on \\`$branch\\`." >> "$GITHUB_STEP_SUMMARY"',
+];
+
+/**
+ * A promoted environment's first job, on GitHub's machines with `actions: read` and
+ * `packages: read` only: the digest input's provenance check ({@link PROVENANCE_CHECK}) and, with
+ * `supplyChain.sign`, its cosign signature by the build run's workflow. Its outputs `image` and
+ * `tag` stand for the build job's.
+ */
+function verifyJob(plan: DeployPlan): string[] {
+  return job({
+    id: "verify",
+    name: "Check where the image was built",
+    permissions: ["actions: read", "packages: read"],
+    outputs: [
+      "image: ${{ steps.provenance.outputs.image }}",
+      "tag: ${{ steps.provenance.outputs.tag }}",
+    ],
+    steps: [
+      ...GHCR_LOGIN,
+      "- id: provenance",
+      "  name: Check the image's provenance",
+      "  env:",
+      "    DIGEST: ${{ inputs.digest }}",
+      "    DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+      "    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+      ...run(PROVENANCE_CHECK),
+      ...(plan.supplyChain.sign
+        ? [
+            ...INSTALL_COSIGN,
+            "- name: Check the image's signature",
+            "  env:",
+            "    IMAGE: ${{ steps.provenance.outputs.image }}",
+            "    IDENTITY: ${{ steps.provenance.outputs.identity }}",
+            ...run([
+              "set -euo pipefail",
+              `if ! cosign verify "$IMAGE" --certificate-identity "$IDENTITY" --certificate-oidc-issuer ${GITHUB_OIDC_ISSUER} > /dev/null; then`,
+              '  echo "::error::The image\'s signature does not verify for $IDENTITY, the workflow that built it. With supplyChain.sign on, OpsCrew deploys only images their build signed."',
+              "  exit 1",
+              "fi",
+              'echo "The signature verifies for $IDENTITY."',
+            ]),
+          ]
+        : []),
+    ],
+  });
+}
+
+/**
+ * The job that gives the deploy its image: the build, or for a promoted environment the check of
+ * the digest it was given ({@link verifyJob}).
+ */
+export function imageSourceJob(plan: DeployPlan): string[] {
+  return promoted(plan) ? verifyJob(plan) : buildJob(plan);
+}
+
+/**
+ * After a healthy deploy, holding only `packages: write`: tags the running image
+ * `opscrew-<env>` and the one that ran before it `opscrew-<env>-previous`, with a tag-only
+ * `imagetools create` that keeps the digest (and so its provenance and signature). `opscrew
+ * promote` reads these labels, and image retention keeps every version that carries one.
+ */
+function labelJob(plan: DeployPlan): string[] {
+  const label = `opscrew-${environmentName(plan)}`;
+  return job({
+    id: "label",
+    name: "Label the deployed image",
+    needs: [imageJob(plan), "deploy"],
+    permissions: ["packages: write"],
+    steps: [
+      ...GHCR_LOGIN,
+      `- name: Tag the image ${label}, and the one before it ${label}-previous`,
+      "  env:",
+      `    IMAGE: ${imageOutput(plan, "image")}`,
+      "    PREVIOUS: ${{ needs.deploy.outputs.previous }}",
+      ...run([
+        "set -euo pipefail",
+        ...CHECK_IMAGE,
+        'name="${IMAGE%@*}"',
+        "# Tag-only: the image keeps its digest, so its provenance and signature stay valid. The",
+        "# running label first, so a failed previous label never leaves it stale.",
+        `docker buildx imagetools create --tag "$name:${label}" "$IMAGE"`,
+        `echo "Labelled \\\`$IMAGE\\\` as \\\`${label}\\\`." >> "$GITHUB_STEP_SUMMARY"`,
+        `if [[ "\${PREVIOUS:-}" =~ ${DIGEST_REF_PATTERN} && "$PREVIOUS" != "$IMAGE" ]]; then`,
+        `  docker buildx imagetools create --tag "$name:${label}-previous" "$PREVIOUS"`,
+        "fi",
+      ]),
     ],
   });
 }
@@ -77,7 +234,7 @@ function deployTagsJob(plan: DeployPlan): string[] {
  * Image retention (FR-1229), after a healthy deploy, holding only `packages: write`: deletes the
  * intermediate `build-<commit>` versions a seal build leaves ({@link sealsImage}) and, with
  * `cicd.imageRetention.enabled`, every `<commit>` version but the newest `keep`, never the running or
- * the previous image (see {@link RETENTION_SCRIPT}).
+ * the previous image, nor one an environment's label tags (see {@link RETENTION_SCRIPT}).
  */
 function retentionJob(plan: DeployPlan): string[] {
   const { enabled, keep } = plan.cicd.imageRetention;
@@ -102,13 +259,18 @@ function retentionJob(plan: DeployPlan): string[] {
 
 /**
  * The jobs after `build` and `deploy`, each with only the permission it needs: signing
- * (`supplyChain.sign`), the deploy tag (`cicd.deployTags.enabled`) and image retention (for
- * `cicd.imageRetention.enabled`, or to delete the intermediate images of a seal build).
+ * (`supplyChain.sign`), the deploy tag (`cicd.deployTags.enabled`), image retention (for
+ * `cicd.imageRetention.enabled`, or to delete the intermediate images of a seal build) and the
+ * environment's image labels ({@link labelJob}). A promoted environment builds nothing, so it only
+ * labels: the workflow of the environment that builds signs, tags and prunes.
  */
 export function afterDeployJobs(plan: DeployPlan): string[] {
+  if (promoted(plan)) return ["", ...labelJob(plan)];
   return [
     ...(plan.supplyChain.sign ? ["", ...signJob()] : []),
     ...(plan.cicd.deployTags.enabled ? ["", ...deployTagsJob(plan)] : []),
     ...(plan.cicd.imageRetention.enabled || sealsImage(plan) ? ["", ...retentionJob(plan)] : []),
+    "",
+    ...labelJob(plan),
   ];
 }

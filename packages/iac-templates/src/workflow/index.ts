@@ -7,16 +7,23 @@ import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
 import { sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
-import { buildJob } from "./build";
 import { edgeCheckStep } from "./edge-check";
-import { afterDeployJobs } from "./jobs";
-import { renderPortainerWorkflow } from "./portainer";
+import { afterDeployJobs, imageSourceJob } from "./jobs";
+import { PORTAINER_DEPLOY_SECRETS, renderPortainerWorkflow } from "./portainer";
 import {
+  block,
+  CHECK_IMAGE,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
   deployJob,
+  deploySecretName,
+  environmentName,
   healthPath,
+  imageOutput,
+  promoted,
+  promotedAbout,
   secret,
+  selfHosted,
   serviceEnvSecret,
   workflowStart,
 } from "./shared";
@@ -26,6 +33,9 @@ export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export {
   buildRunner,
   DEPLOY_SECRETS,
+  deploySecretName,
+  githubEnvironment,
+  runnerLabel,
   serviceEnvSecret,
   sqliteFolder,
   supercronicArch,
@@ -67,11 +77,17 @@ function checkSshPort(port: number | undefined): void {
   }
 }
 
-/** URL the deploy job polls after starting the new version. */
+/**
+ * URL the deploy job polls after starting the new version: the health path on the app's domain;
+ * without one, on the server's address from GitHub's machines, or on the machine's own edge
+ * (`127.0.0.1`, at the localhost target's HTTP port) from a self-hosted runner.
+ */
 export function healthUrl(plan: DeployPlan): string {
-  return plan.dns.domain
-    ? `https://${plan.dns.domain}${healthPath(plan)}`
-    : `http://${secret(DEPLOY_SECRETS.host)}${healthPath(plan)}`;
+  const path = healthPath(plan);
+  if (plan.dns.domain) return `https://${plan.dns.domain}${path}`;
+  if (!selfHosted(plan)) return `http://${secret(plan, DEPLOY_SECRETS.host)}${path}`;
+  const port = plan.target.provider === "localhost" ? `:${plan.target.ports.http}` : "";
+  return `http://127.0.0.1${port}${path}`;
 }
 
 /**
@@ -176,33 +192,320 @@ function remote(script: readonly string[]): string[] {
   return [...script.map((line) => (line.length > 0 ? `    ${line}` : "")), "    REMOTE"];
 }
 
+/** A shell command, wrapped to run on the machine the app runs on. */
+type On = (command: string) => string;
+
+/** Over SSH as `deploy`, from GitHub's machines (after `ssh_opts`). */
+const OVER_SSH: On = (command) => `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" '${command}'`;
+
+/** In a subshell on the machine of the self-hosted runner itself. */
+const HERE: On = (command) => `(${command})`;
+
 /** Shown when the origin certificate's deploy secret holds no certificate and key. */
-const ORIGIN_TLS_MISSING = `::error::The deploy secret ${DEPLOY_SECRETS.originTls} must hold the app's Cloudflare origin certificate, then its private key. Run \\\`opscrew provision\\\` again to set it, then deploy again.`;
+function originTlsMissing(plan: DeployPlan): string {
+  return `::error::The deploy secret ${deploySecretName(plan, DEPLOY_SECRETS.originTls)} must hold the app's Cloudflare origin certificate, then its private key. Run \\\`opscrew provision\\\` again to set it, then deploy again.`;
+}
 
 /**
- * The upload's lines for origin TLS (bash, after `ssh_opts`): the certificate and the key from
- * {@link DEPLOY_SECRETS}' `originTls`, each on ssh's stdin (never in a command line or the log),
- * into `/srv/edge/tls/<app>/` (a 0700 folder, files 0600) as `origin.pem.new` and
- * `origin.key.new`, which the start step puts in place under the edge's lock, with `pull.pem` from
- * the uploaded edge files.
+ * The upload's lines for origin TLS: the certificate and the key from {@link DEPLOY_SECRETS}'
+ * `originTls`, each on the stdin of a command `on` the machine (never in a command line or the
+ * log), into `dir`, the app's origin TLS folder (`/srv/edge/tls/<app>`, 0700, files 0600), as
+ * `origin.pem.new` and `origin.key.new`, which the start step puts in place under the edge's lock,
+ * with `pull.pem` from the uploaded edge files.
  */
-function originTlsUpload(plan: DeployPlan): string[] {
-  const dir = `${EDGE_DIR}/tls/${plan.app.name}`;
+function originTlsUpload(plan: DeployPlan, dir: string, on: On): string[] {
   const value = `"$${DEPLOY_SECRETS.originTls}"`;
-  const ssh = 'ssh "${ssh_opts[@]}" "deploy@${HOST}"';
   return [
     `    case "\${${DEPLOY_SECRETS.originTls}:-}" in`,
     '      *"-----BEGIN CERTIFICATE-----"*"PRIVATE KEY-----"*) ;;',
-    `      *) echo "${ORIGIN_TLS_MISSING}"; exit 1 ;;`,
+    `      *) echo "${originTlsMissing(plan)}"; exit 1 ;;`,
     "    esac",
-    `    printf '%s\\n' ${value} | sed '/-BEGIN [A-Z ]*PRIVATE KEY-/,$d' | ${ssh} 'umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && cat > ${dir}/origin.pem.new'`,
-    `    printf '%s\\n' ${value} | sed -n '/-BEGIN [A-Z ]*PRIVATE KEY-/,$p' | ${ssh} 'umask 077 && cat > ${dir}/origin.key.new'`,
+    `    printf '%s\\n' ${value} | sed '/-BEGIN [A-Z ]*PRIVATE KEY-/,$d' | ${on(`umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && cat > ${dir}/origin.pem.new`)}`,
+    `    printf '%s\\n' ${value} | sed -n '/-BEGIN [A-Z ]*PRIVATE KEY-/,$p' | ${on(`umask 077 && cat > ${dir}/origin.key.new`)}`,
+  ];
+}
+
+/** The env files the upload writes next to compose.yaml, each from its deploy secret. */
+interface EnvFile {
+  file: string;
+  secret: string;
+}
+
+/**
+ * Each env file onto the machine on the stdin of a command `on` it, from its secret (the step's
+ * variable of the same name), never in a command line or the log; `dir` is the app's folder.
+ */
+function envFileWrites(envFiles: readonly EnvFile[], dir: string, on: On): string[] {
+  return envFiles.map(
+    (env) =>
+      `    printf '%s\\n' "\${${env.secret}:-}" | ${on(`umask 077 && cat > ${dir}/${env.file}`)}`,
+  );
+}
+
+/** Saves the running version as `.env.previous` and prints its image, in the app's folder. */
+const SAVE_PREVIOUS =
+  'rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi';
+
+/** How the start and rollback steps reach the app's machine: over SSH, or on the runner's own. */
+interface Reach {
+  /** The steps' `env:` lines for it. */
+  env: readonly string[];
+  /** The scripts' first lines after their checks (`ssh_opts`, or the app's folder `dir`). */
+  prelude: readonly string[];
+  /** The command that runs {@link SAVE_PREVIOUS} in the app's folder. */
+  savePrevious: string;
+  /** Logs in to GHCR with `$REGISTRY_TOKEN` in the app's own Docker settings (script lines). */
+  login: readonly string[];
+  /** The shell there, which reads a script on its stdin (`-s`). */
+  sh: string;
+  /** What to do when the rollback failed. */
+  stuck: string;
+}
+
+/**
+ * The start step. Saving the running version is the first thing done on the machine (its image is
+ * the job's `previous` output), and the rollback only switches back when `.env` already names this
+ * run's image, so a failure before the switch never restores an older version. The registry login
+ * goes into the app's own Docker settings: another app's deploy logs out of the same registry.
+ */
+function startStep(plan: DeployPlan, edgeFiles: EdgeFiles, reach: Reach): string[] {
+  return [
+    "- id: start",
+    "  name: Start the new version",
+    "  env:",
+    ...reach.env,
+    `    IMAGE: ${imageOutput(plan, "image")}`,
+    `    TAG: ${imageOutput(plan, "tag")}`,
+    "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "  run: |",
+    "    set -euo pipefail",
+    ...block(CHECK_IMAGE, 4),
+    '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
+    ...reach.prelude,
+    `    previous="$(${reach.savePrevious})"`,
+    `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
+    '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
+    ...reach.login,
+    `    ${reach.sh} -s -- "$IMAGE" <<'REMOTE'`,
+    // The services' one-time setup steps come from the catalog; no entry has any yet.
+    ...remote(switchCommands(plan, initStepsFor(plan), edgeFiles)),
   ];
 }
 
 /**
- * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback,
- * then the optional signing, deploy tag and image retention jobs. The image is built on an arm64
+ * The rollback step: runs only when starting or checking the new version failed (not for upload
+ * or setup errors), and always fails the job.
+ */
+function rollbackStep(plan: DeployPlan, reach: Reach): string[] {
+  return [
+    "- name: Roll back to the previous version",
+    "  if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
+    "  env:",
+    ...reach.env,
+    `    IMAGE: ${imageOutput(plan, "image")}`,
+    "  run: |",
+    "    set -uo pipefail",
+    ...reach.prelude,
+    "    cat > \"$RUNNER_TEMP/rollback.sh\" <<'REMOTE'",
+    ...remote(rollbackCommands(plan)),
+    "    outcome=unchanged",
+    `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+    `      outcome="$(${reach.sh} -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"`,
+    "    fi",
+    '    case "$outcome" in',
+    "      restored)",
+    '        echo "::error::The deploy failed; OpsCrew restored the previous version." ;;',
+    "      unchanged)",
+    '        echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;',
+    "      no-previous)",
+    '        echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;',
+    "      *)",
+    `        echo "::error::The deploy failed and OpsCrew could not restore the previous version. ${reach.stuck}" ;;`,
+    "    esac",
+    "    exit 1",
+  ];
+}
+
+/** What the upload brings: the env files, the runtime files and the edge's files. */
+interface Upload {
+  /** The `env:` lines of the env files' and the origin certificate's secrets. */
+  env: readonly string[];
+  envFiles: readonly EnvFile[];
+  /** The repository paths copied into the app's folder. */
+  files: readonly string[];
+  edgeFiles: EdgeFiles;
+}
+
+/**
+ * The deploy from GitHub's machines over SSH (as `deploy`, with the pinned host key; in tunnel mode
+ * through Cloudflare Access to the SSH hostname, with the service token from
+ * {@link TUNNEL_DEPLOY_SECRETS}): the upload, then the start and rollback steps over SSH.
+ */
+function sshDeploy(
+  plan: DeployPlan,
+  ctx: RuntimeContext,
+  upload: Upload,
+): { setup: string[]; reach: Reach } {
+  // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
+  // HCL anyway); the service token reaches cloudflared only through the environment.
+  const tunnelHost = sshHostname(plan);
+  const sshOpts = `    ${sshOptsLine(ctx.sshPort, tunnelHost !== undefined)}`;
+  const hostEnv = [
+    tunnelHost === undefined
+      ? `    HOST: ${secret(plan, DEPLOY_SECRETS.host)}`
+      : `    HOST: ${tunnelHost}`,
+    ...(tunnelHost === undefined
+      ? []
+      : [
+          `    TUNNEL_SERVICE_TOKEN_ID: ${secret(plan, TUNNEL_DEPLOY_SECRETS.serviceTokenId)}`,
+          `    TUNNEL_SERVICE_TOKEN_SECRET: ${secret(plan, TUNNEL_DEPLOY_SECRETS.serviceTokenSecret)}`,
+        ]),
+  ];
+  // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
+  const dir = appDir(plan);
+  const setup = [
+    ...(tunnelHost === undefined ? [] : installCloudflaredStep()),
+    "- name: Configure SSH with the pinned host key",
+    "  env:",
+    `    SSH_KEY: ${secret(plan, DEPLOY_SECRETS.sshKey)}`,
+    `    KNOWN_HOSTS: ${secret(plan, DEPLOY_SECRETS.knownHosts)}`,
+    "  run: |",
+    "    set -euo pipefail",
+    "    install -m 700 -d ~/.ssh",
+    "    printf '%s\\n' \"$SSH_KEY\" > ~/.ssh/opscrew",
+    "    chmod 600 ~/.ssh/opscrew",
+    "    printf '%s\\n' \"$KNOWN_HOSTS\" > ~/.ssh/known_hosts",
+    ...(tunnelHost === undefined
+      ? []
+      : [
+          "    {",
+          `      echo 'Host ${tunnelHost}'`,
+          "      echo '  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h'",
+          "    } > ~/.ssh/config",
+          "    chmod 600 ~/.ssh/config",
+        ]),
+    "- name: Upload runtime files and environment",
+    "  env:",
+    ...hostEnv,
+    ...upload.env,
+    "  run: |",
+    "    set -euo pipefail",
+    sshOpts,
+    `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
+    `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
+    ...envFileWrites(upload.envFiles, dir, OVER_SSH),
+    ...(upload.edgeFiles.originTls
+      ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
+      : []),
+  ];
+  return {
+    setup,
+    reach: {
+      env: hostEnv,
+      prelude: [sshOpts],
+      savePrevious: OVER_SSH(`cd ${dir} && ${SAVE_PREVIOUS}`),
+      login: [
+        `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
+      ],
+      sh: 'ssh "${ssh_opts[@]}" "deploy@${HOST}" sh',
+      stuck: `Connect to the server and run \\\`docker compose ps\\\` in ${dir}.`,
+    },
+  };
+}
+
+/**
+ * The deploy on the self-hosted runner's own machine, with no SSH and no host, key or known-hosts
+ * secret: the runtime files and env files are copied into the app's folder, and the same switch
+ * and rollback scripts run with the local `sh`, with the same arguments and stdin. The server's
+ * runner runs as `deploy`, with the server's folders; the local runner takes this computer's
+ * folders from its environment (`OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR`, set by `opscrew runner
+ * start`), which the scripts read too.
+ */
+function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach: Reach } {
+  const app = plan.app.name;
+  const local = plan.environment?.runner === "local";
+  const dir = local ? `    dir="$OPSCREW_APPS_DIR/${app}"` : `    dir=${appDir(plan)}`;
+  const tls = local ? `    tls="$OPSCREW_EDGE_DIR/tls/${app}"` : `    tls=${EDGE_DIR}/tls/${app}`;
+  const setup = [
+    "- name: Copy the runtime files and environment into the app's folder",
+    "  env:",
+    ...upload.env,
+    "  run: |",
+    "    set -euo pipefail",
+    ...(local
+      ? [
+          '    if [[ -z "${OPSCREW_APPS_DIR:-}" || -z "${OPSCREW_EDGE_DIR:-}" ]]; then',
+          `      echo "::error::This runner does not set OPSCREW_APPS_DIR and OPSCREW_EDGE_DIR, the folders of this computer's stack. Start it with \\\`opscrew runner start --env ${environmentName(plan)}\\\`, which sets them."`,
+          "      exit 1",
+          "    fi",
+        ]
+      : []),
+    dir,
+    '    mkdir -p "$dir"',
+    `    cp -r ${upload.files.join(" ")} "$dir"/`,
+    ...envFileWrites(upload.envFiles, '"$dir"', HERE),
+    ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
+  ];
+  return {
+    setup,
+    reach: {
+      env: [],
+      prelude: [dir],
+      savePrevious: `cd "$dir" && ${SAVE_PREVIOUS}`,
+      // The scripts run here, so they must not inherit the job's token.
+      login: [
+        '    printf \'%s\\n\' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$dir"/.docker docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin',
+        "    unset REGISTRY_TOKEN",
+      ],
+      sh: "sh",
+      stuck: "Run \\`docker compose ps\\` in $dir, on the machine this runner runs on.",
+    },
+  };
+}
+
+/**
+ * Today's names (before {@link deploySecretName}) of every GitHub Actions secret the plan's deploy
+ * workflow can read, which `opscrew provision` sets: the build values (none for a promoted
+ * environment, which builds nothing); for a Portainer target, in redeploy mode `cloudflare`, the
+ * webhook's; for a server, the app's env file, one per service with secrets and the origin
+ * certificate (not behind a tunnel), plus, when the deploy runs on GitHub's machines, the
+ * connection: the host, the SSH key, the known hosts and in tunnel mode the Access service token.
+ * A self-hosted runner deploys on its own machine, so it needs no connection secret.
+ */
+export function deploySecretNamesFor(plan: DeployPlan): string[] {
+  const build: string[] = promoted(plan)
+    ? []
+    : [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets];
+  if (plan.target.provider === "portainer") {
+    const cloudflare = plan.target.redeploy === "cloudflare";
+    return [...build, ...(cloudflare ? Object.values(PORTAINER_DEPLOY_SECRETS) : [])];
+  }
+  const tunnel = tunnelMode(plan);
+  const connection = selfHosted(plan)
+    ? []
+    : [
+        DEPLOY_SECRETS.host,
+        DEPLOY_SECRETS.sshKey,
+        DEPLOY_SECRETS.knownHosts,
+        ...(tunnel ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
+      ];
+  return [
+    ...connection,
+    DEPLOY_SECRETS.appEnv,
+    ...envFileServices(plan).map(serviceEnvSecret),
+    ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
+    ...build,
+  ];
+}
+
+/**
+ * `cicd.workflowPath` (prod's `.github/workflows/opscrew-deploy.yml`, any other environment's
+ * `opscrew-deploy-<env>.yml`): build → push to GHCR → deploy over SSH with rollback,
+ * then the optional signing, deploy tag and image retention jobs, and the environment's image
+ * labels. A promoted environment instead starts from the digest `opscrew promote` gives it, which
+ * its verify job checks, and builds nothing. The deploy job's secrets, GitHub environment, runner
+ * and concurrency group are the environment's own; on a self-hosted runner it deploys on the
+ * runner's own machine, with no SSH ({@link localDeploy}). The image is built on an arm64
  * runner for arm64 servers; in tunnel mode SSH goes through Cloudflare Access to the SSH hostname
  * with the service token from {@link TUNNEL_DEPLOY_SECRETS}. The deploy job first checks the edge
  * with the proxy's own checker ({@link edgeCheckStep}). With `ctx.originTls` (not behind a tunnel)
@@ -226,24 +529,6 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     certbot: hosts.length > 0 ? { hosts, email: ctx.acmeEmail } : undefined,
   };
 
-  // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
-  // HCL anyway); the service token reaches cloudflared only through the environment.
-  const tunnelHost = sshHostname(plan);
-  const sshOpts = sshOptsLine(ctx.sshPort, tunnelHost !== undefined);
-  const hostEnv = [
-    tunnelHost === undefined
-      ? `    HOST: ${secret(DEPLOY_SECRETS.host)}`
-      : `    HOST: ${tunnelHost}`,
-    ...(tunnelHost === undefined
-      ? []
-      : [
-          `    TUNNEL_SERVICE_TOKEN_ID: ${secret(TUNNEL_DEPLOY_SECRETS.serviceTokenId)}`,
-          `    TUNNEL_SERVICE_TOKEN_SECRET: ${secret(TUNNEL_DEPLOY_SECRETS.serviceTokenSecret)}`,
-        ]),
-  ];
-
-  // Each env file reaches the server on ssh's stdin from its secret (the step's variable of the
-  // same name), never in a command line or the log.
   const envFiles = [
     { file: "app.env", secret: DEPLOY_SECRETS.appEnv },
     ...envFileServices(plan).map((name) => ({
@@ -251,130 +536,71 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       secret: serviceEnvSecret(name),
     })),
   ];
-  const uploadEnv = [
-    ...hostEnv,
-    ...envFiles.map((env) => `    ${env.secret}: ${secret(env.secret)}`),
-    ...(edgeFiles.originTls
-      ? [`    ${DEPLOY_SECRETS.originTls}: ${secret(DEPLOY_SECRETS.originTls)}`]
-      : []),
-  ];
-  // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
-  const dir = appDir(plan);
-  const uploads = [
-    "opscrew/runtime/compose.yaml",
-    ...runtimeUploads(plan),
-    ...(edgeFiles.additions ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
-  ];
-  const uploadRun = [
-    "    set -euo pipefail",
-    `    ${sshOpts}`,
-    `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p ${dir}'`,
-    `    scp -r "\${ssh_opts[@]}" ${uploads.join(" ")} "deploy@\${HOST}:${dir}/"`,
-    ...envFiles.map(
-      (env) =>
-        `    printf '%s\\n' "\${${env.secret}:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > ${dir}/${env.file}'`,
-    ),
-    ...(edgeFiles.originTls ? originTlsUpload(plan) : []),
-  ];
+  const upload: Upload = {
+    env: [
+      ...envFiles.map((env) => `    ${env.secret}: ${secret(plan, env.secret)}`),
+      ...(edgeFiles.originTls
+        ? [`    ${DEPLOY_SECRETS.originTls}: ${secret(plan, DEPLOY_SECRETS.originTls)}`]
+        : []),
+    ],
+    envFiles,
+    files: [
+      "opscrew/runtime/compose.yaml",
+      ...runtimeUploads(plan),
+      ...(edgeFiles.additions ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
+    ],
+    edgeFiles,
+  };
+  const { setup, reach } = selfHosted(plan)
+    ? localDeploy(plan, upload)
+    : sshDeploy(plan, ctx, upload);
 
   const deploySteps = [
     `- uses: ${ACTIONS.checkout}`,
+    // A self-hosted runner keeps its workspace: the job's token stays out of its git settings.
+    ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
     ...edgeCheckStep(plan, edgeFiles),
-    ...(tunnelHost === undefined ? [] : installCloudflaredStep()),
-    "- name: Configure SSH with the pinned host key",
-    "  env:",
-    `    SSH_KEY: ${secret(DEPLOY_SECRETS.sshKey)}`,
-    `    KNOWN_HOSTS: ${secret(DEPLOY_SECRETS.knownHosts)}`,
-    "  run: |",
-    "    set -euo pipefail",
-    "    install -m 700 -d ~/.ssh",
-    "    printf '%s\\n' \"$SSH_KEY\" > ~/.ssh/opscrew",
-    "    chmod 600 ~/.ssh/opscrew",
-    "    printf '%s\\n' \"$KNOWN_HOSTS\" > ~/.ssh/known_hosts",
-    ...(tunnelHost === undefined
-      ? []
-      : [
-          "    {",
-          `      echo 'Host ${tunnelHost}'`,
-          "      echo '  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h'",
-          "    } > ~/.ssh/config",
-          "    chmod 600 ~/.ssh/config",
-        ]),
-    "- name: Upload runtime files and environment",
-    "  env:",
-    ...uploadEnv,
-    "  run: |",
-    ...uploadRun,
-    // Saving the running version is the first thing done on the server (its image is the job's
-    // `previous` output), and the rollback only switches back when `.env` already names this
-    // run's image, so a failure before the switch never restores an older version.
-    "- id: start",
-    "  name: Start the new version",
-    "  env:",
-    ...hostEnv,
-    "    IMAGE: ${{ needs.build.outputs.image }}",
-    "    TAG: ${{ needs.build.outputs.tag }}",
-    "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
-    "  run: |",
-    "    set -euo pipefail",
-    `    if [[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    '      echo "::error::The build job did not report the image digest; re-run the workflow."',
-    "      exit 1",
-    "    fi",
-    '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
-    `    ${sshOpts}`,
-    `    previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd ${dir} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"`,
-    `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
-    '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
-    // In the app's own Docker settings: another app's deploy logs out of the same registry.
-    `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
-    '    ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
-    // The services' one-time setup steps come from the catalog; no entry has any yet.
-    ...remote(switchCommands(plan, initStepsFor(plan), edgeFiles)),
+    ...setup,
+    ...startStep(plan, edgeFiles, reach),
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",
     `    URL: ${healthUrl(plan)}`,
     "  run: |",
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
-    ...healthScript(edgeServesTls(plan, tunnelHost) && !edgeFiles.originTls),
-    // Runs only when starting or checking the new version failed (not for upload or setup errors),
-    // and always fails the job.
-    "- name: Roll back to the previous version",
-    "  if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
-    "  env:",
-    ...hostEnv,
-    "    IMAGE: ${{ needs.build.outputs.image }}",
-    "  run: |",
-    "    set -uo pipefail",
-    `    ${sshOpts}`,
-    "    cat > \"$RUNNER_TEMP/rollback.sh\" <<'REMOTE'",
-    ...remote(rollbackCommands(plan)),
-    "    outcome=unchanged",
-    `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    '      outcome="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"',
-    "    fi",
-    '    case "$outcome" in',
-    "      restored)",
-    '        echo "::error::The deploy failed; OpsCrew restored the previous version." ;;',
-    "      unchanged)",
-    '        echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;',
-    "      no-previous)",
-    '        echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;',
-    "      *)",
-    `        echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in ${dir}." ;;`,
-    "    esac",
-    "    exit 1",
+    ...healthScript(edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls),
+    ...rollbackStep(plan, reach),
   ];
 
+  const own = selfHosted(plan);
   const lines = [
-    ...workflowStart(plan, [
-      "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
-      "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
-    ]),
-    ...buildJob(plan),
+    ...workflowStart(
+      plan,
+      promoted(plan)
+        ? [
+            ...promotedAbout(plan),
+            own
+              ? "# deploys it with this environment's runner, on its own machine, without building. Secrets"
+              : "# deploys it to your server over SSH, without building. Secrets are set by `opscrew provision`;",
+            own
+              ? "# are set by `opscrew provision`; their values never appear in this file."
+              : "# their values never appear in this file.",
+          ]
+        : own
+          ? [
+              "# Builds the app image, pushes it to GitHub Container Registry and deploys it with this",
+              "# environment's runner, on its own machine. Secrets are set by `opscrew provision`; their",
+              "# values never appear in this file.",
+            ]
+          : [
+              "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
+              "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
+            ],
+    ),
+    ...imageSourceJob(plan),
     "",
     ...deployJob(
+      plan,
       "Deploy to the server",
       ["contents: read", "packages: read"],
       "${{ steps.start.outputs.previous }}",

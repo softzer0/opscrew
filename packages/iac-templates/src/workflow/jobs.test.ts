@@ -137,15 +137,22 @@ describe("deploy tags", () => {
 });
 
 describe("the jobs after the deploy", () => {
-  it("lists only the jobs that are on", () => {
-    expect(Object.keys(jobs(serverPlan()))).toEqual(["build", "deploy", "prune"]);
+  it("lists only the jobs that are on, and always the environment's image labels", () => {
+    expect(Object.keys(jobs(serverPlan()))).toEqual(["build", "deploy", "prune", "label"]);
     const everything = withPlan(serverPlan(), {
       supplyChain: { sign: true },
       deployTags: { enabled: true },
     });
-    expect(Object.keys(jobs(everything))).toEqual(["build", "deploy", "sign", "tag", "prune"]);
+    expect(Object.keys(jobs(everything))).toEqual([
+      "build",
+      "deploy",
+      "sign",
+      "tag",
+      "prune",
+      "label",
+    ]);
     const nothing = withPlan(serverPlan(), { imageRetention: { enabled: false } });
-    expect(Object.keys(jobs(nothing))).toEqual(["build", "deploy"]);
+    expect(Object.keys(jobs(nothing))).toEqual(["build", "deploy", "label"]);
   });
 
   it("matches the snapshot with every option off", () => {
@@ -170,9 +177,9 @@ describe("the jobs after the deploy", () => {
     );
     const p = jobs(portainer);
     const s = jobs(server);
-    expect(Object.keys(p)).toEqual(["build", "deploy", "sign", "tag", "prune"]);
+    expect(Object.keys(p)).toEqual(["build", "deploy", "sign", "tag", "prune", "label"]);
     expect(p.build).toEqual(s.build);
-    for (const id of ["sign", "tag", "prune"]) expect(p[id]).toEqual(s[id]);
+    for (const id of ["sign", "tag", "prune", "label"]) expect(p[id]).toEqual(s[id]);
     expect(parse(content(portainer)).jobs.deploy.outputs).toEqual({
       previous: "${{ steps.write.outputs.previous_image }}",
     });

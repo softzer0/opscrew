@@ -193,8 +193,8 @@ function dockerfileSteps(plan: DeployPlan): string[] {
     `file: ${JSON.stringify(plan.app.dockerfile || "Dockerfile")}`,
   ];
   const values = [
-    `build-args: ${secret(DEPLOY_SECRETS.buildEnv)}`,
-    `secrets: ${secret(DEPLOY_SECRETS.buildSecrets)}`,
+    `build-args: ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
+    `secrets: ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
   ];
   if (!sealsImage(plan)) {
     const note = "# The provenance records build arguments: only non-secret values go there.";
@@ -317,7 +317,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
     "  name: Build the image with Buildpacks",
     "  env:",
     "    NAME: ${{ steps.image.outputs.name }}",
-    `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
+    `    BUILD_ENV: ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
     ...run([
       "set -euo pipefail",
       "# pack uploads the whole folder. .git holds every committed file, the removed secret files",
@@ -369,8 +369,8 @@ function railpackSteps(plan: DeployPlan): string[] {
     "- id: prepare",
     "  name: Plan the Railpack build",
     "  env:",
-    `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
-    `    BUILD_SECRETS: ${secret(DEPLOY_SECRETS.buildSecrets)}`,
+    `    BUILD_ENV: ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
+    `    BUILD_SECRETS: ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
     ...run([
       "set -euo pipefail",
       "# The plan lists the names; the build reads the values as BuildKit secrets. Railpack",
@@ -407,8 +407,8 @@ function railpackSteps(plan: DeployPlan): string[] {
     "    # The frontend reads every value the plan lists as a secret, the runtime version too.",
     "    secrets: |",
     ...(setting === undefined ? [] : [`      ${setting}`]),
-    `      ${secret(DEPLOY_SECRETS.buildEnv)}`,
-    `      ${secret(DEPLOY_SECRETS.buildSecrets)}`,
+    `      ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
+    `      ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
     "    cache-from: type=gha,scope=railpack",
     "    cache-to: type=gha,mode=min,scope=railpack",
     ...sealSteps("railpack", [

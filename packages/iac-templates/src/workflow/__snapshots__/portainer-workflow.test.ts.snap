@@ -259,14 +259,16 @@ jobs:
            * the build-<commit> intermediates and what only they list.
            * protect: digests never deleted: the running and the previous image.
            *
-           * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
-           * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
-           * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
-           * signatures, and untagged versions nothing kept lists.
+           * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
+           * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
+           * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
+           * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
+           * <commit> versions with their signatures, and untagged versions nothing kept lists.
            */
           function prunable(versions, children, keep, protect) {
             const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
             const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+            const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
             const subject = (tag) => {
               const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
               return match ? "sha256:" + match[1] : undefined;
@@ -275,6 +277,7 @@ jobs:
             const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
 
             const kept = new Set(protect);
+            for (const v of versions) if (v.tags.some(label)) kept.add(v.digest);
             if (keep === undefined) {
               for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
             } else {
@@ -396,6 +399,38 @@ jobs:
             }
           }
           main();
+
+  label:
+    name: Label the deployed image
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the image opscrew-prod, and the one before it opscrew-prod-previous
+        env:
+          IMAGE: \${{ needs.build.outputs.image }}
+          PREVIOUS: \${{ needs.deploy.outputs.previous }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          name="\${IMAGE%@*}"
+          # Tag-only: the image keeps its digest, so its provenance and signature stay valid. The
+          # running label first, so a failed previous label never leaves it stale.
+          docker buildx imagetools create --tag "$name:opscrew-prod" "$IMAGE"
+          echo "Labelled \\\`$IMAGE\\\` as \\\`opscrew-prod\\\`." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "\${PREVIOUS:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ && "$PREVIOUS" != "$IMAGE" ]]; then
+            docker buildx imagetools create --tag "$name:opscrew-prod-previous" "$PREVIOUS"
+          fi
 "
 `;
 
@@ -623,14 +658,16 @@ jobs:
            * the build-<commit> intermediates and what only they list.
            * protect: digests never deleted: the running and the previous image.
            *
-           * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
-           * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
-           * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
-           * signatures, and untagged versions nothing kept lists.
+           * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
+           * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
+           * with a tag OpsCrew did not push (yours, or Buildpacks' buildcache), signatures of kept images,
+           * and whatever a kept index lists, tagged or not. Deleted: build-<commit> intermediates, older
+           * <commit> versions with their signatures, and untagged versions nothing kept lists.
            */
           function prunable(versions, children, keep, protect) {
             const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
             const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+            const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
             const subject = (tag) => {
               const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
               return match ? "sha256:" + match[1] : undefined;
@@ -639,6 +676,7 @@ jobs:
             const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
 
             const kept = new Set(protect);
+            for (const v of versions) if (v.tags.some(label)) kept.add(v.digest);
             if (keep === undefined) {
               for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
             } else {
@@ -760,5 +798,37 @@ jobs:
             }
           }
           main();
+
+  label:
+    name: Label the deployed image
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the image opscrew-prod, and the one before it opscrew-prod-previous
+        env:
+          IMAGE: \${{ needs.build.outputs.image }}
+          PREVIOUS: \${{ needs.deploy.outputs.previous }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          name="\${IMAGE%@*}"
+          # Tag-only: the image keeps its digest, so its provenance and signature stay valid. The
+          # running label first, so a failed previous label never leaves it stale.
+          docker buildx imagetools create --tag "$name:opscrew-prod" "$IMAGE"
+          echo "Labelled \\\`$IMAGE\\\` as \\\`opscrew-prod\\\`." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "\${PREVIOUS:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ && "$PREVIOUS" != "$IMAGE" ]]; then
+            docker buildx imagetools create --tag "$name:opscrew-prod-previous" "$PREVIOUS"
+          fi
 "
 `;

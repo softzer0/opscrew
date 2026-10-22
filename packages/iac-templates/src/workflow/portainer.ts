@@ -11,9 +11,18 @@ import {
 import { portainerTarget } from "../providers";
 import { PORTAINER_VERSION_PATH } from "../runtime/services";
 import type { RenderedFile } from "../types";
-import { buildJob } from "./build";
-import { afterDeployJobs } from "./jobs";
-import { DIGEST_REF_PATTERN, deployJob, healthPath, run, secret, workflowStart } from "./shared";
+import { afterDeployJobs, imageSourceJob } from "./jobs";
+import {
+  DIGEST_REF_PATTERN,
+  deployJob,
+  healthPath,
+  imageOutput,
+  promoted,
+  promotedAbout,
+  run,
+  secret,
+  workflowStart,
+} from "./shared";
 
 /**
  * The GitHub Actions secrets of a Portainer target's deploy workflow in redeploy mode `cloudflare`
@@ -117,11 +126,11 @@ const WEBHOOK_CALL = [
   'rm -f "$headers"',
 ];
 
-function webhookEnv(): string[] {
+function webhookEnv(plan: DeployPlan): string[] {
   return [
-    `    WEBHOOK_URL: ${secret(PORTAINER_DEPLOY_SECRETS.webhookUrl)}`,
-    `    ACCESS_CLIENT_ID: ${secret(PORTAINER_DEPLOY_SECRETS.accessClientId)}`,
-    `    ACCESS_CLIENT_SECRET: ${secret(PORTAINER_DEPLOY_SECRETS.accessClientSecret)}`,
+    `    WEBHOOK_URL: ${secret(plan, PORTAINER_DEPLOY_SECRETS.webhookUrl)}`,
+    `    ACCESS_CLIENT_ID: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientId)}`,
+    `    ACCESS_CLIENT_SECRET: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientSecret)}`,
   ];
 }
 
@@ -213,7 +222,8 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
 
 /**
  * The deploy workflow of a Portainer target (`renderWorkflow` delegates here): the same build job
- * and jobs after the deploy as other targets, with a deploy job holding `contents: write` (only
+ * (or verify job, for a promoted environment), triggers and jobs after the deploy as other
+ * targets, with a deploy job holding `contents: write` (only
  * for the deploy branch) that writes the stack file with the new image to `opscrew-deploy`, calls
  * Portainer's webhook through
  * Cloudflare Access in redeploy mode `cloudflare`, waits (bounded) until the site answers with the
@@ -224,11 +234,10 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
  */
 export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
   const target = portainerTarget(plan.target);
-  const build = buildJob(plan);
   const branch = PORTAINER_DEPLOY_BRANCH;
   const cloudflare = target.redeploy === "cloudflare";
   const url = portainerHealthUrl(plan);
-  const image = "    IMAGE: ${{ needs.build.outputs.image }}";
+  const image = `    IMAGE: ${imageOutput(plan, "image")}`;
   // Behind the user's own proxy the domain may resolve only on the user's network: then nothing
   // here can check the app, and a health check would roll back every deploy.
   const probe = target.web.mode === "proxy" && url !== undefined;
@@ -256,7 +265,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
       "  name: Ask Portainer to deploy the new version",
       "  if: steps.write.outputs.changed == 'true'",
       "  env:",
-      ...webhookEnv(),
+      ...webhookEnv(plan),
       ...run([
         "set -euo pipefail",
         ...WEBHOOK_CALL,
@@ -301,20 +310,30 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
       "    PREVIOUS: ${{ steps.write.outputs.previous }}",
       "    DEPLOYED: ${{ steps.write.outputs.deployed }}",
       image,
-      ...(cloudflare ? webhookEnv() : []),
+      ...(cloudflare ? webhookEnv(plan) : []),
       ...run(rollbackScript(branch, cloudflare)),
     );
   }
 
   const lines = [
-    ...workflowStart(plan, [
-      "# Builds the app image, pushes it to GitHub Container Registry and writes it to the",
-      "# opscrew-deploy branch, which your Portainer deploys. Secrets are set by `opscrew provision`;",
-      "# their values never appear in this file.",
-    ]),
-    ...build,
+    ...workflowStart(
+      plan,
+      promoted(plan)
+        ? [
+            ...promotedAbout(plan),
+            `# writes it to the ${branch} branch, which your Portainer deploys, without building. Secrets`,
+            "# are set by `opscrew provision`; their values never appear in this file.",
+          ]
+        : [
+            "# Builds the app image, pushes it to GitHub Container Registry and writes it to the",
+            "# opscrew-deploy branch, which your Portainer deploys. Secrets are set by `opscrew provision`;",
+            "# their values never appear in this file.",
+          ],
+    ),
+    ...imageSourceJob(plan),
     "",
     ...deployJob(
+      plan,
       "Deploy to Portainer",
       ["contents: write"],
       "${{ steps.write.outputs.previous_image }}",
