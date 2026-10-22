@@ -68,8 +68,7 @@ Deploys never recreate a database container unless its own settings or image cha
 
 When your app already uses a hosted database (a `mongodb+srv://` address from MongoDB Atlas,
 PlanetScale, Neon …), the interview asks whether to keep it or let OpsCrew run one on the server.
-If you keep it, OpsCrew runs nothing for it: set its address in your app's production environment,
-as before.
+If you keep it, OpsCrew runs nothing for it: set its address in your app's production environment.
 
 ## Backups
 

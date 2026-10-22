@@ -15,7 +15,7 @@ npx opscrew secure --deep
 ```
 
 It takes a few minutes (Lynis has at most 4, ssh-audit 1, testssl.sh 2 per hostname), costs
-nothing, and changes nothing. Without `--deep`, `secure` runs and takes as long as before.
+nothing, and changes nothing. Without `--deep`, `secure` runs only its usual checks.
 
 ## What you need
 

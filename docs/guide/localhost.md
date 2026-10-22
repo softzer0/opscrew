@@ -38,7 +38,7 @@ npx opscrew design            # reads this computer's CPU and the free ports
 npx opscrew provision         # shows the local plan, and runs the stack after your approval
 ```
 
-Next to an existing deployment, add it as an environment (`dev` runs on this computer by default):
+Next to prod, add it as an environment (`dev` runs on this computer by default):
 
 ```bash
 npx opscrew env add dev

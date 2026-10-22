@@ -8,11 +8,11 @@ port and its health route) is defined once and is the same in every environment.
 A change can then be tried somewhere first, and the live site is never the first place it runs. When
 it works in staging, you promote exactly that image to prod: nothing is rebuilt.
 
-## Your current deployment is prod
+## Prod is the default environment
 
-An app you deployed before environments existed is its `prod` environment. Its files stay where they
-are (`opscrew/plan.yaml`, `.opscrew/`, `~/.opscrew/projects/<project>/`), and there is nothing to
-apply. While prod is the only environment, every command works as before and needs no `--env`.
+Every app starts with one environment, `prod`. Its files are `opscrew/plan.yaml`, `.opscrew/` and
+`~/.opscrew/projects/<project>/`. While prod is the only environment, a command without `--env`
+acts on prod. With several environments, it asks which one, or stops in a script.
 
 ## Adding an environment
 
@@ -114,7 +114,7 @@ The [scan report](security.md), `opscrew/ARCHITECTURE.md` and your own
 
 ## Where each environment's secrets live
 
-While prod is the app's only environment, its deploy secrets are repository secrets, as before.
+While prod is the app's only environment, its deploy secrets are repository secrets.
 Once the app has more than one environment, each environment's provision first checks what your
 repository supports, instead of assuming it. It creates the GitHub environment (prod's is called
 `production`), reads it back, and leaves it as it was. That check is a change in your repository's
@@ -229,7 +229,7 @@ A rollback runs the same checks and asks for the same approval. `promote` accept
 the source environment runs or the target's previous one, and it names both digests when you give
 it another.
 
-An environment that follows your branch rolls back as before: re-run its last good deploy run, or
+An environment that follows your branch rolls back this way: re-run its last good deploy run, or
 revert the commit and push.
 
 Image cleanup never deletes an image that an environment runs or ran just before (see

@@ -201,7 +201,7 @@ up by its own `npx opscrew provision`, and they share only what must be shared:
   [the reverse proxy](reverse-proxy.md)) and kamal-proxy in `/srv/edge` (the Compose project
   `opscrew-edge`) serve every app, each on its own hostnames, with one site file per app in
   `/srv/edge/sites/`. Each deploy brings the edge's files along and keeps the newer
-  version, so an app deployed with an older OpsCrew never downgrades it, and only a changed edge is
+  version, so a deploy never downgrades it, and only a changed edge is
   restarted.
 - **The server's setup is shared:** Docker, the `deploy` user, SSH, the firewall, fail2ban and
   automatic updates. A later app's host plan finds them in place and changes nothing there.

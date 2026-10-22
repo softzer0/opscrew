@@ -6,7 +6,7 @@ GitHub's machines; an environment can also build it on its own runner (see
 
 | `environment.runner` | Where the deploy job runs | For |
 |---|---|---|
-| `github` (the default) | on GitHub's machines, which reach your server over SSH, as before | every target |
+| `github` (the default) | on GitHub's machines, which reach your server over SSH | every target |
 | `server` | on a runner OpsCrew installs on the server itself | a server OpsCrew creates (Hetzner Cloud, DigitalOcean) or [one you already have](own-server.md) |
 | `local` | on a runner on your computer, while you run it | an environment [on your computer](localhost.md) |
 | `host` | on a [runner machine](#runner-machines) of yours: a home server, a spare PC or a VM, which reaches your server over SSH | a server OpsCrew creates or one you already have |
@@ -43,8 +43,8 @@ opened for it. The deploy secrets then hold no server address, SSH key or host k
 leave your computer for GitHub.
 
 **OpsCrew's own management still uses SSH.** `provision`, `drift`, `status`, `secure` and `destroy`
-connect to the server over SSH from your computer, as before, so the server keeps accepting SSH.
-The runner only means GitHub no longer needs to.
+connect to the server over SSH from your computer, so the server keeps accepting SSH.
+The runner only means GitHub does not need to.
 
 ### What the host plan shows
 

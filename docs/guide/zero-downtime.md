@@ -19,7 +19,7 @@ that does. This works on Hetzner Cloud, DigitalOcean and a server you already ha
 6. **A last check** from outside, through your domain when the app has one. If the app does not
    answer there, OpsCrew switches the server back to the previous version and the run fails.
 
-Caddy stays in front, as before, and passes every request to kamal-proxy.
+Caddy stays in front and passes every request to kamal-proxy.
 
 ## A broken release never gets traffic
 
