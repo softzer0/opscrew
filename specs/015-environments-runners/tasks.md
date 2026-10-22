@@ -374,6 +374,7 @@ Effort`.
   - Accept:
     - **`runner: host`:** the deploy job runs on `[self-hosted, opscrew-<app>-<env>]` with the SSH deploy steps a GitHub-hosted job uses. `deploySecretNamesFor` includes the connection secrets for it.
     - **`build: runner`:** the build job runs on the environment's self-hosted label, with Buildx (pinned), provenance, SBOM and the optional signing as on GitHub's machines.
+    - **A runner machine deploys over SSH**, unlike the server's and the local runner, which deploy on their own machine. `selfHosted(plan)` (`workflow/shared.ts`) counts every runner but `github` as deploying in place; split the two cases. `buildArch` uses plan-schema's `targetArch` (T1517a).
     - **Prod and every existing environment** render byte-identically.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: high
@@ -390,7 +391,7 @@ Effort`.
       - removal refused while an environment uses the machine.
     - **Design and `env add|set`:** `runner: host` with `runnerHost`, and `build: runner`. An architecture mismatch is refused, naming the server types that match. A runner machine that is the environment's own server is refused, pointing to `runner: server`.
     - **Provision and destroy** of an environment with `runner: host` add and remove its `github-runner` step on the machine's host plan, approved by that plan's hash. Its deploy secrets include the SSH connection secrets, as for a GitHub-hosted job.
-    - **`status` and `secure`** report the machine's runners through `runnerStatus`.
+    - **`status` and `secure`** report the machine's runners through `runnerStatus`. Its wording (`runners/status.ts`) names the runner machine for `runner: host`, not "the server's runner" (T1517a's report).
     - **Tests:** add, apply and remove a machine; two environments on one machine; destroy removing only one environment's runner; the refusals; no token or address in any plan or committed file.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
