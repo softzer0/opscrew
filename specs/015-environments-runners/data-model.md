@@ -19,7 +19,8 @@
 
 **Shared parts**, copied from prod's plan by design and compared by provision:
 - `app.build`, `app.port`, `app.healthPath`, `app.releaseCommand`, `app.processes`;
-- `services`, `storage.sqlite`, `externalServices`.
+- `services`, `storage.sqlite`, `externalServices`;
+- `supplyChain.sign`, since the source environment signs and the promoted one verifies.
 
 Everything else is the environment's own.
 
