@@ -83,21 +83,35 @@ jobs:
           for plugin in docker-compose docker-buildx; do
             ln -sfn "$(brew --prefix)/opt/$plugin/bin/$plugin" "$HOME/.docker/cli-plugins/$plugin"
           done
-          colima start --cpu 3 --memory 6
+          # The runner has 4 vCPU and 14 GB; the second run's VM, with 3 CPUs and 6 GB, died under
+          # two environments' stacks.
+          colima start --cpu 4 --memory 10 --disk 40
           docker info --format '{{.ServerVersion}} {{.OSType}} {{.MemTotal}}'
           docker compose version
           # Colima shares the home folder with its VM, so the stack's bind mounts resolve there.
           mkdir -p "$HOME/opscrew-test-tmp"
           echo "OPSCREW_TEST_TMP=$HOME/opscrew-test-tmp" >> "$GITHUB_ENV"
-      - name: The localhost Docker pass
-        env:
-          OPSCREW_DOCKER_TESTS: "1"
-        run: pnpm turbo run test --filter=opscrew -- test/e2e/localhost.test.ts
+      # The build first, on the fresh VM: the second run's build failed only after the Docker pass.
       - name: The off-Linux Buildpacks build (pack in a Linux container through Docker)
-        if: ${{ !cancelled() }}
         env:
           OPSCREW_DOCKER_TESTS: "1"
         run: pnpm turbo run test --filter=opscrew -- test/e2e/off-linux-build.test.ts
+      # After each pass, the memory and disk left, so the cause shows before a VM dies.
+      - name: Room on the host and in Colima's VM (after the build)
+        if: always()
+        run: |
+          df -h / || true
+          colima ssh -- sh -c 'free -m; df -h /var/lib/docker' || true
+      - name: The localhost Docker pass
+        if: ${{ !cancelled() }}
+        env:
+          OPSCREW_DOCKER_TESTS: "1"
+        run: pnpm turbo run test --filter=opscrew -- test/e2e/localhost.test.ts
+      - name: Room on the host and in Colima's VM (after the Docker pass)
+        if: always()
+        run: |
+          df -h / || true
+          colima ssh -- sh -c 'free -m; df -h /var/lib/docker' || true
       # When a pass fails, what Colima's VM and its Docker say: a daemon that crashed or ran out of
       # memory, or a full disk, shows here (the first run's `error waiting for container:
       # unexpected EOF` in the Buildpacks build left no other trace).

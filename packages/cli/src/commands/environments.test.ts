@@ -187,12 +187,12 @@ describe("the localhost target in the CLI", () => {
 
   it("`localhost trust` in a script only prints the command", async () => {
     project = await withEnvironments({});
-    const home = path.join(project.dir, "user-home");
+    // A Linux home folder on every OS: a Windows temp path would be quoted in the command.
     const ctx = projectContext(project, {
-      services: { localhost: { platform: "linux", homedir: home, computerName: "laptop" } },
+      services: { localhost: { platform: "linux", homedir: "/home/me", computerName: "laptop" } },
     });
     expect(await run(ctx, "localhost", "trust"), ctx.errors).toBe(0);
-    expect(ctx.output).toContain("Command: certutil -d sql:");
+    expect(ctx.output).toContain("Command: certutil -d sql:/home/me/.pki/nssdb -A");
     expect(ctx.output).toContain("Run the command above yourself");
   });
 });
