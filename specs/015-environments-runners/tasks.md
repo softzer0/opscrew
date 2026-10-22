@@ -347,7 +347,7 @@ Effort`.
       - `ubuntu-latest` runs the Docker pass;
       - `macos-15-intel` runs Colima, then the Docker pass, with `continue-on-error`;
       - `windows-latest` and `macos-latest` run the localhost unit tests;
-      - the workflow is `workflow_dispatch` only, so it never runs on its own (macOS minutes cost more). The founder may change that.
+      - it runs on pushes to `main` and on pull requests that touch the localhost code (agents' `localhost/`, iac-templates' edge and runtime, ssh-host's `localExec`, core's local CA, `examples/`), weekly on a schedule, and by hand. OpsCrew's repository is public, so GitHub-hosted runners, macOS included, cost nothing (the founder, 2026-10-22: not manual-only).
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new file>` and `pnpm lint`
   - Effort: high
 
@@ -381,6 +381,7 @@ Effort`.
     - `provision/origin-tls.ts`: when GitHub accepted the dispatch but no run appeared in time, the warning still says "could not start the deploy workflow"; say it was accepted, and where to look (T1504).
     - Remove iac-templates' `PORTAINER_STACK_TEMPLATE_PATH` and `ORIGIN_PULL_PEM` once only their own tests use them (T1508c). The connector's `DEPLOY_BRANCH` and `DEPLOY_REFERENCE` stay for the Portainer live test.
     - The generic error helpers `reasonOf`, `codeOf` and `hintOf` live in `retarget/` and are imported by promote: move them to `shared/` (T1509's review).
+    - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
