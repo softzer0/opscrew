@@ -113,8 +113,8 @@ jobs:
           fi
       - name: Configure SSH with the pinned host key
         env:
-          SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
-          KNOWN_HOSTS: \${{ secrets.OPSCREW_SSH_KNOWN_HOSTS }}
+          SSH_KEY: \${{ secrets.OPSCREW_STAGING_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: \${{ secrets.OPSCREW_STAGING_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
@@ -123,9 +123,9 @@ jobs:
           printf '%s\\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
       - name: Upload runtime files and environment
         env:
-          HOST: \${{ secrets.OPSCREW_HOST }}
-          OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
-          OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
+          HOST: \${{ secrets.OPSCREW_STAGING_HOST }}
+          OPSCREW_APP_ENV: \${{ secrets.OPSCREW_STAGING_APP_ENV }}
+          OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_STAGING_SERVICE_DB_ENV }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -136,7 +136,7 @@ jobs:
       - id: start
         name: Start the new version
         env:
-          HOST: \${{ secrets.OPSCREW_HOST }}
+          HOST: \${{ secrets.OPSCREW_STAGING_HOST }}
           IMAGE: \${{ needs.build.outputs.image }}
           TAG: \${{ needs.build.outputs.tag }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
@@ -253,7 +253,7 @@ jobs:
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
-          HOST: \${{ secrets.OPSCREW_HOST }}
+          HOST: \${{ secrets.OPSCREW_STAGING_HOST }}
           IMAGE: \${{ needs.build.outputs.image }}
         run: |
           set -uo pipefail

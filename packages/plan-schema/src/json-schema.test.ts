@@ -57,7 +57,7 @@ describe("JSON Schema export", () => {
           properties: {
             name: {
               pattern:
-                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)(?!storage(?:-|$))[a-z][a-z0-9-]{0,15}$",
+                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production)$)(?!storage(?:-|$))(?!(?:.*-)?service(?:-|$))[a-z][a-z0-9-]{0,15}$",
             },
             deploySource: {
               oneOf: [

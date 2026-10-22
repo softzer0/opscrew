@@ -53,6 +53,13 @@ export type GitHubApi = Pick<
   | "findOpenPullRequest"
   | "createPullRequest"
   | "dispatchWorkflow"
+  // Where an environment's deploy secrets live, once the app has several (`checkSecretsPlacement`).
+  | "environmentCapability"
+  | "getEnvironment"
+  | "putEnvironment"
+  | "environmentPublicKey"
+  | "setEnvironmentSecret"
+  | "deleteEnvironmentSecret"
 > & {
   createOrphanBranch(input: DeployBranchInput): Promise<{ commit: string }>;
   replaceOrphanBranch(input: DeployBranchInput): Promise<{ commit: string; previous: string }>;

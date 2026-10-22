@@ -5,7 +5,7 @@ import { cloudTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
-import { checkProvider, deploySecretNames, providerBucket } from "../provision";
+import { checkProvider, providerBucket } from "../provision";
 import {
   describeChanges,
   hasDeployment,
@@ -446,10 +446,7 @@ function remainingAfterDestroy(input: {
       backups: cloudTarget(plan.target).backups,
     }),
     ...(bucket !== undefined ? [bucket] : []),
-    ...deploySecretsLeft(github, {
-      names: deploySecretNames(plan),
-      removed: input.secretsRemoved,
-    }),
+    ...deploySecretsLeft(github, { plan, removed: input.secretsRemoved }),
     containerImagesLeft(github),
     ...zeroTrustLeft(plan),
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` creates a new ${texts.noun} from these files.`,
@@ -637,7 +634,7 @@ export async function runDestroy(
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
   const secretsRemoved = await removeDeploySecrets(deps, github, {
-    names: deploySecretNames(plan),
+    plan,
     done: "The infrastructure is deleted.",
     reach: "a server",
   });

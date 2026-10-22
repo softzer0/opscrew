@@ -646,14 +646,23 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       }),
     );
     expect(result.remaining.join("\n")).not.toMatch(/opscrew-deploy[-a-z]* branch/);
+    // Only staging's own secrets.
+    expect(result.secretsRemoved).toEqual([
+      "OPSCREW_STAGING_BUILD_ENV",
+      "OPSCREW_STAGING_BUILD_SECRETS",
+      "OPSCREW_STAGING_PORTAINER_ACCESS_CLIENT_ID",
+      "OPSCREW_STAGING_PORTAINER_ACCESS_CLIENT_SECRET",
+      "OPSCREW_STAGING_PORTAINER_WEBHOOK_URL",
+    ]);
   });
 
-  it("a staging environment whose stacks were removed by hand names its own branch in what remains", async () => {
+  it("a staging environment whose stacks were removed by hand names its own branch and workflow in what remains", async () => {
     const base = portainerPlan({ web: { mode: "proxy", port: 8080 } });
     const plan = DeployPlanSchema.parse({
       ...base,
       app: { ...base.app, name: `${base.app.name}-staging` },
       environment: { name: "staging" },
+      cicd: { ...base.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
     });
     const s = await deployed({ plan });
     const asked = withBranchDeletion(s);
@@ -667,6 +676,8 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     const remains = result.remaining.join("\n");
     expect(remains).toContain("The opscrew-deploy-staging branch of acme/shop");
     expect(remains).toContain("git push origin --delete opscrew-deploy-staging`");
+    expect(remains).toContain("(opscrew/ and .github/workflows/opscrew-deploy-staging.yml)");
+    expect(remains).not.toContain(".github/workflows/opscrew-deploy.yml");
   });
 
   it("the app's stacks removed by hand: nothing to approve, so the branch stays and what remains says why", async () => {

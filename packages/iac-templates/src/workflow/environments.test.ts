@@ -199,7 +199,9 @@ describe("the deploy job", () => {
   it("names the secrets per environment", () => {
     const host = DEPLOY_SECRETS.host;
     expect(deploySecretName(prod, host)).toBe("OPSCREW_HOST");
-    expect(deploySecretName(staging, host)).toBe("OPSCREW_HOST");
+    expect(deploySecretName(promotedProd, host)).toBe("OPSCREW_HOST");
+    // Also inside its GitHub environment, so a missing secret never falls back to prod's.
+    expect(deploySecretName(staging, host)).toBe("OPSCREW_STAGING_HOST");
     const prefixed = inEnvironment(serverPlan(), { name: "staging", secrets: "prefixed" });
     expect(deploySecretName(prefixed, host)).toBe("OPSCREW_STAGING_HOST");
     expect(deploySecretName(prefixed, "OPSCREW_SERVICE_MAIN_DB_ENV")).toBe(
@@ -209,7 +211,6 @@ describe("the deploy job", () => {
     expect(deploySecretName(inEnvironment(serverPlan(), { name: "qa" }), host)).toBe(
       "OPSCREW_QA_HOST",
     );
-    // The build job runs in no GitHub environment: its values are always repository secrets.
     expect(deploySecretName(staging, DEPLOY_SECRETS.buildEnv)).toBe("OPSCREW_STAGING_BUILD_ENV");
     expect(deploySecretName(staging, DEPLOY_SECRETS.buildSecrets)).toBe(
       "OPSCREW_STAGING_BUILD_SECRETS",
@@ -222,8 +223,8 @@ describe("the deploy job", () => {
     expect(
       stepOf(workflow(staging).jobs.deploy, "Configure SSH with the pinned host key").env,
     ).toEqual({
-      SSH_KEY: "${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}",
-      KNOWN_HOSTS: "${{ secrets.OPSCREW_SSH_KNOWN_HOSTS }}",
+      SSH_KEY: "${{ secrets.OPSCREW_STAGING_SSH_PRIVATE_KEY }}",
+      KNOWN_HOSTS: "${{ secrets.OPSCREW_STAGING_SSH_KNOWN_HOSTS }}",
     });
   });
 

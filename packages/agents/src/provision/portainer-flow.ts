@@ -81,6 +81,7 @@ import { portainerDnsRecordNote } from "./publish";
 import { deploymentFiles, deploymentRenderContext, recordedEdge } from "./render";
 import {
   buildAppEnvironment,
+  checkSecretsPlacement,
   PORTAINER_SECRETS_RECORD,
   portainerDeploySecrets,
   setDeploySecrets,
@@ -333,6 +334,8 @@ export async function provisionPortainer(
   }
   const repository = await github.api.getRepo(github.owner, github.repo);
   const commits = !(options.planOnly && saved.apply === undefined && saved.removal === undefined);
+  // Where the deploy secrets live, before anything is rendered (a plan-only run asks GitHub nothing).
+  plan = await checkSecretsPlacement(deps, github, plan, { command, phase, planOnly: !commits });
   const deployBranch = await deployBranchFor(deps, {
     git,
     github,
@@ -913,6 +916,7 @@ export async function provisionPortainer(
   // 8. The deploy secrets: the build's values, and the webhook through Cloudflare Access.
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
+    plan,
     save: async () => {
       const env = await appEnvironment();
       const webhookId = (await portainerWebhookId(deps, { create: false })) as string;
@@ -938,6 +942,7 @@ export async function provisionPortainer(
       await setDeploySecrets(
         deps,
         github,
+        plan,
         portainerDeploySecrets({ environment: env, ...(webhook !== undefined ? { webhook } : {}) }),
         env.names,
         phase,

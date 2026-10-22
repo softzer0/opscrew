@@ -73,7 +73,12 @@ import {
   readRequirements,
   recordedEdge,
 } from "./render";
-import { buildAppEnvironment, deploySecrets, setDeploySecrets } from "./secrets";
+import {
+  buildAppEnvironment,
+  checkSecretsPlacement,
+  deploySecrets,
+  setDeploySecrets,
+} from "./secrets";
 import {
   applySharedCloudflare,
   cloudflarePlanHashes,
@@ -358,6 +363,8 @@ async function provisionFlow(
   const approveHash = saved.apply;
   // `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
+  // Where the deploy secrets live, before anything is rendered (a plan-only run asks GitHub nothing).
+  plan = await checkSecretsPlacement(deps, github, plan, { command, phase, planOnly: !commits });
   const deployBranch = await deployBranchFor(deps, {
     git,
     github,
@@ -753,6 +760,7 @@ async function provisionFlow(
   // 8–9. Production environment and GitHub Actions secrets
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
+    plan,
     save: async () => {
       // R2's key is a token the user limits to the bucket, so it comes now that the bucket exists.
       const key =
@@ -774,6 +782,7 @@ async function provisionFlow(
       await setDeploySecrets(
         deps,
         github,
+        plan,
         deploySecrets({
           plan,
           host: secretsTarget.host,

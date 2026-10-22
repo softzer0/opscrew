@@ -243,6 +243,7 @@ export async function storeDeploySecrets(
     await setDeploySecrets(
       deps,
       session.github,
+      plan,
       deploySecrets({
         plan,
         host,
@@ -348,7 +349,7 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
   }
   const fresh = providerWords(moveProvider(plan.target));
   const where = { host: next.ipv4, owner: session.github.owner, repo: session.github.repo };
-  if (await deploySecretsStoredFor(deps, where)) {
+  if (await deploySecretsStoredFor(deps, plan, where)) {
     deps.reporter.info("The GitHub deploy secrets already point to the new server.");
   } else {
     await storeDeploySecrets(session, next.ipv4, "new");

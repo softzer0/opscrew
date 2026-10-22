@@ -3,12 +3,15 @@ import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
+  deploySecretName,
+  deploySecretNamesFor,
+  githubEnvironment,
   PORTAINER_DEPLOY_SECRETS,
   serviceEnvSecret,
   serviceSpec,
   TUNNEL_DEPLOY_SECRETS,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, EnvironmentSchema, environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
@@ -183,17 +186,143 @@ export function serviceEnvSecrets(
 }
 
 /**
- * Every GitHub Actions secret provision may have set for the plan on a server: the deploy
- * secrets, and one per service with secrets (enabled or not, an earlier run may have set it).
+ * Every GitHub Actions secret provision may have set for the plan's environment, by its name there
+ * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
+ * service with secrets (enabled or not, an earlier run may have set it) and, on a server the user
+ * owns, the tunnel's service token. In the user's Portainer: the build values and the webhook's.
  * Destroy deletes them all.
  */
 export function deploySecretNames(plan: DeployPlan): string[] {
-  return [
-    ...new Set([
-      ...Object.values(DEPLOY_SECRETS),
-      ...servicesWithSecrets(plan).map((service) => serviceEnvSecret(service.name)),
-    ]),
-  ];
+  const names =
+    plan.target.provider === "portainer"
+      ? [
+          DEPLOY_SECRETS.buildEnv,
+          DEPLOY_SECRETS.buildSecrets,
+          ...Object.values(PORTAINER_DEPLOY_SECRETS),
+        ]
+      : [
+          ...Object.values(DEPLOY_SECRETS),
+          ...servicesWithSecrets(plan).map((service) => serviceEnvSecret(service.name)),
+          ...(plan.target.provider === "own" ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
+        ];
+  return [...new Set(names.map((name) => deploySecretName(plan, name)))];
+}
+
+/** The build values, which the build job reads outside any GitHub environment. */
+const BUILD_VALUES: readonly string[] = [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets];
+
+/**
+ * The GitHub environment that holds the plan environment's deploy secrets apart from the build
+ * values: its own (`githubEnvironment`, prod's `production`) when `environment.secrets` is
+ * `environment`; none (repository secrets) otherwise.
+ */
+export function secretsEnvironment(plan: DeployPlan): string | undefined {
+  return plan.environment?.secrets === "environment" ? githubEnvironment(plan) : undefined;
+}
+
+/**
+ * Where the deploy secrets of the plan's environment live, checked at each of its provisions once
+ * the app has more than one environment (a prod-only app keeps its repository secrets and its plan
+ * as they are, with no check). After a `github-settings` approval, `environmentCapability` creates
+ * (or briefly changes) the environment's GitHub environment, reads it back and leaves it as it was.
+ * Where environments work, that GitHub environment is kept (created when missing) and
+ * `environment.secrets` becomes `environment`; otherwise `prefixed`. Says which applies, and when it
+ * changed, that the deploy secrets move ({@link setDeploySecrets} shows and makes the move).
+ * Returns the plan with the answer.
+ */
+export async function checkSecretsPlacement(
+  deps: PhaseDeps,
+  github: GitHubSetup,
+  plan: DeployPlan,
+  run: { command: string; phase: Extract<PhaseName, "provision" | "dns">; planOnly: boolean },
+): Promise<DeployPlan> {
+  // A named environment is never the only one: prod is always there.
+  const several =
+    plan.environment?.name !== undefined || (await environmentsOf(deps.paths.root)).length > 1;
+  if (!several) return plan;
+  const { api, owner, repo } = github;
+  const where = `${owner}/${repo}`;
+  const name = plan.environment?.name ?? "prod";
+  const withSecrets = (secrets: "environment" | "prefixed"): DeployPlan => ({
+    ...plan,
+    environment: EnvironmentSchema.parse({ ...plan.environment, secrets }),
+  });
+  const probe = githubEnvironment(withSecrets("environment")) as string;
+  const prefixed = deploySecretName(plan, "OPSCREW_…");
+  if (run.planOnly) {
+    // A plan-only run changes nothing at GitHub and keeps the recorded answer. Without one, the
+    // plan stays as it is: a named environment's workflow then reads repository secrets, and
+    // prod's reads them as before the check.
+    if (plan.environment?.secrets === undefined) {
+      deps.reporter.info(
+        `A plan-only run changes nothing at GitHub, so it does not check where the deploy secrets of ${name} live: this plan shows them as repository secrets${plan.environment?.name === undefined ? "" : ` named ${prefixed}`}. \`${run.command}\` checks it before it stores them.`,
+      );
+    }
+    return plan;
+  }
+  const approval = await deps.approvals.request({
+    kind: "github-settings",
+    title: `Check whether ${where} supports GitHub environments, for the deploy secrets of ${name}`,
+    details: [
+      `OpsCrew creates the GitHub environment ${probe} (or changes its rules for a moment), reads it back to see what GitHub enforces there, and leaves it as it was.`,
+      `Where environments work, ${probe} is kept (created when missing) and holds the deploy secrets of ${name}, apart from the build values, which stay repository secrets. Otherwise all of them are repository secrets named ${prefixed}.`,
+    ].join("\n"),
+  });
+  if (!approval.approved) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      `OpsCrew did not check whether ${where} supports GitHub environments, so it does not know where the deploy secrets of ${name} go. Nothing was changed.`,
+      { hint: `Run \`${run.command}\` again when you are ready.` },
+    );
+  }
+  const providerCall = (action: string, detail?: string) =>
+    deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action,
+      phase: run.phase,
+      target: where,
+      decision: "approved",
+      ...(detail !== undefined ? { detail } : {}),
+    });
+  let capability: Awaited<ReturnType<typeof api.environmentCapability>>;
+  try {
+    capability = await api.environmentCapability(owner, repo, probe);
+  } finally {
+    // Created or changed for the check, then put back as it was, also when the check failed.
+    await providerCall(
+      `check environment ${probe}`,
+      "created or changed to read back what GitHub enforces, then left as it was",
+    );
+  }
+  const secrets = capability.environments ? "environment" : "prefixed";
+  if (secrets === "environment" && (await api.getEnvironment(owner, repo, probe)) === undefined) {
+    await api.putEnvironment(owner, repo, probe, {});
+    await providerCall(`create environment ${probe}`);
+    // Only a GitHub environment OpsCrew created is deleted by destroy.
+    const record = await readSecretsRecord(deps);
+    await writeFileAtomic(
+      deps.paths.files.deploySecrets,
+      `${JSON.stringify({
+        ...(record?.repo === where ? record : { repo: where, names: [] }),
+        createdEnvironment: true,
+      })}\n`,
+    );
+  }
+  deps.reporter.info(
+    secrets === "environment"
+      ? `${where} supports GitHub environments: the deploy secrets of ${name} live in the GitHub environment ${probe}, and its build values are repository secrets.`
+      : `${where} does not support GitHub environments (GitHub Free has them only in public repositories), so the deploy secrets of ${name} are repository secrets named ${prefixed}.`,
+  );
+  const before = plan.environment?.secrets;
+  if (before !== undefined && before !== secrets) {
+    deps.reporter.warn(
+      secrets === "environment"
+        ? `The deploy secrets of ${name} move from repository secrets into the GitHub environment ${probe}; the approval of the deploy secrets lists the move.`
+        : `The deploy secrets of ${name} move from the GitHub environment ${probe} to repository secrets; the approval of the deploy secrets lists the move.`,
+    );
+  }
+  return withSecrets(secrets);
 }
 
 /**
@@ -263,52 +392,141 @@ export const PORTAINER_SECRETS_RECORD = "portainer";
 
 /**
  * True when OpsCrew stored the deploy secrets for this server (`host`) in this repository from
- * this computer. The record holds names only, never values.
+ * this computer, where the plan's environment keeps them now ({@link secretsEnvironment}): after
+ * a move between a GitHub environment and repository secrets they count as not stored. The record
+ * holds names only, never values.
  */
 export async function deploySecretsStoredFor(
   deps: PhaseDeps,
+  plan: DeployPlan,
   where: { host: string; owner: string; repo: string },
 ): Promise<boolean> {
   const text = await readTextIfExists(deps.paths.files.deploySecrets);
   if (text === undefined) return false;
   try {
-    const record = JSON.parse(text) as { host?: unknown; repo?: unknown };
-    return record.host === where.host && record.repo === `${where.owner}/${where.repo}`;
+    const record = JSON.parse(text) as { host?: unknown; repo?: unknown; environment?: unknown };
+    return (
+      record.host === where.host &&
+      record.repo === `${where.owner}/${where.repo}` &&
+      record.environment === secretsEnvironment(plan)
+    );
   } catch {
     return false;
   }
 }
 
-/** A service's env file secret: `OPSCREW_SERVICE_<NAME>_ENV` (`serviceEnvSecret`). */
-const SERVICE_SECRET = /^OPSCREW_SERVICE_[A-Z0-9_]+_ENV$/;
-
 /**
- * The service env file secrets OpsCrew stored last time for `repo` (its record of the deploy
- * secrets) that `names` no longer holds: their services are turned off or removed. Only names of
- * that form, never another secret.
+ * Where each of {@link deploySecretNames} lives: in `environment` (the plan environment's GitHub
+ * environment, when its secrets live in one), apart from the build values, which are always
+ * repository secrets. Sorted by name.
  */
-async function staleServiceSecrets(
-  deps: PhaseDeps,
-  repo: string,
-  names: readonly string[],
-): Promise<string[]> {
-  const record = await readValidJson(
-    deps.paths.files.deploySecrets,
-    z.looseObject({ repo: z.string(), names: z.array(z.string()) }),
-  );
-  if (record === undefined || record.repo !== repo) return [];
-  return record.names.filter((name) => SERVICE_SECRET.test(name) && !names.includes(name)).sort();
+export function deploySecretPlaces(
+  plan: DeployPlan,
+  environment: string | undefined,
+): SecretPlace[] {
+  const build = BUILD_VALUES.map((name) => deploySecretName(plan, name));
+  return deploySecretNames(plan)
+    .sort()
+    .map((name) =>
+      environment === undefined || build.includes(name) ? { name } : { name, environment },
+    );
+}
+
+/** A deploy secret by its name in GitHub: in a GitHub environment, or a repository secret. */
+export interface SecretPlace {
+  name: string;
+  environment?: string;
+}
+
+/** A secret's name with where it lives, when that is a GitHub environment. */
+function placeText(place: SecretPlace): string {
+  return place.environment === undefined
+    ? place.name
+    : `${place.name} (in the GitHub environment ${place.environment})`;
 }
 
 /**
- * Stores the deploy secrets in the repository's GitHub Actions after a `github-secrets` approval
- * that lists their names, and deletes the env file secrets of services that no longer run
- * ({@link staleServiceSecrets}, named in the same approval). Values are sealed locally; only
- * names reach the reporter and audit log.
+ * OpsCrew's record of the deploy secrets it stored last time from this computer (names only):
+ * the repository, every secret's name, the GitHub environment that holds them apart from the
+ * build values (absent: all are repository secrets), and whether OpsCrew created that GitHub
+ * environment (only then does destroy delete it).
+ */
+const SecretsRecordSchema = z.looseObject({
+  repo: z.string(),
+  names: z.array(z.string()),
+  environment: z.string().optional(),
+  createdEnvironment: z.literal(true).optional(),
+});
+
+type SecretsRecord = z.infer<typeof SecretsRecordSchema>;
+
+/** The environment's record of its deploy secrets (`deps.paths.files.deploySecrets`), if any. */
+export async function readSecretsRecord(
+  deps: Pick<PhaseDeps, "paths">,
+): Promise<SecretsRecord | undefined> {
+  return readValidJson(deps.paths.files.deploySecrets, SecretsRecordSchema);
+}
+
+/**
+ * What to delete of the secrets OpsCrew stored last time (`previous`, the record for this
+ * repository), each where it is. `stale`: the env file secrets of this environment's services that
+ * no longer run (`names` no longer holds them; only names of that form, never another secret).
+ * `moved`: on a move between a GitHub environment and repository secrets (`environment` is where
+ * they go now), the old copies: into a GitHub environment, the repository secrets of the same
+ * names (GitHub would read them instead of a missing environment secret, also without a record of
+ * this computer's); out of one, every secret the record lists there.
+ */
+function secretsToDelete(
+  plan: DeployPlan,
+  previous: SecretsRecord | undefined,
+  names: readonly string[],
+  environment: string | undefined,
+): { stale: SecretPlace[]; moved: SecretPlace[] } {
+  const was = previous?.environment;
+  const at = (name: string, where: string | undefined): SecretPlace =>
+    where === undefined ? { name } : { name, environment: where };
+  // `OPSCREW_SERVICE_<NAME>_ENV` (`serviceEnvSecret`), `OPSCREW_<ENV>_SERVICE_<NAME>_ENV` outside prod.
+  const service = new RegExp(`^${deploySecretName(plan, "OPSCREW_SERVICE_")}[A-Z0-9_]+_ENV$`);
+  const stale = (previous?.names ?? [])
+    .filter((name) => service.test(name) && !names.includes(name))
+    .sort()
+    .map((name) => at(name, was));
+  if (environment === was) return { stale, moved: [] };
+  if (environment !== undefined) {
+    const moved = deploySecretNamesFor(plan)
+      .filter((name) => !BUILD_VALUES.includes(name))
+      .map((name) => deploySecretName(plan, name))
+      .sort()
+      .map((name) => at(name, undefined));
+    return { stale, moved };
+  }
+  // Out of a GitHub environment: everything the record lists there goes, the stale ones too.
+  const build = BUILD_VALUES.map((name) => deploySecretName(plan, name));
+  const moved = (previous?.names ?? [])
+    .filter((name) => !build.includes(name))
+    .sort()
+    .map((name) => at(name, was));
+  return { stale: [], moved };
+}
+
+/** What the approval says before the names of the secrets stored. */
+const SEALED = "(names only; values are encrypted on this computer before upload and never shown)";
+
+/**
+ * Stores the deploy secrets of the plan's environment in the repository's GitHub Actions after a
+ * `github-secrets` approval that lists their names. `secrets` holds today's names, of which only
+ * those the environment's workflow reads (`deploySecretNamesFor`) are stored, each by its name
+ * there (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). With `environment.secrets:
+ * environment` they go into the environment's GitHub environment ({@link secretsEnvironment}),
+ * apart from the build values, which stay repository secrets. Also deletes, named in the same
+ * approval, the env file secrets of services that no longer run and, on a move between a GitHub
+ * environment and repository secrets, the old copies ({@link secretsToDelete}). Values are sealed
+ * locally; only names reach the reporter and audit log.
  */
 export async function setDeploySecrets(
   deps: PhaseDeps,
   github: GitHubSetup,
+  plan: DeployPlan,
   secrets: Record<string, string>,
   variableNames: readonly string[],
   phase: Extract<PhaseName, "provision" | "dns" | "retarget"> = "provision",
@@ -322,20 +540,51 @@ export async function setDeploySecrets(
     refusedState?: string;
   } = {},
 ): Promise<void> {
-  const names = Object.keys(secrets).sort();
-  const repo = `${github.owner}/${github.repo}`;
-  const stale = await staleServiceSecrets(deps, repo, names);
+  const { api, owner } = github;
+  const repo = `${owner}/${github.repo}`;
+  const environment = secretsEnvironment(plan);
+  const read = new Set(deploySecretNamesFor(plan));
+  const placed = new Map<string, SecretPlace & { value: string }>();
+  for (const [name, value] of Object.entries(secrets)) {
+    if (!read.has(name)) continue;
+    const inEnvironment = environment !== undefined && !BUILD_VALUES.includes(name);
+    const stored = deploySecretName(plan, name);
+    placed.set(stored, { name: stored, value, ...(inEnvironment ? { environment } : {}) });
+  }
+  const names = [...placed.keys()].sort();
+  const all = names.map((name) => placed.get(name) as SecretPlace & { value: string });
+  const inRepository = all.filter((place) => place.environment === undefined);
+  const inEnvironment = all.filter((place) => place.environment !== undefined);
+  const record = await readSecretsRecord(deps);
+  const previous = record?.repo === repo ? record : undefined;
+  const { stale, moved } = secretsToDelete(plan, previous, names, environment);
+  const list = (places: readonly SecretPlace[]) => places.map((place) => `  ${placeText(place)}`);
   const approval = await deps.approvals.request({
     kind: "github-secrets",
     title: `Store ${names.length} deploy secrets in GitHub Actions for ${repo}`,
     details: [
-      "Secrets (names only; values are encrypted on this computer before upload and never shown):",
-      ...names.map((name) => `  ${name}`),
+      ...(environment === undefined
+        ? [`Secrets ${SEALED}:`, ...names.map((name) => `  ${name}`)]
+        : [
+            `Secrets in the GitHub environment ${environment} ${SEALED}:`,
+            ...inEnvironment.map((place) => `  ${place.name}`),
+            ...(inRepository.length > 0
+              ? [
+                  `Repository secrets, which the build job reads outside any GitHub environment ${SEALED}:`,
+                  ...inRepository.map((place) => `  ${place.name}`),
+                ]
+              : []),
+          ]),
       `The app environment contains: ${variableNames.length > 0 ? variableNames.join(", ") : "no variables"}.`,
       ...(stale.length > 0
+        ? ["Deleted, since their services no longer run (names only):", ...list(stale)]
+        : []),
+      ...(moved.length > 0
         ? [
-            "Deleted, since their services no longer run (names only):",
-            ...stale.map((name) => `  ${name}`),
+            environment !== undefined
+              ? `Deleted from the repository's secrets, since these secrets now live in the GitHub environment ${environment} (names only):`
+              : "Deleted from their GitHub environment, since these secrets are now repository secrets (names only):",
+            ...list(moved),
           ]
         : []),
     ].join("\n"),
@@ -347,34 +596,43 @@ export async function setDeploySecrets(
       { hint: "Run `opscrew provision` again when you are ready; it continues from here." },
     );
   }
-  const key = await github.api.getActionsPublicKey(github.owner, github.repo);
-  for (const name of names) {
-    await github.api.setActionsSecret(
-      github.owner,
-      github.repo,
-      name,
-      secrets[name] as string,
-      key,
-    );
-    await deps.audit.append({
+  const audit = (action: string, place: SecretPlace) =>
+    deps.audit.append({
       kind: "secret-set",
       actor: "opscrew",
-      action: `set secret ${name}`,
+      action: `${action} secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
       phase,
       target: repo,
       decision: "approved",
     });
+  const repositoryKey =
+    inRepository.length > 0 ? await api.getActionsPublicKey(owner, github.repo) : undefined;
+  const environmentKey =
+    environment !== undefined && inEnvironment.length > 0
+      ? await api.environmentPublicKey(owner, github.repo, environment)
+      : undefined;
+  for (const place of all) {
+    if (place.environment === undefined) {
+      await api.setActionsSecret(owner, github.repo, place.name, place.value, repositoryKey);
+    } else {
+      await api.setEnvironmentSecret(
+        owner,
+        github.repo,
+        place.environment,
+        place.name,
+        place.value,
+        environmentKey,
+      );
+    }
+    await audit("set", place);
   }
-  for (const name of stale) {
-    await github.api.deleteActionsSecret(github.owner, github.repo, name);
-    await deps.audit.append({
-      kind: "secret-set",
-      actor: "opscrew",
-      action: `delete secret ${name}`,
-      phase,
-      target: repo,
-      decision: "approved",
-    });
+  for (const place of [...stale, ...moved]) {
+    if (place.environment === undefined) {
+      await api.deleteActionsSecret(owner, github.repo, place.name);
+    } else {
+      await api.deleteEnvironmentSecret(owner, github.repo, place.environment, place.name);
+    }
+    await audit("delete", place);
   }
   await writeFileAtomic(
     deps.paths.files.deploySecrets,
@@ -382,7 +640,13 @@ export async function setDeploySecrets(
       host: secrets[DEPLOY_SECRETS.host] ?? options.record,
       repo,
       names,
+      ...(environment !== undefined ? { environment } : {}),
+      ...(previous?.createdEnvironment === true ? { createdEnvironment: true } : {}),
     })}\n`,
   );
-  deps.reporter.success(`Stored ${names.length} deploy secrets in GitHub Actions.`);
+  deps.reporter.success(
+    environment === undefined
+      ? `Stored ${names.length} deploy secrets in GitHub Actions.`
+      : `Stored ${names.length} deploy secrets in GitHub Actions, ${inEnvironment.length} of them in the GitHub environment ${environment}.`,
+  );
 }

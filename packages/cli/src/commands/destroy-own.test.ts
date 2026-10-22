@@ -59,6 +59,13 @@ async function setup(options: Options = {}) {
       deleteActionsSecret: async (_owner, _repo, name) => {
         deletedSecrets.push(name);
       },
+      // A prod-only app keeps no secrets in a GitHub environment.
+      deleteEnvironmentSecret: async () => {
+        throw new Error("no GitHub environment expected");
+      },
+      deleteEnvironment: async () => {
+        throw new Error("no GitHub environment expected");
+      },
     },
   };
   const context = () => {

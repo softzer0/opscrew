@@ -15,12 +15,11 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural, replaceNames } from "@opscrew/core";
-import { TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
+import { usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   checkProvider,
-  deploySecretNames,
   type OwnServerSession,
   ownEngineEnv,
   ownServerLoginCheck,
@@ -320,7 +319,6 @@ function remainingOnOwnServer(input: {
   plan: DeployPlan;
   github: GitHubTarget;
   secretsRemoved: readonly string[];
-  secretNames: readonly string[];
   /** What data stays on the server and how to remove it (see {@link keptData}). */
   keptData: string | undefined;
   /** The app's bucket at a provider when it stays (see `bucketKept`). */
@@ -350,7 +348,7 @@ function remainingOnOwnServer(input: {
   if (input.keptBucket !== undefined) items.push(input.keptBucket);
   if (!input.removedApp) return items;
   items.push(
-    ...deploySecretsLeft(github, { names: input.secretNames, removed: input.secretsRemoved }),
+    ...deploySecretsLeft(github, { plan, removed: input.secretsRemoved }),
     containerImagesLeft(github),
     ...zeroTrustLeft(plan),
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` prepares your server again from these files.`,
@@ -612,12 +610,11 @@ export async function destroyOwnServer(
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
 
   // 7. Deploy secrets (tunnel ones included) and OpsCrew's record of the deployment
-  const secretNames = [...deploySecretNames(plan), ...Object.values(TUNNEL_DEPLOY_SECRETS)];
   let secretsRemoved: string[] = [];
   let current = plan;
   if (removeApp) {
     secretsRemoved = await removeDeploySecrets(deps, github, {
-      names: secretNames,
+      plan,
       done: "The app is removed from your server and Cloudflare.",
       reach: "your server",
     });
@@ -712,7 +709,6 @@ export async function destroyOwnServer(
     plan,
     github,
     secretsRemoved,
-    secretNames,
     // Read before the teardown, which deletes it only with `deleteData` and only when it ran.
     keptData: deletesData && hostPlans.teardown !== undefined ? undefined : kept,
     keptBucket: removeApp && !deleteData ? bucketKept(plan) : undefined,

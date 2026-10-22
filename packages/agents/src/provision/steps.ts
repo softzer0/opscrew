@@ -170,14 +170,16 @@ export function deploymentRecord(
 
 /**
  * Whether GitHub Actions has the deploy secrets after this run: stored now (`store`, its approval
- * asked by `save`), or else stored for `where` by an earlier run from this computer; a warning
- * says when they are not, because a deploy would then fail. `noun` names what they are for.
+ * asked by `save`), or else stored for `where` by an earlier run from this computer, where the
+ * `plan`'s environment keeps them; a warning says when they are not, because a deploy would then
+ * fail. `noun` names what they are for.
  */
 export async function deploySecretsStep(
   deps: PhaseDeps,
   input: {
     store: boolean;
     save: () => Promise<void>;
+    plan: DeployPlan;
     where: { host: string; owner: string; repo: string };
     noun: "server" | "app";
   },
@@ -186,7 +188,7 @@ export async function deploySecretsStep(
     await input.save();
     return true;
   }
-  const stored = await deploySecretsStoredFor(deps, input.where);
+  const stored = await deploySecretsStoredFor(deps, input.plan, input.where);
   if (!stored) {
     deps.reporter.warn(
       `The deploy secrets are not stored in GitHub Actions for this ${input.noun} yet, so a deploy would fail. Before merging the pull request, run \`opscrew provision\` in a terminal in the project directory to store them.`,

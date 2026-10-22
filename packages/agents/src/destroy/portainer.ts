@@ -9,12 +9,7 @@ import {
 } from "@opscrew/connector-portainer";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
-import {
-  DEPLOY_SECRETS,
-  PORTAINER_DEPLOY_SECRETS,
-  portainerTarget,
-  portainerVersionVolume,
-} from "@opscrew/iac-templates";
+import { portainerTarget, portainerVersionVolume } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
@@ -104,13 +99,6 @@ const WORDS: CloudflareRemovalWords = {
   tunnelAfter: TUNNEL_AFTER_STACKS,
   stays: PORTAINER_STAYS,
 };
-
-/** The deploy secrets a Portainer setup stores (in redeploy mode `cloudflare`, the webhook's too). */
-const SECRET_NAMES = [
-  DEPLOY_SECRETS.buildEnv,
-  DEPLOY_SECRETS.buildSecrets,
-  ...Object.values(PORTAINER_DEPLOY_SECRETS),
-];
 
 /** Stops (`PHASE_PRECONDITION`, nothing changed) when the teardown plan cannot run. */
 function requireNoStackBlockers(plan: StackPlan, name: string): void {
@@ -333,7 +321,7 @@ function remainingInPortainer(input: {
   const bucket = input.bucketDeleted ? undefined : bucketKept(plan);
   if (bucket !== undefined) items.push(bucket);
   if (!input.removedApp) return items;
-  items.push(...deploySecretsLeft(github, { names: SECRET_NAMES, removed: input.secretsRemoved }));
+  items.push(...deploySecretsLeft(github, { plan, removed: input.secretsRemoved }));
   const repo = github.owner && github.repo ? `${github.owner}/${github.repo}` : "<owner>/<repo>";
   if (!input.branchDeleted) {
     const branch = deployBranchOf(plan);
@@ -647,7 +635,7 @@ export async function destroyPortainer(
   let secretsRemoved: string[] = [];
   if (removeApp) {
     secretsRemoved = await removeDeploySecrets(deps, github, {
-      names: SECRET_NAMES,
+      plan,
       done: "The app is removed from your Portainer and Cloudflare.",
       reach: "your Portainer",
     });

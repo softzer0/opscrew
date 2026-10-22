@@ -79,14 +79,17 @@ export interface ResolveProjectPathsOptions {
 /**
  * The rule for an environment's name; plan-schema's `EnvironmentNameSchema` checks it too. Never
  * `storage` or `storage-…`: an environment's infrastructure root `opscrew/infra/<env>` would be a
- * storage root (`opscrew/infra/storage` for prod, `opscrew/infra/storage-<env>` otherwise).
+ * storage root (`opscrew/infra/storage` for prod, `opscrew/infra/storage-<env>` otherwise). Never
+ * `production`, prod's GitHub environment. Never `service` as a part between hyphens: the
+ * environment's deploy secrets `OPSCREW_<ENV>_…` would then share a name with a service's env
+ * file secret (`OPSCREW_SERVICE_<NAME>_ENV`, outside prod `OPSCREW_<ENV>_SERVICE_<NAME>_ENV`).
  */
 export const ENVIRONMENT_NAME_PATTERN =
-  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)(?!storage(?:-|$))[a-z][a-z0-9-]{0,15}$/;
+  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production)$)(?!storage(?:-|$))(?!(?:.*-)?service(?:-|$))[a-z][a-z0-9-]{0,15}$/;
 
 /** What {@link ENVIRONMENT_NAME_PATTERN} asks for, worded to follow a name. */
 export const ENVIRONMENT_NAME_MESSAGE =
-  "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…), storage, or a name starting with storage-";
+  "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, storage, a name starting with storage-, or a name with service as one of its hyphen-separated parts, such as service or db-service)";
 
 /**
  * Resolves all OpsCrew paths for the project at `root` (relative roots resolve against cwd).

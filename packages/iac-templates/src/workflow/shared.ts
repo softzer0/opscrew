@@ -118,21 +118,17 @@ export function healthPath(plan: DeployPlan): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
-/** The build values, which the build job reads outside any GitHub environment. */
-const BUILD_VALUES: readonly string[] = [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets];
-
 /**
  * The name of the GitHub Actions secret that holds `name` (one of {@link DEPLOY_SECRETS}' names,
  * {@link serviceEnvSecret}'s, or the tunnel's and Portainer's) for the plan's environment: today's
- * name for prod and in a GitHub environment (`environment.secrets: environment`), else the
- * repository secret `OPSCREW_<ENV>_…` (`OPSCREW_STAGING_HOST`). The build values are always
- * repository secrets, since the build job runs in no GitHub environment.
+ * name for prod, and `OPSCREW_<ENV>_…` (`OPSCREW_STAGING_HOST`) for any other environment, also
+ * inside its GitHub environment. GitHub falls back from an environment secret to a repository
+ * secret of the same name, so a missing staging secret never resolves to prod's.
  */
 export function deploySecretName(plan: DeployPlan, name: string): string {
-  const environment = plan.environment;
-  if (environment?.name === undefined) return name;
-  if (environment.secrets === "environment" && !BUILD_VALUES.includes(name)) return name;
-  const prefix = environment.name.toUpperCase().replaceAll("-", "_");
+  const environment = plan.environment?.name;
+  if (environment === undefined) return name;
+  const prefix = environment.toUpperCase().replaceAll("-", "_");
   return `OPSCREW_${prefix}_${name.replace(/^OPSCREW_/, "")}`;
 }
 

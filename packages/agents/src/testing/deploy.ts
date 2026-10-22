@@ -540,6 +540,18 @@ export class FakeEngine implements IacEngine {
   readonly stateResources = plainStateResources;
 }
 
+/** A GitHub environment with no protection rules, as GitHub shows it. */
+function environmentView(name: string) {
+  return {
+    name,
+    waitTimer: 0,
+    preventSelfReview: false,
+    reviewers: [],
+    branchPolicy: null,
+    canAdminsBypass: true,
+  };
+}
+
 /** GitHub REST fake recording secrets (plaintext, test only) and pull requests. */
 export class FakeGitHub implements GitHubApi {
   readonly secrets = new Map<string, string>();
@@ -563,6 +575,47 @@ export class FakeGitHub implements GitHubApi {
   }
   async deleteActionsSecret(_owner: string, _repo: string, name: string) {
     this.secrets.delete(name);
+  }
+  /** GitHub environments with their secrets (plaintext, test only). */
+  readonly environments = new Map<string, Map<string, string>>();
+  /** False: the repository has no GitHub environments (a private one on GitHub Free). */
+  environmentsWork = true;
+  /** The environments `environmentCapability` probed. */
+  readonly probes: string[] = [];
+  async environmentCapability(_owner: string, _repo: string, probe: string) {
+    this.probes.push(probe);
+    return {
+      environments: this.environmentsWork,
+      branchPolicies: this.environmentsWork,
+      reviewers: false,
+    };
+  }
+  async getEnvironment(_owner: string, _repo: string, name: string) {
+    return this.environments.has(name) ? environmentView(name) : undefined;
+  }
+  async putEnvironment(_owner: string, _repo: string, name: string) {
+    if (!this.environments.has(name)) this.environments.set(name, new Map());
+    return environmentView(name);
+  }
+  async environmentPublicKey() {
+    return { keyId: "env-key-1", key: "dGVzdC1wdWJsaWMta2V5LXRlc3QtcHVibGljLWtleQ==" };
+  }
+  async setEnvironmentSecret(
+    _owner: string,
+    _repo: string,
+    env: string,
+    name: string,
+    value: string,
+  ) {
+    const secrets = this.environments.get(env);
+    if (secrets === undefined) throw new Error(`The GitHub environment ${env} does not exist.`);
+    secrets.set(name, value);
+  }
+  async deleteEnvironmentSecret(_owner: string, _repo: string, env: string, name: string) {
+    this.environments.get(env)?.delete(name);
+  }
+  async deleteEnvironment(_owner: string, _repo: string, name: string) {
+    this.environments.delete(name);
   }
   async findOpenPullRequest(_owner: string, _repo: string, head: string) {
     this.lookups.push(head);
