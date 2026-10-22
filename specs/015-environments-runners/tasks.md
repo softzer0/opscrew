@@ -426,7 +426,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1517e [US6] Runner machines in the CLI, MCP and the guide
+- [X] T1517e [US6] Runner machines in the CLI, MCP and the guide
   - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/runners.md` and `docs/guide/environments.md` (+ tests)
   - Reads: contracts/runners.md "Runner machines"; plan.md "16."
   - Depends: T1517d, T1512a, T1512b
@@ -549,6 +549,7 @@ Effort`.
     - Core's `signedLeafCertificate` takes a `commonName` option, so a long localhost hostname needs no extra short SAN name (`<16 hex>.localhost`) (T1510).
     - A runner machine's host plan is headed "Host plan for your server" (ssh-host); name the runner machine there instead of the MCP text adding a line above it (T1517e).
     - Export `FakeRunnerMachine` and `FakeRunnerGitHub` from `@opscrew/agents/testing`, and drop the CLI's and MCP's own small copies (T1517e).
+    - `env set --from X --runner Y` sets the runner before the source; check both in agents before writing either, so a refused source saves nothing (T1517e).
     - Image retention keeps the label tags of the app's existing environments only, not every `opscrew-*` tag: a removed environment's labels, or a stray tag such as the spike's `opscrew-spike`, would otherwise pin versions forever (the lead, 2026-10-22).
     - The runbook's `workflowName` and plan-file path rebuild what `workflow/shared.ts` builds inline (`workflowStart`): export one helper (T1512b).
     - iac-templates' `workflow/shared.ts` comment on concurrency says no queued deploy is cancelled; GitHub keeps only the newest waiting run (T1512b's review).
