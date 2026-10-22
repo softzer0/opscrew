@@ -8,6 +8,7 @@
 |---|---|---|
 | `name` | `^[a-z][a-z0-9-]{0,15}$`, not a name Windows reserves (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`, which Git for Windows cannot check out), and not `production`, `storage`, `storage-*`, or a name with `service` as one of its hyphen-separated parts, optional | Never `prod`; absent for prod. Unique per app (the folder name). A named environment's `app.name` ends with `-<name>`. |
 | `deploySource` | `{ from: "main" }` or `{ from: "promote", source: <env> }` | `source` names an existing environment of the app, never the environment itself, and the sources form no cycle. Prod's own default is `{ from: "main" }` while it is the only environment. |
+| `cicd.branch` (each environment's own) | a branch the repository has | With `deploySource.from: main`, the branch whose pushes build and deploy this environment. Two environments never follow the same branch. Design sets prod's to the repository's default branch; `env add|set --branch` sets another environment's (FR-1537). |
 | `runner` | `github`, `server`, `local` or `host` | `server` only for cloud and own-server targets, `local` only for localhost, `host` (a runner machine) only for cloud and own-server targets. Default `github`. |
 | `runnerHost` | `{ name, arch }` | Required with `runner: host`, absent otherwise. `name` names a runner machine of the project; no address. |
 | `build` | `github` or `runner` | `runner` only with `runner: local` or `host`, and only for an environment that follows main. The runner's `arch` must equal the target's. Default `github`. |

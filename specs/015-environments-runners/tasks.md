@@ -471,6 +471,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: high
 
+- [ ] T1518 [US2] Branch detection and `--branch` for environments (FR-1537)
+  - Owns: agents' `environments/**` and `interview/**` (the proposal, `--branch`, the checks), `promote/**` (the source's branch); iac-templates' verify job in `src/workflow/**` (its branch check) with its snapshots; the CLI's `env` command and MCP's environment tools; `docs/guide/environments.md` (+ tests)
+  - Reads: spec FR-1517 and FR-1537; data-model.md "Environment" (`cicd.branch`); contracts/environments.md "Promotion"
+  - Depends: T1515a
+  - Accept:
+    - **Detection:** `env add` and the interview read the remote branches through the existing git client (no new dependency), and match the common names in FR-1537.
+    - **The proposal:** when a match is found, an interactive run shows both setups and preselects promotion. In a script, nothing is guessed: the flags decide, and a note names the matching branches.
+    - **`--branch <name>`** on `env add` and `env set` sets that environment's `cicd.branch`. A branch the repository doesn't have is refused, and so is a branch another environment already follows, naming both.
+    - **Promotion's provenance check** (agents' `promote` and the workflow's verify job) requires the build run's `head_branch` to equal the source environment's own `cicd.branch`, not always the default branch. The target's workflow is still dispatched on the default branch, where it lives. Prod's rendered workflow is byte-identical.
+    - **The guide** (`environments.md`): both setups, the trade-off (each branch builds its own image, against one image promoted unchanged), `--branch`, and the duplicate-branch refusal.
+    - **Tests:** detection with matching and non-matching names; the proposal interactively and in a script; `--branch` with an unknown branch and a duplicate; promotion from an environment on its own branch passes, and a run on another branch is refused.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
