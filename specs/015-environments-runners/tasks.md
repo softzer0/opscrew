@@ -175,6 +175,7 @@ Effort`.
     - **Package root exports for T1510:** `switchCommands`, `rollbackCommands`, `EdgeFiles`, `APPS_DIR`, and T1506's localhost helpers (`localhostHostname`, `localhostTlsUpload`, `LocalhostSite`).
     - **The lock where `flock` is missing** (Git for Windows, macOS): the scripts take the edge's lock only when `command -v flock` finds it. T1510 serialises local deploys with its own lock.
     - **`image: local-build`:** the localhost switch doesn't pull the app's locally built image (for example `pull_policy: never` on that service, or a pull that skips it), with a test that `docker compose pull` doesn't fail on it.
+    - **The localhost health check** in the workflow probes HTTPS through the local CA: `https://<host>:<https port><path>`, with `--resolve` to 127.0.0.1 and `--cacert "$OPSCREW_LOCAL_CA_FILE"`. The plain HTTP port answers with a redirect, which `curl -f` would count as healthy (T1505).
     - **Settings files on localhost** (MySQL, Valkey and others) are inline Compose configs, as the local Docker pass's `localServerCompose` does. Files bind-mounted from Windows are world-writable, and MySQL ignores such files.
     - **Prod's rendered output is byte-identical** (snapshots).
     - **Tests:** two environments' rendered files never share a path; a Portainer staging stack points at its own branch.
@@ -254,7 +255,7 @@ Effort`.
   - Depends: T1508b, T1510, T1507, T1504
   - Accept:
     - **`planServerRunner`** checks the repository's visibility and, for a public one, the fork-PR policy (setting it is a `github-settings` change). It adds the `github-runner` step to the host plan, and at apply fetches the registration token through the connector for the step.
-    - **`startLocalRunner`** downloads and checks the pinned asset for this computer, configures it `--ephemeral` with the label, runs it in the foreground, and removes itself through the API on exit or a signal.
+    - **`startLocalRunner`** downloads and checks the pinned asset for this computer, configures it `--ephemeral` with the label, runs it in the foreground, and removes itself through the API on exit or a signal. Its environment (the runner's `.env`) sets `OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR` and `OPSCREW_LOCAL_CA_FILE` for the deploy job (T1505).
     - **`runnerStatus`** in `status` and `secure`:
       - offline is a warning;
       - more than 21 days behind GitHub's latest release is a warning;
