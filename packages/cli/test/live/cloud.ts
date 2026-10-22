@@ -14,6 +14,7 @@ import { connect, type LookupFunction } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import { SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
+import type { ListedFirewallRule } from "./environments-support";
 import {
   type DeployJob,
   type HetznerServerType,
@@ -301,6 +302,76 @@ export async function deleteThrowaway(options: {
     if (!deleted) problems.push(`Hetzner did not delete firewall ${id}`);
   }
   return problems;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hetzner: what OpsCrew itself created for an app (labels `managed-by=opscrew,app=<app>`).
+
+const HETZNER_APP_KINDS = ["servers", "firewalls", "ssh_keys"] as const;
+
+/** The label selector of what OpsCrew created for `app` at Hetzner. */
+const appSelector = (app: string) => encodeURIComponent(`managed-by=opscrew,app=${app}`);
+
+/** What OpsCrew created for `app` that Hetzner still lists, each as `<kind> <id>` (SC-301). */
+export async function hetznerAppLeft(token: string, app: string): Promise<string[]> {
+  const left: string[] = [];
+  for (const kind of HETZNER_APP_KINDS) {
+    const listed = await api(
+      HETZNER_API,
+      token,
+      "GET",
+      `/${kind}?label_selector=${appSelector(app)}`,
+    );
+    if (listed.status !== 200) {
+      throw new Error(`Could not list the Hetzner ${kind} (HTTP ${listed.status}).`);
+    }
+    for (const item of (listed.json as Record<string, { id: number }[]>)[kind] ?? []) {
+      left.push(`${kind} ${item.id}`);
+    }
+  }
+  return left;
+}
+
+/**
+ * The last-resort cleanup of what OpsCrew created for `app` at Hetzner, through the API: every
+ * server (its protection lifted first), firewall and SSH key with the app's labels.
+ */
+export async function deleteHetznerApp(token: string, app: string): Promise<void> {
+  const hetzner = (method: string, path: string, body?: unknown) =>
+    api(HETZNER_API, token, method, path, body);
+  for (const kind of HETZNER_APP_KINDS) {
+    const listed = await hetzner("GET", `/${kind}?label_selector=${appSelector(app)}`);
+    for (const item of (listed.json as Record<string, { id: number }[]>)[kind] ?? []) {
+      if (kind === "servers") {
+        await hetzner("POST", `/servers/${item.id}/actions/change_protection`, {
+          delete: false,
+          rebuild: false,
+        });
+      }
+      // a firewall stays "in use" until its server is gone; retry for up to a minute
+      await retryDelete(() => hetzner("DELETE", `/${kind}/${item.id}`));
+    }
+  }
+}
+
+/** The inbound rules of the firewalls OpsCrew created for `app` at Hetzner. */
+export async function hetznerAppFirewallRules(
+  token: string,
+  app: string,
+): Promise<ListedFirewallRule[]> {
+  const listed = await api(
+    HETZNER_API,
+    token,
+    "GET",
+    `/firewalls?label_selector=${appSelector(app)}`,
+  );
+  if (listed.status !== 200) {
+    throw new Error(`Could not list the app's Hetzner firewalls (HTTP ${listed.status}).`);
+  }
+  const firewalls =
+    (listed.json as { firewalls?: { rules?: ListedFirewallRule[] }[] } | undefined)?.firewalls ??
+    [];
+  return firewalls.flatMap((firewall) => firewall.rules ?? []);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -720,11 +791,22 @@ export class Cloudflare {
 // ---------------------------------------------------------------------------------------------
 // GitHub: the throwaway repository's pull requests and deploy runs.
 
+/** Prod's deploy workflow; every other environment's is `opscrew-deploy-<env>.yml`. */
+export const DEPLOY_WORKFLOW = "opscrew-deploy.yml";
+
 /** A completed deploy workflow run and its jobs' conclusions. */
 export interface DeployRun {
   id: number;
   conclusion: string | null;
   jobs: DeployJob[];
+}
+
+/** A self-hosted runner as GitHub lists it: its id, name, `online` or `offline`, and labels. */
+export interface RepoRunner {
+  id: number;
+  name: string;
+  status: string;
+  labels: string[];
 }
 
 /** A GitHub API client for the throwaway repository. */
@@ -841,11 +923,60 @@ export class GitHubRepo {
     return sha;
   }
 
+  /** Every job of workflow run `runId`, with its steps, its runner and the labels it asked for. */
+  async jobs(runId: number): Promise<DeployJob[]> {
+    const got = await this.call(
+      "GET",
+      `/repos/${this.name}/actions/runs/${runId}/jobs?per_page=100`,
+    );
+    const list =
+      (
+        got.json as
+          | {
+              jobs?: {
+                name: string;
+                conclusion: string | null;
+                steps?: { conclusion: string | null }[];
+                runner_name?: string | null;
+                labels?: string[];
+              }[];
+            }
+          | undefined
+      )?.jobs ?? [];
+    return list.map((job) => ({
+      name: job.name,
+      conclusion: job.conclusion,
+      steps: (job.steps ?? []).map((step) => ({ conclusion: step.conclusion })),
+      runnerName: job.runner_name ?? null,
+      labels: job.labels ?? [],
+    }));
+  }
+
+  /** The repository's self-hosted runners as GitHub lists them. */
+  async runners(): Promise<RepoRunner[]> {
+    const got = await this.call("GET", `/repos/${this.name}/actions/runners?per_page=100`);
+    if (got.status !== 200) throw new Error(`Could not list the runners (HTTP ${got.status}).`);
+    const list =
+      (
+        got.json as
+          | {
+              runners?: { id: number; name: string; status: string; labels?: { name: string }[] }[];
+            }
+          | undefined
+      )?.runners ?? [];
+    return list.map((runner) => ({
+      id: runner.id,
+      name: runner.name,
+      status: runner.status,
+      labels: (runner.labels ?? []).map((label) => label.name),
+    }));
+  }
+
   /** Starts the deploy workflow on `main` (`workflow_dispatch`). */
   async dispatchDeploy(): Promise<void> {
     const started = await this.call(
       "POST",
-      `/repos/${this.name}/actions/workflows/opscrew-deploy.yml/dispatches`,
+      `/repos/${this.name}/actions/workflows/${DEPLOY_WORKFLOW}/dispatches`,
       { ref: "main" },
     );
     if (started.status !== 204) {
@@ -854,18 +985,20 @@ export class GitHubRepo {
   }
 
   /**
-   * Waits for the deploy workflow run of `headSha` (and `event`, created at or after `since`) to
-   * complete and returns it with its jobs' conclusions. A run of an earlier pass never counts.
+   * Waits for the run of the deploy workflow `workflow` (default {@link DEPLOY_WORKFLOW}) of
+   * `headSha` (and `event`, created at or after `since`) to complete and returns it with its jobs.
+   * A run of an earlier pass never counts.
    */
   async waitForDeploy(
-    filter: { headSha: string; event?: string; since?: Date },
+    filter: { headSha: string; event?: string; since?: Date; workflow?: string },
     timeoutMs = minutes(30),
   ): Promise<DeployRun> {
+    const workflow = filter.workflow ?? DEPLOY_WORKFLOW;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const runs = await this.call(
         "GET",
-        `/repos/${this.name}/actions/workflows/opscrew-deploy.yml/runs?head_sha=${filter.headSha}&per_page=20`,
+        `/repos/${this.name}/actions/workflows/${workflow}/runs?head_sha=${filter.headSha}&per_page=20`,
       );
       const run = (
         runs.json as
@@ -886,32 +1019,11 @@ export class GitHubRepo {
             new Date(item.created_at).getTime() >= filter.since.getTime() - 5_000),
       );
       if (run?.status === "completed") {
-        const jobs = await this.call("GET", `/repos/${this.name}/actions/runs/${run.id}/jobs`);
-        const list =
-          (
-            jobs.json as
-              | {
-                  jobs?: {
-                    name: string;
-                    conclusion: string | null;
-                    steps?: { conclusion: string | null }[];
-                  }[];
-                }
-              | undefined
-          )?.jobs ?? [];
-        return {
-          id: run.id,
-          conclusion: run.conclusion,
-          jobs: list.map((job) => ({
-            name: job.name,
-            conclusion: job.conclusion,
-            steps: (job.steps ?? []).map((step) => ({ conclusion: step.conclusion })),
-          })),
-        };
+        return { id: run.id, conclusion: run.conclusion, jobs: await this.jobs(run.id) };
       }
       await sleep(20_000);
     }
-    throw new Error(`The deploy workflow run did not finish within ${timeoutMs / 60_000} minutes.`);
+    throw new Error(`The ${workflow} run did not finish within ${timeoutMs / 60_000} minutes.`);
   }
 
   /** Title, body and opening time of every pull request of the repository (any state). */
@@ -1219,7 +1331,10 @@ export function waitForAccessRefusal(url: string): Promise<number> {
 // ---------------------------------------------------------------------------------------------
 // Root SSH to the throwaway server with the test's own key.
 
-/** Root's SSH login on the throwaway server, as the user would use it. */
+/**
+ * Root's SSH login on the throwaway server, as the user would use it; with `user`, that user's
+ * login instead (`deploy` with OpsCrew's deploy key, on a server OpsCrew created).
+ */
 export class RootShell {
   constructor(
     private readonly runner: CommandRunner,
@@ -1228,10 +1343,16 @@ export class RootShell {
       keyFile: string;
       knownHostsFile: string;
       env: Record<string, string | undefined>;
+      user?: string;
     },
   ) {}
 
-  /** Runs `command` as root; resolves with the result (exit code 255: SSH itself failed). */
+  /** The login's user: root unless another one was given. */
+  private get user(): string {
+    return this.options.user ?? "root";
+  }
+
+  /** Runs `command` as the user; resolves with the result (exit code 255: SSH itself failed). */
   run(command: string, timeoutMs = minutes(2)): Promise<CommandResult> {
     return this.runner.run(
       "ssh",
@@ -1250,19 +1371,19 @@ export class RootShell {
         "ConnectTimeout=15",
         "-o",
         "ServerAliveInterval=15",
-        `root@${this.options.host}`,
+        `${this.user}@${this.options.host}`,
         command,
       ],
       { env: this.options.env, timeoutMs },
     );
   }
 
-  /** Runs `command` as root and returns its output; throws (with its stderr) when it fails. */
+  /** Runs `command` as the user and returns its output; throws (with its stderr) when it fails. */
   async ok(command: string, timeoutMs = minutes(2)): Promise<string> {
     const result = await this.run(command, timeoutMs);
     if (result.exitCode !== 0) {
       throw new Error(
-        `\`${command}\` as root failed (exit ${result.exitCode}): ${result.stderr.trim().slice(-500)}`,
+        `\`${command}\` as ${this.user} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(-500)}`,
       );
     }
     return result.stdout.trim();

@@ -30,8 +30,10 @@ import {
   api,
   Cloudflare,
   type CloudflareZone,
+  deleteHetznerApp,
   GitHubRepo,
   HETZNER_API,
+  hetznerAppLeft,
   minutes,
   retryDelete,
   sleep,
@@ -217,28 +219,12 @@ const HETZNER: LiveProvider = {
       throw new Error(`Hetzner did not reboot the server (HTTP ${rebooted.status}).`);
     }
   },
-  async apiCleanup(appName) {
-    const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
-    for (const kind of ["servers", "firewalls", "ssh_keys"] as const) {
-      const listed = await hetzner("GET", `/${kind}?label_selector=${selector}`);
-      for (const item of (listed.json as Record<string, { id: number }[]>)[kind] ?? []) {
-        if (kind === "servers") {
-          await hetzner("POST", `/servers/${item.id}/actions/change_protection`, {
-            delete: false,
-            rebuild: false,
-          });
-        }
-        // a firewall stays "in use" until its server is gone; retry for up to a minute
-        await retryDelete(() => hetzner("DELETE", `/${kind}/${item.id}`));
-      }
-    }
-  },
+  apiCleanup: (appName) => deleteHetznerApp(E2E.hcloudToken as string, appName),
   async expectNothingLeft(appName) {
-    const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
-    for (const kind of ["servers", "firewalls", "ssh_keys"] as const) {
-      const left = await hetzner("GET", `/${kind}?label_selector=${selector}`);
-      expect((left.json as Record<string, unknown[]>)[kind], `no OpsCrew ${kind} left`).toEqual([]);
-    }
+    expect(
+      await hetznerAppLeft(E2E.hcloudToken as string, appName),
+      "no OpsCrew server, firewall or SSH key left",
+    ).toEqual([]);
   },
 };
 

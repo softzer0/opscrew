@@ -37,6 +37,13 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Hetzner, the recovery copy restored on a fresh clone | `OPSCREW_E2E_TLS=recovery`, the default app | Passed (run 4, after T1414c; run 2 found T1414c) | 2026-10-21 | — |
 | Your own server with nginx (`own-nginx.test.ts`): certbot, an addition, a forced renewal under load, testssl.sh, two apps on one edge, origin TLS on nginx, a switch to Caddy and back | `OPSCREW_E2E_OWN_NGINX=1`, + `OPSCREW_E2E_GITHUB_REPO_B`, Docker here | Passed (run 4; runs 1–3 stopped on the test's own scenario) | 2026-10-21 | — |
 | Your existing Portainer, step 5b: the stack's Caddy with origin TLS, `secure --deep` with only testssl.sh, a redeploy under load | `OPSCREW_E2E_PORTAINER_STEPS=5b` (or `full`), Docker here | Passed (run 3, after T1414e) | 2026-10-21 | — |
+| Hetzner environments and promotion (`environments.test.ts`, feature 015): prod and staging, prod's plan hash and site unchanged under load, promotion of staging's exact digest, a rollback, staging's destroy ([details below](#environments-and-runners-feature-015)) | `OPSCREW_E2E_ENVIRONMENTS=1`, a Cloudflare domain | **Not run yet** | — | T1515 |
+| The environment rules on a public repository: the GitHub environment with its branch rule, its removal, a runner refused and its fork policy change only planned | + `OPSCREW_E2E_GITHUB_REPO_C` | **Not run yet** | — | T1515 |
+| The server's runner (`runners.test.ts`): the deploy job on the server while its firewall refuses SSH from GitHub's Actions ranges | `OPSCREW_E2E_RUNNER=1`, a Cloudflare domain | **Not run yet** | — | T1515 |
+| A runner machine (`runners.test.ts`): the image built on a throwaway runner machine and deployed over SSH to a server that refuses GitHub's ranges | `OPSCREW_E2E_RUNNER_HOST=1`, a Cloudflare domain | **Not run yet** | — | T1515, after T1517e's `runner host` commands |
+| The localhost Docker pass (`test/e2e/localhost.test.ts`, feature 015, quickstart "1."): the site at `https://<app>.localhost` through the local CA, a second environment beside it, the stack's differences from a server's, destroy leaving nothing | `OPSCREW_DOCKER_TESTS=1`, Docker here | Passed, 7 of 7 tests: Windows by hand; Linux CI (`ubuntu-latest`); Intel macOS CI (`macos-15-intel` with Colima, run 39805990349, where the first provision takes about 9 minutes) | 2026-10-22 | — |
+| The off-Linux Buildpacks build (`test/e2e/off-linux-build.test.ts`): the pinned Linux `pack` in a container builds `examples/go-api` on a computer that is not Linux | `OPSCREW_DOCKER_TESTS=1`, Docker here, not Linux | Passed on Windows by hand (442 s). Intel macOS CI: **not tested live**: a plain `docker pull` of the 1.5 GB Paketo builder kills Colima's VM there, even one layer at a time, with no OpsCrew code involved, so the job no longer runs it | 2026-10-22 (Windows) | A macOS computer with more room for Docker |
+| Docker on Apple silicon | — | **Not tested live**: GitHub's arm64 macOS runners cannot run Docker | — | An Apple silicon Mac by hand |
 
 Run in development, not tracked by date:
 
@@ -249,3 +256,42 @@ Not covered by any live test:
   (`SECRETS_COPY_CHANGED_ELSEWHERE`): unit tests only.
 - **The `vercel.json` translation on a real server**: the local Docker pass only.
 - **DigitalOcean with origin TLS**: no DigitalOcean token.
+
+## Environments and runners (feature 015)
+
+The passes are in [e2e.md](e2e.md#environments-and-promotion). None has run live yet (T1515). Tick
+each check once it has passed live; every pass ends with the leak search and the cleanup.
+
+| Check | Where | Passed live |
+|---|---|---|
+| Staging added, provisioned and deployed with no failed request to prod under 20 requests per second, and prod's plan hash unchanged after each step, with nothing to approve for prod | environments, step 3 | [ ] |
+| Staging answers on its own hostname through Cloudflare, and `verify --env staging` passes | environments, step 3 | [ ] |
+| Where the Free private repository puts staging's secrets (expected: a GitHub environment without rules, research.md "Spike results" item 1), recorded as `observed:` | environments, step 3 | [ ] |
+| `env set prod --from staging` and `provision --env prod` make prod's workflow the promoted one | environments, step 4 | [ ] |
+| `promote --to prod` shows staging's digest, and after its approval prod runs exactly that digest (SC-1503) | environments, step 5 | [ ] |
+| A rollback with `promote --to prod --digest <previous>` puts prod's previous image back | environments, step 6 | [ ] |
+| Staging's destroy: no failed request to prod, nothing of staging left at Hetzner, at GitHub or in its DNS records; prod still verified, its plan unchanged | environments, step 7 | [ ] |
+| On the public repository: provision creates the GitHub environment with only `main` allowed to deploy; a script adds no required reviewer and says where to add one | environment rules, step 2 | [ ] |
+| On the public repository: a runner is refused in a plan-only run that names the fork policy change; the policy stays and no runner is registered | environment rules, step 3 | [ ] |
+| On the public repository: destroy removes the GitHub environment OpsCrew created and its secrets | environment rules, step 4 | [ ] |
+| The server's runner: the host plan names the pinned runner, GitHub lists it online, and `status` shows it online | server's runner, steps 2–3 | [ ] |
+| The deploy job runs on the server's runner, never the build, while the firewall lets SSH in only from this computer and from none of GitHub's Actions ranges; a merged change goes live the same way | server's runner, steps 3–4 | [ ] |
+| Destroy unregisters the server's runner: GitHub lists none afterwards | server's runner, step 5 | [ ] |
+| A throwaway server set up as a runner machine (`runner host add`, its host plan approved by its hash) | runner machine, step 2 | [ ] |
+| The build job (`build: runner`) and the deploy job run on the runner machine, and prod's server lets SSH in only from it and this computer | runner machine, steps 3–4 | [ ] |
+| Destroy removes the machine's runner (from GitHub and its folder), and `runner host remove` the machine | runner machine, step 5 | [ ] |
+| The leak search finds no tokens, keys or passphrases, no environment's generated values, no local CA key, no runner credentials and no string shaped like a runner token | every pass | [ ] |
+
+Not covered by any live test:
+
+- **The required reviewer OpsCrew offers in a terminal** for a promoted environment on a public
+  repository: a script is never offered one, so the test records that answer; the offer is tried
+  by hand.
+- **A self-hosted runner on a public repository**, applied: never, by design. Only the refusal and
+  the planned fork policy change run live.
+- **The local runner** (`opscrew runner start`, quickstart "5."): run by hand on Windows in T1515
+  (spike item 9); no gated test.
+- **A tampered digest or a foreign provenance refused by `promote`**, and image retention keeping
+  both environments' running and previous images: unit tests only.
+- **Environments on DigitalOcean, on your own server or in a Portainer**: every live environment
+  pass uses Hetzner.

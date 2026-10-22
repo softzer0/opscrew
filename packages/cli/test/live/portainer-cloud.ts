@@ -346,9 +346,17 @@ export async function jobLog(github: GitHubRepo, runId: number, jobName: string)
   return log.text;
 }
 
-/** The names of the repository's GitHub Actions secrets. */
-export async function secretNames(github: GitHubRepo): Promise<string[]> {
-  const got = await github.call("GET", `/repos/${github.name}/actions/secrets?per_page=100`);
+/**
+ * The names of the repository's GitHub Actions secrets, or of the secrets of its GitHub
+ * environment `environment` (none when that environment does not exist).
+ */
+export async function secretNames(github: GitHubRepo, environment?: string): Promise<string[]> {
+  const where =
+    environment === undefined
+      ? `/repos/${github.name}/actions/secrets`
+      : `/repos/${github.name}/environments/${encodeURIComponent(environment)}/secrets`;
+  const got = await github.call("GET", `${where}?per_page=100`);
+  if (environment !== undefined && got.status === 404) return [];
   if (got.status !== 200)
     throw new Error(`Could not list the Actions secrets (HTTP ${got.status}).`);
   return ((got.json as { secrets?: { name: string }[] } | undefined)?.secrets ?? []).map(

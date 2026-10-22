@@ -16,6 +16,7 @@ import {
   type CloudflareZone,
   cloudflareLeft,
   createThrowawayServer,
+  DEPLOY_WORKFLOW,
   deleteThrowaway,
   type FirewallRule,
   GitHubRepo,
@@ -35,6 +36,7 @@ import {
   blockedByCloudflare,
   cloudflareRecordProblems,
   deployJobFailed,
+  duration,
   ed25519FromKeyscan,
   expectedSharedHosts,
   fingerprintFromKeygen,
@@ -66,19 +68,20 @@ export function isExample(name: string): boolean {
 }
 
 /**
- * The built CLI's environment in a live test: this process's environment with `base` on top,
- * without any `OPSCREW_E2E_*` variable, cloud provider token or name in `drop`.
+ * The built CLI's environment in a live test: this process's environment without any
+ * `OPSCREW_E2E_*` variable, cloud provider token or name in `drop`, with `base` on top (which may
+ * give OpsCrew one provider's token, for a server OpsCrew creates).
  */
 function cliEnv(
   base: Record<string, string | undefined>,
   drop: readonly string[] = [],
 ): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env, ...base };
+  const env: Record<string, string | undefined> = { ...process.env };
   for (const name of ["HCLOUD_TOKEN", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN", ...drop]) {
     delete env[name];
   }
   for (const name of Object.keys(env)) if (name.startsWith("OPSCREW_E2E_")) delete env[name];
-  return env;
+  return { ...env, ...base };
 }
 
 /**
@@ -141,6 +144,13 @@ export interface ServerSettings {
   /** The second app's throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`). */
   secondRepo: string;
 }
+
+/** The cleanup's budget for `opscrew destroy` runs, before the API deletes what is left. */
+export const CLEANUP_DESTROY_BUDGET_MS = minutes(10);
+/** The longest one `opscrew` run of the cleanup may take, within that budget. */
+export const CLEANUP_DESTROY_RUN_MS = minutes(4);
+/** What a cleanup's `teardown` may take: the destroy budget, then the API deletions after it. */
+const TEARDOWN_TIMEOUT_MS = CLEANUP_DESTROY_BUDGET_MS + minutes(15);
 
 /** The file a merged change adds or rewrites, so that its deploy builds a new image. */
 export const CHANGE_FILE = "opscrew-e2e-change.txt";
@@ -229,12 +239,15 @@ export async function localLeakSources(
   return sources;
 }
 
-/** The settings both server live tests share; `serverTypeVariable` names the test's own one. */
+/**
+ * The settings the server live tests share; `serverTypeVariable` names the test's own one for its
+ * throwaway server (none when the test creates none).
+ */
 export function serverSettings(
   env: Record<string, string | undefined>,
-  serverTypeVariable: string,
+  serverTypeVariable?: string,
 ): ServerSettings {
-  const serverType = env[serverTypeVariable]?.trim();
+  const serverType = serverTypeVariable === undefined ? undefined : env[serverTypeVariable]?.trim();
   return {
     hcloudToken: env.OPSCREW_E2E_HCLOUD_TOKEN ?? "",
     githubRepo: env.OPSCREW_E2E_GITHUB_REPO ?? "",
@@ -316,6 +329,8 @@ export class LiveRun {
   sharedBefore: ZoneEntrypoints | undefined;
   /** The zone's origin TLS before the run (feature 014), for the cleanup's leftover decision. */
   tlsBefore: ZoneTls | undefined;
+  /** The example's commit {@link prepareRepo} pushed to `main`. */
+  exampleCommit = "";
   /** Flags every `provisionUntilDone` run passes (`--key-out <file>`, the recovery copy's key). */
   provisionFlags: string[] = [];
 
@@ -444,12 +459,17 @@ export class LiveRun {
     return this.appName as string;
   }
 
-  paths() {
-    return resolveProjectPaths(this.repo, { env: this.env });
+  /** The project's paths: prod's, or `environment`'s. */
+  paths(environment?: string) {
+    return resolveProjectPaths(this.repo, {
+      env: this.env,
+      ...(environment === undefined ? {} : { environment }),
+    });
   }
 
-  readPlan(): Promise<DeployPlan> {
-    return readArtifact("plan", join(this.repo, "opscrew/plan.yaml"));
+  /** `opscrew/plan.yaml`, or `environment`'s plan. */
+  readPlan(environment?: string): Promise<DeployPlan> {
+    return readArtifact("plan", this.paths(environment).files.plan);
   }
 
   async git(...args: string[]): Promise<string> {
@@ -467,15 +487,25 @@ export class LiveRun {
    * Runs the built CLI in the project, non-interactively (`CI=1`), with `overrides` in its env,
    * and keeps its output and the version of `.opscrew/cloudflare.json` it left for the leak search.
    */
-  async opscrewWith(
+  opscrewWith(overrides: Record<string, string | undefined>, ...args: string[]): Promise<CliRun> {
+    return this.cli(overrides, minutes(30), args);
+  }
+
+  /** {@link opscrew}, stopped after `timeoutMs` (the cleanup's runs, within its budget). */
+  opscrewWithin(timeoutMs: number, ...args: string[]): Promise<CliRun> {
+    return this.cli({}, timeoutMs, args);
+  }
+
+  private async cli(
     overrides: Record<string, string | undefined>,
-    ...args: string[]
+    timeoutMs: number,
+    args: readonly string[],
   ): Promise<CliRun> {
     this.log(`running opscrew ${args.join(" ")}`);
     const result = await this.runner.run(process.execPath, [CLI, ...args], {
       cwd: this.repo,
       env: { ...this.env, ...overrides },
-      timeoutMs: minutes(30),
+      timeoutMs,
     });
     const output = `${result.stdout}\n${result.stderr}`;
     const app = this.parent === undefined ? "" : "(B) ";
@@ -488,7 +518,7 @@ export class LiveRun {
     await this.options.afterCli?.();
     if (result.timedOut === true) {
       throw new Error(
-        `opscrew ${args.join(" ")} did not finish in 30 minutes:\n${this.tail(output)}`,
+        `opscrew ${args.join(" ")} did not finish in ${duration(timeoutMs)}:\n${this.tail(output)}`,
       );
     }
     return { exitCode: result.exitCode, stdout: result.stdout, output };
@@ -559,14 +589,15 @@ export class LiveRun {
 
   /**
    * Adds the values OpsCrew generated for the app's services and secrets (database passwords,
-   * Garage's key) to the scrubber; none kept is a finding when the plan has a service.
+   * Garage's key) to the scrubber, prod's or `environment`'s; none kept is a finding when the plan
+   * has a service.
    */
-  async rememberGeneratedValues(): Promise<void> {
-    const values = await readGeneratedValues(this.paths());
+  async rememberGeneratedValues(environment?: string): Promise<void> {
+    const values = await readGeneratedValues(this.paths(environment));
     if (values === undefined) {
-      if (generatesValues(await this.readPlan())) {
+      if (generatesValues(await this.readPlan(environment))) {
         this.findings.push(
-          `OpsCrew kept no generated values for ${this.app()}, so the leak search misses its services' passwords`,
+          `OpsCrew kept no generated values for ${this.app()}${environment === undefined ? "" : ` (${environment})`}, so the leak search misses its services' passwords`,
         );
       }
       return;
@@ -657,9 +688,18 @@ export class LiveRun {
     await this.git("remote", "add", "origin", `https://github.com/${settings.githubRepo}.git`);
     await this.git("add", "-A");
     await this.git("commit", "-q", "-m", options.commit);
+    this.exampleCommit = await this.git("rev-parse", "HEAD");
     await this.git("push", "-q", "--force", "origin", "main");
     await this.github.reset();
     this.repoReady = true;
+  }
+
+  /**
+   * Force-pushes the repository's `main` back to the example's commit {@link prepareRepo} pushed,
+   * so nothing the run committed (an address in `opscrew/plan.yaml`) stays on it.
+   */
+  async restoreMain(): Promise<void> {
+    await this.git("push", "-q", "--force", "origin", `${this.exampleCommit}:refs/heads/main`);
   }
 
   /** The Hetzner locations near `OPSCREW_E2E_REGION`, nearest first. */
@@ -872,11 +912,16 @@ export class LiveRun {
   }
 
   /**
-   * Waits up to `timeoutMs` until the app's health URL answers 200 with Cloudflare's `cf-ray`
-   * header, or, with `throughCloudflare` false, without it (straight from the server).
+   * Waits up to `timeoutMs` until the app's health URL (or `healthUrl`, another environment's)
+   * answers 200 with Cloudflare's `cf-ray` header, or, with `throughCloudflare` false, without it
+   * (straight from the server).
    */
-  async waitForHealth(timeoutMs = minutes(10), throughCloudflare = true): Promise<void> {
-    const url = await this.healthUrl();
+  async waitForHealth(
+    timeoutMs = minutes(10),
+    throughCloudflare = true,
+    healthUrl?: string,
+  ): Promise<void> {
+    const url = healthUrl ?? (await this.healthUrl());
     this.log(
       `waiting for ${url} to answer 200${throughCloudflare ? " through Cloudflare" : " from the server"}`,
     );
@@ -940,16 +985,17 @@ export class LiveRun {
    * finishes; when an apply stops at another plan (the stack plan, or the new setup after a
    * removal), the hash it printed is approved next. A plan that deletes something (the first apply
    * of a switch to or from the tunnel) also needs the app's name: `--confirm <app>`, taken from
-   * the printed command, which must name this app; it is planned only once. Returns every run's
-   * output.
+   * the printed command, which must name this app; it is planned only once. `args` go to every run
+   * (`--env <name>`), `overrides` into its environment. Returns every run's output.
    */
   async provisionUntilDone(
     label: string,
-    overrides: Record<string, string | undefined> = {},
+    options: { overrides?: Record<string, string | undefined>; args?: readonly string[] } = {},
   ): Promise<string> {
     const all: string[] = [];
     let removed = false;
-    const flags = this.provisionFlags;
+    const overrides = options.overrides ?? {};
+    const flags = [...(options.args ?? []), ...this.provisionFlags];
     for (let round = 1; round <= 4; round++) {
       const planned = await this.opscrewOkWith(
         overrides,
@@ -1001,11 +1047,15 @@ export class LiveRun {
   }
 
   /**
-   * Deploys what the last provision prepared: merges its pull request and waits for that run to
-   * succeed, returning its id. Returns `undefined` when provision committed nothing (it stayed on
-   * `main`); a deploy branch without an open pull request stops the run.
+   * Deploys what the last provision prepared: merges its pull request and waits for the merge's
+   * run of each of `workflows` (prod's by default) to succeed, returning the first one's id.
+   * Returns `undefined` when provision committed nothing (it stayed on `main`); a deploy branch
+   * without an open pull request stops the run.
    */
-  async deploy(what: string): Promise<number | undefined> {
+  async deploy(
+    what: string,
+    workflows: readonly string[] = [DEPLOY_WORKFLOW],
+  ): Promise<number | undefined> {
     const head = await this.git("rev-parse", "--abbrev-ref", "HEAD");
     const pull = head.startsWith("opscrew/deploy-setup")
       ? await this.github.openPullRequest(head)
@@ -1027,7 +1077,23 @@ export class LiveRun {
     );
     const sha = await this.github.merge(pull);
     await this.checkoutMain();
-    return this.expectDeployed(await this.github.waitForDeploy({ headSha: sha }), what);
+    return this.expectRuns(sha, workflows, what);
+  }
+
+  /** Waits for the run of each of `workflows` of commit `sha` to succeed; the first one's id. */
+  private async expectRuns(
+    sha: string,
+    workflows: readonly string[],
+    what: string,
+  ): Promise<number> {
+    const ids: number[] = [];
+    for (const workflow of workflows) {
+      const run = await this.github.waitForDeploy({ headSha: sha, workflow });
+      ids.push(this.expectDeployed(run, `${what}, ${workflow}`));
+    }
+    const [first] = ids;
+    if (first === undefined) throw new Error(`No workflow to wait for (${what}).`);
+    return first;
   }
 
   /** Runs the deploy workflow on `main`, as a user would, and waits for it to succeed. */
@@ -1051,10 +1117,13 @@ export class LiveRun {
 
   /**
    * A change as a user merges one: {@link CHANGE_FILE} written on a branch of its own, a pull
-   * request `title`, its merge, and the deploy run of the merge commit, which must succeed.
-   * Returns the run's id.
+   * request `title`, its merge, and the merge commit's run of each of `workflows` (prod's by
+   * default), which must succeed. Returns the first run's id.
    */
-  async mergeChange(title: string): Promise<number> {
+  async mergeChange(
+    title: string,
+    workflows: readonly string[] = [DEPLOY_WORKFLOW],
+  ): Promise<number> {
     const branch = `e2e/change-${this.runId}-${Date.now().toString(36)}`;
     await this.git("checkout", "-q", "-b", branch);
     await writeFile(
@@ -1068,7 +1137,7 @@ export class LiveRun {
     this.log(`merging the change #${number} and waiting for its deploy run (up to 30 minutes)`);
     const sha = await this.github.merge(number);
     await this.checkoutMain();
-    return this.expectDeployed(await this.github.waitForDeploy({ headSha: sha }), title);
+    return this.expectRuns(sha, workflows, title);
   }
 
   private expectDeployed(
@@ -1129,100 +1198,116 @@ export class LiveRun {
   }
 
   /**
-   * The cleanup of docs/e2e.md for both apps, after every step and always, with `first` before it
-   * and `cloudflare` after the zone's rules; problems are collected and fail it at the end.
+   * The cleanup of docs/e2e.md for both apps, after every step and always, with `first` before it,
+   * then `teardown` (what OpsCrew created itself), and `cloudflare` after the zone's rules;
+   * problems are collected and fail it at the end.
    */
   registerCleanup(
-    options: { first?: () => void; cloudflare?: (attempt: CleanupAttempt) => Promise<void> } = {},
+    options: {
+      first?: () => void;
+      teardown?: (attempt: CleanupAttempt) => Promise<void>;
+      cloudflare?: (attempt: CleanupAttempt) => Promise<void>;
+    } = {},
   ): void {
-    afterAll(async () => {
-      const problems: string[] = [];
-      const attempt: CleanupAttempt = async (what, body) => {
-        try {
-          const found = await body();
-          if (Array.isArray(found)) problems.push(...found);
-        } catch (error) {
-          problems.push(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+    afterAll(
+      async () => {
+        const problems: string[] = [];
+        const attempt: CleanupAttempt = async (what, body) => {
+          try {
+            const found = await body();
+            if (Array.isArray(found)) problems.push(...found);
+          } catch (error) {
+            problems.push(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        };
+        options.first?.();
+        // Whatever it does, the throwaway servers, Cloudflare and the repository come after it.
+        const { teardown } = options;
+        if (teardown !== undefined) {
+          await attempt("tear down what OpsCrew created", () => teardown(attempt));
         }
-      };
-      options.first?.();
-      const apps = [this, ...this.children];
-      for (const app of apps.filter((item) => item.hetznerTouched)) {
-        app.log("deleting the throwaway server, its SSH key and any firewall");
-        await attempt("delete the throwaway server", () =>
-          deleteThrowaway({
-            token: app.options.settings.hcloudToken,
-            runId: app.runId,
-            ids: app.hetznerIds,
-          }),
-        );
-      }
-      for (const app of apps) {
-        const { zone, appName, cloudflareBefore } = app;
-        if (zone === undefined || appName === undefined || cloudflareBefore === undefined) continue;
-        app.log(
-          app.destroyed
-            ? "checking Cloudflare for anything of the app that destroy left"
-            : "destroy did not finish: removing what this run created in Cloudflare for the app",
-        );
-        await attempt(`remove the Cloudflare resources of ${appName}`, async () =>
-          app.cloudflare.removeCreated(
-            zone,
-            await app.cloudflare.appResources(zone, appName, app.hostnames),
-            cloudflareBefore,
-          ),
-        );
-        // Feature 014: the app's origin and client certificates and its origin pull settings. A
-        // finished destroy must have removed them; the cleanup removes what is left either way.
-        const { tlsBefore } = app;
-        if (tlsBefore === undefined) continue;
-        await attempt(`remove the origin TLS of ${appName}`, async () => {
-          const { removed, problems: kept } = await app.cloudflare.removeTlsOfRun(
-            zone,
-            tlsBefore,
-            app.hostnames,
-            app.log,
-          );
-          return [
-            ...kept,
-            ...(app.destroyed
-              ? removed.map((what) => `destroy left ${what} of ${appName}; the cleanup removed it`)
-              : []),
-          ];
-        });
-      }
-      const { zone, sharedBefore } = this;
-      if (zone !== undefined && sharedBefore !== undefined) {
-        this.log(
-          "removing the seeded rules; checking OpsCrew's shared rules for this run's hostnames",
-        );
-        await attempt("clean up the zone's rules", () =>
-          this.cloudflare.removeRulesOfRun(zone, sharedBefore, {
-            hostnames: apps.flatMap((app) => app.hostnames),
-            seeded: seededDescription(this.runId),
-            log: this.log,
-          }),
-        );
-        await options.cloudflare?.(attempt);
-      }
-      for (const app of apps) {
-        if (app.repoReady) {
-          await attempt(`reset the throwaway repository ${app.github.name}`, () =>
-            app.github.reset(),
+        const apps = [this, ...this.children];
+        for (const app of apps.filter((item) => item.hetznerTouched)) {
+          app.log("deleting the throwaway server, its SSH key and any firewall");
+          await attempt("delete the throwaway server", () =>
+            deleteThrowaway({
+              token: app.options.settings.hcloudToken,
+              runId: app.runId,
+              ids: app.hetznerIds,
+            }),
           );
         }
-        if (app.work !== "") {
-          await rm(app.work, { recursive: true, force: true }).catch(() => undefined);
+        for (const app of apps) {
+          const { zone, appName, cloudflareBefore } = app;
+          if (zone === undefined || appName === undefined || cloudflareBefore === undefined)
+            continue;
+          app.log(
+            app.destroyed
+              ? "checking Cloudflare for anything of the app that destroy left"
+              : "destroy did not finish: removing what this run created in Cloudflare for the app",
+          );
+          await attempt(`remove the Cloudflare resources of ${appName}`, async () =>
+            app.cloudflare.removeCreated(
+              zone,
+              await app.cloudflare.appResources(zone, appName, app.hostnames),
+              cloudflareBefore,
+            ),
+          );
+          // Feature 014: the app's origin and client certificates and its origin pull settings. A
+          // finished destroy must have removed them; the cleanup removes what is left either way.
+          const { tlsBefore } = app;
+          if (tlsBefore === undefined) continue;
+          await attempt(`remove the origin TLS of ${appName}`, async () => {
+            const { removed, problems: kept } = await app.cloudflare.removeTlsOfRun(
+              zone,
+              tlsBefore,
+              app.hostnames,
+              app.log,
+            );
+            return [
+              ...kept,
+              ...(app.destroyed
+                ? removed.map(
+                    (what) => `destroy left ${what} of ${appName}; the cleanup removed it`,
+                  )
+                : []),
+            ];
+          });
         }
-      }
-      if (problems.length > 0) {
-        throw this.cleanError(
-          new Error(`Cleanup left something behind:\n- ${problems.join("\n- ")}`),
-        );
-      }
-      if (this.hetznerTouched)
-        this.log("the throwaway servers and everything with them are deleted");
-    }, minutes(25));
+        const { zone, sharedBefore } = this;
+        if (zone !== undefined && sharedBefore !== undefined) {
+          this.log(
+            "removing the seeded rules; checking OpsCrew's shared rules for this run's hostnames",
+          );
+          await attempt("clean up the zone's rules", () =>
+            this.cloudflare.removeRulesOfRun(zone, sharedBefore, {
+              hostnames: apps.flatMap((app) => app.hostnames),
+              seeded: seededDescription(this.runId),
+              log: this.log,
+            }),
+          );
+          await options.cloudflare?.(attempt);
+        }
+        for (const app of apps) {
+          if (app.repoReady) {
+            await attempt(`reset the throwaway repository ${app.github.name}`, () =>
+              app.github.reset(),
+            );
+          }
+          if (app.work !== "") {
+            await rm(app.work, { recursive: true, force: true }).catch(() => undefined);
+          }
+        }
+        if (problems.length > 0) {
+          throw this.cleanError(
+            new Error(`Cleanup left something behind:\n- ${problems.join("\n- ")}`),
+          );
+        }
+        if (this.hetznerTouched)
+          this.log("the throwaway servers and everything with them are deleted");
+      },
+      minutes(25) + (options.teardown === undefined ? 0 : TEARDOWN_TIMEOUT_MS),
+    );
   }
 
   /**

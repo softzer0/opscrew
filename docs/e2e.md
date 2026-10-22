@@ -971,6 +971,252 @@ own server: the GitHub Actions secrets of other targets and the container images
 repositories, the zone's rules that existed before the run, and the Zero Trust organization and
 one-time PIN login if OpsCrew created them.
 
+## Environments and promotion
+
+`packages/cli/test/live/environments.test.ts`, with `OPSCREW_E2E_ENVIRONMENTS=1`, runs
+quickstart.md "2." and "3." of feature 015: prod and staging, each on a server OpsCrew creates at
+Hetzner, in the Free private throwaway repository `OPSCREW_E2E_GITHUB_REPO`. OpsCrew gets the
+Hetzner token here (`HCLOUD_TOKEN`), as a user's run does.
+
+1. **Prod designed.** The example goes to the throwaway repository's `main`, as above. The test
+   records the repository's visibility and owner, and the GitHub environments it already has (the
+   cleanup never deletes those). Then `init --fix`, `analyze --no-ai`, `interview --answers`
+   (Hetzner, the run's own hostname behind Cloudflare) and `design`. `opscrew localhost trust`
+   then makes OpsCrew's local CA in the run's own OpsCrew home (a script only prints the trust
+   command, so this computer's trust store never changes), so the leak search has a CA key to look
+   for.
+2. **Prod provisioned and deployed:** `adapt` (pull request merged), `provision` until done, the
+   deploy, the site through Cloudflare and `verify --env prod`. The test keeps prod's plan hash, the
+   SHA-256 of its canonical plan as `opscrew promote` binds it.
+3. **Staging added under load.** While 20 requests per second go to prod's health route, with no
+   failed request allowed: `env add staging --target hetzner --from main`, `provision --env
+   staging` until done, and the merge of its deploy-setup pull request, which runs staging's
+   workflow and prod's. Prod's plan hash must be the same after `env add` and after staging's
+   provision. Then staging answers on its own hostname through Cloudflare (the name design gives,
+   one level below the zone), `verify --env staging` passes, and `provision --env prod
+   --plan-only` has nothing to approve. The test checks that staging's deploy secrets are where
+   OpsCrew's record and plan say (in the GitHub environment `staging`, or as repository secrets
+   prefixed `OPSCREW_STAGING_`), and logs what it found as `observed:` lines: the placement and
+   the GitHub environment's rules. On a Free private repository it records what it finds there;
+   the spike found the environment with its secrets and no rules (research.md "Spike results",
+   item 1). `env list` shows both.
+4. **Prod promoted from staging:** `env set prod --from staging`, `provision --env prod` until
+   done (prod's workflow becomes the promoted one), and the merge of its pull request, which
+   deploys staging again. Prod's secrets are checked where its record says. Prod's plan hash is
+   taken again here, since `env set` changed prod's plan.
+5. **A promotion:** a merged change deploys staging. Staging must then run a newer image than
+   prod (read from each server's `.env` over SSH, as `deploy` with OpsCrew's key). `promote --to
+   prod` stops at its approval and prints the command with the digest and the promotion's hash;
+   the digest must be the one staging runs. `promote --to prod --digest <it> --approve <hash>`
+   deploys it, and prod's server must then run exactly that digest (SC-1503). Then the site and
+   `verify --env prod`.
+6. **A rollback:** `promote --to prod --digest <prod's image before the promotion>`, approved the
+   same way, puts prod's previous image back, read on its server.
+7. **Staging destroyed under load:** `destroy --env staging --confirm <staging's app name>` with
+   no failed request to prod. Nothing of staging is left at Hetzner, none of its deploy secrets is
+   left at GitHub, the GitHub environment OpsCrew created for it is gone, and no DNS record is left
+   on its hostnames. Prod still answers, `verify --env prod` passes, its plan hash is unchanged
+   and provision has nothing to approve for it. `env remove staging --confirm staging` follows.
+8. **Prod destroyed:** nothing of the app is left at Hetzner or in Cloudflare, and none of prod's
+   deploy secrets at GitHub.
+9. **Nothing leaked:** no known secret is in any CLI output, commit (every branch), pull request
+   of the run, audit entry, or saved plan, state file, report or Cloudflare record of either
+   environment. The known secrets are the tokens, both environments' deploy keys, state
+   passphrases and generated values, and the local CA's key. No string shaped like a runner
+   registration token (29 upper-case letters and digits starting with `A`) is anywhere there
+   either, and no server address is in a commit or pull request. Every version of
+   `.opscrew/cloudflare.json` holds only the zone's id, hostnames and phases.
+
+The steps stop at the first failure; the cleanup always runs:
+
+- `opscrew destroy --env <env>` for each environment provisioned and not destroyed yet (staging
+  first), within 10 minutes in all and at most 4 minutes per CLI run. A destroy that fails, or is
+  still running when that time is up, is only logged.
+- Then, whatever those did, through Hetzner's API: everything labelled
+  `managed-by=opscrew,app=<app>` for each environment's app (`<app>` and `<app>-staging`), with
+  any server's protection lifted first. Any of it still listed is a problem.
+- Through GitHub's API: the runners with this run's labels, the GitHub environments that
+  appeared during the run, and the deploy secrets OpsCrew's records name. The repository is then
+  reset as above.
+- In Cloudflare: the records this run created on its hostnames (prod's and staging's), the
+  tunnels and Access objects of each environment's app, the origin TLS of those hostnames, and
+  OpsCrew's shared rules that list only them, as for your own server.
+
+If a run was interrupted, delete by hand: the Hetzner servers, firewalls and SSH keys labelled
+`managed-by=opscrew` with the app's `app=` label; in the throwaway repository, the GitHub
+environment `staging` and the Actions secrets named `OPSCREW_…` (repository and environment);
+and in Cloudflare the records on the run's hostnames `e2e-<run id>.<zone>` and staging's
+`staging-e2e-<run id>.<zone>` (and `www.`), and those hostnames in OpsCrew's shared rules.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_ENVIRONMENTS` | `1` runs this test (and, with `OPSCREW_E2E_GITHUB_REPO_C`, [the next one](#the-environment-rules-on-a-public-repository)). |
+| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write); OpsCrew creates both servers with it. Use a separate, empty project. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository (private, on GitHub Free) and its token. The token also needs **Administration** and **Environments** (Read and write) and **Actions** (Read and write), as research.md "Spike results" lists. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for your own server: staging's hostname is in the same zone. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | Optional but recommended: the classic `read:packages` token of [the builders](#the-builders). The test gives it to OpsCrew as `OPSCREW_GHCR_READ_TOKEN`, which `promote` reads the image's digest and provenance with ([the guide](guide/environments.md#the-registry-token-for-promote)): GitHub's registry may refuse the fine-grained token. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above (examples only). |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_ENVIRONMENTS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/environments.test.ts
+```
+
+Not measured yet: about 90 to 120 minutes. It makes six deploy runs, five of them with a build,
+plus two promotions. Two of the smallest x86 servers run for about an hour and a half each, a few
+cents of server time. The builds use about 45 to 60 minutes of the private repository's GitHub
+Actions minutes (GitHub Free has 2,000 a month).
+
+## The environment rules on a public repository
+
+With `OPSCREW_E2E_ENVIRONMENTS=1` and `OPSCREW_E2E_GITHUB_REPO_C` set, the same file also runs
+the path where GitHub enforces every environment rule: a **public** throwaway repository (the
+founder's, made on 2026-10-22). No domain is used, so this test never touches the zone. Prod is
+designed there but never provisioned.
+
+1. The example goes to that repository's `main`. The test stops unless the repository is public,
+   and unless its approval policy for workflow runs from forks is something other than "all
+   outside contributors" (GitHub's default is first-time contributors), since OpsCrew would then
+   not refuse a runner. It records that policy and the repository's GitHub environments. Then
+   prod's design (Hetzner, no domain) and `adapt` (pull request merged).
+2. **The rules:** `env add staging --target hetzner --from prod` (promoted, so a reviewer is
+   offered) and `provision --env staging` until done, which creates staging's server. The GitHub
+   environment `staging` must exist with custom branch policies that let only `main` deploy.
+   A script has no one to ask, so OpsCrew adds no required reviewer: the provision output must
+   say so and name the setting, and the environment must list none. The test logs it as the
+   recorded answer; the interactive offer is tried by hand. Staging's deploy secrets must be in
+   that environment, and OpsCrew's record must say it created it.
+3. **A runner for the public repository:** `env add selfhosted --target hetzner --from prod
+   --runner server`, then only `provision --env selfhosted --plan-only`, without `--yes`, so
+   nothing at GitHub can be approved in this run. Its output must refuse the runner ("GitHub says
+   self-hosted runners should almost never serve a public repository") and say that a plan-only
+   run changes nothing at GitHub. The fork policy must be unchanged, and no runner listed. **No
+   self-hosted runner is ever registered on this repository**, and no provision of that
+   environment is applied. `env remove selfhosted --confirm selfhosted` follows.
+4. **Destroy:** `destroy --env staging --confirm <staging's app name>`. Nothing of staging is left
+   at Hetzner, its secrets and the GitHub environment OpsCrew created are gone, and the fork
+   policy is still the one recorded.
+5. **Nothing leaked**, as in step 9 above, without the Cloudflare parts. The repository is
+   public, so its commits and pull requests are everyone's to read.
+
+The cleanup is the one above, for staging; it never changes the fork policy.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_GITHUB_REPO_C` | `owner/name` of a **public** throwaway repository. The test force-pushes its `main` branch. `OPSCREW_E2E_GITHUB_TOKEN` must cover it with the same permissions. |
+| `OPSCREW_E2E_ENVIRONMENTS`, `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_TOKEN` | As above. |
+
+Not measured yet: about 20 to 30 minutes, with one server for about 20 minutes (about a cent).
+No deploy runs: staging's deploy-setup pull request is never merged.
+
+## The server's runner
+
+`packages/cli/test/live/runners.test.ts`, with `OPSCREW_E2E_RUNNER=1`, runs quickstart.md "4.":
+prod at Hetzner with its deploy job on the server's own GitHub Actions runner, in the private
+throwaway repository `OPSCREW_E2E_GITHUB_REPO`.
+
+1. **Designed:** the example goes to `main`. The test stops there unless the repository is
+   private: OpsCrew refuses a runner for a public one, and the test commits this computer's
+   address to it. It reads GitHub's Actions address ranges
+   (`actions` in `https://api.github.com/meta`) and this computer's public IPv4 address, which
+   must be outside them. Prod's design follows (as above). Then, as a user edits
+   `opscrew/plan.yaml`, it sets `environment.runner: server`, and sets `security.sshAllowedCidrs`
+   to this computer's address alone. The address is masked in everything printed, and the leak
+   search leaves it alone (the test put it in the plan itself).
+2. **Provisioned:** `adapt`, then `provision` until done. The host plan must name the runner's
+   label `opscrew-<app>-prod` and the pinned runner version. GitHub must then list an online
+   runner with that label. The test reads the runner's credentials on the server (the private
+   parts of `.credentials_rsaparams`, as `deploy`) for the leak search. The app's Hetzner firewall
+   must let SSH in from exactly this computer, and from no address in GitHub's Actions ranges.
+3. **The first deploy:** the deploy-setup pull request is merged, and its run must succeed. Every
+   job that asked for the runner's label must have run on that runner, there must be at least one
+   such job, and the build job must not be one of them (the production server's runner never
+   builds). The firewall is checked again. Then the site through Cloudflare, `verify`, and
+   `status`, which must show the runner online.
+4. **A merged change** deploys the same way, under the same firewall, and the site answers.
+5. **Destroy:** `destroy --confirm <app> --no-snapshot`. GitHub lists no runner with the label
+   afterwards, and nothing of the app is left at Hetzner or in Cloudflare.
+6. **Nothing leaked,** as for environments, now with the runner's credentials as well.
+
+The cleanup is the one for environments: `opscrew destroy` if needed (within its 10 minutes),
+then always Hetzner's API and GitHub's runners with the run's label, removed through the API.
+It then force-pushes `main` back to the example's commit, so this computer's address in
+`opscrew/plan.yaml` does not stay on it. The run's pull requests, closed by the reset, still show
+the address in their changes; the repository is private, so only its collaborators see them.
+
+If a run was interrupted, delete by hand, besides what the environments test lists: the runners
+labelled `opscrew-<app>-prod` under the repository's Settings → Actions → Runners, and this
+computer's address on `main` (force-push the example, or let the next run's push replace it).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_RUNNER` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. The repository must stay private: OpsCrew refuses a runner for a public one. |
+
+Requirements as for your own server. This computer's public IPv4 address must stay the same
+during the run, since the firewall lets SSH in only from it.
+
+```bash
+OPSCREW_E2E_RUNNER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/runners.test.ts
+```
+
+Not measured yet: about 45 to 60 minutes, with one server for under an hour (about a cent). The
+two builds run on GitHub's machines (about 10 to 15 Actions minutes); the deploy jobs run on the
+server.
+
+## A runner machine
+
+The same file, with `OPSCREW_E2E_RUNNER_HOST=1`: a throwaway Hetzner server becomes a runner
+machine of the project (feature 015's runner machines, plan.md "16."). It builds the image
+(`build: runner`) and deploys over SSH to prod's server, which OpsCrew creates at Hetzner.
+
+1. **The machine:** the test stops unless the repository is private, as above. It reads GitHub's
+   Actions ranges, creates a throwaway server outside
+   OpsCrew as the own-server test does (root's login with a key made for this run, its host key
+   pinned and checked on the server), and checks that its address and this computer's are
+   outside those ranges. Prod is designed as above.
+2. **Set up:** `runner host add e2e-runner --ssh root@<address> --key <the run's key> --host-key
+   <fingerprint>`, its host plan approved by the hash it printed. `runner host list` must show
+   it, and the machine must have the `deploy` user and Docker.
+3. **Prod moves to it:** `env set prod --from main --runner host --runner-host e2e-runner --build
+   runner`. `security.sshAllowedCidrs` in `opscrew/plan.yaml` becomes the machine's address and
+   this computer's. Then `adapt` and `provision` until done. GitHub must list an online runner
+   labelled `opscrew-<app>-prod`. Its credentials on the machine are read for the leak search,
+   and prod's firewall must let SSH in from exactly those two addresses and none of GitHub's.
+4. **The first deploy:** the build job and the deploy job must both have run on the machine's
+   runner. The firewall is checked again, then the site and `verify`.
+5. **Teardown:** `destroy --confirm <app> --no-snapshot`, each host plan it stops at approved by
+   its hash. GitHub lists no runner with the label, nothing of the app is left at Hetzner or in
+   Cloudflare, and the app's runner folder is gone from the machine. Then `runner host remove
+   e2e-runner --confirm e2e-runner`, approved the same way, after which `runner host list` no
+   longer shows it.
+6. **Nothing leaked,** as above. The machine's address may appear in `plan.yaml` only inside the
+   SSH source the test planned.
+
+The cleanup is the one above, `main` put back included, plus the deletion of the throwaway
+machine, as for your own server. If a run was interrupted, also delete that machine by hand: the
+Hetzner server and SSH key labelled `managed-by=opscrew-e2e` and `run=<run id>`.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_RUNNER_HOST` | `1` runs this test. It needs the CLI's `runner host` commands (T1517e). |
+| `OPSCREW_E2E_RUNNER_HOST_TYPE` | Optional, a Hetzner server type for the runner machine instead of the cheapest x86 one (it must be x86: prod's server is). |
+| The others | As for the server's runner. |
+
+```bash
+OPSCREW_E2E_RUNNER_HOST=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/runners.test.ts
+```
+
+Not measured yet: about 50 to 70 minutes. Two of the smallest x86 servers run for about an hour
+each (a few cents). The build runs on the machine, so it uses almost no GitHub Actions minutes.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still

@@ -2383,7 +2383,7 @@ describe.skipIf(MISSING.length > 0)(
             { url: `https://${shortHost}:${PORTAINER_PORT}`, redeploy: "updater", web: "proxy" },
             short,
           );
-          await run.provisionUntilDone("the short host name", short);
+          await run.provisionUntilDone("the short host name", { overrides: short });
           await run.expectSharedCloudflare("the short-host setup");
           await rememberSecrets([]);
           // Never deployed: the app's stack runs the placeholder, so no app answers. secure and

@@ -557,11 +557,16 @@ export function failedInitChecks(output: string): string[] {
   return titles;
 }
 
-/** A job of a deploy run as GitHub lists it, with its steps' conclusions. */
+/**
+ * A job of a deploy run as GitHub lists it, with its steps' conclusions, the runner it ran on and
+ * the labels it asked for (`runs-on`).
+ */
 export interface DeployJob {
   name: string;
   conclusion: string | null;
   steps: { conclusion: string | null }[];
+  runnerName?: string | null;
+  labels?: string[];
 }
 
 /**
