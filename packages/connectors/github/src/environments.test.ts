@@ -7,7 +7,8 @@ import { GitHubClient } from "./index";
 
 const TOKEN = fakeSecret("github-token");
 const ENV = "/repos/acme/shop/environments/staging";
-const PROBE = "/repos/acme/shop/environments/opscrew-probe";
+const PROBE_NAME = "opscrew-probe-0a1b2c3d";
+const PROBE = `/repos/acme/shop/environments/${PROBE_NAME}`;
 const ME = { login: "octocat", id: 583231 };
 const NOT_FOUND: FakeReply = { status: 404, body: { message: "Not Found" } };
 /** GitHub's 403 for a fine-grained token without the permission, as the spike saw it. */
@@ -51,20 +52,13 @@ function enforced(name: string) {
   });
 }
 
-/** A probe that existed before the check, with rules of its own and admin bypass off. */
-const EXISTING = environment("opscrew-probe", {
+/** A GitHub environment the user made, with rules of its own. */
+const USERS_ENV = "/repos/acme/shop/environments/production";
+const USERS = environment("production", {
   protection_rules: [{ id: 2, type: "wait_timer", wait_timer: 5 }],
   deployment_branch_policy: { protected_branches: true, custom_branch_policies: false },
   can_admins_bypass: false,
 });
-/** The PUT that gives {@link EXISTING} back its rules. */
-const EXISTING_BODY = {
-  wait_timer: 5,
-  prevent_self_review: false,
-  reviewers: [],
-  deployment_branch_policy: { protected_branches: true, custom_branch_policies: false },
-  can_admins_bypass: false,
-};
 
 async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
   const error = await promise.catch((e: unknown) => e);
@@ -245,14 +239,36 @@ describe("addDeploymentBranch and account", () => {
 });
 
 describe("environmentCapability", () => {
-  it("reports a Free private repository's environment without rules, and deletes the probe", async () => {
+  const BRANCHES = `${PROBE}/deployment-branch-policies`;
+  const check = (fetch: ReturnType<typeof fakeFetch>["fetch"]) =>
+    client(fetch).environmentCapability("acme", "shop", PROBE_NAME, "main");
+  /** Every call that is not a read, as `METHOD path`. */
+  const changes = (calls: { method: string; path: string }[]) =>
+    calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`);
+  /** GitHub's refusal of a rule the plan lacks, as the spike saw it on a Free private repository. */
+  const BILLING: FakeReply = {
+    status: 422,
+    body: {
+      message:
+        "Failed to create the environment protection rule. Please ensure the billing plan supports the wait timer protection rule.",
+    },
+  };
+  const CUSTOM_ONLY = environment(PROBE_NAME, {
+    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+  });
+
+  it("on a Free private repository: environments without rules, the probe deleted, nothing else touched", async () => {
+    // Every rule refused (the environment created anyway), a plain one taken.
     const { fetch, calls } = fakeFetch({
       "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment("opscrew-probe") }],
-      [`PUT ${PROBE}`]: { body: environment("opscrew-probe") },
+      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment(PROBE_NAME) }],
+      [`PUT ${PROBE}`]: [BILLING, { body: environment(PROBE_NAME) }, BILLING],
       [`DELETE ${PROBE}`]: { status: 204 },
+      [`GET ${USERS_ENV}`]: { body: USERS },
+      [`PUT ${USERS_ENV}`]: { body: USERS },
+      [`DELETE ${USERS_ENV}`]: { status: 204 },
     });
-    expect(await client(fetch).environmentCapability("acme", "shop", "opscrew-probe")).toEqual({
+    expect(await check(fetch)).toEqual({
       environments: true,
       branchPolicies: false,
       reviewers: false,
@@ -261,64 +277,85 @@ describe("environmentCapability", () => {
       `GET ${PROBE}`,
       "GET /user",
       `PUT ${PROBE}`,
+      `PUT ${PROBE}`,
+      `PUT ${PROBE}`,
       `GET ${PROBE}`,
       `DELETE ${PROBE}`,
     ]);
-    // It asks for the rules it checks: the user as reviewer and a custom branch policy.
-    expect(calls[2]?.body).toEqual({
-      prevent_self_review: false,
-      reviewers: [{ type: "User", id: ME.id }],
-      deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
-    });
+    // In steps, each asking only for the rules it checks: no field set to its default.
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([
+      { deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } },
+      {},
+      { wait_timer: 1, reviewers: [{ type: "User", id: ME.id }] },
+    ]);
   });
 
-  it("reports the rules GitHub enforced on read-back", async () => {
-    const { fetch } = fakeFetch({
+  it("on a public repository: every rule enforced, the default branch added, the probe deleted", async () => {
+    const { fetch, calls } = fakeFetch({
       "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [NOT_FOUND, { body: enforced("opscrew-probe") }],
-      [`PUT ${PROBE}`]: { body: enforced("opscrew-probe") },
+      [`GET ${PROBE}`]: [NOT_FOUND, { body: enforced(PROBE_NAME) }],
+      [`PUT ${PROBE}`]: { body: enforced(PROBE_NAME) },
+      [`POST ${BRANCHES}`]: { body: { id: 9, name: "main", type: "branch" } },
       [`DELETE ${PROBE}`]: { status: 204 },
     });
-    expect(await client(fetch).environmentCapability("acme", "shop", "opscrew-probe")).toEqual({
+    expect(await check(fetch)).toEqual({
       environments: true,
       branchPolicies: true,
       reviewers: true,
+    });
+    expect(changes(calls)).toEqual([
+      `PUT ${PROBE}`,
+      `POST ${BRANCHES}`,
+      `PUT ${PROBE}`,
+      `DELETE ${PROBE}`,
+    ]);
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ name: "main", type: "branch" });
+  });
+
+  it("on a Pro or Team private repository: branch rules without reviewers", async () => {
+    const { fetch, calls } = fakeFetch({
+      "GET /user": { body: ME },
+      [`GET ${PROBE}`]: [NOT_FOUND, { body: CUSTOM_ONLY }],
+      [`PUT ${PROBE}`]: [{ body: CUSTOM_ONLY }, BILLING],
+      [`POST ${BRANCHES}`]: { body: { id: 9, name: "main", type: "branch" } },
+      [`DELETE ${PROBE}`]: { status: 204 },
+    });
+    expect(await check(fetch)).toEqual({
+      environments: true,
+      branchPolicies: true,
+      reviewers: false,
+    });
+    expect(calls.at(-1)).toMatchObject({ method: "DELETE", path: PROBE });
+  });
+
+  it("reports no branch rules when GitHub takes the policy but not the branch", async () => {
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [`GET ${PROBE}`]: [NOT_FOUND, { body: CUSTOM_ONLY }],
+      [`PUT ${PROBE}`]: [{ body: CUSTOM_ONLY }, BILLING],
+      [`POST ${BRANCHES}`]: NOT_FOUND,
+      [`DELETE ${PROBE}`]: { status: 204 },
+    });
+    expect(await check(fetch)).toEqual({
+      environments: true,
+      branchPolicies: false,
+      reviewers: false,
     });
   });
 
   it("trusts the read-back, not the PUT's answer", async () => {
     const { fetch } = fakeFetch({
       "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment("opscrew-probe") }],
-      [`PUT ${PROBE}`]: { body: enforced("opscrew-probe") },
+      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment(PROBE_NAME) }],
+      [`PUT ${PROBE}`]: { body: enforced(PROBE_NAME) },
+      [`POST ${BRANCHES}`]: { body: { id: 9, name: "main", type: "branch" } },
       [`DELETE ${PROBE}`]: { status: 204 },
     });
-    expect(await client(fetch).environmentCapability("acme", "shop", "opscrew-probe")).toEqual({
+    expect(await check(fetch)).toEqual({
       environments: true,
       branchPolicies: false,
       reviewers: false,
     });
-  });
-
-  it("falls back to a plain environment when GitHub refuses the rules (422)", async () => {
-    const { fetch, calls } = fakeFetch({
-      "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment("opscrew-probe") }],
-      [`PUT ${PROBE}`]: [
-        { status: 422, body: { message: "Validation Failed" } },
-        { body: environment("opscrew-probe") },
-      ],
-      [`DELETE ${PROBE}`]: { status: 204 },
-    });
-    expect(await client(fetch).environmentCapability("acme", "shop", "opscrew-probe")).toEqual({
-      environments: true,
-      branchPolicies: false,
-      reviewers: false,
-    });
-    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([
-      expect.objectContaining({ prevent_self_review: false }),
-      {},
-    ]);
   });
 
   it("reports no environments when GitHub refuses them without naming a permission", async () => {
@@ -331,13 +368,28 @@ describe("environmentCapability", () => {
       [`GET ${PROBE}`]: NOT_FOUND,
       [`PUT ${PROBE}`]: refused,
     });
-    expect(await client(fetch).environmentCapability("acme", "shop", "opscrew-probe")).toEqual({
+    expect(await check(fetch)).toEqual({
       environments: false,
       branchPolicies: false,
       reviewers: false,
     });
     // Nothing was created, so nothing is deleted.
-    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(changes(calls)).toEqual([`PUT ${PROBE}`, `PUT ${PROBE}`]);
+  });
+
+  it("deletes the probe when GitHub refuses every PUT as a validation error, which may create it", async () => {
+    const { fetch, calls } = fakeFetch({
+      "GET /user": { body: ME },
+      [`GET ${PROBE}`]: NOT_FOUND,
+      [`PUT ${PROBE}`]: { status: 422, body: { message: "Validation Failed" } },
+      [`DELETE ${PROBE}`]: { status: 204 },
+    });
+    expect(await check(fetch)).toEqual({
+      environments: false,
+      branchPolicies: false,
+      reviewers: false,
+    });
+    expect(changes(calls)).toEqual([`PUT ${PROBE}`, `PUT ${PROBE}`, `DELETE ${PROBE}`]);
   });
 
   it("stops on a 403 that names the missing permission, without the token", async () => {
@@ -346,97 +398,60 @@ describe("environmentCapability", () => {
       [`GET ${PROBE}`]: NOT_FOUND,
       [`PUT ${PROBE}`]: NO_ADMIN,
     });
-    const error = await failure(
-      client(fetch).environmentCapability("acme", "shop", "opscrew-probe"),
-    );
+    const error = await failure(check(fetch));
     expect(error.code).toBe("CREDENTIALS_INVALID");
     expect(error.hint).toContain("Administration: Read and write");
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
 
-  it("puts back the rules of a probe that already existed instead of deleting it", async () => {
+  it("refuses a probe name that already exists, before any change", async () => {
     const { fetch, calls } = fakeFetch({
-      "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [{ body: EXISTING }, { body: enforced("opscrew-probe") }],
-      [`PUT ${PROBE}`]: [{ body: enforced("opscrew-probe") }, { body: EXISTING }],
+      [`GET ${PROBE}`]: { body: environment(PROBE_NAME) },
     });
-    expect(await client(fetch).environmentCapability("acme", "shop", "opscrew-probe")).toEqual({
-      environments: true,
-      branchPolicies: true,
-      reviewers: true,
-    });
-    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
-    expect(calls.at(-1)).toMatchObject({ method: "PUT", body: EXISTING_BODY });
-  });
-
-  it("puts an existing probe back even when the read-back fails", async () => {
-    const { fetch, calls } = fakeFetch({
-      "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [{ body: EXISTING }, { status: 500, body: { message: "boom" } }],
-      [`PUT ${PROBE}`]: [{ body: enforced("opscrew-probe") }, { body: EXISTING }],
-    });
-    const error = await failure(
-      client(fetch).environmentCapability("acme", "shop", "opscrew-probe"),
+    const error = await failure(check(fetch));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `The GitHub environment ${PROBE_NAME} already exists in acme/shop, and OpsCrew checks what GitHub enforces only on an environment it creates for the check, so it changed nothing.`,
     );
-    expect(error.message).toContain("boom");
-    expect(calls.at(-1)).toMatchObject({ method: "PUT", body: EXISTING_BODY });
+    expect(changes(calls)).toEqual([]);
   });
 
   it("still deletes the probe when the read-back fails", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /user": { body: ME },
       [`GET ${PROBE}`]: [NOT_FOUND, { status: 500, body: { message: "boom" } }],
-      [`PUT ${PROBE}`]: { body: environment("opscrew-probe") },
+      [`PUT ${PROBE}`]: [BILLING, { body: environment(PROBE_NAME) }],
       [`DELETE ${PROBE}`]: { status: 204 },
     });
-    await failure(client(fetch).environmentCapability("acme", "shop", "opscrew-probe"));
+    expect((await failure(check(fetch))).message).toContain("boom");
     expect(calls.at(-1)?.method).toBe("DELETE");
   });
 
-  it("deletes a new probe when the PUT itself fails, and a 404 on the delete is fine", async () => {
+  it("deletes the probe when the PUT itself fails, and a 404 on the delete is fine", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /user": { body: ME },
       [`GET ${PROBE}`]: NOT_FOUND,
       [`PUT ${PROBE}`]: { status: 500, body: { message: "boom" } },
       [`DELETE ${PROBE}`]: NOT_FOUND,
     });
-    const error = await failure(
-      client(fetch).environmentCapability("acme", "shop", "opscrew-probe"),
-    );
-    expect(error.message).toContain("boom");
+    expect((await failure(check(fetch))).message).toContain("boom");
     expect(calls.at(-1)?.method).toBe("DELETE");
   });
 
-  it("says what to delete when the new probe cannot be deleted", async () => {
+  it("names the probe when it cannot be deleted, so the user can remove it", async () => {
     const { fetch } = fakeFetch({
       "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment("opscrew-probe") }],
-      [`PUT ${PROBE}`]: { body: environment("opscrew-probe") },
+      [`GET ${PROBE}`]: [NOT_FOUND, { body: environment(PROBE_NAME) }],
+      [`PUT ${PROBE}`]: [BILLING, { body: environment(PROBE_NAME) }],
       [`DELETE ${PROBE}`]: { status: 500, body: { message: "boom" } },
     });
-    const error = await failure(
-      client(fetch).environmentCapability("acme", "shop", "opscrew-probe"),
+    const error = await failure(check(fetch));
+    expect(error.message).toMatch(
+      new RegExp(
+        `^OpsCrew created the throwaway environment ${PROBE_NAME} to check what GitHub enforces, but could not delete it again \\(.*boom.*\\)\\.$`,
+      ),
     );
-    expect(error.message).toContain("could not delete it again");
-    expect(error.hint).toBe("Delete opscrew-probe in Settings → Environments of acme/shop.");
-  });
-
-  it("says which rules to put back when the existing probe cannot be restored", async () => {
-    const { fetch } = fakeFetch({
-      "GET /user": { body: ME },
-      [`GET ${PROBE}`]: [{ body: EXISTING }, { body: enforced("opscrew-probe") }],
-      [`PUT ${PROBE}`]: [
-        { body: enforced("opscrew-probe") },
-        { status: 500, body: { message: "boom" } },
-      ],
-    });
-    const error = await failure(
-      client(fetch).environmentCapability("acme", "shop", "opscrew-probe"),
-    );
-    expect(error.message).toContain("could not put them back");
-    expect(error.hint).toBe(
-      "In Settings → Environments of acme/shop, give opscrew-probe back its rules: required reviewers: none; prevent self-review: off; wait timer: 5 minutes; deployment branches: protected branches; allow administrators to bypass: off.",
-    );
+    expect(error.hint).toBe(`Delete ${PROBE_NAME} in Settings → Environments of acme/shop.`);
   });
 
   it("stops on a 403 saying admin rights are needed (an OAuth token), naming Administration", async () => {
@@ -448,9 +463,7 @@ describe("environmentCapability", () => {
         body: { message: "Must have admin rights to Repository." },
       },
     });
-    const error = await failure(
-      client(fetch).environmentCapability("acme", "shop", "opscrew-probe"),
-    );
+    const error = await failure(check(fetch));
     expect(error.code).toBe("CREDENTIALS_INVALID");
     expect(error.hint).toContain("Administration: Read and write");
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);

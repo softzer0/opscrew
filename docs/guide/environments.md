@@ -116,8 +116,12 @@ The [scan report](security.md), `opscrew/ARCHITECTURE.md` and your own
 
 While prod is the app's only environment, its deploy secrets are repository secrets.
 Once the app has more than one environment, each environment's provision first checks what your
-repository supports, instead of assuming it. It creates the GitHub environment (prod's is called
-`production`), reads it back, and leaves it as it was. That check is a change in your repository's
+repository supports, instead of assuming it. It creates a throwaway GitHub environment named
+`opscrew-probe-` and eight random hex characters. On it, OpsCrew tries a branch rule, then a required
+reviewer and a wait timer, and reads back which of them GitHub kept. Then it deletes the throwaway
+environment. If the delete fails, the error names the environment so you can remove it in
+Settings → Environments. The check never touches your other environments, and OpsCrew never changes
+the rules of an environment it did not create. That check is a change in your repository's
 settings, so OpsCrew asks first (`--yes` approves it in scripts).
 
 - **Where GitHub environments work**, the environment's deploy secrets go into a GitHub environment

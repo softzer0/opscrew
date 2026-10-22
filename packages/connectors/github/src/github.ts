@@ -282,24 +282,6 @@ function toEnvironmentView(env: z.infer<typeof EnvironmentSchema>): EnvironmentV
   };
 }
 
-/** An environment's rules in words, for putting them back by hand. */
-function rulesText(env: EnvironmentView): string {
-  const branches =
-    env.branchPolicy === null
-      ? "all branches"
-      : env.branchPolicy.protectedBranches
-        ? "protected branches"
-        : "selected branches";
-  const reviewers = env.reviewers.map((r) => `${r.type} ${r.id}`).join(", ") || "none";
-  return [
-    `required reviewers: ${reviewers}`,
-    `prevent self-review: ${env.preventSelfReview ? "on" : "off"}`,
-    `wait timer: ${env.waitTimer} minutes`,
-    `deployment branches: ${branches}`,
-    `allow administrators to bypass: ${env.canAdminsBypass ? "on" : "off"}`,
-  ].join("; ");
-}
-
 function environmentBody(settings: EnvironmentSettings): Record<string, unknown> {
   const { waitTimer, preventSelfReview, reviewers, branchPolicy, canAdminsBypass } = settings;
   return {
@@ -980,69 +962,89 @@ export class GitHubClient {
   }
 
   /**
-   * What this repository's GitHub environments enforce. Creates (or updates) the environment
-   * `probe` asking for the user as reviewer and a custom branch policy, reads it back and reports
-   * what GitHub shows. When GitHub refuses those rules, a plain environment is tried; when it
-   * refuses environments without naming a missing permission, nothing is enforced. A 403 that
-   * names one (or says admin rights are needed) stops with it. Unless GitHub refused every
-   * change, `probe` is then left as it was, also after a failure: deleted when it was new, else
-   * given back its earlier rules. Creating `probe` is a `github-settings` change the caller shows
-   * first.
+   * What this repository's GitHub environments enforce, checked on the throwaway environment
+   * `probe`, a fresh name (`opscrew-probe-<8 random hex>`), in steps: created with custom branch
+   * policies and `branch` (the default branch) added, then given the user as reviewer and a wait
+   * timer, read back, and deleted again (also after a failure). A step GitHub refuses marks only
+   * its own capability as missing; when GitHub refuses the branch policy, a plain environment is
+   * tried, and when it refuses that too without naming a missing permission, nothing is enforced.
+   * A 403 that names one (or says admin rights are needed) stops with it. No other environment is
+   * touched, and a `probe` that already exists is refused before any change. The check is a
+   * `github-settings` change the caller shows first, naming `probe`.
    */
   async environmentCapability(
     owner: string,
     repo: string,
     probe: string,
+    branch: string,
   ): Promise<EnvironmentCapability> {
-    const before = await this.getEnvironment(owner, repo, probe);
-    const me = await this.#me(UserSchema);
-    const asked: EnvironmentSettings = {
-      preventSelfReview: false,
-      reviewers: [{ type: "User", id: me.id }],
-      branchPolicy: { protectedBranches: false, customBranchPolicies: true },
-    };
-    let capability: EnvironmentCapability = {
-      environments: false,
-      branchPolicies: false,
-      reviewers: false,
-    };
-    // Whether the probe may differ from `before`: false only while GitHub refused every PUT.
-    let touched = false;
-    let failure: unknown;
-    try {
-      for (const settings of [asked, {}]) {
-        touched = true;
-        const put = await this.#tryPutEnvironment(owner, repo, probe, settings);
-        touched = put.accepted;
-        if (put.refusal) throw put.refusal;
-        if (put.accepted) break;
-      }
-      if (touched) {
-        const after = await this.getEnvironment(owner, repo, probe);
-        capability = {
-          environments: after !== undefined,
-          branchPolicies: after?.branchPolicy?.customBranchPolicies === true,
-          reviewers: after?.reviewers.some((r) => r.type === "User" && r.id === me.id) ?? false,
-        };
-      }
-    } catch (error) {
-      failure = error;
+    if ((await this.getEnvironment(owner, repo, probe)) !== undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The GitHub environment ${probe} already exists in ${owner}/${repo}, and OpsCrew checks what GitHub enforces only on an environment it creates for the check, so it changed nothing.`,
+        { hint: "Run the command again; the check picks another name." },
+      );
     }
-    if (touched) await this.#leaveProbeAsBefore(owner, repo, probe, before);
-    if (failure !== undefined) throw failure;
-    return capability;
+    const me = await this.#me(UserSchema);
+    // The probe may exist unless GitHub answered every PUT sent with a 403, which creates nothing;
+    // a validation error may (a Free private repository creates it without the rules).
+    let sent = 0;
+    let forbidden = 0;
+    const put = async (settings: EnvironmentSettings): Promise<boolean> => {
+      sent++;
+      const answer = await this.#tryPutEnvironment(owner, repo, probe, settings);
+      if (answer.status === 403) forbidden++;
+      if (answer.refusal) throw answer.refusal;
+      return answer.status < 400;
+    };
+    try {
+      // GitHub merges a PUT, so each step keeps what the one before set.
+      const custom = await put({
+        branchPolicy: { protectedBranches: false, customBranchPolicies: true },
+      });
+      if (!custom && !(await put({}))) {
+        return { environments: false, branchPolicies: false, reviewers: false };
+      }
+      const branchAdded =
+        custom && (await this.#tryAddDeploymentBranch(owner, repo, probe, branch));
+      await put({ waitTimer: 1, reviewers: [{ type: "User", id: me.id }] });
+      const after = await this.getEnvironment(owner, repo, probe);
+      return {
+        environments: after !== undefined,
+        branchPolicies: branchAdded && after?.branchPolicy?.customBranchPolicies === true,
+        reviewers: after?.reviewers.some((r) => r.type === "User" && r.id === me.id) ?? false,
+      };
+    } finally {
+      if (sent > forbidden) await this.#deleteProbe(owner, repo, probe);
+    }
+  }
+
+  /** {@link addDeploymentBranch}, false where GitHub has no branch policies (404) or refuses it (422). */
+  async #tryAddDeploymentBranch(
+    owner: string,
+    repo: string,
+    env: string,
+    branch: string,
+  ): Promise<boolean> {
+    const { status } = await this.#request(
+      "POST",
+      `${environmentPath(owner, repo, env)}/deployment-branch-policies`,
+      `let ${branch} deploy to the environment ${env}`,
+      { body: { name: branch, type: "branch" }, ok: [404, 422], permission: ADMINISTRATION },
+    );
+    return status < 400;
   }
 
   /**
-   * `PUT` of an environment. Not accepted when GitHub refuses it as a validation error (422) or
-   * with a 403; a 403 naming a missing permission (or admin rights) comes back as `refusal`.
+   * `PUT` of an environment, with GitHub's status; a validation error (422) or a 403 is not
+   * thrown. A 403 naming a missing permission (or admin rights) comes back as `refusal`.
    */
   async #tryPutEnvironment(
     owner: string,
     repo: string,
     name: string,
     settings: EnvironmentSettings,
-  ): Promise<{ accepted: boolean; refusal?: OpsCrewError }> {
+  ): Promise<{ status: number; refusal?: OpsCrewError }> {
     const what = `create the environment ${name}`;
     const { status, json, headers } = await this.#request(
       "PUT",
@@ -1052,41 +1054,23 @@ export class GitHubClient {
     );
     const accepted = headers.get("x-accepted-github-permissions");
     if (status === 403 && accepted) {
-      return {
-        accepted: false,
-        refusal: missingPermission(what, json, acceptedPermissions(accepted)),
-      };
+      return { status, refusal: missingPermission(what, json, acceptedPermissions(accepted)) };
     }
     if (status === 403 && ADMIN_RIGHTS.test(messageOf(json, ""))) {
-      return { accepted: false, refusal: missingPermission(what, json, ADMINISTRATION) };
+      return { status, refusal: missingPermission(what, json, ADMINISTRATION) };
     }
-    return { accepted: status < 400 };
+    return { status };
   }
 
-  /** Deletes the probe when it was new, else puts back its earlier rules; says what to do if not. */
-  async #leaveProbeAsBefore(
-    owner: string,
-    repo: string,
-    probe: string,
-    before: EnvironmentView | undefined,
-  ): Promise<void> {
+  /** Deletes the capability check's throwaway environment; says what to delete if it cannot. */
+  async #deleteProbe(owner: string, repo: string, probe: string): Promise<void> {
     try {
-      if (before === undefined) await this.deleteEnvironment(owner, repo, probe);
-      else await this.putEnvironment(owner, repo, probe, before);
+      await this.deleteEnvironment(owner, repo, probe);
     } catch (error) {
-      const where = `Settings → Environments of ${owner}/${repo}`;
       throw new OpsCrewError(
         error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
-        before === undefined
-          ? `OpsCrew created the environment ${probe} to check what GitHub enforces, but could not delete it again (${errorText(error)}).`
-          : `OpsCrew changed the rules of the environment ${probe} to check what GitHub enforces, but could not put them back (${errorText(error)}).`,
-        {
-          hint:
-            before === undefined
-              ? `Delete ${probe} in ${where}.`
-              : `In ${where}, give ${probe} back its rules: ${rulesText(before)}.`,
-          cause: error,
-        },
+        `OpsCrew created the throwaway environment ${probe} to check what GitHub enforces, but could not delete it again (${errorText(error)}).`,
+        { hint: `Delete ${probe} in Settings → Environments of ${owner}/${repo}.`, cause: error },
       );
     }
   }

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type {
   BranchPolicy,
@@ -231,9 +232,11 @@ export function secretsEnvironment(plan: DeployPlan): string | undefined {
  * Where the deploy secrets of the plan's environment live, checked at each of its provisions once
  * the app has more than one environment (a prod-only app keeps its repository secrets and its plan
  * as they are, with no check). After a `github-settings` approval, `environmentCapability` creates
- * (or briefly changes) the environment's GitHub environment, reads it back and leaves it as it was.
- * Where environments work, that GitHub environment is kept (created when missing) and
- * `environment.secrets` becomes `environment`; otherwise `prefixed`. Says which applies, and when it
+ * a throwaway GitHub environment (`opscrew-probe-<8 random hex>`) with test rules, reads it back
+ * and deletes it; no existing environment is changed. Where environments work, the environment's
+ * own GitHub environment holds its deploy secrets (created when missing; one the user or GitHub
+ * made gets only OpsCrew's secrets, never its rules) and `environment.secrets` becomes
+ * `environment`; otherwise `prefixed`. Says which applies, and when it
  * changed, that the deploy secrets move ({@link setDeploySecrets} shows and makes the move). A
  * GitHub environment OpsCrew created then gets the rules GitHub enforces ({@link
  * setEnvironmentRules}); where GitHub enforces no required reviewers, says once what OpsCrew's own
@@ -256,7 +259,9 @@ export async function checkSecretsPlacement(
     ...plan,
     environment: EnvironmentSchema.parse({ ...plan.environment, secrets }),
   });
-  const probe = githubEnvironment(withSecrets("environment")) as string;
+  const githubEnv = githubEnvironment(withSecrets("environment")) as string;
+  // A fresh name, so the check never changes an environment that exists (the user's, or GitHub's).
+  const probe = `opscrew-probe-${randomBytes(4).toString("hex")}`;
   const prefixed = deploySecretName(plan, "OPSCREW_…");
   if (run.planOnly) {
     // A plan-only run changes nothing at GitHub and keeps the recorded answer. Without one, the
@@ -273,8 +278,8 @@ export async function checkSecretsPlacement(
     kind: "github-settings",
     title: `Check whether ${where} supports GitHub environments, for the deploy secrets of ${name}`,
     details: [
-      `OpsCrew creates the GitHub environment ${probe} (or changes its rules for a moment), reads it back to see what GitHub enforces there, and leaves it as it was.`,
-      `Where environments work, ${probe} is kept (created when missing) and holds the deploy secrets of ${name}, apart from the build values, which stay repository secrets. Otherwise all of them are repository secrets named ${prefixed}.`,
+      `OpsCrew creates the throwaway GitHub environment ${probe}, tries a branch rule on it and then a required reviewer and a wait timer, reads it back to see what GitHub enforces there, and removes it again. It changes no other environment.`,
+      `Where environments work, ${githubEnv} is kept (created when missing) and holds the deploy secrets of ${name}, apart from the build values, which stay repository secrets. Otherwise all of them are repository secrets named ${prefixed}.`,
     ].join("\n"),
   });
   if (!approval.approved) {
@@ -296,12 +301,12 @@ export async function checkSecretsPlacement(
     });
   let capability: Awaited<ReturnType<typeof api.environmentCapability>>;
   try {
-    capability = await api.environmentCapability(owner, repo, probe);
+    capability = await api.environmentCapability(owner, repo, probe, github.defaultBranch);
   } finally {
-    // Created or changed for the check, then put back as it was, also when the check failed.
+    // Created for the check, then deleted, also when the check failed.
     await providerCall(
       `check environment ${probe}`,
-      "created or changed to read back what GitHub enforces, then left as it was",
+      "created with test rules to read back what GitHub enforces, then deleted",
     );
   }
   const secrets = capability.environments ? "environment" : "prefixed";
@@ -309,14 +314,14 @@ export async function checkSecretsPlacement(
   if (secrets === "environment") {
     const record = await readSecretsRecord(deps);
     const ours = record?.repo === where ? record : undefined;
-    const view = await api.getEnvironment(owner, repo, probe);
+    const view = await api.getEnvironment(owner, repo, githubEnv);
     if (view === undefined) {
       kept = {
-        view: await api.putEnvironment(owner, repo, probe, {}),
+        view: await api.putEnvironment(owner, repo, githubEnv, {}),
         created: true,
         declined: false,
       };
-      await providerCall(`create environment ${probe}`);
+      await providerCall(`create environment ${githubEnv}`);
       // Only a GitHub environment OpsCrew created is deleted by destroy, or gets its rules.
       await addToSecretsRecord(deps, where, { createdEnvironment: true });
     } else {
@@ -329,7 +334,7 @@ export async function checkSecretsPlacement(
   }
   deps.reporter.info(
     secrets === "environment"
-      ? `${where} supports GitHub environments: the deploy secrets of ${name} live in the GitHub environment ${probe}, and its build values are repository secrets.`
+      ? `${where} supports GitHub environments: the deploy secrets of ${name} live in the GitHub environment ${githubEnv}, and its build values are repository secrets.`
       : `${where} does not support GitHub environments (GitHub Free has them only in public repositories), so the deploy secrets of ${name} are repository secrets named ${prefixed}.`,
   );
   if (kept !== undefined) {
@@ -349,8 +354,8 @@ export async function checkSecretsPlacement(
   if (before !== undefined && before !== secrets) {
     deps.reporter.warn(
       secrets === "environment"
-        ? `The deploy secrets of ${name} move from repository secrets into the GitHub environment ${probe}; the approval of the deploy secrets lists the move.`
-        : `The deploy secrets of ${name} move from the GitHub environment ${probe} to repository secrets; the approval of the deploy secrets lists the move.`,
+        ? `The deploy secrets of ${name} move from repository secrets into the GitHub environment ${githubEnv}; the approval of the deploy secrets lists the move.`
+        : `The deploy secrets of ${name} move from the GitHub environment ${githubEnv} to repository secrets; the approval of the deploy secrets lists the move.`,
     );
   }
   return withSecrets(secrets);

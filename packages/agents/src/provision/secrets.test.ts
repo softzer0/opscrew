@@ -30,6 +30,8 @@ const HCLOUD = "hcloud-test-token-not-a-real-value";
 const PROD_WORKFLOW = ".github/workflows/opscrew-deploy.yml";
 const STAGING_WORKFLOW = ".github/workflows/opscrew-deploy-staging.yml";
 const BUILD = [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets];
+/** The capability check's throwaway GitHub environment. */
+const PROBE = /^opscrew-probe-[0-9a-f]{8}$/;
 
 /** `prod` as staging's plan, as design writes it. */
 function stagingOf(prod: DeployPlan): DeployPlan {
@@ -136,7 +138,12 @@ describe.skipIf(!findExecutable("git"))("deploy secrets per environment", () => 
     // the repository; prod's secrets untouched.
     const staging = await app.addStaging();
     await runProvision(staging, { services: app.services() });
-    expect(github.probes).toEqual(["staging"]);
+    // The check runs on a throwaway environment of its own, which the approval names.
+    expect(github.probes).toEqual([expect.stringMatching(PROBE)]);
+    const [probe] = github.probes;
+    expect(requestsOf(staging).find((r) => r.kind === "github-settings")?.details).toContain(
+      `OpsCrew creates the throwaway GitHub environment ${probe}, tries a branch rule on it and then a required reviewer and a wait timer, reads it back to see what GitHub enforces there, and removes it again. It changes no other environment.`,
+    );
     const kinds = requestsOf(staging).map((r) => r.kind);
     expect(kinds.indexOf("github-settings")).toBeLessThan(kinds.indexOf("github-secrets"));
     const inStaging = [...(github.environments.get("staging")?.keys() ?? [])].sort();
@@ -155,7 +162,7 @@ describe.skipIf(!findExecutable("git"))("deploy secrets per environment", () => 
     // (only then does destroy delete it).
     expect(
       staging.audit.entries.filter((e) => e.kind === "provider-call").map((e) => e.action),
-    ).toEqual(expect.arrayContaining(["check environment staging", "create environment staging"]));
+    ).toEqual(expect.arrayContaining([`check environment ${probe}`, "create environment staging"]));
     expect(JSON.parse(await readFile(staging.paths.files.deploySecrets, "utf8"))).toMatchObject({
       repo: "acme/shop",
       environment: "staging",
@@ -178,7 +185,8 @@ describe.skipIf(!findExecutable("git"))("deploy secrets per environment", () => 
     const stagingSecrets = new Map(github.environments.get("staging"));
     const prod = await app.deps();
     await runProvision(prod, { services: app.services() });
-    expect(github.probes).toEqual(["staging", "production"]);
+    expect(github.probes).toEqual([probe, expect.stringMatching(PROBE)]);
+    expect(github.probes[1]).not.toBe(probe);
     const inProduction = [...(github.environments.get("production")?.keys() ?? [])].sort();
     expect(inProduction).toEqual(
       [...prodSecrets.keys()].filter((name) => !BUILD.includes(name as never)).sort(),
@@ -245,6 +253,41 @@ describe.skipIf(!findExecutable("git"))("deploy secrets per environment", () => 
       "does not support GitHub environments (GitHub Free has them only in public repositories), so the deploy secrets of staging are repository secrets named OPSCREW_STAGING_…",
     );
     expectNoSecretValue(staging, github);
+  });
+
+  it("puts prod's secrets into a production environment GitHub made, keeping its rules byte-identical", async () => {
+    const app = await appInProd();
+    const { github } = app;
+    github.reviewersWork = true;
+    // GitHub created `production` by itself when a deploy workflow named it; the user gave it rules.
+    github.environments.set("production", new Map());
+    github.rules.set("production", {
+      name: "production",
+      waitTimer: 5,
+      preventSelfReview: true,
+      reviewers: [{ type: "User", id: 42 }],
+      branchPolicy: { protectedBranches: true, customBranchPolicies: false },
+      canAdminsBypass: false,
+    });
+    const rules = JSON.stringify(github.rules.get("production"));
+    await runProvision(await app.addStaging(), { services: app.services() });
+    await app.merge();
+
+    const prod = await app.deps();
+    prod.interactive = true;
+    await runProvision(prod, { services: app.services() });
+    // The checks ran on throwaway environments only.
+    expect(github.probes).toEqual([expect.stringMatching(PROBE), expect.stringMatching(PROBE)]);
+    expect(JSON.stringify(github.rules.get("production"))).toBe(rules);
+    expect(github.environmentPuts.filter((put) => put.name === "production")).toEqual([]);
+    expect(github.deploymentBranches.has("production")).toBe(false);
+    expect(github.environments.get("production")?.has(DEPLOY_SECRETS.appEnv)).toBe(true);
+    expect(prod.reporter.text()).toContain(
+      "OpsCrew did not create the GitHub environment production, so it changes none of its rules.",
+    );
+    expect(
+      JSON.parse(await readFile(prod.paths.files.deploySecrets, "utf8")).createdEnvironment,
+    ).toBeUndefined();
   });
 
   it("stops before any change when the check of GitHub environments is refused", async () => {
@@ -386,6 +429,15 @@ describe.skipIf(!findExecutable("git"))("the rules of GitHub environments (FR-15
       branchPolicy: CUSTOM,
     });
     expect(app.github.deploymentBranches.get("staging")).toEqual(["main"]);
+    // GitHub merges a PUT, so only the rules that change are sent: never a wait timer or
+    // self-review left at its default, which GitHub refuses where it has no such rule.
+    expect(app.github.environmentPuts).toEqual([
+      { name: "staging", settings: {} },
+      {
+        name: "staging",
+        settings: { reviewers: [{ type: "User", id: 1001 }], branchPolicy: CUSTOM },
+      },
+    ]);
     expect(staging.audit.entries.map((e) => e.action)).toContain(
       "set rules of environment staging",
     );

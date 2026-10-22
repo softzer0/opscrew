@@ -71,7 +71,7 @@ const ROWS: Row[] = [
   {
     method: "environmentCapability",
     route: `${API}/environments/opscrew-probe`,
-    call: (c) => c.environmentCapability("acme", "shop", "opscrew-probe"),
+    call: (c) => c.environmentCapability("acme", "shop", "opscrew-probe", "main"),
     around: ME,
     withHeader: ADMIN_WRITE,
     withoutHeader: "generic",
