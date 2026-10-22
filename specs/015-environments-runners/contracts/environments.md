@@ -57,13 +57,13 @@ resolveEnvironment(root, requested: string | undefined, deps): Promise<string>;
 
 ```ts
 promote(deps, { target: string; digest?: string; approveHash?: string }): Promise<{
-  digest: string; runUrl: string; deployed: boolean;
-}>;
+  digest: string; runUrl: string;
+}>;   // a failed run throws, with its URL
 ```
 
 1. `source` = the target's `deploySource.source`. `digest` = the given digest, which must be the source's `opscrew-<source>` tag or the target's `opscrew-<target>-previous`, else `taggedDigest("opscrew-<source>")`.
-2. `imageProvenance(digest)` gives the build run from the SLSA v1 provenance (`runDetails.builder.id`, spike result 2). The run must be in this repository, and `workflowRun(id)` must show the default branch as `head_branch`, with `head_sha` matching the image's commit tag. When `supplyChain.sign` is on, the cosign signature must verify too.
-3. The target plan must have no pending infrastructure or stack change, else `PHASE_PRECONDITION`: "provision --env <target> first".
+2. `imageProvenance(digest)` gives the build run from the SLSA v1 provenance (`runDetails.builder.id`, spike result 2). The run must be in this repository, and `workflowRun(id)` must show the default branch as `head_branch`, with `head_sha` matching the image's commit tag. When `supplyChain.sign` is on, the target workflow's verify job checks the cosign signature before its deploy job runs, and fails closed; the approval says so.
+3. The target plan must have no pending infrastructure or stack change, and no generated file that differs from its plan, else `PHASE_PRECONDITION`: "provision --env <target> first". The target's workflow must be on the default branch (`fileExists`).
 4. The approval `{ kind: "promote", planHash: sha256(canonical({ target, source, digest, targetPlanHash })) }`.
 5. `dispatchWorkflow(opscrew-deploy-<target>.yml, defaultBranch, { digest })`, then wait for the run. On success, record the digest in the target's state.
 
@@ -87,6 +87,7 @@ deleteEnvironmentSecret(owner, repo, env, name): Promise<void>;
 dispatchWorkflow(owner, repo, workflowFile, ref, inputs): Promise<{ runId: number; url: string }>;
 taggedDigest(owner, image, tag): Promise<string | undefined>;
 imageProvenance(owner, image, digest): Promise<{ builderId: string; runId?: number; repository?: string } | undefined>;   // SLSA v1 runDetails.builder.id
+fileExists(owner, repo, path, ref): Promise<boolean>;   // the contents API: 404 is false
 workflowRun(owner, repo, runId): Promise<{ repository: string; headBranch: string; headSha: string; path: string } | undefined>;
 ```
 

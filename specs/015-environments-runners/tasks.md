@@ -243,7 +243,7 @@ Effort`.
   - Effort: high
 
 - [ ] T1509 [P] [US3] `opscrew promote`, in `packages/agents/src/promote/**` (new)
-  - Owns: that path (+ tests); `packages/agents/src/index.ts` for the new exports only
+  - Owns: that path (+ tests); `packages/agents/src/index.ts` for the new exports only; the GitHub connector's `fileExists` (`packages/connectors/github/src/{github,connector}.ts` and its test)
   - Reads: contracts/environments.md "Promotion"; data-model.md "Promotion"; plan.md "10."; spec US3, FR-1517–FR-1523
   - Depends: T1508a, T1504, T1505
   - Accept:
@@ -251,6 +251,11 @@ Effort`.
     - **The `promote` approval's hash** is SHA-256 of the canonical `{ target, source, digest, targetPlanHash }`. It is never granted by `--yes`.
     - **Refusals,** each in plain English: no deployed source; a digest that is neither the source's nor the target's previous one; a provenance mismatch (another repository, another ref); a failed signature when signing is on; pending changes in the target; a missing workflow on the default branch.
     - **After a successful run,** the digest is recorded in the target's state. A rollback works the same way.
+    - **Lead decisions (T1509's report):**
+      - the signature is checked by the target workflow's verify job before its deploy job, and the approval says so;
+      - a workflow missing on the default branch is refused before the approval, through the connector's new `fileExists`;
+      - generated files that differ from the target's plan count as pending;
+      - the result has no `deployed` field, since a failed run throws.
     - **Tests:** the fake GitHub's tags, provenance and dispatch; each refusal; a rollback; the approval hash changing with any of its four parts.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
