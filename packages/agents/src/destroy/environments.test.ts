@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { findExecutable } from "@opscrew/core";
+import type { ApprovalRequest } from "@opscrew/contracts";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -67,9 +68,14 @@ const USER_SECRET = "USER_DEPLOY_TOKEN";
  * An app with prod and staging, both deployed and with their secrets stored, and the deps of the
  * environment `destroy` to tear down. `created`: OpsCrew created the GitHub environment of the
  * environment torn down (its record says so); otherwise the user made it, with a secret of their
- * own in it.
+ * own in it. `answer` decides each approval request (all approved by default).
  */
-async function twoEnvironments(destroy: "prod" | "staging", secrets: Secrets, created = true) {
+async function twoEnvironments(
+  destroy: "prod" | "staging",
+  secrets: Secrets,
+  created = true,
+  answer: (request: ApprovalRequest) => boolean = () => true,
+) {
   const prod = deployedIn(undefined, secrets);
   const staging = deployedIn("staging", secrets);
   const project = await createProject(prod);
@@ -84,7 +90,7 @@ async function twoEnvironments(destroy: "prod" | "staging", secrets: Secrets, cr
     GITHUB_TOKEN: undefined,
     GH_TOKEN: undefined,
   };
-  const handler = new ScriptedApprovalHandler(() => true);
+  const handler = new ScriptedApprovalHandler(answer);
   const deps = await createTestPhaseDeps({
     root: project.root,
     env,
@@ -148,23 +154,22 @@ describe.skipIf(!findExecutable("git"))("destroy per environment", () => {
     // Repository secrets are deleted one by one: only the build values live there.
     expect(s.github.deleted.sort()).toEqual(STAGING_BUILD);
     expect(result.secretsRemoved.sort()).toEqual(deploySecretNames(s.staging).sort());
-    const [secrets, settings] = s.handler.requests.filter(
-      (r) => r.kind === "github-secrets" || r.kind === "github-settings",
+    // One approval, the one the typed server name confirms in a script: no settings change.
+    expect(s.handler.requests.map((r) => r.kind)).not.toContain("github-settings");
+    const secrets = s.handler.requests.filter((r) => r.kind === "github-secrets");
+    expect(secrets).toHaveLength(1);
+    expect(secrets[0]?.title).toBe(
+      "Remove the deploy secrets from acme/shop, with the GitHub environment staging OpsCrew created",
     );
-    expect(secrets?.kind).toBe("github-secrets");
-    expect(secrets?.details).toBe(
+    expect(secrets[0]?.details).toBe(
       [
         "GitHub Actions secrets to delete (names only):",
         ...STAGING_BUILD.map((name) => `  ${name}`),
-        "The GitHub environment staging, which OpsCrew created, is deleted next with the deploy secrets it holds (its own approval).",
+        "The GitHub environment staging, which OpsCrew created, to delete with the deploy secrets it holds (names only):",
+        ...(before.staging ?? []).map((name) => `  ${name}`),
         "Without them the deploy workflow cannot reach a server; `opscrew provision` stores new ones.",
       ].join("\n"),
     );
-    expect(settings).toMatchObject({
-      kind: "github-settings",
-      title: "Delete the GitHub environment staging of acme/shop",
-    });
-    expect(settings?.details).toContain("  OPSCREW_STAGING_HOST\n");
     const text = s.deps.reporter.text();
     expect(text).toContain("Removed 2 deploy secrets from GitHub Actions in acme/shop.");
     expect(text).toContain(
@@ -174,6 +179,47 @@ describe.skipIf(!findExecutable("git"))("destroy per environment", () => {
       s.deps.audit.entries.filter((e) => e.kind === "provider-call").map((e) => e.action),
     ).toContain("delete environment staging");
     expect(text).toContain(".github/workflows/opscrew-deploy-staging.yml");
+  });
+
+  it("deletes the created environment when only the deploy secrets' approval is granted", async () => {
+    // A script with --confirm and no --yes: the typed name grants the deploy secrets, and no
+    // GitHub settings change.
+    const s = await twoEnvironments("staging", "environment", true, (r) => {
+      return r.kind !== "github-settings";
+    });
+    const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
+
+    expect(s.github.environments.has("staging")).toBe(false);
+    expect(result.secretsRemoved.sort()).toEqual(deploySecretNames(s.staging).sort());
+    expect(s.handler.requests.map((r) => r.kind)).not.toContain("github-settings");
+  });
+
+  it("says why GitHub did not delete the environment, and how to finish", async () => {
+    const s = await twoEnvironments("staging", "environment");
+    const token = fakeSecret("github-token");
+    s.deps.redactor.addLiteral(token);
+    s.github.deleteEnvironment = async () => {
+      throw new OpsCrewError(
+        "CREDENTIALS_INVALID",
+        `GitHub refused to delete the environment staging (Must have admin rights ${token}).`,
+        { hint: "The token needs Administration: Read and write." },
+      );
+    };
+    const error = await runDestroy(s.deps, { services: s.services, snapshot: false }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(OpsCrewError);
+    const failure = error as OpsCrewError;
+    expect(failure.code).toBe("CREDENTIALS_INVALID");
+    expect(failure.message).toContain(
+      "and the deploy secrets outside it are removed, but deleting the GitHub environment staging failed: GitHub refused to delete the environment staging (Must have admin rights ",
+    );
+    expect(failure.message).not.toContain(token);
+    expect(failure.hint).toBe(
+      "The token needs Administration: Read and write. Then run `opscrew destroy` again to finish the cleanup.",
+    );
+    expect(s.github.environments.has("staging")).toBe(true);
   });
 
   it("keeps the user's own production environment: deletes only OpsCrew's secrets in it", async () => {

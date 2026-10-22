@@ -485,11 +485,12 @@ function ownSecretsEnvironment(plan: DeployPlan): string | undefined {
 
 /**
  * 8. Removes the plan environment's deploy secrets ({@link deploySecretPlaces}, its own names only)
- * after a `github-secrets` approval: the repository's, and those in its GitHub environment one by
- * one when the user made that environment (it stays, with everything else in it). A GitHub
- * environment OpsCrew created (its record says so) is then deleted with its secrets, after a
- * `github-settings` approval. Names only, never values. Returns the names really deleted. `done`
- * says what is already gone when this step stops (for example `The infrastructure is deleted.`).
+ * after one `github-secrets` approval, the teardown's typed name confirms: the repository's, and
+ * those in its GitHub environment one by one when the user made that environment (it stays, with
+ * everything else in it). A GitHub environment OpsCrew created (its record says so) is deleted
+ * with its secrets under the same approval. Names only, never values. Returns the names really
+ * deleted. `done` says what is already gone when this step stops (for example `The
+ * infrastructure is deleted.`).
  */
 export async function removeDeploySecrets(
   deps: PhaseDeps,
@@ -505,126 +506,119 @@ export async function removeDeploySecrets(
   const places = deploySecretPlaces(input.plan, environment);
   const inEnvironment = places.filter((place) => place.environment !== undefined);
   const oneByOne = created ? places.filter((place) => place.environment === undefined) : places;
-  const removed: string[] = [];
-  if (oneByOne.length > 0) {
-    const repository = oneByOne.filter((place) => place.environment === undefined);
-    const kept = created ? [] : inEnvironment;
-    const approval = await deps.approvals.request({
-      kind: "github-secrets",
-      title: `Remove the deploy secrets from ${where}`,
-      details: [
-        ...(repository.length > 0
-          ? [
-              "GitHub Actions secrets to delete (names only):",
-              ...repository.map((place) => `  ${place.name}`),
-            ]
-          : []),
-        ...(kept.length > 0
-          ? [
-              `Secrets to delete from the GitHub environment ${environment}, which stays as you set it up (names only):`,
-              ...kept.map((place) => `  ${place.name}`),
-            ]
-          : []),
-        ...(created
-          ? [
-              `The GitHub environment ${environment}, which OpsCrew created, is deleted next with the deploy secrets it holds (its own approval).`,
-            ]
-          : []),
-        `Without them the deploy workflow cannot reach ${input.reach}; \`opscrew provision\` stores new ones.`,
-      ].join("\n"),
-    });
-    if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The deploy secrets were not removed from ${where}. ${input.done}`,
-        {
-          hint: "Run `opscrew destroy` again to remove them and finish the cleanup (the pinned host key and opscrew/plan.yaml).",
-        },
-      );
-    }
-    for (const place of oneByOne) {
-      try {
-        if (place.environment === undefined) {
-          await api.deleteActionsSecret(owner, repo, place.name);
-        } else {
-          await api.deleteEnvironmentSecret(owner, repo, place.environment, place.name);
-        }
-      } catch (error) {
-        const reason = isUserFacingError(error) ? error.message : "unexpected error";
-        const done = input.done.replace(/\.$/, "");
-        throw new OpsCrewError(
-          error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
-          deps.redactor.redact(
-            `${done}, but removing the GitHub secret ${place.name} failed: ${reason}`,
-          ),
-          {
-            hint: `${error instanceof OpsCrewError && error.hint ? `${error.hint} ` : ""}Then run \`opscrew destroy\` again to finish the cleanup.`,
-          },
-        );
-      }
-      await deps.audit.append({
-        kind: "secret-set",
-        actor: "opscrew",
-        action: `delete secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
-        phase: "provision",
-        target: where,
-        decision: "approved",
-      });
-      removed.push(place.name);
-    }
-    deps.reporter.success(
-      `Removed ${removed.length} deploy secrets from GitHub Actions in ${where}.`,
-    );
-  }
-  if (created && environment !== undefined) {
-    const names = inEnvironment.map((place) => place.name);
-    await removeGitHubEnvironment(deps, { api, owner, repo }, { environment, names, ...input });
-    removed.push(...names);
-  }
-  return removed;
-}
-
-/**
- * 8. Deletes the GitHub environment OpsCrew created, with the deploy secrets `names` it holds,
- * after a `github-settings` approval.
- */
-async function removeGitHubEnvironment(
-  deps: PhaseDeps,
-  github: Required<Pick<GitHubTarget, "api" | "owner" | "repo">>,
-  input: { environment: string; names: readonly string[]; done: string; reach: string },
-): Promise<void> {
-  const { api, owner, repo } = github;
-  const { environment } = input;
-  const where = `${owner}/${repo}`;
+  const repository = oneByOne.filter((place) => place.environment === undefined);
+  const kept = created ? [] : inEnvironment;
   const approval = await deps.approvals.request({
-    kind: "github-settings",
-    title: `Delete the GitHub environment ${environment} of ${where}`,
+    kind: "github-secrets",
+    title: created
+      ? `Remove the deploy secrets from ${where}, with the GitHub environment ${environment} OpsCrew created`
+      : `Remove the deploy secrets from ${where}`,
     details: [
-      `OpsCrew created this GitHub environment for the deploy secrets; GitHub deletes them with it (names only):`,
-      ...input.names.map((name) => `  ${name}`),
-      `Without them the deploy workflow cannot reach ${input.reach}; \`opscrew provision\` creates it again. Every other environment keeps its own.`,
+      ...(repository.length > 0
+        ? [
+            "GitHub Actions secrets to delete (names only):",
+            ...repository.map((place) => `  ${place.name}`),
+          ]
+        : []),
+      ...(kept.length > 0
+        ? [
+            `Secrets to delete from the GitHub environment ${environment}, which stays as you set it up (names only):`,
+            ...kept.map((place) => `  ${place.name}`),
+          ]
+        : []),
+      ...(created
+        ? [
+            `The GitHub environment ${environment}, which OpsCrew created, to delete with the deploy secrets it holds (names only):`,
+            ...inEnvironment.map((place) => `  ${place.name}`),
+          ]
+        : []),
+      `Without them the deploy workflow cannot reach ${input.reach}; \`opscrew provision\` stores new ones.`,
     ].join("\n"),
   });
   if (!approval.approved) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `The GitHub environment ${environment} was not deleted from ${where}. ${input.done.replace(/\.$/, "")}, and the deploy secrets outside it are removed.`,
+      `The deploy secrets were not removed from ${where}. ${input.done}`,
       {
-        hint: "Run `opscrew destroy` again to delete it and finish the cleanup (the pinned host key and the plan).",
+        hint: "Run `opscrew destroy` again to remove them and finish the cleanup (the pinned host key and opscrew/plan.yaml).",
       },
     );
   }
-  await api.deleteEnvironment(owner, repo, environment);
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: `delete environment ${environment}`,
-    phase: "provision",
-    target: where,
-    decision: "approved",
-  });
-  deps.reporter.success(
-    `Deleted the GitHub environment ${environment} of ${where}, with its ${input.names.length} deploy secrets.`,
+  const removed: string[] = [];
+  for (const place of oneByOne) {
+    try {
+      if (place.environment === undefined) {
+        await api.deleteActionsSecret(owner, repo, place.name);
+      } else {
+        await api.deleteEnvironmentSecret(owner, repo, place.environment, place.name);
+      }
+    } catch (error) {
+      throw gitHubFailed(deps, error, {
+        done: input.done.replace(/\.$/, ""),
+        what: `removing the GitHub secret ${place.name}`,
+      });
+    }
+    await deps.audit.append({
+      kind: "secret-set",
+      actor: "opscrew",
+      action: `delete secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
+      phase: "provision",
+      target: where,
+      decision: "approved",
+    });
+    removed.push(place.name);
+  }
+  if (removed.length > 0) {
+    deps.reporter.success(
+      `Removed ${removed.length} deploy secrets from GitHub Actions in ${where}.`,
+    );
+  }
+  if (created && environment !== undefined) {
+    try {
+      await api.deleteEnvironment(owner, repo, environment);
+    } catch (error) {
+      throw gitHubFailed(deps, error, {
+        done: `${input.done.replace(/\.$/, "")}, and the deploy secrets outside it are removed`,
+        what: `deleting the GitHub environment ${environment}`,
+      });
+    }
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: `delete environment ${environment}`,
+      phase: "provision",
+      target: where,
+      decision: "approved",
+    });
+    deps.reporter.success(
+      `Deleted the GitHub environment ${environment} of ${where}, with its ${inEnvironment.length} deploy secrets.`,
+    );
+    removed.push(...inEnvironment.map((place) => place.name));
+  }
+  return removed;
+}
+
+/**
+ * 8. The error when GitHub refused or failed `what` after `done`: GitHub's own reason (the
+ * connector's message: the HTTP status or GitHub's message) and its hint, redacted, and how to
+ * finish.
+ */
+function gitHubFailed(
+  deps: PhaseDeps,
+  error: unknown,
+  input: { done: string; what: string },
+): OpsCrewError {
+  const reason = isUserFacingError(error) ? error.message : "unexpected error";
+  const hint = error instanceof OpsCrewError && error.hint ? `${error.hint} ` : "";
+  return new OpsCrewError(
+    error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
+    deps.redactor.redact(`${input.done}, but ${input.what} failed: ${reason}`),
+    {
+      hint: deps.redactor.redact(
+        `${hint}Then run \`opscrew destroy\` again to finish the cleanup.`,
+      ),
+      cause: error,
+    },
   );
 }
 
