@@ -305,7 +305,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
+- [X] T1510b [US1] `opscrew init` for a localhost-only user, in `packages/agents/src/init/**`
   - Owns: that path (+ tests)
   - Reads: quickstart.md "1."; spec US1
   - Depends: T1510
