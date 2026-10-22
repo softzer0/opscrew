@@ -5,6 +5,7 @@ import { FakeEngine, FakeGitHub, testPlan } from "@opscrew/agents/testing";
 import type { PlanSummary, ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { Redactor, resolveProjectPaths } from "@opscrew/core";
 import { renderDeployment } from "@opscrew/iac-templates";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPhaseDeps, withServices } from "../deps";
 import {
@@ -13,6 +14,7 @@ import {
   deployProject,
   provisionServices,
 } from "../ui/__fixtures__/deploy";
+import { inEnvironment, planFile } from "../ui/__fixtures__/environments";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
 
 let project: DeployProject | undefined;
@@ -109,6 +111,20 @@ describe.skipIf(!GIT)("opscrew drift", () => {
     expect(ctx.output).toContain("rule");
     expect(ctx.output).toContain("`opscrew provision`");
     expect(engine.calls).not.toContain("apply");
+  });
+
+  it("names --env prod in its commands while the app has other environments", async () => {
+    const engine = new DriftEngine({ drift: [FIREWALL] });
+    const ctx = await setup(engine);
+    const root = (project as DeployProject).root;
+    await writeArtifact(
+      "plan",
+      planFile(root, "staging"),
+      inEnvironment(testPlan({ userSecret: false }), "staging"),
+    );
+    expect(await run(ctx, "drift", "--env", "prod")).toBe(1);
+    expect(ctx.output).toContain("run `opscrew provision --env prod` (it shows the plan first)");
+    expect(ctx.output).not.toContain("`opscrew provision`");
   });
 
   it("prints the report as JSON with --json", async () => {

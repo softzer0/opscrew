@@ -7,10 +7,11 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "@opscrew/agents/testing";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import { DeployRunner, fakeSite, writeProjectPlan } from "../ui/__fixtures__/deploy";
+import { inEnvironment, planFile } from "../ui/__fixtures__/environments";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 
 let project: TempProject | undefined;
@@ -70,6 +71,43 @@ describe("opscrew verify", () => {
     expect(await run(ctx, "verify")).toBe(1);
     expect(ctx.errors).toContain("Verification found problems");
     expect(ctx.output).toContain("run `opscrew verify` again");
+  });
+
+  it("names --env prod in its hints while the app has other environments", async () => {
+    const { ctx, root } = await setup(live());
+    await writeArtifact(
+      "plan",
+      planFile(root, "staging"),
+      inEnvironment(testPlan({ userSecret: false }), "staging"),
+    );
+    // The site answers without its security headers.
+    const site = fakeSite();
+    withServices(ctx, {
+      fetch: async (input, init) => {
+        const response = await site(input, init);
+        return String(input) === "https://shop.example.com/"
+          ? new Response(await response.text(), { status: response.status })
+          : response;
+      },
+    });
+    expect(await run(ctx, "verify", "--env", "prod")).toBe(1);
+    expect(ctx.errors).toContain("Fix them and run `opscrew verify --env prod` again.");
+  });
+
+  it("names --env prod in its stops while the app has other environments", async () => {
+    const { ctx, root } = await setup(testPlan({ userSecret: false }));
+    await writeArtifact(
+      "plan",
+      planFile(root, "staging"),
+      inEnvironment(testPlan({ userSecret: false }), "staging"),
+    );
+    expect(await run(ctx, "verify", "--env", "prod")).toBe(1);
+    expect(ctx.errors).toContain(
+      "Run `opscrew provision --env prod` first (on this computer, it records the address), merge its pull request, then run `opscrew verify --env prod`.",
+    );
+    const url = projectContext(project as TempProject);
+    expect(await run(url, "verify", "--env", "prod", "--url", "https://shop.example.com")).toBe(2);
+    expect(url.errors).toContain("Run `opscrew verify --env prod` without it.");
   });
 
   it("exits 1 with the next step when nothing is provisioned yet", async () => {

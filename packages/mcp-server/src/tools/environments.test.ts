@@ -227,6 +227,44 @@ describe("the environment tools", () => {
     expect(plan.environment?.deploySource).toEqual({ from: "main" });
   });
 
+  it("names an environment's runner machine, and changes where its deploy job runs", async () => {
+    const h = await connect();
+    await writeArtifact(
+      "plan",
+      path.join(h.root, "opscrew", "environments", "qa", "plan.yaml"),
+      inEnvironment(testPlan(), "qa", {
+        runner: "host",
+        runnerHost: { name: "home", arch: "amd64" },
+      }),
+    );
+    expect(textOf(await h.call("opscrew_env_list"))).toContain(
+      "- qa: runs on hetzner, deployed on each push, deploy job on the runner machine home, not deployed",
+    );
+
+    const set = await h.call("opscrew_env_set", { name: "staging", runner: "server" });
+    expect(set.isError, textOf(set)).toBeFalsy();
+    expect(textOf(set)).toContain(
+      "The staging environment's deploy job runs on a runner on the server; GitHub's machines build its image.",
+    );
+    expect(dataOf(set)).toMatchObject({ runner: "server", build: "github" });
+    const plan = await readArtifact(
+      "plan",
+      path.join(h.root, "opscrew", "environments", "staging", "plan.yaml"),
+    );
+    expect(plan.environment?.runner).toBe("server");
+
+    // The server's runner never builds; build goes with runner.
+    const builds = await h.call("opscrew_env_set", {
+      name: "staging",
+      runner: "server",
+      build: "runner",
+    });
+    expect(builds.isError).toBe(true);
+    expect(textOf(builds)).toContain("The server's runner never builds");
+    const alone = await h.call("opscrew_env_set", { name: "staging", build: "runner" });
+    expect(textOf(alone)).toContain("runnerHost and build go with runner.");
+  });
+
   it("refuses to remove a deployed environment", async () => {
     const h = await connect({ dialogs: true, typed: "staging" });
     const result = await h.call("opscrew_env_remove", { name: "staging" });

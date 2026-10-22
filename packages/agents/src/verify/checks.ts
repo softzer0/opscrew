@@ -89,6 +89,11 @@ export interface VerifyCheckContext {
    * only when a DNS-only certificate is not renewed in time; absent: no reason is given.
    */
   renewalFailure?: () => Promise<string | undefined>;
+  /**
+   * ` --env <name>` for the commands the checks name (`environmentFlag`, which names `--env prod`
+   * beside other environments); default: the plan's own (`namedEnvironmentFlag`, "" for prod).
+   */
+  flag?: string;
 }
 
 /** What `opscrew verify` says to do when the server's address is not on this computer. */
@@ -756,11 +761,15 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
   }
 }
 
-/** Security headers set by Caddy are present (HSTS only over HTTPS). */
+/**
+ * Security headers set by Caddy are present (HSTS only over HTTPS); `flag` is the remediation's
+ * ` --env <name>` ({@link VerifyCheckContext.flag}).
+ */
 export function checkSecurityHeaders(
   headers: Headers | undefined,
   url: string,
   plan: DeployPlan,
+  flag = namedEnvironmentFlag(plan),
 ): CheckResult {
   const id = "security-headers";
   const title = "Security headers are set";
@@ -789,7 +798,7 @@ export function checkSecurityHeaders(
     "fail",
     `Missing or weak headers: ${missing.join(", ")}.`,
     {
-      remediation: `Restore the \`header\` block in ${runtimeDir(plan)}/Caddyfile (re-run \`opscrew provision${namedEnvironmentFlag(plan)}\` to regenerate it) and redeploy.`,
+      remediation: `Restore the \`header\` block in ${runtimeDir(plan)}/Caddyfile (re-run \`opscrew provision${flag}\` to regenerate it) and redeploy.`,
       target,
     },
   );
@@ -1225,7 +1234,7 @@ export async function runVerifyChecks(base: VerifyCheckContext): Promise<VerifyC
   }
 
   checks.push(await checkHealth(url, ctx));
-  checks.push(checkSecurityHeaders(site.headers, url, plan));
+  checks.push(checkSecurityHeaders(site.headers, url, plan, base.flag));
   checks.push(await checkSensitiveFile(url, "/.env", ctx));
   checks.push(await checkSensitiveFile(url, "/.git/config", ctx));
   checks.push(await checkOriginBlocked(ctx));

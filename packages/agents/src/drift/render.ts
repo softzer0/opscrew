@@ -16,13 +16,17 @@ interface Where {
   branch: string;
 }
 
-/** {@link Where} of the environment `plan` belongs to; prod's without a plan. */
-function whereOf(plan: DeployPlan | undefined): Where {
+/**
+ * {@link Where} of the environment `plan` belongs to; prod's without a plan. `envFlag` is the
+ * caller's ` --env <name>` (`environmentFlag`, which names `--env prod` beside other
+ * environments); by default the plan's own (`namedEnvironmentFlag`: "" for prod).
+ */
+function whereOf(plan: DeployPlan | undefined, envFlag?: string): Where {
   return plan === undefined
-    ? { file: "opscrew/plan.yaml", flag: "", branch: PORTAINER_DEPLOY_BRANCH }
+    ? { file: "opscrew/plan.yaml", flag: envFlag ?? "", branch: PORTAINER_DEPLOY_BRANCH }
     : {
         file: planFile(plan),
-        flag: namedEnvironmentFlag(plan),
+        flag: envFlag ?? namedEnvironmentFlag(plan),
         branch: portainerDeployBranch(plan),
       };
 }
@@ -31,13 +35,15 @@ function whereOf(plan: DeployPlan | undefined): Where {
  * The "next steps" after a drift report, for the terminal. On a server the user owns, changes are
  * made on the server (over SSH) or in the Cloudflare dashboard; there is no provider console, and
  * `opscrew provision` puts back only some of the server's differences (the report says which).
- * `plan` is the checked environment's, whose plan file and `--env` the steps name (prod's without).
+ * `plan` is the checked environment's, whose plan file and `--env` the steps name (prod's without);
+ * `envFlag` is the commands' ` --env <name>` when the caller knows it ({@link whereOf}).
  */
 export function driftNextSteps(
   report: Pick<DriftReport, "clean" | "provider"> & Partial<Pick<DriftReport, "host">>,
   plan?: DeployPlan,
+  envFlag?: string,
 ): string[] {
-  const { file, flag, branch } = whereOf(plan);
+  const { file, flag, branch } = whereOf(plan, envFlag);
   const provision = `\`opscrew provision${flag}\``;
   const again = `run \`opscrew drift${flag}\` again`;
   if (report.provider === "portainer") {
@@ -124,10 +130,15 @@ function hostSection(host: readonly HostDifference[], flag: string): string[] {
  * Plain-text drift report for the terminal: resources changed outside OpsCrew (attribute names,
  * never values), pending infrastructure changes and generated files that differ, in the report's
  * (sorted) order; edited and missing files are listed together by path. `plan` is the checked
- * environment's, whose plan file and `--env` the report names (prod's without).
+ * environment's, whose plan file and `--env` the report names (prod's without); `envFlag` is the
+ * commands' ` --env <name>` when the caller knows it ({@link whereOf}).
  */
-export function renderDriftReport(report: DriftReport, plan?: DeployPlan): string {
-  const { file, flag } = whereOf(plan);
+export function renderDriftReport(
+  report: DriftReport,
+  plan?: DeployPlan,
+  envFlag?: string,
+): string {
+  const { file, flag } = whereOf(plan, envFlag);
   const provision = `\`opscrew provision${flag}\``;
   const lines = [
     report.engine === undefined

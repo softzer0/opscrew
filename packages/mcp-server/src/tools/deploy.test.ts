@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -11,7 +11,16 @@ import {
   ElicitRequestSchema,
   type ElicitResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { type ProvisionServices, runProvision } from "@opscrew/agents";
+import {
+  describeLocalPlan,
+  hostPlanFile,
+  type LocalPlan,
+  localPlanFile,
+  localPlanHash,
+  PlanRefusedError,
+  type ProvisionServices,
+  runProvision,
+} from "@opscrew/agents";
 import {
   createProject as createGitProject,
   FAKE_SOPS,
@@ -27,7 +36,7 @@ import {
 import type { FetchLike, RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
@@ -404,13 +413,16 @@ describe.skipIf(!findExecutable("git"))(
       expect(unpushed).not.toContain("nothing was committed");
     });
 
-    it("refuses when the user declines and names the terminal command", async () => {
+    it("refuses when the user declines and names the terminal command, never its --approve", async () => {
       const h = await connect({ elicit: () => ({ action: "decline" }) });
       const planHash = dataOf(await h.call("opscrew_plan")).planHash as string;
       const result = await h.call("opscrew_apply", { planHash });
       expect(result.isError).toBe(true);
       expect(dataOf(result).error.code).toBe("APPROVAL_REFUSED");
-      expect(textOf(result)).toContain(`opscrew provision --approve ${planHash}`);
+      expect(textOf(result)).toContain(
+        "ask them to run `opscrew provision` in a terminal in the project directory: it shows each plan and asks.",
+      );
+      expect(JSON.stringify(result)).not.toContain("--approve");
       expect(h.elicited).toHaveLength(1);
       expect(h.engine.calls).not.toContain("apply");
 
@@ -573,10 +585,265 @@ describe.skipIf(!findExecutable("git"))(
       await expect(readFile(path.join(h.root, "opscrew", "RUNBOOK.md"), "utf8")).resolves.toContain(
         SERVER_IPV4,
       );
+      // The site sends no security headers: their fix names prod's flag once staging exists.
+      expect(textOf(result)).toContain("re-run `opscrew provision` to regenerate it");
+      const prod = testPlan({ deployed: true });
+      await writeArtifact(
+        "plan",
+        path.join(h.root, "opscrew", "environments", "staging", "plan.yaml"),
+        DeployPlanSchema.parse({
+          ...prod,
+          environment: { name: "staging" },
+          app: { ...prod.app, name: "shop-staging" },
+          infra: { ...prod.infra, dir: "opscrew/infra/staging" },
+          cicd: { ...prod.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
+        }),
+      );
+      const named = await h.call("opscrew_verify", { environment: "prod" });
+      expect(textOf(named)).toContain("re-run `opscrew provision --env prod` to regenerate it");
     });
   },
   120_000,
 );
+
+/** The app on the user's computer: prod's plan with the localhost target. */
+function localhostPlan() {
+  const base = testPlan({ userSecret: false });
+  return DeployPlanSchema.parse({
+    ...base,
+    target: {
+      provider: "localhost",
+      mode: "local-compose",
+      arch: "amd64",
+      ports: { https: 8443, http: 8080 },
+      image: "registry",
+      edge: "caddy",
+    },
+    dns: { provider: "none", proxied: false },
+    cost: { ...base.cost, monthly: { amount: 0, currency: "EUR" }, breakdown: [] },
+  });
+}
+
+/** The local plan the fake provision saves and asks for, as `provisionLocalhost` does. */
+const LOCAL: LocalPlan = {
+  schemaVersion: 1,
+  purpose: "setup",
+  app: "shop",
+  environment: "prod",
+  project: "opscrew-shop",
+  address: "https://shop.localhost:8443",
+  ports: { https: 8443, http: 8080 },
+  items: [{ kind: "container", name: "opscrew-shop-web-1", action: "create" }],
+};
+const LOCAL_HASH = localPlanHash(LOCAL);
+
+/**
+ * Provision on the user's computer as the tools see it: `--plan-only` saves and shows the local
+ * plan; an apply asks for it as `host-apply` by its hash and refuses as `provisionLocalhost` does.
+ */
+const localProvision: typeof runProvision = async (phase, options) => {
+  const details = describeLocalPlan(LOCAL, LOCAL_HASH);
+  if (options?.planOnly === true) {
+    await mkdir(path.dirname(localPlanFile(phase.paths, LOCAL_HASH)), { recursive: true });
+    await writeFile(localPlanFile(phase.paths, LOCAL_HASH), JSON.stringify(LOCAL));
+    phase.reporter.info(details);
+    return { applied: false, localPlanHash: LOCAL_HASH, localApplied: false, outputs: {} };
+  }
+  const approval = await phase.approvals.request({
+    kind: "host-apply",
+    title: "Run shop on this computer (https://shop.localhost:8443)",
+    details,
+    planHash: LOCAL_HASH,
+  });
+  if (!approval.approved) {
+    throw new PlanRefusedError({
+      plan: "local plan",
+      ...(approval.reason ? { reason: approval.reason } : {}),
+      unchanged: "Nothing on this computer was changed.",
+      hint: `To apply it later without prompts, run: opscrew provision --approve ${LOCAL_HASH}`,
+    });
+  }
+  return {
+    applied: false,
+    localPlanHash: LOCAL_HASH,
+    localApplied: true,
+    outputs: { url: LOCAL.address },
+  };
+};
+
+describe.skipIf(!findExecutable("git"))("an environment on the user's computer", () => {
+  it("opscrew_plan returns the local plan's hash, and opscrew_apply applies it after the dialog", async () => {
+    const h = await connect({
+      elicit: approveAll,
+      plan: localhostPlan(),
+      tools: { runProvision: localProvision },
+    });
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(dataOf(planned).localPlanHash).toBe(LOCAL_HASH);
+    expect(textOf(planned)).toContain(`Local plan hash: ${LOCAL_HASH}`);
+    expect(textOf(planned)).toContain("nothing on the user's computer was changed");
+    expect(textOf(planned)).toContain(`call opscrew_apply with planHash ${LOCAL_HASH}`);
+    expect(dataOf(planned).applyCommand).toBe(`opscrew provision --approve ${LOCAL_HASH}`);
+
+    const applied = await h.call("opscrew_apply", { planHash: LOCAL_HASH });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(h.elicited.some((e) => e.message.includes(`Local plan hash: ${LOCAL_HASH}`))).toBe(true);
+    expect(textOf(applied)).toContain(
+      `Ran the app on the user's computer (local plan ${LOCAL_HASH}).`,
+    );
+    expect(textOf(applied)).toContain(
+      "Next: call opscrew_verify to check the app on the user's computer.",
+    );
+    expect(textOf(applied)).not.toContain("deploy secrets are NOT stored");
+    expect(dataOf(applied)).toMatchObject({ localPlanHash: LOCAL_HASH, localApplied: true });
+  });
+
+  it("a declined local plan changes nothing, and the reply never offers --approve", async () => {
+    const h = await connect({
+      elicit: () => ({ action: "decline" }),
+      plan: localhostPlan(),
+      tools: { runProvision: localProvision },
+    });
+    await h.call("opscrew_plan");
+    const refused = await h.call("opscrew_apply", { planHash: LOCAL_HASH });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("The local plan was not approved");
+    expect(textOf(refused)).toContain("Nothing on this computer was changed.");
+    expect(textOf(refused)).toContain("`opscrew provision`");
+    expect(JSON.stringify(refused)).not.toContain("--approve");
+  });
+
+  it("refuses a hash no saved local plan has", async () => {
+    const h = await connect({
+      elicit: approveAll,
+      plan: localhostPlan(),
+      tools: { runProvision: localProvision },
+    });
+    const refused = await h.call("opscrew_apply", { planHash: "ab".repeat(32) });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain(`No saved plan has the hash ${"ab".repeat(32)}.`);
+    expect(h.elicited).toEqual([]);
+  });
+});
+
+/** The host plan of a runner machine the fake provision saves (only its steps are read back). */
+const RUNNER_HASH = "cd".repeat(32);
+
+describe.skipIf(!findExecutable("git"))("a runner machine's host plan", () => {
+  /** Provision whose only change is the environment's runner on a runner machine. */
+  function machineProvision(seen: { approveHashes?: readonly string[] }): typeof runProvision {
+    return async (phase, options) => {
+      if (options?.planOnly === true) {
+        const file = hostPlanFile(phase.paths, RUNNER_HASH);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(
+          file,
+          JSON.stringify({ steps: [{ id: "github-runner", state: "change" }] }),
+        );
+        phase.reporter.info(
+          `Host plan for your server: 1 to change.\n  ~ github-runner\nHost plan hash: ${RUNNER_HASH}`,
+        );
+        return { applied: false, runnerHostPlanHashes: [RUNNER_HASH], outputs: {} };
+      }
+      seen.approveHashes = options?.approveHashes;
+      const approval = await phase.approvals.request({
+        kind: "host-apply",
+        title:
+          "Install the GitHub Actions runner of shop on the runner machine home, run as deploy",
+        details: `Host plan hash: ${RUNNER_HASH}`,
+        planHash: RUNNER_HASH,
+      });
+      if (!approval.approved) throw new Error("not approved");
+      return { applied: false, runnerHostPlanHashes: [RUNNER_HASH], outputs: {}, published: false };
+    };
+  }
+
+  it("is returned by opscrew_plan with its hash and applied by opscrew_apply after its dialog", async () => {
+    const seen: { approveHashes?: readonly string[] } = {};
+    const h = await connect({
+      elicit: approveAll,
+      tools: { runProvision: machineProvision(seen) },
+    });
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(dataOf(planned).runnerHostPlanHashes).toEqual([RUNNER_HASH]);
+    expect(textOf(planned)).toContain("On a runner machine of the user's:");
+    expect(textOf(planned)).toContain(`runnerHostPlanHashes ["${RUNNER_HASH}"]`);
+    expect(dataOf(planned).applyCommand).toBe(`opscrew provision --approve ${RUNNER_HASH}`);
+
+    const unknown = await h.call("opscrew_apply", { runnerHostPlanHashes: ["ef".repeat(32)] });
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("No saved host plan of a runner machine has the hash");
+
+    const applied = await h.call("opscrew_apply", { runnerHostPlanHashes: [RUNNER_HASH] });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(seen.approveHashes).toEqual([RUNNER_HASH]);
+    expect(h.elicited.map((e) => e.message).join("\n")).toContain(
+      "Install the GitHub Actions runner of shop on the runner machine home",
+    );
+    expect(textOf(applied)).toContain(`The runner machines' host plans: ${RUNNER_HASH}.`);
+  });
+});
+
+/** The host plan of the server's runner on a server OpsCrew created (only its steps are read back). */
+const SERVER_RUNNER_HASH = "ab".repeat(32);
+
+describe.skipIf(!findExecutable("git"))("the server runner's host plan on a cloud server", () => {
+  /** Provision whose only change is the runner on the server OpsCrew created. */
+  const serverRunnerProvision: typeof runProvision = async (phase, options) => {
+    if (options?.planOnly === true) {
+      const file = hostPlanFile(phase.paths, SERVER_RUNNER_HASH);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, JSON.stringify({ steps: [{ id: "github-runner", state: "change" }] }));
+      phase.reporter.info(
+        `Host plan for your server: 1 to change.\n  ~ github-runner\nHost plan hash: ${SERVER_RUNNER_HASH}`,
+      );
+      return { applied: false, hostPlanHash: SERVER_RUNNER_HASH, outputs: {} };
+    }
+    const approval = await phase.approvals.request({
+      kind: "host-apply",
+      title: "Install the GitHub Actions runner of shop on the server, run as deploy",
+      details: `Host plan hash: ${SERVER_RUNNER_HASH}`,
+      planHash: SERVER_RUNNER_HASH,
+    });
+    if (!approval.approved) throw new Error("not approved");
+    return {
+      applied: false,
+      hostPlanHash: SERVER_RUNNER_HASH,
+      hostApplied: true,
+      outputs: {},
+      published: false,
+    };
+  };
+
+  it("is applied by opscrew_apply with the hash opscrew_plan returned", async () => {
+    const h = await connect({ elicit: approveAll, tools: { runProvision: serverRunnerProvision } });
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(dataOf(planned).hostPlanHash).toBe(SERVER_RUNNER_HASH);
+    expect(textOf(planned)).toContain(`call opscrew_apply with planHash ${SERVER_RUNNER_HASH}`);
+
+    const applied = await h.call("opscrew_apply", { planHash: SERVER_RUNNER_HASH });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(textOf(applied)).toContain(
+      `Applied the server's host plan ${SERVER_RUNNER_HASH} (its runner).`,
+    );
+    expect(dataOf(applied)).toMatchObject({ hostPlanHash: SERVER_RUNNER_HASH, hostApplied: true });
+
+    // Beside another plan it is passed as hostPlanHash, on a cloud server as on the user's own.
+    const beside = await h.call("opscrew_apply", {
+      cloudflarePlanHash: "cd".repeat(32),
+      hostPlanHash: SERVER_RUNNER_HASH,
+    });
+    expect(beside.isError, textOf(beside)).toBeFalsy();
+    const unknown = await h.call("opscrew_apply", {
+      cloudflarePlanHash: "cd".repeat(32),
+      hostPlanHash: "ef".repeat(32),
+    });
+    expect(textOf(unknown)).toContain(`No saved host plan has the hash ${"ef".repeat(32)}.`);
+  });
+});
 
 describe("the approval dialog's text", () => {
   const request = {

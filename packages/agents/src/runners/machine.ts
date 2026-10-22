@@ -218,13 +218,35 @@ async function recordRunner(
 
 /** Every runner machine this computer records for the project, by name. */
 async function runnerHostRecords(paths: ProjectPaths): Promise<RunnerHostRecord[]> {
+  const names = await runnerHostNames(paths);
+  return Promise.all(names.map((name) => requireRunnerHost(paths, name)));
+}
+
+/** The names of the runner machines this computer records for the project, sorted. */
+async function runnerHostNames(paths: ProjectPaths): Promise<string[]> {
   const files = await readdir(runnerHostsDir(paths)).catch(() => [] as string[]);
-  const names = files
+  return files
     .filter((file) => file.endsWith(".json"))
     .map((file) => file.slice(0, -".json".length))
     .filter((name) => RUNNER_HOST_NAME_PATTERN.test(name))
     .sort();
-  return Promise.all(names.map((name) => requireRunnerHost(paths, name)));
+}
+
+/**
+ * The address and the `user@host` login of every runner machine this computer records for the
+ * project: what the MCP server's replies hide. A damaged record hides nothing, and never stops
+ * the others from being hidden.
+ */
+export async function runnerHostAddresses(paths: ProjectPaths): Promise<string[]> {
+  const addresses: string[] = [];
+  for (const name of await runnerHostNames(paths)) {
+    const login = await readRunnerHost(paths, name).then(
+      (record) => record?.login,
+      () => undefined,
+    );
+    if (login !== undefined) addresses.push(login.host, `${login.user}@${login.host}`);
+  }
+  return addresses;
 }
 
 /** The machine's CPU from inspection: amd64 or arm64, as GitHub's runner and OpsCrew support. */
@@ -344,6 +366,15 @@ export async function addRunnerHost(
       {
         hint: "Give --ssh as user@host or user@host:port (an IP address or a host name, and a user such as ana or root), and --key as the full path of your private key file, such as ~/.ssh/id_ed25519. OpsCrew never asks for a password or passphrase.",
       },
+    );
+  }
+  // The name is never the address: replies that hide the address would rewrite the name too.
+  const host = normalizeHostName(parsed.data.host);
+  if (name === host || name === host.split(".")[0]) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `"${name}" is the runner machine's address (or its first part), and a runner machine's name ${RUNNER_HOST_NAME_MESSAGE}.`,
+      { hint: "Name the machine after what it is, for example home or build-box." },
     );
   }
   const earlier = await readRunnerHost(deps.paths, name);

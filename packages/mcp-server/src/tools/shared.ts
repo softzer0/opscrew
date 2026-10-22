@@ -7,6 +7,7 @@ import {
   portainerAddressNames,
   readServerAddresses,
   resolveEnvironment,
+  runnerHostAddresses,
 } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, replaceNames, resolveProjectPaths } from "@opscrew/core";
@@ -189,6 +190,8 @@ interface HiddenNames {
   server: string[];
   /** The address of the user's Portainer: its URL, origin and host name. */
   portainer: string[];
+  /** The address and login of each runner machine of the user's. */
+  runner: string[];
 }
 
 /**
@@ -197,7 +200,7 @@ interface HiddenNames {
  */
 async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<HiddenNames> {
   const environments = await environmentsOf(projectDir).catch(() => ["prod"]);
-  const names: HiddenNames = { server: [], portainer: [] };
+  const names: HiddenNames = { server: [], portainer: [], runner: [] };
   for (const environment of environments.length === 0 ? ["prod"] : environments) {
     try {
       const { own, portainer } = await readServerAddresses(
@@ -213,6 +216,9 @@ async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<H
       // An unreadable record names nothing to hide.
     }
   }
+  names.runner.push(
+    ...(await runnerHostAddresses(resolveProjectPaths(projectDir, { env: deps.env }))),
+  );
   return names;
 }
 
@@ -231,10 +237,14 @@ export function withoutPortainer(text: string, names: readonly string[]): string
  * "your Portainer" in every string, deeply.
  */
 function hideNames<T>(value: T, names: HiddenNames): T {
-  if (names.server.length === 0 && names.portainer.length === 0) return value;
+  if (names.server.length === 0 && names.portainer.length === 0 && names.runner.length === 0) {
+    return value;
+  }
   const walk = (item: unknown): unknown => {
     if (typeof item === "string") {
-      return withoutPortainer(replaceNames(item, names.server, "your server"), names.portainer);
+      // A runner machine's user@host login, then its address alone (replaceNames: longest first).
+      const machines = replaceNames(item, names.runner, "your runner machine");
+      return withoutPortainer(replaceNames(machines, names.server, "your server"), names.portainer);
     }
     if (Array.isArray(item)) return item.map(walk);
     if (item !== null && typeof item === "object") {

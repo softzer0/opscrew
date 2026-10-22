@@ -74,9 +74,13 @@ export function withoutRoute(text: string, names: readonly string[]): string {
 /**
  * The address `opscrew verify` checks for the user's Portainer: the one given (the user's own
  * route, for web mode `proxy` without a domain), else the app's domain. Stops plainly when there
- * is neither.
+ * is neither, naming the commands with `flag` (` --env <name>`; default the plan's own).
  */
-export function portainerVerifyUrl(plan: DeployPlan, given: string | undefined): string {
+export function portainerVerifyUrl(
+  plan: DeployPlan,
+  given: string | undefined,
+  flag = namedEnvironmentFlag(plan),
+): string {
   if (given !== undefined) {
     let url: URL | undefined;
     try {
@@ -102,7 +106,6 @@ export function portainerVerifyUrl(plan: DeployPlan, given: string | undefined):
   }
   if (plan.dns.domain !== undefined) return `https://${plan.dns.domain}`;
   const file = planFile(plan);
-  const flag = namedEnvironmentFlag(plan);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `${file} has no domain, and OpsCrew does not know where your reverse proxy serves the app, so there is nothing to verify.`,

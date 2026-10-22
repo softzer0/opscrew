@@ -75,6 +75,20 @@ describe("opscrew env set", () => {
     expect(ctx.output).toContain("run `opscrew provision --env staging`");
   });
 
+  it("checks the runner before the source, so a refused runner saves nothing", async () => {
+    project = await withEnvironments({
+      staging: inEnvironment(testPlan(), "staging", {
+        deploySource: { from: "promote", source: "prod" },
+      }),
+    });
+    const before = await readFile(planFile(project.root, "staging"), "utf8");
+    const ctx = projectContext(project);
+    const args = ["--from", "main", "--runner", "server", "--build", "runner"];
+    expect(await run(ctx, "env", "set", "staging", ...args)).not.toBe(0);
+    expect(ctx.errors).toContain("The server's runner never builds");
+    expect(await readFile(planFile(project.root, "staging"), "utf8")).toBe(before);
+  });
+
   it("refuses the environment itself as its source, and changes nothing", async () => {
     project = await withEnvironments({ staging: inEnvironment(testPlan(), "staging") });
     const before = await readFile(planFile(project.root, "staging"), "utf8");
@@ -164,6 +178,18 @@ describe("opscrew env add", () => {
       runner: "github",
     });
     expect(ctx.output).toContain("opscrew provision --env staging");
+  });
+
+  it("takes the runner machine and the build from its flags", async () => {
+    project = await prodApp();
+    const unknown = projectContext(project);
+    const machine = ["--runner", "host", "--runner-host", "home"];
+    expect(await run(unknown, "env", "add", "staging", ...machine)).not.toBe(0);
+    expect(unknown.errors).toContain("This computer has no runner machine named home");
+    const github = projectContext(project);
+    expect(await run(github, "env", "add", "staging", "--build", "runner")).not.toBe(0);
+    expect(github.errors).toContain("its deploy job runs on GitHub's machines");
+    expect(await exists(planFile(project.root, "staging"))).toBe(false);
   });
 
   it("in a terminal, asks only what its flags leave open", async () => {

@@ -99,7 +99,7 @@ export const YES_DESCRIPTION =
 
 /** Help text of `--approve <hash>`, which may be given once per plan. */
 export const APPROVE_DESCRIPTION =
-  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan)";
+  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan; with a runner machine also its host plan)";
 
 /** Adds `--plan-only` and the repeatable `--approve <hash>` to `command`. */
 export function addPlanApproveOptions(command: Command): Command {
@@ -145,11 +145,13 @@ export function addHostKeyOption(command: Command): Command {
 
 /**
  * Checks `--approve` values (each a 64-character SHA-256 hash, not together with `--plan-only`)
- * and `--host-key` (a `SHA256:…` fingerprint) before anything runs. Returns the trimmed hashes.
+ * and `--host-key` (a `SHA256:…` fingerprint) before anything runs. `shows` is the command that
+ * prints the plan's hash (default: `opscrew <command> --plan-only`). Returns the trimmed hashes.
  */
 export function checkApproveFlags(
   command: string,
   flags: { planOnly?: boolean; approve?: string[]; hostKey?: string },
+  shows = `opscrew ${command} --plan-only`,
 ): string[] {
   const hashes = (flags.approve ?? []).map((hash) => hash.trim());
   if (flags.planOnly === true && hashes.length > 0) {
@@ -160,8 +162,8 @@ export function checkApproveFlags(
   if (hashes.some((hash) => !isPlanHash(hash))) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "--approve expects the 64-character SHA-256 plan hash that `--plan-only` printed.",
-      { hint: `Run \`opscrew ${command} --plan-only\` to get the hash of the current plan.` },
+      "--approve expects the 64-character SHA-256 plan hash that OpsCrew printed.",
+      { hint: `Run \`${shows}\` to get the hash of the current plan.` },
     );
   }
   const hostKey = flags.hostKey?.trim();
@@ -357,6 +359,12 @@ export async function runInfraCommand(
           (await planChanges(deps, "stack", result.stackPlanHash))
         ) {
           planned.push({ label: "stack plan for your Portainer", hash: result.stackPlanHash });
+        }
+        // The runner machines: the environment's runner off each machine it left, then on its own.
+        for (const hash of result.runnerHostPlanHashes ?? []) {
+          if (await planChanges(deps, "host", hash)) {
+            planned.push({ label: "host plan for a runner machine", hash });
+          }
         }
         if (portainer) stackFollows = stackFollowsReason(result, saved !== undefined);
         // This computer: the local plan, approved by its hash like a host plan.

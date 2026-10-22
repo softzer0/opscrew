@@ -1,16 +1,19 @@
 # Self-hosted runners: where the deploy job runs
 
-Each environment's deploy job can run in one of three places. The build always runs on GitHub's
-machines; only the deploy job moves.
+Each environment's deploy job can run in one of four places. By default the image is built on
+GitHub's machines; an environment can also build it on its own runner (see
+[Builds on your own hardware](#builds-on-your-own-hardware)).
 
 | `environment.runner` | Where the deploy job runs | For |
 |---|---|---|
 | `github` (the default) | on GitHub's machines, which reach your server over SSH, as before | every target |
 | `server` | on a runner OpsCrew installs on the server itself | a server OpsCrew creates (Hetzner Cloud, DigitalOcean) or [one you already have](own-server.md) |
 | `local` | on a runner on your computer, while you run it | an environment [on your computer](localhost.md) |
+| `host` | on a [runner machine](#runner-machines) of yours: a home server, a spare PC or a VM, which reaches your server over SSH | a server OpsCrew creates or one you already have |
 
-Choose it when you add an environment (`npx opscrew env add staging --runner server`), or set
-`environment.runner` in the environment's plan and run `npx opscrew provision --env <env>`.
+Choose it when you add an environment (`npx opscrew env add staging --runner server`), change it
+with `npx opscrew env set staging --runner <where>`, then run `npx opscrew provision --env staging`,
+which shows the change and applies it after your approval.
 
 A [Portainer](portainer-target.md) environment has no runner choice: Portainer itself redeploys the
 stack, so its deploys already need no SSH.
@@ -107,8 +110,136 @@ without it.
 
 - The deploy job's steps run with your computer's shell (Git for Windows' `bash` on Windows), and
   get none of your provider or model tokens and no SSH agent.
-- It deploys the image GitHub Actions built, so the environment must not build its image on your
-  computer (`target.image: registry`).
+- It deploys an image from GitHub's container registry, so the environment's stack must not build
+  its own image during provision (`target.image: registry`). The image can still be built on this
+  computer by the runner itself: see [Builds on your own hardware](#builds-on-your-own-hardware).
+
+## Runner machines
+
+A runner machine is a machine of yours that runs the deploy jobs, and if you want the builds, of
+the environments that choose it: a home server, a spare PC, a VM on your network. Deploys then
+come from inside your own network, and builds run on hardware you pick.
+
+It needs Ubuntu or Debian, 64-bit (x86-64 or ARM64), and an SSH login as root or as a user with
+passwordless sudo, with your key (a key file, or the key in your SSH agent; OpsCrew never asks for a
+password):
+
+```bash
+npx opscrew runner host add home --ssh ana@192.168.1.30 --key ~/.ssh/id_ed25519
+```
+
+OpsCrew sets it up the way it sets up [a server you already have](own-server.md):
+
+1. It shows the machine's SSH host key fingerprint and asks you to confirm it at the first
+   connection; in a script, pass it with `--host-key SHA256:…` (read it on the machine with
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). A different key later stops every command.
+2. It inspects the machine read-only and shows its host plan: Docker (the deploy job's checks use
+   it) and the `deploy` user that the runners run as.
+3. It changes the machine only after you approve that plan's hash. In a script, the first run shows
+   the plan and its hash, and `npx opscrew runner host add home --approve <hash>` applies exactly
+   that plan.
+
+OpsCrew does not change the machine's SSH settings or firewall, and does not harden it: it may be
+your desktop. Its address and login stay on your computer, in OpsCrew's folder for the project
+(`~/.opscrew/projects/<project>/runner-hosts/`); plans and every file in your repository name the
+machine only as `home`. Run the commands that use it from the computer that added it.
+
+Then choose it for an environment and provision:
+
+```bash
+npx opscrew env set staging --runner host --runner-host home
+npx opscrew provision --env staging
+```
+
+Provision adds the environment's runner to the machine's host plan, one `github-runner` step with
+the label `opscrew-<app>-<env>`, running as `deploy`'s own service in `/srv/runners/<app>`, and
+applies it after you approve that plan's hash (`--plan-only` lists it as "host plan for a runner
+machine", beside the others). The deploy job then runs on the machine and deploys to the server over
+SSH with the same steps and deploy secrets a job on GitHub's machines uses, so GitHub's machines
+never connect to the server. The server keeps accepting SSH, now from your machine.
+
+- Several environments can share a machine; each has its own runner and folder.
+- A runner machine is never the environment's own server: for that, use `runner: server`.
+- It serves environments on a server OpsCrew creates or one you already have. A
+  [Portainer](portainer-target.md) redeploys by itself, and an environment on your computer uses
+  the local runner.
+- `npx opscrew runner host list` shows the machines this computer knows, their CPU, whether Docker
+  is installed, and the environments on each. `status` and `secure` report their runners like the
+  others (see [Status and updates](#status-and-updates)).
+
+### Removing an environment's runner, or the machine
+
+Destroying an environment, or moving its deploy job elsewhere and provisioning, removes only that
+environment's runner from the machine, through the machine's host plan approved by its hash. The
+other environments' runners stay.
+
+```bash
+npx opscrew runner host remove home
+```
+
+removes the machine itself. It is refused while an environment's deploy job runs there. Otherwise
+it takes back what OpsCrew set up: this project's runners (unregistered from GitHub), and the
+`deploy` user and its home folder when OpsCrew created them. Docker stays, since other software may
+use it, and so does the machine. Because it deletes a user's home folder, you type the machine's
+name to approve it; in a script, run it once to see the plan and its hash, then
+`npx opscrew runner host remove home --approve <hash> --confirm home`.
+
+A runner folder that belongs to another repository is never replaced or removed: OpsCrew stops
+instead.
+
+When OpsCrew cannot reach the machine any more (it is off for good, or was wiped), the same command
+forgets it on your computer after you type its name (`--confirm home` in a script), and deletes its
+runners' registrations at GitHub. What OpsCrew installed stays on the machine; remove it there if
+you use the machine again.
+
+### Later: no public SSH
+
+Today a runner machine, like GitHub's machines, reaches your server over SSH, so the server keeps
+SSH open to the internet. With the private network that a later version of OpsCrew adds, runner
+machines and every self-hosted runner will reach your servers over that network instead, so public
+SSH can be closed.
+
+## Builds on your own hardware
+
+By default GitHub's machines build the image. With `build: runner`, the environment's build job runs
+on its own runner instead, with the same Buildx, build provenance, SBOM and optional signature:
+
+```bash
+npx opscrew env set staging --runner host --runner-host home --build runner
+npx opscrew env add dev --target localhost --runner local --build runner
+```
+
+- **Only on a runner machine or the local runner,** never the server's runner (see below).
+- **Only for an environment built from your branch.** An environment
+  [promoted](environments.md#promotion) from another runs the image that one built, so it builds
+  nothing.
+- **The runner's CPU must be the server's.** The image is built for the runner's architecture,
+  without emulation. Every server type OpsCrew offers at Hetzner Cloud and DigitalOcean is x86-64
+  (amd64), so an ARM64 machine (a Raspberry Pi, a VM on an Apple silicon Mac) cannot build for
+  them; on a server you already have, its own CPU counts; on your computer, its CPU is the target's.
+  OpsCrew refuses a machine whose CPU does not match when you choose it, and says which server
+  types match.
+
+### Why the production server never builds
+
+A build runs the app's own build steps: its package install scripts, its Dockerfile's `RUN` lines,
+the builder's scripts. A dependency that turned malicious would then run on the server that serves
+your live site and holds its data, with the `deploy` user's Docker access, which is close to root
+there. A build also takes the server's CPU and memory away from the site while it runs. So
+`build: runner` is refused with `runner: server`: build on GitHub's machines, or on a runner machine
+that is not the server.
+
+### Builds on Windows and macOS
+
+On a local runner that is not Linux, a Dockerfile build uses your Docker (Docker Desktop, or Colima
+on macOS) directly. Cloud Native Buildpacks' `pack` and Railpack exist only for Linux, so OpsCrew
+runs their pinned Linux builds inside a pinned Linux container that reaches your Docker through its
+socket; every [builder](builders.md) works there. Docker must be running while the runner takes the
+job.
+
+The build job keeps its registry login and its Buildx builder in Docker settings of its own, in the
+job's temporary folder: it never uses or changes your own Docker login, keychain or credential
+manager.
 
 ## Status and updates
 
@@ -116,8 +247,9 @@ without it.
 version against GitHub's newest release, and the repository's visibility. `npx opscrew secure`
 reports the same as findings:
 
-- **offline:** a warning, since the environment's deploy jobs wait. For the server's runner, check
-  that the server is up and run `provision`, which starts it again; for the local runner, start it.
+- **offline:** a warning, since the environment's deploy jobs wait. For the server's runner or a
+  runner machine's, check that the machine is up and run `provision`, which starts it again; for
+  the local runner, start it.
 - **more than 21 days behind GitHub's newest runner release:** a warning. GitHub stops sending jobs to
   a runner 30 days after a newer release. The runner updates itself; when it has not,
   `npx opscrew provision` installs OpsCrew's pinned version again.

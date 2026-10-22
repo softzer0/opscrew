@@ -298,7 +298,7 @@ export interface FlagConfirmationOptions {
   kinds: readonly ApprovalKind[];
   /** What those requests do, for its refusals: `a plan that deletes or replaces resources`. */
   what: string;
-  /** The app's name, which the deleting requests ask to have typed. */
+  /** The name the deleting requests ask to have typed: the app's, or a runner machine's. */
   app: string;
   /** `--confirm <app>` was given (and matched {@link FlagConfirmationOptions.app}). */
   confirmed: boolean;
@@ -312,11 +312,12 @@ export interface FlagConfirmationOptions {
 }
 
 /**
- * The typed app name for a request of `kinds` that deletes something (`allowDestroy` and the
- * app's name as `confirmPhrase`): in a script `--confirm <app>` approves it only when one of the
- * `--approve` values is its plan's hash; without `--confirm`, a run nobody can answer is refused
- * with the flag to add, and in a terminal `base` asks for the name. `--yes` never approves it;
- * every other request goes to `base`.
+ * The typed name for a request of `kinds` that deletes something (`allowDestroy` and the app's
+ * name as `confirmPhrase`): in a script `--confirm <app>` approves it only when one of the
+ * `--approve` values is its plan's hash. A typed confirmation bound to no plan (no `planHash`,
+ * no `allowDestroy`: forgetting a runner machine OpsCrew cannot reach) takes `--confirm` alone.
+ * Without `--confirm`, a run nobody can answer is refused with the flag to add, and in a terminal
+ * `base` asks for the name. `--yes` never approves it; every other request goes to `base`.
  */
 export class FlagConfirmation implements ApprovalHandler {
   constructor(
@@ -326,15 +327,16 @@ export class FlagConfirmation implements ApprovalHandler {
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     const { kinds, what, app, confirmed, hashes, interactive, print, clock } = this.options;
+    const unbound = request.allowDestroy !== true && request.planHash === undefined;
     const deletion =
       kinds.includes(request.kind) &&
-      request.allowDestroy === true &&
-      request.confirmPhrase !== undefined;
+      request.confirmPhrase !== undefined &&
+      (request.allowDestroy === true || unbound);
     if (!deletion) return this.base.request(request);
     const decide = (approved: boolean, extra: Pick<ApprovalDecision, "confirmation" | "reason">) =>
       approvalDecision(clock, "--approve and --confirm flags", approved, extra);
     if (confirmed) {
-      if (request.confirmPhrase === app && hashListed(hashes, request.planHash)) {
+      if (request.confirmPhrase === app && (unbound || hashListed(hashes, request.planHash))) {
         print(`  ✓ ${request.title} (confirmed with --confirm ${app})\n`);
         return decide(true, { confirmation: app });
       }
@@ -344,7 +346,7 @@ export class FlagConfirmation implements ApprovalHandler {
     }
     if (!interactive) {
       return decide(false, {
-        reason: `${what} needs the app's name: add --confirm ${request.confirmPhrase} (with --approve and the plan's hash), or run the command in a terminal`,
+        reason: `${what} needs ${request.confirmPhrase} typed to confirm: add --confirm ${request.confirmPhrase}${unbound ? "" : " (with --approve and the plan's hash)"}, or run the command in a terminal`,
       });
     }
     return this.base.request(request);

@@ -40,9 +40,9 @@ export function register(program: Command, ctx: CliContext): void {
     const hostKey = flags.hostKey?.trim();
     // Exit 1 means "something differs"; anything that stopped the check is an error (exit 2),
     // so scripts never mistake missing state or a missing passphrase for drift.
-    const { report, plan } = await runPhaseCommand(ctx, async () => {
+    const { report, plan, flag } = await runPhaseCommand(ctx, async () => {
       checkApproveFlags("drift", flags);
-      const { name } = await chooseEnvironment(ctx, flags.env, "drift");
+      const { name, flag } = await chooseEnvironment(ctx, flags.env, "drift");
       // Progress is dropped for `--json` so stdout holds only the report; problems go to stderr.
       const deps = createPhaseDeps(ctx, {
         ai: false,
@@ -54,7 +54,7 @@ export function register(program: Command, ctx: CliContext): void {
         ...(hostKey === undefined ? {} : { hostKey }),
         ...(services === undefined ? {} : { services }),
       });
-      return { report, plan: await readArtifact("plan", deps.paths.files.plan) };
+      return { report, plan: await readArtifact("plan", deps.paths.files.plan), flag };
     }).catch((error: unknown) => {
       throw error instanceof CliExit && error.exitCode !== 0 ? new CliExit(ERROR_EXIT_CODE) : error;
     });
@@ -63,8 +63,8 @@ export function register(program: Command, ctx: CliContext): void {
       if (!report.clean) throw new CliExit(REFUSED_EXIT_CODE);
       return;
     }
-    ctx.stdout(`${renderDriftReport(report, plan)}\n`);
-    printNextSteps(ctx, driftNextSteps(report, plan));
+    ctx.stdout(`${renderDriftReport(report, plan, flag)}\n`);
+    printNextSteps(ctx, driftNextSteps(report, plan, flag));
     if (!report.clean) throw new CliExit(REFUSED_EXIT_CODE);
   });
 }

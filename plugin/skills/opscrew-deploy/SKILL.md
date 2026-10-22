@@ -345,10 +345,12 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `opscrew_env_list` shows them: where each runs, how it gets new versions, where its deploy job
   runs and whether it is deployed. To add one, ask the user its few questions (where it runs, the
   user's computer `localhost` included; its size; its hostname; whether it is built on each push
-  to main or promoted from another environment; where its deploy job runs: `github`, `server` or
-  `local`) and call `opscrew_env_add` with `name` and `answers`; it designs it and returns its
-  monthly cost. `opscrew_env_set` changes how it gets new versions (`from`: `main` or another
-  environment). `opscrew_env_remove` removes an environment that is not deployed, only when the
+  to main or promoted from another environment; where its deploy job runs: `github`, `server`,
+  `local` or `host`, a runner machine with `runnerHost`; where its image is built: `build`
+  `github` or `runner`) and call `opscrew_env_add` with `name` and `answers`; it designs it and
+  returns its monthly cost. `opscrew_env_set` changes how it gets new versions (`from`: `main` or
+  another environment) and where its jobs run (`runner`, `runnerHost`, `build`).
+  `opscrew_env_remove` removes an environment that is not deployed, only when the
   user asks. Every deploy, status, drift, secrets and design tool takes `environment`: once the
   app has several, always pass the one the user means (a call without it fails with the names),
   and in the terminal commands you pass on add `--env <name>`, for example
@@ -369,7 +371,19 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `untrust` takes it back), and, for an environment whose deploy job runs on this computer,
   `npx opscrew runner start --env <name>`, which keeps GitHub's runner in the foreground until
   Ctrl+C and then removes it from GitHub. Such an environment has no DNS: never call
-  `npx opscrew dns` for it.
+  `npx opscrew dns` for it. `opscrew_plan` returns its local plan with `localPlanHash`: show it
+  to the user and pass that hash to `opscrew_apply` as `planHash`.
+- **Runner machines.** A machine of the user's (a home server, a spare PC, a VM with Ubuntu or
+  Debian) can run environments' deploy jobs, and with `build` `runner` their builds, if its CPU is
+  the server's (OpsCrew's Hetzner and DigitalOcean servers are x86-64). `opscrew_runner_host_add`
+  with `name`, `user`, `host` and, unless the key is in the SSH agent, `keyFile` (ask the user;
+  never a password, and never read the key file): the user confirms its host key and approves its
+  host plan in dialogs. `opscrew_runner_host_list` names the machines, never their address.
+  Then `opscrew_env_set` with `runner` `host` and `runnerHost`, and `opscrew_plan`: it returns the
+  machine's host plan in `runnerHostPlanHashes`, which `opscrew_apply` takes as they are. The
+  production server never builds: with `runner` `server`, `build` stays `github`.
+  `opscrew_runner_host_remove` only when the user asks: they type the machine's name in its dialog,
+  and it is refused while an environment's deploy job runs there.
 - **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`

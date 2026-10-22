@@ -17,7 +17,7 @@ an app yet.
 
 - [How OpsCrew builds your app's image](builders.md)
 - [Deploys without downtime](zero-downtime.md)
-- [Self-hosted runners: where the deploy job runs](runners.md)
+- [Self-hosted runners and runner machines: where the deploy job and the build run](runners.md)
 - [The image supply chain](supply-chain.md)
 - [The reverse proxy: Caddy or nginx, and your own rules](reverse-proxy.md)
 

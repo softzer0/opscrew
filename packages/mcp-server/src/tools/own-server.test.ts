@@ -618,8 +618,10 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expect(h.engine.applied).toHaveLength(1);
     expect(h.host.applies).toEqual([]);
     expect(textOf(applied)).toContain(
-      "The Cloudflare changes are applied; nothing on the user's server was changed.",
+      "The host plan was not approved (declined by the user). Nothing on your server was changed. The Cloudflare changes are applied.",
     );
+    // A decline never offers the command that would apply the plan without asking.
+    expect(JSON.stringify(applied)).not.toContain("--approve");
   });
 
   it("passwordLogins is the user's choice for a server with password-only users, as in the CLI", async () => {

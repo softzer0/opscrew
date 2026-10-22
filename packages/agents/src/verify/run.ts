@@ -140,13 +140,15 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
+  // ` --env <name>` for the commands verify names; `--env prod` beside other environments.
+  const flag = await environmentFlag(paths.root, paths.environment);
   if (!ownProxy && options.url !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       portainer
         ? "An address to check is only for an app in your Portainer behind your own reverse proxy; this app is served through its domain, which OpsCrew checks. Nothing was checked."
         : "An address to check is only for an app in your Portainer behind your own reverse proxy; OpsCrew checks this deployment through its domain or its server. Nothing was checked.",
-      { hint: "Run `opscrew verify` without it." },
+      { hint: `Run \`opscrew verify${flag}\` without it.` },
     );
   }
   // The user's Portainer: no server address (OpsCrew never knows the host's), and its own address
@@ -156,7 +158,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const server = tunnelMode(plan) || portainer ? undefined : await serverAddress(deps, plan);
   // A server the user owns: terminal lines say "your server", never its addresses or login host.
   const hidden = plan.target.provider === "own" ? await ownServerNames(deps, server) : [];
-  const url = portainer ? portainerVerifyUrl(plan, options.url) : siteUrl(plan, server);
+  const url = portainer ? portainerVerifyUrl(plan, options.url, flag) : siteUrl(plan, server);
   // The user's own route (`--url`): registered before any check, so no output or result shows
   // it; messages call it "your route".
   const route =
@@ -177,7 +179,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
           "PHASE_PRECONDITION",
           "OpsCrew does not know the server's address on this computer yet, so there is nothing to verify.",
           {
-            hint: "Run `opscrew provision` first (on this computer, it records the address), merge its pull request, then run `opscrew verify`.",
+            hint: `Run \`opscrew provision${flag}\` first (on this computer, it records the address), merge its pull request, then run \`opscrew verify${flag}\`.`,
           },
         );
   }
@@ -186,6 +188,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   const { checks: checked, latestDeployAt } = await runVerifyChecks({
     plan,
+    flag,
     ...(server !== undefined ? { server } : {}),
     resolver: options.resolver ?? defaultDnsResolver,
     fetch,
@@ -314,7 +317,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
         github: repo,
         projectId: paths.projectId,
         environments,
-        flag: await environmentFlag(paths.root, paths.environment),
+        flag,
       })
     : renderRunbook(current, {
         opscrewVersion: deps.version,
@@ -335,7 +338,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     reporter.success(say(`${url} is live and healthy (${summary}). Runbook: ${runbookPath}`));
   } else {
     reporter.error(
-      say(`Verification found problems (${summary}). Fix them and run \`opscrew verify\` again.`),
+      say(
+        `Verification found problems (${summary}). Fix them and run \`opscrew verify${flag}\` again.`,
+      ),
     );
     reporter.info(say(`Runbook: ${runbookPath}`));
   }

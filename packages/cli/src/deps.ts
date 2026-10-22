@@ -13,6 +13,8 @@ import {
   type PromoteServices,
   type ProvisionServices,
   type RetargetServices,
+  type RunnerGitHubApi,
+  type RunnerHostServices,
   type RunSecureOptions,
   type RunVerifyOptions,
 } from "@opscrew/agents";
@@ -84,6 +86,8 @@ export interface CliServices {
   localRunner?: LocalRunnerServices;
   /** GitHub and the target's read-only check for `promote`. */
   promote?: PromoteServices;
+  /** The runner machine's shell and host adapter, and GitHub's runner API, for `runner host`. */
+  runnerHost?: { machine?: RunnerHostServices; github?: RunnerGitHubApi };
 }
 
 const services = new WeakMap<CliContext, CliServices>();

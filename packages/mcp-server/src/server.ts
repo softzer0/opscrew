@@ -9,6 +9,7 @@ import { registerEnvironmentTools } from "./tools/environments";
 import { registerInitCheckTool } from "./tools/init";
 import { registerInterviewTools } from "./tools/interview";
 import { registerPortainerTools } from "./tools/portainer";
+import { registerRunnerHostTools } from "./tools/runners";
 import { registerScanTool } from "./tools/scan";
 import { registerSecretsTools } from "./tools/secrets";
 import { registerStatusTool } from "./tools/status";
@@ -22,7 +23,7 @@ const INSTRUCTIONS = [
   "Planning: opscrew_scan → opscrew_detect → opscrew_interview_questions → opscrew_save_requirements → opscrew_design_options → opscrew_select_design.",
   "Deploy, only after the app is adapted and merged: opscrew_render → opscrew_plan → show the user the plan, its cost and policy results → opscrew_apply → the user merges the pull request → opscrew_verify and opscrew_secure.",
   "Hard rules:",
-  "- Only the user approves a change, each plan in its own OpsCrew dialog: never approve or claim approval yourself. The user also confirms the SSH host key of their server and the certificate fingerprint of their Portainer in a dialog: never confirm one for them or pass one yourself.",
+  "- Only the user approves a change, each plan in its own OpsCrew dialog: never approve or claim approval yourself. The user also confirms the SSH host key of their server or runner machine and the certificate fingerprint of their Portainer in a dialog: never confirm one for them or pass one yourself.",
   "- Never ask the user to paste tokens, passwords, passphrases, private keys or .env values into the chat. Tokens come only from the environment (the user's Portainer: PORTAINER_API_KEY); a server the user has is reached with a key file or the SSH agent, never a password. Never read Portainer's password file into the chat, nor an age key file.",
   '- The address of a server the user has and of their Portainer stays on their computer: results say "your server" and "your Portainer"; never write the address into a file.',
   "- Never run tofu, terraform, hcloud, doctl, ssh or curl against Portainer yourself.",
@@ -56,5 +57,6 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerPortainerTools(server, resolved);
   registerSecretsTools(server, resolved);
   registerEnvironmentTools(server, resolved);
+  registerRunnerHostTools(server, resolved);
   return server;
 }

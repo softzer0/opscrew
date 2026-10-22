@@ -2,13 +2,13 @@ import { mkdirSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { exists, readTextIfExists } from "@opscrew/core";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { renderDriftReport, runDrift } from "../drift";
 import { runProvision } from "../provision";
 import { runSecure } from "../secure";
 import { componentStatusReport, tlsStatusReport } from "../status";
-import { ScriptedApprovalHandler } from "../testing";
+import { ScriptedApprovalHandler, testPlan } from "../testing";
 import { runVerify } from "../verify";
 import { DIGEST, FakeComputer, localPlan, localProject } from "./__fixtures__/computer";
 import { destroyLocalhost } from "./destroy";
@@ -83,6 +83,26 @@ describe("verify on this computer", () => {
     expect(
       (await readArtifact("plan", deps.paths.files.plan)).deployment.firstDeployAt,
     ).toBeUndefined();
+    const errors = () => deps.reporter.lines.filter((line) => line.level === "error");
+    expect(errors().at(-1)?.message).toMatch(/Fix them and run `opscrew verify` again\.$/);
+
+    // Beside another environment, the command names prod.
+    const prod = testPlan();
+    await writeArtifact(
+      "plan",
+      join(deps.paths.root, "opscrew", "environments", "staging", "plan.yaml"),
+      DeployPlanSchema.parse({
+        ...prod,
+        environment: { name: "staging" },
+        app: { ...prod.app, name: "shop-staging" },
+        infra: { ...prod.infra, dir: "opscrew/infra/staging" },
+        cicd: { ...prod.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
+      }),
+    );
+    await runVerify(deps, { localhost: computer.services() });
+    expect(errors().at(-1)?.message).toContain(
+      "Fix them and run `opscrew verify --env prod` again.",
+    );
   });
 });
 

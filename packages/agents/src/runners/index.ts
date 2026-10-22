@@ -50,6 +50,7 @@ export {
   removeRunnerHost,
   requireOtherMachine,
   requireRunnerHost,
+  runnerHostAddresses,
 } from "./machine";
 export {
   planServerRunner,
@@ -59,4 +60,10 @@ export {
   serverRunnerName,
 } from "./server";
 export { type RunnerStatus, runnerChecks, runnerStatus, runnerStatusLines } from "./status";
-export { namedEnvironmentFlag, planFile, planWhere, runnerSuffix } from "./words";
+export {
+  deployJobPlace,
+  namedEnvironmentFlag,
+  planFile,
+  planWhere,
+  runnerSuffix,
+} from "./words";

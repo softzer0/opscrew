@@ -31,15 +31,30 @@ before anything is created:
 - **Its hostname**, by default `staging.<your domain>`. Every environment needs its own hostname.
 - **Where it gets new versions:** built and deployed on each push to your branch (the default), or
   promoted from another environment (see [Promotion](#promotion)).
-- **Where its deploy job runs:** on GitHub's machines (the default), on a runner on the server, or
-  on a runner on this computer. See [Self-hosted runners](runners.md).
+- **Where its deploy job runs:** on GitHub's machines (the default), on a runner on the server, on
+  a runner on this computer, or on a [runner machine](runners.md#runner-machines) of yours. See
+  [Self-hosted runners](runners.md).
+- **Where its image is built:** on GitHub's machines (the default), or on its own runner: a runner
+  machine with the server's CPU, or this computer's runner. Never on the server. See
+  [Builds on your own hardware](runners.md#builds-on-your-own-hardware).
 
 In scripts, pass the answers as flags:
 
 ```bash
 npx opscrew env add staging --target hetzner --from main --runner github
 npx opscrew env add dev --target localhost --runner local
+npx opscrew env add qa --target hetzner --runner host --runner-host home --build runner
 ```
+
+| Flag | What it answers |
+|---|---|
+| `--target <provider>` | where it runs: `hetzner`, `digitalocean`, `own`, `portainer` or `localhost` |
+| `--from <source>` | `main`, or the environment it is promoted from |
+| `--runner <where>` | where its deploy job runs: `github`, `server`, `local` or `host` |
+| `--runner-host <name>` | with `--runner host`: the runner machine (by default the project's only one) |
+| `--build <where>` | where its image is built: `github` or `runner` |
+| `--host-key <fingerprint>` | on a server you already have: its SSH host key fingerprint (`SHA256:…`), for the first connection when no one can confirm it in a terminal |
+| `--option <id>` | the design option, without asking |
 
 Then provision it like any deployment. Its own plans and approvals are asked for, and prod's plan,
 state and site stay exactly as they are:
@@ -64,7 +79,7 @@ OpsCrew tools take an `environment` input.
   lists the environments.
 
 ```bash
-npx opscrew env list      # each environment: its target, where it gets new versions, its runner, whether it is deployed
+npx opscrew env list      # each environment: its target, where it gets new versions, where its deploy job runs (with its runner machine), whether it is deployed
 npx opscrew status --env staging
 npx opscrew destroy --env staging --confirm shop-staging
 ```
@@ -228,6 +243,24 @@ only the `read:packages` scope (<https://github.com/settings/tokens/new?scopes=r
 OpsCrew reads it from the environment variable and never saves it. Without it, OpsCrew tries your
 GitHub token.
 
+## Changing an environment
+
+`env set` changes how an environment gets new versions, where its deploy job runs and where its
+image is built:
+
+```bash
+npx opscrew env set staging --from main                        # built and deployed on each push
+npx opscrew env set staging --runner host --runner-host home   # its deploy job on your runner machine
+npx opscrew env set staging --runner host --build runner       # and its image built there too
+npx opscrew env set staging --runner github                    # back to GitHub's machines
+```
+
+Each change is written to the environment's plan and checked like the answers of `env add` (a
+runner machine's CPU against the server's, for example). Nothing else changes until
+`npx opscrew provision --env staging`, which shows the workflow change, and the runner machine's
+host plan, before it asks. `--runner-host` and `--build` go with `--runner`; without `--build`, an
+environment that builds on its runner keeps doing so when the new runner can build.
+
 ## Removing an environment
 
 ```bash
@@ -236,7 +269,8 @@ npx opscrew env remove staging
 ```
 
 `destroy --env staging` removes only staging's server or stack, records, hostnames, Cloudflare
-rule entries and deploy secrets, and its GitHub environment when OpsCrew created it. Prod and the
+rule entries and deploy secrets, its runner on a [runner machine](runners.md#runner-machines), and
+its GitHub environment when OpsCrew created it. Prod and the
 other environments keep working. `env remove` then deletes staging's files, and refuses while
 staging is still deployed or while another environment is promoted from it (set that one's source
 first, for example `npx opscrew env set prod --from main`).

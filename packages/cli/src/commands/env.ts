@@ -1,27 +1,38 @@
 import {
+  type AddEnvironmentOptions,
   addEnvironment,
+  deployJobPlace,
   type EnvironmentSummary,
   type InterviewAnswers,
   listEnvironments,
   removeEnvironment,
   setDeploySource,
+  setEnvironmentRunner,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
-import { DeployProviderSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployProviderSchema } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import { askTypedName, checkConfirmName } from "../approval";
 import type { CliContext } from "../context";
-import { createPhaseDeps, promptsOf } from "../deps";
+import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { chooseOption } from "../ui/options";
-import { printNextSteps } from "../ui/output";
+import { printNextSteps, textTable } from "../ui/output";
 import { portainerInterviewOptions } from "../ui/portainer";
 import { askQuestions } from "../ui/questions";
+import { addHostKeyOption } from "./provision";
 
-interface AddFlags {
+/** `--runner`, `--runner-host` and `--build` of `env add` and `env set`. */
+interface RunnerFlags {
+  runner?: string;
+  runnerHost?: string;
+  build?: string;
+}
+
+interface AddFlags extends RunnerFlags {
   target?: string;
   from?: string;
-  runner?: string;
   option?: string;
+  hostKey?: string;
 }
 
 /** The answers the flags of `env add` give up front, by question id. */
@@ -30,6 +41,24 @@ function flagAnswers(flags: AddFlags): InterviewAnswers {
     ...(flags.target === undefined ? {} : { provider: flags.target }),
     ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
     ...(flags.runner === undefined ? {} : { runner: flags.runner }),
+    ...(flags.runnerHost === undefined ? {} : { runnerHost: flags.runnerHost.trim() }),
+    ...(flags.build === undefined ? {} : { build: flags.build }),
+  };
+}
+
+/** `addEnvironment`'s options for a server the user owns: `--host-key`, and the tests' fakes. */
+function ownServerOptions(
+  ctx: CliContext,
+  flag: string | undefined,
+): Pick<AddEnvironmentOptions, "ownServer"> {
+  const hostKey = flag?.trim();
+  const services = servicesOf(ctx).provision?.own;
+  if (hostKey === undefined && services === undefined) return {};
+  return {
+    ownServer: {
+      ...(hostKey === undefined ? {} : { hostKey }),
+      ...(services === undefined ? {} : { services }),
+    },
   };
 }
 
@@ -57,6 +86,7 @@ async function add(ctx: CliContext, name: string, flags: AddFlags): Promise<void
         }
       : { answers: given }),
     portainer: portainerInterviewOptions(ctx, prompts, undefined),
+    ...ownServerOptions(ctx, flags.hostKey),
     design: {
       ...(optionId === undefined ? {} : { optionId }),
       ...(ctx.isInteractive && optionId === undefined
@@ -75,20 +105,83 @@ export function environmentTable(environments: readonly EnvironmentSummary[]): s
       env.name,
       env.target,
       env.from === "main" ? "each push" : `promoted from ${env.from}`,
-      env.runner === "github"
-        ? "GitHub's machines"
-        : `runner on ${env.runner === "server" ? "the server" : "this computer"}`,
+      deployJobPlace(env.runner, env.runnerHost),
       env.deployed ? "yes" : "no",
     ]),
   ];
-  const widths = (rows[0] ?? []).map((_, i) =>
-    Math.max(...rows.map((row) => (row[i] ?? "").length)),
-  );
-  return rows
-    .map((row) =>
-      row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(widths[i] ?? 0))).join("  "),
+  return textTable(rows);
+}
+
+/** What `env set` says the environment now does: how it gets new versions, or where it runs its jobs. */
+function settingLine(name: string, plan: DeployPlan, changed: "from" | "runner"): string {
+  const environment = plan.environment;
+  if (changed === "runner") {
+    const place = deployJobPlace(environment?.runner ?? "github", environment?.runnerHost?.name);
+    const build =
+      environment?.build === "runner"
+        ? ", which also builds its image"
+        : "; GitHub's machines build its image";
+    return `The ${name} environment's deploy job runs on ${place}${build}.`;
+  }
+  const source = environment?.deploySource;
+  return `The ${name} environment ${source?.from === "promote" ? `is deployed only by \`opscrew promote --to ${name}\`, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}.`;
+}
+
+/**
+ * `opscrew env set <name>`: how the environment gets new versions (`--from`), and where its
+ * deploy job runs (`--runner`, with `--runner-host` and `--build`), each written to its plan;
+ * its next provision shows and applies the change.
+ */
+async function set(ctx: CliContext, name: string, flags: RunnerFlags & { from?: string }) {
+  if (flags.runner === undefined && (flags.runnerHost !== undefined || flags.build !== undefined)) {
+    throw new OpsCrewError("INVALID_INPUT", "--runner-host and --build go with --runner.", {
+      hint: `For example \`opscrew env set ${name} --runner host --runner-host <machine> --build runner\`.`,
+    });
+  }
+  if (flags.from === undefined && flags.runner === undefined) {
+    throw new OpsCrewError("INVALID_INPUT", "Say what to change with --from or --runner.", {
+      hint: `For example \`opscrew env set ${name} --from main\` or \`opscrew env set ${name} --runner github\`.`,
+    });
+  }
+  const lines: string[] = [];
+  // The runner first: its checks refuse most often, and a refusal then saves nothing.
+  if (flags.runner !== undefined) {
+    const { paths } = createPhaseDeps(ctx, { ai: false, environment: name });
+    const plan = await setEnvironmentRunner(paths, {
+      runner: flags.runner,
+      ...(flags.runnerHost === undefined ? {} : { runnerHost: flags.runnerHost }),
+      ...(flags.build === undefined ? {} : { build: flags.build }),
+    });
+    lines.push(settingLine(name, plan, "runner"));
+  }
+  if (flags.from !== undefined) {
+    lines.push(settingLine(name, await setDeploySource(ctx.cwd, name, flags.from.trim()), "from"));
+  }
+  ctx.stdout(`${lines.join("\n")}\n`);
+  printNextSteps(ctx, [
+    `run \`opscrew provision --env ${name}\` to apply the change to its deploy workflow (it shows the change first).`,
+  ]);
+}
+
+/** Adds `--runner`, `--runner-host` and `--build` to `command`. */
+function addRunnerOptions(command: Command): Command {
+  return command
+    .addOption(
+      new Option(
+        "--runner <where>",
+        "Where its deploy job runs: github (GitHub's machines, the default), server, local (this computer) or host (a runner machine of yours)",
+      ).choices(["github", "server", "local", "host"]),
     )
-    .join("\n");
+    .option(
+      "--runner-host <name>",
+      "With --runner host: the runner machine (default: the project's only one; `opscrew runner host list` names them)",
+    )
+    .addOption(
+      new Option(
+        "--build <where>",
+        "Where its image is built: github (GitHub's machines, the default) or runner (its own runner: a runner machine with the server's CPU, or this computer's; never the server's)",
+      ).choices(["github", "runner"]),
+    );
 }
 
 /**
@@ -100,10 +193,10 @@ export function register(program: Command, ctx: CliContext): void {
   const env = program
     .command("env")
     .description("Add, change, list or remove the app's environments (staging, dev, …)");
-  env
+  const adding = env
     .command("add")
     .description(
-      "Add an environment: ask its own questions (where it runs, its size, hostname, how it gets new versions, where its deploy job runs), design it and show its monthly cost",
+      "Add an environment: ask its own questions (where it runs, its size, hostname, how it gets new versions, where its deploy job runs and its image is built), design it and show its monthly cost",
     )
     .argument("<name>", "The environment's name, for example staging or dev")
     .addOption(
@@ -115,38 +208,26 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--from <source>",
       "How it gets new versions: main (built and deployed on each push, the default) or the environment it is promoted from",
-    )
-    .addOption(
-      new Option(
-        "--runner <where>",
-        "Where its deploy job runs: github (GitHub's machines, the default), server or local (this computer)",
-      ).choices(["github", "server", "local"]),
-    )
+    );
+  addHostKeyOption(addRunnerOptions(adding))
     .option(
       "--option <id>",
       "Choose this design option without asking (ids are listed by the command)",
     )
     .action((name: string, flags: AddFlags) => add(ctx, name, flags));
-  env
+  const setting = env
     .command("set")
     .description(
-      "Change how an environment gets new versions; its next `opscrew provision --env <name>` applies the workflow change",
+      "Change how an environment gets new versions or where its deploy job runs; its next `opscrew provision --env <name>` applies the change",
     )
     .argument("<name>", "The environment")
-    .requiredOption(
+    .option(
       "--from <source>",
       "main (built and deployed on each push) or the environment it is promoted from",
-    )
-    .action(async (name: string, flags: { from: string }) => {
-      const plan = await setDeploySource(ctx.cwd, name, flags.from.trim());
-      const source = plan.environment?.deploySource;
-      ctx.stdout(
-        `The ${name} environment ${source?.from === "promote" ? `is deployed only by \`opscrew promote --to ${name}\`, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}.\n`,
-      );
-      printNextSteps(ctx, [
-        `run \`opscrew provision --env ${name}\` to apply the change to its deploy workflow (it shows the change first).`,
-      ]);
-    });
+    );
+  addRunnerOptions(setting).action((name: string, flags: RunnerFlags & { from?: string }) =>
+    set(ctx, name, flags),
+  );
   env
     .command("list")
     .description(

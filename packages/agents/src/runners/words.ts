@@ -37,3 +37,16 @@ export async function planWhere(
     flag: await environmentFlag(root, plan.environment?.name ?? "prod"),
   };
 }
+
+/**
+ * Where an environment's deploy job runs, in words: `GitHub's machines`, `a runner on the server`,
+ * `a runner on this computer` or `the runner machine home` (`machine` names it).
+ */
+export function deployJobPlace(
+  runner: NonNullable<DeployPlan["environment"]>["runner"],
+  machine: string | undefined,
+): string {
+  if (runner === "host") return `the runner machine ${machine}`;
+  if (runner === "github") return "GitHub's machines";
+  return `a runner on ${runner === "server" ? "the server" : "this computer"}`;
+}

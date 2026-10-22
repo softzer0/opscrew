@@ -270,6 +270,13 @@ describe.skipIf(!findExecutable("git"))("a runner machine", () => {
         }),
       );
     expect(await add({ name: "Home Box" })).toMatchObject({ code: "INVALID_INPUT" });
+    // The name is never the address, nor its first DNS label: hiding the address keeps the name.
+    for (const host of ["nas", "NAS.lan."]) {
+      const named = await add({ name: "nas", ssh: { user: "ana", host } });
+      expect(named, host).toMatchObject({ code: "INVALID_INPUT" });
+      expect(named.message).toContain("never its address");
+    }
+    expect(await readRunnerHost(s.prod.paths, "nas")).toBeUndefined();
     const key = await add({ keyFile: "-----BEGIN OPENSSH PRIVATE KEY-----" });
     expect(key).toMatchObject({ code: "INVALID_INPUT" });
     expect(`${key.message} ${key.hint}`).not.toContain("BEGIN");

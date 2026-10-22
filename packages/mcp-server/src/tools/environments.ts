@@ -1,14 +1,17 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   addEnvironment,
+  deployJobPlace,
   listEnvironments,
   type PromoteServices,
   promote,
   removeEnvironment,
   setDeploySource,
+  setEnvironmentRunner,
 } from "@opscrew/agents";
 import type { ApprovalHandler, ComputeCatalog } from "@opscrew/contracts";
 import { formatMoney, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
@@ -43,7 +46,7 @@ export function registerEnvironmentTools(
     {
       title: "List the app's environments",
       description:
-        "List the app's environments (prod, then each one added beside it): where each runs, how it gets new versions (each push to main, or promoted from another environment), where its deploy job runs (GitHub's machines, a runner on the server or on the user's computer) and whether it is deployed. Writes nothing.",
+        "List the app's environments (prod, then each one added beside it): where each runs, how it gets new versions (each push to main, or promoted from another environment), where its deploy job runs (GitHub's machines, a runner on the server, on the user's computer or on a runner machine of the user's) and whether it is deployed. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -52,7 +55,7 @@ export function registerEnvironmentTools(
         const environments = await listEnvironments((await call.phaseDeps()).paths);
         const lines = environments.map(
           (env) =>
-            `- ${env.name}: runs on ${env.target}, ${env.from === "main" ? "deployed on each push" : `promoted from ${env.from}`}, deploy job on ${env.runner === "github" ? "GitHub's machines" : env.runner === "server" ? "a runner on the server" : "a runner on the user's computer"}, ${env.deployed ? "deployed" : "not deployed"}`,
+            `- ${env.name}: runs on ${env.target}, ${env.from === "main" ? "deployed on each push" : `promoted from ${env.from}`}, deploy job on ${deployJobPlace(env.runner, env.runnerHost)}, ${env.deployed ? "deployed" : "not deployed"}`,
         );
         return {
           text:
@@ -69,7 +72,7 @@ export function registerEnvironmentTools(
     {
       title: "Add an environment",
       description:
-        "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. It shares prod's build, components and port. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from) and runner (github, server or local). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
+        "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. It shares prod's build, components and port. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from), runner (github, server, local, or host: a runner machine of the user's, opscrew_runner_host_list), runnerHost (with host: the machine's name; the only one by default) and build (github, the default, or runner: built on its own runner, a runner machine with the server's CPU or the user's computer, never the server). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
       inputSchema: {
         ...projectDirInput,
         name: NAME_INPUT,
@@ -77,7 +80,7 @@ export function registerEnvironmentTools(
           .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
           .optional()
           .describe(
-            "The user's answers by question id: provider, region, expectedMonthlyUsers, domain, from, runner (and a server's server.* or a Portainer's portainer.* follow-ups).",
+            "The user's answers by question id: provider, region, expectedMonthlyUsers, domain, from, runner, runnerHost, build (and a server's server.* or a Portainer's portainer.* follow-ups).",
           ),
         optionId: z
           .string()
@@ -123,14 +126,25 @@ export function registerEnvironmentTools(
     {
       title: "Change how an environment gets new versions",
       description:
-        "Change an environment's deploy source in its plan: from main (built and deployed on each push) or promoted from another existing environment (never itself, and never in a cycle). The change reaches GitHub with its next provision, which shows the workflow change first.",
+        "Change an environment's plan: its deploy source (from: main, built and deployed on each push, or another existing environment it is promoted from, never itself and never in a cycle), and where its deploy job runs (runner: github, server, local or host, a runner machine of the user's, with runnerHost its name) and where its image is built (build: github, or runner on a runner machine with the server's CPU or the local runner; never the server's runner). The change reaches GitHub and the runners with its next provision, which shows each change first.",
       inputSchema: {
         ...projectDirInput,
         name: NAME_INPUT,
         from: z
           .string()
           .min(1)
+          .optional()
           .describe("main, or the environment it is promoted from (for example staging)."),
+        runner: z.enum(["github", "server", "local", "host"]).optional(),
+        runnerHost: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("With runner host: the runner machine (default: the project's only one)."),
+        build: z
+          .enum(["github", "runner"])
+          .optional()
+          .describe("With runner: where the image is built (default: the plan's, where it fits)."),
       },
       annotations: {
         readOnlyHint: false,
@@ -139,13 +153,53 @@ export function registerEnvironmentTools(
         openWorldHint: false,
       },
     },
-    ({ projectDir, name, from }) =>
+    ({ projectDir, name, from, runner, runnerHost, build }) =>
       runTool(deps, "opscrew_env_set", projectDir, async (call) => {
-        const plan = await setDeploySource(call.projectDir, name, from);
-        const source = plan.environment?.deploySource ?? { from: "main" as const };
+        if (runner === undefined && (runnerHost !== undefined || build !== undefined)) {
+          throw new OpsCrewError("INVALID_INPUT", "runnerHost and build go with runner.", {
+            hint: 'For example runner "host", runnerHost "home" and build "runner".',
+          });
+        }
+        if (from === undefined && runner === undefined) {
+          throw new OpsCrewError("INVALID_INPUT", "Pass from, runner or both.", {
+            hint: "from changes how the environment gets new versions; runner (with runnerHost and build) where its deploy job runs.",
+          });
+        }
+        const lines: string[] = [];
+        let plan: DeployPlan | undefined;
+        // The runner first: its checks refuse most often, and a refusal then saves nothing.
+        if (runner !== undefined) {
+          const phase = await call.phaseDeps({ environment: name });
+          plan = await setEnvironmentRunner(phase.paths, {
+            runner,
+            ...(runnerHost === undefined ? {} : { runnerHost }),
+            ...(build === undefined ? {} : { build }),
+          });
+          const environment = plan.environment;
+          lines.push(
+            `The ${name} environment's deploy job runs on ${deployJobPlace(environment?.runner ?? "github", environment?.runnerHost?.name)}${environment?.build === "runner" ? ", which also builds its image" : "; GitHub's machines build its image"}.`,
+          );
+        }
+        if (from !== undefined) {
+          plan = await setDeploySource(call.projectDir, name, from);
+          const source = plan.environment?.deploySource ?? { from: "main" as const };
+          lines.push(
+            `The ${name} environment ${source.from === "promote" ? `is deployed only by opscrew_promote, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}.`,
+          );
+        }
+        lines.push(
+          `Next: apply the change with \`npx opscrew provision --env ${name}\`, or opscrew_plan with environment ${name}.`,
+        );
         return {
-          text: `The ${name} environment ${source.from === "promote" ? `is deployed only by opscrew_promote, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}. Next: apply the workflow change with \`npx opscrew provision --env ${name}\`, or opscrew_plan with environment ${name}.`,
-          data: { deploySource: source },
+          text: lines.join(" "),
+          data: {
+            deploySource: plan?.environment?.deploySource ?? { from: "main" },
+            runner: plan?.environment?.runner ?? "github",
+            ...(plan?.environment?.runnerHost === undefined
+              ? {}
+              : { runnerHost: plan.environment.runnerHost }),
+            build: plan?.environment?.build ?? "github",
+          },
         };
       }),
   );

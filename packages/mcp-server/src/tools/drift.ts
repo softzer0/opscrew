@@ -84,12 +84,12 @@ export function registerDriftTool(
     },
     ({ projectDir, environment }, extra: CallExtra) =>
       runTool(deps, "opscrew_drift", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
+        const { name, flag } = await toolEnvironment(call.projectDir, environment);
         const phase = await driftPhaseDeps(server, deps, call, extra, name);
         const report = await runDrift(phase, services);
         const plan = await readArtifact("plan", phase.paths.files.plan);
         return {
-          text: renderDriftReport(report, plan),
+          text: renderDriftReport(report, plan, flag),
           data: { ...report },
         };
       }),

@@ -8,6 +8,7 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
+import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
@@ -42,6 +43,7 @@ import {
   trackedFiles,
   writePlanIfChanged,
 } from "../shared";
+import { hostPlanFile } from "../shared/host-plan";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { checkAdditions } from "./additions";
@@ -191,6 +193,12 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
   return values !== undefined && !("proxied" in values && values.proxied === true);
 }
 
+/** True when `hash` names a saved host plan (`host-<hash>.json`) or local plan (`local-<hash>.json`). */
+async function namesHostOrLocalPlan(deps: PhaseDeps, hash: string): Promise<boolean> {
+  const name = hash.toLowerCase();
+  return (await exists(hostPlanFile(deps.paths, name))) || exists(localPlanFile(deps.paths, name));
+}
+
 /**
  * The saved infrastructure plans the `--approve` hashes name, apart from this run's Cloudflare
  * plans (`cloudflare`, granted by the approval handler). Servers OpsCrew creates have one
@@ -202,6 +210,7 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
  * plans afresh, which finds nothing to change); a saved removal plan is kept apart and only ever
  * applied as the removal; the host or stack plan's hash is granted by the approval handler. On
  * every target, the saved plan of the `storage` root (the app's bucket) is kept apart as `storage`.
+ * A hash that names a saved host plan or local plan is left out.
  */
 async function savedInfrastructureHashes(
   deps: PhaseDeps,
@@ -217,6 +226,9 @@ async function savedInfrastructureHashes(
   )) {
     const savedPlan = await findSavedPlan(deps.paths.files.plansDir, hash);
     if (savedPlan !== undefined) saved.set(hash, savedPlan);
+    // A host plan's (a server's or a runner machine's) or the local plan's hash is granted by the
+    // approval handler: it never names the infrastructure plan.
+    if (savedPlan === undefined && (await namesHostOrLocalPlan(deps, hash))) continue;
     // The `storage` root's saved plan (the app's bucket) is only ever applied as that root's, and
     // once it was applied a run that names it again plans the bucket afresh.
     if (savedPlan?.planFile.endsWith(STORAGE_PLAN_SUFFIX)) {
