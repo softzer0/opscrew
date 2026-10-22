@@ -11,6 +11,7 @@ import { requireSharedParts } from "../environments/shared-parts";
 import { provisionLocalhost } from "../localhost/provision";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
+import { requireServerRunnerTarget } from "../runners";
 import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
 import {
   addressFromOutputs,
@@ -280,6 +281,8 @@ async function provisionFlow(
     const saved = await savedInfrastructureHashes(deps, options, plan);
     return provisionPortainer(deps, options, { plan, requirements, git, phase, saved, extras });
   }
+  // The server's runner needs a server the user owns (root once, for its packages and service).
+  requireServerRunnerTarget(plan);
   const profile = providerProfile(planProvider(plan));
   deps.reporter.step(
     ownServer

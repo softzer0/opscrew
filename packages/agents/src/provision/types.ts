@@ -20,6 +20,7 @@ import type {
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
 import type { LocalhostServices } from "../localhost/services";
+import type { RunnerGitHubApi } from "../runners/github";
 import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
 import type { StorageKey, StorageKeyQuestion } from "./storage";
@@ -112,6 +113,8 @@ export interface ProvisionServices {
   which?: (name: string) => string | undefined;
   /** The localhost target: this computer's OS, CPU, ports, requests and GHCR (fakes in tests). */
   localhost?: LocalhostServices;
+  /** GitHub's runner API for a self-hosted runner (default: the client of the user's token). */
+  runnerGitHub?: RunnerGitHubApi;
 }
 
 /**

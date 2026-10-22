@@ -483,9 +483,11 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
       session: s.host as never,
       apply: () => Promise.reject(new Error("must not apply")),
       verifyLogin: async () => true,
+      repository: () => Promise.reject(new Error("must not reach GitHub")),
     };
     const error = await expectError(
       applyHostPlanApproved(s.deps, host, plan, {
+        deployPlan: await readArtifact("plan", s.deps.paths.files.plan),
         name: "shop",
         title: "Remove shop from your server",
         intro: [],

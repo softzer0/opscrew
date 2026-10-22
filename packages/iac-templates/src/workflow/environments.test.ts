@@ -724,6 +724,7 @@ describe("the deploy job on a self-hosted runner", { timeout: 30_000 }, () => {
         fakes,
         {
           ...roots,
+          OPSCREW_LOCAL_LOCK: `${work}/local/deploy.lock`,
           IMAGE,
           TAG: "ghcr.io/acme/shop:c1",
           REGISTRY_TOKEN: "registry-placeholder",
@@ -743,6 +744,64 @@ describe("the deploy job on a self-hosted runner", { timeout: 30_000 }, () => {
       expect(readFileSync(join(work, "script"), "utf8")).toBe(heredoc(start));
     },
   );
+
+  it.skipIf(!bashWorks())(
+    "takes OpsCrew's local deploy lock around the local runner's start and rollback",
+    () => {
+      const lock = `${work}/lock-home/local/deploy.lock`;
+      const IMAGE = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
+      // The switch script sees the lock held, with the step shell's process id in it.
+      const fakes = [
+        "docker() { cat > /dev/null; }",
+        'sh() { cat > /dev/null; printf \'held %s\\n\' "$(cat "$OPSCREW_LOCAL_LOCK")" >> "$WORK/calls"; echo restored; }',
+        "sleep() { :; }",
+      ].join("\n");
+      const env = {
+        OPSCREW_APPS_DIR: `${work}/lock-apps`,
+        OPSCREW_EDGE_DIR: `${work}/lock-edge`,
+        IMAGE,
+        REGISTRY_TOKEN: "registry-placeholder",
+        GITHUB_ACTOR: "octocat",
+        RUNNER_TEMP: `${work}/lock-temp`,
+      };
+      mkdirSync(`${env.OPSCREW_APPS_DIR}/shop-dev`, { recursive: true });
+      mkdirSync(env.RUNNER_TEMP, { recursive: true });
+      for (const step of ["start", ROLLBACK]) {
+        const script = runOf(local, step);
+        const unset = runScript(script, fakes, env);
+        expect(unset.status).toBe(1);
+        expect(unset.out).toContain(
+          "::error::This runner does not set OPSCREW_LOCAL_LOCK, OpsCrew's deploy lock on this computer. Start it with `opscrew runner start --env dev`, which sets it.",
+        );
+        expect(unset.calls).toEqual([]);
+
+        const free = runScript(script, fakes, { ...env, OPSCREW_LOCAL_LOCK: lock });
+        expect(free.calls, free.out).toEqual([expect.stringMatching(/^held \d+$/)]);
+        // Released when the step ends.
+        expect(existsSync(lock)).toBe(false);
+
+        // Held by another deploy: it waits its 300 tries, then stops without running anything.
+        writeFileSync(lock, "4242\n");
+        const held = runScript(script, fakes, { ...env, OPSCREW_LOCAL_LOCK: lock });
+        expect(held.status).toBe(1);
+        expect(held.out).toContain(
+          `::error::Another OpsCrew deploy on this computer has held the local stack for over 10 minutes, so this one did not start. If no other OpsCrew command runs, delete ${lock}, then run the deploy again.`,
+        );
+        expect(held.calls).toEqual([]);
+        // Another deploy's lock stays.
+        expect(readFileSync(lock, "utf8")).toBe("4242\n");
+        rmSync(lock);
+      }
+      // Only the local runner takes it.
+      expect(content(server)).not.toContain("OPSCREW_LOCAL_LOCK");
+    },
+  );
+
+  it("builds the local runner's image for this computer's CPU", () => {
+    const arm = DeployPlanSchema.parse({ ...local, target: { ...local.target, arch: "arm64" } });
+    expect(workflow(arm).jobs.build?.["runs-on"]).toBe("ubuntu-24.04-arm");
+    expect(workflow(local).jobs.build?.["runs-on"]).toBe("ubuntu-latest");
+  });
 
   it.skipIf(!bashWorks())(
     "checks the local app over HTTPS at its hostname on 127.0.0.1, trusting only the local CA",

@@ -27,6 +27,12 @@ import {
   providerBucket,
 } from "../provision";
 import {
+  type RunnerRepository,
+  removeKeptRegistrations,
+  runnerRepository,
+  runnerTokens,
+} from "../runners";
+import {
   adapterBlocked,
   approvalEntry,
   approveAndApplyHostPlan,
@@ -94,6 +100,8 @@ export interface OwnHost {
   session: OwnServerSession;
   apply: HostAdapterApi["apply"];
   verifyLogin: () => Promise<boolean>;
+  /** The project's GitHub repository, for a runner's remove token and registration (read when needed). */
+  repository: () => Promise<RunnerRepository>;
 }
 
 /**
@@ -152,6 +160,8 @@ export async function applyHostPlanApproved(
   host: OwnHost,
   plan: HostPlan,
   request: {
+    /** The app's plan, whose runner registration GitHub may keep after the removal. */
+    deployPlan: DeployPlan;
     /** The app's name, which the user types to approve the plan. */
     name: string;
     title: string;
@@ -171,7 +181,7 @@ export async function applyHostPlanApproved(
       { hint: "This is a bug in OpsCrew; please report it." },
     );
   }
-  return approveAndApplyHostPlan(deps, {
+  const outcome = await approveAndApplyHostPlan(deps, {
     plan,
     remote: host.session.remote,
     apply:
@@ -213,7 +223,17 @@ export async function applyHostPlanApproved(
     refused: { message: request.refused, hint: SHOWS_PLAN_AGAIN },
     auditAs: `host ${plan.purpose}`,
     secrets: async () => ({}),
+    runnerToken: runnerTokens(deps, host.repository),
   });
+  if (outcome.stillRegistered !== undefined) {
+    await removeKeptRegistrations(deps, host.repository, request.deployPlan, {
+      // Destroy and its undo are audited as the provision phase, as the rest of their host plans.
+      phase: "provision",
+      stillRegistered: outcome.stillRegistered,
+      host: host.session.connection.host,
+    });
+  }
+  return outcome;
 }
 
 /**
@@ -425,6 +445,7 @@ export async function destroyOwnServer(
     detail: "destroy",
   });
   const { session } = inspected;
+  let repository: Promise<RunnerRepository> | undefined;
   const host: OwnHost = {
     session,
     apply: (remote, hostPlan, applyOptions) =>
@@ -437,6 +458,10 @@ export async function destroyOwnServer(
         deployKeyFile: deps.paths.files.deployKey,
         ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
       }),
+    repository: () => {
+      repository ??= runnerRepository(deps, services.runnerGitHub);
+      return repository;
+    },
   };
   const facts = inspected.facts;
   requireOwnApp(plan, deps.paths.projectId, facts);
@@ -568,6 +593,7 @@ export async function destroyOwnServer(
           ? "The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish."
           : undefined;
       const result = await applyHostPlanApproved(deps, host, teardown, {
+        deployPlan: plan,
         name,
         command,
         title: `Remove ${name} from your server (${plural(hostSteps.length, "change")})`,
@@ -675,6 +701,7 @@ export async function destroyOwnServer(
       // it installed): a destroy, so it needs allowDestroy and the typed app name (Constitution I).
       const deletesDeployUser = undoSteps.some((step) => step.id === "deploy-user");
       const result = await applyHostPlanApproved(deps, host, undo, {
+        deployPlan: plan,
         name,
         command,
         title: `Undo OpsCrew's changes to your server (${plural(undoSteps.length, "change")})`,

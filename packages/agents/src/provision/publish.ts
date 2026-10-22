@@ -2,7 +2,12 @@ import { join } from "node:path";
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, upperFirst, writeFileAtomic } from "@opscrew/core";
-import { portainerTarget, type RenderedFile } from "@opscrew/iac-templates";
+import {
+  portainerTarget,
+  type RenderedFile,
+  runnerLabel,
+  runtimeDir,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
@@ -79,6 +84,7 @@ export function deploySetupPullRequestBody(
   options: DeploySetupBodyOptions = {},
 ): string {
   if (plan.target.provider === "portainer") return portainerPullRequestBody(plan, version, options);
+  if (plan.target.provider === "localhost") return localPullRequestBody(plan, version, options);
   const profile = providerProfile(planProvider(plan));
   const own = plan.target.provider === "own";
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
@@ -114,6 +120,39 @@ export function deploySetupPullRequestBody(
     own
       ? "- [ ] The host changes OpsCrew showed before applying them (Docker, the deploy user, SSH settings, the ufw firewall) match what you expect."
       : "- [ ] The firewall rules in the infrastructure code match what you expect.",
+    "",
+    `Opened by OpsCrew ${version}.`,
+  ].join("\n");
+}
+
+/**
+ * The pull request body on this computer (the localhost target), whose deploy job runs on the
+ * local runner: the stack's files, the workflow and the plan; never a path of this computer.
+ */
+function localPullRequestBody(
+  plan: DeployPlan,
+  version: string,
+  options: DeploySetupBodyOptions,
+): string {
+  const start = `opscrew runner start --env ${plan.environment?.name ?? "prod"}`;
+  return [
+    `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**, which runs on your own computer:`,
+    "",
+    `- \`${runtimeDir(plan)}/\`: Docker Compose and the edge's configuration for your computer (on 127.0.0.1 only, with OpsCrew's local certificate authority).`,
+    `- \`${plan.cicd.workflowPath}\`: builds the image on GitHub's machines, pushes it to GitHub Container Registry and, on every push to \`${plan.cicd.branch}\`, deploys it with the runner on your computer, rolling back when the health check fails.`,
+    "- `opscrew/plan.yaml`: the deployment plan.",
+    ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
+    ...dependabotPullRequestLines(options.dependabot),
+    "",
+    ...(options.secretsStored === false
+      ? nextStepLines(false, "The app runs on your computer", "your computer")
+      : [
+          `The app runs on your computer and the deploy secrets are stored in GitHub Actions. **After merging, each push to \`${plan.cicd.branch}\` deploys it there while \`${start}\` runs.**`,
+        ]),
+    "",
+    "Review checklist:",
+    PINNED_ACTIONS_CHECK,
+    `- [ ] The deploy job runs only on your computer's runner (\`runs-on: [self-hosted, ${runnerLabel(plan)}]\`).`,
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");

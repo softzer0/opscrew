@@ -5,6 +5,7 @@ import type { PhaseDeps } from "../context";
 import { localComponentStatus } from "../localhost/status";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
+import { runnerStatusLines } from "../runners";
 import { localhostNotSupported, portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import {
@@ -23,7 +24,7 @@ export interface ComponentStatusOptions {
   /** A server the user owns: `--host-key SHA256:…` for the first connection from this computer. */
   hostKey?: string;
   /** The deploy user's shell on a server OpsCrew created, and own-server and Portainer fakes (tests). */
-  services?: Pick<ProvisionServices, "remote" | "own" | "portainer">;
+  services?: Pick<ProvisionServices, "remote" | "own" | "portainer" | "runnerGitHub">;
 }
 
 /**
@@ -134,12 +135,23 @@ async function readStackContainers(
  * What `status` shows of the plan's components (FR-1331): before a deploy was seen, the plan's
  * list; then each one and whether it runs ({@link readComponentStatus}), with the list and a note
  * (redacted) instead when the deployment cannot be read. `check` runs first and may stop the read
- * the same way (the MCP server's host-key check).
+ * the same way (the MCP server's host-key check). A self-hosted runner's state follows (FR-1530).
  */
 export async function componentStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
+): Promise<{ lines: string[]; status?: ComponentStatus }> {
+  const report = await componentsReport(deps, plan, options);
+  const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
+  return runner.length === 0 ? report : { ...report, lines: [...report.lines, "", ...runner] };
+}
+
+/** {@link componentStatusReport} without the runner. */
+async function componentsReport(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: ComponentStatusOptions & { check?: () => Promise<void> },
 ): Promise<{ lines: string[]; status?: ComponentStatus }> {
   if (!appDeployed(plan)) return { lines: componentStatusLines(plan, undefined) };
   const { check, ...read } = options;

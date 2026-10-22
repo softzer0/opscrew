@@ -42,7 +42,15 @@ import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements, recordedEdge, siteContext } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { committedText, lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
+import { serverRunner } from "../runners";
+import {
+  committedText,
+  gitClient,
+  githubCoordinates,
+  lastHostSetup,
+  passwordLoginChoice,
+  readDeployPublicKey,
+} from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import {
   type AppContainer,
@@ -813,13 +821,24 @@ export async function ownHostDrift(
   const passwordLogins = passwordLoginChoice(setup, facts);
   const tunnelId = options.tunnelId ?? tunnelOf(facts, plan.app.name).tunnelId ?? undefined;
   const webSources = await driftWebSources(deps, plan, options.cloudflare, setup, facts);
+  const target = ownTarget(plan);
+  // The server's runner as provision plans it (the repository's check is provision's).
+  const runner =
+    plan.environment?.runner === "server"
+      ? serverRunner(
+          plan,
+          { arch: target.arch, host: session.connection.host },
+          await githubCoordinates(gitClient(deps)),
+        )
+      : undefined;
   const desired = await desiredHost(
     deps,
     {
       session,
       facts,
-      target: ownTarget(plan),
+      target,
       ...(webSources !== undefined ? { webSources } : {}),
+      ...(runner !== undefined ? { runner } : {}),
     },
     {
       plan,

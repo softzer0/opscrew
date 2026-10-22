@@ -1353,6 +1353,22 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             exit 1
           fi
           echo "Deploying \${TAG:-the new image} as $IMAGE"
+          if [[ -z "\${OPSCREW_LOCAL_LOCK:-}" ]]; then
+            echo "::error::This runner does not set OPSCREW_LOCAL_LOCK, OpsCrew's deploy lock on this computer. Start it with \\\`opscrew runner start --env dev\\\`, which sets it."
+            exit 1
+          fi
+          mkdir -p "$(dirname "$OPSCREW_LOCAL_LOCK")"
+          holder=$$
+          if [[ -r /proc/$$/winpid ]]; then holder="$(cat /proc/$$/winpid)"; fi
+          for attempt in $(seq 1 300); do
+            if (set -o noclobber; echo "$holder" > "$OPSCREW_LOCAL_LOCK") 2> /dev/null; then break; fi
+            if [[ "$attempt" -eq 300 ]]; then
+              echo "::error::Another OpsCrew deploy on this computer has held the local stack for over 10 minutes, so this one did not start. If no other OpsCrew command runs, delete $OPSCREW_LOCAL_LOCK, then run the deploy again."
+              exit 1
+            fi
+            sleep 2
+          done
+          trap 'rm -f "$OPSCREW_LOCAL_LOCK"' EXIT
           dir="$OPSCREW_APPS_DIR/shop-dev"
           previous="$(cd "$dir" && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi)"
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
@@ -1460,6 +1476,22 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           IMAGE: \${{ needs.build.outputs.image }}
         run: |
           set -uo pipefail
+          if [[ -z "\${OPSCREW_LOCAL_LOCK:-}" ]]; then
+            echo "::error::This runner does not set OPSCREW_LOCAL_LOCK, OpsCrew's deploy lock on this computer. Start it with \\\`opscrew runner start --env dev\\\`, which sets it."
+            exit 1
+          fi
+          mkdir -p "$(dirname "$OPSCREW_LOCAL_LOCK")"
+          holder=$$
+          if [[ -r /proc/$$/winpid ]]; then holder="$(cat /proc/$$/winpid)"; fi
+          for attempt in $(seq 1 300); do
+            if (set -o noclobber; echo "$holder" > "$OPSCREW_LOCAL_LOCK") 2> /dev/null; then break; fi
+            if [[ "$attempt" -eq 300 ]]; then
+              echo "::error::Another OpsCrew deploy on this computer has held the local stack for over 10 minutes, so this one did not start. If no other OpsCrew command runs, delete $OPSCREW_LOCAL_LOCK, then run the deploy again."
+              exit 1
+            fi
+            sleep 2
+          done
+          trap 'rm -f "$OPSCREW_LOCAL_LOCK"' EXIT
           dir="$OPSCREW_APPS_DIR/shop-dev"
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"

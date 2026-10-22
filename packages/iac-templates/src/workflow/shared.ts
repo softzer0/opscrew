@@ -36,12 +36,10 @@ export function serviceEnvSecret(service: string): string {
   return `OPSCREW_SERVICE_${service.toUpperCase().replaceAll("-", "_")}_ENV`;
 }
 
-/** The CPU architecture the image is built for: the server's. */
+/** The CPU architecture the image is built for: the server's, or this computer's on localhost. */
 export function buildArch(plan: DeployPlan): PinArch {
   const { target } = plan;
-  return (target.provider === "own" || target.provider === "portainer") && target.arch === "arm64"
-    ? "arm64"
-    : "amd64";
+  return "arch" in target && target.arch === "arm64" ? "arm64" : "amd64";
 }
 
 /** True when the plan has an enabled cron job, which the `cron` service runs with supercronic. */

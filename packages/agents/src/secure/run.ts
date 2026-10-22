@@ -41,6 +41,7 @@ import { originTlsHostnames } from "../provision/origin-tls";
 import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { PortainerServices } from "../provision/types";
+import { type RunnerGitHubApi, runnerChecks } from "../runners";
 import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import {
@@ -94,6 +95,8 @@ export interface RunSecureOptions {
   cloudflare?: CloudflareClient;
   /** The localhost target: this computer's OS (a fake in tests). */
   localhost?: LocalhostServices;
+  /** GitHub's runner API for a self-hosted runner (default: the client of the user's token). */
+  runnerGitHub?: RunnerGitHubApi;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -103,7 +106,7 @@ export interface SecureResult {
   policies?: PolicyResult[];
   hostChecks: CheckResult[];
   probes: CheckResult[];
-  /** The app's certificates, its Cloudflare zone's CAA and minimum TLS, and the secrets copy. */
+  /** The app's certificates, its zone's CAA and minimum TLS, the secrets copy and the runner. */
   settings: CheckResult[];
   /** The deeper checks, one per tool; undefined without `deep`. */
   deep?: DeepToolResult[];
@@ -436,11 +439,15 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     remote = checked.remote;
   }
 
-  const settings = await settingsChecks(
-    deps,
-    plan,
-    options.cloudflare !== undefined ? { cloudflare: options.cloudflare } : {},
-  );
+  const settings = [
+    ...(await settingsChecks(
+      deps,
+      plan,
+      options.cloudflare !== undefined ? { cloudflare: options.cloudflare } : {},
+    )),
+    // A self-hosted runner: online, current, and never open to outside contributors (FR-1530).
+    ...(await runnerChecks(deps, plan, options.runnerGitHub)),
+  ];
 
   const deep = !options.deep
     ? undefined

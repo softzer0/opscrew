@@ -4,20 +4,35 @@
  * repository, the local plan approved by its hash (`host-apply`) and the production scripts run by
  * the local executor.
  */
+import type { GitClient } from "@opscrew/connector-github";
 import { serviceEnvSecret } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
 import { checkAdditions } from "../provision/additions";
-import { buildAppEnvironment, serviceEnvSecrets } from "../provision/secrets";
-import { deploymentRecord } from "../provision/steps";
+import { type GitHubSetup, setupGitHub } from "../provision/credentials";
+import {
+  buildAppEnvironment,
+  checkSecretsPlacement,
+  deploySecrets,
+  serviceEnvSecrets,
+  setDeploySecrets,
+} from "../provision/secrets";
+import {
+  deploymentRecord,
+  deploySecretsStep,
+  mergeDeploysNote,
+  publishDeployment,
+} from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
+import { planWhere, requireLocalRunnerImage } from "../runners";
 import {
   approvalEntry,
   approveAndWriteRenderedFiles,
   PlanRefusedError,
   planStop,
+  requireGitRepo,
   writePlanIfChanged,
 } from "../shared";
 import type { AppEnvironment } from "../shared/app-env";
@@ -78,21 +93,24 @@ function afterDeploy(address: string, trusted: boolean): string[] {
  * repository after their `repo-write` approval, the app's environment, the local plan saved, shown
  * and approved by its hash (`host-apply`; `--plan-only` stops after showing it), then applied
  * ({@link applyLocal}) and recorded in the plan. With the local runner the deploy workflow is
- * written too, rendered with the app's hostname here.
+ * written too, rendered with the app's hostname here (it deploys an image GitHub Actions built,
+ * never a local build), and then, as for the other runners, the environment's deploy secrets are
+ * stored and the files committed, pushed and proposed in the deploy pull request.
  */
 export async function provisionLocalhost(
   deps: PhaseDeps,
-  plan: DeployPlan,
+  requested: DeployPlan,
   options: ProvisionOptions,
 ): Promise<ProvisionResult> {
   const services = options.services ?? {};
   const local = services.localhost;
-  const target = localTarget(plan);
-  await requireSharedParts(deps.paths, plan);
-  await requireOwnHostnames(deps.paths, plan);
+  const target = localTarget(requested);
+  requireLocalRunnerImage(requested);
+  await requireSharedParts(deps.paths, requested);
+  await requireOwnHostnames(deps.paths, requested);
 
   deps.reporter.step("Checking this computer: Docker, its memory, the ports and the shell");
-  const preflight = await localPreflight(deps, plan, local);
+  const preflight = await localPreflight(deps, requested, local);
   for (const note of preflight.notes) deps.reporter.info(note);
   if (preflight.problems.length > 0) {
     throw planStop(
@@ -101,6 +119,22 @@ export async function provisionLocalhost(
       "Fix what is listed above, then run `opscrew provision` again.",
     );
   }
+  const envFlag = planWhere(requested).flag;
+  // The local runner's workflow reads the deploy secrets where the repository keeps them, so where
+  // that is comes before it is rendered.
+  let github: { git: GitClient; setup: GitHubSetup } | undefined;
+  if (requested.environment?.runner === "local") {
+    const git = await requireGitRepo(deps);
+    github = { git, setup: await setupGitHub(deps, git, services) };
+  }
+  const plan =
+    github === undefined
+      ? requested
+      : await checkSecretsPlacement(deps, github.setup, requested, {
+          command: `opscrew provision${envFlag}`,
+          phase: "provision",
+          planOnly: options.planOnly === true,
+        });
 
   // The image first, so a missing one stops before anything is written.
   let ghcr: LocalRegistry | undefined;
@@ -117,7 +151,8 @@ export async function provisionLocalhost(
   const ctx = await localRenderContext(deps, plan, site);
   // The app's own additions to its site, checked before any change (FR-1443), as on a server.
   await checkAdditions(deps, plan, ctx, services);
-  await approveAndWriteRenderedFiles(deps, deps.paths.root, localStackFiles(plan, ctx), {
+  const files = localStackFiles(plan, ctx);
+  await approveAndWriteRenderedFiles(deps, deps.paths.root, files, {
     what: "the local stack's files",
   });
   const environment = await buildAppEnvironment(deps, plan, services, site.hostname);
@@ -138,49 +173,100 @@ export async function provisionLocalhost(
   const details = describeLocalPlan(localPlan, hash);
   deps.reporter.info(details);
   const address = localAddress(site, target);
-  if (localChanges(localPlan).length === 0) {
+  let recorded = plan;
+  const changes = localChanges(localPlan).length > 0;
+  if (!changes) {
     deps.reporter.success(`The app on this computer is up to date at ${address}; nothing changes.`);
-    return { applied: false, localPlanHash: hash, localApplied: false, outputs: { url: address } };
-  }
-  if (options.planOnly === true) {
+  } else if (options.planOnly === true) {
     deps.reporter.info(
       `Saved the local plan (hash ${hash}); nothing on this computer was changed.`,
     );
     return { applied: false, localPlanHash: hash, localApplied: false, outputs: {} };
-  }
-  const approval = await deps.approvals.request({
-    kind: "host-apply",
-    title: `Run ${plan.app.name} on this computer (${address})`,
-    details,
-    planHash: hash,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: "local plan",
-      ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: "Nothing on this computer was changed.",
-      hint: `To apply it later without prompts, run: opscrew provision${deps.paths.environment === "prod" ? "" : ` --env ${deps.paths.environment}`} --approve ${hash}`,
+  } else {
+    const approval = await deps.approvals.request({
+      kind: "host-apply",
+      title: `Run ${plan.app.name} on this computer (${address})`,
+      details,
+      planHash: hash,
     });
+    if (!approval.approved) {
+      throw new PlanRefusedError({
+        plan: "local plan",
+        ...(approval.reason ? { reason: approval.reason } : {}),
+        unchanged: "Nothing on this computer was changed.",
+        hint: `To apply it later without prompts, run: opscrew provision${envFlag} --approve ${hash}`,
+      });
+    }
+    deps.reporter.step(`Starting ${plan.app.name} on this computer`);
+    await applyLocal(deps, deploy, {
+      approvedHash: hash,
+      phase: "provision",
+      ...(image.source === "registry" ? { registry: await registry() } : {}),
+      ...(local !== undefined ? { services: local } : {}),
+    });
+    recorded = deploymentRecord(deps, {
+      plan,
+      url: undefined,
+      iac: { applied: false },
+      approvals: [approvalEntry(approval)],
+    })(true);
+    await writePlanIfChanged(deps, recorded);
+    for (const line of afterDeploy(address, await caTrusted(deps.paths))) {
+      deps.reporter.success(line);
+    }
   }
-  deps.reporter.step(`Starting ${plan.app.name} on this computer`);
-  await applyLocal(deps, deploy, {
-    approvedHash: hash,
-    phase: "provision",
-    ...(image.source === "registry" ? { registry: await registry() } : {}),
-    ...(local !== undefined ? { services: local } : {}),
+  const result: ProvisionResult = {
+    applied: false,
+    localPlanHash: hash,
+    localApplied: changes,
+    outputs: { url: address },
+  };
+  if (github === undefined || options.planOnly === true) return result;
+
+  // The local runner: the deploy secrets, then the files in the deploy pull request.
+  const secretsStored = await deploySecretsStep(deps, {
+    store: options.secrets !== false,
+    plan: recorded,
+    save: () =>
+      setDeploySecrets(
+        deps,
+        github.setup,
+        recorded,
+        // The runner deploys on this computer: the workflow reads no host, key or known hosts,
+        // and only the names it reads are stored.
+        deploySecrets({ plan: recorded, host: "", privateKey: "", knownHosts: "", environment }),
+        environment.names,
+        "provision",
+        { record: LOCAL_SECRETS_RECORD, refusedState: "The app runs on this computer." },
+      ),
+    where: { host: LOCAL_SECRETS_RECORD, owner: github.setup.owner, repo: github.setup.repo },
+    noun: "app",
   });
-  const recorded = deploymentRecord(deps, {
-    plan,
-    url: undefined,
-    iac: { applied: false },
-    approvals: [approvalEntry(approval)],
-  })(true);
-  await writePlanIfChanged(deps, recorded);
-  for (const line of afterDeploy(address, await caTrusted(deps.paths))) deps.reporter.success(line);
-  if (plan.environment?.runner === "local") {
-    deps.reporter.info(
-      `The deploy workflow ${plan.cicd.workflowPath} and the stack's files are written to the repository: commit and push them, then \`opscrew runner start --env ${deps.paths.environment}\` runs its deploy job on this computer.`,
-    );
-  }
-  return { applied: false, localPlanHash: hash, localApplied: true, outputs: { url: address } };
+  const published = await publishDeployment(deps, {
+    git: github.git,
+    github: github.setup,
+    plan: recorded,
+    files: files.map((file) => file.path),
+    push: options.push !== false,
+    secretsStored,
+    phase: "provision",
+    branch: undefined,
+    dependabot: undefined,
+    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+  });
+  const merge = mergeDeploysNote(published.plan, published.published, options.secrets !== false);
+  if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  deps.reporter.info(
+    `Once the deploy workflow ${plan.cicd.workflowPath} is on ${plan.cicd.branch}, \`opscrew runner start --env ${deps.paths.environment}\` runs its deploy job on this computer.`,
+  );
+  return {
+    ...result,
+    branch: published.published.branch,
+    ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
+    published: published.published.published,
+    pushed: published.published.pushed,
+  };
 }
+
+/** What the deploy secrets' record names as the deploy target on this computer. */
+const LOCAL_SECRETS_RECORD = "localhost";

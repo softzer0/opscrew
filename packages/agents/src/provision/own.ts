@@ -3,6 +3,7 @@ import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
   applyHostPlan,
   type DesiredHost,
+  type DesiredRunner,
   type HostFacts,
   type HostPlan,
   inspectHost,
@@ -22,6 +23,14 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import {
+  applyRunnerSettings,
+  planServerRunner,
+  type RunnerRepository,
+  removeKeptRegistrations,
+  runnerRepository,
+  runnerTokens,
+} from "../runners";
 import {
   addressFromOutputs,
   appMemoryMb,
@@ -79,6 +88,13 @@ export interface OwnServerRun {
   host: HostAdapterApi;
   /** Opens new SSH connections as the deploy user and the admin login (see `ownServerLoginCheck`). */
   verifyLogin: () => Promise<boolean>;
+  /**
+   * The app's GitHub Actions runner (`environment.runner: server`), in every host plan of the run;
+   * absent, a runner the app has on the server is removed.
+   */
+  runner?: DesiredRunner;
+  /** The project's GitHub repository, for the runner's tokens and registrations (read when needed). */
+  repository: () => Promise<RunnerRepository>;
 }
 
 /** Placeholder tunnel id for the check before anything changes (the real one comes from the apply). */
@@ -211,7 +227,7 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
  */
 export async function desiredHost(
   deps: Pick<PhaseDeps, "paths">,
-  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources">,
+  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner">,
   input: {
     plan: DeployPlan;
     deployPublicKey: string;
@@ -270,6 +286,7 @@ export async function desiredHost(
     ...(tunnel !== undefined ? { tunnel } : {}),
     ...(portainer !== undefined ? { portainer } : {}),
     ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
+    ...(run.runner !== undefined ? { runner: run.runner } : {}),
     ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
     ...(input.passwordLogins !== undefined
       ? { disablePasswords: input.passwordLogins === "off" }
@@ -310,7 +327,7 @@ export async function prepareOwnServer(
   deps: PhaseDeps,
   input: {
     plan: DeployPlan;
-    options: Pick<ProvisionOptions, "hostKey" | "passwordLogins">;
+    options: Pick<ProvisionOptions, "hostKey" | "passwordLogins" | "planOnly">;
     services: ProvisionServices;
     deployPublicKey: string;
     deployKeyFile: string;
@@ -347,6 +364,19 @@ export async function prepareOwnServer(
     );
   }
   requireMongoAvx(plan, facts);
+  let repository: Promise<RunnerRepository> | undefined;
+  const repo = () => {
+    repository ??= runnerRepository(deps, input.services.runnerGitHub);
+    return repository;
+  };
+  // The server's runner, after the repository's check (a public one needs its own approval).
+  const runner =
+    plan.environment?.runner === "server"
+      ? await planServerRunner(await repo(), plan, {
+          arch: target.arch,
+          host: session.connection.host,
+        })
+      : {};
   const run: OwnServerRun = {
     session,
     facts,
@@ -365,6 +395,8 @@ export async function prepareOwnServer(
         deployKeyFile: input.deployKeyFile,
         ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
       }),
+    ...(runner.step !== undefined ? { runner: runner.step } : {}),
+    repository: repo,
   };
   // The check before anything changes: the tunnel's id is not known yet, so a placeholder stands in.
   requireNoBlockers(
@@ -393,6 +425,20 @@ export async function prepareOwnServer(
       );
     }
     run.address = address;
+  }
+  // The last check before any change: a public repository's runner needs every outside
+  // contributor's workflow runs approved first, set after its own approval (FR-1527).
+  if (runner.settings !== undefined && runner.refusal !== undefined) {
+    await applyRunnerSettings(
+      deps,
+      await repo(),
+      { settings: runner.settings, refusal: runner.refusal },
+      {
+        phase: input.phase,
+        command: input.command,
+        ...(input.options.planOnly === true ? { planOnly: true } : {}),
+      },
+    );
   }
   return run;
 }
@@ -613,9 +659,10 @@ function tunnelOutputs(
  * The host plan for the user's own server, after the infrastructure exists (the tunnel's id is
  * part of it), through {@link approveAndApplyHostPlan}: saved, shown, checked for blocking
  * findings, approved by its hash (`host-apply`) and applied through the host adapter, which gets
- * the tunnel token (and Portainer's password) only then and calls `verifyLogin` before keeping an
- * SSH or firewall change; audited as `phase`, and a refusal or stop says to run `command`. With
- * `planOnly` it stops after saving and showing the plan.
+ * the tunnel token (and Portainer's password, the runner's token) only then and calls
+ * `verifyLogin` before keeping an SSH or firewall change; audited as `phase`, and a refusal or stop
+ * says to run `command`. A runner registration GitHub kept after its removal is deleted through
+ * GitHub's API. With `planOnly` it stops after saving and showing the plan.
  */
 export async function applyOwnHostPlan(
   deps: PhaseDeps,
@@ -676,10 +723,18 @@ export async function applyOwnHostPlan(
         ...(portainerPassword !== undefined ? { portainerPassword } : {}),
       };
     },
+    runnerToken: runnerTokens(deps, run.repository),
     applying: `Preparing your server (${changes}; installing Docker can take a few minutes)`,
     ...(input.shown !== undefined ? { shown: input.shown } : {}),
   });
   if (!outcome.approval) return outcome;
+  if (outcome.stillRegistered !== undefined) {
+    await removeKeptRegistrations(deps, run.repository, input.plan, {
+      phase: input.phase,
+      stillRegistered: outcome.stillRegistered,
+      host: run.session.connection.host,
+    });
+  }
   deps.reporter.success(
     `Prepared your server (${plural(outcome.steps.length, "change")} applied).`,
   );

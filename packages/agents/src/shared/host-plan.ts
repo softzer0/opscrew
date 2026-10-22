@@ -150,6 +150,11 @@ export interface HostPlanStep {
    * plan is approved; never shown, planned or audited.
    */
   secrets: (changes: readonly HostStep[]) => Promise<ApplyOptions["secrets"]>;
+  /**
+   * Fetches the GitHub runner token the `github-runner` step needs, only when it runs (never
+   * shown, planned or audited).
+   */
+  runnerToken?: ApplyOptions["runnerToken"];
   /** Said as a step right before the apply (for example how long installing Docker takes). */
   applying?: string;
   /** Told the plan's hash as soon as it is shown, so an error after it can name the hash. */
@@ -161,6 +166,8 @@ export interface HostPlanOutcome extends HostChangeResult {
   plan: HostPlan;
   /** Ids of the steps the adapter applied (none with `planOnly` or nothing to change). */
   steps: readonly string[];
+  /** The apps whose runner was removed while GitHub kept its registration (`ApplyResult`). */
+  stillRegistered?: readonly string[];
 }
 
 /**
@@ -239,6 +246,7 @@ export async function approveAndApplyHostPlan(
       approvedHash: hash,
       command: step.command,
       secrets,
+      ...(step.runnerToken !== undefined ? { runnerToken: step.runnerToken } : {}),
       verifyLogin: step.verifyLogin,
       version: deps.version,
       now: () => deps.clock.now(),
@@ -260,5 +268,12 @@ export async function approveAndApplyHostPlan(
   for (const id of result.applied) {
     await audit(`${each} ${id}`, "approved", plan.steps.find((item) => item.id === id)?.title);
   }
-  return { plan, hash, applied: result.applied.length > 0, approval, steps: result.applied };
+  return {
+    plan,
+    hash,
+    applied: result.applied.length > 0,
+    approval,
+    steps: result.applied,
+    ...(result.stillRegistered !== undefined ? { stillRegistered: result.stillRegistered } : {}),
+  };
 }

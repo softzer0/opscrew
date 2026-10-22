@@ -279,7 +279,10 @@ async function runChange(
   if (own) {
     ownRun = await prepareOwnServer(deps, {
       plan: change.after,
-      options: options.hostKey !== undefined ? { hostKey: options.hostKey } : {},
+      options: {
+        ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
+        ...(options.planOnly === true ? { planOnly: true } : {}),
+      },
       services,
       deployPublicKey: deployKey.publicKeyOpenSsh,
       deployKeyFile: deployKey.privateKeyFile,

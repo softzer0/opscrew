@@ -6,7 +6,7 @@ import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
 const TRIES = 300;
 
 /** `<OpsCrew home>/local/deploy.lock`: held while a local deploy or teardown runs. */
-function lockFile(paths: Pick<ProjectPaths, "homeDir">): string {
+export function lockFile(paths: Pick<ProjectPaths, "homeDir">): string {
   return join(paths.homeDir, "local", "deploy.lock");
 }
 
@@ -20,6 +20,15 @@ async function stale(file: string): Promise<boolean> {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
+}
+
+/**
+ * Removes this computer's local deploy lock when the process it names no longer runs (a deploy
+ * job the local runner's stop killed); a lock a running process holds stays.
+ */
+export async function clearStaleLock(paths: Pick<ProjectPaths, "homeDir">): Promise<void> {
+  const file = lockFile(paths);
+  if (await stale(file)) await rm(file, { force: true });
 }
 
 /**

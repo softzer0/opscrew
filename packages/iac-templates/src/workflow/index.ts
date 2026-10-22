@@ -449,6 +449,38 @@ function sshDeploy(
   };
 }
 
+/** The tries, 2 seconds apart, the local runner's deploy waits for the local deploy lock. */
+const LOCAL_LOCK_TRIES = 300;
+
+/**
+ * The local runner's start and rollback steps take OpsCrew's local deploy lock, the file
+ * `OPSCREW_LOCAL_LOCK` that `opscrew runner start` sets and `opscrew provision` on this computer
+ * takes too, so the two never change the shared edge at once (`flock` is missing on Git for
+ * Windows and macOS). The file is created only when absent (`noclobber`) and holds the step
+ * shell's process id as Windows knows it under Git for Windows, so OpsCrew can tell a lock left by
+ * a killed job; the step removes it when it ends. It waits up to 10 minutes.
+ */
+function localDeployLock(plan: DeployPlan): string[] {
+  return [
+    '    if [[ -z "${OPSCREW_LOCAL_LOCK:-}" ]]; then',
+    `      echo "::error::This runner does not set OPSCREW_LOCAL_LOCK, OpsCrew's deploy lock on this computer. Start it with \\\`opscrew runner start --env ${environmentName(plan)}\\\`, which sets it."`,
+    "      exit 1",
+    "    fi",
+    '    mkdir -p "$(dirname "$OPSCREW_LOCAL_LOCK")"',
+    "    holder=$$",
+    '    if [[ -r /proc/$$/winpid ]]; then holder="$(cat /proc/$$/winpid)"; fi',
+    `    for attempt in $(seq 1 ${LOCAL_LOCK_TRIES}); do`,
+    '      if (set -o noclobber; echo "$holder" > "$OPSCREW_LOCAL_LOCK") 2> /dev/null; then break; fi',
+    `      if [[ "$attempt" -eq ${LOCAL_LOCK_TRIES} ]]; then`,
+    '        echo "::error::Another OpsCrew deploy on this computer has held the local stack for over 10 minutes, so this one did not start. If no other OpsCrew command runs, delete $OPSCREW_LOCAL_LOCK, then run the deploy again."',
+    "        exit 1",
+    "      fi",
+    "      sleep 2",
+    "    done",
+    "    trap 'rm -f \"$OPSCREW_LOCAL_LOCK\"' EXIT",
+  ];
+}
+
 /**
  * The deploy on the self-hosted runner's own machine, with no SSH and no host, key or known-hosts
  * secret: the runtime files and env files are copied into the app's folder, and the same switch
@@ -486,7 +518,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
     setup,
     reach: {
       env: [],
-      prelude: [dir],
+      prelude: local ? [...localDeployLock(plan), dir] : [dir],
       savePrevious: `cd "$dir" && ${SAVE_PREVIOUS}`,
       // The scripts run here, so they must not inherit the job's token.
       login: [

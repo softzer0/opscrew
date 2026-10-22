@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { canonicalJson, readTextIfExists, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision";
 import { ScriptedApprovalHandler } from "../testing";
@@ -406,21 +406,7 @@ describe("provision on this computer", () => {
       (await readArtifact("plan", deps.paths.files.plan)).deployment.lastApplyAt,
     ).toBeUndefined();
   });
-
-  it("writes the local runner's workflow with the app's hostname on this computer", async () => {
-    const plan = DeployPlanSchema.parse({
-      ...localPlan({ image: "registry" }),
-      environment: { runner: "local" },
-    });
-    const { deps, run } = await project(plan);
-    await run({ planOnly: true });
-    const workflow = await readFile(
-      join(deps.paths.root, ".github", "workflows", "opscrew-deploy.yml"),
-      "utf8",
-    );
-    expect(workflow).toContain("--host shop.localhost");
-    expect(workflow).toContain("runs-on: [self-hosted, opscrew-shop-prod]");
-  });
+  // The local runner's workflow, secrets and pull request: runners/local-provision.test.ts.
 });
 
 describe("planLocal and applyLocal", () => {
