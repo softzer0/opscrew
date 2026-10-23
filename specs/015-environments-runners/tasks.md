@@ -537,6 +537,18 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high
 
+- [ ] T1523 [US5] Destroying a localhost environment removes its GitHub secrets (found by T1515's local runner pass)
+  - Owns: agents' `localhost/destroy.ts` with its tests; `packages/cli/test/live/local-runner.test.ts` (step 6's check)
+  - Reads: `destroy/common.ts` (`removeDeploySecrets`, as `destroy/own.ts` and `destroy/portainer.ts` call it); `provision/secrets.ts` (the secrets record)
+  - Depends: T1521
+  - Accept:
+    - **The removal:** when provision wrote GitHub secrets for the localhost environment (its secrets record names them: the deploy secrets in its GitHub environment, and its build values as repository secrets), `destroy --env <env>` removes them and the GitHub environment OpsCrew created, through `removeDeploySecrets` under the destroy's typed confirmation, as on the other targets. Its result lists them (`secretsRemoved`).
+    - **Unchanged:** a localhost environment whose provision wrote no secrets (no local runner) touches nothing at GitHub; secrets OpsCrew did not write stay.
+    - **The live test:** step 6 also checks that none of dev's secrets and no GitHub environment `dev` is left (the environment helpers' `expectSecretsGone`).
+    - **Tests:** destroy of a local-runner localhost environment removes its recorded secrets and the GitHub environment; one without a record touches nothing at GitHub; a GitHub failure says what is left and how to finish, as `removeDeploySecrets` does elsewhere.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --concurrency=2` and `pnpm lint`
+  - Effort: medium
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
@@ -639,7 +651,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1515 Live runs (lead), after T1520 and T1521: the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e-coverage.md` (its Live results and the status at a glance). Windows localhost runs by hand on the founder's computer.
+- [ ] T1515 Live runs (lead), after T1520, T1521 and T1523: the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e-coverage.md` (its Live results and the status at a glance). Windows localhost runs by hand on the founder's computer.
   - The founder accepted Cloudflare's brief 520s for a zone's other hostnames while a new hostname's Authenticated Origin Pulls setting deploys (seen in 1 of 3 runs; documented in `docs/guide/origin-protection.md`, 2026-10-23). The environments test's load check accepts only HTTP 520–527 answers sent within 3 s of a `deployed` `hostname_association` entry in the account's audit log (the entries name no zone), and logs each with its distance from the rollout; any other failure still fails the step.
 
 ## End-of-feature simplify pass (after T1515)
