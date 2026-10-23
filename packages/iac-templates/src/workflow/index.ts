@@ -145,14 +145,16 @@ export interface LocalEdge {
  * and, when every attempt failed a TLS handshake, the error says that the server has no
  * certificate yet; otherwise, and without `tlsHint`, it says only that the new version did not
  * answer. On this computer (`local`), curl connects to 127.0.0.1 and trusts only OpsCrew's local
- * CA, whose certificate the local runner names in `OPSCREW_LOCAL_CA_FILE`.
+ * CA, whose certificate the local runner names in `OPSCREW_LOCAL_CA_FILE`. That CA publishes no
+ * revocation list, so `--ssl-no-revoke` keeps Windows' curl (Schannel, as in Git for Windows) from
+ * refusing its certificate as of unknown revocation status; other TLS libraries ignore it.
  */
 function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): string[] {
   const failed = 'echo "::error::The new version did not answer at $URL."';
   const curl =
     local === undefined
       ? "curl -fsS --max-time 10"
-      : `curl -fsS --max-time 10 --resolve ${local.hostname}:${local.port}:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE"`;
+      : `curl -fsS --max-time 10 --resolve ${local.hostname}:${local.port}:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE" --ssl-no-revoke`;
   return [
     "    set -euo pipefail",
     ...(local === undefined
