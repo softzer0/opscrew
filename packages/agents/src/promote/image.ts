@@ -102,24 +102,25 @@ export async function chooseImage(
 /**
  * Step 2: the image's SLSA v1 provenance names its build run (`runDetails.builder.id`), which must
  * be this repository's; GitHub's record of the run must show a `push` of this repository's own
- * commits (a fork's pull request runs here too) to the default branch; and the image tagged with
- * the run's commit must be this digest. Each environment that builds tags its own form of the
- * commit ({@link environmentTag}), and the one that built the image may be the source's own
- * source, so the tag is looked up in the forms of the app's `environments`, in their order. A
+ * commits (a fork's pull request runs here too) to `branch`, the branch that builds the images the
+ * target is promoted with (`builderBranch`, as its workflow's verify job checks); and the image
+ * tagged with the run's commit must be this digest. Each environment that builds tags its own form
+ * of the commit ({@link environmentTag}), and the one that built the image may be the source's
+ * own source, so the tag is looked up in the forms of the app's `environments`, in their order. A
  * builder id that is no run URL is never printed.
  * @throws OpsCrewError `PHASE_PRECONDITION` saying which check failed.
  */
 export async function checkProvenance(
   image: AppImage,
   digest: string,
-  defaultBranch: string,
+  branch: string,
   environments: readonly string[],
 ): Promise<ImageBuild> {
   const repository = `${image.owner}/${image.repo}`;
   const reference = imageReference(image, digest);
   const refuse = (why: string) =>
     new OpsCrewError("PHASE_PRECONDITION", `${why} ${nothing}`, {
-      hint: `OpsCrew promotes only images ${repository}'s deploy workflow built from ${defaultBranch}. Promote the image another environment runs, built by a push to ${defaultBranch}.`,
+      hint: `OpsCrew promotes only images ${repository}'s deploy workflow built from ${branch}. Promote the image another environment runs, built by a push to ${branch}.`,
     });
   const provenance = await image.github.imageProvenance(
     image.owner,
@@ -150,16 +151,16 @@ export async function checkProvenance(
     );
   }
   if (run.event !== "push") {
-    throw refuse(`The image was built by a ${run.event} run, not by a push to ${defaultBranch}.`);
+    throw refuse(`The image was built by a ${run.event} run, not by a push to ${branch}.`);
   }
   if (run.headRepository.toLowerCase() !== repository.toLowerCase()) {
     throw refuse(
       `The image was built from the commits of ${run.headRepository}, not of ${repository}.`,
     );
   }
-  if (run.headBranch !== defaultBranch) {
+  if (run.headBranch !== branch) {
     throw refuse(
-      `The image was built from the branch ${run.headBranch}, not from the default branch ${defaultBranch}.`,
+      `The image was built from the branch ${run.headBranch}, not from ${branch}, the branch whose pushes build the images this environment is promoted with.`,
     );
   }
   for (const environment of environments) {

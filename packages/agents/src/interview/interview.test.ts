@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import {
+  DeployPlanSchema,
   type ProjectFacts,
   type Question,
   QuestionSchema,
@@ -14,7 +15,10 @@ import {
 import { describe, expect, it } from "vitest";
 import { runAnalyze } from "../analyze";
 import { runDesign } from "../design";
-import { createTestPhaseDeps, euCatalog, testPlan } from "../testing";
+import { remoteWith } from "../environments/__fixtures__/remote";
+import { environmentPaths } from "../environments/paths";
+import { setupNote } from "../environments/setup";
+import { createTestPhaseDeps, euCatalog, ScriptedRunner, testPlan } from "../testing";
 import { answersToRequirements, normaliseDomain, parseMoney } from "./answers";
 import { buildComponentQuestions } from "./components";
 import { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
@@ -199,6 +203,60 @@ describe("signing and deploy tags", () => {
       "Your repository is private, but once images are signed its name and the deploy workflow's path appear in Sigstore's public log.",
     );
     expect(deps.reporter.text()).toContain(IMAGE_RETENTION_NOTE);
+  });
+});
+
+describe("the setups of environments (FR-1537)", () => {
+  it("shows both setups with their commands when the repository has branches named like environments", async () => {
+    const deps = await createTestPhaseDeps({
+      root: await project("static-vite"),
+      runner: remoteWith(["main", "develop", "staging"]),
+    });
+    await runInterview(deps, { answers: BASE_ANSWERS });
+    const note = deps.reporter.lines.find((l) => l.message.includes("named like environments"));
+    expect(note?.level).toBe("info");
+    expect(note?.message).toBe(
+      setupNote({ prod: "main", dev: "develop", staging: "staging" }, "main"),
+    );
+    expect(note?.message).toContain("- Promotion first (recommended): one image moves");
+    expect(note?.message).toContain("`opscrew env add dev --branch develop`");
+  });
+
+  it("shows nothing without a dev or staging branch, or once the app has another environment", async () => {
+    const trunkOnly = await createTestPhaseDeps({
+      root: await project("static-vite"),
+      runner: remoteWith(["main", "feature/login"]),
+    });
+    await runInterview(trunkOnly, { answers: BASE_ANSWERS });
+    expect(trunkOnly.reporter.text()).not.toContain("named like environments");
+
+    const root = await project("static-vite");
+    const several = await createTestPhaseDeps({ root, runner: remoteWith(["main", "develop"]) });
+    await writeArtifact("plan", several.paths.files.plan, testPlan());
+    await writeArtifact(
+      "plan",
+      environmentPaths(several.paths, "dev").files.plan,
+      DeployPlanSchema.parse({
+        ...testPlan(),
+        environment: { name: "dev" },
+        app: { ...testPlan().app, name: "shop-dev" },
+        infra: { ...testPlan().infra, dir: "opscrew/infra/dev" },
+        cicd: { ...testPlan().cicd, workflowPath: ".github/workflows/opscrew-deploy-dev.yml" },
+      }),
+    );
+    await runInterview(several, { answers: BASE_ANSWERS });
+    expect(several.reporter.text()).not.toContain("named like environments");
+  });
+
+  it("says so, and proposes nothing, when git cannot read the remote's branches", async () => {
+    const deps = await createTestPhaseDeps({
+      root: await project("static-vite"),
+      runner: new ScriptedRunner(() => ({ exitCode: 128, stdout: "", stderr: "fatal: offline" })),
+    });
+    await runInterview(deps, { answers: BASE_ANSWERS });
+    expect(deps.reporter.text()).toContain(
+      "warn: OpsCrew could not read your repository's branches on GitHub, so it proposes no setup of environments: git remote failed: fatal: offline",
+    );
   });
 });
 

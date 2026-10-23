@@ -100,7 +100,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     `| DNS | ${cell(dns)} |`,
     `| Cost | ${cell(money(plan, provider))} |`,
     "",
-    ...deploySections(plan, environments),
+    ...deploySections(plan, ctx),
     ...componentsSection(plan, environments),
     ...edgeSection(plan, false, environments),
     ...objectStorageSection(plan, projectDir, environments),

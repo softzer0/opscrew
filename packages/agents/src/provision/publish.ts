@@ -13,6 +13,7 @@ import {
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { workflowBranch } from "../environments/branches";
 import { planProvider, providerProfile } from "../providers";
 import { planFile, planWhere } from "../runners/words";
 import {
@@ -37,6 +38,8 @@ const recoveryCopyLine = (path: string) =>
 export interface PublishResult {
   /** The branch holding the files: the current one when nothing was committed. */
   branch: string;
+  /** The branch the pull request goes into (`workflowBranch`). */
+  base: string;
   /** This run's commit, when it committed anything. */
   commit?: string;
   prUrl?: string;
@@ -83,6 +86,21 @@ interface DeploySetupBodyOptions {
 }
 
 /**
+ * How the workflow gets the image it deploys, for the pull request body: for a promoted
+ * environment, from its source by `opscrew promote` (its workflow never builds); else built on
+ * each push to the branch the environment follows.
+ */
+function imageArrives(plan: DeployPlan): { promoted: boolean; text: string } {
+  const source = plan.environment?.deploySource;
+  return source?.from === "promote"
+    ? {
+        promoted: true,
+        text: `an image promoted from \`${source.source}\` with \`opscrew promote --to ${plan.environment?.name ?? "prod"}\` (it never builds)`,
+      }
+    : { promoted: false, text: `every push to \`${plan.cicd.branch}\`` };
+}
+
+/**
  * Pull request body for the generated deployment files. `secretsStored` (default true) says
  * whether the GitHub Actions deploy secrets are known to be stored for this server; when they are
  * not, the body tells the user to run `opscrew provision` in a terminal before merging. It names
@@ -103,6 +121,7 @@ export function deploySetupPullRequestBody(
   const file = planFile(plan);
   const flag = options.flag ?? "";
   const runtime = runtimeDir(plan);
+  const arrives = imageArrives(plan);
   const infra = own
     ? tunnel
       ? "the Cloudflare Tunnel that serves the app, its DNS records and the Cloudflare Access application GitHub Actions deploys through (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself."
@@ -115,7 +134,9 @@ export function deploySetupPullRequestBody(
     tunnel
       ? `- \`${runtime}/\`: Docker Compose and Caddy configuration for the server, and the Cloudflare Tunnel connector (\`cloudflared/compose.yaml\`; its token is only on the server).`
       : `- \`${runtime}/\`: Docker Compose and Caddy configuration for the server.`,
-    `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
+    arrives.promoted
+      ? `- \`${plan.cicd.workflowPath}\`: deploys ${arrives.text}, rolling back when the health check fails.`
+      : `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on ${arrives.text}, rolling back when the health check fails.`,
     `- \`${file}\`: the deployment plan. The server's IP address is not in the repository; \`opscrew status${flag}\` shows it on the computer that ran \`opscrew provision${flag}\`.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
@@ -150,11 +171,14 @@ function localPullRequestBody(
   const start = `opscrew runner start --env ${plan.environment?.name ?? "prod"}`;
   const file = planFile(plan);
   const flag = options.flag ?? "";
+  const arrives = imageArrives(plan);
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**, which runs on your own computer:`,
     "",
     `- \`${runtimeDir(plan)}/\`: Docker Compose and the edge's configuration for your computer (on 127.0.0.1 only, with OpsCrew's local certificate authority).`,
-    `- \`${plan.cicd.workflowPath}\`: builds the image on GitHub's machines, pushes it to GitHub Container Registry and, on every push to \`${plan.cicd.branch}\`, deploys it with the runner on your computer, rolling back when the health check fails.`,
+    arrives.promoted
+      ? `- \`${plan.cicd.workflowPath}\`: deploys ${arrives.text} with the runner on your computer, rolling back when the health check fails.`
+      : `- \`${plan.cicd.workflowPath}\`: builds the image on GitHub's machines, pushes it to GitHub Container Registry and, on ${arrives.text}, deploys it with the runner on your computer, rolling back when the health check fails.`,
     `- \`${file}\`: the deployment plan.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
@@ -162,7 +186,7 @@ function localPullRequestBody(
     ...(options.secretsStored === false
       ? nextStepLines(false, "The app runs on your computer", "your computer", flag)
       : [
-          `The app runs on your computer and the deploy secrets are stored in GitHub Actions. **After merging, each push to \`${plan.cicd.branch}\` deploys it there while \`${start}\` runs.**`,
+          `The app runs on your computer and the deploy secrets are stored in GitHub Actions. **After merging, ${arrives.promoted ? `each \`opscrew promote --to ${plan.environment?.name ?? "prod"}\`` : `each push to \`${plan.cicd.branch}\``} deploys it there while \`${start}\` runs.**`,
         ]),
     "",
     "Review checklist:",
@@ -232,6 +256,7 @@ function portainerPullRequestBody(
   const file = planFile(plan);
   const flag = options.flag ?? "";
   const branch = portainerDeployBranch(plan);
+  const arrives = imageArrives(plan);
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**, which runs as stacks in your Portainer:`,
     "",
@@ -241,7 +266,9 @@ function portainerPullRequestBody(
         ]
       : []),
     `- \`${portainerStackTemplatePath(plan)}\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`${branch}\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
-    `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`${branch}\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
+    arrives.promoted
+      ? `- \`${plan.cicd.workflowPath}\`: writes ${arrives.text} to the \`${branch}\` branch; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`
+      : `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`${branch}\` branch on ${arrives.text}; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
     `- \`${file}\`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran \`opscrew provision${flag}\`.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
@@ -312,7 +339,7 @@ function branchStop(
 /** Where the deployment files must start from, and how a stop is worded. */
 interface BaseCheck {
   phase: PublishPhase;
-  /** `plan.cicd.branch`: the branch the pull request goes into (usually `main`). */
+  /** The branch the pull request goes into (`workflowBranch`, usually `main`). */
   base: string;
   /** The branch this clone is on (`HEAD` when detached). */
   current: string;
@@ -329,7 +356,7 @@ function baseStop(check: BaseCheck, reason: string, rerun: string): OpsCrewError
 
 /**
  * Stops (before anything changes) unless the deployment files start from the latest
- * `plan.cicd.branch`, so the pull request never carries old or already-merged changes again: a new
+ * `check.base`, so the pull request never carries old or already-merged changes again: a new
  * deploy branch is only created from that branch itself, and only when it has every commit GitHub
  * has (`baseTip`); the deploy branch this clone is on is only reused when it has them too (a
  * branch GitHub deleted after squash-merging its pull request does not). `baseTip` undefined: the
@@ -384,15 +411,15 @@ async function lastFetchedTip(git: GitClient, base: string): Promise<string | un
  * {@link DEPLOY_SETUP_BRANCH}, `-2`, … that is the current branch or does not exist in this clone,
  * so a stale local branch (its pull request merged long ago) is never committed on. Like
  * {@link chooseDeployBranch} it stops with `PHASE_PRECONDITION` unless the files start from
- * `plan.cicd.branch`, here judged by what this clone last fetched (`origin/<branch>`).
+ * `base` (`workflowBranch`), here judged by what this clone last fetched (`origin/<branch>`).
  */
 export async function localDeployBranch(
   git: GitClient,
-  plan: Pick<DeployPlan, "cicd">,
+  base: string,
   phase: PublishPhase = "provision",
 ): Promise<string> {
   const current = await git.currentBranch();
-  const check: BaseCheck = { phase, base: plan.cicd.branch, current };
+  const check: BaseCheck = { phase, base, current };
   for (let i = 1; i <= 100; i++) {
     const branch = deployBranchName(i);
     if (branch === current || !(await git.branchExists(branch))) {
@@ -418,7 +445,8 @@ export async function localDeployBranch(
  * local branch is never committed on). One with an open pull request is added to when this clone
  * is on that branch and the push is a fast-forward (its head is in this clone's branch, so OpsCrew
  * pushed it from here); otherwise this throws `PHASE_PRECONDITION` naming the pull request, and
- * nothing is force-pushed. Any other branch must start from the latest `plan.cicd.branch` as
+ * nothing is force-pushed. Any other branch must start from the latest branch the plan's files
+ * live on (`workflowBranch`: `cicd.branch`, or the default branch for a promoted environment) as
  * GitHub has it (read with `git ls-remote`, nothing is fetched): a new branch is created only from
  * that branch with every commit GitHub has, and the deploy branch this clone is on only when it
  * has them too; otherwise this throws `PHASE_PRECONDITION` telling the user to check it out and
@@ -433,12 +461,12 @@ export async function chooseDeployBranch(
   deps: PhaseDeps,
   git: GitClient,
   github: GitHubSetup,
-  plan: Pick<DeployPlan, "cicd">,
+  plan: Pick<DeployPlan, "cicd" | "environment">,
   phase: PublishPhase = "provision",
 ): Promise<DeployBranch> {
   const command = `opscrew ${phase}`;
   const current = await git.currentBranch();
-  const check: BaseCheck = { phase, base: plan.cicd.branch, current };
+  const check: BaseCheck = { phase, base: workflowBranch(plan, github.defaultBranch), current };
   /** A branch's sha on GitHub; `null` when GitHub cannot be reached (this clone decides then). */
   const remoteSha = async (branch: string): Promise<string | undefined | null> => {
     try {
@@ -454,11 +482,11 @@ export async function chooseDeployBranch(
     }
   };
   const baseTip = await remoteSha(check.base);
-  if (baseTip === null) return { branch: await localDeployBranch(git, plan, phase) };
+  if (baseTip === null) return { branch: await localDeployBranch(git, check.base, phase) };
   for (let i = 1; i <= 100; i++) {
     const branch = deployBranchName(i);
     const sha = await remoteSha(branch);
-    if (sha === null) return { branch: await localDeployBranch(git, plan, phase) };
+    if (sha === null) return { branch: await localDeployBranch(git, check.base, phase) };
     if (sha === undefined) {
       if (branch !== current && (await git.branchExists(branch))) {
         deps.reporter.info(
@@ -577,7 +605,9 @@ export async function publishDeploySetup(
     input.branch ??
     (input.push
       ? await chooseDeployBranch(deps, git, github, plan, phase)
-      : { branch: await localDeployBranch(git, plan, phase) });
+      : {
+          branch: await localDeployBranch(git, workflowBranch(plan, github.defaultBranch), phase),
+        });
   const recovery = await recoveryCopyFiles(deps, input);
   const paths = [...input.paths, ...recovery.map((file) => file.path)];
   const copy = copyPath(deps.paths);
@@ -646,7 +676,7 @@ export async function commitAndPropose(
   input: {
     git: GitClient;
     github: GitHubSetup;
-    plan: Pick<DeployPlan, "cicd">;
+    plan: Pick<DeployPlan, "cicd" | "environment">;
     chosen: DeployBranch;
     files: readonly RenderedFile[];
     paths: readonly string[];
@@ -660,6 +690,7 @@ export async function commitAndPropose(
 ): Promise<PublishResult> {
   const { git, github, plan, chosen, paths, title, body } = input;
   const branch = chosen.branch;
+  const base = workflowBranch(plan, github.defaultBranch);
   const phase = input.phase !== undefined ? { phase: input.phase } : {};
   const current = await git.currentBranch();
   for (const file of input.files) {
@@ -673,10 +704,9 @@ export async function commitAndPropose(
     !staged &&
     input.push &&
     current === branch &&
-    (await hasUnpublishedFiles(deps, git, { branch, base: plan.cicd.branch, paths }));
+    (await hasUnpublishedFiles(deps, git, { branch, base, paths }));
   if (!staged && !unpushed) {
     const open = branch === current ? chosen.pullRequest?.url : undefined;
-    const base = plan.cicd.branch;
     deps.reporter.info(
       open !== undefined
         ? `${upperFirst(input.what)} did not change, so OpsCrew committed nothing. The pull request from earlier is still open: ${open}`
@@ -686,6 +716,7 @@ export async function commitAndPropose(
     );
     return {
       branch: current,
+      base,
       published: false,
       pushed: false,
       ...(open !== undefined ? { prUrl: open } : {}),
@@ -710,13 +741,14 @@ export async function commitAndPropose(
   }
   const result: PublishResult = {
     branch,
+    base,
     published: true,
     pushed: false,
     ...(commit ? { commit } : {}),
   };
   if (!input.push) {
     deps.reporter.info(
-      `The files are committed on ${branch}. Push it and open a pull request into ${plan.cicd.branch} when you are ready.`,
+      `The files are committed on ${branch}. Push it and open a pull request into ${base} when you are ready.`,
     );
     return result;
   }
@@ -729,7 +761,7 @@ export async function commitAndPropose(
   });
   if (!push.approved) {
     deps.reporter.warn(
-      `Not pushed. The commit stays on the local branch ${branch}; push it yourself and open a pull request into ${plan.cicd.branch}.`,
+      `Not pushed. The commit stays on the local branch ${branch}; push it yourself and open a pull request into ${base}.`,
     );
     return result;
   }
@@ -753,12 +785,12 @@ export async function commitAndPropose(
   }
   const pr = await deps.approvals.request({
     kind: "pull-request",
-    title: `Open the pull request "${title}" into ${plan.cicd.branch}`,
+    title: `Open the pull request "${title}" into ${base}`,
     details: body,
   });
   if (!pr.approved) {
     deps.reporter.warn(
-      `No pull request opened. Open one from ${branch} into ${plan.cicd.branch} when you are ready.`,
+      `No pull request opened. Open one from ${branch} into ${base} when you are ready.`,
     );
     return result;
   }
@@ -766,7 +798,7 @@ export async function commitAndPropose(
     owner: github.owner,
     repo: github.repo,
     head: branch,
-    base: plan.cicd.branch,
+    base,
     title,
     body,
   });

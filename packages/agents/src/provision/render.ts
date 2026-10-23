@@ -15,6 +15,7 @@ import {
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { builderBranch } from "../environments/branches";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import { previewLocalStack } from "../localhost/stack";
 import {
@@ -96,6 +97,11 @@ export function deploymentRenderContext(
     own?: OwnRenderInput;
     /** The app's site: its origin TLS and its own additions (see {@link recordedEdge}). */
     edge?: Pick<RuntimeContext, "originTls" | "additions">;
+    /**
+     * A promoted plan's builder's branch (`builderBranch`), which its workflow checks; `undefined`
+     * for a plan that follows a branch.
+     */
+    builderBranch?: string | undefined;
   },
 ): RuntimeContext {
   const { requirements, cloudflare, own, edge } = input;
@@ -111,6 +117,7 @@ export function deploymentRenderContext(
     ...(server?.ipv6 !== undefined ? { serverIpv6: server.ipv6 } : {}),
     ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
     ...(own?.sshPort !== undefined ? { sshPort: own.sshPort } : {}),
+    ...(input.builderBranch !== undefined ? { builderBranch: input.builderBranch } : {}),
     ...(cloudflare
       ? {
           cloudflare: {
@@ -280,6 +287,7 @@ export async function previewDeploymentFiles(
     plan,
     deploymentRenderContext(deps, {
       plan,
+      builderBranch: await builderBranch(deps.paths, plan),
       requirements,
       github,
       deployPublicKey,

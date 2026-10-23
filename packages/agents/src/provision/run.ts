@@ -6,6 +6,7 @@ import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opsc
 import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { builderBranch, workflowBranch } from "../environments/branches";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
 import { localPlanFile } from "../localhost/plan";
@@ -324,6 +325,7 @@ async function provisionFlow(
     plan,
     deploymentRenderContext(deps, {
       plan,
+      builderBranch: await builderBranch(deps.paths, plan),
       requirements,
       github,
       deployPublicKey: "",
@@ -369,7 +371,7 @@ async function provisionFlow(
       ? {
           notes: originTlsNotes(tls, {
             workflow: posix.basename(plan.cicd.workflowPath),
-            branch: plan.cicd.branch,
+            branch: workflowBranch(plan, github.defaultBranch),
           }),
         }
       : {}),
@@ -545,6 +547,7 @@ async function provisionFlow(
   const site = await recordedEdge(deps, persisted(plan));
   const ctx = deploymentRenderContext(deps, {
     plan,
+    builderBranch: await builderBranch(deps.paths, plan),
     requirements,
     github,
     deployPublicKey: deployKey.publicKeyOpenSsh,
@@ -930,6 +933,7 @@ async function provisionFlow(
     ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
     outputs: publicOutputs(applied.outputs),
     branch: published.published.branch,
+    base: published.published.base,
     ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
     published: published.published.published,
     pushed: published.published.pushed,

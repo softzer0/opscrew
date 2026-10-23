@@ -7,6 +7,7 @@ import {
   listEnvironments,
   removeEnvironment,
   setDeploySource,
+  setEnvironmentBranch,
   setEnvironmentRunner,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
@@ -31,6 +32,7 @@ interface RunnerFlags {
 interface AddFlags extends RunnerFlags {
   target?: string;
   from?: string;
+  branch?: string;
   option?: string;
   hostKey?: string;
 }
@@ -40,6 +42,7 @@ function flagAnswers(flags: AddFlags): InterviewAnswers {
   return {
     ...(flags.target === undefined ? {} : { provider: flags.target }),
     ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
+    ...(flags.branch === undefined ? {} : { branch: flags.branch.trim() }),
     ...(flags.runner === undefined ? {} : { runner: flags.runner }),
     ...(flags.runnerHost === undefined ? {} : { runnerHost: flags.runnerHost.trim() }),
     ...(flags.build === undefined ? {} : { build: flags.build }),
@@ -64,12 +67,17 @@ function ownServerOptions(
 
 /**
  * `opscrew env add <name>`: the environment's own questions (in a terminal, those its flags do not
- * answer; in a script, the flags and the defaults), its requirements, and its design with the
- * monthly cost (contracts/environments.md "Commands").
+ * answer, and the setup of FR-1537 unless `--from` or `--branch` decide it; in a script, the
+ * flags and the defaults), its requirements, and its design with the monthly cost
+ * (contracts/environments.md "Commands").
  */
 async function add(ctx: CliContext, name: string, flags: AddFlags): Promise<void> {
   const deps = createPhaseDeps(ctx, { ai: false, environment: name });
   const given = flagAnswers(flags);
+  const answered = new Set([
+    ...Object.keys(given),
+    ...("from" in given || "branch" in given ? ["setup"] : []),
+  ]);
   const prompts = promptsOf(ctx);
   const ask = (questions: Parameters<typeof askQuestions>[0]) =>
     askQuestions(questions, { prompts });
@@ -78,7 +86,7 @@ async function add(ctx: CliContext, name: string, flags: AddFlags): Promise<void
     ...(ctx.isInteractive
       ? {
           ask: async (questions) => ({
-            ...(await ask(questions.filter((question) => !(question.id in given)))),
+            ...(await ask(questions.filter((question) => !answered.has(question.id)))),
             ...given,
           }),
           askServer: ask,
@@ -104,7 +112,7 @@ export function environmentTable(environments: readonly EnvironmentSummary[]): s
     ...environments.map((env) => [
       env.name,
       env.target,
-      env.from === "main" ? "each push" : `promoted from ${env.from}`,
+      env.from === "main" ? `each push to ${env.branch}` : `promoted from ${env.from}`,
       deployJobPlace(env.runner, env.runnerHost),
       env.deployed ? "yes" : "no",
     ]),
@@ -112,8 +120,15 @@ export function environmentTable(environments: readonly EnvironmentSummary[]): s
   return textTable(rows);
 }
 
-/** What `env set` says the environment now does: how it gets new versions, or where it runs its jobs. */
-function settingLine(name: string, plan: DeployPlan, changed: "from" | "runner"): string {
+/**
+ * What `env set` says the environment now does: how it gets new versions, the branch it follows,
+ * or where it runs its jobs.
+ */
+function settingLine(
+  name: string,
+  plan: DeployPlan,
+  changed: "from" | "branch" | "runner",
+): string {
   const environment = plan.environment;
   if (changed === "runner") {
     const place = deployJobPlace(environment?.runner ?? "github", environment?.runnerHost?.name);
@@ -124,35 +139,56 @@ function settingLine(name: string, plan: DeployPlan, changed: "from" | "runner")
     return `The ${name} environment's deploy job runs on ${place}${build}.`;
   }
   const source = environment?.deploySource;
-  return `The ${name} environment ${source?.from === "promote" ? `is deployed only by \`opscrew promote --to ${name}\`, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}.`;
+  if (source?.from === "promote") {
+    return changed === "branch"
+      ? `The ${name} environment follows ${plan.cicd.branch} once it is built from main again (\`opscrew env set ${name} --from main\`); until then only \`opscrew promote --to ${name}\` deploys it.`
+      : `The ${name} environment is deployed only by \`opscrew promote --to ${name}\`, with the image ${source.source} runs.`;
+  }
+  return `The ${name} environment is built and deployed on each push to ${plan.cicd.branch}.`;
+}
+
+/** The flags of `env set`. */
+interface SetFlags extends RunnerFlags {
+  from?: string;
+  branch?: string;
 }
 
 /**
- * `opscrew env set <name>`: how the environment gets new versions (`--from`), and where its
- * deploy job runs (`--runner`, with `--runner-host` and `--build`), each written to its plan;
- * its next provision shows and applies the change.
+ * `opscrew env set <name>`: how the environment gets new versions (`--from`, and `--branch`, the
+ * branch it follows from main), and where its deploy job runs (`--runner`, with `--runner-host`
+ * and `--build`), each written to its plan; its next provision shows and applies the change.
  */
-async function set(ctx: CliContext, name: string, flags: RunnerFlags & { from?: string }) {
+async function set(ctx: CliContext, name: string, flags: SetFlags) {
   if (flags.runner === undefined && (flags.runnerHost !== undefined || flags.build !== undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "--runner-host and --build go with --runner.", {
       hint: `For example \`opscrew env set ${name} --runner host --runner-host <machine> --build runner\`.`,
     });
   }
-  if (flags.from === undefined && flags.runner === undefined) {
-    throw new OpsCrewError("INVALID_INPUT", "Say what to change with --from or --runner.", {
-      hint: `For example \`opscrew env set ${name} --from main\` or \`opscrew env set ${name} --runner github\`.`,
-    });
+  if (flags.from === undefined && flags.branch === undefined && flags.runner === undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "Say what to change with --from, --branch or --runner.",
+      {
+        hint: `For example \`opscrew env set ${name} --from main\`, \`opscrew env set ${name} --branch develop\` or \`opscrew env set ${name} --runner github\`.`,
+      },
+    );
   }
   const lines: string[] = [];
-  // The runner first: its checks refuse most often, and a refusal then saves nothing.
+  const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+  // The runner first, then the branch: their checks refuse most often, and a refusal then saves
+  // nothing of the source.
   if (flags.runner !== undefined) {
-    const { paths } = createPhaseDeps(ctx, { ai: false, environment: name });
-    const plan = await setEnvironmentRunner(paths, {
+    const plan = await setEnvironmentRunner(deps.paths, {
       runner: flags.runner,
       ...(flags.runnerHost === undefined ? {} : { runnerHost: flags.runnerHost }),
       ...(flags.build === undefined ? {} : { build: flags.build }),
     });
     lines.push(settingLine(name, plan, "runner"));
+  }
+  if (flags.branch !== undefined) {
+    const plan = await setEnvironmentBranch(deps, flags.branch);
+    // With --from the source's line names the branch too.
+    if (flags.from === undefined) lines.push(settingLine(name, plan, "branch"));
   }
   if (flags.from !== undefined) {
     lines.push(settingLine(name, await setDeploySource(ctx.cwd, name, flags.from.trim()), "from"));
@@ -208,6 +244,10 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--from <source>",
       "How it gets new versions: main (built and deployed on each push, the default) or the environment it is promoted from",
+    )
+    .option(
+      "--branch <name>",
+      "With --from main: the branch whose pushes build and deploy it (default: the repository's default branch); one the repository has and no other environment follows",
     );
   addHostKeyOption(addRunnerOptions(adding))
     .option(
@@ -218,16 +258,18 @@ export function register(program: Command, ctx: CliContext): void {
   const setting = env
     .command("set")
     .description(
-      "Change how an environment gets new versions or where its deploy job runs; its next `opscrew provision --env <name>` applies the change",
+      "Change how an environment gets new versions, the branch it follows or where its deploy job runs; its next `opscrew provision --env <name>` applies the change",
     )
     .argument("<name>", "The environment")
     .option(
       "--from <source>",
       "main (built and deployed on each push) or the environment it is promoted from",
+    )
+    .option(
+      "--branch <name>",
+      "The branch whose pushes build and deploy it from main; one the repository has and no other environment follows",
     );
-  addRunnerOptions(setting).action((name: string, flags: RunnerFlags & { from?: string }) =>
-    set(ctx, name, flags),
-  );
+  addRunnerOptions(setting).action((name: string, flags: SetFlags) => set(ctx, name, flags));
   env
     .command("list")
     .description(

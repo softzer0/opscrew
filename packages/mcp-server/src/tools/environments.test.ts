@@ -183,6 +183,7 @@ async function connect(options: { dialogs?: boolean; typed?: string } = {}) {
   });
   return {
     root: project.root,
+    git: project.git,
     home,
     client,
     github,
@@ -240,7 +241,7 @@ describe("the environment tools", () => {
       }),
     );
     expect(textOf(await h.call("opscrew_env_list"))).toContain(
-      "- qa: runs on hetzner, deployed on each push, deploy job on the runner machine home, not deployed",
+      "- qa: runs on hetzner, deployed on each push to main, deploy job on the runner machine home, not deployed",
     );
 
     const set = await h.call("opscrew_env_set", { name: "staging", runner: "server" });
@@ -265,6 +266,38 @@ describe("the environment tools", () => {
     expect(textOf(builds)).toContain("The server's runner never builds");
     const alone = await h.call("opscrew_env_set", { name: "staging", build: "runner" });
     expect(textOf(alone)).toContain("runnerHost and build go with runner.");
+  });
+
+  it("sets the branch an environment follows, refusing one the repository lacks or another environment follows", async () => {
+    const h = await connect();
+    await h.git(h.root, "push", "-q", "origin", "main:main", "main:develop");
+    const staging = path.join(h.root, "opscrew", "environments", "staging", "plan.yaml");
+
+    const set = await h.call("opscrew_env_set", { name: "staging", branch: "develop" });
+    expect(set.isError, textOf(set)).toBeFalsy();
+    expect(textOf(set)).toContain(
+      "The staging environment is built and deployed on each push to develop.",
+    );
+    expect(dataOf(set)).toMatchObject({ deploySource: { from: "main" }, branch: "develop" });
+    expect((await readArtifact("plan", staging)).cicd.branch).toBe("develop");
+    expect(textOf(await h.call("opscrew_env_list"))).toContain(
+      "- staging: runs on hetzner, deployed on each push to develop",
+    );
+
+    const unknown = await h.call("opscrew_env_set", { name: "staging", branch: "release" });
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("The repository on GitHub has no branch release");
+    await writeArtifact(
+      "plan",
+      path.join(h.root, "opscrew", "environments", "qa", "plan.yaml"),
+      inEnvironment(testPlan(), "qa"),
+    );
+    const taken = await h.call("opscrew_env_set", { name: "qa", branch: "develop" });
+    expect(taken.isError).toBe(true);
+    expect(textOf(taken)).toContain(
+      "The staging environment already follows develop, so the qa environment cannot follow it too",
+    );
+    expect((await readArtifact("plan", staging)).cicd.branch).toBe("develop");
   });
 
   it("refuses to remove a deployed environment", async () => {

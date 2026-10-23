@@ -502,6 +502,41 @@ describe.skipIf(!findExecutable("git"))("the rules of GitHub environments (FR-15
     );
   });
 
+  it("lets only the branch an environment follows deploy to it (FR-1537)", async () => {
+    const app = await appInProd();
+    const staging = stagingOf(app.prod);
+    const onDevelop = DeployPlanSchema.parse({
+      ...staging,
+      cicd: { ...staging.cicd, branch: "develop" },
+    });
+    // Its deploy-setup pull request goes into develop, where its workflow runs.
+    await app.git(app.root, "checkout", "-q", "-b", "develop");
+    await app.git(app.root, "push", "-q", "origin", "develop");
+    const provisioned = await provisionStaging(app, onDevelop);
+    await provisioned.run();
+
+    expect(rulesRequest(provisioned.staging)?.details).toContain(
+      "  Deployment branches: only develop, the branch staging follows. A workflow run on any other branch cannot deploy to staging or read its secrets.",
+    );
+    expect(app.github.deploymentBranches.get("staging")).toEqual(["develop"]);
+  });
+
+  it("lets only the default branch deploy to a promoted environment, where `opscrew promote` starts its workflow", async () => {
+    const app = await appInProd();
+    // A branch left in its plan from when it followed one is not the branch its runs are on.
+    const promoted = promotedStagingOf(app.prod);
+    const provisioned = await provisionStaging(
+      app,
+      DeployPlanSchema.parse({ ...promoted, cicd: { ...promoted.cicd, branch: "develop" } }),
+    );
+    await provisioned.run();
+
+    expect(rulesRequest(provisioned.staging)?.details).toContain(
+      "  Deployment branches: only main, the default branch.",
+    );
+    expect(app.github.deploymentBranches.get("staging")).toEqual(["main"]);
+  });
+
   it("leaves the rules as they are when the user refuses them, goes on, and never offers a declined reviewer again", async () => {
     const app = await appInProd();
     app.github.reviewersWork = true;

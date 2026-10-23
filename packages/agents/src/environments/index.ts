@@ -1,7 +1,7 @@
 /**
  * An app's environments (feature 015): the choice of environment, `env add`, `env set`,
- * `env list` and `env remove`, the shared parts every environment takes from prod's plan, and the
- * environment's own answers and paths.
+ * `env list` and `env remove`, the branches each follows (FR-1537), the shared parts every
+ * environment takes from prod's plan, and the environment's own answers and paths.
  */
 export {
   type AddEnvironmentOptions,
@@ -11,6 +11,7 @@ export {
   type EnvironmentQuestionId,
   environmentQuestions,
 } from "./add";
+export { setEnvironmentBranch } from "./branches";
 export { type EnvironmentChoiceDeps, environmentFlag, resolveEnvironment } from "./choice";
 export { type EnvironmentSummary, environmentDeployed, listEnvironments } from "./list";
 export { environmentPaths } from "./paths";

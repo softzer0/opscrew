@@ -5,6 +5,7 @@ import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { workflowBranch } from "../environments/branches";
 import {
   type PlanApproval,
   type ProjectEngine,
@@ -57,7 +58,13 @@ export async function deployBranchFor(
   if (!input.commits) return undefined;
   return input.push
     ? chooseDeployBranch(deps, git, input.github, plan, phase)
-    : { branch: await localDeployBranch(git, plan, phase) };
+    : {
+        branch: await localDeployBranch(
+          git,
+          workflowBranch(plan, input.github.defaultBranch),
+          phase,
+        ),
+      };
 }
 
 /**
@@ -238,7 +245,7 @@ export async function publishDeployment(
 /**
  * What deploys the app once the secrets are stored: merging the deploy pull request (or the
  * branch this run published). When nothing was published and no pull request is open (the files
- * are already on `plan.cicd.branch`) and the secrets were stored again in this run (`storedNow`),
+ * are already on `published.base`) and the secrets were stored again in this run (`storedNow`),
  * how a changed value reaches the running app; else `undefined`.
  */
 export function mergeDeploysNote(
@@ -246,13 +253,14 @@ export function mergeDeploysNote(
   published: PublishResult,
   storedNow: boolean,
 ): string | undefined {
+  const { base } = published;
   if (published.prUrl) return `Merging ${published.prUrl} deploys the app.`;
   if (published.published) {
-    return published.branch !== plan.cicd.branch
-      ? `Merging ${published.branch} into ${plan.cicd.branch} deploys the app.`
+    return published.branch !== base
+      ? `Merging ${published.branch} into ${base} deploys the app.`
       : undefined;
   }
   return storedNow
-    ? `OpsCrew stored the deploy secrets in GitHub Actions again. If you changed a value, the running app gets it on its next deploy: run ${posix.basename(plan.cicd.workflowPath)} on ${plan.cicd.branch} in GitHub Actions, or push a commit.`
+    ? `OpsCrew stored the deploy secrets in GitHub Actions again. If you changed a value, the running app gets it on its next deploy: run ${posix.basename(plan.cicd.workflowPath)} on ${base} in GitHub Actions, or push a commit.`
     : undefined;
 }

@@ -4,6 +4,7 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { exists, findExecutable, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { blobOf } from "../promote/__fixtures__/world";
 import { previewDeploymentFiles } from "../provision/render";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
@@ -20,18 +21,34 @@ import {
   type TestPhaseDeps,
   testPlan,
 } from "../testing";
+import { setEnvironmentBranch } from "./branches";
 import { environmentPaths } from "./paths";
+import { setDeploySource } from "./source";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
 
-/** `prod` as staging's plan, as design writes it. */
-function stagingOf(prod: DeployPlan, app: Partial<DeployPlan["app"]> = {}): DeployPlan {
+/** `prod` as the plan of the environment `name`, as design writes it. */
+function namedOf(prod: DeployPlan, name: string, app: Partial<DeployPlan["app"]> = {}): DeployPlan {
   return DeployPlanSchema.parse({
     ...prod,
-    environment: { name: "staging" },
-    app: { ...prod.app, name: `${prod.app.name}-staging`, ...app },
-    infra: { ...prod.infra, dir: "opscrew/infra/staging" },
-    cicd: { ...prod.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
+    environment: { name },
+    app: { ...prod.app, name: `${prod.app.name}-${name}`, ...app },
+    infra: { ...prod.infra, dir: `opscrew/infra/${name}` },
+    cicd: { ...prod.cicd, workflowPath: `.github/workflows/opscrew-deploy-${name}.yml` },
+  });
+}
+
+/** `prod` as staging's plan, as design writes it. */
+function stagingOf(prod: DeployPlan, app: Partial<DeployPlan["app"]> = {}): DeployPlan {
+  return namedOf(prod, "staging", app);
+}
+
+/** `prod` as the plan of the environment `name`, promoted from `source`. */
+function promotedOf(prod: DeployPlan, name: string, source: string): DeployPlan {
+  const plan = namedOf(prod, name);
+  return DeployPlanSchema.parse({
+    ...plan,
+    environment: { ...plan.environment, deploySource: { from: "promote", source } },
   });
 }
 
@@ -119,6 +136,67 @@ describe.skipIf(!findExecutable("git"))("provision for an environment", () => {
     });
     expect([...after.created, ...after.changed]).toEqual([]);
     expect(after.unchanged).toEqual(before.unchanged);
+  });
+
+  it("checks a promoted environment's images against its builder's branch, and drift then finds nothing to apply (FR-1537)", async () => {
+    const app = await appInProd();
+    const { root, prodDeps } = app;
+    // dev follows develop; staging is promoted from dev.
+    const dev = DeployPlanSchema.parse({
+      ...namedOf(app.prod, "dev"),
+      cicd: { ...namedOf(app.prod, "dev").cicd, branch: "develop" },
+    });
+    await writeArtifact("plan", environmentPaths(prodDeps.paths, "dev").files.plan, dev);
+    const staging = await app.deps("staging");
+    await writeArtifact("plan", staging.paths.files.plan, promotedOf(app.prod, "staging", "dev"));
+    await runProvision(staging, { services: app.services(new FakeEngine()) });
+
+    const workflow = await readFile(
+      join(root, ".github/workflows/opscrew-deploy-staging.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain('          BUILD_BRANCH: "develop"\n');
+    const preview = await previewDeploymentFiles(staging, {
+      services: app.services(new FakeEngine()),
+    });
+    expect([...preview.created, ...preview.changed]).toEqual([]);
+    expect(preview.unchanged).toContain(".github/workflows/opscrew-deploy-staging.yml");
+  });
+
+  it("publishes a promoted environment into the default branch, not the branch it kept (FR-1537)", async () => {
+    const app = await appInProd();
+    const { root, bare, git, prodDeps } = app;
+    // staging followed its own branch staging (`env add staging --branch staging`)...
+    await git(root, "push", "-q", "origin", "main:staging");
+    await writeArtifact(
+      "plan",
+      environmentPaths(prodDeps.paths, "dev").files.plan,
+      namedOf(app.prod, "dev"),
+    );
+    const staging = await app.deps("staging");
+    await writeArtifact("plan", staging.paths.files.plan, namedOf(app.prod, "staging"));
+    expect((await setEnvironmentBranch(staging, "staging")).cicd.branch).toBe("staging");
+    // ...and is then promoted from dev (`env set staging --from dev`).
+    const promoted = await setDeploySource(root, "staging", "dev");
+    expect(promoted.cicd.branch).toBe("staging");
+
+    const services = app.services(new FakeEngine());
+    const result = await runProvision(staging, { services });
+    expect(result.base).toBe("main");
+    const github = services.github as FakeGitHub;
+    expect(github.pulls.map((pull) => pull.base)).toEqual(["main"]);
+
+    // Merged, the workflow on main is the one staging's plan generates, as `opscrew promote` checks.
+    const path = ".github/workflows/opscrew-deploy-staging.yml";
+    const head = github.pulls[0]?.head ?? "";
+    await git(root, "checkout", "-q", "main");
+    await git(root, "merge", "-q", "--ff-only", head);
+    await git(root, "push", "-q", "origin", "main");
+    const rendered = (await readFile(join(root, path), "utf8")).replace(/\r\n/g, "\n");
+    expect(await git(bare, "rev-parse", `main:${path}`)).toBe(blobOf(rendered));
+    expect(
+      await git(bare, "ls-tree", "--name-only", "staging", ".github/workflows/"),
+    ).not.toContain("opscrew-deploy-staging.yml");
   });
 
   it("refuses staging when its shared parts differ from prod's, before anything", async () => {

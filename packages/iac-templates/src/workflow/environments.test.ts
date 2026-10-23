@@ -56,8 +56,15 @@ type Workflow = {
   jobs: Record<string, Job>;
 };
 
-/** The render context; a localhost plan's scripts route the app's hostname on this computer. */
-const ctx = { ...testContext(), localhost: { hostname: "shop.localhost" } };
+/**
+ * The render context; a localhost plan's scripts route the app's hostname on this computer, and a
+ * promoted plan's images are built by pushes to main (staging follows main).
+ */
+const ctx = {
+  ...testContext(),
+  localhost: { hostname: "shop.localhost" },
+  builderBranch: "main",
+};
 const content = (plan: DeployPlan) => renderWorkflow(plan, ctx).content;
 const workflow = (plan: DeployPlan) => parse(content(plan)) as Workflow;
 const action = (key: keyof typeof ACTIONS) => ACTIONS[key].split(" #")[0];
@@ -163,6 +170,33 @@ describe("a workflow per environment", () => {
     expect(doc.jobs.verify).toEqual(workflow(promotedProd).jobs.verify);
     expect(doc.jobs.deploy?.needs).toBe("verify");
     expect(stepOf(doc.jobs.deploy, "write").env?.IMAGE).toBe("${{ needs.verify.outputs.image }}");
+  });
+
+  it("checks the branch of the environment that builds the images, as the render gives it", () => {
+    const fromDevelop = renderWorkflow(promotedProd, { ...ctx, builderBranch: "develop" }).content;
+    const verify = (parse(fromDevelop) as Workflow).jobs.verify;
+    expect(stepOf(verify, "provenance").env?.BUILD_BRANCH).toBe("develop");
+    expect(fromDevelop).toContain(
+      "# environment runs. It checks that a push to develop in this repository built that image, then",
+    );
+    // Only the branch differs from the workflow of images built on main.
+    expect(fromDevelop.replaceAll("develop", "main")).toBe(content(promotedProd));
+    for (const plan of [
+      promotedProd,
+      inEnvironment(portainerTestPlan({ redeploy: "updater" }), { deploySource: PROMOTE }),
+    ]) {
+      expect(() => renderWorkflow(plan, testContext())).toThrow(
+        /without the branch that builds its images/,
+      );
+    }
+  });
+
+  it("renders an environment that follows a branch the same with or without a builder's branch", () => {
+    for (const plan of [prod, staging]) {
+      expect(renderWorkflow(plan, { ...ctx, builderBranch: "develop" }).content).toBe(
+        renderWorkflow(plan, { ...ctx, builderBranch: undefined }).content,
+      );
+    }
   });
 });
 
@@ -428,18 +462,18 @@ describe("the verify job", { timeout: 60_000 }, () => {
   const good = {
     DIGEST,
     TAG: `${COMMIT}-staging`,
-    DEFAULT_BRANCH: "main",
+    BUILD_BRANCH: "main",
     PROVENANCE: provenance(RUN),
     RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
     TAGGED: DIGEST,
   };
   const run = (env: Partial<typeof good>) => runScript(script, fakes, { ...good, ...env });
 
-  it("runs the provenance check with the job's token and the repository's default branch", () => {
+  it("runs the provenance check with the job's token and the branch that builds the images", () => {
     expect(stepOf(verify(promotedProd), "provenance").env).toEqual({
       DIGEST: "${{ inputs.digest }}",
       TAG: "${{ inputs.tag }}",
-      DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}",
+      BUILD_BRANCH: "main",
       GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
     });
     expect(verify(promotedProd).steps[0]?.uses).toBe(action("login"));
@@ -447,7 +481,7 @@ describe("the verify job", { timeout: 60_000 }, () => {
   });
 
   it.skipIf(!bashWorks())(
-    "passes an image this repository's default branch built, with its image and commit tag",
+    "passes an image a push to the builder's branch built, with its image and commit tag",
     () => {
       const result = run({});
       expect(result.status, result.out).toBe(0);
@@ -485,6 +519,32 @@ describe("the verify job", { timeout: 60_000 }, () => {
         RUN_RECORD: `push acme/shop main ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
       });
       expect(lower.status, lower.out).toBe(0);
+    },
+  );
+
+  it.skipIf(!bashWorks())(
+    "passes a build on the builder's own branch, and refuses one on another, the default branch too",
+    () => {
+      // dev follows develop and builds the images staging and prod are promoted with.
+      const fromDev = {
+        BUILD_BRANCH: "develop",
+        TAG: `${COMMIT}-dev`,
+        RUN_RECORD: `push Acme/Shop develop ${COMMIT} .github/workflows/opscrew-deploy-dev.yml`,
+      };
+      const passed = run(fromDev);
+      expect(passed.status, passed.out).toBe(0);
+      expect(passed.outputs.identity).toBe(
+        "https://github.com/Acme/Shop/.github/workflows/opscrew-deploy-dev.yml@refs/heads/develop",
+      );
+      const onMain = run({
+        ...fromDev,
+        RUN_RECORD: `push Acme/Shop main ${COMMIT} .github/workflows/opscrew-deploy-dev.yml`,
+      });
+      expect(onMain.status).toBe(1);
+      expect(onMain.out).toContain(
+        "::error::The image was built from the branch main, not from develop, the branch whose pushes build the images this environment is promoted with. OpsCrew promotes only images a push to develop built.",
+      );
+      expect(onMain.outputs).toEqual({});
     },
   );
 
@@ -540,7 +600,7 @@ describe("the verify job", { timeout: 60_000 }, () => {
         {
           RUN_RECORD: `push Acme/Shop feature ${COMMIT} .github/workflows/opscrew-deploy-staging.yml`,
         },
-        /built from the branch feature, not from the default branch main/,
+        /built from the branch feature, not from main, the branch whose pushes build the images this environment is promoted with/,
       ],
       // A fork's pull request named main runs in this repository too.
       [

@@ -264,9 +264,10 @@ class CloudflarePlanGate implements ApprovalHandler {
 
 /**
  * Where the deployment files are after `opscrew_apply`: a pull request, a branch (pushed or still
- * to push), or unchanged; `base` is the branch the deploy pull request goes into.
+ * to push), or unchanged, with `result.base`, the branch the deploy pull request goes into.
  */
-function publishedLines(result: ProvisionResult, base: string): string[] {
+function publishedLines(result: ProvisionResult): string[] {
+  const { base } = result;
   if (result.published === false) {
     if (result.prUrl) {
       return [
@@ -856,7 +857,7 @@ export function registerDeployTools(
             ? [`The runner machines' host plans: ${result.runnerHostPlanHashes.join(", ")}.`]
             : []),
           ...outputsLines(result, own || portainer),
-          ...publishedLines(result, plan.cicd.branch),
+          ...publishedLines(result),
           ...secretsNote,
           "",
           localOnlyRun

@@ -362,10 +362,17 @@ describe.skipIf(!findExecutable("git"))(
     it("opscrew_apply says plainly when the deployment files did not change or still need a push", async () => {
       const branch = "opscrew/deploy-setup";
       const outcomes = [
-        { applied: false, outputs: {}, branch: "main", published: false },
-        { applied: false, outputs: {}, branch: "main", published: false, prUrl: PR_URL },
-        { applied: false, outputs: {}, branch, published: false },
-        { applied: false, outputs: {}, branch, published: true, pushed: false },
+        { applied: false, outputs: {}, branch: "main", base: "main", published: false },
+        {
+          applied: false,
+          outputs: {},
+          branch: "main",
+          base: "main",
+          published: false,
+          prUrl: PR_URL,
+        },
+        { applied: false, outputs: {}, branch, base: "main", published: false },
+        { applied: false, outputs: {}, branch, base: "main", published: true, pushed: false },
       ];
       const h = await connect({
         elicit: approveAll,

@@ -3,6 +3,7 @@ import { appDir } from "../edge";
 import { runtimeDir } from "../runtime-dir";
 import type { RenderContext } from "../types";
 import {
+  builderBranchOf,
   deploySecretName,
   environmentName,
   githubEnvironment,
@@ -161,21 +162,23 @@ export function deployRows(plan: DeployPlan, repo: string): string[] {
 /**
  * "How a deploy works" and "Roll back", with the target's notes after the build step (`build`) and
  * after the start step (`start`). A promoted environment builds nothing: `opscrew promote` starts
- * its workflow with an image's digest, which its verify job checks, and rolls back the same way.
+ * its workflow with an image's digest, which its verify job checks against the branch that builds
+ * its images (`ctx.builderBranch`), and rolls back the same way.
  */
 export function deploySections(
   plan: DeployPlan,
-  environments: readonly string[] | undefined,
+  ctx: Pick<RunbookContext, "environments" | "builderBranch">,
   notes: { build?: readonly string[]; start?: readonly string[] } = {},
 ): string[] {
+  const { environments } = ctx;
   const branch = plan.cicd.branch;
   const name = environmentName(plan);
   const source = plan.environment?.deploySource;
   const first =
     source?.from === "promote"
       ? [
-          `1. \`opscrew promote --to ${name}\` finds the image the \`${source.source}\` environment runs, checks that a push to this`,
-          `   repository's default branch built it, checks that ${name} has no change waiting for \`${opscrew(plan, "provision", environments)}\`, and`,
+          `1. \`opscrew promote --to ${name}\` finds the image the \`${source.source}\` environment runs, checks that a push to`,
+          `   \`${builderBranchOf(plan, ctx)}\` in this repository built it, checks that ${name} has no change waiting for \`${opscrew(plan, "provision", environments)}\`, and`,
           "   shows it all with the approval's hash. Only after your approval does it start the deploy workflow with the image's",
           "   digest; `--yes` never approves a promotion.",
           `2. The workflow's verify job, on GitHub's machines, checks the image's build again${plan.supplyChain.sign ? " and its cosign signature" : ""}. Nothing is rebuilt.`,

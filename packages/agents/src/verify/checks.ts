@@ -53,10 +53,11 @@ export interface VerifyCheckContext {
   /** Cloudflare edge ranges; when absent, proxied records are only checked not to expose the origin. */
   cloudflareRanges?: CloudflareRanges;
   /**
-   * Latest runs of the deploy workflow on the deploy branch, newest first. Return `undefined`
-   * (or throw) when they cannot be read, for example without a GitHub token.
+   * Latest runs of the deploy workflow on the branch it runs on (`branch`: `workflowBranch`),
+   * newest first. Return `undefined` (or throw) when they cannot be read, for example without a
+   * GitHub token.
    */
-  deployRuns: () => Promise<DeployRunInfo[] | undefined>;
+  deployRuns: () => Promise<{ branch: string; runs: DeployRunInfo[] } | undefined>;
   /** Per-request timeout. Default 10 s (3 s for TCP). */
   timeoutMs?: number;
   /**
@@ -1003,16 +1004,18 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
   latestDeployAt?: string;
 }> {
   const id = "deploy-run";
-  const { workflowPath, branch } = ctx.plan.cicd;
+  const { workflowPath } = ctx.plan.cicd;
   const workflow = workflowPath.split("/").pop() ?? workflowPath;
-  const title = `Latest ${workflow} run on ${branch} succeeded`;
-  let runs: DeployRunInfo[] | undefined;
+  let found: Awaited<ReturnType<VerifyCheckContext["deployRuns"]>>;
   let reason = "no GitHub token is available (set GITHUB_TOKEN or run `gh auth login`)";
   try {
-    runs = await ctx.deployRuns();
+    found = await ctx.deployRuns();
   } catch (error) {
     reason = errorText(error);
   }
+  const branch = found?.branch ?? ctx.plan.cicd.branch;
+  const runs = found?.runs;
+  const title = `Latest ${workflow} run on ${branch} succeeded`;
   if (runs === undefined) {
     return {
       check: checkResult(id, title, "high", "warn", `Could not read the deploy runs: ${reason}.`, {

@@ -16,6 +16,8 @@ export interface EnvironmentSummary {
   target: DeployProvider;
   /** `main` (built and deployed on each push), or the environment it is promoted from. */
   from: string;
+  /** With `from: main`, the branch whose pushes build and deploy it. */
+  branch?: string;
   /** Where its deploy job runs. */
   runner: NonNullable<DeployPlan["environment"]>["runner"];
   /** The runner machine of `runner: host`, by its name. */
@@ -48,7 +50,8 @@ export async function environmentDeployed(paths: ProjectPaths, plan: DeployPlan)
 
 /**
  * The app's environments in their order (`environmentsOf`: each after its source), each with its
- * target, deploy source, runner and whether it is deployed. `paths` are any environment's.
+ * target, deploy source (with the branch it follows, never the one a promoted environment keeps
+ * for later), runner and whether it is deployed. `paths` are any environment's.
  */
 export async function listEnvironments(paths: ProjectPaths): Promise<EnvironmentSummary[]> {
   const names = await environmentsOf(paths.root);
@@ -60,7 +63,9 @@ export async function listEnvironments(paths: ProjectPaths): Promise<Environment
       return {
         name,
         target: plan.target.provider,
-        from: source?.from === "promote" ? source.source : "main",
+        ...(source?.from === "promote"
+          ? { from: source.source }
+          : { from: "main", branch: plan.cicd.branch }),
         runner: plan.environment?.runner ?? "github",
         ...(plan.environment?.runnerHost !== undefined
           ? { runnerHost: plan.environment.runnerHost.name }

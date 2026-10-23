@@ -267,6 +267,116 @@ describe("promote", () => {
     });
   });
 
+  describe("the build's branch (FR-1537)", () => {
+    /** staging follows develop, and its build of the image ran on `branch`. */
+    async function stagingOnDevelop(branch: string) {
+      const world = await promoteWorld({
+        staging: (plan) =>
+          DeployPlanSchema.parse({ ...plan, cicd: { ...plan.cicd, branch: "develop" } }),
+      });
+      world.github.build(STAGING_IMAGE, {
+        runId: STAGING_RUN,
+        commit: STAGING_COMMIT,
+        run: { headBranch: branch },
+      });
+      return world;
+    }
+
+    it("passes an image built on the branch the source environment follows, and dispatches on the default branch", async () => {
+      const world = await stagingOnDevelop("develop");
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+      expect(result.digest).toBe(STAGING_IMAGE);
+      expect(world.handler.requests[0]?.details).toContain(
+        `Built by: https://github.com/acme/shop/actions/runs/${STAGING_RUN}/attempts/1, from develop at ${STAGING_COMMIT}`,
+      );
+      // The target's workflow lives on the default branch, and runs there.
+      expect(world.github.dispatches.map((d) => [d.workflowFile, d.ref])).toEqual([
+        ["opscrew-deploy.yml", "main"],
+      ]);
+    });
+
+    it("refuses an image built on another branch, the default one too", async () => {
+      const world = await stagingOnDevelop("main");
+      const error = await failure(
+        promote(world.deps, { target: "prod", services: world.services }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        "The image was built from the branch main, not from develop, the branch whose pushes build the images this environment is promoted with. Nothing was deployed.",
+      );
+      expect(error.hint).toBe(
+        "OpsCrew promotes only images acme/shop's deploy workflow built from develop. Promote the image another environment runs, built by a push to develop.",
+      );
+      expect(world.handler.requests).toEqual([]);
+      expect(world.github.dispatches).toEqual([]);
+    });
+
+    it("checks the branch of the environment that built the image, at the start of the chain", async () => {
+      // dev follows develop; staging is promoted from dev, and prod from staging.
+      const world = await promoteWorld({
+        staging: (plan) =>
+          DeployPlanSchema.parse({
+            ...plan,
+            environment: { ...plan.environment, deploySource: { from: "promote", source: "dev" } },
+          }),
+      });
+      const dev = inEnvironment(world.prodPlan, "dev");
+      await world.writePlan(
+        "dev",
+        DeployPlanSchema.parse({ ...dev, cicd: { ...dev.cicd, branch: "develop" } }),
+      );
+      const commit = commitOf("dev");
+      const built = digestOf("dev's build");
+      world.github.build(built, {
+        runId: 701,
+        commit,
+        environment: "dev",
+        run: { headBranch: "develop" },
+      });
+      world.github.tags.set("opscrew-staging", built);
+      expect((await promote(world.deps, { target: "prod", services: world.services })).digest).toBe(
+        built,
+      );
+
+      world.github.build(built, { runId: 701, commit, environment: "dev" });
+      const error = await failure(
+        promote(world.deps, { target: "prod", services: world.services }),
+      );
+      expect(error.message).toContain(
+        "built from the branch main, not from develop, the branch whose pushes build the images this environment is promoted with",
+      );
+    });
+
+    it("refuses a rollback to an image built on a branch the chain no longer builds from, before the approval", async () => {
+      // prod's previous image was built on main by staging; now prod ← staging ← dev, dev on develop.
+      const world = await promoteWorld({
+        staging: (plan) =>
+          DeployPlanSchema.parse({
+            ...plan,
+            environment: { ...plan.environment, deploySource: { from: "promote", source: "dev" } },
+          }),
+      });
+      const dev = inEnvironment(world.prodPlan, "dev");
+      await world.writePlan(
+        "dev",
+        DeployPlanSchema.parse({ ...dev, cicd: { ...dev.cicd, branch: "develop" } }),
+      );
+      const error = await failure(
+        promote(world.deps, {
+          target: "prod",
+          digest: PREVIOUS_IMAGE,
+          services: world.services,
+        }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        "The image was built from the branch main, not from develop, the branch whose pushes build the images this environment is promoted with. Nothing was deployed.",
+      );
+      expect(world.handler.requests).toEqual([]);
+      expect(world.github.dispatches).toEqual([]);
+    });
+  });
+
   describe("the approval", () => {
     it("is never granted by --yes: the kinds --yes grants cannot deploy", async () => {
       const world = await promoteWorld({
@@ -576,7 +686,9 @@ describe("promote", () => {
         promote(world.deps, { target: "prod", services: world.services }),
       );
       expect(error.code).toBe("PHASE_PRECONDITION");
-      expect(error.message).toContain("built by a pull_request run, not by a push to main");
+      expect(error.message).toContain(
+        "The image was built by a pull_request run, not by a push to main.",
+      );
       expect(world.handler.requests).toEqual([]);
     });
 
@@ -617,7 +729,9 @@ describe("promote", () => {
         promote(world.deps, { target: "prod", services: world.services }),
       );
       expect(error.code).toBe("PHASE_PRECONDITION");
-      expect(error.message).toContain("from the branch feature, not from the default branch main");
+      expect(error.message).toContain(
+        "The image was built from the branch feature, not from main, the branch whose pushes build the images this environment is promoted with.",
+      );
       expect(world.handler.requests).toEqual([]);
     });
 

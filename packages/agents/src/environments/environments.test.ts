@@ -342,9 +342,42 @@ describe("listEnvironments and removeEnvironment", () => {
       }),
     );
     expect(await listEnvironments(deps.paths)).toEqual([
-      { name: "prod", target: "hetzner", from: "main", runner: "github", deployed: true },
-      { name: "staging", target: "digitalocean", from: "main", runner: "server", deployed: false },
+      {
+        name: "prod",
+        target: "hetzner",
+        from: "main",
+        branch: "main",
+        runner: "github",
+        deployed: true,
+      },
+      {
+        name: "staging",
+        target: "digitalocean",
+        from: "main",
+        branch: "main",
+        runner: "server",
+        deployed: false,
+      },
     ]);
+  });
+
+  it("lists a promoted environment by its source, never the branch it keeps for later", async () => {
+    const { deps } = await withStaging();
+    const qa = inEnvironment(prodPlan(), "qa", {
+      deploySource: { from: "promote", source: "staging" },
+    });
+    await writeArtifact(
+      "plan",
+      environmentPaths(deps.paths, "qa").files.plan,
+      DeployPlanSchema.parse({ ...qa, cicd: { ...qa.cicd, branch: "develop" } }),
+    );
+    expect((await listEnvironments(deps.paths)).at(-1)).toEqual({
+      name: "qa",
+      target: "hetzner",
+      from: "staging",
+      runner: "github",
+      deployed: false,
+    });
   });
 
   it("removes only the environment's own files", async () => {

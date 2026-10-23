@@ -195,7 +195,10 @@ async function verified(deps: Project["deps"], deployedAt: string) {
   const fetch: FetchLike = async (input) => {
     const url = new URL(String(input));
     if (url.host === "api.github.com") {
+      // The repository (its default branch) and its workflow runs, in one answer.
       return Response.json({
+        default_branch: "main",
+        private: true,
         workflow_runs: [
           {
             id: 42,

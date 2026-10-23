@@ -132,6 +132,11 @@ export interface RunDesignOptions {
     NonNullable<DeployPlan["environment"]>,
     "deploySource" | "runner" | "runnerHost" | "build"
   >;
+  /**
+   * A new environment's `cicd.branch` (`opscrew env add --branch`), written into its first plan;
+   * a later design keeps the plan's own.
+   */
+  branch?: string;
   /** This computer (the localhost target): its CPU and the port probe (fakes in tests). */
   localhost?: Pick<LocalhostServices, "arch" | "portFree">;
 }
@@ -730,9 +735,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     fresh = planFor({ ...components, processes: { ...components.processes, cron } });
   }
   const named =
-    shared === undefined
-      ? fresh
-      : environmentNames(fresh, shared, paths.environment, options.environment);
+    shared === undefined ? fresh : environmentNames(fresh, shared, paths.environment, options);
   const own = previous ? keepPlanSettings(named, previous, requirements) : named;
   const kept = shared === undefined ? own : environmentPlan(own, shared, paths);
   // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
@@ -855,21 +858,25 @@ function samePlan(a: DeployPlan, b: DeployPlan): boolean {
 /**
  * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>`, its own
  * workflow and infrastructure root, and its `environment` block (with the deploy source and runner
- * `opscrew env add` chose). An earlier plan's root and block are kept over these
- * (`keepPlanSettings`).
+ * `opscrew env add` chose) and branch (`--branch`). An earlier plan's root, block and branch are
+ * kept over these (`keepPlanSettings`).
  */
 function environmentNames(
   plan: DeployPlan,
   prodPlan: DeployPlan,
   name: string,
-  environment: RunDesignOptions["environment"],
+  options: Pick<RunDesignOptions, "environment" | "branch">,
 ): DeployPlan {
   return {
     ...plan,
-    environment: EnvironmentSchema.parse({ ...environment, name }),
+    environment: EnvironmentSchema.parse({ ...options.environment, name }),
     app: { ...plan.app, name: `${prodPlan.app.name}-${name}` },
     infra: { ...plan.infra, dir: environmentInfraDir(name) },
-    cicd: { ...plan.cicd, workflowPath: environmentWorkflowPath(name) },
+    cicd: {
+      ...plan.cicd,
+      workflowPath: environmentWorkflowPath(name),
+      ...(options.branch !== undefined ? { branch: options.branch } : {}),
+    },
   };
 }
 
@@ -1072,10 +1079,10 @@ async function requireChosenApp(
 
 /**
  * Carries what the user and later phases put into the previous plan over to the new one:
- * `deployment`, `approvals`, `security`, `infra`, `environment`, `app.maxBodyMb`, the server's proxy
- * (`target.edge`, between server targets) and the status of code changes that are still
- * the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the DNS proxy
- * setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
+ * `deployment`, `approvals`, `security`, `infra`, `environment`, `cicd.branch`, `app.maxBodyMb`,
+ * the server's proxy (`target.edge`, between server targets) and the status of code changes that
+ * are still the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the
+ * DNS proxy setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
  * `portainer` is kept exactly as it was, with the Cloudflare zone learned for it (`dns.zone`)
  * while the app's domain is still on Cloudflare inside that zone. A Portainer subdomain the new
  * DNS settings no longer allow stops design before plan.yaml changes. Image retention is kept, and
@@ -1146,6 +1153,8 @@ function keepPlanSettings(
     deploy: keptDeploy(fresh, previous),
     cicd: {
       ...fresh.cicd,
+      // The branch it follows, set by `opscrew env add|set --branch` or by an earlier design.
+      branch: previous.cicd.branch,
       imageRetention: previous.cicd.imageRetention,
       ...(answeredLater ? {} : { deployTags: previous.cicd.deployTags }),
     },

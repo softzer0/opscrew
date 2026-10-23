@@ -29,8 +29,10 @@ before anything is created:
   `dev` defaults to [this computer](localhost.md), which costs nothing.
 - **Its size**, from the number of people who will use it each month.
 - **Its hostname**, by default `staging.<your domain>`. Every environment needs its own hostname.
-- **Where it gets new versions:** built and deployed on each push to your branch (the default), or
-  promoted from another environment (see [Promotion](#promotion)).
+- **Where it gets new versions:** built and deployed on each push to a branch (your repository's
+  default branch, or the one you name with `--branch`), or promoted from another environment. See
+  [Two setups](#two-setups-promotion-first-or-a-branch-per-environment) and
+  [Promotion](#promotion).
 - **Where its deploy job runs:** on GitHub's machines (the default), on a runner on the server, on
   a runner on this computer, or on a [runner machine](runners.md#runner-machines) of yours. See
   [Self-hosted runners](runners.md).
@@ -42,7 +44,7 @@ In scripts, pass the answers as flags:
 
 ```bash
 npx opscrew env add staging --target hetzner --from main --runner github
-npx opscrew env add dev --target localhost --runner local
+npx opscrew env add dev --target localhost --runner local --branch develop
 npx opscrew env add qa --target hetzner --runner host --runner-host home --build runner
 ```
 
@@ -50,6 +52,7 @@ npx opscrew env add qa --target hetzner --runner host --runner-host home --build
 |---|---|
 | `--target <provider>` | where it runs: `hetzner`, `digitalocean`, `own`, `portainer` or `localhost` |
 | `--from <source>` | `main`, or the environment it is promoted from |
+| `--branch <name>` | with `--from main`: the branch whose pushes build and deploy it (by default your repository's default branch); see [`--branch`](#--branch) |
 | `--runner <where>` | where its deploy job runs: `github`, `server`, `local` or `host` |
 | `--runner-host <name>` | with `--runner host`: the runner machine (by default the project's only one) |
 | `--build <where>` | where its image is built: `github` or `runner` |
@@ -138,9 +141,12 @@ reverse), the next provision shows the move of the secrets as a planned change. 
 move into `production`, prod's old repository secrets of the same names are deleted, so the
 workflow can never read a stale one.
 
-OpsCrew creates its GitHub environments without protection rules. Where your GitHub plan offers
-them, you can add required reviewers or branch rules yourself in **Settings → Environments**;
-OpsCrew keeps them.
+Where GitHub enforces branch rules, OpsCrew gives each GitHub environment it created, after your
+approval, the rule that only one branch may deploy to it: the branch the environment follows, or
+for a promoted environment your default branch, where `opscrew promote` starts its workflow. Where
+GitHub enforces required reviewers, it offers one for an environment that is promoted to. You can
+add more rules yourself in **Settings → Environments**; OpsCrew keeps them, and never changes the
+rules of a GitHub environment you made.
 
 ### On a Free private repository
 
@@ -153,15 +159,89 @@ OpsCrew's own approval before every change is the only gate.
 Public repositories, and private ones on GitHub Pro, Team or Enterprise, get branch rules as well.
 Required reviewers on a private repository need GitHub Enterprise.
 
+## Two setups: promotion first, or a branch per environment
+
+An environment that is not promoted follows one branch: each push to it builds the image and
+deploys it to that environment. dev, staging and prod can be set up in two ways.
+
+- **Promotion first (recommended).** Only the first environment follows a branch, usually your
+  default branch. Each push builds one image and deploys it to dev. When it works there, you promote
+  exactly that image to staging, and from staging to prod. This is trunk-based development: changes
+  are merged into one branch, and prod runs the image dev and staging ran.
+
+  ```bash
+  npx opscrew env add dev
+  npx opscrew env add staging --from dev
+  npx opscrew env set prod --from staging
+  ```
+
+  Until the last command, dev and prod both follow your default branch, so a push deploys to both.
+
+- **Each environment follows its own branch**, for example dev `develop`, staging `staging` and
+  prod `main`. Merging into a branch deploys that environment.
+
+  ```bash
+  npx opscrew env add dev --branch develop
+  npx opscrew env add staging --branch staging
+  ```
+
+The trade-off: with a branch per environment, each branch builds its own image, so prod runs an
+image built again from `main`, not the one staging ran. With promotion, one image is built and moves
+forward unchanged, so prod runs exactly what was tested before it.
+
+### When your branches are named like environments
+
+When your repository on GitHub has branches named like environments (`main`, `master` or `trunk`;
+`develop`, `development` or `dev`; `staging`, `stage` or `release`):
+
+- `npx opscrew interview` shows both setups with their commands, while prod is the app's only
+  environment.
+- `npx opscrew env add dev` or `npx opscrew env add staging` in a terminal first asks which setup to
+  use, with promotion first preselected. With promotion first, a new staging is promoted from your
+  dev environment when you have one.
+- In a script, OpsCrew guesses nothing: the flags decide, and a note names the matching branches
+  and the `--branch` flag that would use one.
+
+### `--branch`
+
+`--branch <name>` on `env add` and `env set` names the branch an environment follows:
+
+```bash
+npx opscrew env add staging --branch staging
+npx opscrew env set dev --branch develop
+```
+
+OpsCrew refuses:
+
+- a branch your repository on GitHub does not have. Push it first (`git push -u origin <name>`);
+- a branch another environment already follows, and names that environment. One push would
+  otherwise build and deploy both. `env set <name> --from main` is refused the same way when the
+  branch the environment kept is one another environment follows now.
+
+Your default branch is the exception: without `--branch`, a new environment follows it, so
+`--branch main` (or whatever your default branch is) does the same as leaving `--branch` out.
+Promotion first passes through a time when two environments follow it. The environment's
+deploy-setup pull request goes into the branch it follows, since its workflow runs from there on
+each push.
+
+A promoted environment follows no branch, and its pull request goes into your default branch, where
+`opscrew promote` starts its workflow. A branch you set on it with `env set` waits in its plan for
+when it is built from main again (`npx opscrew env set <name> --from main`).
+
+`npx opscrew design` keeps the branch each environment follows. After you rename your default
+branch, run `npx opscrew analyze` (so OpsCrew knows the new name), then
+`npx opscrew env set <name> --branch <new name>` for each environment that followed it, prod
+included.
+
 ## Promotion
 
 An environment gets new versions in one of two ways:
 
-- **From your branch:** each push builds the image once and deploys it to this environment.
+- **From its branch:** each push builds the image once and deploys it to this environment.
 - **By promotion from another environment:** it is deployed only by `npx opscrew promote`, with
   exactly the image the other environment runs.
 
-A new environment follows your branch unless you name its source with `--from`, and adding one never
+A new environment follows a branch unless you name its source with `--from`, and adding one never
 changes another. To make prod take only what staging ran:
 
 ```bash
@@ -179,9 +259,10 @@ npx opscrew promote --to prod
 
 1. OpsCrew finds the image staging runs, by its digest.
 2. It checks the image's [build provenance](supply-chain.md#what-is-in-an-image-and-where-it-came-from):
-   the image must come from a push to this repository's default branch, built by this repository's
-   own workflow run, at the commit the image is tagged with (`<commit>`, or `<commit>-<env>` for the
-   environment that built it). A pull request from a fork never passes.
+   the image must come from a push to the branch the environment that built it follows, built by
+   this repository's own workflow run, at the commit the image is tagged with (`<commit>`, or
+   `<commit>-<env>` for the environment that built it). In a chain dev → staging → prod, dev built
+   the image, so it must come from a push to dev's branch. A pull request from a fork never passes.
 3. It checks that prod has no change waiting for `npx opscrew provision --env prod` (infrastructure,
    generated files, the server, Cloudflare rules or the Portainer stack), and that prod's workflow on
    the default branch is the one its plan generates. Otherwise it stops and says to provision prod
@@ -189,8 +270,10 @@ npx opscrew promote --to prod
 4. It shows the image, its provenance and prod's plan, with the promotion's hash, and asks for your
    approval. The approval is bound to the target, the source, the image's digest and prod's plan
    hash: if any of them changes, it no longer applies.
-5. It starts prod's deploy workflow with the digest and waits for the run. The workflow's verify job
-   checks the provenance again on GitHub's machines before the deploy job runs.
+5. It starts prod's deploy workflow on the default branch with the digest and waits for the run.
+   The workflow's verify job checks the provenance again on GitHub's machines before the deploy job
+   runs, against the branch `opscrew provision --env prod` wrote into it: the one the environment
+   that builds prod's images follows.
 
 Prod then runs the identical image staging ran. Nothing is rebuilt.
 
@@ -213,7 +296,7 @@ only the newest.
 
 The provenance record sits next to the image in GitHub Container Registry. Without signing, anyone
 who can push to the image's package could also write a matching record, so the check confirms that
-the image is consistent with a build of your default branch, not that it really came from one.
+the image is consistent with a build of the branch it names, not that it really came from one.
 [Signing](supply-chain.md#signing-images) (`supplyChain.sign: true`) is the real gate: with it,
 prod's verify job checks the image's cosign signature before its deploy job runs, and fails closed
 when the signature is missing or does not match. The promotion's approval says which applies.
@@ -234,7 +317,7 @@ A rollback runs the same checks and asks for the same approval. `promote` accept
 the source environment runs or the target's previous one, and it names both digests when you give
 it another.
 
-An environment that follows your branch rolls back this way: re-run its last good deploy run, or
+An environment that follows a branch rolls back this way: re-run its last good deploy run, or
 revert the commit and push.
 
 Image cleanup never deletes an image that an environment runs or ran just before (see
@@ -250,11 +333,12 @@ GitHub token.
 
 ## Changing an environment
 
-`env set` changes how an environment gets new versions, where its deploy job runs and where its
-image is built:
+`env set` changes how an environment gets new versions, the branch it follows, where its deploy
+job runs and where its image is built:
 
 ```bash
 npx opscrew env set staging --from main                        # built and deployed on each push
+npx opscrew env set staging --branch staging                   # on each push to staging (see --branch)
 npx opscrew env set staging --runner host --runner-host home   # its deploy job on your runner machine
 npx opscrew env set staging --runner host --build runner       # and its image built there too
 npx opscrew env set staging --runner github                    # back to GitHub's machines

@@ -13,6 +13,7 @@ import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, environmentsOf, readArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { builderBranch, workflowBranch } from "../environments/branches";
 import { environmentFlag } from "../environments/choice";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
@@ -225,19 +226,25 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
       ),
     deployRuns: async () => {
       if (!github.client || !github.repo) return undefined;
-      const runs = await github.client.listWorkflowRuns(github.repo.owner, github.repo.repo, {
+      const { owner, repo } = github.repo;
+      const { defaultBranch } = await github.client.getRepo(owner, repo);
+      const branch = workflowBranch(plan, defaultBranch);
+      const runs = await github.client.listWorkflowRuns(owner, repo, {
         workflowFile: plan.cicd.workflowPath,
-        branch: plan.cicd.branch,
+        branch,
         perPage: 1,
       });
-      return runs.map(
-        (run): DeployRunInfo => ({
-          status: run.status,
-          conclusion: run.conclusion,
-          htmlUrl: run.htmlUrl,
-          createdAt: run.createdAt,
-        }),
-      );
+      return {
+        branch,
+        runs: runs.map(
+          (run): DeployRunInfo => ({
+            status: run.status,
+            conclusion: run.conclusion,
+            htmlUrl: run.htmlUrl,
+            createdAt: run.createdAt,
+          }),
+        ),
+      };
     },
   });
 
@@ -323,6 +330,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
         opscrewVersion: deps.version,
         github: repo,
         environments,
+        builderBranch: await builderBranch(paths, current),
         deploySshPublicKey: (await readTextIfExists(paths.files.deployKeyPub))?.trim() ?? "",
         projectId: paths.projectId,
         ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),

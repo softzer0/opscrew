@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
 import { writeCloudflareRecord } from "../provision/shared-cloudflare";
@@ -36,6 +41,8 @@ interface SiteOptions {
   headers?: Record<string, string>;
   runs?: { status: string; conclusion: string | null; createdAt?: string }[];
   base?: string;
+  /** The deploy workflow's file name (default prod's `opscrew-deploy.yml`). */
+  workflow?: string;
 }
 
 /** Fake internet: the site, its redirect, and GitHub's workflow runs API. */
@@ -53,7 +60,12 @@ function fakeSite(o: SiteOptions = {}) {
     calls.push({ url, ...(init ? { init } : {}) });
     const parsed = new URL(url);
     if (parsed.host === "api.github.com") {
-      expect(parsed.pathname).toBe("/repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs");
+      if (parsed.pathname === "/repos/acme/shop") {
+        return Response.json({ default_branch: "main", private: true });
+      }
+      expect(parsed.pathname).toBe(
+        `/repos/acme/shop/actions/workflows/${o.workflow ?? "opscrew-deploy.yml"}/runs`,
+      );
       expect(parsed.searchParams.get("branch")).toBe("main");
       const runs = o.runs ?? [{ status: "completed", conclusion: "success" }];
       return Response.json({
@@ -632,7 +644,9 @@ describe("runVerify", () => {
     const result = await runVerify(deps, {
       resolver: resolver(),
       fetch: async (input) => {
-        if (String(input).includes("api.github.com")) return Response.json({ workflow_runs: [] });
+        if (String(input).includes("api.github.com")) {
+          return Response.json({ default_branch: "main", private: true, workflow_runs: [] });
+        }
         throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED") });
       },
       tlsConnect: cert(),
@@ -673,6 +687,44 @@ describe("runVerify", () => {
     const plan: DeployPlan = await readArtifact("plan", running.paths.files.plan);
     expect(plan.deployment.url).toBe("https://shop.example.com");
     expect(plan.deployment.firstDeployAt).toBeUndefined();
+  });
+
+  it("reads a promoted environment's deploy runs on the default branch, where promote starts them", async () => {
+    const deps = await setup();
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    // prod is promoted from staging, and keeps the branch it followed before.
+    await writeArtifact(
+      "plan",
+      join(deps.paths.root, "opscrew", "environments", "staging", "plan.yaml"),
+      DeployPlanSchema.parse({
+        ...plan,
+        environment: { name: "staging" },
+        app: { ...plan.app, name: "shop-staging" },
+        infra: { ...plan.infra, dir: "opscrew/infra/staging" },
+        cicd: { ...plan.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
+      }),
+    );
+    await writeArtifact(
+      "plan",
+      deps.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        environment: { deploySource: { from: "promote", source: "staging" } },
+        cicd: { ...plan.cicd, branch: "release" },
+      }),
+    );
+    const result = await runVerify(deps, {
+      resolver: resolver(),
+      fetch: fakeSite().fetch,
+      tlsConnect: cert(),
+      tcpConnect: closed,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const run = byId(result.checks, "deploy-run");
+    expect(run.status, run.message).toBe("pass");
+    expect(result.checks.find((check) => check.id === "deploy-run")?.title).toBe(
+      "Latest opscrew-deploy.yml run on main succeeded",
+    );
   });
 
   it("warns about the deploy run without a GitHub token", async () => {

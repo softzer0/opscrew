@@ -45,6 +45,36 @@ describe("the deploy-setup pull request of a named environment", () => {
     expect(body).toContain("- `opscrew/runtime/`: Docker Compose");
     expect(body).toContain("- `opscrew/plan.yaml`: the deployment plan.");
   });
+
+  it("names the branch an environment follows, and for a promoted one that it never builds", () => {
+    const staging = inEnvironment(testPlan(), "staging");
+    const onDevelop = DeployPlanSchema.parse({
+      ...staging,
+      cicd: { ...staging.cicd, branch: "develop" },
+    });
+    expect(deploySetupPullRequestBody(onDevelop, "1.2.3")).toContain(
+      "builds the image, pushes it to GitHub Container Registry and deploys it on every push to `develop`,",
+    );
+    const promoted = (plan: DeployPlan) =>
+      DeployPlanSchema.parse({
+        ...plan,
+        environment: { ...plan.environment, deploySource: { from: "promote", source: "dev" } },
+      });
+    const server = deploySetupPullRequestBody(promoted(onDevelop), "1.2.3");
+    expect(server).toContain(
+      "- `.github/workflows/opscrew-deploy-staging.yml`: deploys an image promoted from `dev` with `opscrew promote --to staging` (it never builds), rolling back when the health check fails.",
+    );
+    expect(server).not.toContain("builds the image");
+    expect(server).not.toContain("every push");
+    const portainer = deploySetupPullRequestBody(
+      promoted(inEnvironment(portainerPlan(), "staging")),
+      "1.2.3",
+    );
+    expect(portainer).toContain(
+      "writes an image promoted from `dev` with `opscrew promote --to staging` (it never builds) to the `opscrew-deploy-staging` branch;",
+    );
+    expect(portainer).not.toContain("every push");
+  });
 });
 
 describe("the Portainer runbook beside other environments", () => {

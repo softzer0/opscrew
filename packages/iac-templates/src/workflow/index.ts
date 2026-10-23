@@ -645,7 +645,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  * come up, writes the previous version back.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
-  if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
+  if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
   checkSshPort(ctx.sshPort);
   // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).
   const hosts = certbotHosts(plan, ctx);
@@ -714,7 +714,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       plan,
       promoted(plan)
         ? [
-            ...promotedAbout(plan),
+            ...promotedAbout(plan, ctx),
             own
               ? "# deploys it with this environment's runner, on its own machine, without building. Secrets"
               : "# deploys it to your server over SSH, without building. Secrets are set by `opscrew provision`;",
@@ -733,7 +733,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
               "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
             ],
     ),
-    ...imageSourceJob(plan),
+    ...imageSourceJob(plan, ctx),
     "",
     ...deployJob(
       plan,

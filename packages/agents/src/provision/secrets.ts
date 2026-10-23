@@ -21,6 +21,7 @@ import {
 import { type DeployPlan, EnvironmentSchema, environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { workflowBranch } from "../environments/branches";
 import { codeOf, hintOf } from "../retarget/window";
 import {
   type AppEnvironment,
@@ -369,9 +370,10 @@ const CUSTOM_BRANCHES: BranchPolicy = { protectedBranches: false, customBranchPo
  * environment, where GitHub enforces them (FR-1521), after a `github-settings` approval naming
  * each change. Only in an environment OpsCrew created (`created`); a user's own is left as it is,
  * and the user is told so.
- * - The branch rule (`capability.branchPolicies`): only the default branch may deploy, as custom
- *   branch policies with that branch, where the environment still lets every branch deploy, or
- *   none (custom branch policies without a branch, left by a failed earlier run).
+ * - The branch rule (`capability.branchPolicies`): only the branch its workflow runs on may deploy
+ *   (`workflowBranch`: the branch it follows, or the default branch for a promoted environment),
+ *   as custom branch policies with that branch, where the environment still lets every branch
+ *   deploy, or none (custom branch policies without a branch, left by a failed earlier run).
  * - A required reviewer (`capability.reviewers`), for an environment promoted to that has none:
  *   offered only in an interactive run, the repository's owner when it is a user. Otherwise
  *   none is added, and the setting to add one is shown. Once declined (`declined`, the record's
@@ -398,9 +400,12 @@ async function setEnvironmentRules(
   const env = view.name;
   const name = plan.environment?.name ?? "prod";
   const settings = `https://github.com/${where}/settings/environments`;
+  const promoted = plan.environment?.deploySource?.from === "promote";
+  // The branch whose runs deploy.
+  const branch = workflowBranch(plan, defaultBranch);
   if (!input.created) {
     deps.reporter.info(
-      `OpsCrew did not create the GitHub environment ${env}, so it changes none of its rules. To let only ${defaultBranch} deploy to it, or to have each deploy wait for a reviewer, set its rules yourself in ${settings}.`,
+      `OpsCrew did not create the GitHub environment ${env}, so it changes none of its rules. To let only ${branch} deploy to it, or to have each deploy wait for a reviewer, set its rules yourself in ${settings}.`,
     );
     return;
   }
@@ -411,7 +416,6 @@ async function setEnvironmentRules(
       (view.branchPolicy.customBranchPolicies &&
         (await api.listDeploymentBranches(owner, repo, env)).length === 0));
   let reviewer: EnvironmentReviewer | undefined;
-  const promoted = plan.environment?.deploySource?.from === "promote";
   if (capability.reviewers && promoted && view.reviewers.length === 0 && !input.declined) {
     const account = deps.interactive ? await api.account(owner) : undefined;
     if (account?.type === "User") {
@@ -434,7 +438,7 @@ async function setEnvironmentRules(
       : []),
     ...(branchRule
       ? [
-          `Deployment branches: only ${defaultBranch}, the default branch. A workflow run on any other branch cannot deploy to ${env} or read its secrets.`,
+          `Deployment branches: only ${branch}, ${branch === defaultBranch ? "the default branch" : `the branch ${name} follows`}. A workflow run on any other branch cannot deploy to ${env} or read its secrets.`,
         ]
       : []),
   ];
@@ -471,7 +475,7 @@ async function setEnvironmentRules(
   }
   if (branchRule) {
     try {
-      await api.addDeploymentBranch(owner, repo, env, defaultBranch);
+      await api.addDeploymentBranch(owner, repo, env, branch);
     } catch (error) {
       // Custom branch policies without a branch stop every deploy: put back what changed.
       let undone = true;
@@ -487,9 +491,9 @@ async function setEnvironmentRules(
       }
       await input.audit(
         `set rules of environment ${env} (failed)`,
-        `${defaultBranch} could not be added to its deployment branches; ${undone ? "the rules were put back as they were" : "the rules could not be put back"}`,
+        `${branch} could not be added to its deployment branches; ${undone ? "the rules were put back as they were" : "the rules could not be put back"}`,
       );
-      const reason = `OpsCrew could not let ${defaultBranch} deploy to the GitHub environment ${env} (${errorText(error)})`;
+      const reason = `OpsCrew could not let ${branch} deploy to the GitHub environment ${env} (${errorText(error)})`;
       // Still custom branch policies without a branch: when the rules could not be put back, or
       // when that was already the state before.
       if (!undone || !custom) {
@@ -499,7 +503,7 @@ async function setEnvironmentRules(
             `${reason}${undone ? "" : ", and could not put its rules back"}: no branch can deploy to ${env} now.`,
           ),
           {
-            hint: `In ${settings}, add ${defaultBranch} under Deployment branches of ${env}, or set them to No restriction. Then run \`${command}\` again.`,
+            hint: `In ${settings}, add ${branch} under Deployment branches of ${env}, or set them to No restriction. Then run \`${command}\` again.`,
             cause: error,
           },
         );

@@ -281,6 +281,11 @@ export interface ProvisionResult {
   /** Branch holding the generated files. */
   branch?: string;
   /**
+   * The branch the pull request goes into, where the environment's workflow lives
+   * (`workflowBranch`: the branch it follows, or the default branch for a promoted environment).
+   */
+  base?: string;
+  /**
    * False when the deployment files did not change and GitHub has them, so nothing was committed
    * or pushed and no pull request was opened (`prUrl` is then one still open from earlier); absent
    * when the run stopped before that step.

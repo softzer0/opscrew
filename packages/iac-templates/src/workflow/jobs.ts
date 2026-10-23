@@ -1,10 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
+import type { RenderContext } from "../types";
 import { buildJob, sealsImage } from "./build";
 import { retentionScript } from "./retention";
 import {
   block,
+  builderBranchOf,
   CHECK_IMAGE,
   DIGEST_REF_PATTERN,
   environmentName,
@@ -57,7 +59,8 @@ const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
  * The provenance check of a promoted environment's digest (`$DIGEST`): the image's SLSA provenance
  * (`docker buildx imagetools inspect`) must name exactly one GitHub Actions run, as buildx records
  * it in `runDetails.builder.id`; that run must be this repository's, its API record must show a
- * `push` of this repository's own commits to the default branch (`$DEFAULT_BRANCH`), and the image
+ * `push` of this repository's own commits to the branch that builds the environment's images
+ * (`$BUILD_BRANCH`: the `cicd.branch` of the first of its sources that follows a branch), and the image
  * with the commit tag `$TAG` must be this digest. `$TAG` is the run's commit, or `<commit>-<env>`
  * ({@link environmentTag} of the environment that built it, which this workflow cannot know: the
  * source may itself be promoted from another). Outputs `image`, `tag` (`<name>:<commit tag>`) and
@@ -96,15 +99,15 @@ const PROVENANCE_CHECK = [
   'workflow="${workflow%%@*}"',
   "# A fork's pull request runs in this repository too, with its own branch name: only a push counts.",
   'if [[ "$event" != "push" ]]; then',
-  '  echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to the default branch built."',
+  '  echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to $BUILD_BRANCH built."',
   "  exit 1",
   "fi",
   'if [[ "${head_repo,,}" != "${GITHUB_REPOSITORY,,}" ]]; then',
   '  echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."',
   "  exit 1",
   "fi",
-  'if [[ "$branch" != "$DEFAULT_BRANCH" ]]; then',
-  '  echo "::error::The image was built from the branch $branch, not from the default branch $DEFAULT_BRANCH. OpsCrew promotes only images the default branch built."',
+  'if [[ "$branch" != "$BUILD_BRANCH" ]]; then',
+  '  echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch whose pushes build the images this environment is promoted with. OpsCrew promotes only images a push to $BUILD_BRANCH built."',
   "  exit 1",
   "fi",
   "# prod's build tags its commit, another environment's <commit>-<env>.",
@@ -126,11 +129,11 @@ const PROVENANCE_CHECK = [
 
 /**
  * A promoted environment's first job, on GitHub's machines with `actions: read` and
- * `packages: read` only: the digest input's provenance check ({@link PROVENANCE_CHECK}) and, with
- * `supplyChain.sign`, its cosign signature by the build run's workflow. Its outputs `image` and
- * `tag` stand for the build job's.
+ * `packages: read` only: the digest input's provenance check ({@link PROVENANCE_CHECK}) against the
+ * branch that builds its images ({@link builderBranchOf}) and, with `supplyChain.sign`, its cosign
+ * signature by the build run's workflow. Its outputs `image` and `tag` stand for the build job's.
  */
-function verifyJob(plan: DeployPlan): string[] {
+function verifyJob(plan: DeployPlan, ctx: Pick<RenderContext, "builderBranch">): string[] {
   return job({
     id: "verify",
     name: "Check where the image was built",
@@ -146,7 +149,7 @@ function verifyJob(plan: DeployPlan): string[] {
       "  env:",
       "    DIGEST: ${{ inputs.digest }}",
       "    TAG: ${{ inputs.tag }}",
-      "    DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+      `    BUILD_BRANCH: ${JSON.stringify(builderBranchOf(plan, ctx))}`,
       "    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
       ...run(PROVENANCE_CHECK),
       ...(plan.supplyChain.sign
@@ -174,8 +177,11 @@ function verifyJob(plan: DeployPlan): string[] {
  * The job that gives the deploy its image: the build, or for a promoted environment the check of
  * the digest it was given ({@link verifyJob}).
  */
-export function imageSourceJob(plan: DeployPlan): string[] {
-  return promoted(plan) ? verifyJob(plan) : buildJob(plan);
+export function imageSourceJob(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "builderBranch">,
+): string[] {
+  return promoted(plan) ? verifyJob(plan, ctx) : buildJob(plan);
 }
 
 /**

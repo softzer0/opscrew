@@ -24,6 +24,7 @@ import {
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { builderBranch } from "../environments/branches";
 import {
   type CloudflareSetup,
   portainerCloudflare,
@@ -533,6 +534,7 @@ export async function portainerDrift(
     current,
     deploymentRenderContext(deps, {
       plan: current,
+      builderBranch: await builderBranch(deps.paths, current),
       requirements: await readRequirements(deps),
       github,
       deployPublicKey: "",

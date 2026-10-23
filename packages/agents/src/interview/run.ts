@@ -1,4 +1,11 @@
-import { ensureStateDir, type ProjectPaths, toPosixRelative } from "@opscrew/core";
+import { join } from "node:path";
+import {
+  ensureStateDir,
+  errorMessage,
+  exists,
+  type ProjectPaths,
+  toPosixRelative,
+} from "@opscrew/core";
 import { detectProject, detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type ProjectFacts,
@@ -9,8 +16,11 @@ import {
 } from "@opscrew/plan-schema";
 import { runAnalyze } from "../analyze";
 import type { PhaseDeps } from "../context";
+import { defaultBranchOf, remoteEnvironmentBranches } from "../environments/branches";
+import { setupNote } from "../environments/setup";
 import { PORTAINER_TOKEN_VAR, providerFromTokens } from "../providers";
 import {
+  gitClient,
   hidePortainerAddress,
   type OwnServerConnection,
   readOwnServer,
@@ -274,6 +284,30 @@ export async function portainerAnswers(
 }
 
 /**
+ * While prod is the app's only environment: both setups of FR-1537 with their commands
+ * (`setupNote`), when the repository on GitHub has branches named like dev or staging. The
+ * environments are added once prod is designed, so the choice is made in `opscrew env add`. Says
+ * so and proposes nothing when git cannot read the remote's branches.
+ */
+async function environmentSetupNote(
+  deps: PhaseDeps,
+  facts: ProjectFacts,
+): Promise<string | undefined> {
+  // Another environment's files are under opscrew/environments/ (no plan is read here).
+  if (await exists(join(deps.paths.artefactsDir, "environments"))) return undefined;
+  try {
+    const matches = await remoteEnvironmentBranches(gitClient(deps));
+    // The branch design gives prod.
+    return setupNote(matches, defaultBranchOf(facts));
+  } catch (error) {
+    deps.reporter.warn(
+      `OpsCrew could not read your repository's branches on GitHub, so it proposes no setup of environments: ${errorMessage(error)}`,
+    );
+    return undefined;
+  }
+}
+
+/**
  * The interview phase: builds the questions that cannot be inferred (previous answers pre-filled),
  * takes answers from `options.answers` or `options.ask`, validates them into requirements, writes
  * `opscrew/requirements.yaml` and records the phase. In a repository with several apps it asks
@@ -424,6 +458,8 @@ export async function runInterview(
     const publicLog = signingPublicLog(options.repositoryPrivate);
     if (requirements.signImages === true && publicLog !== undefined) reporter.warn(publicLog);
     reporter.info(IMAGE_RETENTION_NOTE);
+    const setup = await environmentSetupNote(deps, facts);
+    if (setup !== undefined) reporter.info(setup);
     const budget = requirements.budgetMonthly;
     const where =
       requirements.provider === "own"

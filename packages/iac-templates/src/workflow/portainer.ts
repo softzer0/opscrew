@@ -10,7 +10,7 @@ import {
 } from "../portainer-target/stack";
 import { portainerTarget } from "../providers";
 import { PORTAINER_VERSION_PATH } from "../runtime/services";
-import type { RenderedFile } from "../types";
+import type { RenderContext, RenderedFile } from "../types";
 import { afterDeployJobs, imageSourceJob } from "./jobs";
 import {
   DIGEST_REF_PATTERN,
@@ -231,9 +231,13 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
  * new version, and otherwise writes the previous version back (calling the webhook again in
  * `cloudflare` mode) and fails the run. Without a domain, or in web mode `proxy` when the site
  * does not answer GitHub at all before the deploy (a domain only the user's network resolves),
- * there is no site to check: the job writes the branch and says so.
+ * there is no site to check: the job writes the branch and says so. A promoted environment's
+ * verify job takes the branch that builds its images from `ctx.builderBranch`.
  */
-export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
+export function renderPortainerWorkflow(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "builderBranch">,
+): RenderedFile {
   const target = portainerTarget(plan.target);
   const branch = portainerDeployBranch(plan);
   const cloudflare = target.redeploy === "cloudflare";
@@ -321,7 +325,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
       plan,
       promoted(plan)
         ? [
-            ...promotedAbout(plan),
+            ...promotedAbout(plan, ctx),
             `# writes it to the ${branch} branch, which your Portainer deploys, without building. Secrets`,
             "# are set by `opscrew provision`; their values never appear in this file.",
           ]
@@ -331,7 +335,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
             "# their values never appear in this file.",
           ],
     ),
-    ...imageSourceJob(plan),
+    ...imageSourceJob(plan, ctx),
     "",
     ...deployJob(
       plan,

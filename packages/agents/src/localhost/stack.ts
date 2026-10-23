@@ -24,6 +24,7 @@ import type { DeployPlan, LocalhostDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { builderBranch } from "../environments/branches";
 import type { DeploymentPreview } from "../provision/render";
 import { diffRenderedFiles } from "../shared";
 import { composeProject, localRoots } from "./services";
@@ -31,8 +32,9 @@ import { localSite } from "./site";
 
 /**
  * The render context of a localhost plan: the app's hostname on this computer (the scripts route
- * it, the site serves it) and the user's own additions to the proxy. Nothing else of a server's
- * context applies, and the image name comes from the repository at deploy time.
+ * it, the site serves it), the user's own additions to the proxy, and for a promoted plan the
+ * branch that builds its images (its workflow checks it). Nothing else of a server's context
+ * applies, and the image name comes from the repository at deploy time.
  */
 export async function localRenderContext(
   deps: Pick<PhaseDeps, "paths" | "version">,
@@ -40,6 +42,7 @@ export async function localRenderContext(
   site: LocalhostSite,
 ): Promise<RuntimeContext> {
   const additions = await exists(join(deps.paths.root, EDGE_PROXIES[edgeProxy(plan)].additions));
+  const builder = await builderBranch(deps.paths, plan);
   return {
     opscrewVersion: deps.version,
     github: { owner: "", repo: "" },
@@ -47,6 +50,7 @@ export async function localRenderContext(
     projectId: deps.paths.projectId,
     localhost: site,
     ...(additions ? { additions: true } : {}),
+    ...(builder !== undefined ? { builderBranch: builder } : {}),
   };
 }
 

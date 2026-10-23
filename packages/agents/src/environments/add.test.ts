@@ -32,10 +32,13 @@ import {
   PORTAINER_URL,
   portainerPlan,
   readyRemote,
+  ScriptedRunner,
   type TestPhaseDeps,
 } from "../testing";
+import { remoteWith } from "./__fixtures__/remote";
 import {
   addEnvironment,
+  type EnvironmentQuestion,
   environmentQuestions,
   listEnvironments,
   setDeploySource,
@@ -151,8 +154,22 @@ describe("addEnvironment", () => {
       "opscrew/environments/staging/plan.yaml is up to date",
     );
     expect(await listEnvironments(prod.paths)).toEqual([
-      { name: "prod", target: "hetzner", from: "main", runner: "github", deployed: false },
-      { name: "staging", target: "hetzner", from: "main", runner: "github", deployed: false },
+      {
+        name: "prod",
+        target: "hetzner",
+        from: "main",
+        branch: "trunk",
+        runner: "github",
+        deployed: false,
+      },
+      {
+        name: "staging",
+        target: "hetzner",
+        from: "main",
+        branch: "trunk",
+        runner: "github",
+        deployed: false,
+      },
     ]);
   });
 
@@ -425,6 +442,246 @@ describe("addEnvironment", () => {
     const early = await failure(addEnvironment(fresh));
     expect(early.code).toBe("PHASE_PRECONDITION");
     expect(early.hint).toBe("Run `opscrew design` first, then add the environment.");
+  });
+});
+
+describe("env add with branches named like environments (FR-1537)", () => {
+  /** prod designed (it follows trunk, the default branch), and `name`'s deps with git's `branches`. */
+  async function withBranches(name: string, branches: readonly string[]) {
+    const { prod } = await prodApp();
+    const runner = remoteWith(branches);
+    const deps = await createTestPhaseDeps({ root: prod.paths.root, environment: name, runner });
+    return { prod, deps, runner };
+  }
+
+  /** An interactive run that answers the setup with `setup` and the rest with `answers`. */
+  function terminal(setup: string | undefined, answers: Record<string, string> = {}) {
+    const shown: EnvironmentQuestion[][] = [];
+    const ask = async (questions: EnvironmentQuestion[]) => {
+      shown.push(questions);
+      if (questions[0]?.id !== "setup") return { provider: "hetzner", ...answers };
+      return setup === undefined ? {} : { setup };
+    };
+    return { shown, ask };
+  }
+
+  const BRANCHES = ["trunk", "develop", "staging", "feature/login"];
+
+  it("in a terminal, shows both setups first and preselects promotion: dev then follows trunk", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const run = terminal("promotion");
+    const { design } = await addEnvironment(deps, {
+      ask: run.ask,
+      design: { catalog: euCatalog() },
+    });
+    expect(run.shown.map((questions) => questions[0]?.id)).toEqual(["setup", "provider"]);
+    expect(run.shown[0]).toEqual([
+      {
+        id: "setup",
+        prompt:
+          "Your repository has branches named like environments (trunk, develop and staging). How should your environments get new versions?",
+        kind: "single-select",
+        options: [
+          {
+            value: "promotion",
+            label: "Promotion first: one image moves dev → staging → prod (recommended)",
+            hint: "dev is built and deployed on each push to trunk, and the environments after it are promoted with exactly the image it ran",
+          },
+          {
+            value: "branches",
+            label:
+              "Each environment follows its own branch (dev ← develop, staging ← staging, prod ← trunk)",
+            hint: "dev is built and deployed on each push to develop; each branch builds its own image",
+          },
+        ],
+        default: "promotion",
+        required: true,
+      },
+    ]);
+    expect(design.plan.environment?.deploySource).toEqual({ from: "main" });
+    expect(design.plan.cicd.branch).toBe("trunk");
+  });
+
+  it("in a terminal, with each environment on its own branch, dev follows develop", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const run = terminal("branches");
+    const { design } = await addEnvironment(deps, {
+      ask: run.ask,
+      design: { catalog: euCatalog() },
+    });
+    const from = run.shown[1]?.find((question) => question.id === "from");
+    expect(from?.default).toBe("main");
+    expect(from?.options?.[0]?.label).toBe("Built and deployed on each push to develop");
+    expect(design.plan.environment?.deploySource).toEqual({ from: "main" });
+    expect(design.plan.cicd.branch).toBe("develop");
+    expect((await readArtifact("plan", deps.paths.files.plan)).cicd.branch).toBe("develop");
+    // A later design keeps it.
+    await runDesign(deps, { catalog: euCatalog() });
+    expect((await readArtifact("plan", deps.paths.files.plan)).cicd.branch).toBe("develop");
+  });
+
+  it("in a terminal, promotion first promotes a new staging from dev", async () => {
+    const { prod } = await withBranches("dev", BRANCHES);
+    const dev = await createTestPhaseDeps({
+      root: prod.paths.root,
+      environment: "dev",
+      runner: remoteWith(BRANCHES),
+    });
+    await addEnvironment(dev, {
+      answers: { provider: "hetzner" },
+      design: { catalog: euCatalog() },
+    });
+    const staging = await createTestPhaseDeps({
+      root: prod.paths.root,
+      environment: "staging",
+      runner: remoteWith(BRANCHES),
+    });
+    const run = terminal("promotion");
+    const { design } = await addEnvironment(staging, {
+      ask: run.ask,
+      design: { catalog: euCatalog() },
+    });
+    expect(run.shown[0]?.[0]?.options?.[0]?.hint).toBe(
+      "staging is promoted from dev, with exactly the image dev runs",
+    );
+    expect(run.shown[1]?.find((question) => question.id === "from")?.default).toBe("dev");
+    expect(design.plan.environment?.deploySource).toEqual({ from: "promote", source: "dev" });
+  });
+
+  it("in a terminal, a deploy source answered after the setup wins over its branch", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const run = terminal("branches", { from: "prod" });
+    const { design } = await addEnvironment(deps, {
+      ask: run.ask,
+      design: { catalog: euCatalog() },
+    });
+    expect(design.plan.environment?.deploySource).toEqual({ from: "promote", source: "prod" });
+  });
+
+  it("in a script, guesses nothing: the flags decide, and a note names the branches", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const { design } = await addEnvironment(deps, {
+      answers: { provider: "hetzner" },
+      design: { catalog: euCatalog() },
+    });
+    expect(design.plan.environment?.deploySource).toEqual({ from: "main" });
+    expect(design.plan.cicd.branch).toBe("trunk");
+    expect(deps.reporter.lines).toContainEqual({
+      level: "info",
+      message:
+        "Your repository has branches named like environments: trunk, develop and staging. In a script OpsCrew guesses nothing, so the flags decide: the dev environment is built and deployed on each push to trunk. To have it follow develop, add --branch develop.",
+    });
+
+    const staging = await createTestPhaseDeps({
+      root: deps.paths.root,
+      environment: "staging",
+      runner: remoteWith(BRANCHES),
+    });
+    const flagged = await addEnvironment(staging, {
+      answers: { provider: "hetzner", branch: "staging" },
+      design: { catalog: euCatalog() },
+    });
+    expect(flagged.design.plan.cicd.branch).toBe("staging");
+    expect(staging.reporter.text()).toContain(
+      "In a script OpsCrew guesses nothing, so the flags decide: the staging environment is built and deployed on each push to staging.\n",
+    );
+  });
+
+  it("proposes nothing without a branch named like the environment, nor for another name", async () => {
+    for (const [name, branches] of [
+      ["dev", ["trunk", "staging"]],
+      ["qa", BRANCHES],
+    ] as const) {
+      const { deps } = await withBranches(name, branches);
+      const run = terminal("branches");
+      await addEnvironment(deps, { ask: run.ask, design: { catalog: euCatalog() } });
+      expect(run.shown.map((questions) => questions[0]?.id)).toEqual(["provider"]);
+      expect(deps.reporter.text()).not.toContain("named like environments");
+    }
+  });
+
+  it("says so and proposes nothing when git cannot read the remote's branches", async () => {
+    const { prod } = await prodApp();
+    const deps = await createTestPhaseDeps({
+      root: prod.paths.root,
+      environment: "dev",
+      runner: new ScriptedRunner(() => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: "error: No such remote 'origin'",
+      })),
+    });
+    const run = terminal("branches");
+    await addEnvironment(deps, { ask: run.ask, design: { catalog: euCatalog() } });
+    expect(run.shown.map((questions) => questions[0]?.id)).toEqual(["provider"]);
+    expect(deps.reporter.text()).toContain(
+      "warn: OpsCrew could not read your repository's branches on GitHub, so it proposes no setup for the dev environment: git remote failed: error: No such remote 'origin'",
+    );
+  });
+
+  it("--branch refuses a branch the repository does not have, and writes nothing", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const error = await failure(
+      addEnvironment(deps, {
+        answers: { provider: "hetzner", branch: "release/1" },
+        design: { catalog: euCatalog() },
+      }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "The repository on GitHub has no branch release/1, so no push to it could deploy the dev environment.",
+    );
+    expect(await exists(deps.paths.files.requirements)).toBe(false);
+    expect(await exists(deps.paths.files.plan)).toBe(false);
+  });
+
+  it("--branch refuses a branch another environment follows, naming both, and writes nothing", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    await addEnvironment(deps, {
+      answers: { provider: "hetzner", branch: "develop" },
+      design: { catalog: euCatalog() },
+    });
+    const staging = await createTestPhaseDeps({
+      root: deps.paths.root,
+      environment: "staging",
+      runner: remoteWith(BRANCHES),
+    });
+    const error = await failure(
+      addEnvironment(staging, {
+        answers: { provider: "hetzner", branch: "develop" },
+        design: { catalog: euCatalog() },
+      }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "The dev environment already follows develop, so the staging environment cannot follow it too: each push to develop would then build and deploy both.",
+    );
+    expect(await exists(staging.paths.files.plan)).toBe(false);
+  });
+
+  it("--branch with the default branch acts like no --branch, though prod follows it", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const { design } = await addEnvironment(deps, {
+      answers: { provider: "hetzner", branch: "trunk" },
+      design: { catalog: euCatalog() },
+    });
+    expect(design.plan.cicd.branch).toBe("trunk");
+    expect(design.plan.environment?.deploySource).toEqual({ from: "main" });
+  });
+
+  it("--branch refuses a promoted environment, which no push builds", async () => {
+    const { deps } = await withBranches("dev", BRANCHES);
+    const error = await failure(
+      addEnvironment(deps, {
+        answers: { provider: "hetzner", from: "prod", branch: "develop" },
+        design: { catalog: euCatalog() },
+      }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "A branch goes with from main: the dev environment would be promoted from prod, so no push builds it.",
+    );
+    expect(await exists(deps.paths.files.plan)).toBe(false);
   });
 });
 

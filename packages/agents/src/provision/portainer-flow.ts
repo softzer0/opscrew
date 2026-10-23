@@ -27,6 +27,7 @@ import {
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
+import { builderBranch } from "../environments/branches";
 import {
   type AppEnvironment,
   applyStackPlanAudited,
@@ -469,6 +470,7 @@ export async function provisionPortainer(
   const originChanged = originBefore !== undefined && originBefore !== stackOrigin(site);
   const ctx = deploymentRenderContext(deps, {
     plan,
+    builderBranch: await builderBranch(deps.paths, plan),
     requirements: input.requirements,
     github,
     // A Portainer target has no SSH deploy: its files never use the deploy key.
@@ -985,6 +987,7 @@ export async function provisionPortainer(
     stackApplied,
     outputs: publicOutputs(outputs),
     branch: published.published.branch,
+    base: published.published.base,
     ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
     published: published.published.published,
     pushed: published.published.pushed,

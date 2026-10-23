@@ -24,6 +24,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { builderBranch } from "../environments/branches";
 import { providerProfile } from "../providers";
 import {
   type CloudflareSetup,
@@ -93,6 +94,8 @@ export interface MoveSession {
    * Portainer on a subdomain): the move renders with them, as the last provision did.
    */
   committedRender: OwnRenderInput;
+  /** A promoted plan's builder's branch (`builderBranch`), which its workflow checks. */
+  builderBranch: string | undefined;
   /**
    * The app's site as the last provision left it (its origin TLS and additions) and the origin TLS
    * values: the new server gets the same certificates, with the same deploy secret.
@@ -281,6 +284,7 @@ export async function openSession(
     approve: input.approvePlanHash?.trim() || undefined,
     servers,
     committedRender: ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan)),
+    builderBranch: await builderBranch(deps.paths, plan),
     site: await recordedEdge(deps, withCloudflareZone(plan, cloudflare)),
   };
 }
@@ -319,6 +323,7 @@ export function renderFiles(
     cloudflare: session.cloudflare,
     own: session.committedRender,
     edge: session.site.edge,
+    builderBranch: session.builderBranch,
   });
   return renderDeployment(plan, layout ? { ...ctx, layout } : ctx);
 }

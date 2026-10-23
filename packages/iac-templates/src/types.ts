@@ -66,6 +66,12 @@ export interface RenderContext {
   /** OpsCrew project id (names `~/.opscrew/projects/<id>/` in the runbook; never an absolute path). */
   projectId?: string;
   /**
+   * For a promoted environment: the `cicd.branch` of the environment that builds the images it is
+   * promoted with (the first of its sources that follows a branch). Its workflow's verify job
+   * requires the image's build run on that branch. Absent for a plan that follows a branch.
+   */
+  builderBranch?: string | undefined;
+  /**
    * Which server modules the root module contains during a move to another provider
    * (`opscrew retarget`), from `moveLayout`. Without it the root module deploys `plan.target` as
    * `module "server"`.

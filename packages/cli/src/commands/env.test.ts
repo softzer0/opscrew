@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { makeRequirements, nextPostgresFacts, testPlan } from "@opscrew/agents/testing";
+import type { CommandRunner } from "@opscrew/contracts";
 import { exists } from "@opscrew/core";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,6 +42,23 @@ class DefaultPrompts implements UiPrompts {
   }
 }
 
+/**
+ * git whose GitHub `origin` has `branches`: `ls-remote` lists a ref when it is one of them, and
+ * every other command succeeds with no output.
+ */
+function remoteWith(branches: readonly string[]): CommandRunner {
+  return {
+    async run(_command, args) {
+      if (args.includes("get-url")) {
+        return { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" };
+      }
+      const ref = args.at(-1) ?? "";
+      const listed = args.includes("ls-remote") && branches.some((b) => ref === `refs/heads/${b}`);
+      return { exitCode: 0, stdout: listed ? `${"a".repeat(40)}\t${ref}\n` : "", stderr: "" };
+    },
+  };
+}
+
 let project: TempProject | undefined;
 afterEach(async () => {
   await project?.cleanup();
@@ -59,7 +77,7 @@ describe("opscrew env list", () => {
     expect(await run(ctx, "env", "list"), ctx.errors).toBe(0);
     const lines = ctx.output.trim().split("\n");
     expect(lines[0]).toMatch(/^Environment\s+Runs on\s+New versions\s+Deploy job\s+Deployed$/);
-    expect(lines[1]).toMatch(/^prod\s+hetzner\s+each push\s+GitHub's machines\s+yes$/);
+    expect(lines[1]).toMatch(/^prod\s+hetzner\s+each push to main\s+GitHub's machines\s+yes$/);
     expect(lines[2]).toMatch(/^staging\s+hetzner\s+promoted from prod\s+GitHub's machines\s+no$/);
   });
 });
@@ -96,6 +114,64 @@ describe("opscrew env set", () => {
     expect(await run(ctx, "env", "set", "staging", "--from", "staging")).not.toBe(0);
     expect(ctx.errors).toContain("cannot be promoted from itself");
     expect(await readFile(planFile(project.root, "staging"), "utf8")).toBe(before);
+  });
+
+  it("sets the branch the environment follows with --branch", async () => {
+    project = await withEnvironments({ staging: inEnvironment(testPlan(), "staging") });
+    const ctx = projectContext(project, { services: { runner: remoteWith(["main", "staging"]) } });
+    expect(await run(ctx, "env", "set", "staging", "--branch", "staging"), ctx.errors).toBe(0);
+    expect((await readArtifact("plan", planFile(project.root, "staging"))).cicd.branch).toBe(
+      "staging",
+    );
+    expect(ctx.output).toContain(
+      "The staging environment is built and deployed on each push to staging.",
+    );
+    expect(ctx.output).toContain("run `opscrew provision --env staging`");
+  });
+
+  it("refuses with --branch a branch the repository does not have, or another environment follows, and saves nothing of the source", async () => {
+    const dev = inEnvironment(testPlan(), "dev");
+    project = await withEnvironments({
+      dev: { ...dev, cicd: { ...dev.cicd, branch: "develop" } },
+      staging: inEnvironment(testPlan(), "staging", {
+        deploySource: { from: "promote", source: "prod" },
+      }),
+    });
+    const before = await readFile(planFile(project.root, "staging"), "utf8");
+    const unknown = projectContext(project, { services: { runner: remoteWith(["main"]) } });
+    expect(
+      await run(unknown, "env", "set", "staging", "--from", "main", "--branch", "staging"),
+    ).not.toBe(0);
+    expect(unknown.errors).toContain(
+      "The repository on GitHub has no branch staging, so no push to it could deploy the staging environment.",
+    );
+    const remote = remoteWith(["main", "develop"]);
+    const taken = projectContext(project, { services: { runner: remote } });
+    expect(await run(taken, "env", "set", "staging", "--branch", "develop")).not.toBe(0);
+    expect(taken.errors).toContain(
+      "The dev environment already follows develop, so the staging environment cannot follow it too",
+    );
+    expect(await readFile(planFile(project.root, "staging"), "utf8")).toBe(before);
+  });
+
+  it("says a promoted environment follows its --branch once it is built from main again", async () => {
+    project = await withEnvironments({
+      staging: inEnvironment(testPlan(), "staging", {
+        deploySource: { from: "promote", source: "prod" },
+      }),
+    });
+    const ctx = projectContext(project, { services: { runner: remoteWith(["main", "staging"]) } });
+    expect(await run(ctx, "env", "set", "staging", "--branch", "staging"), ctx.errors).toBe(0);
+    expect(ctx.output).toContain(
+      "The staging environment follows staging once it is built from main again (`opscrew env set staging --from main`); until then only `opscrew promote --to staging` deploys it.",
+    );
+    const both = projectContext(project, { services: { runner: remoteWith(["main", "staging"]) } });
+    expect(await run(both, "env", "set", "staging", "--from", "main", "--branch", "staging")).toBe(
+      0,
+    );
+    expect(both.output).toContain(
+      "The staging environment is built and deployed on each push to staging.",
+    );
   });
 });
 
@@ -203,5 +279,60 @@ describe("opscrew env add", () => {
     expect(asked).not.toContain("deploy job run?");
     const plan = await readArtifact("plan", planFile(project.root, "staging"));
     expect(plan.environment?.runner).toBe("server");
+  });
+
+  it("in a terminal, proposes the setup first when the repository has a branch named like it, promotion preselected", async () => {
+    project = await prodApp();
+    const prompts = new DefaultPrompts();
+    const ctx = projectContext(project, {
+      interactive: true,
+      services: { prompts, runner: remoteWith(["trunk", "develop"]) },
+    });
+    expect(await run(ctx, "env", "add", "dev", "--target", "hetzner"), ctx.errors).toBe(0);
+    expect(prompts.messages[0]).toBe(
+      "Your repository has branches named like environments (trunk and develop). How should your environments get new versions?",
+    );
+    // Promotion first: dev follows the trunk prod follows, and nothing else changed.
+    const plan = await readArtifact("plan", planFile(project.root, "dev"));
+    expect(plan.environment?.deploySource).toEqual({ from: "main" });
+    expect(plan.cicd.branch).toBe("trunk");
+  });
+
+  it("in a terminal, lets --branch decide instead of the setup", async () => {
+    project = await prodApp();
+    const prompts = new DefaultPrompts();
+    const ctx = projectContext(project, {
+      interactive: true,
+      services: { prompts, runner: remoteWith(["trunk", "develop"]) },
+    });
+    const args = ["env", "add", "dev", "--target", "hetzner", "--branch", "develop"];
+    expect(await run(ctx, ...args), ctx.errors).toBe(0);
+    expect(prompts.messages.join("\n")).not.toContain("named like environments");
+    expect((await readArtifact("plan", planFile(project.root, "dev"))).cicd.branch).toBe("develop");
+  });
+
+  it("in a script, takes --branch, and without it guesses nothing but names the branches", async () => {
+    project = await prodApp();
+    const runner = remoteWith(["trunk", "develop", "staging"]);
+    const flagged = projectContext(project, { services: { runner } });
+    const args = ["env", "add", "staging", "--branch", "staging"];
+    expect(await run(flagged, ...args), flagged.errors).toBe(0);
+    expect((await readArtifact("plan", planFile(project.root, "staging"))).cicd.branch).toBe(
+      "staging",
+    );
+    const bare = projectContext(project, { services: { runner } });
+    expect(await run(bare, "env", "add", "dev", "--target", "hetzner"), bare.errors).toBe(0);
+    expect((await readArtifact("plan", planFile(project.root, "dev"))).cicd.branch).toBe("trunk");
+    expect(`${bare.output}${bare.errors}`).toContain(
+      "In a script OpsCrew guesses nothing, so the flags decide: the dev environment is built and deployed on each push to trunk. To have it follow develop, add --branch develop.",
+    );
+  });
+
+  it("refuses --branch with a branch the repository does not have, and writes nothing", async () => {
+    project = await prodApp();
+    const ctx = projectContext(project, { services: { runner: remoteWith(["trunk"]) } });
+    expect(await run(ctx, "env", "add", "staging", "--branch", "staging")).not.toBe(0);
+    expect(ctx.errors).toContain("The repository on GitHub has no branch staging");
+    expect(await exists(planFile(project.root, "staging"))).toBe(false);
   });
 });

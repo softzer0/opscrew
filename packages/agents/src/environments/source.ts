@@ -6,6 +6,7 @@ import {
   resolveEnvironmentPaths,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { requireBranchFree } from "./branches";
 
 /** `plan.environment.deploySource`: built from main, or promoted from another environment. */
 export type DeploySource = NonNullable<DeployPlan["environment"]>["deploySource"];
@@ -13,10 +14,11 @@ export type DeploySource = NonNullable<DeployPlan["environment"]>["deploySource"
 /**
  * Sets how the environment is deployed (`opscrew env set <name> --from main|<source>`): `main`
  * (built and deployed on each push), or promoted from `from`, another existing environment whose
- * own sources never lead back to this one. Writes the environment's plan only when it changes;
- * its next provision shows and applies the workflow change. Returns the plan.
+ * own sources never lead back to this one. Built from main again, it follows the branch its plan
+ * kept, which no other environment may follow (`requireBranchFree`). Writes the plan only when it
+ * changes; its next provision shows and applies the workflow change. Returns the plan.
  * @throws OpsCrewError `INVALID_INPUT` for an unknown environment or source, the environment
- * itself, or a source that would promote in a cycle.
+ * itself, a source that would promote in a cycle, or a kept branch another environment follows.
  */
 export async function setDeploySource(
   root: string,
@@ -24,7 +26,8 @@ export async function setDeploySource(
   from: string,
 ): Promise<DeployPlan> {
   // Only the repository's files are read and written, so no OpsCrew home is read for the paths.
-  const { files } = await resolveEnvironmentPaths(root, environment, { env: {} });
+  const own = await resolveEnvironmentPaths(root, environment, { env: {} });
+  const { files } = own;
   const plan = await readArtifact("plan", files.plan);
   let deploySource: DeploySource = { from: "main" };
   if (from !== "main") {
@@ -55,6 +58,8 @@ export async function setDeploySource(
   }
   const before = plan.environment?.deploySource ?? { from: "main" };
   if (canonicalJson(before) === canonicalJson(deploySource)) return plan;
+  // Built from main again, it follows the branch its plan kept: no other environment's.
+  if (deploySource.from === "main") await requireBranchFree(own, plan.cicd.branch);
   const changed: DeployPlan = {
     ...plan,
     environment: EnvironmentSchema.parse({ ...plan.environment, deploySource }),

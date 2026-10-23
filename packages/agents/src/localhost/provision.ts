@@ -257,11 +257,12 @@ export async function provisionLocalhost(
   const merge = mergeDeploysNote(published.plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   deps.reporter.info(
-    `Once the deploy workflow ${plan.cicd.workflowPath} is on ${plan.cicd.branch}, \`opscrew runner start --env ${deps.paths.environment}\` runs its deploy job on this computer.`,
+    `Once the deploy workflow ${plan.cicd.workflowPath} is on ${published.published.base}, \`opscrew runner start --env ${deps.paths.environment}\` runs its deploy job on this computer.`,
   );
   return {
     ...result,
     branch: published.published.branch,
+    base: published.published.base,
     ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
     published: published.published.published,
     pushed: published.published.pushed,

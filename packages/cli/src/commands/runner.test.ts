@@ -314,7 +314,9 @@ describe.skipIf(GIT === undefined)("opscrew runner host", () => {
 
     const list = context(project, fakes);
     expect(await run(list, "env", "list"), list.errors).toBe(0);
-    expect(list.output).toMatch(/staging\s+hetzner\s+each push\s+the runner machine home\s+no/);
+    expect(list.output).toMatch(
+      /staging\s+hetzner\s+each push to main\s+the runner machine home\s+no/,
+    );
 
     const alone = context(project, fakes);
     expect(await run(alone, "env", "set", "staging", "--build", "github")).toBe(2);

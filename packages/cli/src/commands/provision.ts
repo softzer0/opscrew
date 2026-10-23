@@ -466,12 +466,12 @@ export async function runInfraCommand(
   // Nothing was committed (the files did not change, as the phase said): no deploy run follows
   // from this run, unless a pull request from earlier is still open. A branch whose push was
   // refused still needs it first.
-  const { published, pushed, prUrl, branch } = result.result;
+  const { published, pushed, prUrl, branch, base } = result.result;
   const deploys = published !== false || prUrl !== undefined;
   const push =
-    published === true && pushed === false && branch !== undefined
+    published === true && pushed === false && branch !== undefined && base !== undefined
       ? [
-          `push ${branch} (\`git push -u origin ${branch}\`) and open a pull request into ${result.plan?.cicd.branch ?? "main"}; merging it deploys the app.`,
+          `push ${branch} (\`git push -u origin ${branch}\`) and open a pull request into ${base}; merging it deploys the app.`,
         ]
       : [];
   if (result.portainer) {

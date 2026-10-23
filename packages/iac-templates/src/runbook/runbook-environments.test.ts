@@ -89,13 +89,15 @@ describe("renderRunbook per environment", () => {
       deploySource: PROMOTE,
       secrets: "environment",
     });
-    const { content } = renderRunbook(prod, ctx);
+    // staging, which prod is promoted from, follows develop.
+    const { content } = renderRunbook(prod, { ...ctx, builderBranch: "develop" });
     expect(content).toContain(
       "| Deploys | only by `opscrew promote --to prod`, which runs `.github/workflows/opscrew-deploy.yml` with the image the `staging` environment runs |",
     );
     expect(content).toContain(
-      "1. `opscrew promote --to prod` finds the image the `staging` environment runs",
+      "1. `opscrew promote --to prod` finds the image the `staging` environment runs, checks that a push to\n   `develop` in this repository built it,",
     );
+    expect(() => renderRunbook(prod, ctx)).toThrow(/without the branch that builds its images/);
     expect(content).toContain("`--yes` never approves a promotion.");
     expect(content).toContain("checks the image's build again. Nothing is rebuilt.");
     expect(content).toContain(
@@ -110,7 +112,10 @@ describe("renderRunbook per environment", () => {
       "| Deploy secrets | the GitHub environment `production`; the build values are repository secrets |",
     );
 
-    const signed = renderRunbook(withPlan(prod, { supplyChain: { sign: true } }), ctx).content;
+    const signed = renderRunbook(withPlan(prod, { supplyChain: { sign: true } }), {
+      ...ctx,
+      builderBranch: "main",
+    }).content;
     expect(signed).toContain(
       "checks the image's build again and its cosign signature. Nothing is rebuilt.",
     );

@@ -18,6 +18,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { builderBranch } from "../environments/branches";
 import { type CloudflareSetup, setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
@@ -203,6 +204,7 @@ async function renderChange(
       : (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
   const ctx = deploymentRenderContext(deps, {
     plan,
+    builderBranch: await builderBranch(deps.paths, plan),
     requirements: await readRequirements(deps),
     github,
     deployPublicKey: input.deployPublicKey,

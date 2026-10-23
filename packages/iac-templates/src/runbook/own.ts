@@ -99,7 +99,7 @@ export function renderOwnRunbook(
         ]),
     "| Cost | no server price: you already pay for this server; OpsCrew adds no server cost |",
     "",
-    ...deploySections(plan, environments, {
+    ...deploySections(plan, ctx, {
       build:
         target.arch === "arm64"
           ? ["   Your server is arm64, so the image is built on GitHub's arm64 runner."]

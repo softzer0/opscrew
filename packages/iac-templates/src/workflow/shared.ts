@@ -4,6 +4,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, targetArch } from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
 import { ACTIONS, type PinArch } from "../pins";
+import type { RenderContext } from "../types";
 
 /** Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
 export const DIGEST_REF_PATTERN = "^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$";
@@ -170,6 +171,23 @@ export function promoted(plan: DeployPlan): boolean {
 }
 
 /**
+ * The branch whose pushes build the images of the promoted environment `plan`
+ * (`ctx.builderBranch`).
+ * @throws OpsCrewError `INTERNAL` when the render was given none.
+ */
+export function builderBranchOf(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "builderBranch">,
+): string {
+  if (ctx.builderBranch !== undefined) return ctx.builderBranch;
+  throw new OpsCrewError(
+    "INTERNAL",
+    `OpsCrew rendered the files of the ${environmentName(plan)} environment, which is promoted, without the branch that builds its images.`,
+    { hint: "This is a bug in OpsCrew; please report it." },
+  );
+}
+
+/**
  * The job whose outputs `image` (`<name>@<digest>`) and `tag` (`<name>:<commit tag>`, see
  * {@link environmentTag}) the deploy takes: `verify` for a promoted environment, else `build`.
  */
@@ -269,13 +287,17 @@ export const GHCR_LOGIN = [
 
 /**
  * The first lines of a promoted environment's header comment: what starts the workflow and where
- * its image comes from. The renderer goes on with what it does with the image.
+ * its image comes from ({@link builderBranchOf}). The renderer goes on with what it does with the
+ * image.
  */
-export function promotedAbout(plan: DeployPlan): string[] {
+export function promotedAbout(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "builderBranch">,
+): string[] {
   const source = plan.environment?.deploySource;
   return [
     `# \`opscrew promote --to ${environmentName(plan)}\` starts this workflow with the digest of an image the ${source?.from === "promote" ? source.source : ""}`,
-    "# environment runs. It checks that this repository's default branch built that image, then",
+    `# environment runs. It checks that a push to ${builderBranchOf(plan, ctx)} in this repository built that image, then`,
   ];
 }
 

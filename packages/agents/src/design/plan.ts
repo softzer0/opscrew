@@ -14,6 +14,7 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { defaultBranchOf } from "../environments/branches";
 import { type LocalhostDesignChoice, localhostTarget } from "../localhost/design";
 import { providerProfile } from "../providers";
 import {
@@ -301,7 +302,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     cicd: {
       provider: "github-actions",
       registry: "ghcr",
-      branch: facts.git.defaultBranch ?? facts.git.currentBranch ?? "main",
+      branch: defaultBranchOf(facts),
       deployTags: {
         enabled: tags !== undefined && tags !== "off",
         release: tags === "tag-and-release",

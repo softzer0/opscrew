@@ -46,7 +46,10 @@ function fakeSite(base: string, o: { down?: boolean } = {}): FetchLike {
     const url = String(input);
     const parsed = new URL(url);
     if (parsed.host === "api.github.com") {
+      // The repository (its default branch) and its workflow runs, in one answer.
       return Response.json({
+        default_branch: "main",
+        private: true,
         workflow_runs: [
           {
             id: 42,
