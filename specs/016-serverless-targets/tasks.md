@@ -120,7 +120,7 @@ Effort`.
 
 ## Phase 3: Packages (parallel)
 
-- [ ] T1603 [P] [US1] [US2] [US4] The Cloudflare connector: Workers versions, deployments, custom domains, the token's Workers permissions, and the redirect phase in the shared rules, in `packages/connectors/cloudflare/**`
+- [X] T1603 [P] [US1] [US2] [US4] The Cloudflare connector: Workers versions, deployments, custom domains, the token's Workers permissions, and the redirect phase in the shared rules, in `packages/connectors/cloudflare/**`
   - Owns: that path (+ tests and fakes)
   - Reads: contracts/targets.md "The Cloudflare connector"; research.md R1 and "Spike results" 1–3, 9, 10, 12; plan.md "4."
   - Depends: T1601a, T1602
@@ -312,7 +312,7 @@ Effort`.
       - **Cloudflare:** the version running and the one before (read, never stored), when each was deployed, the run each came from, the custom domains' state, and the rollback command for the one before.
       - **GitHub Pages:** the site, its certificate state, HTTPS, the last Pages run and the one before.
     - **drift:** the Worker's settings and custom domains against the plan and the IaC state; the Pages settings (`build_type`, `cname`, HTTPS) against the plan; the redirect rule (`inspectShared` with `redirect: true`, T1603). Each difference says how `provision` puts it back.
-    - **secure:** the headers on Cloudflare. On GitHub Pages, the finding "GitHub Pages cannot set security headers", with what it means and that Cloudflare can.
+    - **secure:** `minTlsChecks` (secure/settings.ts) calls `planShared` with `redirect: true` for a Cloudflare-hosted app, or it throws `phaseNotRead` (T1603's review). The headers on Cloudflare. On GitHub Pages, the finding "GitHub Pages cannot set security headers", with what it means and that Cloudflare can.
     - **Server targets are unchanged** (the existing tests pass untouched).
     - **Tests:** each command on both targets with fakes, and a drifted custom domain and Pages `cname`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
@@ -334,7 +334,7 @@ Effort`.
       - Both need the typed app name, as today.
     - **promote:**
       - **A Cloudflare promotion** (`deploySource.from: promote`): the source's running version → its run id and SHA-256 from the version's message → the `promote` approval, whose hash covers the target plan hash, both environments, the run id and the SHA-256 → `dispatchWorkflow` with `run` and `sha256`. A version without OpsCrew's message, or an expired artifact, is refused with what to do.
-      - **A rollback, any environment:** `version`. On Cloudflare it activates that version of the environment's own Worker through `deployWorkerVersion`. On GitHub Pages it re-runs that run with `rerunWorkflowRun`. Both need a `promote` approval over the target plan hash and the id.
+      - **A rollback, any environment:** `version`. Cloudflare blocks a rollback to a version older than a secret change unless `force` is sent; T1614 checks what it answers, and an approved rollback sends `force=true` if that's needed (T1603's review). On Cloudflare it activates that version of the environment's own Worker through `deployWorkerVersion`. On GitHub Pages it re-runs that run with `rerunWorkflowRun`. Both need a `promote` approval over the target plan hash and the id.
       - **Refused:** `digest` on these targets, `version` on server targets, and promotion on GitHub Pages (each environment builds its own).
     - **retarget:** refused to and from both targets (FR-1611). Its hint names `opscrew destroy`, which works for them after this task.
     - **Entry refusals T1601a added** in verify, drift, secure, destroy, promote and `env add` are replaced by the real branches (T1610a and this task). `opscrew dns` and `portainer enable`/`disable` stay refused for both targets: provision manages their DNS.
@@ -434,7 +434,7 @@ Effort`.
   - Depends: T1612a, T1612b, T1613
   - Accept:
     - **Cloudflare** (`OPSCREW_E2E_CLOUDFLARE_HOSTING=1`), in the e2e zone with `e2e-` hostnames:
-      - a static example: provision, deploy, verify (headers), a change, a rollback within a minute (SC-1604), destroy leaving nothing. The time from `provision` to the first answer is logged, and over 10 minutes fails (SC-1601);
+      - a static example: provision, deploy, verify (headers), a change, a rollback within a minute (SC-1604), destroy leaving nothing. A second `provision` right after the first shows no change, the `www` redirect rule included (Cloudflare may echo defaults in `action_parameters`, T1603's review); The time from `provision` to the first answer is logged, and over 10 minutes fails (SC-1601);
       - an SSR example: rendered per request, its secret reaching the app, and the leak search over every output (SC-1602);
       - staging promoted to prod: prod runs staging's build, with the same SHA-256.
     - **GitHub Pages** (`OPSCREW_E2E_GITHUB_PAGES=1`), on the public throwaway repository `OPSCREW_E2E_GITHUB_REPO_C`:
