@@ -7,7 +7,6 @@ import { GitHubClient } from "./index";
 
 const TOKEN = fakeSecret("github-token");
 const FILE = ".github/workflows/opscrew-deploy.yml";
-const RUNS = "GET /repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs";
 
 /** Routes by method + path prefix; each route serves its replies in order, repeating the last. */
 const fakeFetch = (routes: Record<string, FakeReply[]>) =>
@@ -43,10 +42,8 @@ function client(fetch: FetchLike, clock = fakeClock()) {
 
 describe("dispatchWorkflow", () => {
   const DISPATCH = "POST /repos/acme/shop/actions/workflows/opscrew-deploy.yml/dispatches";
-  /** GitHub's 204 to a dispatch, stamped with GitHub's own clock. */
-  const accepted: FakeReply = { status: 204, headers: { date: "Thu, 22 Oct 2026 10:00:00 GMT" } };
 
-  it("returns the run from a 200 answer", async () => {
+  it("asks for the run's details and returns the run from GitHub's 200 answer", async () => {
     const { fetch, calls } = fakeFetch({
       [DISPATCH]: [
         {
@@ -77,7 +74,11 @@ describe("dispatchWorkflow", () => {
     expect(order).toEqual(["accepted after 1 call"]);
     // Only the body fields GitHub documents for "Create a workflow dispatch event".
     expect(calls[0]?.method).toBe("POST");
-    expect(calls[0]?.body).toEqual({ ref: "main", inputs: { digest: "sha256:a" } });
+    expect(calls[0]?.body).toEqual({
+      ref: "main",
+      inputs: { digest: "sha256:a" },
+      return_run_details: true,
+    });
   });
 
   it("refuses a 200 answer that names no run", async () => {
@@ -88,20 +89,24 @@ describe("dispatchWorkflow", () => {
     expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
   });
 
-  it("records the accepted dispatch before it waits for the run", async () => {
-    const clock = fakeClock();
-    const { fetch, calls } = fakeFetch({
-      [DISPATCH]: [accepted],
-      [RUNS]: [{ body: { workflow_runs: [] } }],
-    });
-    let callsWhenAccepted = -1;
-    await client(fetch, clock)
-      .dispatchWorkflow("acme", "shop", FILE, "main", {}, async () => {
-        callsWhenAccepted = calls.length;
+  it("stops plainly on a 204, which names no run, after recording the accepted dispatch", async () => {
+    const { fetch, calls } = fakeFetch({ [DISPATCH]: [{ status: 204 }] });
+    let accepted = false;
+    const error = await client(fetch)
+      .dispatchWorkflow("acme", "shop", FILE, "refs/heads/main", {}, async () => {
+        accepted = true;
       })
-      .catch(() => undefined);
-    expect(callsWhenAccepted).toBe(1);
-    expect(calls.length).toBeGreaterThan(1);
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "GitHub started .github/workflows/opscrew-deploy.yml on main but did not say which run it is, so OpsCrew cannot follow it; look in https://github.com/acme/shop/actions.",
+    });
+    expect(JSON.stringify(error)).not.toContain(TOKEN);
+    // GitHub accepted it, and no list of runs is read.
+    expect(accepted).toBe(true);
+    expect(calls).toHaveLength(1);
   });
 
   it("calls nothing back when GitHub refuses the dispatch", async () => {
@@ -113,74 +118,6 @@ describe("dispatchWorkflow", () => {
       })
       .catch(() => undefined);
     expect(called).toBe(false);
-  });
-
-  it("finds the run it started after a 204, once GitHub shows it", async () => {
-    const clock = fakeClock();
-    const { fetch, calls } = fakeFetch({
-      [DISPATCH]: [accepted],
-      [RUNS]: [
-        // An earlier dispatch is not this one; the new run appears on the third poll.
-        { body: { workflow_runs: [run(9, "completed", "success", "2026-10-22T09:59:30Z")] } },
-        { body: { workflow_runs: [run(9, "completed", "success", "2026-10-22T09:59:30Z")] } },
-        {
-          body: {
-            workflow_runs: [
-              run(10, "queued", null, "2026-10-22T10:00:07Z"),
-              run(9, "completed", "success", "2026-10-22T09:59:30Z"),
-            ],
-          },
-        },
-      ],
-    });
-    expect(
-      await client(fetch, clock).dispatchWorkflow("acme", "shop", FILE, "refs/heads/main"),
-    ).toEqual({ runId: 10, url: "https://github.com/acme/shop/actions/runs/10" });
-    expect(calls[0]?.body).toEqual({ ref: "refs/heads/main", inputs: {} });
-    const query = new URL(calls[1]?.url ?? "").searchParams;
-    expect(query.get("event")).toBe("workflow_dispatch");
-    expect(query.get("branch")).toBe("main");
-    // GitHub's clock, from the dispatch's answer, less a second of rounding.
-    expect(query.get("created")).toBe(">=2026-10-22T09:59:59Z");
-    expect(calls).toHaveLength(4);
-    expect(clock.sleeps).toEqual([5000, 5000]);
-  });
-
-  it("takes the first run after the dispatch, not a later one", async () => {
-    const { fetch } = fakeFetch({
-      [DISPATCH]: [accepted],
-      [RUNS]: [
-        {
-          body: {
-            workflow_runs: [
-              run(12, "queued", null, "2026-10-22T10:00:20Z"),
-              run(11, "queued", null, "2026-10-22T10:00:06Z"),
-            ],
-          },
-        },
-      ],
-    });
-    expect(await client(fetch).dispatchWorkflow("acme", "shop", FILE, "main")).toMatchObject({
-      runId: 11,
-    });
-  });
-
-  it("says where to look when the run never appears", async () => {
-    const clock = fakeClock();
-    const { fetch } = fakeFetch({
-      [DISPATCH]: [accepted],
-      [RUNS]: [{ body: { workflow_runs: [] } }],
-    });
-    const error = await client(fetch, clock)
-      .dispatchWorkflow("acme", "shop", FILE, "main")
-      .catch((e: unknown) => e);
-    expect(error).toMatchObject({
-      code: "PROVIDER_ERROR",
-      message:
-        "GitHub accepted the dispatch of .github/workflows/opscrew-deploy.yml on main but showed no run of it within 2 minutes; look in https://github.com/acme/shop/actions.",
-    });
-    expect(JSON.stringify(error)).not.toContain(TOKEN);
-    expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(120_000);
   });
 
   it("reports failures plainly without the token", async () => {
@@ -216,7 +153,7 @@ describe("dispatchWorkflow", () => {
   });
 });
 
-describe("getWorkflowRun and listWorkflowRuns", () => {
+describe("getWorkflowRun", () => {
   it("reads one run", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /repos/acme/shop/actions/runs/7": [
@@ -232,28 +169,6 @@ describe("getWorkflowRun and listWorkflowRuns", () => {
       createdAt: "2026-10-13T10:00:00Z",
     });
     expect(calls[0]?.url).toBe("https://api.github.com/repos/acme/shop/actions/runs/7");
-  });
-
-  it("filters by event and creation time", async () => {
-    const { fetch, calls } = fakeFetch({ [RUNS]: [{ body: { workflow_runs: [] } }] });
-    await client(fetch).listWorkflowRuns("acme", "shop", {
-      workflowFile: FILE,
-      branch: "main",
-      event: "workflow_dispatch",
-      createdSince: "2026-10-13T10:00:00Z",
-    });
-    const query = new URL(calls[0]?.url ?? "").searchParams;
-    expect(query.get("event")).toBe("workflow_dispatch");
-    expect(query.get("created")).toBe(">=2026-10-13T10:00:00Z");
-    expect(query.get("branch")).toBe("main");
-  });
-
-  it("keeps the old call shape without filters", async () => {
-    const { fetch, calls } = fakeFetch({ [RUNS]: [{ body: { workflow_runs: [] } }] });
-    await client(fetch).listWorkflowRuns("acme", "shop", { workflowFile: FILE });
-    const query = new URL(calls[0]?.url ?? "").searchParams;
-    expect(query.has("event")).toBe(false);
-    expect(query.has("created")).toBe(false);
   });
 });
 

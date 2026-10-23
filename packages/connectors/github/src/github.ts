@@ -7,7 +7,6 @@ import {
   isRecord,
   OpsCrewError,
   parseAnswer,
-  pollAction,
   Redactor,
   realSleep,
 } from "@opscrew/core";
@@ -406,8 +405,6 @@ function workflowId(workflowFile: string): string {
 
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_RUN_POLL_MS = 5_000;
-/** How long a dispatched run may take to show up in GitHub's list (the spike saw 7 seconds). */
-const DISPATCHED_RUN_TIMEOUT_MS = 2 * 60_000;
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -1153,26 +1150,15 @@ export class GitHubClient {
     );
   }
 
-  /**
-   * Lists recent runs of a workflow, newest first. `event` and `createdSince` (ISO time) narrow
-   * the list to runs of that trigger created at or after that time.
-   */
+  /** Lists recent runs of a workflow, newest first. */
   async listWorkflowRuns(
     owner: string,
     repo: string,
-    options: {
-      workflowFile: string;
-      branch?: string;
-      perPage?: number;
-      event?: string;
-      createdSince?: string;
-    },
+    options: { workflowFile: string; branch?: string; perPage?: number },
   ): Promise<WorkflowRun[]> {
     const what = "list workflow runs";
     const query = new URLSearchParams({ per_page: String(options.perPage ?? 5) });
     if (options.branch) query.set("branch", options.branch);
-    if (options.event) query.set("event", options.event);
-    if (options.createdSince) query.set("created", `>=${options.createdSince}`);
     const { json } = await this.#request(
       "GET",
       `/repos/${owner}/${repo}/actions/workflows/${workflowId(options.workflowFile)}/runs?${query}`,
@@ -1219,12 +1205,11 @@ export class GitHubClient {
 
   /**
    * Starts a `workflow_dispatch` run of `workflowFile` on `ref` with `inputs`, and returns the run
-   * it started: the one GitHub's 200 answer names (`workflow_run_id`, `html_url`). After the older
-   * 204 answer, it is the first dispatch run of that file on that branch created since the
-   * dispatch by GitHub's clock (the answer's `Date`), polled until it shows up. `onAccepted` runs
-   * as soon as GitHub has accepted the dispatch, before any wait, so a caller can record it.
-   * GitHub's 404 or 422 (no such workflow on the default branch, no `workflow_dispatch` trigger for
-   * these inputs) is `PHASE_PRECONDITION`.
+   * it started: the one GitHub's 200 answer names (`workflow_run_id`, `html_url`), which the body's
+   * `return_run_details` asks for. `onAccepted` runs as soon as GitHub has accepted the dispatch,
+   * so a caller can record it. GitHub's 404 or 422 (no such workflow on the default branch, no
+   * `workflow_dispatch` trigger for these inputs) is `PHASE_PRECONDITION`; a 204, which names no
+   * run, is `PROVIDER_ERROR`.
    */
   async dispatchWorkflow(
     owner: string,
@@ -1235,11 +1220,11 @@ export class GitHubClient {
     onAccepted?: () => Promise<void>,
   ): Promise<{ runId: number; url: string }> {
     const what = `start the workflow ${workflowFile} on ${ref}`;
-    const { status, json, headers } = await this.#request(
+    const { status, json } = await this.#request(
       "POST",
       `/repos/${owner}/${repo}/actions/workflows/${workflowId(workflowFile)}/dispatches`,
       what,
-      { body: { ref, inputs }, ok: [404, 422] },
+      { body: { ref, inputs, return_run_details: true }, ok: [404, 422] },
     );
     // 404: GitHub knows no such workflow (its file is not on the default branch); 422: the file on
     // `ref` has no `workflow_dispatch` trigger taking these inputs, or there is no such ref.
@@ -1253,42 +1238,15 @@ export class GitHubClient {
       );
     }
     await onAccepted?.();
-    if (status !== 204) {
-      const named = this.#parse(DispatchSchema, json, what);
-      return { runId: named.workflow_run_id, url: named.html_url };
+    if (status === 204) {
+      const branch = ref.replace(/^refs\/heads\//, "");
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `GitHub started ${workflowFile} on ${branch} but did not say which run it is, so OpsCrew cannot follow it; look in https://github.com/${owner}/${repo}/actions.`,
+      );
     }
-    // GitHub's `Date` has whole seconds, and so has a run's `created_at`: a second of allowance.
-    const answered = Date.parse(headers.get("date") ?? "");
-    const sinceMs = (Number.isNaN(answered) ? this.#now() : answered) - 1000;
-    const branch = ref.replace(/^refs\/heads\//, "");
-    const run = await pollAction<WorkflowRun | undefined>({
-      // The oldest dispatch run of the file on the branch since the dispatch.
-      read: async () => {
-        const runs = await this.listWorkflowRuns(owner, repo, {
-          workflowFile,
-          branch,
-          event: "workflow_dispatch",
-          createdSince: new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z"),
-          perPage: 10,
-        });
-        return runs
-          .filter((r) => Date.parse(r.createdAt) >= sinceMs)
-          .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id - b.id)[0];
-      },
-      finished: (run) => run !== undefined,
-      timedOut: () =>
-        new OpsCrewError(
-          "PROVIDER_ERROR",
-          `GitHub accepted the dispatch of ${workflowFile} on ${branch} but showed no run of it within ${durationText(DISPATCHED_RUN_TIMEOUT_MS)}; look in https://github.com/${owner}/${repo}/actions.`,
-        ),
-      timeoutMs: DISPATCHED_RUN_TIMEOUT_MS,
-      intervalMs: DEFAULT_RUN_POLL_MS,
-      sleep: this.#sleep,
-      now: this.#now,
-    });
-    // `finished` is true only once a run was found.
-    const { id, htmlUrl } = run as WorkflowRun;
-    return { runId: id, url: htmlUrl };
+    const named = this.#parse(DispatchSchema, json, what);
+    return { runId: named.workflow_run_id, url: named.html_url };
   }
 
   /**
