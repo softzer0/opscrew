@@ -14,8 +14,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan, localProject } from "../localhost/__fixtures__/computer";
 import { lockFile } from "../localhost/lock";
-import { ScriptedApprovalHandler } from "../testing";
-import { FakeRunnerGitHub, listedRunner } from "./__fixtures__/github";
+import { FakeRunnerGitHub, listedRunner, ScriptedApprovalHandler } from "../testing";
 import {
   type LocalRunnerServices,
   type RunnerProcess,

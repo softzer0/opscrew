@@ -16,8 +16,8 @@ import {
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
-import type { HostAdapterApi } from "../../shared";
-import { freshFacts } from "../../testing";
+import type { HostAdapterApi } from "../shared";
+import { freshFacts } from "./own";
 
 /** The machine's address on the user's network (RFC 1918), which no plan or file may hold. */
 export const MACHINE_IPV4 = "192.168.1.30";
@@ -55,7 +55,11 @@ export class FakeRunnerMachine implements HostAdapterApi {
     return this.facts;
   };
 
-  apply = async (_remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult> => {
+  apply = async (
+    _remote: RemoteExec,
+    plan: HostPlan,
+    options: ApplyOptions,
+  ): Promise<ApplyResult> => {
     if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
     const record: MachineApply = { plan, options, tokens: [], logins: [] };
     this.applies.push(record);

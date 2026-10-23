@@ -24,8 +24,10 @@ import {
   FakeDestroyGitHub,
   FakeEngine,
   FakeGitHub,
+  FakeRunnerGitHub,
   FakeServers,
   fakeSharedCloudflare,
+  listedRunner,
   projectRunner,
   readyRemote,
   ScriptedApprovalHandler,
@@ -36,7 +38,6 @@ import {
   writeFakeState,
 } from "../testing";
 import { FakeCloudRunnerHost } from "./__fixtures__/cloud-host";
-import { FakeRunnerGitHub, listedRunner } from "./__fixtures__/github";
 import { applyCloudRunner, checkCloudRunner } from "./cloud";
 import { planServerRunner } from "./server";
 

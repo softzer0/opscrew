@@ -4,7 +4,7 @@
  */
 import type { ForkPrApprovalPolicy, RunnerInfo } from "@opscrew/connector-github";
 import { fakeSecret } from "@opscrew/core/testing";
-import type { RunnerGitHubApi } from "../github";
+import type { RunnerGitHubApi } from "../runners/github";
 
 /** A fake of {@link RunnerGitHubApi} that records every call. */
 export class FakeRunnerGitHub implements RunnerGitHubApi {

@@ -27,8 +27,13 @@ import {
   published,
 } from "../drift/__fixtures__/own-project";
 import { runProvision } from "../provision/run";
-import { createTestPhaseDeps, FakeHostServer, ownPlan } from "../testing";
-import { FakeRunnerGitHub, listedRunner } from "./__fixtures__/github";
+import {
+  createTestPhaseDeps,
+  FakeHostServer,
+  FakeRunnerGitHub,
+  listedRunner,
+  ownPlan,
+} from "../testing";
 import { applyRunnerSettings, checkRunnerRepository } from "./github";
 import { planServerRunner, runnerTokens } from "./server";
 

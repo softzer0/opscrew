@@ -1,17 +1,18 @@
 import path from "node:path";
-import { hostKeyFingerprint, type RunnerGitHubApi, type RunnerHostServices } from "@opscrew/agents";
+import { hostKeyFingerprint, type RunnerHostServices } from "@opscrew/agents";
 import {
   FakeEngine,
   FakeGitHub,
-  FakeHostServer,
+  FakeRunnerGitHub,
+  FakeRunnerMachine,
   freshFacts,
   HOST_KEY,
+  MACHINE_IPV4,
   readyRemote,
   testPlan,
 } from "@opscrew/agents/testing";
 import type { CommandOptions, CommandResult } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
@@ -25,8 +26,6 @@ import { inEnvironment, planFile } from "../ui/__fixtures__/environments";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
 import { sshLogin } from "./runner";
 
-/** The machine's address on the user's network. */
-const MACHINE = "192.168.1.30";
 const FINGERPRINT = hostKeyFingerprint(HOST_KEY.split(" ")[1] as string);
 
 let project: DeployProject | undefined;
@@ -34,27 +33,6 @@ afterEach(async () => {
   await project?.cleanup();
   project = undefined;
 });
-
-/** GitHub's runner API for a private repository; nothing reaches GitHub. */
-class FakeRunnerGitHub implements RunnerGitHubApi {
-  async runnerRegistrationToken() {
-    return fakeSecret("hcloud-token", "runner-registration");
-  }
-  async runnerRemoveToken() {
-    return fakeSecret("hcloud-token", "runner-remove");
-  }
-  async listRunners() {
-    return [];
-  }
-  async deleteRunner() {}
-  async repositoryVisibility() {
-    return "private" as const;
-  }
-  async forkPrApprovalPolicy() {
-    return "all_external_contributors" as const;
-  }
-  async setForkPrApprovalPolicy() {}
-}
 
 /** `DeployRunner`, with `ssh-keyscan` finding nothing when the machine is `off`. */
 class MachineRunner extends DeployRunner {
@@ -75,7 +53,7 @@ class MachineRunner extends DeployRunner {
 function setUpFacts() {
   const fresh = freshFacts({
     user: "ana",
-    addresses: [{ interface: "eth0", family: "ipv4", address: MACHINE, public: false }],
+    addresses: [{ interface: "eth0", family: "ipv4", address: MACHINE_IPV4, public: false }],
   });
   return {
     ...fresh,
@@ -96,19 +74,11 @@ function setUpFacts() {
   };
 }
 
-/** The runner machine, its host adapter (`inspect` and `apply` as plain functions) and GitHub. */
+/** The runner machine, its host adapter and GitHub. */
 function machineFakes() {
-  const host = new FakeHostServer(
-    freshFacts({
-      user: "ana",
-      addresses: [{ interface: "eth0", family: "ipv4", address: MACHINE, public: false }],
-    }),
-  );
+  const host = new FakeRunnerMachine();
   const machine: RunnerHostServices = {
-    host: {
-      inspect: (remote) => host.inspect(remote),
-      apply: (remote, plan, options) => host.apply(remote, plan, options),
-    },
+    host,
     remote: (login) => readyRemote(login.host),
     verifyLogin: async () => true,
   };
@@ -134,7 +104,7 @@ function hashAfter(text: string, label: string): string {
 /** Adds the machine "home" in a script: the plan, then its hash approved. */
 async function addHome(p: DeployProject, fakes: Fakes): Promise<string> {
   const first = context(p, fakes);
-  const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT];
+  const ssh = ["--ssh", `ana@${MACHINE_IPV4}`, "--host-key", FINGERPRINT];
   expect(await run(first, "runner", "host", "add", "home", ...ssh)).toBe(1);
   const hash = hashAfter(first.output, "Host plan hash");
   const second = context(p, fakes);
@@ -146,7 +116,7 @@ async function addHome(p: DeployProject, fakes: Fakes): Promise<string> {
 
 describe("--ssh", () => {
   it("takes user@host and user@host:port, an IPv6 address in brackets", () => {
-    expect(sshLogin(`ana@${MACHINE}`)).toEqual({ user: "ana", host: MACHINE });
+    expect(sshLogin(`ana@${MACHINE_IPV4}`)).toEqual({ user: "ana", host: MACHINE_IPV4 });
     expect(sshLogin("ana@build-box.lan:2222")).toEqual({
       user: "ana",
       host: "build-box.lan",
@@ -156,7 +126,12 @@ describe("--ssh", () => {
   });
 
   it("refuses another shape without repeating the address", () => {
-    for (const login of [MACHINE, "ana@fd00::30", `ana@${MACHINE}:0`, `ana@${MACHINE}:70000`]) {
+    for (const login of [
+      MACHINE_IPV4,
+      "ana@fd00::30",
+      `ana@${MACHINE_IPV4}:0`,
+      `ana@${MACHINE_IPV4}:70000`,
+    ]) {
       const error = (() => {
         try {
           sshLogin(login);
@@ -166,7 +141,7 @@ describe("--ssh", () => {
       })();
       expect(error, login).toBeInstanceOf(OpsCrewError);
       expect((error as OpsCrewError).code).toBe("INVALID_INPUT");
-      expect((error as OpsCrewError).message).not.toContain(MACHINE);
+      expect((error as OpsCrewError).message).not.toContain(MACHINE_IPV4);
     }
   });
 });
@@ -176,7 +151,7 @@ describe.skipIf(GIT === undefined)("opscrew runner host", () => {
     project = await deployProject();
     const fakes = machineFakes();
     const first = context(project, fakes);
-    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT];
+    const ssh = ["--ssh", `ana@${MACHINE_IPV4}`, "--host-key", FINGERPRINT];
     expect(await run(first, "runner", "host", "add", "home", ...ssh)).toBe(1);
     expect(first.output).toContain("Docker");
     const hash = hashAfter(first.output, "Host plan hash");
@@ -201,7 +176,7 @@ describe.skipIf(GIT === undefined)("opscrew runner host", () => {
     const lines = list.output.trim().split("\n");
     expect(lines[0]).toMatch(/^Machine\s+CPU\s+Docker\s+Hardening chosen\s+Environments$/);
     expect(lines[1]).toMatch(/^home\s+amd64\s+yes\s+none\s+none$/);
-    expect(list.output).not.toContain(MACHINE);
+    expect(list.output).not.toContain(MACHINE_IPV4);
   });
 
   it("add: needs --ssh unless it approves the recorded machine's plan", async () => {
@@ -408,7 +383,7 @@ describe.skipIf(GIT === undefined)("opscrew runner host --harden", () => {
     withNft(fakes);
     const first = context(project, fakes);
     const flags = ["--harden", "ssh", "firewall", "--ssh-from", CLIENT];
-    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT, ...flags];
+    const ssh = ["--ssh", `ana@${MACHINE_IPV4}`, "--host-key", FINGERPRINT, ...flags];
     expect(await run(first, "runner", "host", "add", "home", ...ssh)).toBe(1);
     expect(first.output).toContain("Harden SSH");
     expect(first.output).toContain(`SSH firewall: port 22 only from ${CLIENT}`);
@@ -426,7 +401,7 @@ describe.skipIf(GIT === undefined)("opscrew runner host --harden", () => {
       "sshd",
       "ssh-firewall",
     ]);
-    expect(applied?.verified).toBe(true);
+    expect(applied?.logins).toEqual([true, true]);
     expect(await listedHome(project, fakes)).toMatch(
       new RegExp(`^home\\s+amd64\\s+yes\\s+SSH, firewall from ${CLIENT}\\s+none$`),
     );
@@ -438,7 +413,7 @@ describe.skipIf(GIT === undefined)("opscrew runner host --harden", () => {
     withNft(fakes);
     const add = context(project, fakes);
     const flags = ["--harden", "ssh", "--harden", "firewall", "--ssh-from", CLIENT];
-    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT, ...flags];
+    const ssh = ["--ssh", `ana@${MACHINE_IPV4}`, "--host-key", FINGERPRINT, ...flags];
     expect(await run(add, "runner", "host", "add", "home", ...ssh)).toBe(1);
     const added = ["--approve", hashAfter(add.output, "Host plan hash")];
     const apply = context(project, fakes);
@@ -468,7 +443,7 @@ describe.skipIf(GIT === undefined)("opscrew runner host --harden", () => {
     project = await deployProject();
     const fakes = machineFakes();
     const bare = context(project, fakes);
-    const ssh = ["--ssh", `ana@${MACHINE}`, "--host-key", FINGERPRINT];
+    const ssh = ["--ssh", `ana@${MACHINE_IPV4}`, "--host-key", FINGERPRINT];
     expect(await run(bare, "runner", "host", "add", "home", ...ssh, "--harden", "firewall")).toBe(
       2,
     );

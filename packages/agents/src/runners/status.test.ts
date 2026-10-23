@@ -3,8 +3,13 @@ import { resolveProjectPaths } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
-import { createTestPhaseDeps, ownPlan, ScriptedRunner } from "../testing";
-import { FakeRunnerGitHub, listedRunner } from "./__fixtures__/github";
+import {
+  createTestPhaseDeps,
+  FakeRunnerGitHub,
+  listedRunner,
+  ownPlan,
+  ScriptedRunner,
+} from "../testing";
 import { runnerChecks, runnerStatus, runnerStatusLines } from "./status";
 
 const NOW = "2026-10-22T12:00:00.000Z";

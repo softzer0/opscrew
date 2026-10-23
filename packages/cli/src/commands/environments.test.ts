@@ -11,12 +11,10 @@ import {
   type PhaseDeps,
   type PromoteGitHubApi,
   type ProvisionResult,
-  type RunnerGitHubApi,
   type RunnerProcess,
 } from "@opscrew/agents";
-import { testPlan } from "@opscrew/agents/testing";
+import { FakeRunnerGitHub, listedRunner, testPlan } from "@opscrew/agents/testing";
 import type { CommandOptions, CommandResult, CommandRunner } from "@opscrew/contracts";
-import { fakeSecret } from "@opscrew/core/testing";
 import { TOOLS } from "@opscrew/iac-templates";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -310,17 +308,7 @@ describe("opscrew runner start", () => {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, ".opscrew-version"), `${TOOLS.githubRunner.version}\n`);
     const calls: string[] = [];
-    const github: RunnerGitHubApi = {
-      runnerRegistrationToken: async () => fakeSecret("hcloud-token", "cli-runner-registration"),
-      runnerRemoveToken: async () => fakeSecret("hcloud-token", "cli-runner-remove"),
-      listRunners: async () => [],
-      deleteRunner: async () => undefined,
-      repositoryVisibility: async () => "private",
-      forkPrApprovalPolicy: async () => "first_time_contributors",
-      setForkPrApprovalPolicy: async () => {
-        calls.push("set-fork-pr-policy");
-      },
-    };
+    const github = new FakeRunnerGitHub();
     let stop: (() => void) | undefined;
     let ready: () => void = () => undefined;
     const started = new Promise<void>((resolve) => {
@@ -362,6 +350,7 @@ describe("opscrew runner start", () => {
     stop?.();
     expect(await finished, ctx.errors).toBe(0);
     expect(calls).toEqual(["SIGINT"]);
+    expect(github.calls.filter((call) => call.startsWith("set-fork-pr-policy"))).toEqual([]);
     expect(ctx.output).toContain("is stopped and removed from GitHub");
   });
 });
@@ -377,24 +366,15 @@ class RemoteOnlyRunner implements CommandRunner {
 }
 
 /** GitHub's runner API with this environment's runner registered but offline. */
-function offlineRunnerGitHub(): RunnerGitHubApi {
-  return {
-    runnerRegistrationToken: async () => fakeSecret("hcloud-token", "cli-status-registration"),
-    runnerRemoveToken: async () => fakeSecret("hcloud-token", "cli-status-remove"),
-    listRunners: async () => [
-      {
-        id: 7,
-        name: "laptop-shop-dev",
-        status: "offline",
-        labels: ["self-hosted", "opscrew-shop-dev"],
-        version: TOOLS.githubRunner.version,
-      },
-    ],
-    deleteRunner: async () => undefined,
-    repositoryVisibility: async () => "private",
-    forkPrApprovalPolicy: async () => "first_time_contributors",
-    setForkPrApprovalPolicy: async () => undefined,
-  };
+function offlineRunnerGitHub(): FakeRunnerGitHub {
+  const github = new FakeRunnerGitHub();
+  github.runners = [
+    listedRunner(7, "laptop-shop-dev", "opscrew-shop-dev", {
+      status: "offline",
+      version: TOOLS.githubRunner.version,
+    }),
+  ];
+  return github;
 }
 
 describe("the runner's state in status and secure", () => {
