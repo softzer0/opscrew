@@ -20,10 +20,12 @@
   - its `dns.domain`, for example `staging.<domain>`;
   - for localhost, `<app>.localhost`, or `<env>.<app>.localhost` when the app has another localhost environment.
 
-**Shared parts**, copied from prod's plan by design and compared by provision:
+**Shared parts**, which follow the image (FR-1539). An environment that builds takes them from its own design; a promoted environment's design copies them from its source environment, and provision compares them with the source's:
 - `app.build`, `app.port`, `app.healthPath`, `app.releaseCommand`, `app.processes`;
 - `services`, `storage.sqlite`, `externalServices`;
 - `supplyChain.sign`, since the source environment signs and the promoted one verifies.
+
+A promoted environment may have services its source no longer has, until it runs the source's image (its deployment record's digest equals the source's): until then its design keeps them, and after it the next design removes them. `promote` checks that the target has every service of the source with the same settings and every other shared part equal.
 
 Everything else is the environment's own.
 

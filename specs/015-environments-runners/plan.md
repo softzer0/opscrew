@@ -21,8 +21,10 @@ user's own Docker:
 - **Paths:** `resolveProjectPaths(root, { environment })` gives each environment its own state,
   records, saved plans, infrastructure root, generated values and deploy key. Prod keeps today's
   paths.
-- **Shared parts:** the app's build, components, port and health route are copied from prod's plan
-  by `design`, and `provision` refuses an environment whose copy differs.
+- **Shared parts:** the app's build, components, port and health route follow the image (FR-1539).
+  An environment that builds takes them from its own design; a promoted one's `design` copies them
+  from its source, `provision` refuses a copy that differs, and `promote` refuses a target that is
+  not ready for the source's image.
 - **Selection:** every deployment command takes `--env`, and every MCP tool an `environment`
   input.
 
@@ -285,7 +287,7 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
 
 - **T1508a:**
   - **`env add <name>`** asks only the environment's own questions (target, size, hostname, deploy source, runner). It writes `opscrew/environments/<name>/requirements.yaml` and runs design for it.
-  - **Design per environment:** the shared parts are copied from prod's plan, with `app.name` set and the hostnames derived, and the cost shown.
+  - **Design per environment:** a promoted environment's shared parts are copied from its source (FR-1539), with `app.name` set and the hostnames derived, and the cost shown.
   - **`env list`** shows each environment: its target, its source, its runner and whether it is deployed.
   - **`env remove`** refuses while the environment is deployed; destroy comes first.
   - **`--env` resolution:** the only environment by default. With several, an interactive run asks and a script fails with the list.

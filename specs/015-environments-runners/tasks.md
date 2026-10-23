@@ -496,6 +496,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: medium
 
+- [ ] T1520 [US2] The shared parts follow the image (FR-1539)
+  - Owns: agents' `environments/shared-parts.ts`, `design/run.ts` (`sharedPartsSource` and its callers), `provision/run.ts` and `localhost/provision.ts` (the preflight's call), `promote/**` (the readiness check); the CLI's and MCP's texts only where they name prod's plan as the source; `docs/guide/environments.md` (+ tests)
+  - Reads: spec FR-1517, FR-1537 and FR-1539; data-model.md "Shared parts"; contracts/environments.md "Promotion"
+  - Depends: T1518 and T1519 (the same files)
+  - Accept:
+    - **The source of the shared parts:** an environment that builds (`deploySource.from: main`, prod included) takes them from its own design. A promoted environment's `design --env <env>` copies them from its source environment's plan (not prod's). Its error when the source has no plan yet names the source.
+    - **Provision's preflight** compares a promoted environment's shared parts with its source's, and checks nothing for one that builds. Its hint names `design --env <env>` and the source.
+    - **Removal after the promotion:** when a promoted environment has a service its source no longer has, its design keeps the service while the environment's deployed digest (its deployment record) differs from the source's, and says why; once they are equal, design removes it, and provision's existing confirmation before data is deleted applies.
+    - **Promote's readiness check,** before the approval is shown: every service of the source exists in the target with the same settings, and every other shared part is equal. Otherwise it stops (`PHASE_PRECONDITION`), naming each difference and the two commands (`design --env <target>`, then `provision --env <target>`). Extra services in the target are allowed.
+    - **The guide** (`environments.md`): replace "defined once in prod's plan". A new service starts where the code first runs, with an example (Redis added on dev, then staging, then prod, each with its own approved plan), and a service removed in dev stays in staging and prod until their next promotion.
+    - **Tests:** dev gains Redis while prod has none; staging's promotion is refused until its design and provision, then passes; prod is refused the same way; dev drops a service: staging keeps it until it runs dev's image, then its design removes it; the branches setup (every environment builds) checks nothing between environments.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
@@ -598,7 +612,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1515 Live runs (lead): the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e-coverage.md` (its Live results and the status at a glance). Windows localhost runs by hand on the founder's computer.
+- [ ] T1515 Live runs (lead), after T1520: the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e-coverage.md` (its Live results and the status at a glance). Windows localhost runs by hand on the founder's computer.
   - The founder accepted Cloudflare's brief 520s for a zone's other hostnames while a new hostname's Authenticated Origin Pulls setting deploys (seen in 1 of 3 runs; documented in `docs/guide/origin-protection.md`, 2026-10-23). The environments test's load check accepts only HTTP 520–527 answers sent within 3 s of a `deployed` `hostname_association` entry in the account's audit log (the entries name no zone), and logs each with its distance from the rollout; any other failure still fails the step.
 
 ## End-of-feature simplify pass (after T1515)
