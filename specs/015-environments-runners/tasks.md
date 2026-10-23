@@ -471,7 +471,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1518 [US2] Branch detection and `--branch` for environments (FR-1537)
+- [X] T1518 [US2] Branch detection and `--branch` for environments (FR-1537)
   - Owns: agents' `environments/**` and `interview/**` (the proposal, `--branch`, the checks), `promote/**` (the source's branch); iac-templates' verify job in `src/workflow/**` (its branch check) with its snapshots; the CLI's `env` command and MCP's environment tools; `docs/guide/environments.md` (+ tests)
   - Reads: spec FR-1517 and FR-1537; data-model.md "Environment" (`cicd.branch`); contracts/environments.md "Promotion"
   - Depends: T1515a
@@ -485,7 +485,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1519 [US2] Each environment's own app values, and what environments share (FR-1538)
+- [X] T1519 [US2] Each environment's own app values, and what environments share (FR-1538)
   - Owns: agents' `provision/secrets.ts` (`buildAppEnvironment`'s file choice) with its tests; `docs/guide/environments.md`; `docs/guide/secrets.md` if it says where provision reads values
   - Reads: spec FR-1538; data-model.md "Shared parts"
   - Depends: T1518 (the same files)
@@ -636,6 +636,8 @@ Effort`.
     - The runbook's `workflowName` and plan-file path rebuild what `workflow/shared.ts` builds inline (`workflowStart`): export one helper (T1512b).
     - iac-templates' `workflow/shared.ts` comment on concurrency says no queued deploy is cancelled; GitHub keeps only the newest waiting run (T1512b's review).
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
+    - Verify fetches the repository's default branch on every run; only a promoted plan needs it (`verify/run.ts:230`), so fetch it only then (T1518's re-review).
+    - The CLI's provision next steps test `base !== undefined`, which every producer sets (`cli/src/commands/provision.ts:472`): drop it (T1518's re-review).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
