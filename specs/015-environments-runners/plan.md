@@ -236,7 +236,7 @@ throwaway CI workflow, and 1–5 on the throwaway repository and a throwaway Het
 - **Dispatch:** `dispatchWorkflow(path, ref, inputs)`, and finding the run it started.
 - **GHCR:**
   - `imageManifest(ref)`;
-  - `imageProvenance(digest)`: the attestation manifest's in-toto SLSA provenance, giving the repository, the workflow, the ref and the commit;
+  - `imageFacts(digest)`: one read of the image's index, giving the attestation manifest's in-toto SLSA provenance (the repository, the workflow, the ref and the commit) and the image's platforms;
   - `taggedDigest(tag)`.
 - **Tests:** fakes for every endpoint, including a Free private repository's environment that comes back with no rules.
 
