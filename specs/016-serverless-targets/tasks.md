@@ -233,7 +233,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1617b [P] [US6] The renderers per app, in `packages/iac-templates/src/**`
+- [X] T1617b [P] [US6] The renderers per app, in `packages/iac-templates/src/**`
   - Owns: that path (+ tests, snapshots)
   - Reads: data-model.md "Apps in a repository"; contracts/apps.md; T1617a's report
   - Depends: T1617a
@@ -265,6 +265,8 @@ Effort`.
     - **The two branches** use `appBranch`. Their numbered fallbacks (`-2`, `-3`) must not collide across keys: app `a`'s `opscrew/prepare-deploy-a-2` is app `a-2`'s first branch, so number after a separator no key can hold, or check the other keys (T1617a's report).
     - **The uniqueness check reads the real values** (T1617a's review): besides `derivedNames(key, env, app.name)` for every app and environment, it compares each plan's actual `infra.dir`, `cicd.workflowPath` and `app.name`, which a user may have set by hand. Design writes a further app's values from the helpers, and never builds its plan by spreading a parsed plan of another app (the transform fills only missing fields).
     - **One GitHub Pages site per repository, across apps** (T1617a's review): `app add`, design and `env add` refuse a second app or environment on `github-pages` in the same repository, naming the one already there.
+    - **Left from T1617b's review** (these iac-templates spots join this task's Owns): the commands named in `workflow/switch.ts` (`RERUN`, ~101), `workflow/retention.ts` (~178) and `workflow/cloudflare-workers.ts` (~401, ~461) use `provisionCommand(plan)` or `appFlag(plan)`, so a further app's scripts are told `--app <key>`. The runbook's "What remains" (`providers.ts` ~177 and ~249, `runbook/own.ts` ~237) names the app's own artefacts folder, not `opscrew/`. In `dependabot/index.ts` (~69-73), `runtimeDir` takes `{ app, environment }` directly, with no schema parse. `edge-check.ts` (~40) spells the provision command through the same helper.
+    - **`imageReleaseCommand(facts)`** (iac-templates `docker/stacks.ts`) names `opscrew/plan.yaml` in three messages, because design calls it before any plan exists; design passes the app's key, so a further app's messages name its own plan (T1617b's report).
     - **The proxy additions path** (T1617b's report): agents' five readers of `EDGE_PROXIES[proxy].additions` (`localhost/stack.ts`, `provision/additions.ts`, `provision/render.ts`, `provision/run.ts`, `design/additions.ts`) switch to iac-templates' `additionsPath(plan, proxy)`, and the field goes. `renderDependabot` gets the repository's other apps (its `others` parameter) at every call site.
     - **`environmentPaths(paths, name)`** keeps `paths.app`. `environmentInfraDir` and `environmentWorkflowPath` give way to plan-schema's `infraDirFor` and `workflowPathFor`, and `environmentsOf(root, key)` lists an app's environments (T1617a's report). Dependabot covers every app. `env add` runs the uniqueness check too.
     - **`policy.ts`** denies agent edits to every OpsCrew workflow file pattern, a further app's and environments' included.
