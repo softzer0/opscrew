@@ -1,7 +1,7 @@
 import { CodeChangeKindSchema, type ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makePlan, nextChanges, nextFacts } from "./__fixtures__/repo";
-import { playbookFor, playbookInstructions } from "./playbooks";
+import { playbookFor, playbookInstructions, serverlessStaticPlaybook } from "./playbooks";
 import { djangoPlaybook } from "./playbooks/django";
 import { fastapiPlaybook } from "./playbooks/fastapi";
 import { genericPlaybook } from "./playbooks/generic";
@@ -148,5 +148,47 @@ describe("Code-change prompts", () => {
     const text = manualInstructions(change as NonNullable<typeof change>, playbookFor(nextFacts()));
     expect(text).toMatch(/^next\.config\.mjs: /);
     expect(text).toContain("Done when:");
+  });
+});
+
+describe("buildCodeChangePrompt on a server-less target", () => {
+  const site = { tool: "node", packageManager: "npm", command: "npm run build" } as const;
+  const target = (provider: "cloudflare-workers" | "github-pages", render = "static") =>
+    provider === "github-pages"
+      ? { provider, mode: "pages-workflow", site: { ...site, outputDir: "dist" } }
+      : {
+          provider,
+          mode: "workers-assets",
+          worker: "example-app",
+          render,
+          notFound: "none",
+          workersDev: false,
+          previewUrls: false,
+          site: {
+            ...site,
+            outputDir: render === "ssr" ? "dist/client" : "dist",
+            ...(render === "ssr" ? { entry: "dist/server/entry.mjs" } : {}),
+          },
+        };
+  const prompt = (t: ReturnType<typeof target>) =>
+    buildCodeChangePrompt({
+      facts: facts({ frameworks: [{ name: "astro", path: "." }] }),
+      plan: { ...makePlan([]), target: t } as Parameters<typeof buildCodeChangePrompt>[0]["plan"],
+      changes: [],
+      playbook: serverlessStaticPlaybook("GitHub Pages"),
+    });
+
+  it("says what serves the build output, with no container, port or health check", () => {
+    const pages = prompt(target("github-pages"));
+    expect(pages).toContain(
+      'Prepare the app "shop" for GitHub Pages, which serves the site\'s build output; there is no container or server.',
+    );
+    expect(prompt(target("cloudflare-workers", "ssr"))).toContain(
+      "for Cloudflare hosting, which serves the site's build output and runs its server-rendered pages as a Cloudflare Worker;",
+    );
+    for (const text of [pages, prompt(target("cloudflare-workers"))]) {
+      expect(text).not.toMatch(/container port|health check path|production container|Caddy/i);
+    }
+    expect(CODE_CHANGE_SYSTEM_PROMPT).not.toContain("production container");
   });
 });

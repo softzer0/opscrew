@@ -1,7 +1,8 @@
-import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessTarget, type ProjectFacts } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { CodeChange } from "../design/code-changes";
 import { appDirOf } from "../design/code-changes";
+import { serverlessName } from "../shared";
 import { type Playbook, playbookInstructions } from "./playbooks";
 
 /** Default model for the Code-change agent. */
@@ -24,7 +25,7 @@ export const CodeChangeReportSchema = z.strictObject({
 export type CodeChangeReport = z.output<typeof CodeChangeReportSchema>;
 
 /** System prompt of the Code-change agent (runs in the `edit-repo` profile). */
-export const CODE_CHANGE_SYSTEM_PROMPT = `You are OpsCrew's Code-change agent. You prepare an existing application so it can run in a production container. A person reviews your work in a pull request before anything is deployed.
+export const CODE_CHANGE_SYSTEM_PROMPT = `You are OpsCrew's Code-change agent. You prepare an existing application for its production deployment, described in the task. A person reviews your work in a pull request before anything is deployed.
 
 Rules you must follow:
 1. Edit only the files listed in the task, and create new files only at the listed paths. The one exception: you may add variable names, never values, to .env.example when it exists.
@@ -57,22 +58,38 @@ export function buildCodeChangePrompt(input: CodeChangePromptInput): string {
   );
   const envNames = plan.app.env.map((variable) => variable.name);
   const appDir = appDirOf(facts);
+  const { target } = plan;
+  const serverless = isServerlessTarget(target);
+  const worker =
+    target.provider === "cloudflare-workers" && target.render === "ssr"
+      ? " and runs its server-rendered pages as a Cloudflare Worker"
+      : "";
   const lines: string[] = [
-    `Prepare the app "${facts.name}" for a production container.`,
+    serverless
+      ? `Prepare the app "${facts.name}" for ${serverlessName(target.provider)}, which serves the site's build output${worker}; there is no container or server.`
+      : `Prepare the app "${facts.name}" for a production container.`,
     "",
     "## Project",
     ...(appDir === "."
       ? []
       : [
           `- App folder: ${appDir} (this repository holds several apps; change only this app and the files listed below, never the other apps)`,
-          `- The container image is built from the repository root with ${plan.app.dockerfile}, so code shared from other folders of the repository is available at build time`,
+          ...(serverless
+            ? []
+            : [
+                `- The container image is built from the repository root with ${plan.app.dockerfile}, so code shared from other folders of the repository is available at build time`,
+              ]),
         ]),
     `- Languages: ${facts.languages.join(", ") || "unknown"}`,
     `- Frameworks: ${frameworks.join(", ") || "none detected"}`,
     `- Package manager: ${facts.packageManager}`,
     `- App kind: ${facts.appKind}`,
-    `- Container port: ${plan.app.port} (read from the PORT environment variable)`,
-    `- Health check path: ${plan.app.healthPath}`,
+    ...(serverless
+      ? []
+      : [
+          `- Container port: ${plan.app.port} (read from the PORT environment variable)`,
+          `- Health check path: ${plan.app.healthPath}`,
+        ]),
     `- Environment variable names (values are never shown): ${envNames.join(", ") || "none"}`,
     "",
     `## Playbook: ${playbook.title}`,

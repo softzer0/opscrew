@@ -1,0 +1,147 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`adapt on Cloudflare's hosting (the SSR adapters) > adds @astrojs/cloudflare 14.3 to astro-ssr on astro 7.3, wrangler, and adapter: cloudflare() 1`] = `
+"diff --git a/astro.config.mjs b/astro.config.mjs
+--- a/astro.config.mjs
++++ b/astro.config.mjs
+@@ -1,13 +1,11 @@
+ // @ts-check
+ import { defineConfig } from 'astro/config';
+ 
+-import node from '@astrojs/node';
++import cloudflare from '@astrojs/cloudflare';
+ 
+ // https://astro.build/config
+ export default defineConfig({
+   output: 'server',
+ 
+-  adapter: node({
+-    mode: 'standalone',
+-  }),
++  adapter: cloudflare(),
+ });
+diff --git a/package-lock.json b/package-lock.json
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1 +1 @@
+-{ "lockfileVersion": 3 }
++updated by npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -12,7 +12,10 @@
+     "astro": "astro"
+   },
+   "dependencies": {
+-    "@astrojs/node": "11.1.7",
++    "@astrojs/cloudflare": "14.3.1",
+     "astro": "7.3.8"
++  },
++  "devDependencies": {
++    "wrangler": "<wrangler pin>"
+   }
+ }"
+`;
+
+exports[`adapt on Cloudflare's hosting (the SSR adapters) > replaces sveltekit-ssr's Node adapter with @sveltejs/adapter-cloudflare in vite.config.ts 1`] = `
+"diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -12,13 +12,14 @@
+ 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+ 	},
+ 	"devDependencies": {
+-		"@sveltejs/adapter-node": "6.0.0",
++		"@sveltejs/adapter-cloudflare": "8.0.1",
+ 		"@sveltejs/kit": "3.0.1",
+ 		"@sveltejs/vite-plugin-svelte": "7.3.1",
+ 		"svelte": "5.57.2",
+ 		"svelte-check": "4.7.6",
+ 		"typescript": "6.0.3",
+-		"vite": "8.3.4"
++		"vite": "8.3.4",
++		"wrangler": "<wrangler pin>"
+ 	},
+ 	"imports": {
+ 		"#lib": "./src/lib/index.js",
+diff --git a/vite.config.ts b/vite.config.ts
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -1,4 +1,4 @@
+-import adapter from '@sveltejs/adapter-node';
++import adapter from '@sveltejs/adapter-cloudflare';
+ import { sveltekit } from '@sveltejs/kit/vite';
+ import { defineConfig } from 'vite';"
+`;
+
+exports[`adapt on Cloudflare's hosting (the SSR adapters) > sets Nitro's cloudflare_module preset for nuxt-ssr, with no new package 1`] = `
+"diff --git a/nuxt.config.ts b/nuxt.config.ts
+--- a/nuxt.config.ts
++++ b/nuxt.config.ts
+@@ -1,5 +1,6 @@
+ // https://nuxt.com/docs/api/configuration/nuxt-config
+ export default defineNuxtConfig({
++  nitro: { preset: 'cloudflare_module' },
+   compatibilityDate: '2025-07-15',
+   devtools: { enabled: true }
+ })"
+`;
+
+exports[`adapt on Cloudflare's hosting (the SSR adapters) > writes open-next.config.ts for Next.js and turns cacheComponents and partialPrefetching off 1`] = `
+"diff --git a/.gitignore b/.gitignore
+--- a/.gitignore
++++ b/.gitignore
+@@ -2,3 +2,4 @@ node_modules/
+ .next/
+ .env
+ .env*.local
++.open-next/
+diff --git a/next.config.ts b/next.config.ts
+--- a/next.config.ts
++++ b/next.config.ts
+@@ -2,8 +2,8 @@ import type { NextConfig } from "next";
+ 
+ const nextConfig: NextConfig = {
+   /* config options here */
+-  cacheComponents: true,
+-  partialPrefetching: true,
++  cacheComponents: false,
++  partialPrefetching: false,
+ };
+ 
+ export default nextConfig;
+diff --git a/open-next.config.ts b/open-next.config.ts
+new file mode 100644
+--- /dev/null
++++ b/open-next.config.ts
+@@ -0,0 +1,3 @@
++import { defineCloudflareConfig } from "@opennextjs/cloudflare";
++
++export default defineCloudflareConfig();
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -8,6 +8,7 @@
+     "start": "next start"
+   },
+   "dependencies": {
++    "@opennextjs/cloudflare": "1.20.13",
+     "next": "16.4.2",
+     "react": "19.3.0",
+     "react-dom": "19.3.0"
+@@ -15,6 +16,7 @@
+   "devDependencies": {
+     "@types/node": "^24",
+     "@types/react": "^19",
+-    "typescript": "^5"
++    "typescript": "^5",
++    "wrangler": "<wrangler pin>"
+   }
+ }
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1 +1 @@
+-lockfileVersion: '9.0'
++updated by pnpm install --lockfile-only --ignore-scripts"
+`;

@@ -95,8 +95,7 @@ export function standaloneConfigEdit(input: StandaloneEditInput): StandaloneEdit
 
   const source = input.content;
   if (/\r(?!\n)/.test(source)) return manual(`${name} has unusual line endings.`);
-  const crlf = source.includes("\r\n");
-  const text = crlf ? source.replace(/\r\n/g, "\n") : source;
+  const { text, restore } = normalized(source);
 
   const found = findExportedObject(text, ext);
   if (typeof found === "string") return manual(`${name} ${found}`);
@@ -169,7 +168,7 @@ export function standaloneConfigEdit(input: StandaloneEditInput): StandaloneEdit
   return {
     action: "write",
     created: false,
-    content: crlf ? edited.replace(/\n/g, "\r\n") : edited,
+    content: restore(edited),
     note: notes(
       name,
       false,
@@ -309,7 +308,7 @@ function findExportedObject(text: string, ext: string): ExportedObject | string 
   };
 }
 
-interface ObjectScan {
+export interface ObjectScan {
   /** Index of the closing `}`. */
   close: number;
   /** Top-level keys, each with the index just after the key. */
@@ -317,7 +316,7 @@ interface ObjectScan {
 }
 
 /** End index of the string starting at `start`, or -1 when it is unterminated or multi-line. */
-function stringEnd(text: string, start: number): number {
+export function stringEnd(text: string, start: number): number {
   const quote = text[start];
   for (let i = start + 1; i < text.length; i++) {
     const c = text[i];
@@ -329,26 +328,52 @@ function stringEnd(text: string, start: number): number {
 }
 
 /**
+ * Where the comment starting at `i` ends (the line's `\n`, or just past `*\/`), -1 when it is
+ * unterminated, or undefined when no comment starts there.
+ */
+export function commentEnd(text: string, i: number): number | undefined {
+  if (text[i] !== "/") return undefined;
+  if (text[i + 1] === "/") {
+    const end = text.indexOf("\n", i);
+    return end < 0 ? text.length : end;
+  }
+  if (text[i + 1] === "*") {
+    const end = text.indexOf("*/", i + 2);
+    return end < 0 ? -1 : end + 2;
+  }
+  return undefined;
+}
+
+/** A text file with its line endings normalized to `\n`, and how to write it back. */
+export interface NormalizedText {
+  text: string;
+  restore: (text: string) => string;
+}
+
+/** `source` with CRLF line endings turned into `\n`, and `restore` turning them back. */
+export function normalized(source: string): NormalizedText {
+  const crlf = source.includes("\r\n");
+  return {
+    text: crlf ? source.replace(/\r\n/g, "\n") : source,
+    restore: (text) => (crlf ? text.replace(/\n/g, "\r\n") : text),
+  };
+}
+
+/**
  * Walks the object literal starting at `open`, skipping strings and comments, and collects its
  * top-level keys. Returns the reason when it meets anything it cannot read with certainty.
  */
-function scanObject(text: string, open: number): ObjectScan | string {
+export function scanObject(text: string, open: number): ObjectScan | string {
   const keys = new Map<string, number>();
   let depth = 0;
   let expectKey = false;
   let i = open;
   while (i < text.length) {
     const c = text[i] as string;
-    const next = text[i + 1];
-    if (c === "/" && next === "/") {
-      const end = text.indexOf("\n", i);
-      i = end < 0 ? text.length : end;
-      continue;
-    }
-    if (c === "/" && next === "*") {
-      const end = text.indexOf("*/", i + 2);
-      if (end < 0) return "has an unterminated comment.";
-      i = end + 2;
+    const comment = commentEnd(text, i);
+    if (comment !== undefined) {
+      if (comment < 0) return "has an unterminated comment.";
+      i = comment;
       continue;
     }
     if (c === "/") return "uses a regular expression or a division in the config object.";
@@ -425,7 +450,7 @@ function scanObject(text: string, open: number): ObjectScan | string {
 }
 
 /** Single quotes when every string in the object uses them, double quotes otherwise. */
-function preferredQuote(body: string): string {
+export function preferredQuote(body: string): string {
   return /'[^'\n]*'/.test(body) && !/"[^"\n]*"/.test(body) ? "'" : '"';
 }
 
@@ -443,7 +468,7 @@ function indentUnit(text: string): string {
 }
 
 /** Inserts `additions` as the first properties of the object between `open` and `close`. */
-function insertProperties(
+export function insertProperties(
   text: string,
   open: number,
   close: number,

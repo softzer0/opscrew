@@ -1,7 +1,20 @@
 import type { CodeChangeKind } from "@opscrew/plan-schema";
 
-/** Playbook ids, one per supported stack plus a generic fallback. */
-export type PlaybookId = "nextjs" | "node-server" | "static-spa" | "fastapi" | "django" | "generic";
+/**
+ * Playbook ids, one per supported stack plus a generic fallback, and one per framework whose
+ * Cloudflare adapter OpsCrew sets up for server rendering on Cloudflare's Workers.
+ */
+export type PlaybookId =
+  | "nextjs"
+  | "node-server"
+  | "static-spa"
+  | "fastapi"
+  | "django"
+  | "generic"
+  | "cloudflare-astro"
+  | "cloudflare-next"
+  | "cloudflare-nuxt"
+  | "cloudflare-sveltekit";
 
 /**
  * Plain-English instructions for the Code-change agent (and for people making the changes by

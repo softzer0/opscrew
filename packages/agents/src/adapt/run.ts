@@ -18,13 +18,14 @@ import {
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
-import { listProjectFiles } from "@opscrew/detect";
+import { detectSite, listProjectFiles } from "@opscrew/detect";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import {
   appBranch,
   type CodeChangeKind,
   type CodeChangeStatus,
   type DeployPlan,
+  isServerlessTarget,
   type ProjectFacts,
   readArtifact,
   writeArtifact,
@@ -35,7 +36,12 @@ import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
-import { githubClientFromToken, requireGitRepo, writeRenderedFiles } from "../shared";
+import {
+  githubClientFromToken,
+  requireGitRepo,
+  serverlessName,
+  writeRenderedFiles,
+} from "../shared";
 import { appBranchNames, numberedBranches } from "../shared/app-branches";
 import { runPhase } from "../shared/phase-status";
 import {
@@ -44,9 +50,15 @@ import {
   renderDockerFiles,
   runtimeVersionFile,
 } from "./build-files";
+import {
+  cloudflareAdapterEdit,
+  type EditedFile,
+  nextWorkersOptionsEdit,
+} from "./cloudflare-adapter";
 import { healthRouteEdit } from "./health";
+import { updateLockfile } from "./lockfile";
 import { isNextConfigPath, nextConfigEdit } from "./next-config";
-import { playbookFor } from "./playbooks";
+import { CLOUDFLARE_PLAYBOOKS, playbookFor, serverlessStaticPlaybook } from "./playbooks";
 import {
   healthCheckWarning,
   PULL_REQUEST_TITLE,
@@ -61,6 +73,7 @@ import {
   CodeChangeReportSchema,
   manualInstructions,
 } from "./prompts";
+import { staticOutputNote } from "./static-output";
 
 /**
  * Branch adapt creates for the repository's first app; `-2`, `-3`, … are appended when it already
@@ -147,6 +160,9 @@ const DETERMINISTIC: Partial<Record<CodeChangeKind, (path: string) => boolean>> 
   "env-example": (path) => path === ".env.example",
 };
 
+/** The Cloudflare adapter's changes design adds for a server-rendered app (`serverlessCodeChanges`). */
+const ADAPTER_CHANGES = new Set(["cloudflare-adapter", "next-workers-options"]);
+
 /** The rendered template for a deterministic change, preferring one at the change's own path. */
 function templateFor(
   change: CodeChange,
@@ -169,7 +185,9 @@ function templateFor(
  * and they are missing, adds the runtime version file when the repository has none, checks the
  * user's own Dockerfile against
  * the image baseline, adds the health route itself for the frameworks it knows (`./health`), makes
- * the deterministic Next.js standalone edit, runs the Code-change agent (`edit-repo` profile)
+ * the deterministic Next.js standalone edit, on Cloudflare's hosting sets up a server-rendered
+ * app's Cloudflare adapter (`./cloudflare-adapter`, its release read from the npm registry) and
+ * has the app's package manager update its lockfile, runs the Code-change agent (`edit-repo` profile)
  * for the other pending changes when a model is configured, updates the statuses in
  * `opscrew/plan.yaml`, and then — each step after its own approval (`repo-write`, `git-push`,
  * `pull-request`) — commits, pushes and opens a pull request. A refused approval stops there and
@@ -434,10 +452,37 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         };
 
   // 3b. The health route, added by OpsCrew for the frameworks it knows when it can tell where
-  // it goes (`./health`), and the Next.js standalone output, edited when the config is a plain
-  // object (or missing); anything else stays with the Code-change agent or the user.
-  const playbook = playbookFor(facts);
+  // it goes (`./health`), the Next.js standalone output, edited when the config is a plain
+  // object (or missing), and on Cloudflare the server-rendered app's adapter; anything else stays
+  // with the Code-change agent or the user.
+  const deployTarget = plan.target;
+  const site = isServerlessTarget(deployTarget) ? await detectSite(paths.root, facts) : undefined;
+  const adapter =
+    deployTarget.provider === "cloudflare-workers" && deployTarget.render === "ssr"
+      ? site?.adapter
+      : undefined;
+  if (site !== undefined && isServerlessTarget(deployTarget) && site.render === "static") {
+    const note = staticOutputNote(site, deployTarget.site.outputDir, deployTarget.provider);
+    if (note !== undefined) reporter.info(say(note));
+  }
+  const playbook =
+    adapter !== undefined
+      ? CLOUDFLARE_PLAYBOOKS[adapter.framework]
+      : isServerlessTarget(deployTarget)
+        ? serverlessStaticPlaybook(serverlessName(deployTarget.provider))
+        : playbookFor(facts);
   const editedFiles: string[] = [];
+  /** Writes edited and new files, edited ones keeping their mode (the build must still read them). */
+  const writeEdited = async (files: readonly EditedFile[]) => {
+    for (const file of files) {
+      const path = join(paths.root, file.path);
+      const mode = file.created ? 0o644 : (await stat(path)).mode & 0o777;
+      await writeFileAtomic(path, file.content, { mode });
+      (file.created ? createdFiles : editedFiles).push(file.path);
+    }
+  };
+  /** The adapter change whose package.json edit needs the lockfile updated. */
+  let lockfileFor: CodeChange | undefined;
   /** The file a change was really made in, when it is not the plan's path. */
   const madeIn: Record<string, string> = {};
   const manualReasons = new Map<string, string>();
@@ -451,6 +496,25 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   /** True when adapt changed `app.healthPath` to where the new route answers. */
   let planChanged = false;
   for (const change of pending.filter((c) => DETERMINISTIC[c.kind] === undefined)) {
+    if (site !== undefined && adapter !== undefined && ADAPTER_CHANGES.has(change.id)) {
+      const edit =
+        change.id === "cloudflare-adapter"
+          ? await cloudflareAdapterEdit(paths.root, site, deps.fetch)
+          : await nextWorkersOptionsEdit(paths.root, change.path, site.nextOptions ?? []);
+      if (edit.action === "write") {
+        await writeEdited(edit.files);
+        if (edit.path !== change.path) madeIn[change.id] = edit.path;
+        if (edit.packageJson) lockfileFor = change;
+        set(change, "applied", edit.note);
+        byOpsCrew.add(change.id);
+        reporter.success(say(edit.note));
+      } else if (edit.action === "none") {
+        set(change, "skipped", edit.reason);
+      } else {
+        leaveToAgent(change, `OpsCrew did not make it: ${edit.reason}`, edit.reason);
+      }
+      continue;
+    }
     if (change.kind === "health-endpoint") {
       // The health route for every stack OpsCrew knows (FR-816), before the Code-change agent.
       const edit = await healthRouteEdit({
@@ -478,13 +542,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       }
       const tell = (text: string) => (moved === undefined ? warn(text) : reporter.info(say(text)));
       if (edit.action === "write") {
-        for (const file of edit.files) {
-          const target = join(paths.root, file.path);
-          // Edited files keep their mode (the image must still be able to read them).
-          const mode = file.created ? 0o644 : (await stat(target)).mode & 0o777;
-          await writeFileAtomic(target, file.content, { mode });
-          (file.created ? createdFiles : editedFiles).push(file.path);
-        }
+        await writeEdited(edit.files);
         if (edit.path !== change.path) madeIn[change.id] = edit.path;
         const note = [edit.note, ...edit.checks, pathNote]
           .filter((line) => line !== undefined)
@@ -527,6 +585,19 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       set(change, "skipped", edit.reason);
     } else {
       leaveToAgent(change, `OpsCrew did not edit it: ${edit.reason}`, edit.reason);
+    }
+  }
+  // The adapter's new dependencies into the app's lockfile, by its own package manager.
+  if (lockfileFor !== undefined && site?.packageManager !== undefined) {
+    const update = await updateLockfile(deps, site.dir, site.packageManager);
+    if (update.status !== "none") {
+      notes[lockfileFor.id] = say(`${notes[lockfileFor.id] ?? ""} ${update.note}`.trim());
+      if (update.status === "updated") {
+        editedFiles.push(update.lockfile);
+        reporter.success(say(update.note));
+      } else {
+        warn(update.note);
+      }
     }
   }
 
@@ -823,6 +894,18 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
         byOpsCrew: ctx.byOpsCrew,
         paths: ctx.paths,
         ...(ctx.build === undefined ? {} : { build: ctx.build }),
+        ...(isServerlessTarget(plan.target)
+          ? {
+              site: {
+                target: serverlessName(plan.target.provider),
+                ...(plan.target.site.command === undefined
+                  ? {}
+                  : { command: plan.target.site.command }),
+                buildContext: plan.app.buildContext,
+                outputDir: plan.target.site.outputDir,
+              },
+            }
+          : {}),
         ...(backgroundJobs === undefined ? {} : { backgroundJobs }),
         ...(migrations === undefined ? {} : { migrations }),
         ...(facts.notes === undefined ? {} : { appNotes: facts.notes }),

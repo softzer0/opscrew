@@ -8,6 +8,8 @@ import { nodeServerPlaybook } from "./node-server";
 import { staticSpaPlaybook } from "./static-spa";
 import type { Playbook } from "./types";
 
+export { CLOUDFLARE_PLAYBOOKS } from "./cloudflare";
+export { serverlessStaticPlaybook } from "./static-spa";
 export type { Playbook, PlaybookId } from "./types";
 
 /** The playbook for the app's container stack (the generic one when there is no better match). */

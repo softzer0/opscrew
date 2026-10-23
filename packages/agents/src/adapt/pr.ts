@@ -53,6 +53,19 @@ export interface PullRequestBodyInput {
   migrations?: string;
   /** What adapt did for the image's build: its section and the checklist's build line. */
   build?: PullRequestBuild;
+  /** A server-less target's site, which the checklist builds instead of an image. */
+  site?: PullRequestSite;
+}
+
+/** The site a server-less target builds and publishes, from the plan's target. */
+export interface PullRequestSite {
+  /** The target in a sentence: "Cloudflare hosting", "GitHub Pages". */
+  target: string;
+  /** `target.site.command`, run in `buildContext`; absent for a site with no build. */
+  command?: string;
+  buildContext: string;
+  /** `target.site.outputDir`. */
+  outputDir: string;
 }
 
 /** The image build in the pull request (absent: `docker build` at the root in the checklist). */
@@ -105,7 +118,14 @@ function buildSection(build: PullRequestBuild): string[] {
 /** The checklist's lines that check the image: the build, and the container answering. */
 function buildChecks(input: PullRequestBodyInput): string[] {
   const { name, port, healthPath } = input.app;
-  const { build } = input;
+  const { build, site } = input;
+  if (site !== undefined) {
+    if (site.command === undefined) return [];
+    const where = site.buildContext === "." ? "" : ` in \`${site.buildContext}\``;
+    return [
+      `- [ ] The site builds: \`${site.command}\`${where} writes \`${site.outputDir}\`, which ${site.target} publishes.`,
+    ];
+  }
   const named = codeBuilder(build?.builder);
   if (named !== undefined) {
     return [
@@ -160,8 +180,10 @@ function changeLine(
  * "Opened by OpsCrew". Pure: callers redact the result before sending it.
  */
 export function renderPullRequestBody(input: PullRequestBodyInput): string {
+  const purpose =
+    input.site === undefined ? "to run in a production container" : `for ${input.site.target}`;
   const lines: string[] = [
-    'This pull request prepares the app to run in a production container. OpsCrew wrote the deterministic files and edits (marked "applied by OpsCrew"); the Code-change agent (when a model was configured) made the other code edits. Nothing is deployed until you merge and approve the infrastructure plan.',
+    `This pull request prepares the app ${purpose}. OpsCrew wrote the deterministic files and edits (marked "applied by OpsCrew"); the Code-change agent (when a model was configured) made the other code edits. Nothing is deployed until you merge and approve the infrastructure plan.`,
     "",
     "## Changes",
     "",

@@ -1,12 +1,15 @@
 import type { Playbook } from "./types";
 
+const PUBLIC_BUNDLE =
+  "Everything in a static bundle is public. Variables such as VITE_*, REACT_APP_* or PUBLIC_* are baked into the files that browsers download.";
+
 /** Static single-page apps (Vite, Create React App, Angular) served by Caddy in the container. */
 export const staticSpaPlaybook: Playbook = {
   id: "static-spa",
   title: "Static single-page app (served by Caddy)",
   guidance: [
     "The app is built with Node and served as static files by Caddy on port 8080 with a fallback to index.html, so it needs no server code, health endpoint or port setting.",
-    "Everything in a static bundle is public. Variables such as VITE_*, REACT_APP_* or PUBLIC_* are baked into the files that browsers download.",
+    PUBLIC_BUNDLE,
   ],
   steps: {
     "health-endpoint":
@@ -27,3 +30,27 @@ export const staticSpaPlaybook: Playbook = {
     ],
   },
 };
+
+/**
+ * A static site on a server-less target (`target`: "Cloudflare hosting", "GitHub Pages"), which
+ * serves the site's build output itself: no container, server, health endpoint or port.
+ */
+export function serverlessStaticPlaybook(target: string): Playbook {
+  return {
+    id: "static-spa",
+    title: `Static site (served by ${target})`,
+    guidance: [
+      `The deploy workflow builds the site in GitHub Actions and ${target} serves its build output as static files, so it needs no server code, health endpoint or port setting.`,
+      PUBLIC_BUNDLE,
+    ],
+    steps: {
+      ...staticSpaPlaybook.steps,
+      "health-endpoint": `Do not add server code: ${target} serves the build output. Mark this change skipped and say so in your notes.`,
+      "port-config":
+        "Do not change the dev-server port: the site is served as static files, with no port. Mark this change skipped and say so in your notes.",
+      "build-config":
+        "Make sure the production build writes the site to the folder in target.site.outputDir of opscrew/plan.yaml, with the base path `/`.",
+    },
+    checks: staticSpaPlaybook.checks,
+  };
+}
