@@ -1047,7 +1047,14 @@ export class GitHubRepo {
             new Date(item.created_at).getTime() >= filter.since.getTime() - 5_000),
       );
       if (run?.status === "completed") {
-        return { id: run.id, conclusion: run.conclusion, jobs: await this.jobs(run.id) };
+        // GitHub can show a run completed while its jobs' results still lag (a skipped job says
+        // `skipped`, never nothing): read them again for up to a minute.
+        let jobs = await this.jobs(run.id);
+        for (let tries = 0; tries < 6 && jobs.some((job) => job.conclusion === null); tries++) {
+          await sleep(10_000);
+          jobs = await this.jobs(run.id);
+        }
+        return { id: run.id, conclusion: run.conclusion, jobs };
       }
       await sleep(20_000);
     }
