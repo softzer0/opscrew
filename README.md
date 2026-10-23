@@ -4,7 +4,9 @@
 
 From a GitHub repo to a hardened production deployment on your own cloud. Any cloud. You keep the infrastructure code.
 
-> Status: alpha. Tested live on Hetzner Cloud, on a server you already own and on an existing Portainer. DigitalOcean is tested against a fake only so far. Not published on npm yet; expect breaking changes before 1.0.
+> Status: alpha. Tested live on Hetzner Cloud, on a server you already own and on an existing Portainer. DigitalOcean is tested against a fake only so far. Expect breaking changes before 1.0.
+
+The full guide is at [docs.opscrew.dev](https://docs.opscrew.dev).
 
 ## What OpsCrew does
 
@@ -63,13 +65,7 @@ Run these in your app's repository, in order:
 6. `npx opscrew provision` shows the infrastructure plan and creates the server only after you approve that exact plan. From here your cloud bills you (the estimate from step 4). It opens a second pull request with the deploy workflow; merging it runs the first deploy.
 7. `npx opscrew verify` checks that the app is up, healthy and served over TLS, and `npx opscrew secure` checks the server's hardening and writes the security report. Free.
 
-Until 0.1.0 is published to npm, run OpsCrew from a clone instead of `npx opscrew`:
-
-```bash
-git clone https://github.com/softzer0/opscrew.git && cd opscrew
-pnpm install && pnpm --filter opscrew build
-node packages/cli/dist/opscrew.js --cwd /path/to/your/app init   # then analyze, interview, ...
-```
+To install it once instead of fetching it with `npx` each time, run `npm install -g opscrew`, then `opscrew init`, `opscrew analyze` and so on.
 
 ## After the first deploy
 
