@@ -52,6 +52,7 @@ import {
   gitClient,
   githubCoordinates,
   type HostPlanOutcome,
+  type HostPlanStep,
   readServerAddresses,
   refusalReason,
   requireNoBlockers,
@@ -441,20 +442,29 @@ function hardeningOf(
 }
 
 /**
- * The check after an SSH or firewall change: a new login as the machine's admin works. The deploy
- * user only runs the runners there, with no SSH key, so its login is not checked.
+ * What every host plan step on the machine `machine` (`the runner machine <name>`) shares: its
+ * shell, the host adapter, the names, no secrets, and the check after an SSH or firewall change
+ * that a new login as the machine's admin works. The deploy user only runs the runners there, with
+ * no SSH key, so its login is not checked.
  */
-function loginCheck(
+function onMachine(
   deps: PhaseDeps,
   session: OwnServerSession,
   services: RunnerHostServices | undefined,
-): () => Promise<boolean> {
-  return (
-    services?.verifyLogin ??
-    ownServerLoginCheck(deps, session, {
-      ...(services?.homeDir !== undefined ? { homeDir: services.homeDir } : {}),
-    })
-  );
+  machine: string,
+): Pick<HostPlanStep, "remote" | "apply" | "verifyLogin" | "server" | "planOf" | "secrets"> {
+  return {
+    remote: session.remote,
+    apply: services?.host?.apply ?? applyHostPlan,
+    verifyLogin:
+      services?.verifyLogin ??
+      ownServerLoginCheck(deps, session, {
+        ...(services?.homeDir !== undefined ? { homeDir: services.homeDir } : {}),
+      }),
+    server: machine,
+    planOf: machine,
+    secrets: async () => ({}),
+  };
 }
 
 /**
@@ -667,13 +677,9 @@ export async function applyRunnerHost(
   }
   const machine = `the runner machine ${name}`;
   const outcome = await approveAndApplyHostPlan(deps, {
+    ...onMachine(deps, session, input.services, machine),
     plan,
-    remote: session.remote,
-    apply: input.services?.host?.apply ?? applyHostPlan,
-    verifyLogin: loginCheck(deps, session, input.services),
     title: `Set up the runner machine ${name}: Docker${harden === undefined ? " and the deploy user" : `, the deploy user, ${hardeningWords(harden)}`}`,
-    server: machine,
-    planOf: machine,
     upToDate: `The runner machine ${name} is set up; nothing on it changes.`,
     command,
     phase: "provision",
@@ -681,7 +687,6 @@ export async function applyRunnerHost(
       `This prepares ${machine} for the GitHub Actions runners of this project's environments. ${harden === undefined ? "OpsCrew hardens its SSH and firewall only when you ask: it may be your desktop." : `As you chose, OpsCrew sets up ${hardeningWords(harden)} there.`}`,
       ...undoSentence(plan, record.login.user),
     ],
-    secrets: async () => ({}),
     applying: `Setting up ${machine} (installing Docker can take a few minutes)`,
   });
   await writeRunnerHost(deps.paths, { ...record, docker: true });
@@ -778,13 +783,9 @@ export async function removeRunnerHost(
   }
   const machine = `the runner machine ${name}`;
   const outcome = await approveAndApplyHostPlan(deps, {
+    ...onMachine(deps, session, input.services, machine),
     plan,
-    remote: session.remote,
-    apply: input.services?.host?.apply ?? applyHostPlan,
-    verifyLogin: loginCheck(deps, session, input.services),
     title: `Take back what OpsCrew set up on the runner machine ${name}`,
-    server: machine,
-    planOf: machine,
     upToDate: `Nothing of OpsCrew's is left on ${machine}.`,
     command,
     phase: "provision",
@@ -796,7 +797,6 @@ export async function removeRunnerHost(
       ...undoSentence(plan, record.login.user),
     ],
     auditAs: "host undo",
-    secrets: async () => ({}),
     runnerToken: runnerTokens(deps, repo),
   });
   if (outcome.stillRegistered !== undefined && outcome.stillRegistered.length > 0) {
@@ -1082,18 +1082,13 @@ export async function applyMachineRunner(
   );
   const machine = `the runner machine ${name}`;
   const outcome = await approveAndApplyHostPlan(deps, {
+    ...onMachine(deps, session, services.runnerMachine, machine),
     plan: hostPlan,
-    remote: session.remote,
-    apply: services.runnerMachine?.host?.apply ?? applyHostPlan,
-    verifyLogin: loginCheck(deps, session, services.runnerMachine),
     title: `Install the GitHub Actions runner of ${app} on the runner machine ${name}, run as deploy`,
-    server: machine,
-    planOf: machine,
     upToDate: `The runner of ${app} on ${machine} is installed and running as planned; nothing on it changes.`,
     command,
     phase: input.phase,
     ...(input.planOnly === true ? { planOnly: true } : {}),
-    secrets: async () => ({}),
     runnerToken: runnerTokens(deps, async () => repository),
     applying: `Installing the GitHub Actions runner of ${app} on ${machine}`,
   });
@@ -1148,18 +1143,13 @@ async function removeRunnerFrom(
   const hostPlan = planRunnerHost(facts, { repositoryUrl: url, runners: [{ app }] }, command);
   const machine = `the runner machine ${name}`;
   const outcome = await approveAndApplyHostPlan(deps, {
+    ...onMachine(deps, session, services.runnerMachine, machine),
     plan: hostPlan,
-    remote: session.remote,
-    apply: services.runnerMachine?.host?.apply ?? applyHostPlan,
-    verifyLogin: loginCheck(deps, session, services.runnerMachine),
     title: `Remove the GitHub Actions runner of ${app} from the runner machine ${name}`,
-    server: machine,
-    planOf: machine,
     upToDate: `${upperFirst(machine)} has no runner of ${app}; nothing on it changes.`,
     command,
     phase: input.phase,
     ...(input.planOnly === true ? { planOnly: true } : {}),
-    secrets: async () => ({}),
     runnerToken: runnerTokens(deps, repo),
     applying: `Removing the GitHub Actions runner of ${app} from ${machine}`,
   });
