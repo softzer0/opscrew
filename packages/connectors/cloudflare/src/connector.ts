@@ -1,6 +1,7 @@
 import type { Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
 import { errorText, Redactor } from "@opscrew/core";
 import {
+  CLOUDFLARE_HOSTING_PERMISSIONS,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -46,9 +47,10 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
     credentials: {
       envVars: ["CLOUDFLARE_API_TOKEN"],
       description:
-        "Cloudflare API token with the zone permissions below for the zone that holds your domain. Buying domains with OpsCrew is optional and also needs the permissions marked optional: then the zone permissions must cover all zones of the account, because a token limited to the zones you have today cannot set up a domain you buy (or add the new domain's zone to the token right after buying it).",
+        "Cloudflare API token with the zone permissions below for the zone that holds your domain. Buying domains with OpsCrew is optional and also needs the permissions marked optional: then the zone permissions must cover all zones of the account, because a token limited to the zones you have today cannot set up a domain you buy (or add the new domain's zone to the token right after buying it). Hosting a site on Cloudflare without a server also needs the permissions marked for it.",
       scopes: [
         ...CLOUDFLARE_TOKEN_PERMISSIONS,
+        ...CLOUDFLARE_HOSTING_PERMISSIONS,
         ...CLOUDFLARE_REGISTRAR_PERMISSIONS.map((p) => `${p} (optional, for buying domains)`),
       ],
       createUrl: CLOUDFLARE_TOKEN_PAGE,

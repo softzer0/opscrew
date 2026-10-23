@@ -3,7 +3,8 @@
  * phase in a zone, found by its fixed `ref` and listing the hostnames of every OpsCrew app there,
  * and the account's Zero Trust organization and one-time PIN login; and (feature 014, ADR 0017)
  * each app's origin TLS, per hostname (an Origin CA certificate and a client certificate for
- * Authenticated Origin Pulls), and the zone's minimum TLS version. `inspectShared` reads them,
+ * Authenticated Origin Pulls), and the zone's minimum TLS version; and (feature 016) the rule that
+ * sends the `www` hostnames of sites hosted on Cloudflare to their domain. `inspectShared` reads them,
  * `planShared` plans one app's change, `applyShared` applies a plan approved by its hash
  * (`cloudflare-apply`). A rule OpsCrew did not create is never written. See
  * `specs/011-shared-cloudflare-zone/contracts/cloudflare-shared.md` and
@@ -42,6 +43,7 @@ import {
 export const SHARED_RULES = {
   "opscrew-block-probes": { phase: "http_request_firewall_custom" },
   "opscrew-strict-tls": { phase: "http_config_settings" },
+  "opscrew-www-redirect": { phase: "http_request_dynamic_redirect" },
 } as const;
 export type SharedRuleRef = keyof typeof SHARED_RULES;
 type SharedPhase = (typeof SHARED_RULES)[SharedRuleRef]["phase"];
@@ -61,10 +63,16 @@ const PROBE_PATHS = [
   'http.request.uri.path contains "/phpmyadmin"',
 ].join(" or ");
 
+/** Where the redirect rule sends a `www` hostname: the same URL without `www.` (spike T1602, 12). */
+// biome-ignore lint/suspicious/noTemplateCurlyInString: `${1}` is Cloudflare's wildcard capture.
+const WWW_TARGET = 'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")';
+
 interface RuleTemplate {
   description: string;
   action: string;
-  parameters?: Record<string, string>;
+  parameters?: Record<string, unknown>;
+  /** How a rule whose parameters are not `parameters` differs, in words (with `parameters`). */
+  changedParameters?: string;
   /** What follows the hostname set in the expression. */
   suffix: string;
   /** The phase's rules as the dashboard names them. */
@@ -88,11 +96,28 @@ const TEMPLATES: Record<SharedRuleRef, RuleTemplate> = {
     description: "OpsCrew: verify the origin certificate (Full (strict) TLS)",
     action: "set_config",
     parameters: { ssl: "strict" },
+    changedParameters: "its settings are not just the SSL setting Strict",
     suffix: "",
     label: "configuration rules",
     permission: "Zone → Config Rules → Edit",
     restore:
       "set it back to turned on, with only the SSL setting Strict and the expression (http.host in {…its quoted hostnames…})",
+  },
+  "opscrew-www-redirect": {
+    description: "OpsCrew: redirect www to the domain",
+    action: "redirect",
+    parameters: {
+      from_value: {
+        status_code: 301,
+        target_url: { expression: WWW_TARGET },
+        preserve_query_string: true,
+      },
+    },
+    changedParameters: "its redirect is not OpsCrew's 301 to the domain without www",
+    suffix: "",
+    label: "single redirect rules",
+    permission: "Zone → Single Redirect → Edit",
+    restore: `set it back to turned on, with a dynamic redirect to ${WWW_TARGET}, the status code 301 and the query string kept, and the expression (http.host in {…its quoted www hostnames…})`,
   },
 };
 
@@ -103,19 +128,42 @@ interface PlanLimits {
 }
 
 /**
- * The rule limits by the zone's plan (`plan.legacy_id`). For a plan not listed, OpsCrew does not
- * count, and Cloudflare's own refusal stops the apply.
+ * The rule limits by the zone's plan (`plan.legacy_id`); single redirects have the configuration
+ * rules' limits. For a plan not listed, OpsCrew does not count, and Cloudflare's own refusal stops
+ * the apply.
  */
 const RULE_LIMITS = new Map<string, PlanLimits>([
-  ["free", { name: "Free", limits: { "opscrew-block-probes": 5, "opscrew-strict-tls": 10 } }],
-  ["pro", { name: "Pro", limits: { "opscrew-block-probes": 20, "opscrew-strict-tls": 25 } }],
+  [
+    "free",
+    {
+      name: "Free",
+      limits: { "opscrew-block-probes": 5, "opscrew-strict-tls": 10, "opscrew-www-redirect": 10 },
+    },
+  ],
+  [
+    "pro",
+    {
+      name: "Pro",
+      limits: { "opscrew-block-probes": 20, "opscrew-strict-tls": 25, "opscrew-www-redirect": 25 },
+    },
+  ],
   [
     "business",
-    { name: "Business", limits: { "opscrew-block-probes": 100, "opscrew-strict-tls": 50 } },
+    {
+      name: "Business",
+      limits: { "opscrew-block-probes": 100, "opscrew-strict-tls": 50, "opscrew-www-redirect": 50 },
+    },
   ],
   [
     "enterprise",
-    { name: "Enterprise", limits: { "opscrew-block-probes": 1000, "opscrew-strict-tls": 300 } },
+    {
+      name: "Enterprise",
+      limits: {
+        "opscrew-block-probes": 1000,
+        "opscrew-strict-tls": 300,
+        "opscrew-www-redirect": 300,
+      },
+    },
   ],
 ]);
 
@@ -148,7 +196,10 @@ export interface SharedFacts {
   accountId: string;
   /** The zone's plan (`free`, `pro`, `business`, `enterprise`), when Cloudflare says. */
   zonePlan?: string;
-  /** Per phase: the entrypoint ruleset (absent when Cloudflare answered 404). */
+  /**
+   * Per phase read: the entrypoint ruleset (`undefined` when Cloudflare answered 404). A phase not
+   * read has no key.
+   */
   entrypoints: Record<string, EntrypointRuleset | undefined>;
   /** Phases whose entrypoint the token may not read (HTTP 403). */
   deniedPhases?: string[];
@@ -239,14 +290,24 @@ const Id = z.string().min(1);
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 
 /**
- * `.opscrew/cloudflare.json` as read from disk: a 32-hex zone id, OpsCrew's two rule refs with
+ * `.opscrew/cloudflare.json` as read from disk: a 32-hex zone id, OpsCrew's rule refs with
  * lower-case hostnames, phases, and the app's origin certificates and zone setting when it has
  * them. Unknown keys are refused, so a damaged file stops the command.
  */
 export const SharedRecordSchema: z.ZodType<SharedRecord> = z.strictObject({
   zoneId: z.string().regex(/^[0-9a-f]{32}$/),
-  hostnames: z.strictObject({ "opscrew-block-probes": Hostnames, "opscrew-strict-tls": Hostnames }),
-  createdEntrypoints: z.array(z.enum(["http_request_firewall_custom", "http_config_settings"])),
+  hostnames: z.strictObject({
+    "opscrew-block-probes": Hostnames,
+    "opscrew-strict-tls": Hostnames,
+    "opscrew-www-redirect": Hostnames,
+  }),
+  createdEntrypoints: z.array(
+    z.enum([
+      "http_request_firewall_custom",
+      "http_config_settings",
+      "http_request_dynamic_redirect",
+    ]),
+  ),
   tls: z
     .strictObject({
       origin: z
@@ -414,7 +475,8 @@ export class SharedApplyError extends OpsCrewError {
 // --- Inspect -------------------------------------------------------------------------------------
 
 /**
- * Reads the zone's plan and its two entrypoint rulesets; with `tls`, the zone's origin and client
+ * Reads the zone's plan and the entrypoint rulesets of OpsCrew's phases (the redirect phase only
+ * with `redirect`); with `tls`, the zone's origin and client
  * certificates and the origin pull settings of the proxied hostnames and of those the record's
  * client certificate is on or leaving; with `minTls`, the zone's minimum
  * TLS version and its proxied A, AAAA and CNAME records; and, when `access` is set, the account's
@@ -427,6 +489,11 @@ export async function inspectShared(
     zoneId: string;
     accountId: string;
     access: boolean;
+    /**
+     * Read the phase of the `www` redirect rule too: for a site hosted on Cloudflare, which has (or
+     * had) www hostnames there. A server never needs it, nor the token permission for it.
+     */
+    redirect?: boolean;
     /**
      * Read the zone's origin TLS for the app's proxied hostnames (`desired.tls.proxied`) and for
      * those its record's client certificate is on or leaving (the record to be planned against).
@@ -442,6 +509,7 @@ export async function inspectShared(
   const entrypoints: Record<string, EntrypointRuleset | undefined> = {};
   const deniedPhases: string[] = [];
   for (const ref of REFS) {
+    if (ref === "opscrew-www-redirect" && !opts.redirect) continue;
     const { phase } = SHARED_RULES[ref];
     const read = await client.entrypointRuleset(opts.zoneId, phase);
     if (read === "forbidden") deniedPhases.push(phase);
@@ -539,6 +607,13 @@ export function planShared(
     const { phase } = SHARED_RULES[ref];
     if (facts.deniedPhases?.includes(phase)) {
       findings.push(permissionMissing(ref));
+      continue;
+    }
+    if (!(phase in facts.entrypoints)) {
+      // Not read (`inspectShared` without `redirect`): fine while the app has no hostnames there.
+      if (hostnames[ref].length > 0 || (record?.hostnames[ref] ?? []).length > 0) {
+        throw phaseNotRead(ref);
+      }
       continue;
     }
     const entrypoint = facts.entrypoints[phase];
@@ -819,7 +894,7 @@ function ruleBody(ref: SharedRuleRef, hostnames: readonly string[]): CloudflareR
     description: template.description,
     expression: `(http.host in {${hostnames.map((h) => `"${h}"`).join(" ")}})${template.suffix}`,
     action: template.action,
-    ...(template.parameters ? { action_parameters: { ...template.parameters } } : {}),
+    ...(template.parameters ? { action_parameters: structuredClone(template.parameters) } : {}),
     enabled: true,
   };
 }
@@ -845,11 +920,7 @@ function ruleDifferences(ref: SharedRuleRef, rule: RulesetRule): string[] {
     out.push(`its action is "${rule.action}" instead of "${template.action}"`);
   }
   if (canonicalJson(rule.actionParameters ?? null) !== canonicalJson(template.parameters ?? null)) {
-    out.push(
-      template.parameters
-        ? "its settings are not just the SSL setting Strict"
-        : "it has settings OpsCrew does not set",
-    );
+    out.push(template.changedParameters ?? "it has settings OpsCrew does not set");
   }
   if (!rule.enabled) out.push("it is turned off");
   if (!hostnamesOf(ref, rule)) out.push("its expression is not the one OpsCrew writes");
@@ -916,6 +987,16 @@ function hostnameTlsClaimed(hostnames: readonly string[]): SharedFinding {
     message: `${listText(hostnames)} already ${one ? "requires" : "require"} a client certificate at Cloudflare that this app did not upload: another OpsCrew app uses ${one ? "it" : "them"}, or one whose project folder is gone.`,
     hint: `OpsCrew never takes a hostname from another app. Use another hostname, or run \`opscrew destroy\` for the app that uses ${one ? "it" : "them"}. If that app's folder is gone, turn the setting off with Cloudflare's API (PUT /zones/<zone id>/origin_tls_client_auth/hostnames with "enabled": null for ${one ? "the hostname" : "each hostname"}), then run the command again.`,
   };
+}
+
+function phaseNotRead(ref: SharedRuleRef): OpsCrewError {
+  return new OpsCrewError(
+    "INTERNAL",
+    `OpsCrew planned its shared rule "${TEMPLATES[ref].description}" without reading the zone's ${TEMPLATES[ref].label} first.`,
+    {
+      hint: "Report this to OpsCrew: inspectShared needs `redirect` whenever the app has www hostnames there.",
+    },
+  );
 }
 
 function originCsrMissing(hostnames: readonly string[]): OpsCrewError {

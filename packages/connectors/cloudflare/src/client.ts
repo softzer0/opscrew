@@ -65,8 +65,31 @@ export const CLOUDFLARE_REGISTRAR_PERMISSIONS = [
   `${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")} for all zones of the account, not only the zone you use today: a token limited to existing zones does not cover the zone of a domain you buy, so otherwise add that zone to the token right after buying`,
 ] as const;
 
+/** The account permission Workers need, named as in the token builder (spike T1602, result 3). */
+const WORKERS_PERMISSION = "Account → Workers Scripts → Edit";
+
+/**
+ * Permissions only Cloudflare hosting (no server) adds to the token, each marked with when it is
+ * needed: the Worker, its custom domains and their DNS records; and, for a site that also answers
+ * on `www`, the shared `www` redirect rule.
+ */
+export const CLOUDFLARE_HOSTING_PERMISSIONS = [
+  `${WORKERS_PERMISSION} (only for Cloudflare hosting)`,
+  "Zone → Single Redirect → Edit (only for Cloudflare hosting with www)",
+] as const;
+
+/**
+ * The only permission the deploy token in GitHub Actions needs: Wrangler uploads and activates
+ * versions with it. Cloudflare offers nothing narrower, so it can also attach custom domains in
+ * the account's zones.
+ */
+export const CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS = [WORKERS_PERMISSION] as const;
+
 /** The zone rule phases OpsCrew adds its own rule to, next to the user's rules. */
-export type ManagedRulesetPhase = "http_config_settings" | "http_request_firewall_custom";
+export type ManagedRulesetPhase =
+  | "http_config_settings"
+  | "http_request_firewall_custom"
+  | "http_request_dynamic_redirect";
 
 /**
  * Comment on the DNS records that OpsCrew's `cloudflare-dns` and `cloudflare-tunnel` modules
@@ -96,8 +119,33 @@ export interface CloudflareRuleInput {
   description: string;
   expression: string;
   action: string;
-  action_parameters?: Record<string, string>;
+  action_parameters?: Record<string, unknown>;
   enabled: boolean;
+}
+
+/** A version of a Worker, latest first. */
+export interface WorkerVersion {
+  id: string;
+  /** ISO time. */
+  createdOn: string;
+  /** Its `workers/message` annotation: OpsCrew's deploys write `opscrew <run id> <sha256>`. */
+  message?: string;
+  /** What uploaded it, as Cloudflare names it (`wrangler`, `terraform`, `api` …). */
+  source?: string;
+}
+
+/** A deployment of a Worker: the versions serving traffic and their shares, latest first. */
+export interface WorkerDeployment {
+  id: string;
+  /** ISO time. */
+  createdOn: string;
+  versions: { id: string; percentage: number }[];
+}
+
+/** A custom domain of a Worker. */
+export interface WorkerCustomDomain {
+  hostname: string;
+  zoneId: string;
 }
 
 export interface CloudflareZone {
@@ -395,6 +443,32 @@ const IdResultSchema = z.looseObject({ id: z.string().min(1) });
 
 const ZoneSettingSchema = z.looseObject({ value: z.string(), editable: z.boolean() });
 
+/** `GET …/workers/scripts/{name}/versions`: the message is the `workers/message` annotation. */
+const WorkerVersionsSchema = z.looseObject({
+  items: z
+    .array(
+      z.looseObject({
+        id: z.string().min(1),
+        metadata: z.looseObject({ created_on: z.string(), source: z.string().nullish() }),
+        annotations: z.looseObject({ "workers/message": z.string().nullish() }).nullish(),
+      }),
+    )
+    .nullish(),
+});
+
+const WorkerDeploymentSchema = z.looseObject({
+  id: z.string().min(1),
+  created_on: z.string(),
+  versions: z.array(z.looseObject({ version_id: z.string().min(1), percentage: z.number() })),
+});
+
+const WorkerDomainsSchema = z
+  .array(z.looseObject({ hostname: z.string().min(1), zone_id: z.string().min(1) }))
+  .nullable();
+
+/** Most versions one read lists: Cloudflare keeps the last 100 for a rollback. */
+const WORKER_VERSIONS_PAGE = 100;
+
 /** Client certificates Cloudflare is deleting: listed for a while, but gone for OpsCrew. */
 const DELETED_STATUS = new Set(["pending_deletion", "deleted"]);
 
@@ -515,6 +589,24 @@ const CERTIFICATE_HINTS: FailHints = {
 const SETTINGS_HINTS: FailHints = {
   auth: `The zone's minimum TLS version needs the token permission "Zone → Zone Settings → Edit" for this zone. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
+
+/** Hints for the account's Workers. */
+const WORKERS_HINTS: FailHints = {
+  auth: `Cloudflare hosting needs the account permission "${WORKERS_PERMISSION}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Cloudflare's error code (with HTTP 404) for "This Worker does not exist on your account". */
+const NO_WORKER_CODE = 10007;
+
+/** True only for Cloudflare's "no such Worker" answer; any other 404 (a wrong account) is not. */
+function noWorker(answer: RawAnswer): boolean {
+  return answer.status === 404 && answer.body.errors.some((e) => e.code === NO_WORKER_CODE);
+}
+
+/** `/accounts/{id}/workers/scripts/{name}`. */
+function workerPath(accountId: string, worker: string): string {
+  return `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(worker)}`;
+}
 
 function toClientCertificate(
   raw: z.infer<typeof ClientCertificateSchema>,
@@ -652,7 +744,8 @@ const SANDBOX_REGISTRANT = {
 /**
  * Cloudflare API client. DNS changes are made through HCL and the approval gate; the registrar,
  * zone-create and DNSSEC calls are made by the domain purchase flow after its approval; the ruleset
- * and Zero Trust writes are made by `applyShared` after its `cloudflare-apply` approval.
+ * and Zero Trust writes are made by `applyShared` after its `cloudflare-apply` approval; a Worker
+ * version is activated by a promotion or rollback after its `promote` approval.
  */
 export class CloudflareClient {
   readonly #token: string | undefined;
@@ -1346,6 +1439,108 @@ export class CloudflareClient {
     );
     if (answer.status === 404) return "gone";
     return tunnelState(this.#result(answer, TunnelSchema, "read the tunnel", TUNNEL_HINTS));
+  }
+
+  /**
+   * Which of the Workers permissions the token lacks, named as in the token builder. Cloudflare
+   * does not list a token's permissions, so this reads the account's Workers: a refusal (HTTP 403)
+   * means the permission is missing. A token with only the read permission passes, and the first
+   * write then names the permission. Read-only.
+   */
+  async workersPermissions(accountId: string): Promise<{ missing: string[] }> {
+    const answer = await this.#request(
+      `/accounts/${encodeURIComponent(accountId)}/workers/scripts`,
+    );
+    if (answer.status === 403) return { missing: [WORKERS_PERMISSION] };
+    this.#result(answer, z.unknown(), "list the account's Workers", WORKERS_HINTS);
+    return { missing: [] };
+  }
+
+  /**
+   * The Worker's versions, latest first, each with its `workers/message` annotation
+   * (`GET …/versions`, the last 100); `undefined` when the account has no such Worker. Read-only.
+   */
+  async listWorkerVersions(
+    accountId: string,
+    worker: string,
+  ): Promise<WorkerVersion[] | undefined> {
+    const answer = await this.#request(
+      `${workerPath(accountId, worker)}/versions?per_page=${WORKER_VERSIONS_PAGE}`,
+    );
+    if (noWorker(answer)) return undefined;
+    const versions = this.#result(
+      answer,
+      WorkerVersionsSchema,
+      `list the versions of the Worker ${worker}`,
+      WORKERS_HINTS,
+    );
+    return (versions.items ?? []).map((v) => {
+      const message = v.annotations?.["workers/message"];
+      return {
+        id: v.id,
+        createdOn: v.metadata.created_on,
+        ...(message ? { message } : {}),
+        ...(v.metadata.source ? { source: v.metadata.source } : {}),
+      };
+    });
+  }
+
+  /**
+   * The Worker's deployments, latest (the one serving traffic) first (`GET …/deployments`);
+   * `undefined` when the account has no such Worker. Read-only.
+   */
+  async listWorkerDeployments(
+    accountId: string,
+    worker: string,
+  ): Promise<WorkerDeployment[] | undefined> {
+    const answer = await this.#request(`${workerPath(accountId, worker)}/deployments`);
+    if (noWorker(answer)) return undefined;
+    const { deployments } = this.#result(
+      answer,
+      z.looseObject({ deployments: z.array(WorkerDeploymentSchema) }),
+      `list the deployments of the Worker ${worker}`,
+      WORKERS_HINTS,
+    );
+    return deployments.map((d) => ({
+      id: d.id,
+      createdOn: d.created_on,
+      versions: d.versions.map((v) => ({ id: v.version_id, percentage: v.percentage })),
+    }));
+  }
+
+  /**
+   * Activates one version of the Worker for all its traffic (`POST …/deployments`, strategy
+   * `percentage`, the version at 100), with `message` as its `workers/message` annotation: a
+   * promotion or a rollback. Sent once.
+   */
+  async deployWorkerVersion(
+    accountId: string,
+    worker: string,
+    versionId: string,
+    message: string,
+  ): Promise<void> {
+    const what = `activate version ${versionId} of the Worker ${worker}`;
+    const answer = await this.#send(`${workerPath(accountId, worker)}/deployments`, what, {
+      method: "POST",
+      body: {
+        strategy: "percentage",
+        versions: [{ version_id: versionId, percentage: 100 }],
+        annotations: { "workers/message": message },
+      },
+      hints: WORKERS_HINTS,
+    });
+    this.#parseWrite(WorkerDeploymentSchema, answer.body.result, what);
+  }
+
+  /** The Worker's custom domains (`GET /accounts/{id}/workers/domains?service=`). Read-only. */
+  async listWorkerCustomDomains(accountId: string, worker: string): Promise<WorkerCustomDomain[]> {
+    const domains = await this.#call(
+      `/accounts/${encodeURIComponent(accountId)}/workers/domains?${new URLSearchParams({ service: worker })}`,
+      WorkerDomainsSchema,
+      `list the custom domains of the Worker ${worker}`,
+      { hints: WORKERS_HINTS },
+    );
+    return (domains ?? []).map((d) => ({ hostname: d.hostname, zoneId: d.zone_id }));
   }
 
   /**

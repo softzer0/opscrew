@@ -34,8 +34,10 @@ import {
 const TOKEN = fakeSecret("cloudflare-token");
 const WAF = "http_request_firewall_custom";
 const CONFIG = "http_config_settings";
+const REDIRECT = "http_request_dynamic_redirect";
 const BLOCK = "opscrew-block-probes";
 const TLS = "opscrew-strict-tls";
+const WWW = "opscrew-www-redirect";
 const PATHS =
   'http.request.uri.path contains "/.env" or starts_with(http.request.uri.path, "/.git") or http.request.uri.path contains "/wp-admin" or http.request.uri.path contains "/wp-login.php" or http.request.uri.path contains "/xmlrpc.php" or http.request.uri.path contains "/phpmyadmin"';
 const hostSet = (hosts: string[]) => `(http.host in {${hosts.map((h) => `"${h}"`).join(" ")}})`;
@@ -62,6 +64,8 @@ async function planFor(
     zoneId: ZONE_ID,
     accountId: ACCOUNT_ID,
     access: desired.access !== undefined,
+    // A site hosted on Cloudflare: it has (or had) www hostnames in the redirect rule.
+    redirect: WWW in desired.hostnames || record?.hostnames[WWW] !== undefined,
   });
   return planShared(facts, desired, record);
 }
@@ -93,7 +97,181 @@ describe("SHARED_RULES", () => {
     expect(SHARED_RULES).toEqual({
       "opscrew-block-probes": { phase: WAF },
       "opscrew-strict-tls": { phase: CONFIG },
+      "opscrew-www-redirect": { phase: REDIRECT },
     });
+  });
+});
+
+describe("the www redirect rule (feature 016)", () => {
+  const SITE = ["www.example.com"];
+  const DOCS = ["www.docs.example.com"];
+  const redirect = (hosts: string[]) => ({ [WWW]: hosts });
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: `${1}` is Cloudflare's wildcard capture.
+  const TARGET = 'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")';
+  const PARAMETERS = {
+    from_value: {
+      status_code: 301,
+      target_url: { expression: TARGET },
+      preserve_query_string: true,
+    },
+  };
+
+  it("creates the redirect entrypoint for the first site, adds a second site's www hostname, and the last site deletes it (204)", async () => {
+    const zone = new FakeZone();
+    const site = await deploy(zone, { hostnames: redirect(SITE) });
+    expect(site.plan.changes).toEqual([
+      {
+        kind: "create-entrypoint",
+        phase: REDIRECT,
+        rule: {
+          ref: WWW,
+          description: "OpsCrew: redirect www to the domain",
+          expression: hostSet(SITE),
+          action: "redirect",
+          action_parameters: PARAMETERS,
+          enabled: true,
+        },
+      },
+    ]);
+    expect(zone.opscrewRule(REDIRECT)).toMatchObject({
+      action: "redirect",
+      action_parameters: PARAMETERS,
+      expression: '(http.host in {"www.example.com"})',
+    });
+    expect(site.result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: redirect(SITE),
+      createdEntrypoints: [REDIRECT],
+    });
+    expect(SharedRecordSchema.parse(JSON.parse(JSON.stringify(site.result.record)))).toEqual(
+      site.result.record,
+    );
+    expect(
+      (await planFor(zone, { hostnames: redirect(SITE) }, site.result.record)).changes,
+    ).toEqual([]);
+
+    const docs = await deploy(zone, { hostnames: redirect(DOCS) });
+    expect(docs.plan.changes).toMatchObject([
+      { kind: "update-hostnames", phase: REDIRECT, add: DOCS, remove: [] },
+    ]);
+    expect(zone.opscrewRule(REDIRECT)?.expression).toBe(hostSet([...DOCS, ...SITE]));
+
+    await deploy(zone, { hostnames: {} }, site.result.record);
+    expect(zone.opscrewRule(REDIRECT)?.expression).toBe(hostSet(DOCS));
+    const before = zone.calls.length;
+    const gone = await deploy(zone, { hostnames: {} }, docs.result.record);
+    expect(gone.plan.changes).toMatchObject([
+      { kind: "delete-rule", phase: REDIRECT },
+      { kind: "delete-entrypoint", phase: REDIRECT },
+    ]);
+    expect(writesSince(zone, before).map((c) => c.method)).toEqual(["DELETE", "DELETE"]);
+    expect(zone.entrypoints.has(REDIRECT)).toBe(false);
+    expect(gone.result.applied).toEqual([
+      `delete-rule ${REDIRECT}`,
+      `delete-entrypoint ${REDIRECT}`,
+    ]);
+  });
+
+  it("keeps the user's own redirect rule and its ruleset when OpsCrew adds and then removes its rule", async () => {
+    const zone = new FakeZone();
+    zone.seedRule(REDIRECT, {
+      description: "My own redirect",
+      expression: '(http.host eq "old.example.com")',
+      action: "redirect",
+    });
+    const rulesetId = zone.entrypoints.get(REDIRECT)?.id;
+    const userRules = zone.userRulesText(REDIRECT);
+    const site = await deploy(zone, { hostnames: redirect(SITE) });
+    expect(kinds(site.plan)).toEqual(["add-rule"]);
+    expect(site.result.record.createdEntrypoints).toEqual([]);
+    expect(zone.entrypoints.get(REDIRECT)?.rules).toHaveLength(2);
+
+    const before = zone.calls.length;
+    const gone = await deploy(zone, { hostnames: {} }, site.result.record);
+    expect(kinds(gone.plan)).toEqual(["delete-rule"]);
+    expect(writesSince(zone, before)).toMatchObject([
+      { method: "DELETE", path: expect.stringContaining(`/rules/`) },
+    ]);
+    expect(zone.entrypoints.get(REDIRECT)?.id).toBe(rulesetId);
+    expect(zone.opscrewRule(REDIRECT)).toBeUndefined();
+    expect(zone.userRulesText(REDIRECT)).toBe(userRules);
+  });
+
+  it("finds a redirect rule changed outside OpsCrew and does not overwrite it", async () => {
+    const zone = new FakeZone();
+    const { result } = await deploy(zone, { hostnames: redirect(SITE) });
+    const rule = zone.opscrewRule(REDIRECT) as Record<string, unknown>;
+    rule.action_parameters = {
+      from_value: { ...PARAMETERS.from_value, status_code: 302 },
+    };
+    const before = zone.calls.length;
+    const plan = await planFor(zone, { hostnames: redirect([...SITE, ...DOCS]) }, result.record);
+    expect(plan.changes).toEqual([]);
+    expect(plan.findings).toEqual([
+      {
+        code: "rule-changed",
+        message:
+          "OpsCrew's shared rule \"OpsCrew: redirect www to the domain\" in the zone's single redirect rules was changed outside OpsCrew: its redirect is not OpsCrew's 301 to the domain without www. OpsCrew does not overwrite it.",
+        hint: expect.stringContaining(`with a dynamic redirect to ${TARGET}, the status code 301`),
+      },
+    ]);
+    await expect(applyShared(clientFor(zone), plan, { approvedHash: plan.hash })).rejects.toThrow(
+      /cannot change the shared Cloudflare rules yet/,
+    );
+    expect(writesSince(zone, before)).toEqual([]);
+  });
+
+  it("reads the redirect rules only for a site, so a server needs no Single Redirect permission", async () => {
+    const zone = new FakeZone();
+    zone.denied.add(REDIRECT);
+    const server = await deploy(zone, { hostnames: both(A) });
+    expect(server.plan.findings).toEqual([]);
+    expect(zone.calls.some((c) => c.path.includes(REDIRECT))).toBe(false);
+    const site = await planFor(zone, { hostnames: redirect(SITE) });
+    expect(site.findings).toMatchObject([
+      {
+        code: "permission-missing",
+        message: "The Cloudflare token may not read the zone's single redirect rules (HTTP 403).",
+        hint: expect.stringContaining("give it Zone → Single Redirect → Edit for this zone"),
+      },
+    ]);
+  });
+
+  it("refuses to plan www hostnames without reading the redirect rules", async () => {
+    const facts = await inspectShared(clientFor(new FakeZone()), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+    });
+    expect(() => planShared(facts, { hostnames: redirect(SITE) }, undefined)).toThrow(
+      expect.objectContaining({ code: "INTERNAL" }),
+    );
+    const record = { zoneId: ZONE_ID, hostnames: redirect(SITE), createdEntrypoints: [] };
+    expect(() => planShared(facts, { hostnames: {} }, record)).toThrow(
+      expect.objectContaining({ code: "INTERNAL" }),
+    );
+  });
+
+  it("counts the redirect rule slots as Cloudflare's plans allow them", async () => {
+    const zone = new FakeZone();
+    for (let i = 0; i < 10; i++) {
+      zone.seedRule(REDIRECT, {
+        description: `user redirect ${i}`,
+        expression: `http.host eq "r${i}.example.com"`,
+        action: "redirect",
+      });
+    }
+    const free = await planFor(zone, { hostnames: redirect(SITE) });
+    expect(free.findings).toMatchObject([
+      {
+        code: "no-rule-slot",
+        message: expect.stringContaining(
+          "single redirect rules already hold 10 rules, the most Cloudflare's Free plan allows (10)",
+        ),
+      },
+    ]);
+    zone.plan = "pro";
+    expect((await planFor(zone, { hostnames: redirect(SITE) })).findings).toEqual([]);
   });
 });
 

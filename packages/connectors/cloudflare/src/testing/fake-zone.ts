@@ -18,8 +18,13 @@ import { CLOUDFLARE_API } from "../client";
  * {@link FakeZone.certificatePendingReads} lists, then `active`; a deleted one stays listed as
  * `pending_deletion`); per-hostname settings, with their `cert_status`, that read
  * `pending_deployment` for {@link FakeZone.pendingReads} reads after each change, then `active`,
- * and 404 for a hostname without one; the zone's `min_tls_version`; and its DNS records. State is
- * plain data for assertions.
+ * and 404 for a hostname without one; the zone's `min_tls_version`; and its DNS records.
+ *
+ * Workers as feature 016's spike saw them: the account's Workers, each with its versions (latest
+ * first, the message as the `workers/message` annotation) and deployments (latest first; a `POST`
+ * puts one version at 100% in front), 404 with code 10007 for a Worker the account does not have
+ * (and 7003 for another account), and the account's Workers custom domains, filtered by `service`. Single redirect rules have the
+ * configuration rules' limits. State is plain data for assertions.
  */
 
 /** The fake zone's id. */
@@ -71,6 +76,40 @@ export interface FakeHostnameAop {
   enabled: boolean | null;
 }
 
+/** A version of a Worker. */
+export interface FakeWorkerVersion {
+  id: string;
+  created_on: string;
+  /** Listed as the `workers/message` annotation. */
+  message?: string;
+  source?: string;
+}
+
+/** A deployment of a Worker, as Cloudflare lists it. */
+export interface FakeWorkerDeployment {
+  id: string;
+  created_on: string;
+  source: string;
+  strategy: "percentage";
+  versions: { version_id: string; percentage: number }[];
+  annotations?: Record<string, string>;
+}
+
+/** A Worker of the fake account: its versions and deployments, latest first. */
+export interface FakeWorker {
+  versions: FakeWorkerVersion[];
+  deployments: FakeWorkerDeployment[];
+}
+
+/** A Workers custom domain, as Cloudflare lists it. */
+export interface FakeWorkerDomain {
+  id: string;
+  hostname: string;
+  service: string;
+  zone_id: string;
+  zone_name: string;
+}
+
 /** A one-shot failure of the next request matching `"METHOD /path"` (prefix). */
 export interface FakeFault {
   match: string;
@@ -110,9 +149,14 @@ export class FakeZone {
   readonly providers: { id: string; name: string; type: string }[] = [];
   /**
    * What the token may not read or change (HTTP 403): phases by name, `ssl` for origin
-   * certificates and origin pulls, `settings` for the zone's settings, `dns` for its DNS records.
+   * certificates and origin pulls, `settings` for the zone's settings, `dns` for its DNS records,
+   * `workers` for the account's Workers and their custom domains.
    */
   readonly denied = new Set<string>();
+  /** The account's Workers, by name. */
+  readonly workers = new Map<string, FakeWorker>();
+  /** The account's Workers custom domains. */
+  readonly workerDomains: FakeWorkerDomain[] = [];
   readonly faults: FakeFault[] = [];
   readonly calls: FakeZoneCall[] = [];
   /** The zone's Origin CA certificates, revoked ones included. */
@@ -261,6 +305,17 @@ export class FakeZone {
     if (route.startsWith("/certificates")) return this.#originCa(method, route, url, body);
     const aop = `/zones/${FAKE_ZONE_ID}/origin_tls_client_auth/hostnames`;
     if (route.startsWith(aop)) return this.#aop(method, route.slice(aop.length), body);
+    const workers = `/accounts/${FAKE_ACCOUNT_ID}/workers`;
+    if (route.startsWith(workers)) {
+      return this.#workers(method, route.slice(workers.length), url, body);
+    }
+    if (/^\/accounts\/[^/]+\/workers\//.test(route)) {
+      return refuse(
+        404,
+        7003,
+        "Could not route to the path, perhaps your object identifier is invalid?",
+      );
+    }
     if (route === `/zones/${FAKE_ZONE_ID}/settings/min_tls_version`) {
       return this.#minTls(method, body);
     }
@@ -402,6 +457,62 @@ export class FakeZone {
       cert_status: certificate?.status ?? "active",
       status: reads < this.pendingReads ? "pending_deployment" : "active",
     });
+  }
+
+  /** `/accounts/{id}/workers` + `rest`. */
+  #workers(method: string, rest: string, url: URL, body: unknown): FakeReply {
+    if (this.denied.has("workers")) return refuse(403, 10000, "Authentication error");
+    if (rest === "/scripts" && method === "GET") {
+      return ok([...this.workers.keys()].map((id) => ({ id })));
+    }
+    if (rest === "/domains" && method === "GET") {
+      const service = url.searchParams.get("service");
+      return ok(this.workerDomains.filter((d) => service === null || d.service === service));
+    }
+    const script = /^\/scripts\/([^/]+)\/(versions|deployments)$/.exec(rest);
+    if (!script?.[1]) throw new Error(`fake zone: ${method} on Workers ${rest}`);
+    const worker = this.workers.get(decodeURIComponent(script[1]));
+    if (!worker) return refuse(404, 10007, "This Worker does not exist on your account.");
+    if (script[2] === "versions" && method === "GET") {
+      return ok({
+        items: worker.versions.map((v, i) => ({
+          id: v.id,
+          number: worker.versions.length - i,
+          metadata: {
+            created_on: v.created_on,
+            modified_on: v.created_on,
+            source: v.source ?? "wrangler",
+            author_email: "dev@example.com",
+          },
+          annotations: v.message ? { "workers/message": v.message } : {},
+        })),
+      });
+    }
+    if (script[2] === "deployments" && method === "GET") {
+      return ok({ deployments: worker.deployments });
+    }
+    if (script[2] !== "deployments" || method !== "POST") {
+      throw new Error(`fake zone: ${method} on Workers ${rest}`);
+    }
+    const sent = body as Pick<FakeWorkerDeployment, "strategy" | "versions" | "annotations">;
+    const total = sent.versions.reduce((sum, v) => sum + v.percentage, 0);
+    if (
+      sent.strategy !== "percentage" ||
+      total !== 100 ||
+      sent.versions.some((v) => !worker.versions.some((known) => known.id === v.version_id))
+    ) {
+      return refuse(400, 10021, "invalid deployment");
+    }
+    const deployment: FakeWorkerDeployment = {
+      id: this.#id(),
+      created_on: this.now.toISOString(),
+      source: "api",
+      strategy: "percentage",
+      versions: sent.versions,
+      ...(sent.annotations ? { annotations: sent.annotations } : {}),
+    };
+    worker.deployments.unshift(deployment);
+    return ok(deployment);
   }
 
   #minTls(method: string, body: unknown): FakeReply {

@@ -1,4 +1,6 @@
 export {
+  CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
+  CLOUDFLARE_HOSTING_PERMISSIONS,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -14,6 +16,9 @@ export {
   type OriginCertificate,
   type RulesetRule,
   type TunnelConnectionState,
+  type WorkerCustomDomain,
+  type WorkerDeployment,
+  type WorkerVersion,
   zoneCandidates,
 } from "./client";
 export { type CloudflareConnector, cloudflareConnector } from "./connector";

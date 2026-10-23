@@ -5,5 +5,9 @@ export {
   type FakeClientCertificate,
   type FakeHostnameAop,
   type FakeOriginCertificate,
+  type FakeWorker,
+  type FakeWorkerDeployment,
+  type FakeWorkerDomain,
+  type FakeWorkerVersion,
   FakeZone,
 } from "./fake-zone";
