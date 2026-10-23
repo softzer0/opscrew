@@ -260,6 +260,13 @@ describe.skipIf(reason !== undefined)(
       const bad = runStep(planFor("caddy"), both, "header {\n");
       expect(bad.status).toBe(1);
       expect(bad.output).toContain("::error::Caddy refused this app's edge configuration");
+      // Nothing of the check stays in Docker, after a pass or a refusal.
+      const left = spawnSync(
+        "docker",
+        ["volume", "ls", "-q", "--filter", "label=com.docker.compose.project=opscrew-edge-check"],
+        { encoding: "utf8" },
+      ).stdout.trim();
+      expect(left, "the check's volumes left in Docker").toBe("");
     }, 300_000);
   },
 );

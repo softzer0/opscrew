@@ -86,6 +86,15 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
       : []),
     // nginx runs as the deploy user on the server, here as the runner's.
     ...(nginx ? ['    export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"'] : []),
+    // `run --rm` keeps the volumes the edge's Compose file names: on the user's own runner they
+    // would stay, so they go at the end, also after a refusal. One another deploy's check uses
+    // at that moment stays, and that check removes it.
+    "    remove_check_volumes() {",
+    "      for volume in $(docker volume ls -q --filter label=com.docker.compose.project=opscrew-edge-check); do",
+    '        docker volume rm "$volume" > /dev/null 2>&1 || true',
+    "      done",
+    "    }",
+    "    trap remove_check_volumes EXIT",
     // A runner machine runs other environments' deploys at once: one of them may create it first.
     onRunnerMachine(plan)
       ? `    docker network create ${EDGE_PROJECT} > /dev/null 2>&1 || docker network inspect ${EDGE_PROJECT} > /dev/null`

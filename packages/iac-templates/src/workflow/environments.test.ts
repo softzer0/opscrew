@@ -1057,7 +1057,9 @@ describe("the deploy job on a self-hosted runner", { timeout: 60_000 }, () => {
       expect(readFileSync(`${temp}/opscrew-edge/tls/shop-dev/local.key`, "utf8")).toBe(
         "leaf key\n",
       );
-      expect(checked.calls.at(-1)).toContain(" caddy caddy validate ");
+      expect(checked.calls.some((call) => call.includes(" caddy caddy validate "))).toBe(true);
+      // Then the check's volumes go, so none stays on this computer.
+      expect(checked.calls.at(-1)).toContain("volume ls -q --filter");
       // A server's check makes its placeholders as before, with no leaf of this computer.
       expect(jobYaml(content(server), "deploy")).not.toContain('OPSCREW_EDGE_DIR"/tls');
     },

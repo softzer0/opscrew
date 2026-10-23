@@ -107,6 +107,12 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites
           cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
+          remove_check_volumes() {
+            for volume in $(docker volume ls -q --filter label=com.docker.compose.project=opscrew-edge-check); do
+              docker volume rm "$volume" > /dev/null 2>&1 || true
+            done
+          }
+          trap remove_check_volumes EXIT
           docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
           cp opscrew/runtime/edge/sites/shop.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop.caddy
           if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then

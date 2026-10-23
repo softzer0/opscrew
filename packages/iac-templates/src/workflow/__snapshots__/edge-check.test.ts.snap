@@ -9,6 +9,12 @@ cp opscrew/proxy/additions.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop.addition
 mkdir -p "$RUNNER_TEMP/opscrew-edge"/tls/shop
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=opscrew-placeholder -keyout "$RUNNER_TEMP/opscrew-edge"/tls/shop/origin.key -out "$RUNNER_TEMP/opscrew-edge"/tls/shop/origin.pem 2> /dev/null
 cp opscrew/runtime/edge/tls/pull.pem "$RUNNER_TEMP/opscrew-edge"/tls/shop/pull.pem
+remove_check_volumes() {
+  for volume in $(docker volume ls -q --filter label=com.docker.compose.project=opscrew-edge-check); do
+    docker volume rm "$volume" > /dev/null 2>&1 || true
+  done
+}
+trap remove_check_volumes EXIT
 docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
 cp opscrew/runtime/edge/sites/shop.caddy "$RUNNER_TEMP/opscrew-edge"/sites/shop.caddy
 if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null; then
@@ -26,6 +32,12 @@ cp opscrew/runtime/edge/tls/pull.pem "$RUNNER_TEMP/opscrew-edge"/tls/shop/pull.p
 mkdir -p "$RUNNER_TEMP/opscrew-edge"/letsencrypt/live/shop
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=opscrew-placeholder -keyout "$RUNNER_TEMP/opscrew-edge"/letsencrypt/live/shop/privkey.pem -out "$RUNNER_TEMP/opscrew-edge"/letsencrypt/live/shop/fullchain.pem 2> /dev/null
 export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"
+remove_check_volumes() {
+  for volume in $(docker volume ls -q --filter label=com.docker.compose.project=opscrew-edge-check); do
+    docker volume rm "$volume" > /dev/null 2>&1 || true
+  done
+}
+trap remove_check_volumes EXIT
 docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
 cp opscrew/runtime/edge/sites/shop.conf "$RUNNER_TEMP/opscrew-edge"/sites/shop.conf
 if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T -v "$RUNNER_TEMP/opscrew-edge"/letsencrypt:/etc/letsencrypt:ro --entrypoint nginx nginx -t < /dev/null; then
@@ -43,6 +55,12 @@ mkdir -p "$RUNNER_TEMP/opscrew-edge"/sites "$RUNNER_TEMP/opscrew-edge"/letsencry
 cp opscrew/runtime/edge/compose.yaml "$RUNNER_TEMP/opscrew-edge"/compose.yaml
 cp opscrew/proxy/additions.nginx "$RUNNER_TEMP/opscrew-edge"/sites/shop.additions
 export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"
+remove_check_volumes() {
+  for volume in $(docker volume ls -q --filter label=com.docker.compose.project=opscrew-edge-check); do
+    docker volume rm "$volume" > /dev/null 2>&1 || true
+  done
+}
+trap remove_check_volumes EXIT
 docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
 cp opscrew/runtime/edge/sites/shop.conf "$RUNNER_TEMP/opscrew-edge"/sites/shop.conf
 if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T -v "$RUNNER_TEMP/opscrew-edge"/letsencrypt:/etc/letsencrypt:ro --entrypoint nginx nginx -t < /dev/null; then
