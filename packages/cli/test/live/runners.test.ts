@@ -5,13 +5,15 @@
  * - `OPSCREW_E2E_RUNNER=1`: quickstart "4.", the server's runner on prod's server at Hetzner. The
  *   deploy job runs on it, a merged change goes live, and destroy unregisters it.
  * - `OPSCREW_E2E_RUNNER_HOST=1`: a throwaway Hetzner server, set up as a runner machine as the
- *   user's own server is (root's SSH login, the host key pinned), builds the image (`build:
- *   runner`) and deploys over SSH to prod's server, which OpsCrew creates.
+ *   user's own server is (root's SSH login, the host key pinned) with its SSH firewall
+ *   (`--harden firewall`, SSH only from this computer, kept across a reboot), builds the image
+ *   (`build: runner`) and deploys over SSH to prod's server, which OpsCrew creates; removing the
+ *   machine takes the firewall off.
  */
 import { runnerLabel, TOOLS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
-import { minutes, type RepoRunner } from "./cloud";
+import { minutes, type RepoRunner, waitFor } from "./cloud";
 import {
   AppEnvironments,
   actionsRanges,
@@ -79,6 +81,41 @@ async function requirePrivate(run: LiveRun): Promise<void> {
       "The runner tests run only on a private repository: OPSCREW_E2E_GITHUB_REPO is public. A self-hosted runner must never serve a public repository, and these tests commit this computer's address to it. Point OPSCREW_E2E_GITHUB_REPO at a private throwaway repository.",
     );
   }
+}
+
+/**
+ * The runner machine's SSH firewall (FR-1536, `--harden firewall`): OpsCrew's nftables table
+ * `inet opscrew` accepts SSH on port 22 only from `tester` (this computer's address) and drops the
+ * rest, its service loads it at boot, and no revert timer is left pending. Only booleans are
+ * compared, so no address is printed.
+ */
+async function expectSshFirewall(run: LiveRun, tester: string, when: string): Promise<void> {
+  const shell = run.shell();
+  const table = await shell.ok("nft list table inet opscrew");
+  expect(
+    table.includes(`ip saddr ${tester} tcp dport 22 accept`),
+    `${when}: the table accepts SSH from this computer`,
+  ).toBe(true);
+  expect(table.includes("tcp dport 22 drop"), `${when}: the table drops other SSH traffic`).toBe(
+    true,
+  );
+  expect(
+    await shell.ok("systemctl is-enabled opscrew-ssh-firewall.service"),
+    `${when}: the service that loads the table at boot`,
+  ).toBe("enabled");
+  const timer = await shell.run("systemctl is-active opscrew-undo-ssh-firewall.timer");
+  expect(timer.stdout.trim(), `${when}: the revert timer`).not.toBe("active");
+}
+
+/** Reboots the runner machine and waits until root logs in again after the new boot. */
+async function rebootMachine(run: LiveRun): Promise<void> {
+  const bootId = "cat /proc/sys/kernel/random/boot_id";
+  const before = await run.shell().ok(bootId);
+  await run.shell().ok("systemd-run --on-active=2 --unit=opscrew-e2e-reboot systemctl reboot");
+  await waitFor("the runner machine after its reboot", minutes(6), async () => {
+    const now = await run.shell().run(bootId, minutes(1));
+    return now.exitCode === 0 && now.stdout.trim() !== before ? true : undefined;
+  });
 }
 
 /** Changes prod's `opscrew/plan.yaml` with `edit`, as a user edits it after design. */
@@ -219,6 +256,7 @@ describe.skipIf(HOST_MISSING.length > 0)(
     let fingerprint = "";
     let actions: string[] = [];
     let allowed: string[] = [];
+    let tester = "";
     let label = "";
     let runner: RepoRunner | undefined;
 
@@ -242,12 +280,13 @@ describe.skipIf(HOST_MISSING.length > 0)(
           "the runner machine's address inside GitHub's Actions ranges",
         ).toBe(0);
         allowed = [await testerCidr(run, actions), machine];
+        tester = (allowed[0] as string).replace(/\/32$/, "");
         await designProd(run, envs, SETTINGS.region);
       },
     );
 
     run.step(
-      "2. sets the server up as a runner machine, its host plan approved by its hash",
+      "2. sets the server up as a runner machine with its SSH firewall, its host plan approved by its hash; the firewall is back after a reboot",
       minutes(30),
       async () => {
         await opscrewUntilApproved(run, [
@@ -261,10 +300,17 @@ describe.skipIf(HOST_MISSING.length > 0)(
           run.keyFile,
           "--host-key",
           fingerprint,
+          "--harden",
+          "firewall",
+          "--ssh-from",
+          allowed[0] as string,
         ]);
         const listed = (await run.opscrewOk("runner", "host", "list")).stdout;
         expect(listed.includes(MACHINE), `runner host list shows ${MACHINE}`).toBe(true);
         await run.shell().ok("id -u deploy && docker version --format '{{.Server.Version}}'");
+        await expectSshFirewall(run, tester, "after the setup");
+        await rebootMachine(run);
+        await expectSshFirewall(run, tester, "after the reboot");
       },
     );
 
@@ -341,6 +387,12 @@ describe.skipIf(HOST_MISSING.length > 0)(
         ]);
         const listed = (await run.opscrewOk("runner", "host", "list")).stdout;
         expect(listed.includes(MACHINE), `runner host list no longer shows ${MACHINE}`).toBe(false);
+        const table = await run.shell().run("nft list table inet opscrew");
+        expect(table.exitCode, "OpsCrew's nftables table is gone from the machine").not.toBe(0);
+        const service = await run
+          .shell()
+          .run("test -e /etc/systemd/system/opscrew-ssh-firewall.service");
+        expect(service.exitCode, "the firewall's service is gone from the machine").not.toBe(0);
       },
     );
 

@@ -1189,9 +1189,14 @@ machine of the project (feature 015's runner machines, plan.md "16."). It builds
    OpsCrew as the own-server test does (root's login with a key made for this run, its host key
    pinned and checked on the server), and checks that its address and this computer's are
    outside those ranges. Prod is designed as above.
-2. **Set up:** `runner host add e2e-runner --ssh root@<address> --key <the run's key> --host-key
-   <fingerprint>`, its host plan approved by the hash it printed. `runner host list` must show
-   it, and the machine must have the `deploy` user and Docker.
+2. **Set up, with the SSH firewall:** `runner host add e2e-runner --ssh root@<address> --key <the
+   run's key> --host-key <fingerprint> --harden firewall --ssh-from <this computer>/32`, its host
+   plan approved by the hash it printed. `runner host list` must show it, and the machine must have
+   the `deploy` user and Docker. OpsCrew's nftables table `inet opscrew` must accept port 22 from
+   this computer and drop the rest, `opscrew-ssh-firewall.service` must be enabled, and no revert
+   timer may be left pending. The machine is then rebooted, and the same checks pass again. SSH
+   hardening (`--harden ssh`) is not part of the pass: the plan refuses it while OpsCrew logs in as
+   root, which this machine does.
 3. **Prod moves to it:** `env set prod --from main --runner host --runner-host e2e-runner --build
    runner`. `security.sshAllowedCidrs` in `opscrew/plan.yaml` becomes the machine's address and
    this computer's. Then `adapt` and `provision` until done. GitHub must list an online runner
@@ -1203,7 +1208,7 @@ machine of the project (feature 015's runner machines, plan.md "16."). It builds
    its hash. GitHub lists no runner with the label, nothing of the app is left at Hetzner or in
    Cloudflare, and the app's runner folder is gone from the machine. Then `runner host remove
    e2e-runner --confirm e2e-runner`, approved the same way, after which `runner host list` no
-   longer shows it.
+   longer shows it. OpsCrew's table and the firewall's service must be gone from the machine.
 6. **Nothing leaked,** as above. The machine's address may appear in `plan.yaml` only inside the
    SSH source the test planned.
 
