@@ -2,8 +2,10 @@
 
 One app can have several environments, for example `dev` on your computer, `staging` on a small
 server and `prod` on the live server. Each environment has its own target, size, hostnames, deploy
-secrets, infrastructure state and approvals. The app itself (how it is built, its components, its
-port and its health route) is defined once and is the same in every environment.
+secrets, infrastructure state and approvals. The app itself (how it is built, which components it
+uses, its port and its health route) is defined once and is the same in every environment, while
+each environment runs its own copies: its own containers and databases, with their own data (see
+[What every environment shares](#what-every-environment-shares-and-what-each-runs-on-its-own)).
 
 A change can then be tried somewhere first, and the live site is never the first place it runs. When
 it works in staging, you promote exactly that image to prod: nothing is rebuilt.
@@ -102,15 +104,40 @@ npx opscrew destroy --env staging --confirm shop-staging
 Because each environment's app name is its own (`shop-staging`), two environments can share a
 server, a Portainer and a Cloudflare zone the way two apps do.
 
-### What every environment shares
+### What every environment shares, and what each runs on its own
 
-The app's build, its port, its health route, its release command, its workers and cron jobs, its
-components (databases, caches and the other services), SQLite, its external services and image
-signing come from prod's plan, `opscrew/plan.yaml`. `npx opscrew design --env <env>` copies them
-into the environment's plan. When you change one of them, run `design` for each environment: each
-shows the change as a pending change and applies it only with its own approved plan.
+Every environment runs the same app, defined once in prod's plan, `opscrew/plan.yaml`: how it is
+built, its port, its health route, its release command, its workers and cron jobs, which
+components it uses (databases, caches and the other services, SQLite), which external services it
+uses, and image signing. `npx opscrew design --env <env>` copies that definition into the
+environment's plan. When you change it, run `design` for each environment: each shows the change
+as a pending change and applies it only with its own approved plan.
 `npx opscrew provision --env <env>` refuses an environment whose copy differs from prod's, and says
 to run `design` for it first.
+
+Sharing the definition shares nothing that runs. Each environment runs its own copies:
+
+- its own containers, on a server of its own by default (on a server you already have, beside
+  prod's, as another app);
+- its own databases and other services, with their own data and their own generated passwords;
+- its own buckets;
+- its own deploy secrets and deploy key.
+
+Staging's database starts empty, and nothing in staging reads or changes prod's data.
+
+The app's own values, such as API keys or the address of a hosted service, are each environment's
+own too. In a terminal, `npx opscrew provision --env staging` offers the values in `.env.staging`
+(each only after you confirm it), and prod's come from `.env`. Prod's `.env` is never offered to
+another environment: without `.env.staging`, OpsCrew says so and asks for each value. In scripts,
+the file `OPSCREW_APP_ENV_FILE` names holds the values of the environment the run is for.
+
+Give an external service the app uses, such as a hosted database or a payment provider, its own
+connection value per environment: a staging database, a test-mode key. Then staging never touches
+prod's data or money.
+
+Keep `.env.staging` and every other `.env.*` file out of git, as you do `.env`. Many `.gitignore`
+files list only `.env`, so add `.env.*` too (with `!.env.example` if you commit an example file).
+`npx opscrew scan` flags an env file that git does not ignore.
 
 The [scan report](security.md), `opscrew/ARCHITECTURE.md` and your own
 [proxy rules](reverse-proxy.md#your-own-rules) in `opscrew/proxy/` are shared too.

@@ -56,7 +56,11 @@ export type EnvAnswer = { useLocal: true } | { value: string } | { skip: true };
 export interface EnvQuestion {
   name: string;
   secret: boolean;
-  /** True when the local `.env` has a value the user may reuse for production. */
+  /** The environment the value is for: `prod`, or another environment's name. */
+  environment: string;
+  /** The local file values are offered from: `.env` for prod, `.env.<env>` for another. */
+  localFile: string;
+  /** True when {@link localFile} has a value the user may reuse for the environment. */
   localValueAvailable: boolean;
   /**
    * True when the app's code has a default for the variable: leaving it unset (an empty answer)
@@ -375,10 +379,18 @@ function hostListValue(
 
 export interface AssembleAppEnvOptions {
   plan: DeployPlan;
-  /** Contents of the local `.env` (interactive) or of `OPSCREW_APP_ENV_FILE` (non-interactive). */
+  /**
+   * Contents of the environment's local file (interactive, `local.file`) or of
+   * `OPSCREW_APP_ENV_FILE` (non-interactive).
+   */
   dotenvText?: string;
   /** Interactive prompt; when absent, values come from `dotenvText` only. */
   ask?: (question: EnvQuestion) => Promise<EnvAnswer>;
+  /**
+   * The environment an interactive run is for, and the local file its values are offered from,
+   * which `ask`'s questions name (default prod's `.env`).
+   */
+  local?: { environment: string; file: string };
   /**
    * Makes every value this run generates, in place of the database password and the formats of
    * {@link FRAMEWORK_ENV} (tests, and drift's marker for a value it cannot know).
@@ -554,6 +566,8 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       const answer = await options.ask({
         name: variable.name,
         secret: variable.secret,
+        environment: options.local?.environment ?? "prod",
+        localFile: options.local?.file ?? ".env",
         localValueAvailable: local.has(variable.name),
         optional,
       });

@@ -58,10 +58,12 @@ async function readGenerated(
 }
 
 /**
- * Production environment for the deploy secrets. Interactive runs offer each value from the local
- * `.env` (only after the user confirms it) or let them type it; non-interactive runs read the file
- * named by `OPSCREW_APP_ENV_FILE`. Generated values (database password, app secrets) are kept in
- * a private file so re-running provision never changes the password Postgres was created with.
+ * Production environment for the deploy secrets. Interactive runs offer each value from the
+ * environment's own local file (only after the user confirms it), `.env` for prod and
+ * `.env.<env>` for another environment (FR-1538: never prod's), or let them type it;
+ * non-interactive runs read the file named by `OPSCREW_APP_ENV_FILE`. Generated values (database
+ * password, app secrets) are kept in a private file so re-running provision never changes the
+ * password Postgres was created with.
  * `serverHost` (the address the deploy secrets point to) fills host lists such as
  * `ALLOWED_HOSTS` when the plan has no domain; it is never printed. For the user's Portainer
  * (`options.portainer`) the notes about unset variables say what a stack does with them: they are
@@ -78,17 +80,25 @@ export async function buildAppEnvironment(
 ): Promise<AppEnvironment> {
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;
+  // Each environment's own values: prod's `.env` never reaches another environment.
+  const name = deps.paths.environment;
+  const file = name === "prod" ? ".env" : `.env.${name}`;
   if (ask) {
-    dotenvText = await readTextIfExists(join(deps.paths.root, ".env"));
+    dotenvText = await readTextIfExists(join(deps.paths.root, file));
+    if (dotenvText === undefined && name !== "prod") {
+      deps.reporter.info(
+        `There is no ${file}, so OpsCrew offers none of your own values for the ${name} environment and asks for each one. It never offers prod's .env there; put the ${name} environment's values in ${file} to have them offered.`,
+      );
+    }
   } else {
-    const file = deps.env.OPSCREW_APP_ENV_FILE?.trim();
-    if (file) {
-      const path = isAbsolute(file) ? file : join(deps.paths.root, file);
+    const named = deps.env.OPSCREW_APP_ENV_FILE?.trim();
+    if (named) {
+      const path = isAbsolute(named) ? named : join(deps.paths.root, named);
       dotenvText = await readTextIfExists(path);
       if (dotenvText === undefined) {
         throw new OpsCrewError(
           "INVALID_INPUT",
-          `OPSCREW_APP_ENV_FILE points to ${file}, which does not exist.`,
+          `OPSCREW_APP_ENV_FILE points to ${named}, which does not exist.`,
         );
       }
     }
@@ -97,7 +107,7 @@ export async function buildAppEnvironment(
   const environment = await assembleAppEnv({
     plan,
     ...(dotenvText !== undefined ? { dotenvText } : {}),
-    ...(ask ? { ask } : {}),
+    ...(ask ? { ask, local: { environment: name, file } } : {}),
     ...(serverHost !== undefined ? { serverHost } : {}),
     ...(previous ? { previous } : {}),
     ...(options.storage !== undefined ? { storage: options.storage } : {}),

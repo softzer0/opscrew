@@ -1,7 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -24,6 +25,7 @@ import {
   testPlan,
 } from "../testing";
 import { runProvision } from "./run";
+import { buildAppEnvironment } from "./secrets";
 import type { ProvisionServices } from "./types";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
@@ -679,5 +681,89 @@ describe.skipIf(!findExecutable("git"))("the rules of GitHub environments (FR-15
     await other.run();
     expect(rulesRequest(other.staging)).toBeUndefined();
     expect(count(other.staging.reporter.text(), GUARD)).toBe(1);
+  });
+});
+
+describe("each environment's own app values (FR-1538)", () => {
+  // testPlan's STRIPE_SECRET_KEY is the user's own value; prod's and staging's differ.
+  const PROD_KEY = fakeSecret("stripe-live-key", "prod");
+  const STAGING_KEY = fakeSecret("stripe-live-key", "staging");
+  const BOTH = {
+    ".env": `STRIPE_SECRET_KEY=${PROD_KEY}\n`,
+    ".env.staging": `STRIPE_SECRET_KEY=${STAGING_KEY}\n`,
+  };
+
+  /** The deps of `environment` with `files` in the project, interactive unless a script. */
+  async function withFiles(
+    environment: string,
+    files: Record<string, string>,
+    interactive = true,
+  ): Promise<TestPhaseDeps> {
+    const deps = await createTestPhaseDeps({ environment });
+    deps.interactive = interactive;
+    for (const [name, text] of Object.entries(files)) {
+      await writeFile(join(deps.paths.root, name), text);
+    }
+    return deps;
+  }
+
+  /** The app's values when each offered local value is taken, and what was offered, by name. */
+  async function interactiveValues(deps: TestPhaseDeps) {
+    const offered: Record<string, boolean> = {};
+    const where = new Set<string>();
+    const services: ProvisionServices = {
+      askEnv: async (question) => {
+        offered[question.name] = question.localValueAvailable;
+        where.add(`${question.environment} ${question.localFile}`);
+        return question.localValueAvailable ? { useLocal: true } : { skip: true };
+      },
+    };
+    const environment = await buildAppEnvironment(deps, testPlan(), services);
+    return { offered, where: [...where], app: environment.values.app };
+  }
+
+  it("offers staging only .env.staging's values, never prod's .env", async () => {
+    const deps = await withFiles("staging", BOTH);
+    const { offered, where, app } = await interactiveValues(deps);
+    // The questions name the environment and the file the values come from.
+    expect(where).toEqual(["staging .env.staging"]);
+    expect(offered.STRIPE_SECRET_KEY).toBe(true);
+    expect(app.STRIPE_SECRET_KEY).toBe(STAGING_KEY);
+    expect(JSON.stringify(app)).not.toContain(PROD_KEY);
+  });
+
+  it("offers staging nothing without .env.staging, and says so once", async () => {
+    const deps = await withFiles("staging", { ".env": BOTH[".env"] });
+    const { offered, app } = await interactiveValues(deps);
+    expect(offered.STRIPE_SECRET_KEY).toBe(false);
+    expect(Object.values(offered)).not.toContain(true);
+    expect(app.STRIPE_SECRET_KEY).toBeUndefined();
+    expect(deps.reporter.lines.filter((line) => line.message.includes(".env.staging"))).toEqual([
+      {
+        level: "info",
+        message:
+          "There is no .env.staging, so OpsCrew offers none of your own values for the staging environment and asks for each one. It never offers prod's .env there; put the staging environment's values in .env.staging to have them offered.",
+      },
+    ]);
+  });
+
+  it("offers prod its .env", async () => {
+    const deps = await withFiles("prod", BOTH);
+    const { offered, where, app } = await interactiveValues(deps);
+    expect(where).toEqual(["prod .env"]);
+    expect(offered.STRIPE_SECRET_KEY).toBe(true);
+    expect(app.STRIPE_SECRET_KEY).toBe(PROD_KEY);
+  });
+
+  it("reads OPSCREW_APP_ENV_FILE in a script, for any environment", async () => {
+    const deps = await withFiles(
+      "staging",
+      { ...BOTH, "staging.env": `STRIPE_SECRET_KEY=${STAGING_KEY}\n` },
+      false,
+    );
+    deps.env.OPSCREW_APP_ENV_FILE = "staging.env";
+    const environment = await buildAppEnvironment(deps, testPlan(), {});
+    expect(environment.values.app.STRIPE_SECRET_KEY).toBe(STAGING_KEY);
+    expect(deps.reporter.text()).not.toContain("There is no");
   });
 });

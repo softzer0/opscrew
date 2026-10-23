@@ -267,7 +267,9 @@ for both). The stack plan names what it replaces, never the token.
 
 OpsCrew reads the values of your app's environment variables on your computer: in a terminal it
 offers the values in your project's `.env` (each only after you confirm it) or lets you type them
-in; in scripts it reads them from the file `OPSCREW_APP_ENV_FILE` names. OpsCrew generates the values it creates itself, such as the database password, and
+in; in scripts it reads them from the file `OPSCREW_APP_ENV_FILE` names. For an environment other
+than prod, it offers the values in `.env.<env>` instead, for example `.env.staging` (see
+[environments](environments.md#what-every-environment-shares-and-what-each-runs-on-its-own)). OpsCrew generates the values it creates itself, such as the database password, and
 keeps them in its local state. At runtime the values live only in the stack's environment in
 Portainer. The values the image needs while it is built are also stored in the GitHub Actions secret
 `OPSCREW_BUILD_ENV`, which the deploy workflow reads. OpsCrew never prints, plans, audits or commits

@@ -142,9 +142,11 @@ describe("assembleAppEnv: defaults and host lists", () => {
         return question.name === "STRIPE_SECRET_KEY" ? { value: stripe } : { skip: true };
       },
     });
+    // prod's, by default.
+    const own = { environment: "prod", localFile: ".env", localValueAvailable: false };
     expect(asked).toEqual([
-      { name: "DJANGO_DEBUG", secret: false, localValueAvailable: false, optional: true },
-      { name: "STRIPE_SECRET_KEY", secret: true, localValueAvailable: false, optional: false },
+      { name: "DJANGO_DEBUG", secret: false, ...own, optional: true },
+      { name: "STRIPE_SECRET_KEY", secret: true, ...own, optional: false },
     ]);
     expect(result.defaulted).toEqual(["DJANGO_DEBUG"]);
     expect(parseDotenv(result.appEnv).get("STRIPE_SECRET_KEY")).toBe(stripe);
