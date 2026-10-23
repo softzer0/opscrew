@@ -95,14 +95,14 @@ export function caName(computerName: string): string {
 const MAX_COMMON_NAME = 64;
 
 /**
- * The names of `hostname`'s leaf certificate, the first its common name: the hostname alone, or,
- * when it is longer than a common name holds (a long `<env>.<app>.localhost`), first a short name
- * made from its SHA-256 that nothing serves, then the hostname, which the certificate's SAN names
- * for TLS.
+ * The common name of `hostname`'s leaf certificate when the hostname is longer than one holds (a
+ * long `<env>.<app>.localhost`): a short name made from its SHA-256. The SAN names the hostname
+ * alone, for TLS.
  */
-function leafNames(hostname: string): string[] {
-  if (hostname.length <= MAX_COMMON_NAME) return [hostname];
-  return [`${sha256Hex(hostname).slice(0, 16)}.localhost`, hostname];
+function leafCommonName(hostname: string): string | undefined {
+  return hostname.length <= MAX_COMMON_NAME
+    ? undefined
+    : `${sha256Hex(hostname).slice(0, 16)}.localhost`;
 }
 
 /** A new leaf certificate for `hostname` signed by the local CA, and its key (PEM, never logged). */
@@ -112,11 +112,13 @@ export function issueLeaf(
   now: Date,
 ): { certificate: string; key: string } {
   const pair = generateP256();
+  const commonName = leafCommonName(hostname);
   const certificate = signedLeafCertificate({
     caKey: ca.key,
     caCertificate: ca.certificate,
     key: createPrivateKey(pair.privateKey),
-    hostnames: leafNames(hostname),
+    hostnames: [hostname],
+    ...(commonName !== undefined ? { commonName } : {}),
     days: LEAF_DAYS,
     now,
   });
@@ -166,12 +168,7 @@ export async function leafState(
     return { action: "change", detail: "the certificate in place cannot be read" };
   }
   const expires = new Date(leaf.validTo).toISOString();
-  if (
-    leaf.subjectAltName !==
-    leafNames(hostname)
-      .map((name) => `DNS:${name}`)
-      .join(", ")
-  ) {
+  if (leaf.subjectAltName !== `DNS:${hostname}`) {
     return {
       action: "change",
       detail: `the certificate in place names ${leaf.subjectAltName}`,

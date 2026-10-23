@@ -9,7 +9,7 @@ import { ensureLocalCa, issueLeaf, leafFile, leafState } from "./ca";
 const now = new Date("2026-10-11T12:00:00.000Z");
 
 describe("the leaf certificates of OpsCrew's local CA", () => {
-  it("keep a long <env>.<app>.localhost in the SAN, with a common name of at most 64 characters", async () => {
+  it("name a long <env>.<app>.localhost alone in the SAN, with a common name of at most 64 characters", async () => {
     const paths = { homeDir: await mkdtemp(join(tmpdir(), "opscrew-local-ca-")) };
     const ca = await ensureLocalCa(paths, { computerName: "test", now });
     const app = "a-very-long-app-name-that-fills-most-of-4";
@@ -18,7 +18,7 @@ describe("the leaf certificates of OpsCrew's local CA", () => {
     const leaf = new X509Certificate(issueLeaf(ca, hostname, now).certificate);
     const commonName = /CN=([^\n]+)/.exec(leaf.subject)?.[1] ?? "";
     expect(commonName.length).toBeLessThanOrEqual(64);
-    expect(leaf.subjectAltName?.split(", ")).toContain(`DNS:${hostname}`);
+    expect(leaf.subjectAltName).toBe(`DNS:${hostname}`);
     expect(leaf.checkIssued(new X509Certificate(ca.certificate))).toBe(true);
 
     // Provision keeps it: it is the leaf this hostname gets.

@@ -227,6 +227,33 @@ describe("localCaCertificate and signedLeafCertificate", () => {
     ).toThrow(/local CA expired on 2036-10-19T08:09:10\.000Z/);
   });
 
+  it("takes a common name apart from the hostnames, for a hostname too long for one", () => {
+    const long = `staging-europe01.${"a".repeat(50)}.localhost`;
+    const named = new X509Certificate(
+      signedLeafCertificate({
+        caKey,
+        caCertificate: caPem,
+        key: leafKey,
+        hostnames: [long],
+        commonName: "a.localhost",
+        days: 1,
+        now,
+      }),
+    );
+    expect(named.subject).toBe("CN=a.localhost");
+    expect(named.subjectAltName).toBe(`DNS:${long}`);
+    expect(() =>
+      signedLeafCertificate({
+        caKey,
+        caCertificate: caPem,
+        key: leafKey,
+        hostnames: [long],
+        days: 1,
+        now,
+      }),
+    ).toThrow(/common name holds at most 64 characters/);
+  });
+
   it("refuses a CA key that is not the certificate's, no hostname, and a bad hostname", () => {
     const sign = (o: { caKey?: KeyObject; hostnames?: string[] }) => () =>
       signedLeafCertificate({

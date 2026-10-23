@@ -120,10 +120,10 @@ function dnsNames(hostnames: readonly string[]): Uint8Array {
 }
 
 /**
- * Refuses a hostname that is not lower-case ASCII, and a first hostname (the common name) longer
- * than RFC 5280 allows.
+ * Refuses a hostname that is not lower-case ASCII, and a common name (by default the first
+ * hostname) longer than RFC 5280 allows.
  */
-function checkHostnames(first: string, hostnames: readonly string[], what: string): void {
+function checkHostnames(commonName: string, hostnames: readonly string[], what: string): void {
   const invalid = hostnames.find((name) => !HOSTNAME.test(name));
   if (invalid !== undefined) {
     throw new OpsCrewError(
@@ -132,10 +132,10 @@ function checkHostnames(first: string, hostnames: readonly string[], what: strin
       { hint: "Write hostnames in lower case, with an international name in its xn-- form." },
     );
   }
-  if (first.length > MAX_COMMON_NAME) {
+  if (commonName.length > MAX_COMMON_NAME) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The first hostname becomes the certificate's common name, which holds at most ${MAX_COMMON_NAME} characters; ${first} has ${first.length}.`,
+      `The certificate's common name holds at most ${MAX_COMMON_NAME} characters; ${commonName} has ${commonName.length}.`,
       { hint: `Put a hostname of at most ${MAX_COMMON_NAME} characters first.` },
     );
   }
@@ -273,9 +273,9 @@ export function localCaCertificate(
 
 /**
  * A server certificate (PEM) for `hostnames`, signed by the local CA (`caKey` and its
- * `caCertificate`): the common name is the first hostname, and it has the CA's subject as its
- * issuer, every hostname as a SAN DNS name, basicConstraints CA:false and keyUsage
- * digitalSignature (both critical), extKeyUsage serverAuth, and subject and authority key
+ * `caCertificate`): the common name is `commonName` (default: the first hostname), and it has the
+ * CA's subject as its issuer, every hostname as a SAN DNS name, basicConstraints CA:false and
+ * keyUsage digitalSignature (both critical), extKeyUsage serverAuth, and subject and authority key
  * identifiers. Valid for `days` from `now`, but never past the CA's own notAfter. `key` is the
  * leaf's P-256 private key; only its public key goes in the certificate.
  */
@@ -284,6 +284,8 @@ export function signedLeafCertificate(o: {
   caCertificate: string;
   key: KeyObject;
   hostnames: readonly string[];
+  /** At most 64 characters; for a first hostname longer than a common name holds. */
+  commonName?: string;
   days: number;
   now: Date;
 }): string {
@@ -291,7 +293,8 @@ export function signedLeafCertificate(o: {
   if (first === undefined) {
     throw new OpsCrewError("INVALID_INPUT", "A leaf certificate needs at least one hostname.");
   }
-  checkHostnames(first, o.hostnames, "a certificate");
+  const commonName = o.commonName ?? first;
+  checkHostnames(commonName, o.hostnames, "a certificate");
   const ca = p256Key(o.caKey);
   const leaf = p256Key(o.key);
   const caCertificate = new X509Certificate(o.caCertificate);
@@ -318,7 +321,7 @@ export function signedLeafCertificate(o: {
   return certificate(
     {
       issuer,
-      subject: commonNameOf(first),
+      subject: commonNameOf(commonName),
       notBefore,
       notAfter,
       spki: leaf.spki,
