@@ -749,7 +749,7 @@ describe.skipIf(!findExecutable("git"))("a runner machine's host plan", () => {
           JSON.stringify({ steps: [{ id: "github-runner", state: "change" }] }),
         );
         phase.reporter.info(
-          `Host plan for your server: 1 to change.\n  ~ github-runner\nHost plan hash: ${RUNNER_HASH}`,
+          `Host plan for the runner machine home: 1 to change.\n  ~ github-runner\nHost plan hash: ${RUNNER_HASH}`,
         );
         return { applied: false, runnerHostPlanHashes: [RUNNER_HASH], outputs: {} };
       }
@@ -775,7 +775,7 @@ describe.skipIf(!findExecutable("git"))("a runner machine's host plan", () => {
     const planned = await h.call("opscrew_plan");
     expect(planned.isError, textOf(planned)).toBeFalsy();
     expect(dataOf(planned).runnerHostPlanHashes).toEqual([RUNNER_HASH]);
-    expect(textOf(planned)).toContain("On a runner machine of the user's:");
+    expect(textOf(planned)).toContain("Host plan for the runner machine home: 1 to change.");
     expect(textOf(planned)).toContain(`runnerHostPlanHashes ["${RUNNER_HASH}"]`);
     expect(dataOf(planned).applyCommand).toBe(`opscrew provision --approve ${RUNNER_HASH}`);
 

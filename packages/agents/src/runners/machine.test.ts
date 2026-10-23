@@ -416,6 +416,8 @@ describe.skipIf(!findExecutable("git"))("a runner machine", () => {
     const planned = await runProvision(staging, { services: s.services(), planOnly: true });
     expect(planned.runnerHostPlanHashes).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/)]);
     expect(s.machine.applies).toHaveLength(applies);
+    // Its plan's heading names the machine.
+    expect(staging.reporter.text()).toContain("Host plan for the runner machine home: ");
 
     // The machine is not removed while an environment uses it.
     const refused = await failure(

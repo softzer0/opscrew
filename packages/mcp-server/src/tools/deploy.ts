@@ -536,11 +536,9 @@ export function registerDeployTools(
         const shown =
           ["this plan", "both plans", "all three plans", "all four plans"][hashes.length - 1] ??
           `all ${hashes.length} plans`;
-        // ssh-host names every host plan "Host plan for your server": these are the runner machines'.
         const runnerTexts = runnerHashes.flatMap((hash) => [
           "",
-          "On a runner machine of the user's:",
-          planText(call.reporter.messages, "Host plan for your server", hash) ?? "",
+          planText(call.reporter.messages, "Host plan for the runner machine", hash) ?? "",
         ]);
         const localText =
           localHash === undefined

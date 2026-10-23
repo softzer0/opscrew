@@ -68,10 +68,13 @@ export function passwordLoginChoice(
   return undefined;
 }
 
-/** Plain-English host plan shown before the `host-apply` approval: every step, then the hash. */
-export function describeHostPlan(plan: HostPlan, hash: string): string {
+/**
+ * Plain-English host plan shown before the `host-apply` approval: every step, then the hash.
+ * Headed `Host plan for <of>` (default: `your server`).
+ */
+export function describeHostPlan(plan: HostPlan, hash: string, of = "your server"): string {
   return describeAdapterPlan({
-    heading: "Host plan for your server",
+    heading: `Host plan for ${of}`,
     items: plan.steps,
     findings: plan.findings,
     note: "OpsCrew changes nothing it did not list here, never removes what it did not install, and records every change (and the value it replaced) in /etc/opscrew/host.json on the server.",
@@ -121,6 +124,8 @@ export interface HostPlanStep {
   title: string;
   /** The server in words: `your server` (one the user owns) or `the server`. */
   server: string;
+  /** What the plan's heading names (`Host plan for <planOf>`; default `your server`). */
+  planOf?: string;
   /** Said when the plan changes nothing: `Your server is already prepared; nothing on it changes.` */
   upToDate: string;
   /** The command that applies it later (`--approve <hash>`), for example `opscrew provision`. */
@@ -186,7 +191,7 @@ export async function approveAndApplyHostPlan(
   const hash = hostPlanHash(plan);
   step.shown?.(hash);
   await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
-  const details = [...(step.intro ?? []), describeHostPlan(plan, hash)].join("\n");
+  const details = [...(step.intro ?? []), describeHostPlan(plan, hash, step.planOf)].join("\n");
   deps.reporter.info(details);
   requireNoBlockers(plan, step);
   const changes = plan.steps.filter((item) => item.state === "change");
