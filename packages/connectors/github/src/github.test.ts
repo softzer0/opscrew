@@ -323,7 +323,7 @@ describe("githubConnector", () => {
     });
   });
 
-  it("lists the token's permissions, those of environments and runners marked as only theirs", () => {
+  it("lists the token's permissions, those of environments, runners and GitHub Pages marked as only theirs", () => {
     expect(GITHUB_TOKEN_PERMISSIONS).toEqual([
       "Contents: Read and write",
       "Pull requests: Read and write",
@@ -331,8 +331,10 @@ describe("githubConnector", () => {
       "Actions: Read and write",
       "Workflows: Read and write",
       "Metadata: Read",
-      "Administration: Read and write (only for an app with several environments, and for self-hosted runners)",
+      "Administration: Read and write (only for an app with several environments, for self-hosted runners, and for GitHub Pages)",
       "Environments: Read and write (only for an app with several environments)",
+      "Pages: Read and write (only for GitHub Pages)",
+      "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
     ]);
     expect(
       githubConnector({ token: TOKEN, fetch: fakeFetch({}).fetch }).credentials.scopes,

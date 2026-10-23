@@ -34,6 +34,8 @@ interface Row {
 const ADMIN_WRITE = { permission: "Administration: Read and write" };
 const ADMIN_READ = { permission: "Administration: Read" };
 const ENVIRONMENTS = { permission: "Environments: Read and write" };
+const PAGES_READ = { permission: "Pages: Read" };
+const PAGES_WRITE = { permission: "Pages: Read and write and Administration: Read and write" };
 const ME = { "GET /user": { body: { login: "octocat", id: 1 } } };
 const PULL = { "GET https://ghcr.io/token": { body: { token: fakeSecret("generic-password") } } };
 
@@ -181,6 +183,70 @@ const ROWS: Row[] = [
     withHeader: ADMIN_WRITE,
     withoutHeader: "generic",
     notFound: "undefined",
+  },
+  {
+    method: "getPages",
+    route: `GET ${API}/pages`,
+    call: (c) => c.getPages("acme", "shop"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: PAGES_READ,
+    notFound: "undefined",
+  },
+  {
+    method: "createPages",
+    route: `POST ${API}/pages`,
+    call: (c) => c.createPages("acme", "shop"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: PAGES_WRITE,
+    notFound: "generic",
+  },
+  {
+    method: "updatePages",
+    route: `PUT ${API}/pages`,
+    call: (c) => c.updatePages("acme", "shop", { cname: "docs.example.com" }),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: PAGES_WRITE,
+    notFound: "precondition",
+  },
+  {
+    method: "deletePages",
+    route: `DELETE ${API}/pages`,
+    call: (c) => c.deletePages("acme", "shop"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: PAGES_WRITE,
+    notFound: "undefined",
+  },
+  {
+    method: "pagesHealth",
+    route: `GET ${API}/pages/health`,
+    call: (c) => c.pagesHealth("acme", "shop"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: PAGES_WRITE,
+    notFound: "undefined",
+  },
+  {
+    method: "pagesRuns",
+    route: `GET ${API}/actions/workflows/opscrew-pages.yml/runs`,
+    call: (c) => c.pagesRuns("acme", "shop", ".github/workflows/opscrew-pages.yml"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: "generic",
+    notFound: "generic",
+  },
+  {
+    method: "rerunWorkflowRun",
+    route: `POST ${API}/actions/runs/1/rerun`,
+    call: (c) => c.rerunWorkflowRun("acme", "shop", 1),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: "precondition",
+    notFound: "generic",
+  },
+  {
+    method: "pagesAllowed",
+    route: `GET ${API}`,
+    call: (c) => c.pagesAllowed("acme", "shop"),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: "generic",
+    notFound: "generic",
   },
   {
     method: "taggedDigest",

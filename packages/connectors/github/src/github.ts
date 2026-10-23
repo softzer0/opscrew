@@ -21,9 +21,13 @@ export const GITHUB_API = "https://api.github.com";
  * them (shown by `opscrew init` and the guide). Actions also covers reading GitHub environments.
  * Administration (GitHub environments, runner registration, the fork-PR policy) and Environments
  * (environment secrets) are needed only for an app with several environments and for self-hosted
- * runners. `opscrew promote` reads GitHub's container registry with `OPSCREW_GHCR_READ_TOKEN` (a
- * classic token with `read:packages`) when it is set, since the registry may not accept a
- * fine-grained token.
+ * runners. GitHub Pages needs Pages and Administration, both Read and write, for creating,
+ * updating and deleting the site and for its health check (GitHub accepts nothing narrower).
+ * Plan: Read is optional: without it GitHub hides the plan, so OpsCrew cannot tell whether a
+ * private repository may use GitHub Pages.
+ * `opscrew promote` reads GitHub's container registry with `OPSCREW_GHCR_READ_TOKEN` (a classic
+ * token with `read:packages`) when it is set, since the registry may not accept a fine-grained
+ * token.
  */
 export const GITHUB_TOKEN_PERMISSIONS = [
   "Contents: Read and write",
@@ -32,8 +36,10 @@ export const GITHUB_TOKEN_PERMISSIONS = [
   "Actions: Read and write",
   "Workflows: Read and write",
   "Metadata: Read",
-  "Administration: Read and write (only for an app with several environments, and for self-hosted runners)",
+  "Administration: Read and write (only for an app with several environments, for self-hosted runners, and for GitHub Pages)",
   "Environments: Read and write (only for an app with several environments)",
+  "Pages: Read and write (only for GitHub Pages)",
+  "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
 ] as const;
 
 export interface GitHubClientOptions {
@@ -124,6 +130,39 @@ export interface WorkflowRunSource {
   path: string;
 }
 
+/** A repository's GitHub Pages site as GitHub reports it. */
+export interface PagesSite {
+  /** `workflow`: published by a workflow; `legacy`: built from a branch. */
+  buildType: "workflow" | "legacy";
+  /** The custom domain. */
+  cname?: string;
+  httpsEnforced: boolean;
+  /** GitHub's build status (`built`, `building`, `errored`). */
+  status?: string;
+}
+
+/** What GitHub's health check says of a Pages site's custom domain. */
+export interface PagesHealth {
+  certificate: "pending" | "issued" | "error";
+  dns: "ok" | "pending" | "error";
+}
+
+/** A successful run of the Pages workflow. */
+export interface PagesRun {
+  runId: number;
+  /** 1 for the first run, then one more for each re-run. */
+  attempt: number;
+  /** When its latest attempt started (ISO 8601). */
+  startedAt: string;
+  headSha: string;
+}
+
+/**
+ * Whether a repository's plan allows GitHub Pages: `unknown` when GitHub does not show the
+ * plan to this token.
+ */
+export type PagesAllowed = "yes" | "no" | "unknown";
+
 /** Default time one request to GitHub may take before it counts as failed. */
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -164,7 +203,6 @@ const RunSchema = z.looseObject({
   head_sha: z.string(),
   created_at: z.string(),
 });
-const RunsSchema = z.looseObject({ workflow_runs: z.array(RunSchema) });
 const RunSourceSchema = z.looseObject({
   event: z.string(),
   head_repository: z.looseObject({ full_name: z.string() }),
@@ -218,6 +256,48 @@ const RunnersSchema = z.looseObject({
 });
 const VisibilitySchema = z.looseObject({ visibility: z.enum(["public", "private", "internal"]) });
 const ForkPrPolicySchema = z.looseObject({ approval_policy: z.enum(FORK_PR_APPROVAL_POLICIES) });
+const PagesSchema = z.looseObject({
+  build_type: z.enum(["workflow", "legacy"]).nullable().optional(),
+  cname: z.string().nullable().optional(),
+  https_enforced: z.boolean().optional(),
+  status: z.string().nullable().optional(),
+});
+const PagesHealthSchema = z.looseObject({
+  domain: z.looseObject({
+    dns_resolves: z.boolean().optional(),
+    is_valid: z.boolean().optional(),
+    is_proxied: z.boolean().nullable().optional(),
+    is_https_eligible: z.boolean().nullable().optional(),
+    responds_to_https: z.boolean().optional(),
+  }),
+});
+const PagesRunSchema = z.looseObject({
+  id: z.number(),
+  run_attempt: z.number(),
+  run_started_at: z.string(),
+  head_sha: z.string(),
+});
+const RepoOwnerSchema = z.looseObject({
+  private: z.boolean(),
+  owner: z.looseObject({ login: z.string(), type: z.string() }),
+});
+/** A user (`GET /user`) or an organization (`GET /orgs/{org}`), with the plan where GitHub shows it. */
+const PlanSchema = z.looseObject({
+  login: z.string(),
+  plan: z.looseObject({ name: z.string() }).optional(),
+});
+
+/** GitHub's health check in OpsCrew's terms; the certificate waits for the DNS. */
+function toPagesHealth(domain: z.infer<typeof PagesHealthSchema>["domain"]): PagesHealth {
+  if (domain.dns_resolves !== true) return { certificate: "pending", dns: "pending" };
+  // Cloudflare's proxy keeps GitHub from issuing and renewing the certificate.
+  if (domain.is_valid === false || domain.is_proxied === true) {
+    return { certificate: "error", dns: "error" };
+  }
+  if (domain.is_valid !== true) return { certificate: "pending", dns: "pending" };
+  if (domain.responds_to_https === true) return { certificate: "issued", dns: "ok" };
+  return { certificate: domain.is_https_eligible === false ? "error" : "pending", dns: "ok" };
+}
 
 /** The fine-grained permission the environment, runner and fork-PR endpoints need. */
 const ADMINISTRATION = "Administration: Read and write";
@@ -227,6 +307,10 @@ const ADMINISTRATION_READ = "Administration: Read";
 const ADMIN_RIGHTS = /must have admin rights/i;
 /** The fine-grained permission the environment secret endpoints need. */
 const ENVIRONMENTS = "Environments: Read and write";
+/** What reading a Pages site needs. */
+const PAGES_READ = "Pages: Read";
+/** What changing a Pages site and its health check need (`pages=write,administration=write`). */
+const PAGES_WRITE = "Pages: Read and write and Administration: Read and write";
 
 /** One permission of `x-accepted-github-permissions` as GitHub's token page names it. */
 function permissionText(pair: string): string {
@@ -1156,15 +1240,26 @@ export class GitHubClient {
     repo: string,
     options: { workflowFile: string; branch?: string; perPage?: number },
   ): Promise<WorkflowRun[]> {
+    return (await this.#workflowRuns(owner, repo, options, RunSchema)).map(toWorkflowRun);
+  }
+
+  /** The runs of a workflow as GitHub lists them (newest created first), each read with `schema`. */
+  async #workflowRuns<T>(
+    owner: string,
+    repo: string,
+    options: { workflowFile: string; branch?: string; status?: string; perPage?: number },
+    schema: z.ZodType<T>,
+  ): Promise<T[]> {
     const what = "list workflow runs";
     const query = new URLSearchParams({ per_page: String(options.perPage ?? 5) });
     if (options.branch) query.set("branch", options.branch);
+    if (options.status) query.set("status", options.status);
     const { json } = await this.#request(
       "GET",
       `/repos/${owner}/${repo}/actions/workflows/${workflowId(options.workflowFile)}/runs?${query}`,
       what,
     );
-    return this.#parse(RunsSchema, json, what).workflow_runs.map(toWorkflowRun);
+    return this.#parse(z.looseObject({ workflow_runs: z.array(schema) }), json, what).workflow_runs;
   }
 
   /** Reads one workflow run. */
@@ -1318,6 +1413,183 @@ export class GitHubClient {
         { hint: `Follow it at ${run.htmlUrl}, then run the command again once it has finished.` },
       );
     }
+  }
+
+  /**
+   * Re-runs every job of the workflow run `runId`, on its own commit. A 403 naming no permission
+   * (GitHub re-runs only runs from the last 30 days) is `PHASE_PRECONDITION`. Needs Actions: Read
+   * and write.
+   */
+  async rerunWorkflowRun(owner: string, repo: string, runId: number): Promise<void> {
+    const what = `re-run workflow run ${runId}`;
+    const { status, json, headers } = await this.#request(
+      "POST",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/rerun`,
+      what,
+      { ok: [403] },
+    );
+    if (status !== 403) return;
+    const accepted = headers.get("x-accepted-github-permissions");
+    if (accepted) throw missingPermission(what, json, acceptedPermissions(accepted));
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `GitHub can no longer re-run workflow run ${runId} (${messageOf(json, "HTTP 403")}).`,
+      {
+        hint: "GitHub re-runs only runs from the last 30 days: pick a newer run, or deploy again from the branch.",
+      },
+    );
+  }
+
+  /** The repository's GitHub Pages site; `undefined` when Pages is off (404). Needs Pages: Read. */
+  async getPages(owner: string, repo: string): Promise<PagesSite | undefined> {
+    const what = `read the GitHub Pages site of ${owner}/${repo}`;
+    const { status, json } = await this.#request("GET", `/repos/${owner}/${repo}/pages`, what, {
+      ok: [404],
+      permission: PAGES_READ,
+    });
+    if (status === 404) return undefined;
+    const site = this.#parse(PagesSchema, json, what);
+    return {
+      // GitHub shows no build type for a site from before workflows, which a branch builds.
+      buildType: site.build_type ?? "legacy",
+      ...(site.cname ? { cname: site.cname } : {}),
+      httpsEnforced: site.https_enforced ?? false,
+      ...(site.status ? { status: site.status } : {}),
+    };
+  }
+
+  /**
+   * Turns GitHub Pages on, published by a workflow (`build_type: "workflow"`). GitHub's 422 (a
+   * private repository whose plan has no Pages) is `PHASE_PRECONDITION`, with nothing changed.
+   * Needs Pages and Administration, both Read and write.
+   */
+  async createPages(owner: string, repo: string): Promise<void> {
+    const what = `turn on GitHub Pages for ${owner}/${repo}`;
+    const { status, json } = await this.#request("POST", `/repos/${owner}/${repo}/pages`, what, {
+      body: { build_type: "workflow" },
+      ok: [422],
+      permission: PAGES_WRITE,
+    });
+    if (status === 422) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `GitHub refused to ${what} (${messageOf(json, "HTTP 422")}), and nothing changed.`,
+        {
+          hint: "GitHub Pages on a private repository needs a paid GitHub plan (Pro, Team or Enterprise Cloud), and the site is public even then. Make the repository public or move to such a plan, then run the command again.",
+        },
+      );
+    }
+    this.#parse(PagesSchema, json, what);
+  }
+
+  /**
+   * Changes the Pages site: `cname` sets the custom domain (`null` removes it), `httpsEnforced`
+   * turns HTTPS enforcement on or off. A field left out is not sent. GitHub's 404 (Pages is off,
+   * or HTTPS asked for before the certificate exists) is `PHASE_PRECONDITION`. Needs Pages and
+   * Administration, both Read and write.
+   */
+  async updatePages(
+    owner: string,
+    repo: string,
+    change: { cname?: string | null; httpsEnforced?: boolean },
+  ): Promise<void> {
+    const what = `change the GitHub Pages site of ${owner}/${repo}`;
+    const { status, json } = await this.#request("PUT", `/repos/${owner}/${repo}/pages`, what, {
+      body: {
+        ...(change.cname === undefined ? {} : { cname: change.cname }),
+        ...(change.httpsEnforced === undefined ? {} : { https_enforced: change.httpsEnforced }),
+      },
+      ok: [404],
+      permission: PAGES_WRITE,
+    });
+    // GitHub answers 404 when Pages is off, and for HTTPS before the certificate exists.
+    if (status === 404) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `GitHub could not ${what} (${messageOf(json, "HTTP 404")}).`,
+        {
+          hint: "GitHub has not issued the site's certificate yet, or GitHub Pages is off. Check `opscrew status`, wait a while, then run `opscrew provision` again.",
+        },
+      );
+    }
+  }
+
+  /**
+   * Turns GitHub Pages off; a site already off (404) counts as deleted. Needs Pages and
+   * Administration, both Read and write.
+   */
+  async deletePages(owner: string, repo: string): Promise<void> {
+    await this.#request(
+      "DELETE",
+      `/repos/${owner}/${repo}/pages`,
+      `turn off GitHub Pages for ${owner}/${repo}`,
+      { ok: [404], permission: PAGES_WRITE },
+    );
+  }
+
+  /**
+   * GitHub's health check of the Pages site's custom domain: its DNS, then its certificate.
+   * Both are `pending` while GitHub is still checking (202) or the domain does not resolve yet,
+   * and `undefined` when Pages is off (404). Needs Pages and Administration, both Read and write.
+   */
+  async pagesHealth(owner: string, repo: string): Promise<PagesHealth | undefined> {
+    const what = `check the GitHub Pages domain of ${owner}/${repo}`;
+    const { status, json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/pages/health`,
+      what,
+      { ok: [404], permission: PAGES_WRITE },
+    );
+    if (status === 404) return undefined;
+    if (status === 202) return { certificate: "pending", dns: "pending" };
+    return toPagesHealth(this.#parse(PagesHealthSchema, json, what).domain);
+  }
+
+  /**
+   * The successful runs of the Pages workflow `workflowFile` (up to 100), the latest started
+   * first: the first published the site, the second is where a rollback goes. A re-run keeps its
+   * id and starts again, so it moves to the top. Needs Actions: Read.
+   */
+  async pagesRuns(owner: string, repo: string, workflowFile: string): Promise<PagesRun[]> {
+    const runs = await this.#workflowRuns(
+      owner,
+      repo,
+      { workflowFile, status: "success", perPage: 100 },
+      PagesRunSchema,
+    );
+    return runs
+      .map((run) => ({
+        runId: run.id,
+        attempt: run.run_attempt,
+        startedAt: run.run_started_at,
+        headSha: run.head_sha,
+      }))
+      .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  }
+
+  /**
+   * Whether the repository's plan allows GitHub Pages: `yes` for a public repository; for a
+   * private one, the plan of its owner (`free` has no Pages there) where GitHub shows it to this
+   * token (`GET /user` for the token's own repository, `GET /orgs/{org}` for an organization's,
+   * both with Plan: Read), else `unknown`.
+   */
+  async pagesAllowed(owner: string, repo: string): Promise<PagesAllowed> {
+    const what = `read whether ${owner}/${repo} is public`;
+    const { json } = await this.#request("GET", `/repos/${owner}/${repo}`, what);
+    const repository = this.#parse(RepoOwnerSchema, json, what);
+    if (!repository.private) return "yes";
+    const { login, type } = repository.owner;
+    let account: z.infer<typeof PlanSchema>;
+    if (type === "Organization") {
+      const read = `read the plan of ${login}`;
+      const org = await this.#request("GET", `/orgs/${encodeURIComponent(login)}`, read);
+      account = this.#parse(PlanSchema, org.json, read);
+    } else {
+      account = await this.#me(PlanSchema);
+      if (account.login.toLowerCase() !== login.toLowerCase()) return "unknown";
+    }
+    if (account.plan === undefined) return "unknown";
+    return account.plan.name === "free" ? "no" : "yes";
   }
 
   /** The authenticated user's login (used to verify the token). */
