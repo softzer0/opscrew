@@ -6,7 +6,7 @@
  */
 import type { CheckResult } from "@opscrew/contracts";
 import { readTextIfExists, toPosixRelative } from "@opscrew/core";
-import { EDGE_PROJECT } from "@opscrew/iac-templates";
+import { EDGE_PROJECT, renderLocalRunbook } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { environmentFlag } from "../environments/choice";
@@ -15,7 +15,6 @@ import type { VerifyResult } from "../verify/run";
 import { caFiles, caTrusted, LEAF_RENEW_DAYS } from "./ca";
 import { projectObjects } from "./docker";
 import { type LocalRequest, type LocalResponse, nodeLocalRequest } from "./https";
-import { renderLocalRunbook } from "./runbook";
 import { computer, type LocalhostServices } from "./services";
 import { localAddress, localTarget, servedSite } from "./site";
 import { localComponentStatus } from "./status";

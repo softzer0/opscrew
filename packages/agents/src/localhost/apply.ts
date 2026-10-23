@@ -13,6 +13,7 @@ import {
   initStepsFor,
   localhostTlsUpload,
   rollbackCommands,
+  shellQuote,
   switchCommands,
 } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
@@ -30,7 +31,6 @@ import {
   ownerFile,
   requireShell,
   shellPath,
-  shellWord,
 } from "./services";
 import { localTarget, recordServedSite } from "./site";
 
@@ -65,14 +65,14 @@ async function buildImage(
   const { args, secrets } = deploy.buildValues;
   const script = [
     "set -eu",
-    `cd ${shellWord(shellPath(deps.paths.root))}`,
-    ...Object.entries(secrets).map(([name, value]) => `export ${name}=${shellWord(value)}`),
-    `id="$(docker build -q -f ${shellWord(dockerfile)} ${[
+    `cd ${shellQuote(shellPath(deps.paths.root))}`,
+    ...Object.entries(secrets).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
+    `id="$(docker build -q -f ${shellQuote(dockerfile)} ${[
       ...Object.entries(args).map(
-        ([name, value]) => `--build-arg ${shellWord(`${name}=${value}`)}`,
+        ([name, value]) => `--build-arg ${shellQuote(`${name}=${value}`)}`,
       ),
-      ...Object.keys(secrets).map((name) => `--secret ${shellWord(`id=${name},env=${name}`)}`),
-    ].join(" ")} ${shellWord(context)})"`,
+      ...Object.keys(secrets).map((name) => `--secret ${shellQuote(`id=${name},env=${name}`)}`),
+    ].join(" ")} ${shellQuote(context)})"`,
     `tag="opscrew-local/${deploy.plan.app.name}:$(printf '%s' "\${id#sha256:}" | cut -c1-12)"`,
     'docker tag "$id" "$tag"',
     "printf '%s\\n' \"$tag\"",
@@ -110,7 +110,7 @@ async function withRegistryLogin<T>(
   const login = await registry.login();
   try {
     const logged = await exec.run(
-      `${config} docker login ghcr.io -u ${shellWord(login.username)} --password-stdin > /dev/null`,
+      `${config} docker login ghcr.io -u ${shellQuote(login.username)} --password-stdin > /dev/null`,
       { input: `${login.token}\n`, timeoutMs: 60_000 },
     );
     if (logged.exitCode !== 0) {
@@ -185,7 +185,7 @@ export async function applyLocal(
       await mkdir(folder, { recursive: true });
       await mkdir(join(edge, "sites"), { recursive: true });
       // A local build first: a failed one leaves the app's folder as it was.
-      const inShell = `"$OPSCREW_APPS_DIR"/${shellWord(plan.app.name)}`;
+      const inShell = `"$OPSCREW_APPS_DIR"/${shellQuote(plan.app.name)}`;
       const image =
         deploy.image.source === "local-build"
           ? await buildImage(deps, exec, deploy)
@@ -230,7 +230,7 @@ export async function applyLocal(
       const start = await withRegistryLogin(exec, inShell, options.registry, () =>
         exec.run(
           [
-            `set -- ${shellWord(image)}`,
+            `set -- ${shellQuote(image)}`,
             ...switchCommands(plan, initStepsFor(plan), edgeFiles),
           ].join("\n"),
           { timeoutMs: SCRIPT_TIMEOUT_MS },
@@ -242,7 +242,7 @@ export async function applyLocal(
         (await healthCheck(deps, local, { site, port: target.ports.https, path }));
       if (!healthy) {
         const rollback = await exec.run(
-          [`set -- ${shellWord(image)}`, ...rollbackCommands(plan, site)].join("\n"),
+          [`set -- ${shellQuote(image)}`, ...rollbackCommands(plan, site)].join("\n"),
           { timeoutMs: SCRIPT_TIMEOUT_MS },
         );
         const outcome = rollback.stdout.trim().split(/\r?\n/).pop();

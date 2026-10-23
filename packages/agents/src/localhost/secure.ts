@@ -8,13 +8,13 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { CheckResult } from "@opscrew/contracts";
 import { exists, listText, upperFirst } from "@opscrew/core";
-import { EDGE_PROJECT } from "@opscrew/iac-templates";
+import { EDGE_PROJECT, localComposeProject } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { checkResult } from "../shared";
 import { caFiles, leafState } from "./ca";
 import { projectObjects } from "./docker";
-import { appFolder, composeProject, computer, type LocalhostServices } from "./services";
+import { appFolder, computer, type LocalhostServices } from "./services";
 import { servedSite } from "./site";
 
 /** What `opscrew secure` says of this computer, whose own security stays the user's. */
@@ -81,7 +81,7 @@ export async function localSecurityChecks(
   services: LocalhostServices = {},
 ): Promise<CheckResult[]> {
   const windows = computer(deps, services).platform === "win32";
-  const app = await projectObjects(deps, composeProject(plan));
+  const app = await projectObjects(deps, localComposeProject(plan));
   const edge = await projectObjects(deps, EDGE_PROJECT);
   const checks: CheckResult[] = [];
 

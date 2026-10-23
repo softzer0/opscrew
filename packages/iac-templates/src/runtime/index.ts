@@ -47,6 +47,13 @@ import {
   RELEASE_NOTE,
 } from "./services";
 
+export { shellQuote } from "./services";
+
+/** The app's Compose project on this computer: `opscrew-<app>`, apart from the user's own. */
+export function localComposeProject(plan: Pick<DeployPlan, "app">): string {
+  return `opscrew-${plan.app.name}`;
+}
+
 /**
  * What the app's site and its deploy need from provision besides the plan, in addition to the
  * {@link RenderContext}. Never a secret: the origin certificate's key reaches the server only as a
@@ -175,7 +182,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
       : {}),
   };
   const document = {
-    name: local ? `opscrew-${plan.app.name}` : plan.app.name,
+    name: local ? localComposeProject(plan) : plan.app.name,
     services,
     networks: { internal: {}, [EDGE_PROJECT]: { external: true } },
     ...(backing.volumes.length > 0

@@ -1,6 +1,7 @@
-import { type RenderedFile, runtimeDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { composeProject } from "./services";
+import { localComposeProject } from "../runtime";
+import { runtimeDir } from "../runtime-dir";
+import type { RenderedFile } from "../types";
 
 /**
  * The runbook of an app on this computer (`RUNBOOK.md` beside the plan): where it runs, the
@@ -11,7 +12,7 @@ export function renderLocalRunbook(
   plan: DeployPlan,
   o: { address: string; file: string },
 ): RenderedFile {
-  const project = composeProject(plan);
+  const project = localComposeProject(plan);
   const target = plan.target.provider === "localhost" ? plan.target : undefined;
   const image =
     target?.image === "local-build"

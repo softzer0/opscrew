@@ -158,11 +158,6 @@ export function localRelative(paths: Pick<ProjectPaths, "homeDir">, path: string
   return path.slice(join(paths.homeDir, "local").length + 1).replaceAll("\\", "/");
 }
 
-/** The app's Compose project on this computer: `opscrew-<app>`, apart from the user's own. */
-export function composeProject(plan: Pick<DeployPlan, "app">): string {
-  return `opscrew-${plan.app.name}`;
-}
-
 /**
  * `<app folder>/.opscrew-project`: the id of the project that deployed the app there. The app's
  * folder and Compose project are named by the app alone, so every repository on this computer
@@ -198,11 +193,6 @@ export async function requireOwnLocalApp(
           : "Give this app another name (app.name in its plan, then `opscrew design`), or remove the other project's app with `opscrew destroy` in that project, then run the command again.",
     },
   );
-}
-
-/** A single-quoted POSIX shell word. */
-export function shellWord(text: string): string {
-  return `'${text.replaceAll("'", "'\\''")}'`;
 }
 
 /** A path as the shell scripts take it: forward slashes (`D:/…` on Windows). */

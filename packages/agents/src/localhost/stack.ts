@@ -11,6 +11,7 @@ import {
   EDGE_PROXIES,
   edgeProxy,
   type LocalhostSite,
+  localComposeProject,
   type RenderedFile,
   type RuntimeContext,
   renderCompose,
@@ -27,7 +28,7 @@ import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import type { DeploymentPreview } from "../provision/render";
 import { diffRenderedFiles } from "../shared";
-import { composeProject, localRoots } from "./services";
+import { localRoots } from "./services";
 import { localSite } from "./site";
 
 /**
@@ -209,7 +210,7 @@ export function stackMemoryMb(plan: DeployPlan): number {
   const sum = (project: string, content: string) =>
     composeParts(project, content).services.reduce((total, service) => total + service.memoryMb, 0);
   return (
-    sum(composeProject(plan), renderCompose(plan).content) +
+    sum(localComposeProject(plan), renderCompose(plan).content) +
     sum(EDGE_PROJECT, renderEdgeCompose(plan).content)
   );
 }
@@ -225,7 +226,7 @@ export function stackParts(
     return found.content;
   };
   return {
-    app: composeParts(composeProject(plan), file("compose.yaml")),
+    app: composeParts(localComposeProject(plan), file("compose.yaml")),
     edge: composeParts(EDGE_PROJECT, file("edge/compose.yaml")),
   };
 }

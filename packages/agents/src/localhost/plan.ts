@@ -15,7 +15,7 @@ import {
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
-import { EDGE_PROJECT, type LocalhostSite } from "@opscrew/iac-templates";
+import { EDGE_PROJECT, type LocalhostSite, localComposeProject } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -25,7 +25,6 @@ import { networkExists, projectObjects } from "./docker";
 import type { LocalImage } from "./image";
 import {
   appFolder,
-  composeProject,
   computer,
   type LocalhostServices,
   localRelative,
@@ -339,7 +338,7 @@ export async function planLocal(
     purpose: "setup",
     app: plan.app.name,
     environment: deps.paths.environment,
-    project: composeProject(plan),
+    project: localComposeProject(plan),
     address: localAddress(site, target),
     ports: target.ports,
     items,

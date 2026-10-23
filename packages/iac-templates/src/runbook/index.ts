@@ -32,6 +32,7 @@ import {
 } from "./shared";
 
 export { componentsSection, objectStorageSection, recoverySection } from "./components";
+export { renderLocalRunbook } from "./localhost";
 export {
   cell,
   deployRows,

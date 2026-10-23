@@ -5,13 +5,12 @@
  * whether Docker's memory still holds the stack's limits.
  */
 import { upperFirst } from "@opscrew/core";
-import { EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
+import { EDGE_PROXIES, edgeProxy, localComposeProject } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type ComponentStatus, componentStatus } from "../status/components";
 import { caTrusted, leafState } from "./ca";
 import { dockerInfo, projectObjects } from "./docker";
-import { composeProject } from "./services";
 import { localAddress, localTarget, servedSite } from "./site";
 import { stackMemoryMb } from "./stack";
 
@@ -20,7 +19,7 @@ export async function localComponentStatus(
   deps: Pick<PhaseDeps, "runner">,
   plan: DeployPlan,
 ): Promise<ComponentStatus> {
-  const { containers } = await projectObjects(deps, composeProject(plan));
+  const { containers } = await projectObjects(deps, localComposeProject(plan));
   return componentStatus(
     plan,
     containers.map(({ service, running }) => ({ service, running })),

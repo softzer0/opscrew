@@ -9,7 +9,13 @@
 import { join } from "node:path";
 import type { ApprovalRecord } from "@opscrew/contracts";
 import { exists, listText, OpsCrewError } from "@opscrew/core";
-import { EDGE_PROJECT, edgeProxy, runtimeDir } from "@opscrew/iac-templates";
+import {
+  EDGE_PROJECT,
+  edgeProxy,
+  localComposeProject,
+  runtimeDir,
+  shellQuote,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -37,7 +43,6 @@ import {
 import { otherLocalApps } from "./preflight";
 import {
   appFolder,
-  composeProject,
   computer,
   type LocalhostServices,
   localRelative,
@@ -45,7 +50,6 @@ import {
   localShell,
   requireOwnLocalApp,
   requireShell,
-  shellWord,
 } from "./services";
 import { forgetServedSite, localAddress, localTarget, servedSite } from "./site";
 
@@ -64,7 +68,7 @@ function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolea
     `ids="$(docker ${list} -q --filter ${label(project)})"`,
     `if [ -n "$ids" ]; then docker ${remove} $ids > /dev/null; fi`,
   ];
-  const project = composeProject(plan);
+  const project = localComposeProject(plan);
   return [
     "set -eu",
     'APPS_DIR="$OPSCREW_APPS_DIR"',
@@ -73,7 +77,7 @@ function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolea
     ...(o.last
       ? []
       : [
-          `edge exec -T kamal-proxy kamal-proxy remove ${shellWord(app)} < /dev/null > /dev/null 2>&1 || true`,
+          `edge exec -T kamal-proxy kamal-proxy remove ${shellQuote(app)} < /dev/null > /dev/null 2>&1 || true`,
         ]),
     ...removeAll("ps -a", "rm -f", project),
     ...removeAll("network ls", "network rm", project),
@@ -86,11 +90,11 @@ function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolea
           'rm -rf "$EDGE_DIR"',
         ]
       : [
-          `rm -f "$EDGE_DIR"/sites/${shellWord(app)}.caddy "$EDGE_DIR"/sites/${shellWord(app)}.conf "$EDGE_DIR"/sites/${shellWord(app)}.additions`,
-          `rm -rf "$EDGE_DIR"/tls/${shellWord(app)}`,
+          `rm -f "$EDGE_DIR"/sites/${shellQuote(app)}.caddy "$EDGE_DIR"/sites/${shellQuote(app)}.conf "$EDGE_DIR"/sites/${shellQuote(app)}.additions`,
+          `rm -rf "$EDGE_DIR"/tls/${shellQuote(app)}`,
           `${RELOAD[edgeProxy(plan)]} > /dev/null 2>&1 || true`,
         ]),
-    `rm -rf "$APPS_DIR"/${shellWord(app)}`,
+    `rm -rf "$APPS_DIR"/${shellQuote(app)}`,
   ].join("\n");
 }
 
@@ -122,7 +126,7 @@ async function teardownPlan(
   const relative = (path: string) => localRelative(deps.paths, path);
   const others = await otherLocalApps(roots.apps, plan.app.name);
   const last = others.length === 0;
-  const app = await projectObjects(deps, composeProject(plan));
+  const app = await projectObjects(deps, localComposeProject(plan));
   const items: LocalItem[] = [];
   const remove = (kind: LocalItem["kind"], name: string) =>
     items.push({ kind, name, action: "remove" });
@@ -153,7 +157,7 @@ async function teardownPlan(
     purpose: "teardown",
     app: plan.app.name,
     environment: deps.paths.environment,
-    project: composeProject(plan),
+    project: localComposeProject(plan),
     address: localAddress(await servedSite(deps.paths, plan), target),
     ports: target.ports,
     items,
