@@ -47,7 +47,7 @@ function variables(plan: DeployPlan, pieces: TunnelPieces | undefined): Variable
       },
     );
   }
-  if (usesCloudflare(plan)) specs.push(...zoneVariables(tunnel ? "tunnel" : "records"));
+  if (usesCloudflare(plan)) specs.push(...zoneVariables(tunnel ? "domain" : "records"));
   return [...specs, ...(pieces?.variables ?? [])];
 }
 
@@ -114,7 +114,7 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
     outputs: outputsTf(plan, pieces),
     tfvars: {
       app_name: plan.app.name,
-      ...(cloudflare ? zoneTfvars(plan, ctx, tunnel ? "tunnel" : "records") : {}),
+      ...(cloudflare ? zoneTfvars(plan, ctx, tunnel ? "domain" : "records") : {}),
       ...(pieces?.tfvars ?? {}),
     },
     modules: [...(cloudflare && !tunnel ? ["cloudflare-dns"] : []), ...(pieces?.modules ?? [])],

@@ -18,10 +18,12 @@ import {
 } from "./hcl";
 import { ownRoot } from "./own";
 import { portainerRoot } from "./portainer";
+import { pagesRoot, workersRoot } from "./serverless";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
+export { pagesVerificationRootDir, renderPagesVerification } from "./serverless";
 export {
   type BucketProvider,
   type ProviderBucket,
@@ -70,8 +72,7 @@ interface RootShape {
 /**
  * Resolves the root module's layout. Without `ctx.layout` this is `module "server"` for
  * `plan.target` and its provider only. Only servers OpsCrew creates have a cloud root: throws for
- * a plan for a server the user owns or a Portainer target, and for layouts the engines would
- * reject.
+ * a plan for any other target, and for layouts the engines would reject.
  */
 function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   const target = cloudTarget(plan.target);
@@ -306,13 +307,17 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
 
 /**
  * The root module for the plan: a Portainer target's (none when it needs no Cloudflare Tunnel), a
- * server the user owns, or servers OpsCrew creates (with a move layout, always this one).
+ * server the user owns, Cloudflare's hosting, GitHub Pages, or servers OpsCrew creates (with a move
+ * layout, always this one).
  */
 function rootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined {
-  if (ctx.layout === undefined && plan.target.provider === "portainer") {
-    return portainerRoot(plan, ctx);
+  if (ctx.layout === undefined) {
+    const { target } = plan;
+    if (target.provider === "portainer") return portainerRoot(plan, ctx);
+    if (target.provider === "own") return ownRoot(plan, ctx);
+    if (target.provider === "cloudflare-workers") return workersRoot(plan, target, ctx);
+    if (target.provider === "github-pages") return pagesRoot(plan, ctx);
   }
-  if (ctx.layout === undefined && plan.target.provider === "own") return ownRoot(plan, ctx);
   return cloudRoot(plan, ctx);
 }
 
@@ -364,7 +369,17 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * Portainer's webhook hostname (Portainer's address from `TF_VAR_portainer_origin`). OpsCrew
  * creates no DNS record for web modes `proxy` and `caddy`, so a plan that needs neither tunnel
  * renders no files at all. Only servers OpsCrew creates move: a move layout for a server the user
- * owns or a Portainer target throws.
+ * owns, a Portainer target or a server-less target throws.
+ *
+ * On Cloudflare's hosting (`cloudflare-workers`) the root module has only `module "worker"`
+ * (`cloudflare-workers`): the Worker's shell, its `workers.dev` and preview switches, and one
+ * custom domain per hostname (the domain, and `www.` when on); output `url`. Needs
+ * `ctx.cloudflare.accountId`.
+ *
+ * On GitHub Pages (`github-pages`) the root module has only `module "dns"`, the `cloudflare-dns`
+ * module's GitHub Pages mode (`cloudflare-dns/github-pages`), DNS only: an apex domain's A and AAAA
+ * records, or a subdomain's CNAME, to GitHub Pages, and `www.` when on; output `url`. GitHub's
+ * domain verification record is in a root of its own ({@link renderPagesVerification}).
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   const portainer = ctx.layout === undefined && plan.target.provider === "portainer";
@@ -389,7 +404,8 @@ export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[
   for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
-    if (root.modules.some((m) => path.startsWith(`${m}/`))) {
+    // A module's own files only: the GitHub Pages mode of `cloudflare-dns` is a folder inside it.
+    if (root.modules.includes(path.slice(0, path.lastIndexOf("/")))) {
       files.push({ path: `${modulesDir}/${path}`, content, kind: "infra" });
     }
   }

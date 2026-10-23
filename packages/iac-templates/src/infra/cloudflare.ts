@@ -4,13 +4,13 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 import { moduleBlock, sensitiveOutput, type VariableSpec } from "./hcl";
 
-/** The Cloudflare account the tunnels, Access and R2 buckets belong to. */
+/** The Cloudflare account the tunnels, Access, R2 buckets and Workers belong to. */
 export function accountId(ctx: RenderContext): string {
   const id = ctx.cloudflare?.accountId;
   if (!id) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "A Cloudflare account id is required to render the Cloudflare Tunnel, Access or R2 bucket of this plan.",
+      "A Cloudflare account id is required to render the Cloudflare Tunnel, Access, R2 bucket or Worker of this plan.",
       {
         hint: "Check that your Cloudflare token can read the account that owns the domain's zone, then run the command again.",
       },
@@ -21,10 +21,17 @@ export function accountId(ctx: RenderContext): string {
 
 /**
  * What a root module needs from the app's Cloudflare zone: `records` (the DNS module: the domain,
- * the proxy and `www.`), `tunnel` (the app served through a tunnel: the domain) or `zone` (the zone
- * id only).
+ * the proxy and `www.`), `domain` (the domain: an app served through a tunnel, or on a server-less
+ * target) or `zone` (the zone id only).
  */
-export type ZoneUse = "records" | "tunnel" | "zone";
+export type ZoneUse = "records" | "domain" | "zone";
+
+/** The `www` root variable. */
+export const WWW_VARIABLE: VariableSpec = {
+  name: "www",
+  type: "bool",
+  description: "Also serve www.<domain>.",
+};
 
 /** The zone's root variables for `use`, in the order every root declares them. */
 export function zoneVariables(use: ZoneUse): VariableSpec[] {
@@ -36,7 +43,7 @@ export function zoneVariables(use: ZoneUse): VariableSpec[] {
   if (use === "records") {
     specs.push(
       { name: "proxied", type: "bool", description: "Proxy traffic through Cloudflare." },
-      { name: "www", type: "bool", description: "Also serve www.<domain>." },
+      WWW_VARIABLE,
       {
         name: "caa_issuers",
         type: "list(string)",

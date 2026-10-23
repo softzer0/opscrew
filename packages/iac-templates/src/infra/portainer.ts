@@ -156,7 +156,7 @@ function mainTf(plan: DeployPlan, s: Shape): string {
 function variables(s: Shape): VariableSpec[] {
   const specs: VariableSpec[] = [
     APP_NAME_VARIABLE,
-    ...zoneVariables(s.appTunnel ? "tunnel" : "zone"),
+    ...zoneVariables(s.appTunnel ? "domain" : "zone"),
     {
       name: "cloudflare_account_id",
       type: "string",
@@ -210,7 +210,7 @@ function tfvars(plan: DeployPlan, ctx: RenderContext, s: Shape): Record<string, 
   // Never Portainer's address: it reaches the engine only as TF_VAR_portainer_origin.
   return {
     app_name: plan.app.name,
-    ...zoneTfvars(plan, ctx, s.appTunnel ? "tunnel" : "zone"),
+    ...zoneTfvars(plan, ctx, s.appTunnel ? "domain" : "zone"),
     cloudflare_account_id: accountId(ctx),
     ...(s.webhook ? { portainer_hostname: portainerWebhookHostname(plan) } : {}),
   };
