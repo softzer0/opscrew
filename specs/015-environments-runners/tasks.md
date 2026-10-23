@@ -510,7 +510,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1521 [US5] A localhost environment with the local runner runs its own image (FR-1540)
+- [X] T1521 [US5] A localhost environment with the local runner runs its own image (FR-1540)
   - Owns: agents' `localhost/image.ts` (`imageSource`, `resolveLocalImage`) and `localhost/provision.ts` with their tests; `docs/guide/runners.md` "The local runner" and `docs/guide/localhost.md` where they say which image runs (+ tests)
   - Reads: spec FR-1539 and FR-1540; data-model.md "Localhost target"
   - Depends: T1520 (its `sharedPartsSource` uses `imageSource`'s rule)
@@ -641,7 +641,6 @@ Effort`.
     - Remove iac-templates' `PORTAINER_STACK_TEMPLATE_PATH` and `ORIGIN_PULL_PEM` once only their own tests use them (T1508c). The connector's `DEPLOY_BRANCH` and `DEPLOY_REFERENCE` stay for the Portainer live test.
     - The generic error helpers `reasonOf`, `codeOf` and `hintOf` live in `retarget/` and are imported by promote: move them to `shared/` (T1509's review).
     - Localhost's `shellWord` duplicates the unexported `shellQuote` helpers; and its runbook (`localhost/runbook.ts`) belongs beside `renderRunbook` in iac-templates (T1510).
-    - Agents' `localhost/image.ts` keeps a private `buildArch`; use iac-templates' (T1511).
     - Core's `signedLeafCertificate` takes a `commonName` option, so a long localhost hostname needs no extra short SAN name (`<16 hex>.localhost`) (T1510).
     - A runner machine's host plan is headed "Host plan for your server" (ssh-host); name the runner machine there instead of the MCP text adding a line above it (T1517e).
     - Export `FakeRunnerMachine` and `FakeRunnerGitHub` from `@opscrew/agents/testing`, and drop the CLI's and MCP's own small copies (T1517e).
