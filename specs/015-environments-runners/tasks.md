@@ -485,6 +485,17 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
+- [ ] T1519 [US2] Each environment's own app values, and what environments share (FR-1538)
+  - Owns: agents' `provision/secrets.ts` (`buildAppEnvironment`'s file choice) with its tests; `docs/guide/environments.md`; `docs/guide/secrets.md` if it says where provision reads values
+  - Reads: spec FR-1538; data-model.md "Shared parts"
+  - Depends: T1518 (the same files)
+  - Accept:
+    - **The file:** an interactive provision of an environment other than prod offers values from `.env.<env>` only (`<env>` is the environment's name); prod keeps `.env`. Without `.env.<env>`, it says so once and asks each value with nothing offered. A script reads `OPSCREW_APP_ENV_FILE` as today.
+    - **The guide:** "What every environment shares" says the environments share the app's definition (build, port, health route, release command, processes, which components and external services it uses, signing), and that each runs its own copies: its own containers, databases and their data and passwords, buckets, secrets and deploy key, on its own server by default. Where the app's own values come from per environment (`.env.<env>`, never prod's `.env`), and that an external service should get its own connection value per environment.
+    - **Tests:** staging's interactive provision with `.env` and `.env.staging` offers only `.env.staging`'s values; without `.env.staging`, nothing is offered; prod still reads `.env`; a script still reads `OPSCREW_APP_ENV_FILE`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: medium
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
