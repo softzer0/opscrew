@@ -13,8 +13,10 @@ import {
   OpsCrewError,
   readTextIfExists,
   selfSignedClientCertificate,
+  toPosixRelative,
 } from "@opscrew/core";
 import {
+  additionsPath,
   certbotHosts,
   EDGE_PROXIES,
   type EdgeProxy,
@@ -30,6 +32,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { localDocker, localDockerProblem, runGixy, scanProxyAdditions } from "@opscrew/secops";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
+import { planFile } from "../runners/words";
 import type { ProvisionServices } from "./types";
 
 /** How long the proxy's checker may take, pulling its pinned image included. */
@@ -141,8 +144,10 @@ async function runProxyChecker(
 export async function portainerAdditionsNote(
   deps: Pick<PhaseDeps, "paths" | "reporter">,
 ): Promise<void> {
-  for (const { additions } of Object.values(EDGE_PROXIES)) {
-    if ((await readTextIfExists(join(deps.paths.root, additions))) === undefined) continue;
+  for (const proxy of Object.keys(EDGE_PROXIES)) {
+    const file = join(deps.paths.files.shared.proxyDir, `additions.${proxy}`);
+    if ((await readTextIfExists(file)) === undefined) continue;
+    const additions = toPosixRelative(deps.paths.root, file);
     deps.reporter.warn(
       `OpsCrew does not use ${additions} in your Portainer: the app stack's Caddy has no additions yet, so the site stays as OpsCrew renders it.`,
     );
@@ -165,14 +170,15 @@ export async function checkAdditions(
 ): Promise<boolean> {
   const root = deps.paths.root;
   const proxy = edgeProxy(plan);
-  const path = EDGE_PROXIES[proxy].additions;
+  const path = additionsPath(plan, proxy);
   const other = EDGE_PROXIES[otherProxy(proxy)];
-  if ((await readTextIfExists(join(root, other.additions))) !== undefined) {
+  const otherPath = additionsPath(plan, otherProxy(proxy));
+  if ((await readTextIfExists(join(root, otherPath))) !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${other.additions} holds additions for ${other.label}, but this app's proxy is ${EDGE_PROXIES[proxy].label} (target.edge), so OpsCrew would not use them. Nothing was changed.`,
+      `${otherPath} holds additions for ${other.label}, but this app's proxy is ${EDGE_PROXIES[proxy].label} (target.edge), so OpsCrew would not use them. Nothing was changed.`,
       {
-        hint: `Write the same rules in ${EDGE_PROXIES[proxy].label}'s syntax in ${path} and delete ${other.additions}, or set target.edge to "${otherProxy(proxy)}" in opscrew/plan.yaml; then run the command again.`,
+        hint: `Write the same rules in ${EDGE_PROXIES[proxy].label}'s syntax in ${path} and delete ${otherPath}, or set target.edge to "${otherProxy(proxy)}" in ${planFile(plan)}; then run the command again.`,
       },
     );
   }

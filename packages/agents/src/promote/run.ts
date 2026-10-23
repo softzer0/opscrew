@@ -41,6 +41,7 @@ import {
   checkProvenance,
   chooseImage,
   type ImageBuild,
+  imageFactsOf,
   imageReference,
 } from "./image";
 import {
@@ -312,6 +313,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   }
   const targetPaths = await resolveEnvironmentPaths(deps.paths.root, target, {
     env: { OPSCREW_HOME: deps.paths.homeDir },
+    app: deps.paths.app,
   });
   const plan = await readArtifact("plan", targetPaths.files.plan);
   if (isServerlessProvider(plan.target.provider)) {
@@ -350,6 +352,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     github: github.api,
     owner,
     repo,
+    key: plan.app.key,
     ...(credential !== undefined ? { credential } : {}),
   };
   const followed = await checkPending(deps, targetPaths, image, {
@@ -367,9 +370,9 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   });
   const { digest } = chosen;
   deps.reporter.step("Checking where the image was built (its build provenance)");
-  const environments = await environmentsOf(deps.paths.root);
+  const environments = await environmentsOf(deps.paths.root, deps.paths.app);
   // One read of GHCR's record of the image gives both its provenance and its CPUs.
-  const facts = await github.api.imageFacts(owner, repo, digest, credential);
+  const facts = await imageFactsOf(image, digest);
   const build = await checkProvenance(image, digest, facts?.provenance, branch, environments);
   checkPlatform(image, digest, facts?.platforms, target, targetArch(plan.target));
 

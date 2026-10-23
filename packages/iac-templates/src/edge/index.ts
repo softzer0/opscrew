@@ -79,27 +79,12 @@ export const EDGE_PROXIES: Record<
     label: string;
     /** The extension of the app's site file, `sites/<app>.<site>`. */
     site: string;
-    /**
-     * The repository's first app's own additions; on the server `sites/<app>.additions`.
-     * {@link additionsPath} gives any app's.
-     */
-    additions: string;
     /** Where a site sends the app's traffic, as its file names it (the additions' upstream). */
     upstream: string;
   }
 > = {
-  caddy: {
-    label: "Caddy",
-    site: "caddy",
-    additions: "opscrew/proxy/additions.caddy",
-    upstream: EDGE_UPSTREAM,
-  },
-  nginx: {
-    label: "nginx",
-    site: "conf",
-    additions: "opscrew/proxy/additions.nginx",
-    upstream: NGINX_UPSTREAM,
-  },
+  caddy: { label: "Caddy", site: "caddy", upstream: EDGE_UPSTREAM },
+  nginx: { label: "nginx", site: "conf", upstream: NGINX_UPSTREAM },
 };
 
 /**

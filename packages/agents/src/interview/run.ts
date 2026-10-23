@@ -16,6 +16,8 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { runAnalyze } from "../analyze";
+import { appFlag } from "../apps/choice";
+import { recordedAppDir } from "../apps/record";
 import type { PhaseDeps } from "../context";
 import { serverlessTargetsFor } from "../design/serverless";
 import { defaultBranchOf, remoteEnvironmentBranches } from "../environments/branches";
@@ -143,32 +145,39 @@ export interface InterviewResult {
 const errorCode = (error: unknown) =>
   typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
 
-/** Facts from `opscrew/architecture.json`, or fresh deterministic detection when it is unusable. */
-async function loadFacts(deps: PhaseDeps): Promise<ProjectFacts> {
+/**
+ * Facts from the app's `architecture.json`, or fresh deterministic detection when it is unusable
+ * (of the further app's own folder, `recorded`).
+ */
+async function loadFacts(deps: PhaseDeps, recorded: string | undefined): Promise<ProjectFacts> {
+  const { paths } = deps;
   try {
-    return (await readArtifact("architecture", deps.paths.files.architecture)).facts;
+    return (await readArtifact("architecture", paths.files.architecture)).facts;
   } catch (error) {
+    const file = toPosixRelative(paths.root, paths.files.architecture);
+    const analyze = `opscrew analyze${await appFlag(paths.root, paths.app)}`;
     if (errorCode(error) === "ARTIFACT_MISSING") {
       deps.reporter.info(
-        "No opscrew/architecture.json yet, so OpsCrew detected the project again. Run `opscrew analyze` for the full analysis.",
+        `No ${file} yet, so OpsCrew detected the project again. Run \`${analyze}\` for the full analysis.`,
       );
     } else if (errorCode(error) === "ARTIFACT_INVALID") {
       deps.reporter.warn(
-        "opscrew/architecture.json is not valid, so OpsCrew detected the project again. Run `opscrew analyze` to rewrite it.",
+        `${file} is not valid, so OpsCrew detected the project again. Run \`${analyze}\` to rewrite it.`,
       );
     } else {
       throw error;
     }
-    return detectProject(deps.paths.root);
+    return detectProject(paths.root, recorded === undefined ? {} : { appDir: recorded });
   }
 }
 
 /**
  * Deployable app folders when the facts describe the repository root of a monorepo with several
- * apps; empty otherwise (or when detection fails, which analyze reports).
+ * apps; empty otherwise (or when detection fails, which analyze reports), and always for a further
+ * app, whose folder is its record's.
  */
 async function appCandidatesFor(deps: PhaseDeps, facts: ProjectFacts): Promise<string[]> {
-  if (!describesRoot(facts)) return [];
+  if (deps.paths.app !== undefined || !describesRoot(facts)) return [];
   try {
     return (await detectProjectDetails(deps.paths.root)).appCandidates;
   } catch {
@@ -333,7 +342,8 @@ export async function runInterview(
   return runPhase(deps, "interview", async () => {
     await ensureStateDir(paths);
     reporter.step("Collecting your deployment requirements");
-    const facts = await loadFacts(deps);
+    const recorded = await recordedAppDir(paths);
+    const facts = await loadFacts(deps, recorded);
     const previous = await loadPrevious(deps);
     const appCandidates = await appCandidatesFor(deps, facts);
     const inferredProvider = providerFromTokens(deps.env);
@@ -367,6 +377,8 @@ export async function runInterview(
       ...context,
       ...(previous !== undefined ? { previous } : {}),
     });
+    // A further app is the one in its record's folder (`opscrew app add`).
+    if (recorded !== undefined) requirements = { ...requirements, appDir: recorded };
     // Asked once the provider and region are known: a hosted service's question names the price
     // of the server running it would need.
     if (!hasComponentAnswers(componentSplit) && options.askComponents !== undefined) {
@@ -438,7 +450,7 @@ export async function runInterview(
       reporter.info(`Analysing ${requirements.appDir} again, the app you chose to deploy.`);
       await runAnalyze(deps, { ai: false, appDir: requirements.appDir });
       reporter.info(
-        `opscrew/architecture.json now describes ${requirements.appDir}. The Analyst's AI review was not re-run; run \`opscrew analyze\` to add it.`,
+        `${toPosixRelative(paths.root, paths.files.architecture)} now describes ${requirements.appDir}. The Analyst's AI review was not re-run; run \`opscrew analyze${await appFlag(paths.root, paths.app)}\` to add it.`,
       );
     }
     if (ownServer !== undefined) {
@@ -464,7 +476,7 @@ export async function runInterview(
       );
     }
     await writeArtifact("requirements", paths.files.requirements, requirements);
-    reporter.success("Wrote opscrew/requirements.yaml.");
+    reporter.success(`Wrote ${toPosixRelative(paths.root, paths.files.requirements)}.`);
     const publicLog = signingPublicLog(options.repositoryPrivate);
     if (requirements.signImages === true && publicLog !== undefined) reporter.warn(publicLog);
     reporter.info(IMAGE_RETENTION_NOTE);

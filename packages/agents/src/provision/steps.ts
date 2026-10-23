@@ -62,6 +62,7 @@ export async function deployBranchFor(
         branch: await localDeployBranch(
           git,
           workflowBranch(plan, input.github.defaultBranch),
+          plan.app.key,
           phase,
         ),
       };

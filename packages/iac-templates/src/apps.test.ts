@@ -2,7 +2,7 @@
 import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { CF_RANGES, testCloudflare, testContext } from "./__fixtures__/plans";
+import { CF_RANGES, testCloudflare, testContext, testPlan } from "./__fixtures__/plans";
 import { renderDockerAssets } from "./docker";
 import { additionsPath, renderEdgeCompose } from "./edge";
 import { localhostPlan } from "./edge/__fixtures__/localhost";
@@ -12,12 +12,13 @@ import { renderRunbook } from "./runbook";
 import { type RuntimeContext, renderCompose, renderEdgeSite } from "./runtime";
 import { runtimeDir } from "./runtime-dir";
 import { renderWranglerConfig } from "./serverless";
-import { cloudflarePlan, FROM_STAGING } from "./serverless/__fixtures__/plans";
+import { cloudflarePlan, FROM_STAGING, pagesPlan } from "./serverless/__fixtures__/plans";
 import { cloudflareDir } from "./serverless/site";
 import {
   deploySecretName,
   githubEnvironment,
   renderCloudflareWorkersWorkflow,
+  renderGithubPagesWorkflow,
   renderWorkflow,
 } from "./workflow";
 import {
@@ -320,6 +321,56 @@ describe("the commands a further app's files name", () => {
     const localCtx = { ...testContext(), localhost: { hostname: "docs-staging.localhost" } };
     expect(renderWorkflow(local, localCtx).content).toContain(
       "Start it with \\`opscrew runner start --app docs --env staging\\`",
+    );
+    // The local runner's leaf check names the environment, prod's too.
+    const leaf = (plan: DeployPlan) =>
+      renderWorkflow(plan, { ...testContext(), localhost: { hostname: "shop.localhost" } }).content;
+    const prod = inEnvironment(localhostPlan(), { runner: "local" });
+    expect(leaf(prod)).toContain("Run `opscrew provision --env prod`, which issues it");
+    expect(leaf(ofApp(prod, "docs"))).toContain(
+      "Run `opscrew provision --app docs --env prod`, which issues it",
+    );
+  });
+
+  it("tell a further app's failed deploy and its image retention to run its own commands", () => {
+    const own = renderWorkflow(docs, testContext()).content;
+    expect(own).toContain(
+      "run opscrew design --app docs, opscrew adapt --app docs and opscrew provision --app docs.",
+    );
+    expect(own).toContain('run "opscrew provision --app docs" to write the deploy workflow again');
+    const firsts = renderWorkflow(first, testContext()).content;
+    expect(firsts).toContain("run opscrew design, opscrew adapt and opscrew provision.");
+    expect(firsts).toContain('run "opscrew provision" to write the deploy workflow again');
+  });
+
+  it("tell a further app's Cloudflare deploy to provision and verify the app itself", () => {
+    const site = ofApp(cloudflarePlan({ env: ["PUBLIC_API_URL"] }), "docs");
+    const content = renderCloudflareWorkersWorkflow(site, FROM_STAGING).content;
+    expect(content).toContain("(\\`opscrew provision --app docs\\` creates it)");
+    expect(content).toContain("\\`opscrew verify --app docs\\` checks the site once it is there.");
+  });
+
+  it("tell a further app's GitHub Pages deploy to design and verify the app itself", () => {
+    const content = renderGithubPagesWorkflow(ofApp(pagesPlan(), "docs")).content;
+    expect(content).toContain("host it on Cloudflare (\\`opscrew design --app docs\\`)");
+    expect(content).toContain("\\`opscrew verify --app docs\\` says when it is there.");
+    const first = renderGithubPagesWorkflow(pagesPlan()).content;
+    expect(first).toContain("host it on Cloudflare (\\`opscrew design\\`)");
+    expect(first).toContain("\\`opscrew verify\\` says when it is there.");
+  });
+
+  it("name the further app's own folder in the runbook's What remains", () => {
+    const remains = (plan: DeployPlan) =>
+      renderRunbook(plan, testContext())
+        .content.split("\n")
+        .filter((line) => line.includes("the files in this repository"))
+        .join("\n");
+    expect(remains(docs)).toContain("(`opscrew/apps/docs/` and");
+    expect(remains(docsStaging)).toContain("(`opscrew/apps/docs/` and");
+    expect(remains(first)).toContain("(`opscrew/` and");
+    const own = ofApp(testPlan({ provider: "own", domain: "docs.example.com" }), "docs");
+    expect(remains(own)).toContain(
+      "(`opscrew/apps/docs/` and `.github/workflows/opscrew-deploy-docs.yml`)",
     );
   });
 

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectProject } from "@opscrew/detect";
-import { EDGE_PROXIES, type EdgeProxy, siteHosts } from "@opscrew/iac-templates";
+import { additionsPath, EDGE_PROXIES, type EdgeProxy, siteHosts } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { scanProxyAdditions } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,7 +35,7 @@ const SKIPPED_ROUTES =
   "Not translated from vercel.json: routes, because `routes` uses Vercel's PCRE form, which OpsCrew does not translate yet; write these rules as `redirects`, `rewrites` and `headers` instead.";
 
 describe.each(["caddy", "nginx"] as const)("vercelAdditions on %s", (proxy) => {
-  const file = EDGE_PROXIES[proxy].additions;
+  const file = additionsPath(plan(proxy));
   const label = EDGE_PROXIES[proxy].label;
 
   it.each(["vite-spa.json", "static-site.json", "malformed.json"])(

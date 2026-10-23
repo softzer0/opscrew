@@ -232,6 +232,28 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     ]);
   });
 
+  it("checks a further app's deploy branch against its own image, ghcr.io/<owner>/<repo>/<key>", async () => {
+    const base = portainerPlan();
+    const { dir: _dir, ...infra } = base.infra;
+    const { workflowPath: _workflowPath, ...cicd } = base.cicd;
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, key: "docs", name: "docs" },
+      dns: { ...base.dns, domain: "docs.example.com" },
+      infra,
+      cicd,
+    });
+    const s = await deployed({ plan });
+    await deployImage(s, `ghcr.io/acme/shop/docs@sha256:${"ab".repeat(32)}`);
+    let report = await drift(s);
+    expect(report.portainer?.differences).toEqual([]);
+
+    // The first app's image is not this app's.
+    await deployImage(s, APP_IMAGE);
+    report = await drift(s);
+    expect(titles(report)[0]).toContain(`runs ${APP_IMAGE}, which is not the app's image`);
+  });
+
   it("without the value key compares names only, says so, and creates no key", async () => {
     const s = await deployed();
     await rm(portainerValueKeyFile(s.deps.paths));

@@ -447,11 +447,14 @@ describe("runAnalyze", () => {
       );
     });
 
-    it("keeps the app chosen with --app on the next plain analyze, until --app .", async () => {
+    it("keeps the app chosen with --dir on the next plain analyze, until --dir .", async () => {
       const deps = await twoApps();
       await runAnalyze(deps, { ai: false, appDir: "apps/api" });
       const again = await runAnalyze(deps, { ai: false });
       expect(again.architecture.facts.appDir).toBe("apps/api");
+      expect(deps.reporter.text()).toContain(
+        "Describing the app in apps/api (chosen earlier; `--dir .` describes the whole repository).",
+      );
       const reset = await runAnalyze(deps, { ai: false, appDir: "." });
       expect(reset.architecture.facts.appDir).toBe(".");
       const afterReset = await runAnalyze(deps, { ai: false });
@@ -466,6 +469,9 @@ describe("runAnalyze", () => {
       expect(error).toMatchObject({ code: "INVALID_INPUT" });
       expect((error as Error).message).toMatch(/apps\/api, apps\/web/);
       expect(isUserFacingError(error)).toBe(true);
+      expect((error as { hint?: string }).hint).toBe(
+        'Pick one of the listed directories, for example `opscrew analyze --dir apps/api`, or use "." for the repository root.',
+      );
       await expect(readFile(deps.paths.files.architecture, "utf8")).rejects.toMatchObject({
         code: "ENOENT",
       });

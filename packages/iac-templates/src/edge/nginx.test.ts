@@ -9,6 +9,7 @@ import { type RuntimeContext, renderCaddyfile, renderEdgeSite } from "../runtime
 import { composeLiteral } from "../runtime/services";
 import { TUNNEL_ORIGIN_PORT } from "../tunnel";
 import {
+  additionsPath,
   EDGE_PROXIES,
   EDGE_PROXY_KEY,
   EDGE_VERSION,
@@ -371,7 +372,7 @@ describe("the app's site on nginx", () => {
     expect(sites(shop, { ...proxied, additions: false })["shop.conf"]).not.toContain(
       "include /etc/nginx/sites",
     );
-    expect(EDGE_PROXIES.nginx.additions).toBe("opscrew/proxy/additions.nginx");
+    expect(additionsPath(shop)).toBe("opscrew/proxy/additions.nginx");
   });
 
   it("serves certbot's hostnames over HTTP until their first certificate, in sites/<app>.http.conf", () => {

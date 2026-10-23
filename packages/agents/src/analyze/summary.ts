@@ -211,7 +211,7 @@ function risksFor(facts: ProjectFacts, options: SummarizeOptions): string[] {
     risks.push(
       `This repository contains several deployable apps (${listText(candidates.map((c) => `\`${c}\``))}). ` +
         "OpsCrew deploys one of them, so `opscrew design` stops until you choose which: answer the " +
-        `question in \`opscrew interview\`, or run \`opscrew analyze --app ${candidates[0]}\`.`,
+        `question in \`opscrew interview\`, or run \`opscrew analyze --dir ${candidates[0]}\`.`,
     );
   } else if (facts.appKind === "unknown") {
     risks.push(

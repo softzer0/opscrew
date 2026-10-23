@@ -46,7 +46,7 @@ describe("summarizeFacts for a monorepo with several apps", () => {
     expect(text).toMatch(/several deployable apps \(`apps\/api` and `apps\/web`\)/);
     expect(text).toMatch(/stops until you choose which/);
     expect(text).toMatch(/`opscrew interview`/);
-    expect(text).toMatch(/`opscrew analyze --app apps\/api`/);
+    expect(text).toMatch(/`opscrew analyze --dir apps\/api`/);
     expect(text).not.toMatch(/no known web framework/);
     expect(text).not.toMatch(/could not tell what kind of app/);
   });

@@ -8,7 +8,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { EDGE_PROXIES, edgeProxy } from "../edge";
+import { additionsPath } from "../edge";
 import { type RuntimeContext, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { renderWorkflow } from "./index";
 
@@ -212,7 +212,7 @@ describe.skipIf(reason !== undefined)(
           [...renderRuntimeFiles(plan), ...renderEdgeSite(plan, c)].map((f) => [f.path, f.content]),
         ),
         "opscrew/runtime/edge/tls/pull.pem": pull,
-        [EDGE_PROXIES[edgeProxy(plan)].additions]: additions,
+        [additionsPath(plan)]: additions,
       };
       for (const [path, content] of Object.entries(files)) {
         mkdirSync(dirname(join(repo, path)), { recursive: true });

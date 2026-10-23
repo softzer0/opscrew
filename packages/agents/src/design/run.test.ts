@@ -448,7 +448,7 @@ describe("runDesign", () => {
       expect(message).toContain("`apps/web` (Next.js");
       expect(message).toContain("OpsCrew deploys one app, so choose which one");
       expect(hint).toMatch(/`opscrew interview` and pick the app/);
-      expect(hint).toMatch(/`opscrew analyze --app apps\/api`/);
+      expect(hint).toMatch(/`opscrew analyze --dir apps\/api`/);
     }
     await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect((await deps.state.read()).phases.design?.status).toBe("failed");

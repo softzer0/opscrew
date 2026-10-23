@@ -42,7 +42,9 @@ import {
   CONTINUES_WITH_LEFT,
   checkCloudflare,
   containerImagesLeft,
+  type DeploymentFiles,
   DRIFT_THEN_DESTROY,
+  deploymentFiles,
   deploySecretsLeft,
   type GitHubTarget,
   nothingDeployed,
@@ -446,8 +448,9 @@ function remainingAfterDestroy(input: {
   secretsRemoved: readonly string[];
   /** `--delete-data`: the bucket goes with the app's data; otherwise it is said to stay. */
   bucketDeleted: boolean;
+  files: DeploymentFiles;
 }): string[] {
-  const { plan, texts, github } = input;
+  const { plan, texts, github, files } = input;
   const bucket = input.bucketDeleted ? undefined : bucketKept(plan);
   return [
     ...remainingAfterDeletion({
@@ -458,9 +461,9 @@ function remainingAfterDestroy(input: {
     }),
     ...(bucket !== undefined ? [bucket] : []),
     ...deploySecretsLeft(github, { plan, removed: input.secretsRemoved }),
-    containerImagesLeft(github),
+    containerImagesLeft(github, plan),
     ...zeroTrustLeft(plan),
-    `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` creates a new ${texts.noun} from these files.`,
+    `The deployment files in the repository (${files.folder}/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`${files.provision}\` creates a new ${texts.noun} from these files.`,
     "The project's SSH deploy key on this computer, kept so a new deployment can reuse it.",
   ];
 }
@@ -725,6 +728,7 @@ export async function runDestroy(
     github,
     secretsRemoved,
     bucketDeleted: options.deleteData === true,
+    files: await deploymentFiles(deps, plan),
   });
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));

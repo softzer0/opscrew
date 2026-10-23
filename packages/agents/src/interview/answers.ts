@@ -201,7 +201,7 @@ export function answersToRequirements(
     options.facts !== undefined ? inferredAnswers(options.facts, context) : {};
   // The provider is always recorded: previous answer, else the token inference, else Hetzner.
   inferred.provider ??= defaultProvider(undefined, context);
-  // An app folder chosen in the analysis (`opscrew analyze --app`) wins over an older answer.
+  // An app folder chosen in the analysis (`opscrew analyze --dir`) wins over an older answer.
   if (options.facts !== undefined && !describesRoot(options.facts)) {
     inferred.appDir = options.facts.appDir;
   }

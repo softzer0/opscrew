@@ -21,6 +21,7 @@ import {
 import { listProjectFiles } from "@opscrew/detect";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import {
+  appBranch,
   type CodeChangeKind,
   type CodeChangeStatus,
   type DeployPlan,
@@ -29,11 +30,13 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { scanDockerfile } from "@opscrew/secops";
+import { appFlag } from "../apps/choice";
 import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
 import { githubClientFromToken, requireGitRepo, writeRenderedFiles } from "../shared";
+import { appBranchNames, numberedBranches } from "../shared/app-branches";
 import { runPhase } from "../shared/phase-status";
 import {
   BASELINE_MET,
@@ -59,7 +62,10 @@ import {
   manualInstructions,
 } from "./prompts";
 
-/** Branch adapt creates; `-2`, `-3`, … are appended when it already exists. */
+/**
+ * Branch adapt creates for the repository's first app; `-2`, `-3`, … are appended when it already
+ * exists. A further app's is `opscrew/prepare-deploy-<key>`, then `_2`, … (`appBranchNames`).
+ */
 export const ADAPT_BRANCH = "opscrew/prepare-deploy";
 
 /** Subject line of the adapt commit. */
@@ -213,6 +219,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   }
 
   // 2. Branch from the current HEAD (or continue an earlier run's commit that was never pushed).
+  const key = plan.app.key;
   const original = await git.currentBranch();
   const remote = push ? await git.remoteUrl("origin") : undefined;
   const repo = remote === undefined ? undefined : parseGitHubRepo(remote);
@@ -242,12 +249,12 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
           warn,
         };
 
-  const unpushed = await unpushedAdaptCommit(git, original);
+  const unpushed = await unpushedAdaptCommit(git, key, original);
   if (unpushed !== undefined) {
     const baseBranch = await git.defaultBranch();
     const short = unpushed.slice(0, 7);
     if (!push) {
-      const advice = await pushAdvice(git, original);
+      const advice = await pushAdvice(git, key, original);
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `You are on ${original}, and OpsCrew's commit ${short} on it is not on origin yet, so OpsCrew did not start another run.`,
@@ -266,7 +273,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     const picked =
       originCheck === undefined
         ? { branch: original, originChecked: false }
-        : await pickBranch(git, originCheck, original);
+        : await pickBranch(git, key, originCheck, original);
     if (picked.branch !== original) {
       await git.renameBranch(original, picked.branch);
       await audit({
@@ -326,7 +333,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   }
 
   const baseBranch = original === "HEAD" ? await git.defaultBranch() : original;
-  const { branch, originChecked } = await pickBranch(git, originCheck);
+  const { branch, originChecked } = await pickBranch(git, key, originCheck);
   await git.createBranch(branch);
   await audit({ kind: "git", actor: "opscrew", action: "create branch", target: branch });
   reporter.info(
@@ -666,7 +673,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
 
   // 6. Push and open the pull request, each after approval.
   if (!push) {
-    const advice = await pushAdvice(git, branch);
+    const advice = await pushAdvice(git, key, branch);
     result.pushCommand = advice.command;
     reporter.info(say(`Not pushed (--no-push). ${advice.text} Then open a pull request.`));
     await deps.state.markPhase("adapt", "ok", say(`committed ${sha.slice(0, 7)} on ${branch}`));
@@ -802,7 +809,7 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
       return done(`pull request #${existing.number}`);
     }
     const backgroundJobs = backgroundJobsWarning(facts);
-    const migrations = releaseCommandNote(plan, facts)?.text;
+    const migrations = releaseCommandNote(plan, facts, await appFlag(paths.root, paths.app))?.text;
     const body = say(
       renderPullRequestBody({
         changes,
@@ -875,30 +882,23 @@ interface OriginCheck {
   warn(text: string): void;
 }
 
-/** The branch names adapt uses: `opscrew/prepare-deploy`, then `-2`, `-3`, … `-100`. */
-const ADAPT_BRANCH_NAMES = [
-  ADAPT_BRANCH,
-  ...Array.from({ length: 99 }, (_, i) => `${ADAPT_BRANCH}-${i + 2}`),
-];
-
-/** A branch adapt creates. */
-const ADAPT_BRANCH_NAME = /^opscrew\/prepare-deploy(?:-[1-9][0-9]*)?$/;
-
 /**
- * The first free branch name: not in this clone (except `current`, the branch already holding
- * the commit to push) and, when adapt will push, not on origin either, so the push never collides
- * with a branch an earlier run left behind. A branch on origin with an open pull request stops
- * adapt before it changes anything (that pull request is still the place to finish the earlier
- * run); one without (merged or closed) is skipped, never pushed to. `originChecked` is false when
- * origin was not checked (no push, or it could not be reached).
+ * The first free name of the app `key`'s adapt branches (`appBranchNames`: the plan's key, none
+ * for the first app): not in this clone (except `current`, the branch already holding the commit
+ * to push) and, when adapt will push, not on origin either, so the push never collides with a
+ * branch an earlier run left behind. A branch on origin with an open pull request stops adapt
+ * before it changes anything (that pull request is still the place to finish the earlier run); one
+ * without (merged or closed) is skipped, never pushed to. `originChecked` is false when origin was
+ * not checked (no push, or it could not be reached).
  */
 async function pickBranch(
   git: GitClient,
+  key: string | undefined,
   origin?: OriginCheck,
   current?: string,
 ): Promise<{ branch: string; originChecked: boolean }> {
   let check = origin;
-  for (const name of ADAPT_BRANCH_NAMES) {
+  for (const name of appBranchNames(ADAPT_BRANCH, key)) {
     if (check !== undefined) {
       let sha: string | undefined;
       try {
@@ -935,18 +935,25 @@ async function pickBranch(
   }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `There are already 100 ${ADAPT_BRANCH} branches, so OpsCrew did not create another one.`,
-    { hint: `Delete the old ones with \`git branch -D ${ADAPT_BRANCH}-<n>\`, then try again.` },
+    `There are already 100 ${appBranch(ADAPT_BRANCH, key)} branches, so OpsCrew did not create another one.`,
+    {
+      hint: `Delete the old ones with \`git branch -D ${numberedBranches(ADAPT_BRANCH, key)}\`, then try again.`,
+    },
   );
 }
 
 /**
- * The sha of OpsCrew's adapt commit at `HEAD` when it was never pushed: `branch` is an adapt
- * branch, its last commit is the adapt commit, and neither origin's copy of the branch (as this
- * clone last saw it) nor origin's default branch contains it. Reads only this clone.
+ * The sha of OpsCrew's adapt commit at `HEAD` when it was never pushed: `branch` is one of the
+ * app `key`'s adapt branches (`appBranchNames`), its last commit is the adapt commit, and neither
+ * origin's copy of the branch (as this clone last saw it) nor origin's default branch contains it.
+ * Reads only this clone.
  */
-async function unpushedAdaptCommit(git: GitClient, branch: string): Promise<string | undefined> {
-  if (!ADAPT_BRANCH_NAME.test(branch)) return undefined;
+async function unpushedAdaptCommit(
+  git: GitClient,
+  key: string | undefined,
+  branch: string,
+): Promise<string | undefined> {
+  if (!appBranchNames(ADAPT_BRANCH, key).includes(branch)) return undefined;
   if ((await git.commitSubject()) !== ADAPT_COMMIT_SUBJECT) return undefined;
   const sha = await git.headSha();
   if (await git.isAncestor(sha, `refs/remotes/origin/${branch}`)) return undefined;
@@ -959,10 +966,12 @@ async function unpushedAdaptCommit(git: GitClient, branch: string): Promise<stri
 /**
  * The command that pushes `branch` (and how to say it), checked read-only against origin when it
  * can be reached: when origin already has `branch` from an earlier run, the commit goes to the
- * next name that is free on origin and in this clone (`git push -u origin <branch>:<free name>`).
+ * next of the app `key`'s adapt branches (`appBranchNames`) that is free on origin and in this
+ * clone (`git push -u origin <branch>:<free name>`).
  */
 async function pushAdvice(
   git: GitClient,
+  key: string | undefined,
   branch: string,
 ): Promise<{ command: string; text: string }> {
   const plain = `git push -u origin ${branch}`;
@@ -980,7 +989,7 @@ async function pushAdvice(
     if ((await git.remoteBranchSha(branch)) === undefined) {
       return { command: plain, text: `When you are ready: \`${plain}\`.` };
     }
-    for (const name of ADAPT_BRANCH_NAMES) {
+    for (const name of appBranchNames(ADAPT_BRANCH, key)) {
       if (name === branch || (await git.branchExists(name))) continue;
       if ((await git.remoteBranchSha(name)) !== undefined) continue;
       const command = `git push -u origin ${branch}:${name}`;

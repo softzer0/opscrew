@@ -51,10 +51,10 @@ export async function environmentDeployed(paths: ProjectPaths, plan: DeployPlan)
 /**
  * The app's environments in their order (`environmentsOf`: each after its source), each with its
  * target, deploy source (with the branch it follows, never the one a promoted environment keeps
- * for later), runner and whether it is deployed. `paths` are any environment's.
+ * for later), runner and whether it is deployed. `paths` are any environment's of the app.
  */
 export async function listEnvironments(paths: ProjectPaths): Promise<EnvironmentSummary[]> {
-  const names = await environmentsOf(paths.root);
+  const names = await environmentsOf(paths.root, paths.app);
   return Promise.all(
     names.map(async (name) => {
       const own = environmentPaths(paths, name);

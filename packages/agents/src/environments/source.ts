@@ -1,4 +1,4 @@
-import { canonicalJson, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
+import { canonicalJson, OpsCrewError, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
 import {
   type DeployPlan,
   EnvironmentSchema,
@@ -11,21 +11,22 @@ import { requireBranchFree } from "./branches";
 export type DeploySource = NonNullable<DeployPlan["environment"]>["deploySource"];
 
 /**
- * `plan` of the environment `environment` with how it is deployed (`opscrew env set <name> --from
- * main|<source>`): `main` (built and deployed on each push), or promoted from `from`, another
- * existing environment whose own sources never lead back to this one. Built from main again, it
- * follows the branch its plan kept, which no other environment may follow (`requireBranchFree`).
- * `plan` itself when it is unchanged.
+ * `plan` of the environment `paths` belong to with how it is deployed (`opscrew env set <name>
+ * --from main|<source>`): `main` (built and deployed on each push), or promoted from `from`,
+ * another existing environment of the app whose own sources never lead back to this one. Built
+ * from main again, it follows the branch its plan kept, which no other environment may follow
+ * (`requireBranchFree`). `plan` itself when it is unchanged.
  * @throws OpsCrewError `INVALID_INPUT` for an unknown environment or source, the environment
  * itself, a source that would promote in a cycle, or a kept branch another environment follows.
  */
 export async function withDeploySource(
-  root: string,
-  environment: string,
+  paths: ProjectPaths,
   plan: DeployPlan,
   from: string,
 ): Promise<DeployPlan> {
-  const own = await resolveEnvironmentPaths(root, environment, { env: {} });
+  const { root, app, environment } = paths;
+  const ofApp = app === undefined ? {} : { app };
+  const own = await resolveEnvironmentPaths(root, environment, { env: {}, ...ofApp });
   let deploySource: DeploySource = { from: "main" };
   if (from !== "main") {
     if (from === environment) {
@@ -35,12 +36,12 @@ export async function withDeploySource(
         { hint: "Name the environment it takes its releases from, or `main`." },
       );
     }
-    await resolveEnvironmentPaths(root, from, { env: {} });
+    await resolveEnvironmentPaths(root, from, { env: {}, ...ofApp });
     // The source's own sources must not lead back here (`environmentsOf`, through
     // `resolveEnvironmentPaths`, already refused a cycle among them).
     for (let next: string | undefined = from; next !== undefined; ) {
-      const paths = resolveProjectPaths(root, { env: {}, environment: next });
-      const sourcePlan: DeployPlan = await readArtifact("plan", paths.files.plan);
+      const sourcePaths = resolveProjectPaths(root, { env: {}, ...ofApp, environment: next });
+      const sourcePlan: DeployPlan = await readArtifact("plan", sourcePaths.files.plan);
       const source = sourcePlan.environment?.deploySource;
       next = source?.from === "promote" ? source.source : undefined;
       if (next === environment) {

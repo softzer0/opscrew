@@ -21,7 +21,7 @@ import {
   portainerTarget,
   renderPlaceholderStack,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, ghcrImageFor, type PortainerDeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
@@ -456,7 +456,7 @@ async function deployBranchDifferences(
     ];
   }
   const image = imageIn(text);
-  const appImage = `ghcr.io/${input.repo}@sha256:`.toLowerCase();
+  const appImage = `${ghcrImageFor(input.repo, input.plan.app.key)}@sha256:`;
   if (image === undefined || !image.startsWith(appImage)) {
     return [
       {

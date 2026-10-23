@@ -261,7 +261,8 @@ export async function checkSecretsPlacement(
 ): Promise<DeployPlan> {
   // A named environment is never the only one: prod is always there.
   const several =
-    plan.environment?.name !== undefined || (await environmentsOf(deps.paths.root)).length > 1;
+    plan.environment?.name !== undefined ||
+    (await environmentsOf(deps.paths.root, deps.paths.app)).length > 1;
   if (!several) return plan;
   const { api, owner, repo } = github;
   const where = `${owner}/${repo}`;

@@ -649,7 +649,7 @@ describe("the retention step's program", () => {
     expect(result.exitCode).toBe(1);
     expect(api.deleted()).toEqual([]);
     expect(result.log).toEqual([
-      '::error::OpsCrew found no workflow named "OpsCrew deploy docs" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
+      '::error::OpsCrew found no workflow named "OpsCrew deploy docs" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision --app docs" to write the deploy workflow again.',
     ]);
   });
 

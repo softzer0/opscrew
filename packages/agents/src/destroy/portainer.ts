@@ -55,6 +55,8 @@ import {
   COMMAND,
   checkCloudflare,
   containerImagesLeft,
+  type DeploymentFiles,
+  deploymentFiles,
   deploySecretsLeft,
   type GitHubTarget,
   nothingDeployed,
@@ -313,8 +315,9 @@ function remainingInPortainer(input: {
   branchDeleted: boolean;
   /** This run approved nothing, so OpsCrew did not delete the branch (it never does unapproved). */
   branchUnapproved: boolean;
+  files: DeploymentFiles;
 }): string[] {
-  const { plan, github } = input;
+  const { plan, github, files } = input;
   const items = [
     "Your Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create: OpsCrew never changes them.",
     PORTAINER_NOTES,
@@ -338,9 +341,9 @@ function remainingInPortainer(input: {
     );
   }
   items.push(
-    containerImagesLeft(github),
+    containerImagesLeft(github, plan),
     ...zeroTrustLeft(plan),
-    `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy fails until \`opscrew provision\` sets up the app's stacks again from these files.`,
+    `The deployment files in the repository (${files.folder}/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy fails until \`${files.provision}\` sets up the app's stacks again from these files.`,
     "How OpsCrew reaches your Portainer (.opscrew/server.json) with its confirmed certificate, kept so a new deployment can reuse it.",
   );
   return items;
@@ -676,6 +679,7 @@ export async function destroyPortainer(
     removedApp: removeApp,
     branchDeleted,
     branchUnapproved,
+    files: await deploymentFiles(deps, plan),
   });
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));

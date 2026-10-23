@@ -2,9 +2,10 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { renderDependabot } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { makeFacts, testPlan } from "../testing";
+import { appPlan } from "../apps/__fixtures__/sites";
+import { makeFacts, testPlan, writeArchitecture } from "../testing";
 import { dependabotPullRequestLines, dependabotStep } from "./dependabot";
 
 async function temp(files: Record<string, string> = {}): Promise<string> {
@@ -109,6 +110,39 @@ describe("dependabotStep", () => {
       path: file.path,
       missing: [],
     });
+  });
+});
+
+describe("dependabotStep with several apps", () => {
+  it("brings OpsCrew's file up to date when an app was added since, at either app's provision", async () => {
+    const before = renderDependabot(facts, plan);
+    const root = await temp({ [before.path]: before.content });
+    const docsPlan = appPlan("docs");
+    await writeArtifact("plan", join(root, "opscrew", "plan.yaml"), plan);
+    await writeArchitecture(join(root, "opscrew", "architecture.json"), "demo-app");
+    await writeArtifact("app", join(root, "opscrew", "apps", "docs", "app.yaml"), {
+      schemaVersion: 1,
+      dir: ".",
+    });
+    await writeArtifact("plan", join(root, "opscrew", "apps", "docs", "plan.yaml"), docsPlan);
+    await writeArchitecture(join(root, "opscrew", "apps", "docs", "architecture.json"), "demo-app");
+
+    for (const [mine, theirs] of [
+      [docsPlan, plan],
+      [plan, docsPlan],
+    ] as const) {
+      const step = await dependabotStep(root, facts, mine);
+      expect(step.action).toBe("write");
+      const both = renderDependabot(
+        facts,
+        mine,
+        undefined,
+        ["prod"],
+        [{ facts, plan: theirs, environments: ["prod"] }],
+      );
+      expect(step).toEqual({ action: "write", file: both });
+      expect(both.content).toContain("- /opscrew/apps/docs/runtime\n");
+    }
   });
 });
 

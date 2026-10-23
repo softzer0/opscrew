@@ -8,6 +8,7 @@ import {
 import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
 import { siteHosts } from "../runtime";
+import { artefactsFolder } from "../runtime-dir";
 import type { RenderedFile } from "../types";
 import { runbookFilePath } from "../workflow/shared";
 import {
@@ -319,7 +320,12 @@ function teardown(
     ...(keepsData
       ? [`- **Snapshot first:** because ${reason}, ${snapshotLead}`, ...snapshotRest]
       : text.noSnapshot),
-    ...text.whatRemains(ghcrImageFor(repo, plan.app.key), plan.cicd.workflowPath, backups),
+    ...text.whatRemains(
+      ghcrImageFor(repo, plan.app.key),
+      artefactsFolder(plan, "prod"),
+      plan.cicd.workflowPath,
+      backups,
+    ),
     ...(plan.storage?.objectStorage === undefined
       ? []
       : [

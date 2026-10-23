@@ -7,6 +7,7 @@ import {
 import { providerBucket } from "../infra/storage";
 import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
+import { artefactsFolder } from "../runtime-dir";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { runbookFilePath, selfHosted } from "../workflow/shared";
@@ -234,7 +235,7 @@ export function renderOwnRunbook(
     "  server (deploy user, SSH settings, firewall, automatic updates, Docker if OpsCrew installed it), from the record in",
     "  `/etc/opscrew/host.json`. It is a separate plan that you approve on its own.",
     `- **What remains:** your server, the container images in GitHub Container Registry (\`${ghcrImageFor(repo, plan.app.key)}\`), and`,
-    `  the files in this repository (\`opscrew/\` and \`${plan.cicd.workflowPath}\`).`,
+    `  the files in this repository (\`${artefactsFolder(plan, "prod")}/\` and \`${plan.cicd.workflowPath}\`).`,
     "",
     ...deployAgain(plan, environments),
   );

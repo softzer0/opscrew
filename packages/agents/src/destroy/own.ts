@@ -59,6 +59,8 @@ import {
   COMMAND,
   checkCloudflare,
   containerImagesLeft,
+  type DeploymentFiles,
+  deploymentFiles,
   deploySecretsLeft,
   type GitHubTarget,
   nothingDeployed,
@@ -354,8 +356,9 @@ function remainingOnOwnServer(input: {
   others: readonly string[];
   /** Portainer runs on the server (shared by the apps). */
   portainer: boolean;
+  files: DeploymentFiles;
 }): string[] {
-  const { plan, github, others } = input;
+  const { plan, github, others, files } = input;
   const items = [
     "Your server itself: OpsCrew never deletes, rebuilds or reinstalls it, and took no snapshot. Backups of anything on it are your responsibility.",
   ];
@@ -374,9 +377,9 @@ function remainingOnOwnServer(input: {
   if (!input.removedApp) return items;
   items.push(
     ...deploySecretsLeft(github, { plan, removed: input.secretsRemoved }),
-    containerImagesLeft(github),
+    containerImagesLeft(github, plan),
     ...zeroTrustLeft(plan),
-    `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` prepares your server again from these files.`,
+    `The deployment files in the repository (${files.folder}/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`${files.provision}\` prepares your server again from these files.`,
     "How OpsCrew reaches your server (.opscrew/server.json) with its confirmed host key, and the project's SSH deploy key on this computer, kept so a new deployment can reuse them.",
   );
   return items;
@@ -781,6 +784,7 @@ export async function destroyOwnServer(
     removedApp: removeApp,
     others,
     portainer: facts.portainer.installed,
+    files: await deploymentFiles(deps, plan),
   });
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));

@@ -17,6 +17,7 @@ import {
   type DeployProvider,
   type DesignOption,
   EnvironmentSchema,
+  infraDirFor,
   isServerlessProvider,
   isServerlessTarget,
   type PlanService,
@@ -26,16 +27,15 @@ import {
   readArtifact,
   readOptionalArtifact,
   type ServerlessProvider,
+  workflowPathFor,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { appCandidatesText } from "../analyze/summary";
+import { appFlag } from "../apps/choice";
+import { requireOnePagesSite, requireUniqueNames } from "../apps/names";
 import type { PhaseDeps } from "../context";
 import { requireOwnHostnames } from "../environments/hostnames";
-import {
-  environmentInfraDir,
-  environmentPaths,
-  environmentWorkflowPath,
-} from "../environments/paths";
+import { environmentPaths } from "../environments/paths";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import {
   type SharedPartsSource,
@@ -485,7 +485,7 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   const answered = await readEnvironmentRequirements(paths);
   // This computer has no region, domain or DNS, whatever prod's answers say.
   const requirements = answered.provider === "localhost" ? onThisComputer(answered) : answered;
-  await requireChosenApp(paths.root, resolvedFacts, requirements);
+  await requireChosenApp(paths, resolvedFacts, requirements);
   return { facts: resolvedFacts, requirements };
 }
 
@@ -821,7 +821,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     );
     if ("refused" in choice) {
       throw new OpsCrewError("INVALID_INPUT", choice.refused, {
-        hint: "Change app.build.builder in opscrew/plan.yaml, then run `opscrew design` again.",
+        hint: `Change app.build.builder in ${toPosixRelative(paths.root, paths.files.plan)}, then run \`opscrew design${await appFlag(paths.root, paths.app)}\` again.`,
       });
     }
     for (const warning of choice.warnings) warn(warning);
@@ -840,6 +840,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       facts,
       requirements,
       now,
+      key: paths.app,
       codeChanges,
       signals,
       ...(previous ? { createdAt: previous.createdAt } : {}),
@@ -918,6 +919,14 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     for (const warning of localhostImageWarnings(plan.target, preview.localhost)) warn(warning);
   }
   await requireOwnHostnames(paths, plan);
+  // No other app or environment of the repository may share its names or its Pages site.
+  const self = { ...(paths.app === undefined ? {} : { app: paths.app }), environment: name };
+  await requireUniqueNames(
+    paths,
+    { ...self, plan },
+    `Give the apps names of their own: a further app takes another key (\`opscrew app remove <key>\`, then \`opscrew app add <new key> --dir <folder>\`), and a name set by hand in a plan.yaml another value; then run \`opscrew design${await appFlag(paths.root, paths.app)}\` again.`,
+  );
+  if (plan.target.provider === "github-pages") await requireOnePagesSite(paths, self);
   if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
@@ -975,7 +984,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   if (!ownsServer && serverless === undefined && headroom.low) {
     warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   }
-  const migrations = serverless === undefined ? releaseCommandNote(plan, facts) : undefined;
+  const migrations =
+    serverless === undefined
+      ? releaseCommandNote(plan, facts, await appFlag(paths.root, paths.app))
+      : undefined;
   if (migrations?.warning) warn(migrations.text);
   else if (migrations !== undefined) reporter.info(say(migrations.text));
   for (const line of supplyLines) reporter.info(line);
@@ -1026,7 +1038,8 @@ function samePlan(a: DeployPlan, b: DeployPlan): boolean {
 
 /**
  * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>`, its own
- * workflow and infrastructure root, and its `environment` block (with the deploy source and runner
+ * workflow and infrastructure root (plan-schema's `workflowPathFor` and `infraDirFor`, with a
+ * further app's key), and its `environment` block (with the deploy source and runner
  * `opscrew env add` chose) and branch (`--branch`). On Cloudflare's hosting its Worker is named
  * like its app. An earlier plan's root, block and branch are kept over these (`keepPlanSettings`).
  */
@@ -1044,10 +1057,10 @@ function environmentNames(
     ...(plan.target.provider === "cloudflare-workers"
       ? { target: { ...plan.target, worker: app } }
       : {}),
-    infra: { ...plan.infra, dir: environmentInfraDir(name) },
+    infra: { ...plan.infra, dir: infraDirFor(plan.app.key, name) },
     cicd: {
       ...plan.cicd,
-      workflowPath: environmentWorkflowPath(name),
+      workflowPath: workflowPathFor(plan.app.key, name),
       ...(options.branch !== undefined ? { branch: options.branch } : {}),
     },
   };
@@ -1328,10 +1341,11 @@ function requireSameProvider(
  * folder, re-detects the repository (the saved facts may be stale) and stops with
  * `PHASE_PRECONDITION` when it has several deployable apps, instead of designing a plan from the
  * mixed facts of the repository root. When the requirements chose an app the analysis does not
- * describe, stops and says how to bring them back in line.
+ * describe, stops and says how to bring them back in line (a further app's folder is its
+ * record's, so only analyze does that).
  */
 async function requireChosenApp(
-  root: string,
+  paths: PhaseDeps["paths"],
   facts: ProjectFacts,
   requirements: Requirements,
 ): Promise<void> {
@@ -1340,18 +1354,25 @@ async function requireChosenApp(
     const chosen = normalizeAppDir(requirements.appDir);
     if (chosen === factsDir) return;
     const described = factsDir === "." ? "the repository root" : factsDir;
+    const app = await appFlag(paths.root, paths.app);
+    const file = (path: string) => toPosixRelative(paths.root, path);
+    const instead =
+      factsDir === "." ? "" : `, or \`opscrew interview${app}\` to deploy ${factsDir} instead`;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `opscrew/requirements.yaml chooses the app in ${chosen === "." ? "the repository root" : chosen}, but opscrew/architecture.json describes ${described}.`,
+      `${file(paths.files.shared.requirementsBase)} chooses the app in ${chosen === "." ? "the repository root" : chosen}, but ${file(paths.files.architecture)} describes ${described}.`,
       {
-        hint: `Run \`opscrew analyze\` to describe the chosen app${factsDir === "." ? "" : `, or \`opscrew interview\` to deploy ${factsDir} instead`}, then run \`opscrew design\` again.`,
+        hint:
+          paths.app === undefined
+            ? `Run \`opscrew analyze${app}\` to describe the chosen app${instead}, then run \`opscrew design${app}\` again.`
+            : `Run \`opscrew analyze${app}\` and \`opscrew interview${app}\`, which take the app's folder from opscrew/apps/${paths.app}/app.yaml, then run \`opscrew design${app}\` again.`,
       },
     );
   }
   if (factsDir !== ".") return;
   let detection: Awaited<ReturnType<typeof detectProjectDetails>>;
   try {
-    detection = await detectProjectDetails(root);
+    detection = await detectProjectDetails(paths.root);
   } catch {
     return; // Analyze already reported detection problems; the saved facts are used as they are.
   }
@@ -1361,7 +1382,7 @@ async function requireChosenApp(
     "PHASE_PRECONDITION",
     `This repository contains ${candidates.length} deployable apps: ${appCandidatesText(detection.facts, candidates)}. OpsCrew deploys one app, so choose which one before designing the deployment.`,
     {
-      hint: `Run \`opscrew interview\` and pick the app, or \`opscrew analyze --app ${candidates[0]}\`, then run \`opscrew design\` again.`,
+      hint: `Run \`opscrew interview\` and pick the app, or \`opscrew analyze --dir ${candidates[0]}\`, then run \`opscrew design\` again.`,
     },
   );
 }

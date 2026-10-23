@@ -22,10 +22,14 @@ import {
   type RefreshRecoveryOptions,
   refreshRecoveryCopy,
 } from "../secrets";
+import { appBranchNames, numberedBranches } from "../shared/app-branches";
 import { type GitHubSetup, portainerCloudflare } from "./credentials";
 import { type DependabotStep, dependabotPullRequestLines } from "./dependabot";
 
-/** Branch holding the generated deployment files. */
+/**
+ * Branch holding the generated deployment files of the repository's first app, then `-2`, `-3`,
+ * …; a further app's is `opscrew/deploy-setup-<key>`, then `_2`, … (`appBranchNames`).
+ */
 export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
 
 /** The review checklist item of every deploy-setup pull request about the workflow's actions. */
@@ -301,11 +305,6 @@ export interface DeployBranch {
 /** Phases that publish the deployment files. */
 export type PublishPhase = Extract<PhaseName, "provision" | "dns" | "retarget">;
 
-/** {@link DEPLOY_SETUP_BRANCH}, then `-2`, `-3`, … */
-function deployBranchName(i: number): string {
-  return i === 1 ? DEPLOY_SETUP_BRANCH : `${DEPLOY_SETUP_BRANCH}-${i}`;
-}
-
 /** What to do when the final files of a finished move were not published. */
 const PUBLISH_BY_HAND =
   "commit the changed files under opscrew/ on a new branch and open a pull request yourself, so the repository describes the deployment.";
@@ -407,21 +406,23 @@ async function lastFetchedTip(git: GitClient, base: string): Promise<string | un
 }
 
 /**
- * The branch for the deployment files chosen without reaching GitHub: the first of
- * {@link DEPLOY_SETUP_BRANCH}, `-2`, … that is the current branch or does not exist in this clone,
- * so a stale local branch (its pull request merged long ago) is never committed on. Like
- * {@link chooseDeployBranch} it stops with `PHASE_PRECONDITION` unless the files start from
- * `base` (`workflowBranch`), here judged by what this clone last fetched (`origin/<branch>`).
+ * The branch for the deployment files of the app `key` (a further app's; `undefined`: the first
+ * app) chosen without reaching GitHub: the first of its {@link DEPLOY_SETUP_BRANCH} names
+ * (`appBranchNames`) that is the current branch or does not exist in this clone, so a stale local
+ * branch (its pull request merged long ago) is never committed on. Like {@link chooseDeployBranch}
+ * it stops with `PHASE_PRECONDITION` unless the files start from `base` (`workflowBranch`), here
+ * judged by what this clone last fetched (`origin/<branch>`).
  */
 export async function localDeployBranch(
   git: GitClient,
   base: string,
+  key: string | undefined,
   phase: PublishPhase = "provision",
 ): Promise<string> {
   const current = await git.currentBranch();
   const check: BaseCheck = { phase, base, current };
-  for (let i = 1; i <= 100; i++) {
-    const branch = deployBranchName(i);
+  const names = appBranchNames(DEPLOY_SETUP_BRANCH, key);
+  for (const branch of names) {
     if (branch === current || !(await git.branchExists(branch))) {
       const baseTip = await lastFetchedTip(git, check.base);
       await requireLatestBase(git, check, { branch, baseTip });
@@ -430,21 +431,23 @@ export async function localDeployBranch(
   }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `There are already 100 ${DEPLOY_SETUP_BRANCH} branches in this clone, so OpsCrew did not create another one.`,
+    `There are already 100 ${names[0]} branches in this clone, so OpsCrew did not create another one.`,
     {
-      hint: `Delete the old ones with \`git branch -D ${DEPLOY_SETUP_BRANCH}-<n>\`, then try again.`,
+      hint: `Delete the old ones with \`git branch -D ${numberedBranches(DEPLOY_SETUP_BRANCH, key)}\`, then try again.`,
     },
   );
 }
 
 /**
- * Picks the branch for the deployment files before anything changes, so the push never collides
- * with a branch an earlier run left on GitHub: {@link DEPLOY_SETUP_BRANCH}, or the next free
- * `-2`, `-3`, …. A branch on GitHub whose pull request is merged or closed is skipped (never
- * pushed to), and so is a branch only this clone has unless it is the current branch (a stale
- * local branch is never committed on). One with an open pull request is added to when this clone
- * is on that branch and the push is a fast-forward (its head is in this clone's branch, so OpsCrew
- * pushed it from here); otherwise this throws `PHASE_PRECONDITION` naming the pull request, and
+ * Picks the branch for the deployment files of the plan's app before anything changes, so the
+ * push never collides with a branch an earlier run left on GitHub: its {@link DEPLOY_SETUP_BRANCH}
+ * (`opscrew/deploy-setup-<key>` for a further app), or the next free `-2`, `-3`, … (a further
+ * app's `_2`, `_3`, …: `appBranchNames`). A branch on GitHub whose pull request is merged or
+ * closed is skipped (never pushed to), and so is a branch only this clone has unless it is the
+ * current branch (a stale local branch is never committed on). One with an open pull request is
+ * added to when this clone is on that branch and the push is a fast-forward (its head is in this
+ * clone's branch, so OpsCrew pushed it from here); otherwise this throws `PHASE_PRECONDITION`
+ * naming the pull request, and
  * nothing is force-pushed. Any other branch must start from the latest branch the plan's files
  * live on (`workflowBranch`: `cicd.branch`, or the default branch for a promoted environment) as
  * GitHub has it (read with `git ls-remote`, nothing is fetched): a new branch is created only from
@@ -461,10 +464,12 @@ export async function chooseDeployBranch(
   deps: PhaseDeps,
   git: GitClient,
   github: GitHubSetup,
-  plan: Pick<DeployPlan, "cicd" | "environment">,
+  plan: Pick<DeployPlan, "app" | "cicd" | "environment">,
   phase: PublishPhase = "provision",
 ): Promise<DeployBranch> {
   const command = `opscrew ${phase}`;
+  const key = plan.app.key;
+  const names = appBranchNames(DEPLOY_SETUP_BRANCH, key);
   const current = await git.currentBranch();
   const check: BaseCheck = { phase, base: workflowBranch(plan, github.defaultBranch), current };
   /** A branch's sha on GitHub; `null` when GitHub cannot be reached (this clone decides then). */
@@ -482,11 +487,10 @@ export async function chooseDeployBranch(
     }
   };
   const baseTip = await remoteSha(check.base);
-  if (baseTip === null) return { branch: await localDeployBranch(git, check.base, phase) };
-  for (let i = 1; i <= 100; i++) {
-    const branch = deployBranchName(i);
+  if (baseTip === null) return { branch: await localDeployBranch(git, check.base, key, phase) };
+  for (const branch of names) {
     const sha = await remoteSha(branch);
-    if (sha === null) return { branch: await localDeployBranch(git, check.base, phase) };
+    if (sha === null) return { branch: await localDeployBranch(git, check.base, key, phase) };
     if (sha === undefined) {
       if (branch !== current && (await git.branchExists(branch))) {
         deps.reporter.info(
@@ -527,7 +531,7 @@ export async function chooseDeployBranch(
       },
     );
   }
-  throw branchStop(phase, `there are already 100 ${DEPLOY_SETUP_BRANCH} branches on GitHub`, {
+  throw branchStop(phase, `there are already 100 ${names[0]} branches on GitHub`, {
     rerun: "Delete the old ones on GitHub, then try again.",
     retarget: `Delete the old ones on GitHub, then ${PUBLISH_BY_HAND}`,
   });
@@ -606,7 +610,12 @@ export async function publishDeploySetup(
     (input.push
       ? await chooseDeployBranch(deps, git, github, plan, phase)
       : {
-          branch: await localDeployBranch(git, workflowBranch(plan, github.defaultBranch), phase),
+          branch: await localDeployBranch(
+            git,
+            workflowBranch(plan, github.defaultBranch),
+            plan.app.key,
+            phase,
+          ),
         });
   const recovery = await recoveryCopyFiles(deps, input);
   const paths = [...input.paths, ...recovery.map((file) => file.path)];

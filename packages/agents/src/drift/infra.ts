@@ -7,7 +7,7 @@ import { storageRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { environmentFlag } from "../environments/choice";
+import { commandFlags } from "../environments/choice";
 import {
   providerBucket,
   type StorageKey,
@@ -42,7 +42,7 @@ export async function inspectState(deps: PhaseDeps, statePath: string): Promise<
   const text = await readTextIfExists(statePath);
   // Only a refusal needs it, so the environments are read only then.
   const copyHint = async () => {
-    const flag = await environmentFlag(deps.paths.root, deps.paths.environment);
+    const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
     return `The state lives on the computer that ran \`opscrew provision${flag}\`, in ${relative} inside the project. Copy the ${toPosixRelative(deps.paths.root, deps.paths.files.tfstateDir)} folder from there into this project (with OpenTofu state encryption, also copy the state passphrase file; on this computer OpsCrew reads it from ${deps.paths.files.statePassphrase}), then run \`opscrew drift${flag}\` again.`;
   };
   if (text === undefined || text.trim() === "") {

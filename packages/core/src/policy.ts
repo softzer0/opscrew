@@ -384,6 +384,12 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
   return resolved;
 }
 
+/**
+ * OpsCrew's deploy workflows: `opscrew-deploy[-<key>][-<env>].yml` (plan-schema's
+ * `workflowPathFor`) for every app and environment of the repository, or `.yaml`.
+ */
+const DEPLOY_WORKFLOW = /^\.github\/workflows\/opscrew-deploy(?:-[a-z][a-z0-9-]*)?\.ya?ml$/;
+
 /** Project-relative locations agents may never write. */
 function protectedWriteReason(rel: string): string | undefined {
   const segments = rel
@@ -395,12 +401,8 @@ function protectedWriteReason(rel: string): string | undefined {
   if (segments[0] === "opscrew") {
     return "OpsCrew artefacts (opscrew/) are written by validated code, not by agents";
   }
-  const joined = segments.join("/");
-  if (
-    joined === ".github/workflows/opscrew-deploy.yml" ||
-    joined === ".github/workflows/opscrew-deploy.yaml"
-  ) {
-    return "the OpsCrew deploy workflow is rendered by OpsCrew, not edited by agents";
+  if (DEPLOY_WORKFLOW.test(segments.join("/"))) {
+    return "the OpsCrew deploy workflows are rendered by OpsCrew, not edited by agents";
   }
   return undefined;
 }

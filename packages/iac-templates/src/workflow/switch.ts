@@ -27,7 +27,7 @@ import {
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
-import { hasCronJobs, healthPath, planFilePath, runbookFilePath } from "./shared";
+import { appFlag, hasCronJobs, healthPath, planFilePath, runbookFilePath } from "./shared";
 
 /**
  * The first lines of every script (contracts/localhost.md "The script roots"): the apps' and the
@@ -97,8 +97,14 @@ const BUILDER_LABEL: Record<ImageBuilder, string> = {
   railpack: "Railpack",
 };
 
-/** How a changed builder reaches the workflow: design checks it, adapt and provision follow. */
-const RERUN = "run opscrew design, opscrew adapt and opscrew provision";
+/**
+ * How a changed builder reaches the workflow: design checks it, adapt and provision follow, each
+ * with a further app's `--app <key>` ({@link appFlag}).
+ */
+function rerun(plan: DeployPlan): string {
+  const app = appFlag(plan);
+  return `run opscrew design${app}, opscrew adapt${app} and opscrew provision${app}`;
+}
 
 /**
  * The failed-deploy hint (FR-1206): which builder made the image and its `opscrew/plan.yaml` line,
@@ -109,7 +115,7 @@ const RERUN = "run opscrew design, opscrew adapt and opscrew provision";
 function builderHint(plan: DeployPlan): string {
   const build = plan.app.build;
   if (build === undefined) {
-    return `It was built from ${plan.app.dockerfile}; to let OpsCrew choose a builder, ${RERUN}.`;
+    return `It was built from ${plan.app.dockerfile}; to let OpsCrew choose a builder, ${rerun(plan)}.`;
   }
   const { builder, automatic } = build;
   const line = `(app.build.builder: ${builder} in ${planFilePath(plan)})`;
@@ -118,7 +124,7 @@ function builderHint(plan: DeployPlan): string {
   }
   const built = `It was built with ${BUILDER_LABEL[builder]} ${line}.`;
   if (automatic === undefined) return built;
-  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} and app.build.chosen: user in ${planFilePath(plan)}, then ${RERUN}.`;
+  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} and app.build.chosen: user in ${planFilePath(plan)}, then ${rerun(plan)}.`;
 }
 
 /**

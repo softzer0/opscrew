@@ -139,7 +139,7 @@ describe("chosen app directory: two-app monorepo", () => {
     const error = await rejection(detectProjectDetails(TWO_APPS, { appDir: "apps/worker" }));
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toContain("Deployable apps found: apps/api, apps/web.");
-    expect(error.hint).toContain("--app");
+    expect(error.hint).toContain("`opscrew analyze --dir apps/api`");
   });
 
   it.each(["../outside", "/apps/api", "apps/api/src"])("rejects %j", async (appDir) => {

@@ -1,7 +1,6 @@
 import { posix } from "node:path";
 import {
   type DeployPlan,
-  EnvironmentSchema,
   isServerlessTarget,
   type PackageManager,
   type ProjectFacts,
@@ -67,10 +66,7 @@ export const NO_MINOR_UPDATES: readonly string[] = [imageName(serviceSpec("meili
 function runtimeFolders(plan: DeployPlan, environments: readonly string[]): string[] {
   const named = [...new Set(environments)].filter((name) => name !== "prod").sort();
   const dirs = [undefined, ...named].map((name) =>
-    runtimeDir({
-      ...plan,
-      environment: name === undefined ? undefined : EnvironmentSchema.parse({ name }),
-    }),
+    runtimeDir({ app: plan.app, environment: name === undefined ? undefined : { name } }),
   );
   return dirs.flatMap((dir) => [`/${dir}`, `/${dir}/cloudflared`, `/${dir}/portainer`]);
 }

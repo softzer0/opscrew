@@ -31,7 +31,11 @@ export function stateNotHere(
   hint: string,
 ): OpsCrewError {
   // Only the layout is needed, so any root does: the path is shown relative to it.
-  const paths = resolveProjectPaths(".", { env: {}, environment: plan.environment?.name });
+  const paths = resolveProjectPaths(".", {
+    env: {},
+    app: plan.app.key,
+    environment: plan.environment?.name,
+  });
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     `The infrastructure state of ${plan.app.name} is not on this computer (${toPosixRelative(paths.root, tfstateFile(paths))}), so OpsCrew cannot ${cannot}. Nothing was changed.`,
@@ -40,20 +44,30 @@ export function stateNotHere(
 }
 
 /**
- * What a "copy the state here" hint names for the environment of `plan`: its state folder and,
- * with OpenTofu, its state passphrase in the OpsCrew home.
+ * What a "copy the state here" hint names for the app's environment of `plan`: its state folder
+ * and, with OpenTofu, its state passphrase in the OpsCrew home (`apps/<key>` for a further app,
+ * then `environments/<env>` for an environment other than prod).
  */
-export function stateCopyPaths(plan: Pick<DeployPlan, "environment">): {
+export function stateCopyPaths(plan: Pick<DeployPlan, "app" | "environment">): {
   folder: string;
   passphrase: string;
 } {
+  const key = plan.app.key;
   const name = plan.environment?.name;
-  return name === undefined
-    ? { folder: ".opscrew/tfstate", passphrase: "~/.opscrew/projects/<project>/state_passphrase" }
-    : {
-        folder: `.opscrew/environments/${name}/tfstate`,
-        passphrase: `~/.opscrew/projects/<project>/environments/${name}/state_passphrase`,
-      };
+  const own = `${key === undefined ? "" : `/apps/${key}`}${name === undefined ? "" : `/environments/${name}`}`;
+  return {
+    folder: `.opscrew${own}/tfstate`,
+    passphrase: `~/.opscrew/projects/<project>${own}/state_passphrase`,
+  };
+}
+
+/**
+ * The state of the app's GitHub Pages verification root (iac-templates' `pagesVerificationRootDir`:
+ * GitHub's domain verification record, which `opscrew destroy` keeps unless asked):
+ * `<tfstateDir>/github-pages-verification.tfstate` of the app's prod, apart from the site's own.
+ */
+export function pagesVerificationStateFile(paths: Pick<ProjectPaths, "files">): string {
+  return join(paths.files.tfstateDir, "github-pages-verification.tfstate");
 }
 
 /** True when the environment's state file exists and is not empty. */

@@ -99,15 +99,19 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     return ref === "main" ? this.onMain.get(path) : undefined;
   }
 
-  async taggedDigest(_owner: string, _image: string, tag: string, credential?: RegistryCredential) {
+  /** The image of every GHCR read, `<owner>/<image>`. */
+  readonly images: string[] = [];
+  async taggedDigest(owner: string, image: string, tag: string, credential?: RegistryCredential) {
     this.credentials.push(credential);
+    this.images.push(`${owner}/${image}`);
     return this.tags.get(tag);
   }
 
   /** The digest of each `imageFacts` read. */
   readonly factReads: string[] = [];
-  async imageFacts(_owner: string, _image: string, digest: string, credential?: RegistryCredential) {
+  async imageFacts(owner: string, image: string, digest: string, credential?: RegistryCredential) {
     this.credentials.push(credential);
+    this.images.push(`${owner}/${image}`);
     this.factReads.push(digest);
     return { provenance: this.provenance.get(digest), platforms: this.platforms.get(digest) };
   }

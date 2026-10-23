@@ -3,7 +3,7 @@ import type { GitClient } from "@opscrew/connector-github";
 import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
-import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
+import { additionsPath, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { builderBranch, workflowBranch } from "../environments/branches";
@@ -916,10 +916,7 @@ async function provisionFlow(
     git,
     github,
     plan: persisted(plan),
-    files: [
-      ...files.map((f) => f.path),
-      ...(ctx.additions === true ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
-    ],
+    files: [...files.map((f) => f.path), ...(ctx.additions === true ? [additionsPath(plan)] : [])],
     push: options.push !== false,
     secretsStored,
     phase,

@@ -10,6 +10,15 @@ import type { PhaseDeps } from "../context";
 /** What the git and GitHub helpers need from the phase. */
 type GitDeps = Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">;
 
+/**
+ * The app's image within its owner's GitHub Container Registry, as the connector reads it: the
+ * repository's name `repo`, and `<repo>/<key>` for the further app `key` (plan-schema's
+ * `ghcrImageFor` without `ghcr.io/<owner>/`).
+ */
+export function ghcrPackage(repo: string, key: string | undefined): string {
+  return key === undefined ? repo : `${repo}/${key}`;
+}
+
 /** The project's git repository (`git -C <root> …`, never interactive); `git` is the binary. */
 export function gitClient(deps: GitDeps, git?: string): GitClient {
   return new GitClient({

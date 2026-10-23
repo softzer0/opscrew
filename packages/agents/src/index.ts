@@ -1,5 +1,6 @@
 export * from "./adapt";
 export * from "./analyze";
+export * from "./apps";
 export * from "./context";
 export * from "./design";
 export * from "./destroy";

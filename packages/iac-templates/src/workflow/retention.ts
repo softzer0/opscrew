@@ -1,6 +1,7 @@
 import { MANIFEST_ACCEPT } from "../registry";
 import type { AppEnvironment } from "../runtime-dir";
 import {
+  appFlag,
   DIGEST_REF_PATTERN,
   environmentName,
   environmentTag,
@@ -175,7 +176,7 @@ async function main() {
     // None found means the workflows were renamed: no environment's labels could be kept.
     if (environments.length === 0) {
       fail(
-        'OpsCrew found no workflow named "${workflow}" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
+        'OpsCrew found no workflow named "${workflow}" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision${appFlag(plan)}" to write the deploy workflow again.',
       );
       return;
     }

@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { exists } from "@opscrew/core";
 import {
-  EDGE_PROXIES,
-  edgeProxy,
+  additionsPath,
   type RenderedFile,
   type RenderedFileKind,
   type RuntimeContext,
@@ -171,7 +170,7 @@ export async function recordedEdge(
   const originTls = originTlsFor(plan, await readCloudflareRecord(deps.paths), values);
   const additions =
     plan.target.provider !== "portainer" &&
-    (await exists(join(deps.paths.root, EDGE_PROXIES[edgeProxy(plan)].additions)));
+    (await exists(join(deps.paths.root, additionsPath(plan))));
   return {
     edge: {
       ...(originTls !== undefined ? { originTls } : {}),

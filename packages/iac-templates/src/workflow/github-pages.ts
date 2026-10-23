@@ -6,7 +6,7 @@ import { wrongTarget } from "../providers";
 import { shellQuote } from "../runtime/services";
 import { answerCheck, siteBuildSteps, siteExists, siteFiles, siteUrl } from "../serverless/site";
 import type { RenderedFile } from "../types";
-import { job, promoted, provisionCommand, run, workflowStart } from "./shared";
+import { appFlag, job, promoted, provisionCommand, run, workflowStart } from "./shared";
 
 /** The largest site GitHub Pages publishes: 1 GB. */
 const PAGES_SITE_BYTES = 1024 ** 3;
@@ -49,7 +49,7 @@ export function renderGithubPagesWorkflow(plan: DeployPlan): RenderedFile {
         ...siteExists(plan, files),
         `bytes="$(du -sb ${shellQuote(files.assets)} | cut -f 1)"`,
         `if [[ "$bytes" -gt ${PAGES_SITE_BYTES} ]]; then`,
-        `  echo "::error::The site in ${files.assets} is $(( bytes / 1048576 )) MB, over the 1 GB GitHub Pages publishes. Leave out the files the site does not need, or host it on Cloudflare (\\\`opscrew design\\\`), then push again."`,
+        `  echo "::error::The site in ${files.assets} is $(( bytes / 1048576 )) MB, over the 1 GB GitHub Pages publishes. Leave out the files the site does not need, or host it on Cloudflare (\\\`opscrew design${appFlag(plan)}\\\`), then push again."`,
         "  exit 1",
         "fi",
       ]),
@@ -76,7 +76,7 @@ export function renderGithubPagesWorkflow(plan: DeployPlan): RenderedFile {
       `    URL: ${siteUrl(plan)}`,
       ...run(
         answerCheck(
-          `GitHub has not issued the certificate for ${plan.dns.domain} yet, so this run could not check the site over HTTPS. GitHub issues it once it has checked the domain's DNS records, which can take up to 24 hours; \\\`opscrew verify\\\` says when it is there. Then run \\\`${provisionCommand(plan)}\\\` to enforce HTTPS.`,
+          `GitHub has not issued the certificate for ${plan.dns.domain} yet, so this run could not check the site over HTTPS. GitHub issues it once it has checked the domain's DNS records, which can take up to 24 hours; \\\`opscrew verify${appFlag(plan)}\\\` says when it is there. Then run \\\`${provisionCommand(plan)}\\\` to enforce HTTPS.`,
         ),
       ),
     ],

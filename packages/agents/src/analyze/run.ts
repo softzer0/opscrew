@@ -1,5 +1,12 @@
 import type { PhaseResult } from "@opscrew/contracts";
-import { ensureStateDir, errorMessage, plural, writeFileAtomic } from "@opscrew/core";
+import {
+  ensureStateDir,
+  errorMessage,
+  OpsCrewError,
+  plural,
+  toPosixRelative,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   AppKindSchema,
@@ -13,6 +20,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { recordedAppDir } from "../apps/record";
 import type { PhaseDeps } from "../context";
 import { runPhase } from "../shared/phase-status";
 import { renderArchitectureMarkdown } from "./markdown";
@@ -44,8 +52,9 @@ export interface AnalyzeOptions {
   model?: string;
   /**
    * Repo-relative directory of the app to describe in a repository with several apps (CLI
-   * `--app`). Default: `appDir` from `opscrew/requirements.yaml` when it is set there. An unknown
-   * directory fails with `INVALID_INPUT` listing the apps OpsCrew found.
+   * `--dir`). Default: `appDir` from `opscrew/requirements.yaml` when it is set there. An unknown
+   * directory fails with `INVALID_INPUT` listing the apps OpsCrew found. A further app is always
+   * the one in its record's folder (`opscrew/apps/<key>/app.yaml`): another folder is refused.
    */
   appDir?: string;
 }
@@ -84,12 +93,30 @@ export async function runAnalyze(
   return runPhase(deps, "analyze", async () => {
     await ensureStateDir(paths);
     reporter.step("Analysing the project");
-    const appDir = options.appDir ?? (await chosenAppDir(deps));
+    // A further app is the one in its record's folder (`opscrew app add`), never another.
+    const recorded = await recordedAppDir(paths);
+    if (
+      recorded !== undefined &&
+      options.appDir !== undefined &&
+      normalizeAppDir(options.appDir) !== recorded
+    ) {
+      const asked = normalizeAppDir(options.appDir);
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `The app ${paths.app} is the one in ${recorded} (opscrew/apps/${paths.app}/app.yaml), so OpsCrew does not describe ${asked} for it. Nothing was written.`,
+        {
+          hint: `Leave the folder out to describe ${recorded}, or add the app in ${asked} with \`opscrew app add <key> --dir ${asked}\`.`,
+        },
+      );
+    }
+    const appDir = recorded ?? options.appDir ?? (await chosenAppDir(deps));
     if (appDir !== undefined && normalizeAppDir(appDir) !== ".") {
       const source =
-        options.appDir !== undefined
-          ? ""
-          : " (chosen earlier; `--app .` describes the whole repository)";
+        recorded !== undefined
+          ? ` (opscrew/apps/${paths.app}/app.yaml)`
+          : options.appDir !== undefined
+            ? ""
+            : " (chosen earlier; `--dir .` describes the whole repository)";
       reporter.info(`Describing the app in ${normalizeAppDir(appDir)}${source}.`);
     }
     const detection = await detectProjectDetails(
@@ -125,8 +152,14 @@ export async function runAnalyze(
     const markdown = renderArchitectureMarkdown(architecture);
     await writeArtifact("architecture", paths.files.architecture, architecture);
     await writeFileAtomic(paths.files.architectureMd, markdown, { mode: 0o644 });
-    reporter.success("Wrote opscrew/architecture.json and opscrew/ARCHITECTURE.md.");
-    if (options.appDir !== undefined) await recordAppChoice(deps, architecture.facts.appDir);
+    const written = [paths.files.architecture, paths.files.architectureMd];
+    reporter.success(
+      `Wrote ${written.map((file) => toPosixRelative(paths.root, file)).join(" and ")}.`,
+    );
+    // A further app's requirements take its folder from its record (the interview).
+    if (options.appDir !== undefined && recorded === undefined) {
+      await recordAppChoice(deps, architecture.facts.appDir);
+    }
 
     const { facts } = architecture;
     await deps.state.markPhase(
@@ -146,8 +179,8 @@ export async function runAnalyze(
 
 /**
  * The app directory chosen earlier: `appDir` in `opscrew/requirements.yaml`, else the one the
- * previous `opscrew/architecture.json` describes (so `opscrew analyze --app <dir>` sticks until the
- * user picks another app or `--app .`). Missing or invalid files mean no choice.
+ * previous `opscrew/architecture.json` describes (so `opscrew analyze --dir <folder>` sticks until
+ * the user picks another app or `--dir .`). Missing or invalid files mean no choice.
  */
 async function chosenAppDir(deps: PhaseDeps): Promise<string | undefined> {
   try {

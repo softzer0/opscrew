@@ -1,13 +1,15 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments/paths";
 import { sharedPartsSource } from "../environments/shared-parts";
-import { testPlan } from "../testing";
+import { createTestPhaseDeps, ScriptedRunner, testPlan } from "../testing";
 import { DIGEST, FakeComputer, localPlan, localProject } from "./__fixtures__/computer";
-import { imageSource, type LocalRegistry, resolveLocalImage } from "./image";
+import { githubRegistry, imageSource, type LocalRegistry, resolveLocalImage } from "./image";
 import { appFolder } from "./services";
 
 /** The image dev's own workflow built and its local runner deployed. */
@@ -240,5 +242,40 @@ describe("a localhost environment without the local runner (unchanged)", () => {
     expect(await resolve(localPlan({ environment: "dev" }))).toMatchObject({
       source: "local-build",
     });
+  });
+});
+
+describe("githubRegistry", () => {
+  it("reads and names a further app's own package, ghcr.io/<owner>/<repo>/<key>", async () => {
+    const urls: string[] = [];
+    const fetch: FetchLike = async (input) => {
+      const url = String(input);
+      urls.push(url);
+      return url.includes("/token?")
+        ? new Response(JSON.stringify({ token: "pull-token-of-the-test" }), { status: 200 })
+        : new Response("", { status: 404 });
+    };
+    const runner = new ScriptedRunner((_command, args) =>
+      args.includes("rev-parse")
+        ? { exitCode: 0, stdout: "true\n", stderr: "" }
+        : args.includes("get-url")
+          ? { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" }
+          : { exitCode: 1, stdout: "", stderr: "not scripted" },
+    );
+    const env = {
+      GITHUB_TOKEN: fakeSecret("github-token", "registry"),
+      OPSCREW_GHCR_READ_TOKEN: fakeSecret("github-token", "registry-read"),
+    };
+    const docs = await createTestPhaseDeps({ app: "docs", runner, fetch, env });
+    const registry = await githubRegistry(docs);
+    expect(registry.image).toBe("ghcr.io/acme/shop/docs");
+    expect(await registry.taggedDigest("opscrew-prod")).toBeUndefined();
+    expect(urls).toEqual([
+      expect.stringContaining("scope=repository%3Aacme%2Fshop%2Fdocs%3Apull"),
+      "https://ghcr.io/v2/acme/shop/docs/manifests/opscrew-prod",
+    ]);
+
+    const first = await createTestPhaseDeps({ runner, fetch, env });
+    expect((await githubRegistry(first)).image).toBe("ghcr.io/acme/shop");
   });
 });

@@ -37,6 +37,7 @@ function localLeaf(plan: DeployPlan, tls: string): string[] {
   const app = plan.app.name;
   const { certificate, key } = LOCALHOST_TLS;
   const [pem, pemKey] = [certificate, key].map((file) => `"$OPSCREW_EDGE_DIR"/tls/${app}/${file}`);
+  // The local runner is started per environment, so the command names prod's too.
   const provision = `opscrew provision${appFlag(plan)} --env ${environmentName(plan)}`;
   const missing = `::error::This runner finds no leaf certificate for the app in this computer's edge (tls/${app}/${certificate} and ${key} in OPSCREW_EDGE_DIR). Run \`${provision}\`, which issues it, and start the runner with \`${runnerStartCommand(plan)}\`, which sets OPSCREW_EDGE_DIR; then run the workflow again.`;
   return [

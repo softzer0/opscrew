@@ -19,7 +19,7 @@ import { readValidJson } from "../shared";
  */
 export async function localSite(paths: ProjectPaths, plan: DeployPlan): Promise<LocalhostSite> {
   let beside = false;
-  for (const name of await environmentsOf(paths.root)) {
+  for (const name of await environmentsOf(paths.root, paths.app)) {
     if (name === paths.environment) continue;
     const other = await readOptionalArtifact("plan", environmentPaths(paths, name).files.plan);
     if (other?.target.provider === "localhost") beside = true;

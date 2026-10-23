@@ -19,7 +19,7 @@ import {
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { builderBranch, followsBranch } from "../environments/branches";
-import { environmentFlag } from "../environments/choice";
+import { commandFlags } from "../environments/choice";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
 import { readOwnServerRecord } from "../provision";
@@ -151,7 +151,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
   // ` --env <name>` for the commands verify names; `--env prod` beside other environments.
-  const flag = await environmentFlag(paths.root, paths.environment);
+  const flag = await commandFlags(paths.root, paths.environment, paths.app);
   if (!ownProxy && options.url !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -328,7 +328,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const sshPort = current.target.provider === "own" ? await ownSshPort(deps, current) : undefined;
   const repo = github.repo ?? { owner: "<owner>", repo: "<repo>" };
   // Beside other environments, prod's runbook names `--env prod` in its commands.
-  const environments = await environmentsOf(paths.root);
+  const environments = await environmentsOf(paths.root, paths.app);
   const runbook = portainer
     ? renderPortainerRunbook(current, {
         opscrewVersion: deps.version,

@@ -143,11 +143,23 @@ export interface PortainerProjectOptions {
 export async function portainerProject(o: PortainerProjectOptions = {}) {
   const secrets = portainerSecrets();
   const plan = o.plan ?? portainerPlan();
-  // A named environment's plan sits in its own folder beside prod's, as `opscrew env add` leaves it.
+  // A named environment's plan sits in its own folder beside prod's, as `opscrew env add` leaves it;
+  // a further app's beside the first app's, with its record, as `opscrew app add` leaves it.
   const environment = plan.environment?.name;
+  const key = plan.app.key;
   const project = await createProject(
-    environment === undefined ? plan : prodBeside(plan, environment),
+    key !== undefined
+      ? portainerPlan()
+      : environment === undefined
+        ? plan
+        : prodBeside(plan, environment),
   );
+  if (key !== undefined) {
+    await writeArtifact("app", join(project.root, "opscrew", "apps", key, "app.yaml"), {
+      schemaVersion: 1,
+      dir: ".",
+    });
+  }
   await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${secrets.stripe}\n`);
   const fake = fakePortainer({ token: secrets.portainerToken, ...o.portainer });
   const github = new PortainerLifecycleGitHub(project.bare);
@@ -176,9 +188,12 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
     env,
     runner: projectRunner(),
     approvalHandler: handler,
+    ...(key !== undefined ? { app: key } : {}),
     ...(environment !== undefined ? { environment } : {}),
   });
-  if (environment !== undefined) await writeArtifact("plan", deps.paths.files.plan, plan);
+  if (environment !== undefined || key !== undefined) {
+    await writeArtifact("plan", deps.paths.files.plan, plan);
+  }
   const target = plan.target.provider === "portainer" ? plan.target : undefined;
   await recordPortainerConnection(deps.paths, {
     url: PORTAINER_URL,

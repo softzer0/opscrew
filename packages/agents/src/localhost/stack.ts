@@ -7,8 +7,8 @@
 import { join } from "node:path";
 import { exists, type ProjectPaths, readTextIfExists } from "@opscrew/core";
 import {
+  additionsPath,
   EDGE_PROJECT,
-  EDGE_PROXIES,
   edgeProxy,
   type LocalhostSite,
   localComposeProject,
@@ -42,7 +42,7 @@ export async function localRenderContext(
   plan: DeployPlan,
   site: LocalhostSite,
 ): Promise<RuntimeContext> {
-  const additions = await exists(join(deps.paths.root, EDGE_PROXIES[edgeProxy(plan)].additions));
+  const additions = await exists(join(deps.paths.root, additionsPath(plan)));
   const builder = await builderBranch(deps.paths, plan);
   return {
     opscrewVersion: deps.version,
@@ -111,7 +111,7 @@ export function stackUploads(plan: DeployPlan, ctx: RuntimeContext): StackUpload
   return [
     ...runtime,
     ...(ctx.additions === true
-      ? [{ path: `additions.${proxy}`, from: EDGE_PROXIES[proxy].additions }]
+      ? [{ path: `additions.${proxy}`, from: additionsPath(plan, proxy) }]
       : []),
   ];
 }

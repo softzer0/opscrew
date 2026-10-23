@@ -243,6 +243,25 @@ describe("detectStack", () => {
     expect(imageReleaseCommand(nextApp)).toEqual({});
   });
 
+  it("names the plan of the app whose release command it leaves out, a further app's its own", () => {
+    const withRelease = (sample: ProjectFacts, releaseCommand: string) => ({
+      ...sample,
+      build: { ...sample.build, releaseCommand },
+    });
+    for (const facts of [
+      withRelease(expressApp, "alembic upgrade head"),
+      withRelease(nextApp, "npx keystone migrate deploy"),
+      withRelease(nextMonorepoApp, "cd apps/web && node scripts/migrate.js"),
+    ]) {
+      expect(imageReleaseCommand(facts).notRun).toContain(
+        "`app.releaseCommand` in opscrew/plan.yaml",
+      );
+      const further = imageReleaseCommand(facts, "docs").notRun;
+      expect(further).toContain("`app.releaseCommand` in opscrew/apps/docs/plan.yaml");
+      expect(further).not.toContain("opscrew/plan.yaml");
+    }
+  });
+
   it("knows which images keep which migration tools", () => {
     const withRelease = withReleaseOf;
     // The Node.js server image keeps the packages of the migration tool, and package scripts.

@@ -37,7 +37,7 @@ export async function setEnvironment(
     plan = { ...plan, cicd: { ...plan.cicd, branch } };
   }
   if (settings.from !== undefined) {
-    plan = await withDeploySource(paths.root, paths.environment, plan, settings.from);
+    plan = await withDeploySource(paths, plan, settings.from);
   }
   if (settings.runner !== undefined) plan = await withRunner(paths, plan, settings.runner);
   if (canonicalJson(plan) === canonicalJson(before)) return before;

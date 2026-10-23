@@ -1,13 +1,21 @@
 import type { ImageFacts, RegistryCredential } from "@opscrew/connector-github";
 import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import { environmentTag } from "@opscrew/iac-templates";
+import { ghcrImageFor } from "@opscrew/plan-schema";
+import { ghcrPackage } from "../shared/github";
 import type { PromoteGitHubApi } from "./types";
 
-/** The app's image on GHCR: `ghcr.io/<owner>/<repo>`, read with `credential` when given. */
+/**
+ * The app's image on GHCR: `ghcr.io/<owner>/<repo>`, a further app's `ghcr.io/<owner>/<repo>/<key>`
+ * (plan-schema's `ghcrImageFor`), read with `credential` when given.
+ */
 export interface AppImage {
   github: PromoteGitHubApi;
   owner: string;
+  /** The GitHub repository's name. */
   repo: string;
+  /** A further app's key (`plan.app.key`); absent for the repository's first app. */
+  key?: string | undefined;
   credential?: RegistryCredential;
 }
 
@@ -28,13 +36,23 @@ export interface ImageBuild {
   tag: string;
 }
 
-/** `ghcr.io/<owner>/<repo>@<digest>`, as GHCR names it (lower case). */
-export function imageReference(image: Pick<AppImage, "owner" | "repo">, digest: string): string {
-  return `ghcr.io/${image.owner}/${image.repo}@${digest}`.toLowerCase();
+/** `ghcr.io/<owner>/<repo>[/<key>]@<digest>`, as GHCR names it (lower case). */
+export function imageReference(
+  image: Pick<AppImage, "owner" | "repo" | "key">,
+  digest: string,
+): string {
+  return `${ghcrImageFor(`${image.owner}/${image.repo}`, image.key)}@${digest}`.toLowerCase();
 }
 
 function digestOfTag(image: AppImage, tag: string): Promise<string | undefined> {
-  return image.github.taggedDigest(image.owner, image.repo, tag, image.credential);
+  const { github, owner, repo, key, credential } = image;
+  return github.taggedDigest(owner, ghcrPackage(repo, key), tag, credential);
+}
+
+/** What GHCR shows of the app's image `digest`: its provenance and platforms (`imageFacts`). */
+export function imageFactsOf(image: AppImage, digest: string): Promise<ImageFacts | undefined> {
+  const { github, owner, repo, key, credential } = image;
+  return github.imageFacts(owner, ghcrPackage(repo, key), digest, credential);
 }
 
 const nothing = "Nothing was deployed.";

@@ -18,6 +18,7 @@ import {
 import { wranglerConfigPath } from "../serverless/wrangler";
 import type { RenderContext, RenderedFile } from "../types";
 import {
+  appFlag,
   block,
   builderBranchOf,
   deploySecretName,
@@ -398,7 +399,7 @@ function deployJob(
       "set -euo pipefail",
       ...apiFunction(target.worker),
       'if ! answer="$(api deployments)"; then',
-      `  echo "::error::Cloudflare did not list the deployments of the Worker ${target.worker}. Check that the deploy token in ${deploySecretName(plan, CLOUDFLARE_DEPLOY_SECRETS.apiToken)} holds Account → Workers Scripts → Edit and that the Worker exists (\\\`opscrew provision\\\` creates it), then run the workflow again."`,
+      `  echo "::error::Cloudflare did not list the deployments of the Worker ${target.worker}. Check that the deploy token in ${deploySecretName(plan, CLOUDFLARE_DEPLOY_SECRETS.apiToken)} holds Account → Workers Scripts → Edit and that the Worker exists (\\\`opscrew provision${appFlag(plan)}\\\` creates it), then run the workflow again."`,
       "  exit 1",
       "fi",
       'previous="$(jq -r \'[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty\' <<< "$answer")"',
@@ -458,7 +459,7 @@ function deployJob(
     `    URL: ${siteUrl(plan)}`,
     ...run(
       answerCheck(
-        `Cloudflare has not issued the certificate for ${plan.dns.domain} yet, so this run could not check the new version over HTTPS. It usually comes within a few minutes of the custom domain; \\\`opscrew verify\\\` checks the site once it is there.`,
+        `Cloudflare has not issued the certificate for ${plan.dns.domain} yet, so this run could not check the new version over HTTPS. It usually comes within a few minutes of the custom domain; \\\`opscrew verify${appFlag(plan)}\\\` checks the site once it is there.`,
       ),
     ),
     ...wrangler(

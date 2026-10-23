@@ -26,7 +26,7 @@ export function unknownAppDirError(input: string, candidates: string[]): OpsCrew
     "INVALID_INPUT",
     `${shown} is not an app directory OpsCrew detected. ${list}`,
     {
-      hint: `Pick one of the listed directories, for example \`opscrew analyze --app ${example}\`, or use "." for the repository root.`,
+      hint: `Pick one of the listed directories, for example \`opscrew analyze --dir ${example}\`, or use "." for the repository root.`,
     },
   );
 }

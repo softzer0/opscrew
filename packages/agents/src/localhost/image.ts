@@ -9,6 +9,7 @@ import { resolveGitHubToken } from "@opscrew/connector-github";
 import { exists, OpsCrewError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import {
   type DeployPlan,
+  ghcrImageFor,
   type ImageBuilder,
   isServerlessProvider,
   readOptionalArtifact,
@@ -17,13 +18,13 @@ import {
 import type { PhaseDeps } from "../context";
 import { environmentPaths } from "../environments/paths";
 import { REGISTRY_TOKEN_VAR } from "../provision/portainer";
-import { githubClientFromToken, githubCoordinates, requireGitRepo } from "../shared";
+import { ghcrPackage, githubClientFromToken, githubCoordinates, requireGitRepo } from "../shared";
 import { runningImage } from "./plan";
 import { appFolder } from "./services";
 
 /** The app's image on GHCR, as the local deploy reads and pulls it. */
 export interface LocalRegistry {
-  /** `ghcr.io/<owner>/<repo>`, lower case. */
+  /** `ghcr.io/<owner>/<repo>`, a further app's `ghcr.io/<owner>/<repo>/<key>`, lower case. */
   image: string;
   /** The digest GHCR has for the app image's `tag`, or `undefined` when it has none. */
   taggedDigest(tag: string): Promise<string | undefined>;
@@ -35,7 +36,7 @@ export interface LocalRegistry {
 export type LocalImage =
   | {
       source: "registry";
-      /** `ghcr.io/<owner>/<repo>@sha256:…`. */
+      /** `ghcr.io/<owner>/<repo>[/<key>]@sha256:…`. */
       ref: string;
       /** The environment whose running image it is (its `opscrew-<env>` label). */
       environment: string;
@@ -143,7 +144,8 @@ export function ghcrReadCredential(
 }
 
 /**
- * The app's image on GHCR through the GitHub connector: read and pulled with
+ * The app's image on GHCR (`ghcrImageFor`: a further app's under `<repo>/<key>`, `deps.paths.app`)
+ * through the GitHub connector: read and pulled with
  * `OPSCREW_GHCR_READ_TOKEN` when it is set (a classic `read:packages` token, which GHCR accepts
  * where it may refuse a fine-grained one, as `opscrew promote` reads it), else with the user's
  * GitHub token. Both are registered with the redactor.
@@ -163,9 +165,10 @@ export async function githubRegistry(
     );
   }
   const credential = ghcrReadCredential(deps, owner);
+  const key = deps.paths.app;
   return {
-    image: `ghcr.io/${owner}/${repo}`.toLowerCase(),
-    taggedDigest: (tag) => client.taggedDigest(owner, repo, tag, credential),
+    image: ghcrImageFor(`${owner}/${repo}`, key),
+    taggedDigest: (tag) => client.taggedDigest(owner, ghcrPackage(repo, key), tag, credential),
     login: async () =>
       credential ?? {
         username: await client.whoAmI(),

@@ -12,6 +12,8 @@ import {
   readArtifact,
   readOptionalArtifact,
 } from "@opscrew/plan-schema";
+import { appFlag } from "../apps/choice";
+import { requireUniqueNames } from "../apps/names";
 import type { PhaseDeps } from "../context";
 import { type DesignResult, type RunDesignOptions, runDesign } from "../design/run";
 import { answersToRequirements } from "../interview/answers";
@@ -382,10 +384,11 @@ export async function addEnvironment(
       hint: "Give the new environment another name, for example staging or dev.",
     });
   }
-  const environments = await environmentsOf(paths.root);
+  const environments = await environmentsOf(paths.root, paths.app);
+  const app = await appFlag(paths.root, paths.app);
   if (environments.includes(name)) {
     throw new OpsCrewError("PHASE_PRECONDITION", `The app already has a ${name} environment.`, {
-      hint: `Run \`opscrew design --env ${name}\` to design it again, or \`opscrew env remove ${name}\` first.`,
+      hint: `Run \`opscrew design${app} --env ${name}\` to design it again, or \`opscrew env remove ${name}${app}\` first.`,
     });
   }
   const prodPaths = environmentPaths(paths, "prod");
@@ -393,10 +396,20 @@ export async function addEnvironment(
   if (prodPlan === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The ${name} environment's app is named after prod's (\`<app>-${name}\`), and opscrew/plan.yaml does not exist yet.`,
-      { hint: "Run `opscrew design` first, then add the environment." },
+      `The ${name} environment's app is named after prod's (\`<app>-${name}\`), and ${toPosixRelative(paths.root, prodPaths.files.plan)} does not exist yet.`,
+      { hint: `Run \`opscrew design${app}\` first, then add the environment.` },
     );
   }
+  // No other app or environment of the repository may have its names (FR-1615).
+  await requireUniqueNames(
+    paths,
+    {
+      ...(paths.app === undefined ? {} : { app: paths.app }),
+      environment: name,
+      name: `${prodPlan.app.name}-${name}`,
+    },
+    `Give the environment another name, then run \`opscrew env add <name>${app}\` again.`,
+  );
   const base = await readArtifact("requirements", paths.files.shared.requirementsBase);
   const { facts } = await readArtifact("architecture", paths.files.architecture);
   const runnerHosts = (await listRunnerHosts(deps)).map((machine) => machine.name);

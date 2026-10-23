@@ -101,7 +101,7 @@ export async function requireBranchFree(paths: ProjectPaths, branch: string): Pr
   const analysis = await readOptionalArtifact("architecture", paths.files.architecture);
   if (branch === defaultBranchOf(analysis?.facts ?? { git: {} })) return;
   const name = paths.environment;
-  for (const other of await environmentsOf(paths.root)) {
+  for (const other of await environmentsOf(paths.root, paths.app)) {
     if (other === name) continue;
     const plan = await readArtifact("plan", environmentPaths(paths, other).files.plan);
     if (followsBranch(plan) && plan.cicd.branch === branch) {

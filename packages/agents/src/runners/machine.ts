@@ -30,7 +30,6 @@ import {
   OpsCrewError,
   type ProjectPaths,
   readTextIfExists,
-  resolveProjectPaths,
   stripBom,
   upperFirst,
   writeFileAtomic,
@@ -697,16 +696,15 @@ export async function applyRunnerHost(
   }
 }
 
-/** Each environment of the app in `root` with its plan. */
-async function environmentPlans(root: string): Promise<{ name: string; plan: DeployPlan }[]> {
-  const names = await environmentsOf(root);
+/** Each environment of the app `paths` belong to, with its plan. */
+async function environmentPlans(
+  paths: ProjectPaths,
+): Promise<{ name: string; plan: DeployPlan }[]> {
+  const names = await environmentsOf(paths.root, paths.app);
   return Promise.all(
     names.map(async (name) => ({
       name,
-      plan: await readArtifact(
-        "plan",
-        resolveProjectPaths(root, { env: {}, environment: name }).files.plan,
-      ),
+      plan: await readArtifact("plan", environmentPaths(paths, name).files.plan),
     })),
   );
 }
@@ -717,8 +715,8 @@ function runsOn(plan: DeployPlan, name: string): boolean {
 }
 
 /** The environments that use the runner machine `name` and are not torn down, by name. */
-async function environmentsOn(root: string, name: string): Promise<string[]> {
-  return (await environmentPlans(root))
+async function environmentsOn(paths: ProjectPaths, name: string): Promise<string[]> {
+  return (await environmentPlans(paths))
     .filter(({ plan }) => runsOn(plan, name) && plan.deployment.destroyedAt === undefined)
     .map((environment) => environment.name);
 }
@@ -749,7 +747,7 @@ export async function removeRunnerHost(
   const record = await requireRunnerHost(deps.paths, input.name);
   const { name } = record;
   const command = `opscrew runner host remove ${name}`;
-  const users = await environmentsOn(deps.paths.root, name);
+  const users = await environmentsOn(deps.paths, name);
   if (users.length > 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -848,7 +846,7 @@ async function forgetMachine(
 ): Promise<void> {
   const { name } = record;
   const machine = `the runner machine ${name}`;
-  const plans = (await environmentPlans(deps.paths.root)).filter((environment) =>
+  const plans = (await environmentPlans(deps.paths)).filter((environment) =>
     record.environments.includes(environment.name),
   );
   const unknown = record.environments.filter((env) => !plans.some((p) => p.name === env));
@@ -901,7 +899,7 @@ export interface RunnerHostSummary {
 export async function listRunnerHosts(
   deps: Pick<PhaseDeps, "paths">,
 ): Promise<RunnerHostSummary[]> {
-  const plans = await environmentPlans(deps.paths.root);
+  const plans = await environmentPlans(deps.paths);
   return (await runnerHostRecords(deps.paths)).map(({ name, arch, docker, harden }) => ({
     name,
     arch,

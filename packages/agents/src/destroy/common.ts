@@ -9,10 +9,12 @@ import {
   OpsCrewError,
   plural,
   tfstateFile,
+  toPosixRelative,
   upperFirst,
 } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, ghcrImageFor, writeArtifact } from "@opscrew/plan-schema";
+import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
 import {
@@ -676,11 +678,34 @@ export function deploySecretsLeft(
   ];
 }
 
-/** 9. "What remains": the app's container images in GitHub's container registry. */
-export function containerImagesLeft(github: GitHubTarget): string {
-  const image =
-    github.owner && github.repo
-      ? `ghcr.io/${github.owner}/${github.repo}`.toLowerCase()
-      : "ghcr.io/<owner>/<repo>";
+/**
+ * 9. "What remains": the app's container images in GitHub's container registry, a further app's
+ * package `<repo>/<key>` (`ghcrImageFor`).
+ */
+export function containerImagesLeft(github: GitHubTarget, plan: Pick<DeployPlan, "app">): string {
+  const image = ghcrImageFor(
+    github.owner && github.repo ? `${github.owner}/${github.repo}` : "<owner>/<repo>",
+    plan.app.key,
+  );
   return `The app's container images in GitHub's container registry (${image}). Delete them in the package settings on GitHub if you no longer need them.`;
+}
+
+/** What "What remains" names of the app's deployment files and the command that uses them. */
+export interface DeploymentFiles {
+  /** The app's artefacts folder (its prod's): `opscrew`, a further app's `opscrew/apps/<key>`. */
+  folder: string;
+  /** `opscrew provision` with the flags of the plan's app and environment (`planWhere`). */
+  provision: string;
+}
+
+/** 9. "What remains": {@link DeploymentFiles} of the app `deps.paths` belong to. */
+export async function deploymentFiles(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+): Promise<DeploymentFiles> {
+  const { root } = deps.paths;
+  return {
+    folder: toPosixRelative(root, appPaths(deps.paths, deps.paths.app).artefactsDir),
+    provision: `opscrew provision${(await planWhere(root, plan)).flag}`,
+  };
 }

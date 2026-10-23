@@ -274,6 +274,26 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(await git(repo.env, repo.root, "branch", "--show-current")).toBe(`${ADAPT_BRANCH}-3`);
   });
 
+  it("opens a further app's own branch, numbered apart from every other key's", async () => {
+    const repo = await setup({ depsOptions: { app: "docs" } });
+    const plan = await readArtifact("plan", repo.deps.paths.files.plan);
+    await writeArtifact("plan", repo.deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, key: "docs" },
+    });
+    // The app's own branch from an earlier run, and the first branch of the app `docs-2`.
+    await git(repo.env, repo.root, "branch", `${ADAPT_BRANCH}-docs`);
+    await git(repo.env, repo.root, "branch", `${ADAPT_BRANCH}-docs-2`);
+
+    const result = await runAdapt(repo.deps, { github: new FakeGitHub(), push: false });
+
+    expect(result.branch).toBe(`${ADAPT_BRANCH}-docs_2`);
+    expect(await git(repo.env, repo.root, "branch", "--show-current")).toBe(
+      `${ADAPT_BRANCH}-docs_2`,
+    );
+    expect(result.pushCommand).toBe(`git push -u origin ${ADAPT_BRANCH}-docs_2`);
+  });
+
   it("writes deterministic files only when they are missing", async () => {
     const own = "FROM scratch\n# my own Dockerfile\n";
     const repo = await setup({ files: { Dockerfile: own }, agent: null });

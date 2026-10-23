@@ -49,6 +49,8 @@ export interface OptionToPlanInput {
   facts: ProjectFacts;
   requirements: Requirements;
   now: Date;
+  /** A further app's key (`app.key`), which also names it (`app.name`); none for the first app. */
+  key?: string | undefined;
   codeChanges: CodeChange[];
   /** Repository signals used to pick the health path (see `collectCodeChangeSignals`). */
   signals?: CodeChangeSignals;
@@ -283,7 +285,10 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         : appDirOf(facts) !== "."
           ? appDockerfile(facts).path
           : undefined;
-  const name = appNameFor(facts);
+  // A further app is named after its key, which is unique in the repository; the first app after
+  // what detection found.
+  const { key } = input;
+  const name = key ?? appNameFor(facts);
 
   const plan = DeployPlanSchema.parse({
     schemaVersion: 1,
@@ -291,6 +296,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     updatedAt: now,
     app: {
       name,
+      ...(key === undefined ? {} : { key }),
       port: appPortFor(facts),
       healthPath: healthRouteFor(facts, input.signals).path,
       buildContext,

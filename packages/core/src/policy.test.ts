@@ -384,6 +384,7 @@ describe("DefaultToolPolicy: Bash parsing rules", () => {
     expect(bash("ls >> .opscrew/x").decision).toBe("deny");
     expect(bash("ls > opscrew/notes.md").decision).toBe("deny");
     expect(bash("ls > .github/workflows/opscrew-deploy.yml").decision).toBe("deny");
+    expect(bash("ls > .github/workflows/opscrew-deploy-docs-staging.yml").decision).toBe("deny");
     expect(bash("ls > .env").decision).toBe("deny");
     expect(bash("wc -l < /etc/passwd").decision).toBe("ask");
     expect(bash("wc -l < .env.production").decision).toBe("deny");
@@ -748,6 +749,10 @@ describe("DefaultToolPolicy: file tools", () => {
       "OpsCrew/plan.yaml",
       ".github/workflows/opscrew-deploy.yml",
       ".GitHub/Workflows/OpsCrew-Deploy.yml",
+      // An environment's, a further app's and a further app's environment's.
+      ".github/workflows/opscrew-deploy-staging.yml",
+      ".github/workflows/opscrew-deploy-docs.yaml",
+      ".github/workflows/opscrew-deploy-docs-staging.yml",
       ".env",
       "../outside.txt",
       "/tmp/x.txt",
@@ -759,6 +764,7 @@ describe("DefaultToolPolicy: file tools", () => {
     expect(read("opscrew/plan.yaml", POSIX, "edit-repo")).toBe("allow");
     expect(read(".github/workflows/opscrew-deploy.yml", POSIX, "edit-repo")).toBe("allow");
     expect(write(".github/workflows/ci.yml")).toBe("allow");
+    expect(write(".github/workflows/opscrew-deployment-notes.yml")).toBe("allow");
     expect(write("src/opscrew/helper.ts")).toBe("allow");
     expect(write("/home/dev/app/src/new.ts")).toBe("allow");
     expect(write(".gitignore")).toBe("allow");

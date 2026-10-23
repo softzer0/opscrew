@@ -6,7 +6,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { readTextIfExists } from "@opscrew/core";
 import { detectProjectDetails } from "@opscrew/detect";
-import { EDGE_PROXIES, edgeProxy, siteHosts, translateVercelRouting } from "@opscrew/iac-templates";
+import {
+  additionsPath,
+  EDGE_PROXIES,
+  edgeProxy,
+  siteHosts,
+  translateVercelRouting,
+} from "@opscrew/iac-templates";
 import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { scanProxyAdditions } from "@opscrew/secops";
 
@@ -25,8 +31,9 @@ function header(sha256: string, label: string): string {
 
 /**
  * For a plan on a server (not a Portainer stack), with `facts` from the analysis:
- * - when `facts` carry `vercel.json`'s routing rules and `opscrew/proxy/additions.<proxy>` does not
- *   exist, writes their translation there with a header naming `vercel.json`'s SHA-256, and says
+ * - when `facts` carry `vercel.json`'s routing rules and the app's additions file
+ *   (`additionsPath`: `opscrew/proxy/additions.<proxy>` for the first app) does not exist, writes
+ *   their translation there with a header naming `vercel.json`'s SHA-256, and says
  *   which rules were not translated and why (nothing is written when none were, nor when
  *   `scanProxyAdditions` refuses the translation, which design then warns about);
  * - when the file exists with that header and a fresh detect finds another `vercel.json` (detect
@@ -41,7 +48,8 @@ export async function vercelAdditions(
   const none = { lines: [], warnings: [] };
   if (plan.target.provider === "portainer") return none;
   const proxy = edgeProxy(plan);
-  const { label, additions: file, upstream } = EDGE_PROXIES[proxy];
+  const { label, upstream } = EDGE_PROXIES[proxy];
+  const file = additionsPath(plan, proxy);
   const path = join(root, file);
   const existing = await readTextIfExists(path);
   if (existing !== undefined) {

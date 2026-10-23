@@ -9,7 +9,7 @@ import { readTextIfExists, toPosixRelative } from "@opscrew/core";
 import { EDGE_PROJECT, renderLocalRunbook } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { environmentFlag } from "../environments/choice";
+import { commandFlags } from "../environments/choice";
 import { checkResult, summarizeChecks, writePlanIfChanged, writeRenderedFiles } from "../shared";
 import type { VerifyResult } from "../verify/run";
 import { caFiles, caTrusted, LEAF_RENEW_DAYS } from "./ca";
@@ -270,7 +270,7 @@ export async function verifyLocalhost(
     );
   } else {
     // ` --env <name>` beside other environments (`--env prod` included).
-    const flag = await environmentFlag(paths.root, paths.environment);
+    const flag = await commandFlags(paths.root, paths.environment, paths.app);
     reporter.error(
       `Verification found problems (${summary}). Fix them and run \`opscrew verify${flag}\` again.`,
     );

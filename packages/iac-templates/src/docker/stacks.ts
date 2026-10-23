@@ -7,6 +7,7 @@ import {
   TOOLS,
   toolDownloadUrl,
 } from "../pins";
+import { planFilePath } from "../workflow/shared";
 import { type BaseImage, tagOnlyNote } from "./images";
 import {
   NODE_TOOL_BINS,
@@ -927,8 +928,13 @@ const IMAGE_NAMES: Record<Exclude<DockerStack, "static-spa">, string> = {
 };
 
 /** Why an image of another kind cannot run the command (for example Rails in a Node.js image). */
-function wrongImage(tool: ReleaseTool, stack: Exclude<DockerStack, "static-spa">, command: string) {
-  return `OpsCrew found ${tool.found}, but \`${command}\` needs ${tool.needs}, which the ${IMAGE_NAMES[stack]} image OpsCrew builds for this app does not include, so deploys will not run it. Set \`app.releaseCommand\` in opscrew/plan.yaml to a command the image can run, or run the migrations yourself against the production database before each deploy that changes the schema.`;
+function wrongImage(
+  tool: ReleaseTool,
+  stack: Exclude<DockerStack, "static-spa">,
+  command: string,
+  plan: string,
+) {
+  return `OpsCrew found ${tool.found}, but \`${command}\` needs ${tool.needs}, which the ${IMAGE_NAMES[stack]} image OpsCrew builds for this app does not include, so deploys will not run it. Set \`app.releaseCommand\` in ${plan} to a command the image can run, or run the migrations yourself against the production database before each deploy that changes the schema.`;
 }
 
 /**
@@ -941,27 +947,30 @@ function wrongImage(tool: ReleaseTool, stack: Exclude<DockerStack, "static-spa">
  * (Rails or Diesel, say, which OpsCrew cannot build images for yet), a Node.js tool OpsCrew does
  * not install in the Next.js standalone image, and a command that changes into a monorepo folder
  * that image may lack. Empty without a release command or for a static site (no app container).
+ * The reasons name the plan of the app `key` (a further app's; the first app's by default), whose
+ * `app.releaseCommand` the user sets: design calls this before the plan exists.
  */
-export function imageReleaseCommand(facts: ProjectFacts): ImageReleaseCommand {
+export function imageReleaseCommand(facts: ProjectFacts, key?: string): ImageReleaseCommand {
   const command = facts.build.releaseCommand;
   const stack = detectStack(facts);
   if (command === undefined || stack === undefined || stack === "static-spa") return {};
   const tool = releaseToolOf(command);
   const python = stack.startsWith("python-");
+  const plan = planFilePath({ app: { key } });
   if (tool !== undefined && tool.runtime !== (python ? "python" : "node")) {
-    return { notRun: wrongImage(tool, stack, command) };
+    return { notRun: wrongImage(tool, stack, command, plan) };
   }
   if (python) return { command: inAppFolder(command, appDirectory(facts)) };
   if (stack !== "next-standalone" || releaseNeeds(command, true) !== undefined) return { command };
   if (tool !== undefined) {
     return {
-      notRun: `OpsCrew found ${tool.found}, but the Next.js standalone image keeps only the files the server needs, not ${tool.needs}, so deploys cannot run \`${command}\`. Run the migrations another way: change the Dockerfile so the image keeps them, then set \`app.releaseCommand\` in opscrew/plan.yaml; or run the command yourself against the production database before each deploy that changes the schema.`,
+      notRun: `OpsCrew found ${tool.found}, but the Next.js standalone image keeps only the files the server needs, not ${tool.needs}, so deploys cannot run \`${command}\`. Run the migrations another way: change the Dockerfile so the image keeps them, then set \`app.releaseCommand\` in ${plan}; or run the command yourself against the production database before each deploy that changes the schema.`,
     };
   }
   const dir = appDirectory(facts);
   if (dir !== "." && command.startsWith("cd ")) {
     return {
-      notRun: `The release command \`${command}\` changes into ${dir}, which the Next.js standalone image may not contain, so OpsCrew left it out of the plan. Set \`app.releaseCommand\` in opscrew/plan.yaml to a command that runs from the image's working folder (/app).`,
+      notRun: `The release command \`${command}\` changes into ${dir}, which the Next.js standalone image may not contain, so OpsCrew left it out of the plan. Set \`app.releaseCommand\` in ${plan} to a command that runs from the image's working folder (/app).`,
     };
   }
   return { command };
