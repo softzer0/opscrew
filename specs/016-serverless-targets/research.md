@@ -160,3 +160,65 @@ The per-asset size of 25 MiB is **open**.
 11. Downloading another run's artifact in a deploy job (`actions/download-artifact` with `run-id` and the job's token), for promotion.
 12. Single Redirect rules (`http_request_dynamic_redirect`) through 011's shared-rules adapter, for `www` to the domain on Cloudflare: the phase, the Free plan's limit, and whether the adapter takes a third phase as it is.
 13. How OpsCrew tells, before any change, whether a private repository's owner has a plan that allows GitHub Pages (the user's or the organization's `plan`, or GitHub's answer to enabling Pages), and whether the verification record's value is readable by API or only on the settings page.
+
+## Spike results (T1602, 2026-10-23)
+
+Run in the e2e Cloudflare zone, on a hostname two levels below it, and in the private throwaway repository. Everything was removed afterwards. Items 5–7 and 13 follow.
+
+1. **The Worker shell:** OpenTofu and Terraform 1.16.5 both resolve `cloudflare/cloudflare` 5.28.1 and validate it.
+   - OpenTofu created the script with a placeholder module (answering 503), the `workers.dev` toggle and a custom domain in 6 s. `wrangler versions upload` and `versions deploy` then replaced the code and added assets.
+   - **`cloudflare_workers_script` needs `lifecycle { ignore_changes = all }`:**
+     - With a narrower list, the source map Wrangler uploads (`files`) showed as drift.
+     - Any update to the script made Terraform upload a new version (re-sending the code it had read back) and activate it at 100%, with no OpsCrew message on it, so promotion could no longer trace its build.
+   - So Terraform creates the shell once and never updates it. The Worker's settings (`observability`, `workers_dev`, `preview_urls`) live in the Wrangler config. A rename needs `replace_triggered_by`.
+   - With `ignore_changes = all`, a later plan after a deploy shows no changes.
+2. **Custom domains:**
+   - `cloudflare_workers_custom_domain` creates its DNS record itself (proxied, read-only), and public DNS answers A and AAAA.
+   - Its certificate was valid 153 s after creation, for a hostname two levels below the zone, which Universal SSL doesn't cover.
+   - Destroy removes the record.
+   - The apex was not tried live: the e2e zone's apex is a real domain. Cloudflare's docs show the apex as an example.
+   - A resolver that looked the name up before the record existed keeps a cached "no such name". Live tests therefore wait for the record through DNS over HTTPS, then probe with `--resolve`.
+3. **Permissions:**
+   - **Cloudflare:** Account → Workers Scripts → Edit is the only permission needed, both for the IaC (the script, the `workers.dev` toggle, custom domains with their DNS records) and for the deploy (`versions upload` with assets and secrets, `versions deploy`, the deployments API for a rollback, reading versions). Wrangler needs nothing else when `CLOUDFLARE_ACCOUNT_ID` is set. The deploy token can therefore also attach custom domains in the account's zones; Cloudflare offers nothing narrower, and the guide says so.
+   - **GitHub:** creating, updating and deleting a Pages site, and its health, need **Pages: write and Administration: write** (`x-accepted-github-permissions: pages=write,administration=write`). Reading needs Pages: read.
+   - A fine-grained token's `GET /user` has no `plan` without the account permission Plan: read.
+4. **Pins:** T1601b. Newer majors of the three Pages actions exist, so T1601c moves to them.
+8. **Prices:**
+   - **Workers Paid:** a minimum of USD 5 a month per account. It includes 10 million requests (then USD 0.30 per million) and 30 million CPU-ms (then USD 0.02 per million).
+   - **Static asset requests** are free and unlimited.
+   - **Free:** 100,000 requests a day and 10 ms CPU per request.
+   - **Files per version:** 20,000 (Free) or 100,000 (Paid), at most 25 MiB each.
+   - Sources: developers.cloudflare.com/workers/platform/pricing and /limits.
+9. **Secrets and version messages:**
+   - `wrangler versions upload --message "opscrew <run id> <sha256>" --secrets-file <file>` puts the secrets on the uploaded version, as `secret_text` bindings, without a version of their own. `versions deploy <id>@100 -y` then activates it.
+   - The message reads back as `annotations["workers/message"]` in both the versions list and a single version (at most 1,000 bytes).
+   - `POST …/workers/scripts/<name>/deployments` (`strategy: "percentage"`, one version at 100) rolled back to an earlier version, answering in 1.6 s.
+   - In GitHub Actions, `versions deploy` 3.5 s after the upload failed with code 100146 ("version could not be found"). The deploy job therefore waits until `GET …/versions/<id>` answers (2 s in the run that followed).
+   - `_headers` applied to static files and the 404 page, not to responses the Worker made.
+10. **Shared WAF rules:** a zone WAF custom rule blocked a path on the Worker's custom domain (403) and left the rest (200). Provision keeps 011's shared WAF rule for Cloudflare hosting.
+11. **Promotion:**
+    - A second workflow run downloaded the first run's artifact (`actions/download-artifact` v8.0.2 with `run-id`, `github-token` and `actions: read`).
+    - It matched its SHA-256 (the SHA-256 of the sorted `sha256sum` lines over the files) and deployed it, so the site served exactly that build, with no rebuild.
+    - The whole path ran with the pinned `cloudflare/wrangler-action` v4.1.3, the version id taken from its `command-output`.
+12. **`www`:**
+    - A Single Redirect rule on the Free plan (phase `http_request_dynamic_redirect`, at most 10 rules) sent a second custom domain of the Worker to the first with a 301, keeping the path and the query: `wildcard_replace(http.request.full_uri, "https://<from>/*", "https://<to>/${1}")` with `preserve_query_string`. It runs before the Worker.
+    - So `www` is a custom domain of the Worker too, which gives it its DNS record and certificate, and one shared OpsCrew rule lists every app's `www` hostname with the generic target `wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")` (to confirm in the live run).
+    - Deleting a ruleset answers 204 with no body.
+5. **SSR headers:**
+   - A wrapper module imports the adapter's default export and re-exports everything else (`export *`, then `...worker`). Its `fetch` copies the response and adds OpsCrew's headers where the app set none.
+   - With `wrangler dev`, server-rendered pages, endpoints and the Worker's 404s carried them, and a secret given to the Worker reached the page.
+   - The same file worked for Nuxt (its `scheduled` handler survived) and Next.js (its Durable Object classes were re-exported).
+   - Static files never reach the Worker while `run_worker_first` is off, so they need `_headers` too. Turning it on would make every static request a billed Worker call.
+   - **So the Worker gets the wrapper and the static files get `_headers`.** Two `/*` blocks in `_headers` don't combine: the second replaces the first. OpsCrew merges its headers into the site's own `/*` block.
+6. **SSR builds** (`node:24` containers, Wrangler 4.152.0):
+
+   | Framework and adapter | Static files | Worker entry | Compatibility flags | Notes |
+   |---|---|---|---|---|
+   | Astro, `@astrojs/cloudflare` 14.4.2 | `dist/client` | `dist/server/entry.mjs` | none | Needs astro ^7.4.0 (an app on 7.3 needs adapter 14.3 or an upgrade), and `wrangler` in the project. Its own `dist/server/wrangler.json` adds `SESSION` (a KV namespace created at deploy) and `IMAGES`; OpsCrew's generated config leaves them out, and the app ran without them. |
+   | Nuxt, Nitro `cloudflare_module` (nitropack 2.13.5) | `.output/public` | `.output/server/index.mjs` | `nodejs_compat` | Exports `scheduled`, `email`, `queue`, `tail` and `trace` on the default object. |
+   | SvelteKit, `@sveltejs/adapter-cloudflare` 8.0.1 | `.svelte-kit/cloudflare` | `.svelte-kit/cloudflare/_worker.js` | none | Builds for Cloudflare Pages unless the build sees a Wrangler config with `main` and `assets`, or `WORKERS_CI=1`; that Pages output fails `wrangler deploy`. The entry sits inside the assets folder, excluded by the adapter's `.assetsignore`. The site's own `_headers` goes in the project root. |
+   | Next.js 16.4.2, `@opennextjs/cloudflare` 1.20.13 | `.open-next/assets` | `.open-next/worker.js` (1.0 MB gzipped) | `nodejs_compat`, `global_fetch_strictly_public` | Needs `open-next.config.ts` and a Wrangler config to build (or `--skipWranglerConfigCheck`). `opennextjs-cloudflare migrate` waits two minutes for a browser login, so OpsCrew writes both files itself. Next.js 16's default `cacheComponents` and `partialPrefetching` make every server-rendered request hang on Workers; they must be off. |
+
+   - Build times with dependencies installed: 2–17 s.
+   - The artifact upload must keep hidden files (`.assetsignore`).
+   - npm 11.19 skips install scripts by default (esbuild, workerd); the builds and `wrangler dev` worked anyway.

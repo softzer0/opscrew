@@ -81,7 +81,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1601b [P] Pins: the actions and tools the new workflows run, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`
+- [X] T1601b [P] Pins: the actions and tools the new workflows run, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`
   - Owns: those paths (+ tests)
   - Reads: research.md R1 "Deploy", R2 "Deploy"; plan.md "Technical Context"
   - Depends: —
@@ -97,6 +97,20 @@ Effort`.
     - **`update-pins.mjs`** learns each one the way it learns today's: a tag resolved to its commit, npm's latest for Wrangler, Hugo's checksums file. Run it once and commit the real values.
     - **Tests:** the format checks the existing pins have, and `update-pins.mjs` parsing a fake release and checksums file.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
+  - Effort: medium
+
+- [X] T1601c Snapshots that survive a pin refresh, then the refresh, in `packages/iac-templates/**`, and the tests elsewhere that write a pinned value literally
+  - Owns: `packages/iac-templates/**` (its vitest config and setup, tests, snapshots, `pins.ts`); in other packages, only test files that hold a pinned value literally
+  - Reads: T1601b's report; `packages/iac-templates/src/pins.ts`; `scripts/update-pins.mjs`
+  - Depends: T1601b
+  - Accept:
+    - **The finding (the lead, 2026-10-23):** 16 of iac-templates' 42 snapshot files embed the pinned digests and versions, because they snapshot the rendered Compose files, Dockerfiles and workflows. So every pin refresh breaks them (30 snapshots on T1601b's run), and a refresh then means rewriting snapshots by hand, which hides real changes among the pin lines.
+    - **A snapshot serializer** in iac-templates' vitest setup replaces every pinned value with a placeholder naming its pin, such as `<pin:IMAGES.node>` or `<pin:ACTIONS.checkout>`: the image references with their digests, the action references, and the tools' versions, URLs and SHA-256s, plus `PACKAGE_MANAGERS` and `PYPI_PACKAGES`. It builds the map from `pins.ts`'s exports at run time, never from a hand-kept list. The snapshots are rewritten once with the placeholders, so they still check that the right pin lands in the right place.
+    - **Literal pins in tests:** tests that write a pinned value literally (for example in `toContain`) use the export instead, in any package. Search the test files for each pinned value.
+    - **A guard test:** no snapshot file holds a value from `pins.ts`.
+    - **Then the refresh:** run `update-pins.mjs` (the eight image digests, uv and pnpm that T1601b left out) with no snapshot changing, as a separate commit.
+    - **The Pages actions** move to their newest majors (configure-pages v6, upload-pages-artifact v5, deploy-pages v5), since 016's research named older ones. Report any input or permission change in their release notes that T1606 must follow.
+  - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
   - Effort: medium
 
 ## Phase 2: Spike (lead)
@@ -119,8 +133,9 @@ Effort`.
       - `workersPermissions`, and `deleteWorker` if the spike shows destroy needs it outside IaC.
 
       A 404 for a Worker is `undefined`.
-    - **The permission list** (shown by `init` and the guide) gains the Workers permissions the spike found. Each is marked "only for Cloudflare hosting", and the deploy token's permissions are listed separately.
-    - **The shared rules adapter** (011) takes the Single Redirect phase (`http_request_dynamic_redirect`) for one app's `www` → domain rule, as item 12 settles. Its ownership, drift and destroy work as they do for the other phases.
+    - **The permission list** (shown by `init` and the guide) gains Account → Workers Scripts → Edit, marked "only for Cloudflare hosting". The deploy token needs only that permission (spike result 3), listed separately.
+    - **The shared rules adapter** (011) gains a third shared rule, `opscrew-www-redirect`, in the Single Redirect phase (`http_request_dynamic_redirect`): `http.host in {<every OpsCrew app's www hostname in the zone>}`, a 301 to `wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")` with `preserve_query_string` (spike result 12). Its ownership, drift and destroy work as for the other two rules. A `DELETE` answers 204 with no body.
+    - **Rollback** goes through `POST …/workers/scripts/<worker>/deployments` (`strategy: "percentage"`, one version at 100, a `workers/message` annotation); versions and deployments are read from `GET …/versions` and `GET …/deployments` (spike results 9 and 11).
     - **Errors:** a 403 names the missing permission and never prints the token.
     - **Tests:** the fake covers every endpoint: a 404, a 403, two versions with messages, and the redirect rule's create, drift and delete.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare` and `pnpm lint`
@@ -135,7 +150,7 @@ Effort`.
       - `getPages` (`undefined` on 404), `createPages` (`build_type: "workflow"`), `updatePages` (`cname`, with `null` removing it, and `https_enforced`), `deletePages`;
       - `pagesHealth`, `latestPagesDeployment`, `rerunWorkflowRun`. Earlier Pages runs come from the existing `listWorkflowRuns`;
       - `pagesAllowed(owner, repo)`: whether the repository's plan allows Pages, as item 13 settles.
-    - **`GITHUB_TOKEN_PERMISSIONS`** gains Pages (Read and write), marked as needed only for GitHub Pages, plus anything else the spike found these calls need. It lists only what the code calls.
+    - **`GITHUB_TOKEN_PERMISSIONS`** gains Pages (Read and write), and notes that GitHub Pages also needs Administration (Read and write), which the list already names: creating, updating and deleting a Pages site, and its health, accept only `pages=write,administration=write` (spike result 3). The account permission Plan (Read) is listed as optional, for private repositories. It lists only what the code calls.
     - **Errors:** a 403 names the missing permission. A 422 when enabling Pages on a private repository without a plan for it says what GitHub needs.
     - **Tests:** the fake covers every endpoint: Pages absent, Pages on from a branch (`legacy`), the certificate pending and issued, a re-run, a 403 and a 422.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github` and `pnpm lint`
@@ -147,9 +162,9 @@ Effort`.
   - Depends: T1601a, T1602
   - Accept:
     - **The `cloudflare-workers` module:**
-      - `cloudflare_workers_script` with a placeholder ES module that answers "not deployed yet". It has `keep_assets` and `keep_bindings`, and `lifecycle.ignore_changes` on what Wrangler owns, as spike item 1 settled. A later apply leaves the deployed code and assets alone.
-      - The `workers.dev` address and preview URLs follow `workersDev` and `previewUrls`, through the resource the spike found.
-      - One `cloudflare_workers_custom_domain` per hostname (the domain, and `www` when on).
+      - `cloudflare_workers_script` with a placeholder ES module that answers "Not deployed yet" (503), `keep_assets` and `keep_bindings`, and `lifecycle { ignore_changes = all }` (spike result 1): Terraform creates the shell once and never updates it, since any update uploads and activates a new version without OpsCrew's message. A rename replaces it through `replace_triggered_by` on the name.
+      - `cloudflare_workers_script_subdomain` with `enabled` and `previews_enabled` from `workersDev` and `previewUrls`, so the shell is off before the first deploy; the Wrangler config carries the same values afterwards.
+      - One `cloudflare_workers_custom_domain` per hostname: the domain, and `www` when on (spike result 12: `www` is a custom domain too, and the shared redirect rule sends it to the domain).
       - No `secret_text` or other secret binding anywhere (a test greps the module).
       - It validates under `tofu` and `terraform`.
     - **The root:** `rootModule` builds a root for `cloudflare-workers`, and one for `github-pages` with only the DNS module. Server roots are byte-identical (snapshots).
@@ -173,22 +188,25 @@ Effort`.
       2. the site's tool: Node with `setupNode` at `site.nodeVersion` (and `setupBun` for Bun, or the pinned pnpm or Yarn installed as the generated Dockerfiles do), Hugo from its pinned tarball with the checksum checked, or nothing for `none`;
       3. the install with the lockfile, and `site.command` in `app.buildContext`, with the app's `env` names as environment variables from GitHub secrets;
       4. **a limit check** before any upload: over 20,000 files (Cloudflare's free plan) or 1 GB (GitHub Pages) fails with the limit named;
-      5. the output (`site.outputDir`, plus the `site.entry` bundle for SSR) uploaded as an artifact, with the build's SHA-256: the SHA-256 of a manifest of the sorted lines `<sha256>  <path>`, one per output file.
+      5. the output (`site.outputDir`, plus the `site.entry` bundle for SSR) uploaded as an artifact with hidden files kept (`.assetsignore`), with the build's SHA-256: the SHA-256 of a manifest of the sorted lines `<sha256>  <path>`, one per output file.
+
+      SvelteKit builds with `WORKERS_CI=1`, or it builds for Cloudflare Pages (spike result 6).
     - **`renderCloudflareWorkersWorkflow`:**
       - **A following environment** (on `push` to its branch): the build job, then the deploy job.
         1. Wrangler through `wranglerAction` with `wranglerVersion`, with the deploy token and the account id from GitHub secrets.
         2. `_headers` is written into the output.
-        3. `wrangler versions upload` with the committed config and the message `opscrew <run id> <sha256>`.
-        4. For SSR, the app's `env` values put on that version from GitHub secrets, in the order spike item 9 settled (`wrangler versions secret bulk` or another), never deploying a version of its own.
-        5. `wrangler versions deploy <id>@100`.
+        3. `wrangler versions upload` with the committed config, the message `opscrew <run id> <sha256>`, and, for SSR, `--secrets-file` with the app's `env` values written from GitHub secrets to a file in `$RUNNER_TEMP` (mode 600, removed in an `always()` step). That puts them on the uploaded version with no version of their own (spike result 9). The version id comes from the action's `command-output`.
+        4. A wait until `GET …/workers/scripts/<worker>/versions/<id>` answers, at most 60 s: a deploy right after the upload failed with code 100146 (spike result 9).
+        5. `wrangler versions deploy <id>@100 -y`.
         6. A check of the answer on the domain. On failure, the version that ran before is activated again and the job fails.
       - **A promoted environment:** no build job. `workflow_dispatch` takes `run` and `sha256`; the deploy job downloads that run's artifact with `downloadArtifact` (`run-id`, `actions: read`), refuses it unless its SHA-256 matches, then deploys as above.
       - The deploy job's concurrency is `opscrew-deploy-<app>-<env>`, never cancelling, as for servers.
-    - **`renderGithubPagesWorkflow`:** the build job, then `configurePages`, `uploadPagesArtifact` and `deployPages` in the `github-pages` environment with `pages: write` and `id-token: write`, and a check of the answer once the certificate exists (a pending certificate is a warning, not a failure).
+    - **`renderGithubPagesWorkflow`:** the build job, then `configurePages` (v6), `uploadPagesArtifact` (v5, with `include-hidden-files: true`, or it drops dotfiles such as `.well-known`) and `deployPages` (v5) in the `github-pages` environment with `pages: write`, `id-token: write` and `contents: read` (T1601c's report), and a check of the answer once the certificate exists (a pending certificate is a warning, not a failure).
     - **Generated files (`src/serverless/`):**
-      - `renderWranglerConfig(plan)`: `opscrew/cloudflare/wrangler.jsonc` (an environment's own path under `opscrew/environments/<env>/`), with the name, the compatibility date, `assets.directory`, `assets.not_found_handling`, `main` and `run_worker_first` for SSR, `workers_dev` and `preview_urls`. No secret, no account id;
-      - `renderHeadersFile(plan)`: `_headers` with OpsCrew's security headers for every path. The site's own `_headers` is merged, its rules kept and placed first;
-      - for SSR, `renderHeadersEntry(plan)`: the wrapper module around the adapter's entry that adds the same headers to the Worker's responses, as spike item 5 settled.
+      - `renderWranglerConfig(plan)`: `opscrew/cloudflare/wrangler.jsonc` (an environment's own path under `opscrew/environments/<env>/`), with the name, the compatibility date, `assets.directory`, `assets.not_found_handling`, `main` and `run_worker_first` for SSR, `workers_dev`, `preview_urls` and `observability`. No secret, no account id. These settings live here, never in Terraform (spike result 1);
+      - `renderHeadersFile(plan)`: `_headers` with OpsCrew's security headers, merged into the site's own `/*` block when it has one (a second `/*` block would replace the first, spike result 5); the site's other rules are kept;
+      - for SSR, `renderHeadersEntry(plan)`: the wrapper module (spike result 5): `export *` from the adapter's entry, and a default export spreading the adapter's (`...worker`) whose `fetch` copies the response and adds OpsCrew's headers where the app set none. `run_worker_first` stays off, so static files keep `_headers` and cost no Worker call;
+      - the config's `compatibility_flags` come from `site.compatibilityFlags`. OpsCrew's own config is used, never the adapter's generated one, so no binding the adapter adds (Astro's `SESSION` and `IMAGES`, OpenNext's self-reference and caches) is created.
     - **`renderDeployment`** dispatches to them. Server targets render byte-identically (snapshots).
     - **Tests:**
       - snapshots: static and SSR on Cloudflare, a promoted Cloudflare environment, GitHub Pages, each with Node and npm, pnpm and Hugo;
@@ -208,7 +226,8 @@ Effort`.
   - Accept:
     - **Detection** (`packages/detect`):
       - the Cloudflare adapters: `@astrojs/cloudflare`, `@opennextjs/cloudflare`, Nitro's `cloudflare_module` preset, `@sveltejs/adapter-cloudflare`;
-      - their entry paths, as spike item 6 found;
+      - their output folders, entry paths and compatibility flags, from research.md's spike result 6 table, written to `site.outputDir`, `site.entry` and `site.compatibilityFlags`;
+      - Next.js's `cacheComponents` and `partialPrefetching`, which make server-rendered requests hang on Workers (spike result 6): with either on, `adapt` turns them off, or design says why the Cloudflare option needs that;
       - Hugo (`hugo.toml`, `config.toml` with `content/`), a static site with no build (an `index.html` at the root and no package.json), the package manager and Node version;
       - the site's own `_headers`, `_redirects` and `404.html`;
       - long-running server needs the facts already show (WebSockets held open, background work).
@@ -220,6 +239,7 @@ Effort`.
       - **A domain whose DNS isn't on Cloudflare:** design offers `domain connect`, as it does for servers.
       - `targetFor` and `optionToPlan` write the target, the `site` block, `worker = app.name`, the `notFound` default (SPA for a single-page app, `404-page` when the site has a `404.html`), and the `dns` rules T1601a checks.
     - **The interview's provider question** offers "Cloudflare (no server)" and "GitHub Pages (no server)" where they fit.
+    - **What T1601a left to design** (its report): replace the entry refusals in design and the interview with real branches. `deployStrategyFor`, `dragonflyFits`, `refuseDeepDomain`, `isUnpriced`, the CLI interview's `nextStep` default and the options table must not assume a server. Design writes `security.wafCustomRules: false` for GitHub Pages, since the schema defaults it to true and refuses that there.
     - **Profiles** next to Portainer's and localhost's, outside `VPS_PROVIDERS` and `vpsConnector`.
     - **`init`:** when either target is in use, it checks the Cloudflare token's Workers permissions (`workersPermissions`), the deploy token, and the GitHub token's Pages permission, naming what's missing and where to add it (FR-1610).
     - **The provision seam:** `serverless/index.ts` exports `provisionCloudflareWorkers` and `provisionGithubPages`, each refusing with "not available yet" until T1608 and T1609. `provision/run.ts` dispatches to them before `requireDockerfile`.
@@ -238,7 +258,7 @@ Effort`.
       3. a DNS record already at a hostname, refused with its name, as for servers;
       4. the IaC plan (the Worker's shell and custom domains, `iac-apply`);
       5. the `www` redirect rule (`cloudflare-apply`), when `www` is on;
-      6. the shared WAF rules as spike item 10 settled;
+      6. the shared WAF rule (011), which applies to the Worker's custom domains (spike result 10);
       7. the deploy secrets (`github-secrets`): the deploy token, the account id, and the app's values;
       8. the generated files and the workflow in the deploy-setup pull request;
       9. the record (`deploymentRecord`).
@@ -315,7 +335,8 @@ Effort`.
       - **A Cloudflare promotion** (`deploySource.from: promote`): the source's running version → its run id and SHA-256 from the version's message → the `promote` approval, whose hash covers the target plan hash, both environments, the run id and the SHA-256 → `dispatchWorkflow` with `run` and `sha256`. A version without OpsCrew's message, or an expired artifact, is refused with what to do.
       - **A rollback, any environment:** `version`. On Cloudflare it activates that version of the environment's own Worker through `deployWorkerVersion`. On GitHub Pages it re-runs that run with `rerunWorkflowRun`. Both need a `promote` approval over the target plan hash and the id.
       - **Refused:** `digest` on these targets, `version` on server targets, and promotion on GitHub Pages (each environment builds its own).
-    - **retarget:** refused to and from both targets (FR-1611).
+    - **retarget:** refused to and from both targets (FR-1611). Its hint names `opscrew destroy`, which works for them after this task.
+    - **Entry refusals T1601a added** in verify, drift, secure, destroy, promote and `env add` are replaced by the real branches (T1610a and this task). `opscrew dns` and `portainer enable`/`disable` stay refused for both targets: provision manages their DNS.
     - **Environments:**
       - a server-less app's environments use prod's target;
       - Cloudflare: each environment has its own Worker and hostname;
@@ -340,7 +361,8 @@ Effort`.
       - Nuxt: the `cloudflare_module` preset;
       - SvelteKit: `@sveltejs/adapter-cloudflare`.
 
-      Each is pinned to the version the spike built, with the package manager's lockfile updated by the package manager in the user's checkout, as `adapt` does today.
+      Each is pinned to the newest adapter release that supports the app's framework version, read from the adapter's peer dependencies (Astro's adapter 14.4 needs astro ^7.4.0, so an app on 7.3 gets 14.3, or a proposed framework upgrade; spike result 6). The package manager updates the lockfile in the user's checkout, as `adapt` does today.
+    - **Astro** also gets `wrangler` as a dev dependency. **Next.js** gets `open-next.config.ts` written by OpsCrew (never `opennextjs-cloudflare migrate`, which waits for a browser login), and `cacheComponents` and `partialPrefetching` turned off when on.
     - **Static apps** need no change, beyond a note when the output directory is unusual.
     - **No adapter is proposed** for a framework outside the four.
     - **Tests:** the four playbooks against `examples/astro-ssr`, `examples/nuxt-ssr`, `examples/sveltekit-ssr` and a Next.js fixture (snapshots of the proposed diffs).

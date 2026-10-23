@@ -21,6 +21,7 @@ type Site = {
   command?: string;                     // required with node and hugo, refused with none
   outputDir: string;                    // repository path
   entry?: string;                       // Cloudflare ssr only, required there
+  compatibilityFlags: string[];         // Cloudflare ssr only, default []
 };
 // DeployTargetSchema gains both; DeployProviderSchema gains "cloudflare-workers" and "github-pages".
 // onServer(plan) is true only for the cloud and own targets.

@@ -34,6 +34,42 @@
 | `command` | a command line | The build command. Required with `node` and `hugo`, refused with `none`. |
 | `outputDir` | a repository path | The folder of static files that is uploaded. |
 | `entry` | a repository path | Cloudflare with `render: "ssr"` only, and required there: the Worker module the adapter builds. |
+| `compatibilityFlags` | Cloudflare compatibility flags (`^[a-z0-9_]+# Data model: Server-less targets
+
+## Plan targets (`plan.target`)
+
+**Cloudflare Workers with static assets**
+
+| Field | Type | Rule |
+|---|---|---|
+| `provider` | `"cloudflare-workers"` | |
+| `mode` | `"workers-assets"` | |
+| `worker` | string (Worker name rules: lower case, digits, `-`, up to 63) | Defaults to the app's name. Unique in the account. Another environment is `<app>-<env>`. |
+| `render` | `"static"` or `"ssr"` | `ssr` only with a supported adapter (detected or added by `adapt`). |
+| `notFound` | `"single-page-application"`, `"404-page"` or `"none"` | Defaults: SPA for a single-page app, `404-page` for a static site with a `404.html`. |
+| `workersDev` | boolean, default `false` | The `workers.dev` address. |
+| `previewUrls` | boolean, default `false` | Version URLs. Per-PR previews are feature 020. |
+
+| `site` | the site block below | |
+
+**GitHub Pages**
+
+| Field | Type | Rule |
+|---|---|---|
+| `provider` | `"github-pages"` | |
+| `mode` | `"pages-workflow"` | |
+| `site` | the site block below | `entry` refused |
+
+**The site block (`target.site`)**: how the deploy job builds the site, set by design from detection. It is in `app.buildContext`.
+
+| Field | Type | Rule |
+|---|---|---|
+| `tool` | `"node"`, `"hugo"` or `"none"` | `none`: the files are in the repository as they are. |
+| `packageManager` | `"npm"`, `"pnpm"`, `"yarn"` or `"bun"` | Required with `node`, refused otherwise. |
+| `nodeVersion` | a version such as `24` or `22.12` | With `node`: as the app declares it, else OpsCrew's default. |
+| `command` | a command line | The build command. Required with `node` and `hugo`, refused with `none`. |
+| `outputDir` | a repository path | The folder of static files that is uploaded. |
+), default `[]` | Cloudflare with `render: "ssr"` only: what the adapter needs (`nodejs_compat` for Nuxt; `nodejs_compat` and `global_fetch_strictly_public` for Next.js through OpenNext). |
 
 The app's `env` entries reach the build job as environment variables from GitHub secrets. On Cloudflare with SSR, they also reach the Worker with `wrangler secret bulk`. Design warns when a secret's name has a framework's public prefix (`VITE_`, `PUBLIC_`, `NEXT_PUBLIC_`, `NUXT_PUBLIC_`): its value ends up in the published files.
 
