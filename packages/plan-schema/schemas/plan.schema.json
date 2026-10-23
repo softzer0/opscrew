@@ -443,7 +443,6 @@
                   "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
                 },
                 "compatibilityFlags": {
-                  "default": [],
                   "type": "array",
                   "items": {
                     "type": "string",
@@ -497,7 +496,6 @@
                   "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
                 },
                 "compatibilityFlags": {
-                  "default": [],
                   "type": "array",
                   "items": {
                     "type": "string",

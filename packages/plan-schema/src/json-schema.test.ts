@@ -64,7 +64,6 @@ describe("JSON Schema export", () => {
                   properties: {
                     tool: { enum: ["node", "hugo", "none"] },
                     compatibilityFlags: {
-                      default: [],
                       type: "array",
                       items: { type: "string", pattern: "^[a-z0-9_]+$" },
                     },

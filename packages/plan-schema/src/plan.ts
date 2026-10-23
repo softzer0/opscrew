@@ -149,7 +149,8 @@ export const SiteSchema = z
     entry: RepoPathSchema.optional(),
     /**
      * The Cloudflare compatibility flags the adapter's Worker needs, such as `nodejs_compat`, for
-     * server rendering on Cloudflare only. Design sets them from the framework's adapter.
+     * server rendering on Cloudflare only. Design sets them from the framework's adapter. Absent
+     * (or empty) means none.
      */
     compatibilityFlags: z
       .array(
@@ -158,7 +159,7 @@ export const SiteSchema = z
             "must be a Cloudflare compatibility flag such as `nodejs_compat`: lower-case letters, digits and underscores",
         }),
       )
-      .default(() => []),
+      .optional(),
   })
   .superRefine((site, ctx) => {
     const node = site.tool === "node";
@@ -234,12 +235,12 @@ export const CloudflareWorkersTargetSchema = z
           : 'is refused with render "static": a static site runs no server code (Cloudflare with render "ssr" only, and required there)',
       });
     }
-    if (!ssr && target.site.compatibilityFlags.length > 0) {
+    if (!ssr && (target.site.compatibilityFlags ?? []).length > 0) {
       ctx.addIssue({
         code: "custom",
         path: ["site", "compatibilityFlags"],
         message:
-          'must be empty with render "static": compatibility flags are for server-rendered apps on Cloudflare',
+          'is refused with render "static": compatibility flags are for server-rendered apps on Cloudflare',
       });
     }
   });
@@ -263,12 +264,12 @@ export const GithubPagesTargetSchema = z
           'is refused with GitHub Pages: it serves static files only and runs no server code (Cloudflare with render "ssr" only)',
       });
     }
-    if (target.site.compatibilityFlags.length > 0) {
+    if ((target.site.compatibilityFlags ?? []).length > 0) {
       ctx.addIssue({
         code: "custom",
         path: ["site", "compatibilityFlags"],
         message:
-          "must be empty with GitHub Pages: compatibility flags are for server-rendered apps on Cloudflare",
+          "is refused with GitHub Pages: compatibility flags are for server-rendered apps on Cloudflare",
       });
     }
   });
@@ -509,12 +510,15 @@ export function likelyCloudflareZone(domain: string): string {
 /**
  * Every name Cloudflare's proxy serves for the app must be the zone or one label below it (see
  * {@link cloudflareEdgeCoverage}): the domain when proxied or behind the tunnel, its `www.` alias
- * then, and a Portainer subdomain. DNS-only names get Caddy's own certificates and are unaffected.
+ * then, and a Portainer subdomain. DNS-only names get Caddy's own certificates and are unaffected,
+ * and so are the server-less targets: a Worker's custom domain gets a certificate of its own, and
+ * GitHub issues GitHub Pages' certificates.
  */
 function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const { dns, target, portainer } = plan;
   const zone = dns.zone;
   if (dns.provider !== "cloudflare" || zone === undefined) return;
+  if (target.provider === "cloudflare-workers" || target.provider === "github-pages") return;
   const ownTunnel = target.provider === "own" && target.access === "tunnel";
   const portainerTunnel = target.provider === "portainer" && target.web?.mode === "tunnel";
   const served = dns.proxied || ownTunnel || portainerTunnel;

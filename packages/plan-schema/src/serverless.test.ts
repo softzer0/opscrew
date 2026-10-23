@@ -36,8 +36,6 @@ const ssrSite = {
   entry: "dist/_worker.js/index.js",
   compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
 } as const;
-/** `site` as parsing fills it: no compatibility flags unless it names some. */
-const withDefaults = (site: object) => ({ compatibilityFlags: [], ...site });
 
 const cloudflare = (overrides: Record<string, unknown> = {}) => ({
   provider: "cloudflare-workers",
@@ -100,12 +98,7 @@ function issues(result: ReturnType<typeof DeployPlanSchema.safeParse>) {
 describe("the Cloudflare hosting target", () => {
   it("records the Worker, the rendering, the not-found handling and the site, with no server", async () => {
     const parsed = DeployPlanSchema.parse(await serverlessPlan(cloudflare()));
-    expect(parsed.target).toEqual({
-      ...cloudflare(),
-      site: withDefaults(staticSite),
-      workersDev: false,
-      previewUrls: false,
-    });
+    expect(parsed.target).toEqual({ ...cloudflare(), workersDev: false, previewUrls: false });
     expectTypeOf<CloudflareWorkersDeployTarget>().toEqualTypeOf<{
       provider: "cloudflare-workers";
       mode: "workers-assets";
@@ -116,32 +109,31 @@ describe("the Cloudflare hosting target", () => {
       previewUrls: boolean;
       site: Site;
     }>();
-    for (const [overrides, site] of [
-      [{ notFound: "404-page", workersDev: true, previewUrls: true }, staticSite],
-      [{ notFound: "none" }, staticSite],
-      [{ render: "ssr", site: ssrSite }, ssrSite],
-    ] as const) {
-      const variant = cloudflare(overrides);
+    for (const variant of [
+      cloudflare({ notFound: "404-page", workersDev: true, previewUrls: true }),
+      cloudflare({ notFound: "none" }),
+      cloudflare({ render: "ssr", site: ssrSite }),
+    ]) {
       expect(DeployPlanSchema.parse(await serverlessPlan(variant)).target).toEqual({
         workersDev: false,
         previewUrls: false,
         ...variant,
-        site: withDefaults(site),
       });
     }
   });
 
   it("round-trips a static and a server-rendered plan through plan.yaml unchanged", async () => {
+    const texts: string[] = [];
     for (const target of [cloudflare(), cloudflare({ render: "ssr", site: ssrSite })]) {
       const plan = DeployPlanSchema.parse(await serverlessPlan(target));
       const text = serializeArtifact("plan", plan);
       expect(text).toContain("provider: cloudflare-workers");
       expect(parseArtifact("plan", text, "plan.yaml")).toEqual(plan);
+      texts.push(text);
     }
-    const ssr = DeployPlanSchema.parse(
-      await serverlessPlan(cloudflare({ render: "ssr", site: ssrSite })),
-    );
-    expect(serializeArtifact("plan", ssr)).toContain(
+    // Only the server-rendered site names compatibility flags: absent means none.
+    expect(texts[0]).not.toContain("compatibilityFlags");
+    expect(texts[1]).toContain(
       "    compatibilityFlags:\n      - nodejs_compat\n      - global_fetch_strictly_public\n",
     );
   });
@@ -216,7 +208,8 @@ describe("the Cloudflare hosting target", () => {
 describe("the GitHub Pages target", () => {
   it("records the site only, and round-trips through plan.yaml unchanged", async () => {
     const plan = DeployPlanSchema.parse(await serverlessPlan(pages()));
-    expect(plan.target).toEqual({ ...pages(), site: withDefaults(pages().site) });
+    expect(plan.target).toEqual(pages());
+    expect(serializeArtifact("plan", plan)).not.toContain("compatibilityFlags");
     expectTypeOf<GithubPagesDeployTarget>().toEqualTypeOf<{
       provider: "github-pages";
       mode: "pages-workflow";
@@ -273,9 +266,7 @@ describe("the site block", () => {
       { tool: "none", outputDir: "." },
     ]) {
       const parsed = DeployPlanSchema.parse(await serverlessPlan(pages({ site })));
-      expect(parsed.target.provider === "github-pages" && parsed.target.site).toEqual(
-        withDefaults(site),
-      );
+      expect(parsed.target.provider === "github-pages" && parsed.target.site).toEqual(site);
     }
   });
 
@@ -370,7 +361,7 @@ describe("compatibility flags", () => {
     expect(issues(static_)).toEqual([
       {
         path: "target.site.compatibilityFlags",
-        message: `must be empty with render "static": ${message}`,
+        message: `is refused with render "static": ${message}`,
       },
     ]);
     const site = { tool: "none", outputDir: ".", compatibilityFlags: ["nodejs_compat"] };
@@ -378,9 +369,20 @@ describe("compatibility flags", () => {
     expect(issues(github)).toEqual([
       {
         path: "target.site.compatibilityFlags",
-        message: `must be empty with GitHub Pages: ${message}`,
+        message: `is refused with GitHub Pages: ${message}`,
       },
     ]);
+  });
+
+  it("are none when absent or empty", async () => {
+    for (const target of [
+      cloudflare({ site: { ...staticSite, compatibilityFlags: [] } }),
+      cloudflare({ render: "ssr", site: { ...staticSite, entry: "dist/_worker.js/index.js" } }),
+      pages({ site: { tool: "none", outputDir: ".", compatibilityFlags: [] } }),
+    ]) {
+      const result = DeployPlanSchema.safeParse(await serverlessPlan(target));
+      expect(result.success, JSON.stringify(target)).toBe(true);
+    }
   });
 
   it("are Cloudflare flag names", async () => {
@@ -425,6 +427,19 @@ describe("the plan's rules for the server-less targets", () => {
     expect(issues(DeployPlanSchema.safeParse({ ...plan, dns: noDomain }))).toEqual([
       { path: "dns.domain", message: 'is required when dns.provider is "cloudflare"' },
     ]);
+  });
+
+  it.each(targets)("%s serves a hostname two levels below the zone", async (_name, target) => {
+    // A Worker's custom domain gets a certificate of its own, and GitHub issues GitHub Pages'
+    // certificates: Cloudflare's free certificate, which reaches one level, is not involved.
+    const plan = await serverlessPlan(target);
+    const dns = { ...plan.dns, domain: "docs.shop.example.com", www: true };
+    const parsed = DeployPlanSchema.parse({
+      ...plan,
+      dns,
+      deployment: { url: "https://docs.shop.example.com" },
+    });
+    expect(parsed.dns).toMatchObject({ domain: "docs.shop.example.com", zone: "example.com" });
   });
 
   it("keeps a Worker's custom domain behind Cloudflare's proxy", async () => {
