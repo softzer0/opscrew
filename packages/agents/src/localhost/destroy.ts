@@ -3,7 +3,8 @@
  * app on this computer, found by Compose's labels and OpsCrew's folder names: its containers and
  * networks, its folder and its files on the edge, the edge itself with the computer's last OpsCrew
  * app, and the volumes only with `--delete-data`. A teardown local plan, approved by its hash with
- * the app's name typed (`host-apply`, `allowDestroy`).
+ * the app's name typed (`host-apply`, `allowDestroy`). With the local runner, also the deploy
+ * secrets its provision stored at GitHub (and the GitHub environment OpsCrew created for them).
  */
 import { join } from "node:path";
 import type { ApprovalRecord } from "@opscrew/contracts";
@@ -11,8 +12,16 @@ import { exists, listText, OpsCrewError } from "@opscrew/core";
 import { EDGE_PROJECT, edgeProxy, runtimeDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { nothingDeployed, recordTeardown } from "../destroy/common";
+import {
+  deploySecretsLeft,
+  type GitHubTarget,
+  nothingDeployed,
+  recordTeardown,
+  removeDeploySecrets,
+  resolveGitHub,
+} from "../destroy/common";
 import type { DestroyOptions, DestroyResult } from "../destroy/types";
+import { readSecretsRecord } from "../provision/secrets";
 import { hasDeployment, PlanRefusedError } from "../shared";
 import { caTrusted } from "./ca";
 import { networkExists, projectObjects } from "./docker";
@@ -157,7 +166,8 @@ async function teardownPlan(
  * deployed here; shows what it removes (and what stays); asks for the `host-apply` approval of its
  * local plan with the app's name typed; then, under the deploy lock, plans it again and refuses
  * unless it is still the approved plan (another app may have come to share the edge meanwhile),
- * removes it all and records the deployment as destroyed. The data volumes stay unless
+ * removes it all, removes the deploy secrets the secrets record names (`removeDeploySecrets`, only
+ * with a record) and records the deployment as destroyed. The data volumes stay unless
  * `deleteData`; a later `--delete-data` run removes them.
  * @throws OpsCrewError `PHASE_PRECONDITION` when nothing of the app is on this computer or it is
  * another project's, `PLAN_HASH_MISMATCH` when the teardown changed since its approval.
@@ -175,6 +185,9 @@ export async function destroyLocalhost(
   deps.reporter.step("Reading what OpsCrew created for the app on this computer (read-only)");
   const first = await teardownPlan(deps, plan, deleteData);
   if (first.plan.items.length === 0 && !hasDeployment(plan)) throw nothingDeployed(plan);
+  // Only a provision with the local runner stored deploy secrets at GitHub (its record names them).
+  const stored = (await readSecretsRecord(deps)) !== undefined;
+  const github: GitHubTarget = stored ? await resolveGitHub(deps, options.services ?? {}) : {};
   await saveLocalPlan(deps.paths, first.plan, first.hash);
   const details = [
     describeLocalPlan(first.plan, first.hash),
@@ -247,6 +260,13 @@ export async function destroyLocalhost(
     });
     approval = granted;
   }
+  const secretsRemoved = stored
+    ? await removeDeploySecrets(deps, github, {
+        plan,
+        done: "The app is removed from this computer.",
+        reach: "this computer",
+      })
+    : [];
   await forgetServedSite(deps.paths);
   await recordTeardown(deps, plan, [approval], {
     summary: "removed from this computer by `opscrew destroy`",
@@ -255,8 +275,9 @@ export async function destroyLocalhost(
   deps.reporter.success(`Removed ${plan.app.name} from this computer.`);
   return {
     destroyed: [],
-    secretsRemoved: [],
+    secretsRemoved,
     remaining: [
+      ...deploySecretsLeft(github, { plan, removed: secretsRemoved }),
       ...(first.kept.length > 0
         ? [
             `The data volumes (${listText(first.kept)}): \`opscrew destroy --delete-data\` removes them.`,

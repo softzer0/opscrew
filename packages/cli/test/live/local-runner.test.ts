@@ -32,6 +32,7 @@ import {
   expectNoRunner,
   jobsOnRunner,
   opscrewUntilApproved,
+  secretsRecord,
   waitForRunner,
 } from "./environment-checks";
 import { LiveRun, serverSettings } from "./harness";
@@ -357,9 +358,12 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "6. destroy --env dev removes the local stack: nothing of it is left in Docker",
+      "6. destroy --env dev removes the local stack and its GitHub secrets: nothing of it is left in Docker or at GitHub",
       minutes(20),
       async () => {
+        // The local runner's provision stored dev's deploy secrets; the destroy removes them all.
+        const record = await secretsRecord(run.paths(DEV));
+        expect(record, "dev's record of the deploy secrets its provision stored").toBeDefined();
         await opscrewUntilApproved(run, [
           "destroy",
           "--env",
@@ -376,6 +380,7 @@ describe.skipIf(MISSING.length > 0)(
             volumes: [],
           });
         }
+        if (record !== undefined) await envs.expectSecretsGone(DEV, record);
       },
     );
 
