@@ -1292,10 +1292,9 @@ if nothing uses it; and any runner process still running from the run's folder.
 | `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP` | Optional, as above (examples only). |
 
 Requirements: Docker running here with Linux containers, and on Windows Git for Windows' `bash`.
-GitHub's registry must already have an image of the repository labelled `opscrew-prod`: dev runs
-prod's image until its own first deploy, and prod is never deployed here. A pass that deploys prod
-in the same repository (the server's runner) leaves one; without it, `provision --env dev` stops
-and says so. Keep `OPSCREW_TEST_TMP` short on Windows: the runner's work folder is inside it.
+dev's first provision starts from an image built here (the example builds from its Dockerfile),
+since dev has no image of its own before its first deploy (FR-1540). Keep `OPSCREW_TEST_TMP` short
+on Windows: the runner's work folder is inside it.
 
 ```bash
 pnpm --filter opscrew build
