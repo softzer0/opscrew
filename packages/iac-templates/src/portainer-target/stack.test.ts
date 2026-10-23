@@ -19,7 +19,6 @@ import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
   PORTAINER_IMAGE_PLACEHOLDER,
-  PORTAINER_STACK_TEMPLATE_PATH,
   PORTAINER_STACK_VARIABLES,
   PORTAINER_VERSION_PLACEHOLDER,
   portainerConnectorStackName,
@@ -119,7 +118,6 @@ const fullStack = stack(fullFile.content);
 
 describe("renderPortainerStack", () => {
   it("is the template at opscrew/runtime/compose.yaml named opscrew-<app>", () => {
-    expect(fullFile.path).toBe(PORTAINER_STACK_TEMPLATE_PATH);
     expect(fullFile.path).toBe("opscrew/runtime/compose.yaml");
     expect(fullFile.kind).toBe("runtime");
     expect(fullStack.name).toBe("opscrew-shop");

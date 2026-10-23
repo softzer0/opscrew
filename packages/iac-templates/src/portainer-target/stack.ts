@@ -54,9 +54,6 @@ export function portainerDeployBranch(plan: DeployPlan): string {
 /** The stack file on {@link portainerDeployBranch} (Portainer's `ComposeFile`). */
 export const PORTAINER_COMPOSE_FILE = "compose.yaml";
 
-/** Prod's {@link portainerStackTemplatePath}. */
-export const PORTAINER_STACK_TEMPLATE_PATH = "opscrew/runtime/compose.yaml";
-
 /**
  * Where the app stack's template is committed, `<runtimeDir>/compose.yaml`; the deploy workflow
  * fills it in.

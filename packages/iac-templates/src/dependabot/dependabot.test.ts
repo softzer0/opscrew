@@ -4,7 +4,7 @@ import { parse } from "yaml";
 import { designProbe, testPlan } from "../__fixtures__/plans";
 import { SERVICE_SPECS } from "../catalog";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
-import { PORTAINER_STACK_TEMPLATE_PATH } from "../portainer-target/stack";
+import { portainerStackTemplatePath } from "../portainer-target/stack";
 import { inEnvironment } from "../workflow/__fixtures__/plans";
 import { NO_MAJOR_UPDATES, renderDependabot } from "./index";
 
@@ -157,7 +157,7 @@ describe("renderDependabot", () => {
   it("watches a Portainer target's stack template, committed in opscrew/runtime", () => {
     // Dependabot reads only the default branch. The deploy-setup pull request commits the stack
     // template there; the `opscrew-deploy` branch only gets the copy with each new image.
-    expect(PORTAINER_STACK_TEMPLATE_PATH).toBe("opscrew/runtime/compose.yaml");
+    expect(portainerStackTemplatePath(portainerTestPlan())).toBe("opscrew/runtime/compose.yaml");
     expect(entries(updates(facts({}), portainerTestPlan()))).toContain(
       "docker-compose /opscrew/runtime,/opscrew/runtime/cloudflared,/opscrew/runtime/portainer",
     );

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { ORIGIN_PULL_PEM } from "../edge";
+import { originPullPem } from "../edge";
 import type { RuntimeContext } from "../runtime";
 import { DEPLOY_SECRETS, renderWorkflow } from "./index";
 
@@ -60,7 +60,7 @@ describe("the deploy with origin TLS", () => {
 
   it("uploads pull.pem with the edge's files and puts all three in place under the lock, before the site", () => {
     // opscrew/runtime/edge lands in the app's folder as edge/, with tls/pull.pem in it.
-    expect(ORIGIN_PULL_PEM).toBe("opscrew/runtime/edge/tls/pull.pem");
+    expect(originPullPem(plan)).toBe("opscrew/runtime/edge/tls/pull.pem");
     expect(upload(plan, origin).run).toMatch(
       / opscrew\/runtime\/edge "deploy@\$\{HOST\}:\/srv\/apps\/shop\/"\n/,
     );

@@ -150,9 +150,6 @@ export function originPullPem(plan: DeployPlan): string {
   return `${runtimeDir(plan)}/edge/tls/pull.pem`;
 }
 
-/** Prod's {@link originPullPem}. */
-export const ORIGIN_PULL_PEM = "opscrew/runtime/edge/tls/pull.pem";
-
 /**
  * Caddy's main configuration: with Cloudflare's `ranges`, global options that take the client's
  * address from `CF-Connecting-IP` on requests from them; on this computer (`local`), global
