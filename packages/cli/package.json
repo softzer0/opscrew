@@ -44,7 +44,7 @@
     "test": "vitest run --passWithNoTests",
     "build": "tsup",
     "dev": "tsx src/bin.ts",
-    "prepack": "node -e \"for (const f of ['README.md', 'LICENSE', 'NOTICE']) require('node:fs').copyFileSync('../../' + f, f)\"",
+    "prepack": "node scripts/prepack.mjs",
     "postpack": "node -e \"for (const f of ['README.md', 'LICENSE', 'NOTICE']) require('node:fs').rmSync(f, { force: true })\""
   },
   "dependencies": {
