@@ -13,7 +13,7 @@ import { applyLocal } from "./apply";
 import { caFiles } from "./ca";
 import { destroyLocalhost } from "./destroy";
 import { ghcrReadCredential } from "./image";
-import { withLocalLock } from "./lock";
+import { busyLockFile, withLocalLock } from "./lock";
 import { localPlanFile, planLocal } from "./plan";
 import { appFolder, localRoots } from "./services";
 
@@ -494,12 +494,22 @@ describe("planLocal and applyLocal", () => {
 });
 
 describe("the local deploy lock", () => {
+  it("tries a lock file Windows still holds again, and nowhere else", () => {
+    expect(busyLockFile("EPERM", "win32")).toBe(true);
+    expect(busyLockFile("EBUSY", "win32")).toBe(true);
+    expect(busyLockFile("EEXIST", "win32")).toBe(false);
+    expect(busyLockFile("EPERM", "linux")).toBe(false);
+    expect(busyLockFile("EACCES", "darwin")).toBe(false);
+  });
+
   it("serialises deploys, and takes over a lock its process left behind", async () => {
     const { deps } = await localProject(localPlan(), new FakeComputer());
     const order: string[] = [];
     let waits = 0;
-    const sleep = async () => {
+    // Short real waits: Windows may still hold a lock file just deleted (see `busyLockFile`).
+    const sleep = async (ms: number) => {
       waits += 1;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(ms, 50)));
     };
     let release: () => void = () => {};
     const first = withLocalLock(deps.paths, sleep, async () => {

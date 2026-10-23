@@ -5,6 +5,18 @@ import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
 /** How long a deploy waits for another one on this computer, in 2-second tries (10 minutes). */
 const TRIES = 300;
 
+/** How often a lock file Windows still holds is tried again, 200 ms apart. */
+const BUSY_TRIES = 10;
+
+/**
+ * True for an error Windows gives while a lock file just deleted or written is still held, by its
+ * pending deletion or a scanner such as Defender: `EPERM` or `EBUSY` where another system would
+ * succeed or say `EEXIST`. Elsewhere those codes mean a real permission problem.
+ */
+export function busyLockFile(code: string | undefined, platform: NodeJS.Platform): boolean {
+  return platform === "win32" && (code === "EPERM" || code === "EBUSY");
+}
+
 /** `<OpsCrew home>/local/deploy.lock`: held while a local deploy or teardown runs. */
 export function lockFile(paths: Pick<ProjectPaths, "homeDir">): string {
   return join(paths.homeDir, "local", "deploy.lock");
@@ -44,6 +56,7 @@ export async function withLocalLock<T>(
 ): Promise<T> {
   const file = lockFile(paths);
   await mkdir(dirname(file), { recursive: true });
+  let busy = 0;
   for (let tries = 0; ; tries += 1) {
     try {
       const handle = await open(file, "wx");
@@ -51,7 +64,13 @@ export async function withLocalLock<T>(
       await handle.close();
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (busyLockFile(code, process.platform) && busy < BUSY_TRIES) {
+        busy += 1;
+        await sleep(200);
+        continue;
+      }
+      if (code !== "EEXIST") throw error;
       if (await stale(file)) {
         await rm(file, { force: true });
         continue;
