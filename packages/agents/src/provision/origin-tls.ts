@@ -594,9 +594,11 @@ export async function deployRenewedCertificate(
   const workflow = posix.basename(plan.cicd.workflowPath);
   const { branch } = plan.cicd;
   const { owner, repo } = github;
+  let accepted = false;
   // Recorded as soon as GitHub accepts the dispatch, so a wait for its run that times out keeps it.
-  const accepted = () =>
-    deps.audit.append({
+  const onAccepted = () => {
+    accepted = true;
+    return deps.audit.append({
       kind: "provider-call",
       actor: "opscrew",
       action: "dispatch workflow",
@@ -605,13 +607,16 @@ export async function deployRenewedCertificate(
       decision: "approved",
       detail: `${workflow} on ${branch}: the renewed origin certificate`,
     });
+  };
   try {
-    await github.api.dispatchWorkflow(owner, repo, workflow, branch, {}, accepted);
+    await github.api.dispatchWorkflow(owner, repo, workflow, branch, {}, onAccepted);
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     deps.reporter.warn(
       deps.redactor.redact(
-        `OpsCrew could not start the deploy workflow (${error.message}), so the server still serves the previous origin certificate. Run ${workflow} on ${branch} in GitHub Actions to bring it the new one.`,
+        accepted
+          ? `GitHub accepted the start of the deploy workflow (${workflow} on ${branch}), but OpsCrew could not find its run (${error.message}). Look for the run at https://github.com/${owner}/${repo}/actions: it brings the renewed origin certificate to the server; if there is none, run ${workflow} on ${branch} there.`
+          : `OpsCrew could not start the deploy workflow (${error.message}), so the server still serves the previous origin certificate. Run ${workflow} on ${branch} in GitHub Actions to bring it the new one.`,
       ),
     );
     return;

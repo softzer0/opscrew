@@ -10,8 +10,10 @@ import { renderEdgeSite, renderPortainerStack } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ownPlan, portainerPlan, testPlan } from "../testing";
+import type { GitHubSetup } from "./credentials";
 import {
   clientCertificateWarning,
+  deployRenewedCertificate,
   edgeReadCommand,
   edgeSwitch,
   keepCertificateRequest,
@@ -440,5 +442,37 @@ describe("stackServed: what a Portainer stack serves", () => {
     expect(stackServed(undefined, record, { held: undefined, fingerprint: "f" })).toEqual({
       requiring: [],
     });
+  });
+});
+
+describe("deployRenewedCertificate's warnings", () => {
+  const plan = testPlan({ domain: "example.com" });
+  /** A GitHub whose dispatch fails, after accepting it when `accepts`. */
+  const github = (accepts: boolean) => ({
+    owner: "acme",
+    repo: "shop",
+    api: {
+      dispatchWorkflow: async (...args: unknown[]) => {
+        if (accepts) await (args[5] as () => Promise<void>)();
+        throw new OpsCrewError("PROVIDER_ERROR", "no run showed up");
+      },
+    } as unknown as GitHubSetup["api"],
+  });
+
+  it("says the dispatch was not started when GitHub refused it", async () => {
+    const deps = await createTestPhaseDeps();
+    await deployRenewedCertificate(deps, github(false), plan, "provision");
+    expect(deps.reporter.text()).toContain("OpsCrew could not start the deploy workflow");
+    expect(deps.audit.entries).toHaveLength(0);
+  });
+
+  it("says GitHub accepted it, and where to look, when no run showed up", async () => {
+    const deps = await createTestPhaseDeps();
+    await deployRenewedCertificate(deps, github(true), plan, "provision");
+    const text = deps.reporter.text();
+    expect(text).toContain("GitHub accepted the start of the deploy workflow");
+    expect(text).toContain("https://github.com/acme/shop/actions");
+    expect(text).not.toContain("could not start");
+    expect(deps.audit.entries).toHaveLength(1);
   });
 });
