@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloudTarget, edgeProxy, renderDeployment } from "@opscrew/iac-templates";
+import { cloudTarget, edgeProxy } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -247,7 +247,8 @@ describe.each([
     return deps;
   }
 
-  it("is a bug in OpsCrew where a server's provider, files or proxy are needed", () => {
+  // `renderDeployment` renders these targets since T1605 and T1606 (iac-templates tests them).
+  it("is a bug in OpsCrew where a server's provider or proxy is needed", () => {
     const plan = serverlessPlan();
     const provider = plan.target.provider;
     for (const attempt of [
@@ -255,12 +256,6 @@ describe.each([
       () => requestedProvider({ provider }),
       () => cloudTarget(plan.target),
       () => edgeProxy(plan),
-      () =>
-        renderDeployment(plan, {
-          opscrewVersion: "0.0.0-test",
-          github: { owner: "example", repo: "example-app" },
-          deploySshPublicKey: "",
-        }),
     ]) {
       expect(refusal(attempt)).toMatchObject({
         ...BUG,
