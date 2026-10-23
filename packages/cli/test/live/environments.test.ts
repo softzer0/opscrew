@@ -277,6 +277,14 @@ describe.skipIf(MISSING.length > 0)(
         await run.opscrewOk("verify", "--env", "prod");
         await expectProdUnchanged("staging's destroy");
         await envs.expectSecretsPlaced("prod");
+        // Prod is still promoted from staging, so staging's files stay until prod has another source.
+        const refused = await run.opscrew("env", "remove", STAGING, "--confirm", STAGING);
+        expect(
+          refused.exitCode,
+          `env remove refuses staging while prod is promoted from it:\n${run.tail(refused.output)}`,
+        ).not.toBe(0);
+        expect(refused.output, "the refusal names the fix").toContain("env set prod --from");
+        await run.opscrewOk("env", "set", "prod", "--from", "main");
         await run.opscrewOk("env", "remove", STAGING, "--confirm", STAGING);
       },
     );

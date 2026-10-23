@@ -1017,7 +1017,7 @@ Hetzner token here (`HCLOUD_TOKEN`), as a user's run does.
    no failed request to prod (with the same exception). Nothing of staging is left at Hetzner, none of its deploy secrets is
    left at GitHub, the GitHub environment OpsCrew created for it is gone, and no DNS record is left
    on its hostnames. Prod still answers, `verify --env prod` passes, its plan hash is unchanged
-   and provision has nothing to approve for it. `env remove staging --confirm staging` follows.
+   and provision has nothing to approve for it. `env remove staging --confirm staging` must then refuse, naming `env set prod --from`, since prod is still promoted from staging; after `env set prod --from main` it removes staging's files.
 8. **Prod destroyed:** nothing of the app is left at Hetzner or in Cloudflare, and none of prod's
    deploy secrets at GitHub.
 9. **Nothing leaked:** no known secret is in any CLI output, commit (every branch), pull request
