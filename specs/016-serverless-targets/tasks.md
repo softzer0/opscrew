@@ -247,6 +247,7 @@ Effort`.
       - the proxy additions (`opscrew/apps/<key>/proxy/…`);
       - the storage and verification roots.
     - **dependabot** renders entries for every app's folders.
+    - **The GHCR image in shell** (T1617a's report): `ghcrImageFor` lower-cases its whole result, so the workflows keep `${GITHUB_REPOSITORY,,}` and append `/<key>` themselves for a further app.
     - **The first app's output is byte-identical** (every existing snapshot unchanged).
     - **Tests:** a further app's static Cloudflare workflow, a server workflow, and dependabot with two apps.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
@@ -260,7 +261,8 @@ Effort`.
     - **`addApp(root, key, dir)`:** checks the folder holds a deployable app (detection's candidates) and the uniqueness of every derived name; writes the app record `opscrew/apps/<key>/app.yaml` (`{ schemaVersion: 1, dir }`); the interview later fills `requirements.yaml`'s `appDir` from it, so no reader sees partial requirements. `listApps`, and `removeApp`, which is refused while the app is deployed.
     - **`resolveApp`:** like `resolveEnvironment`, with `appFlag` for suggested commands.
     - **Phase deps** take `app` next to `environment`. Analyze and interview read the app's `appDir`. Design writes `app.key`, and `app.name` defaults to the key.
-    - **The two branches** use `appBranch`. Dependabot covers every app. `env add` runs the uniqueness check too.
+    - **The two branches** use `appBranch`. Their numbered fallbacks (`-2`, `-3`) must not collide across keys: app `a`'s `opscrew/prepare-deploy-a-2` is app `a-2`'s first branch, so number after a separator no key can hold, or check the other keys (T1617a's report).
+    - **`environmentPaths(paths, name)`** keeps `paths.app`. `environmentInfraDir` and `environmentWorkflowPath` give way to plan-schema's `infraDirFor` and `workflowPathFor`, and `environmentsOf(root, key)` lists an app's environments (T1617a's report). Dependabot covers every app. `env add` runs the uniqueness check too.
     - **`policy.ts`** denies agent edits to every OpsCrew workflow file pattern, a further app's and environments' included.
     - **Tests:** two apps in one repository end to end on fakes: design and provision of a static Cloudflare app for each; their files, secrets, state and approvals never shared; destroying one leaving the other. Plus the clash refusal.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/core --concurrency=2` and `pnpm lint`
