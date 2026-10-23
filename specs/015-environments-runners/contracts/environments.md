@@ -62,7 +62,7 @@ promote(deps, { target: string; digest?: string; approveHash?: string }): Promis
 ```
 
 1. `source` = the target's `deploySource.source`. `digest` = the given digest, which must be the source's `opscrew-<source>` tag or the target's `opscrew-<target>-previous`, else `taggedDigest("opscrew-<source>")`.
-2. `imageProvenance(digest)` gives the build run from the SLSA v1 provenance (`runDetails.builder.id`, spike result 2). The run must be a `push` run whose head repository is this one (so a fork's pull request cannot pass), and `workflowRun(id)` must show, as `head_branch`, the branch the building environment follows (`builderBranch`: the source chain's environment that builds, its `cicd.branch`), with `head_sha` matching the image's commit tag. The target workflow's verify job checks the same branch, rendered into it at provision. When `supplyChain.sign` is on, the target workflow's verify job checks the cosign signature before its deploy job runs, and fails closed; the approval says so.
+2. `imageFacts(digest)` (one read of the image's index) gives the build run from the SLSA v1 provenance (`runDetails.builder.id`, spike result 2). The run must be a `push` run whose head repository is this one (so a fork's pull request cannot pass), and `workflowRun(id)` must show, as `head_branch`, the branch the building environment follows (`builderBranch`: the source chain's environment that builds, its `cicd.branch`), with `head_sha` matching the image's commit tag. The target workflow's verify job checks the same branch, rendered into it at provision. When `supplyChain.sign` is on, the target workflow's verify job checks the cosign signature before its deploy job runs, and fails closed; the approval says so.
 3. Every difference drift reports that provision would apply must be none (infrastructure, generated files changed or missing, the host plan, Cloudflare rules, the Portainer stack), else `PHASE_PRECONDITION`: "provision --env <target> first". The target's workflow on the default branch must be the one its plan generates: `fileSha` equals the git blob hash of the rendered file.
 4. The approval `{ kind: "promote", planHash: sha256(canonical({ target, source, digest, targetPlanHash })) }`.
 5. `dispatchWorkflow(opscrew-deploy-<target>.yml, defaultBranch, { digest })`, then wait for the run. On success, record the digest in the target's state.
@@ -71,7 +71,7 @@ Refusals (`PHASE_PRECONDITION`, plain English):
 - no deployed source;
 - a digest that isn't the source's or a rollback;
 - a provenance mismatch;
-- an image built for another CPU than the target's (`imagePlatforms(digest)` against `targetArch(target)`), or one whose CPU cannot be read;
+- an image built for another CPU than the target's (`imageFacts(digest).platforms` against `targetArch(target)`), or one whose CPU cannot be read;
 - a target not ready for the source's image (FR-1539), or a rollback to an image that needs a service the target no longer has;
 - pending changes;
 - a target workflow missing on the default branch.
@@ -86,9 +86,9 @@ environmentCapability(owner, repo, probe: string): Promise<{ environments: boole
 environmentPublicKey(owner, repo, env): Promise<{ key_id: string; key: string }>;
 setEnvironmentSecret(owner, repo, env, name, value): Promise<void>;   // sealed locally
 deleteEnvironmentSecret(owner, repo, env, name): Promise<void>;
-dispatchWorkflow(owner, repo, workflowFile, ref, inputs): Promise<{ runId: number; url: string }>;
+dispatchWorkflow(owner, repo, workflowFile, ref, inputs): Promise<{ runId: number; url: string }>;   // sends return_run_details: true; GitHub answers 200 with workflow_run_id (204 without it, a PROVIDER_ERROR)
 taggedDigest(owner, image, tag): Promise<string | undefined>;
-imageProvenance(owner, image, digest): Promise<{ builderId: string; runId?: number; repository?: string } | undefined>;   // SLSA v1 runDetails.builder.id
+imageFacts(owner, image, digest): Promise<{ provenance: { builderId: string; runId?: number; repository?: string }; platforms: { os: string; architecture: string; variant?: string }[] } | undefined>;   // one token and one index read; SLSA v1 runDetails.builder.id
 fileSha(owner, repo, path, ref): Promise<string | undefined>;   // the contents API's blob sha; 404 is undefined
 workflowRun(owner, repo, runId): Promise<{ repository: string; headRepository: string; event: string; headBranch: string; headSha: string; path: string } | undefined>;
 ```
