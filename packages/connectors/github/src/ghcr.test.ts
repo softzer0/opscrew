@@ -401,6 +401,65 @@ describe("imagePlatforms", () => {
     ).toEqual([{ architecture: "arm64", os: "linux" }]);
   });
 
+  it("reads each platform of a Docker manifest list", async () => {
+    const LIST_TYPE = "application/vnd.docker.distribution.manifest.list.v2+json";
+    const list = JSON.stringify({
+      schemaVersion: 2,
+      mediaType: LIST_TYPE,
+      manifests: [
+        {
+          mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+          digest: digestOf("amd64"),
+          size: 1,
+          platform: { architecture: "amd64", os: "linux" },
+        },
+        {
+          mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+          digest: digestOf("arm"),
+          size: 1,
+          platform: { architecture: "arm", os: "linux", variant: "v7" },
+        },
+      ],
+    });
+    const digest = digestOf(list);
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${V2}/manifests/${digest}`]: { text: list, headers: { "content-type": LIST_TYPE } },
+    });
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
+    ).toEqual([
+      { architecture: "amd64", os: "linux" },
+      { architecture: "arm", os: "linux", variant: "v7" },
+    ]);
+  });
+
+  it("refuses a single manifest's config that does not match its digest", async () => {
+    const config = JSON.stringify({ architecture: "arm64", os: "linux" });
+    const manifest = JSON.stringify({
+      schemaVersion: 2,
+      mediaType: MANIFEST_TYPE,
+      config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: digestOf(config) },
+      layers: [],
+    });
+    const digest = digestOf(manifest);
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${V2}/manifests/${digest}`]: { text: manifest, headers: { "content-type": MANIFEST_TYPE } },
+      // Another config than the one the manifest names.
+      [`${V2}/blobs/${digestOf(config)}`]: {
+        text: JSON.stringify({ architecture: "amd64", os: "linux" }),
+      },
+    });
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain(`GHCR sent content for ${digestOf(config)}`);
+  });
+
   it("is undefined for a digest GHCR does not have (404)", async () => {
     const digest = digestOf("gone");
     const { fetch } = fakeFetch({
