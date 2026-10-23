@@ -286,7 +286,6 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
   deps.reporter.step(
     `Running the deploy workflow (${workflowFile} on ${branch}) for the new ${fresh.noun}`,
   );
-  const since = deps.clock.now().toISOString();
   let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
   try {
     // Recorded as soon as GitHub accepts the dispatch, before any wait for its run.
@@ -301,9 +300,8 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
     run = await githubApi.waitForWorkflowRun(owner, repo, {
       workflowFile,
       ref: branch,
-      since,
+      runId,
       timeoutMs: WORKFLOW_WAIT_MS,
-      ...(runId !== undefined ? { runId } : {}),
     });
   } catch (error) {
     throw new OpsCrewError(

@@ -153,13 +153,13 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
   async waitForWorkflowRun(
     _owner: string,
     _repo: string,
-    options: { runId?: number; onWaiting?: (htmlUrl: string) => Promise<void> | void },
+    options: { runId: number; onWaiting?: (htmlUrl: string) => Promise<void> | void },
   ) {
     if (this.waitError !== undefined) throw this.waitError;
     if (this.reviewer !== "none") await options.onWaiting?.(DEPLOY_RUN_URL);
     const waiting = this.reviewer === "pending";
     return {
-      id: options.runId ?? 777,
+      id: options.runId,
       status: waiting ? ("waiting" as const) : ("completed" as const),
       conclusion: waiting ? null : this.conclusion,
       htmlUrl: DEPLOY_RUN_URL,

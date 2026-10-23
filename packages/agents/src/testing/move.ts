@@ -712,11 +712,11 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
     return { runId: 99, url: "https://github.com/acme/shop/actions/runs/99" };
   }
 
-  async waitForWorkflowRun(_owner: string, _repo: string, options: { runId?: number }) {
+  async waitForWorkflowRun(_owner: string, _repo: string, options: { runId: number }) {
     const host = this.secrets.get("OPSCREW_HOST");
     if (this.conclusion === "success" && host !== undefined) this.hostsFake.deploy(host);
     return {
-      id: options.runId ?? 99,
+      id: options.runId,
       conclusion: this.conclusion,
       htmlUrl: "https://github.com/acme/shop/actions/runs/99",
     };

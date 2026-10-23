@@ -409,23 +409,10 @@ function workflowId(workflowFile: string): string {
   return encodeURIComponent(workflowFile.split("/").pop() ?? workflowFile);
 }
 
-/** `since` rounded down to whole seconds: GitHub's `created_at` has no milliseconds. */
-function floorToSecond(iso: string): number {
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) {
-    throw new OpsCrewError("INVALID_INPUT", `"${iso}" is not a valid ISO time.`, {
-      hint: "Pass the time just before the dispatch, for example new Date().toISOString().",
-    });
-  }
-  return Math.floor(ms / 1000) * 1000;
-}
-
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_RUN_POLL_MS = 5_000;
 /** How long a dispatched run may take to show up in GitHub's list (the spike saw 7 seconds). */
 const DISPATCHED_RUN_TIMEOUT_MS = 2 * 60_000;
-/** How far this computer's clock may run ahead of GitHub's when finding a dispatched run. */
-const CLOCK_SKEW_ALLOWANCE_MS = 2 * 60_000;
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -1236,29 +1223,6 @@ export class GitHubClient {
   }
 
   /**
-   * `workflow_dispatch` runs of `workflowFile` on `branch` created at or after `sinceMs`, oldest
-   * first.
-   */
-  async #dispatchRunsSince(
-    owner: string,
-    repo: string,
-    workflowFile: string,
-    branch: string,
-    sinceMs: number,
-  ): Promise<WorkflowRun[]> {
-    const runs = await this.listWorkflowRuns(owner, repo, {
-      workflowFile,
-      branch,
-      event: "workflow_dispatch",
-      createdSince: new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z"),
-      perPage: 10,
-    });
-    return runs
-      .filter((r) => Date.parse(r.createdAt) >= sinceMs)
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id - b.id);
-  }
-
-  /**
    * Starts a `workflow_dispatch` run of `workflowFile` on `ref` with `inputs`, and returns the run
    * it started: the one GitHub's 200 answer names (`workflow_run_id`, `html_url`). After the older
    * 204 answer, it is the first dispatch run of that file on that branch created since the
@@ -1303,8 +1267,19 @@ export class GitHubClient {
     const sinceMs = (Number.isNaN(answered) ? this.#now() : answered) - 1000;
     const branch = ref.replace(/^refs\/heads\//, "");
     const run = await pollAction<WorkflowRun | undefined>({
-      read: async () =>
-        (await this.#dispatchRunsSince(owner, repo, workflowFile, branch, sinceMs))[0],
+      // The oldest dispatch run of the file on the branch since the dispatch.
+      read: async () => {
+        const runs = await this.listWorkflowRuns(owner, repo, {
+          workflowFile,
+          branch,
+          event: "workflow_dispatch",
+          createdSince: new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z"),
+          perPage: 10,
+        });
+        return runs
+          .filter((r) => Date.parse(r.createdAt) >= sinceMs)
+          .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id - b.id)[0];
+      },
       finished: (run) => run !== undefined,
       timedOut: () =>
         new OpsCrewError(
@@ -1322,13 +1297,11 @@ export class GitHubClient {
   }
 
   /**
-   * Waits for a dispatched run to complete: the run `runId` when given, else the newest
-   * `workflow_dispatch` run on `ref` created at or after `since` minus two minutes (allowance for
-   * a local clock ahead of GitHub's; it may take a few polls to appear). Throws a plain
-   * `PROVIDER_ERROR` naming the run link on timeout. With `onWaiting`, a run that waits for a
-   * required reviewer of its environment (status `waiting`) is reported once through it, and a run
-   * still waiting when the time is up is returned with status `waiting` instead of timing out: a
-   * review may take any time. When a run stops waiting, its time starts again.
+   * Waits for the dispatched run `runId` to complete. Throws a plain `PROVIDER_ERROR` naming the
+   * run link on timeout. With `onWaiting`, a run that waits for a required reviewer of its
+   * environment (status `waiting`) is reported once through it, and a run still waiting when the
+   * time is up is returned with status `waiting` instead of timing out: a review may take any
+   * time. When a run stops waiting, its time starts again.
    */
   async waitForWorkflowRun(
     owner: string,
@@ -1336,9 +1309,7 @@ export class GitHubClient {
     options: {
       workflowFile: string;
       ref: string;
-      runId?: number;
-      /** ISO time just before the dispatch. */
-      since: string;
+      runId: number;
       timeoutMs?: number;
       pollMs?: number;
       /** Called once, with the run's link, when the run waits for a required reviewer. */
@@ -1352,33 +1323,14 @@ export class GitHubClient {
   }> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_RUN_POLL_MS;
-    // `since` is this computer's time; GitHub stamps runs with its own clock, so a local clock
-    // ahead of GitHub's would hide the dispatched run. Look a little earlier and take the newest.
-    const sinceMs = floorToSecond(options.since) - CLOCK_SKEW_ALLOWANCE_MS;
-    const branch = options.ref.replace(/^refs\/heads\//, "");
-    const within = durationText(timeoutMs);
     const { onWaiting } = options;
     let deadline = this.#now() + timeoutMs;
-    let runId = options.runId;
     let reported = false;
     // Whether the run waited for a reviewer at the last read.
     let waited = false;
     for (;;) {
-      let run: WorkflowRun | undefined;
-      if (runId !== undefined) {
-        run = await this.getWorkflowRun(owner, repo, runId);
-      } else {
-        const runs = await this.#dispatchRunsSince(
-          owner,
-          repo,
-          options.workflowFile,
-          branch,
-          sinceMs,
-        );
-        run = runs.at(-1);
-        runId = run?.id;
-      }
-      if (run?.status === "completed") {
+      const run = await this.getWorkflowRun(owner, repo, options.runId);
+      if (run.status === "completed") {
         return {
           id: run.id,
           status: "completed",
@@ -1386,7 +1338,7 @@ export class GitHubClient {
           htmlUrl: run.htmlUrl,
         };
       }
-      if (run?.status === "waiting") {
+      if (run.status === "waiting") {
         waited = true;
         if (onWaiting !== undefined && !reported) {
           reported = true;
@@ -1403,24 +1355,15 @@ export class GitHubClient {
         continue;
       }
       // A run still waiting for its reviewer is returned, not a timeout.
-      if (onWaiting !== undefined && run?.status === "waiting") {
+      if (onWaiting !== undefined && run.status === "waiting") {
         return { id: run.id, status: "waiting", conclusion: null, htmlUrl: run.htmlUrl };
       }
-      throw run === undefined
-        ? new OpsCrewError(
-            "PROVIDER_ERROR",
-            `GitHub did not show a run of ${options.workflowFile} on ${branch} within ${within}.`,
-            {
-              hint: `Check the Actions tab of https://github.com/${owner}/${repo} for the run, then run the command again.`,
-            },
-          )
-        : new OpsCrewError(
-            "PROVIDER_ERROR",
-            `The ${options.workflowFile} run on ${branch} did not finish within ${within}.`,
-            {
-              hint: `Follow it at ${run.htmlUrl}, then run the command again once it has finished.`,
-            },
-          );
+      const branch = options.ref.replace(/^refs\/heads\//, "");
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `The ${options.workflowFile} run on ${branch} did not finish within ${durationText(timeoutMs)}.`,
+        { hint: `Follow it at ${run.htmlUrl}, then run the command again once it has finished.` },
+      );
     }
   }
 

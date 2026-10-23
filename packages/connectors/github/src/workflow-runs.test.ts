@@ -258,8 +258,6 @@ describe("getWorkflowRun and listWorkflowRuns", () => {
 });
 
 describe("waitForWorkflowRun", () => {
-  const since = "2026-10-13T10:00:00.250Z";
-
   for (const conclusion of ["success", "failure", "cancelled"]) {
     it(`waits by id through queued and in_progress to ${conclusion}`, async () => {
       const clock = fakeClock();
@@ -274,7 +272,6 @@ describe("waitForWorkflowRun", () => {
         workflowFile: FILE,
         ref: "main",
         runId: 42,
-        since,
         pollMs: 1000,
       });
       expect(result).toEqual({
@@ -287,70 +284,6 @@ describe("waitForWorkflowRun", () => {
       expect(clock.sleeps).toEqual([1000, 1000]);
     });
   }
-
-  it("finds the newest dispatch run since the dispatch when there is no id", async () => {
-    const clock = fakeClock();
-    const { fetch, calls } = fakeFetch({
-      [RUNS]: [
-        { body: { workflow_runs: [] } },
-        {
-          body: {
-            workflow_runs: [
-              run(9, "completed", "success", "2026-10-13T09:59:59Z"),
-              run(10, "queued", null, "2026-10-13T10:00:00Z"),
-            ],
-          },
-        },
-      ],
-      "GET /repos/acme/shop/actions/runs/10": [
-        { body: run(10, "completed", "success", "2026-10-13T10:00:00Z") },
-      ],
-    });
-    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
-      workflowFile: FILE,
-      ref: "refs/heads/main",
-      since,
-      pollMs: 2000,
-    });
-    expect(result).toMatchObject({ id: 10, conclusion: "success" });
-    const query = new URL(calls[0]?.url ?? "").searchParams;
-    expect(query.get("event")).toBe("workflow_dispatch");
-    expect(query.get("branch")).toBe("main");
-    // Two minutes of allowance for a local clock ahead of GitHub's.
-    expect(query.get("created")).toBe(">=2026-10-13T09:58:00Z");
-    expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
-      "/repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs",
-      "/repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs",
-      "/repos/acme/shop/actions/runs/10",
-    ]);
-  });
-
-  it("finds the run when the local clock is ahead of GitHub's (up to two minutes)", async () => {
-    const clock = fakeClock();
-    // This computer said 10:01:30 before the dispatch; GitHub stamped the run 10:00:05.
-    const { fetch } = fakeFetch({
-      [RUNS]: [
-        {
-          body: {
-            workflow_runs: [
-              run(20, "completed", "success", "2026-10-13T09:59:00Z"),
-              run(21, "completed", "failure", "2026-10-13T10:00:05Z"),
-            ],
-          },
-        },
-      ],
-    });
-    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
-      workflowFile: FILE,
-      ref: "main",
-      since: "2026-10-13T10:01:30.000Z",
-      pollMs: 1000,
-    });
-    // The newest run is the dispatched one, even though it looks older than `since`.
-    expect(result).toMatchObject({ id: 21, conclusion: "failure" });
-    expect(clock.sleeps).toEqual([]);
-  });
-
   it("times out with the run link when the run is known", async () => {
     const clock = fakeClock();
     const { fetch } = fakeFetch({
@@ -363,7 +296,6 @@ describe("waitForWorkflowRun", () => {
         workflowFile: FILE,
         ref: "main",
         runId: 42,
-        since,
         timeoutMs: 120_000,
         pollMs: 10_000,
       })
@@ -394,7 +326,6 @@ describe("waitForWorkflowRun", () => {
       workflowFile: FILE,
       ref: "main",
       runId: 42,
-      since,
       pollMs: 1000,
       onWaiting: (url) => {
         waiting.push(url);
@@ -420,7 +351,6 @@ describe("waitForWorkflowRun", () => {
       workflowFile: FILE,
       ref: "main",
       runId: 42,
-      since,
       timeoutMs: 60_000,
       pollMs: 10_000,
       onWaiting: () => undefined,
@@ -452,7 +382,6 @@ describe("waitForWorkflowRun", () => {
       workflowFile: FILE,
       ref: "main",
       runId: 42,
-      since,
       timeoutMs: 60_000,
       pollMs: 10_000,
       onWaiting: () => undefined,
@@ -473,30 +402,9 @@ describe("waitForWorkflowRun", () => {
         workflowFile: FILE,
         ref: "main",
         runId: 42,
-        since,
         timeoutMs: 60_000,
         pollMs: 10_000,
       }),
     ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
-  });
-
-  it("times out plainly when the run never appears", async () => {
-    const clock = fakeClock();
-    const { fetch } = fakeFetch({ [RUNS]: [{ body: { workflow_runs: [] } }] });
-    const error = await client(fetch, clock)
-      .waitForWorkflowRun("acme", "shop", {
-        workflowFile: FILE,
-        ref: "main",
-        since,
-        timeoutMs: 60_000,
-        pollMs: 5_000,
-      })
-      .catch((e: unknown) => e);
-    expect(error).toMatchObject({
-      code: "PROVIDER_ERROR",
-      message: expect.stringContaining("did not show a run"),
-      hint: expect.stringContaining("https://github.com/acme/shop"),
-    });
-    expect(JSON.stringify(error)).not.toContain(TOKEN);
   });
 });

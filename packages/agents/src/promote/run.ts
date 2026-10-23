@@ -469,7 +469,6 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   await deps.approvals.assertApprovedPromotion(hash);
 
   // 5. The target's workflow with the digest, its run, and the record.
-  const since = deps.clock.now().toISOString();
   deps.reporter.step(`Starting ${workflowFile} on ${defaultBranch} with the image's digest`);
   let dispatched: { runId: number; url: string };
   let accepted = false;
@@ -527,7 +526,6 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
       workflowFile,
       ref: defaultBranch,
       runId: dispatched.runId,
-      since,
       onWaiting: (url) =>
         deps.reporter.info(
           `${target}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run and records the image once it succeeded.`,
