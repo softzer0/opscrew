@@ -105,6 +105,12 @@ export interface ProvisionServices {
    * console steps (CLI prompt, hidden input). Never logged.
    */
   askStorageKey?: (question: StorageKeyQuestion) => Promise<StorageKey>;
+  /**
+   * GitHub Pages: interactive question for the value of GitHub's domain verification record, which
+   * GitHub shows only on its settings `page` once `domain` is added there (CLI prompt). Not a
+   * secret: it is public in DNS.
+   */
+  askPagesVerification?: (question: { domain: string; page: string }) => Promise<string>;
   /** A server the user owns: its shell and the host adapter (fakes in tests). */
   own?: OwnServerServices;
   /**
@@ -220,6 +226,11 @@ export interface ProvisionOptions {
    * recipient.
    */
   recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+  /**
+   * GitHub Pages: `--pages-verification <value>`, the value of GitHub's domain verification record
+   * from the GitHub account's Pages settings. It replaces the one an earlier run recorded.
+   */
+  pagesVerification?: string;
   services?: ProvisionServices;
 }
 
@@ -274,6 +285,16 @@ export interface ProvisionResult {
   localPlanHash?: string;
   /** The localhost target: true when this run changed the stack on this computer. */
   localApplied?: boolean;
+  /**
+   * GitHub Pages: the Pages plan's SHA-256 hash (its file is `.opscrew/plans/pages-<hash>.json`),
+   * when it has changes. With `--plan-only` it is the hash to approve.
+   */
+  pagesPlanHash?: string;
+  /**
+   * GitHub Pages: the plan hash of the domain verification record's root (`iac-apply`), when it
+   * has changes; `planHash` is the site's DNS records. With `--plan-only` it is the hash to approve.
+   */
+  pagesVerificationPlanHash?: string;
   /** Root-module outputs after the run (server IPs, id, name, url). */
   outputs: Record<string, unknown>;
   /** Pull request with the generated files, when one was opened or already open. */

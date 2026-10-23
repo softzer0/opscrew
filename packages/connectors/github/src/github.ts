@@ -1483,19 +1483,21 @@ export class GitHubClient {
   }
 
   /**
-   * Changes the Pages site: `cname` sets the custom domain (`null` removes it), `httpsEnforced`
-   * turns HTTPS enforcement on or off. A field left out is not sent. GitHub's 404 (Pages is off,
-   * or HTTPS asked for before the certificate exists) is `PHASE_PRECONDITION`. Needs Pages and
-   * Administration, both Read and write.
+   * Changes the Pages site: `buildType: "workflow"` switches a site published from a branch to
+   * the workflow (the site and its domain stay), `cname` sets the custom domain (`null` removes
+   * it), `httpsEnforced` turns HTTPS enforcement on or off. A field left out is not sent. GitHub's
+   * 404 (Pages is off, or HTTPS asked for before the certificate exists) is `PHASE_PRECONDITION`.
+   * Needs Pages and Administration, both Read and write.
    */
   async updatePages(
     owner: string,
     repo: string,
-    change: { cname?: string | null; httpsEnforced?: boolean },
+    change: { buildType?: "workflow"; cname?: string | null; httpsEnforced?: boolean },
   ): Promise<void> {
     const what = `change the GitHub Pages site of ${owner}/${repo}`;
     const { status, json } = await this.#request("PUT", `/repos/${owner}/${repo}/pages`, what, {
       body: {
+        ...(change.buildType === undefined ? {} : { build_type: change.buildType }),
         ...(change.cname === undefined ? {} : { cname: change.cname }),
         ...(change.httpsEnforced === undefined ? {} : { https_enforced: change.httpsEnforced }),
       },

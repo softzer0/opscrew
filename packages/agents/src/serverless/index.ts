@@ -8,7 +8,7 @@ import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { SavedInfrastructureHashes } from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
-import { serverlessNotSupported } from "../shared";
+import { provisionPages } from "./pages/provision";
 
 /** What `opscrew provision` hands a server-less target's flow once its checks passed. */
 export interface ServerlessProvisionInput {
@@ -22,14 +22,14 @@ export interface ServerlessProvisionInput {
 export { provisionCloudflareWorkers } from "./cloudflare/provision";
 
 /**
- * Provisions a site on GitHub Pages: the Pages site and its custom domain, its DNS records and
- * GitHub's verification record, and the deploy-setup pull request.
- * @throws OpsCrewError `PHASE_PRECONDITION` until T1609: not available yet.
+ * Provisions a site on GitHub Pages: the Pages site and its custom domain (a Pages plan approved
+ * by its hash, `pages-apply`), then its DNS records and GitHub's verification record (`iac-apply`,
+ * one plan per root), and the deploy-setup pull request (see `provisionPages`).
  */
-export async function provisionGithubPages(
-  _deps: PhaseDeps,
-  _options: ProvisionOptions,
-  _input: ServerlessProvisionInput,
+export function provisionGithubPages(
+  deps: PhaseDeps,
+  options: ProvisionOptions,
+  input: ServerlessProvisionInput,
 ): Promise<ProvisionResult> {
-  throw serverlessNotSupported("`opscrew provision`", "github-pages");
+  return provisionPages(deps, options, input);
 }

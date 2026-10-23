@@ -3,6 +3,7 @@ import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, upperFirst, writeFileAtomic } from "@opscrew/core";
 import {
+  pagesVerificationRootDir,
   portainerDeployBranch,
   portainerStackTemplatePath,
   portainerTarget,
@@ -208,8 +209,9 @@ function localPullRequestBody(
 /**
  * The pull request body for a site with no server (Cloudflare's hosting, GitHub Pages): the
  * infrastructure code (the Worker's shell and custom domains, or the site's DNS records), on
- * Cloudflare the Worker's settings, the workflow and the plan. The site's secrets are in GitHub
- * Actions only.
+ * Cloudflare the Worker's settings, on GitHub Pages the verification record's root, the workflow
+ * and the plan; on GitHub Pages also the manual Verify step and when HTTPS follows. The site's
+ * secrets are in GitHub Actions only.
  */
 function sitePullRequestBody(
   plan: DeployPlan,
@@ -233,13 +235,15 @@ function sitePullRequestBody(
     "",
     workers !== undefined
       ? `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: the Worker ${workers.worker}'s shell and a custom domain for each hostname, which bring their own DNS records and certificates (works with OpenTofu and Terraform). The Worker's code, files and secrets come only from the deploy workflow.`
-      : `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: the site's DNS records at Cloudflare, all DNS only (works with OpenTofu and Terraform).`,
+      : `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: the site's DNS records at Cloudflare, all DNS only, since Cloudflare's proxy would stop GitHub from issuing and renewing the site's certificate (works with OpenTofu and Terraform). The GitHub Pages site claimed the domain before they existed, so no record points at GitHub while no site claims it.`,
     ...(workers !== undefined
       ? [
           // The Worker's settings live in its Wrangler config, never in Terraform (spike result 1).
           `- \`${posix.dirname(renderWranglerConfig(plan).path)}/\`: the Worker's settings for Wrangler (the site's files, how a missing page is answered, the workers.dev address and preview URLs)${workers.render === "ssr" ? ", and the module that adds OpsCrew's security headers to the pages the Worker renders" : ""}.`,
         ]
-      : []),
+      : [
+          `- \`${pagesVerificationRootDir(plan)}/\`: GitHub's domain verification record, a TXT record in a root of its own, so that destroying the site keeps the domain verified.`,
+        ]),
     `- \`${plan.cicd.workflowPath}\`: ${workflow}`,
     `- \`${file}\`: the deployment plan.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
@@ -249,10 +253,17 @@ function sitePullRequestBody(
       options.secretsStored,
       workers !== undefined
         ? "The Worker and its custom domains are set up"
-        : "The site's DNS records are set up",
+        : "The GitHub Pages site and its DNS records are set up",
       plan.dns.domain ?? where,
       flag,
     ),
+    ...(workers !== undefined
+      ? []
+      : [
+          "",
+          `One step is yours, because GitHub has no API for it: once the verification record resolves, click Verify next to ${plan.dns.domain ?? "the domain"} in your GitHub account's (or organization's) Settings → Pages; \`opscrew provision${flag}\` named the exact page. A verified domain can be used only by your account's GitHub Pages sites.`,
+          `GitHub issues the site's certificate once it has checked the DNS records, which can take up to 24 hours. Until then the site answers over HTTP; run \`opscrew provision${flag}\` again then to enforce HTTPS (\`opscrew verify${flag}\` shows when the certificate is there).`,
+        ]),
     "",
     "Review checklist:",
     PINNED_ACTIONS_CHECK,

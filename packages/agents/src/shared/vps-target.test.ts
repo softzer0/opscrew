@@ -293,9 +293,10 @@ describe.each([
     expect(provider).toBe(github ? "github-pages" : "cloudflare-workers");
   });
 
-  // Cloudflare's hosting has its provision since T1608 (`serverless/cloudflare/provision.test.ts`).
+  // Both targets have their provision since T1608 and T1609 (`serverless/*/provision.test.ts`).
+  // GitHub Pages' starts with its GitHub checks, so without a GitHub remote it stops there.
   it.runIf(github)(
-    "reaches its own provision after the repository checks, with no Dockerfile, and stops there",
+    "reaches its own provision after the repository checks, with no Dockerfile, and stops at the GitHub remote",
     async () => {
       const runner = new ScriptedRunner((_command, args) => ({
         exitCode: 0,
@@ -303,9 +304,13 @@ describe.each([
         stderr: "",
       }));
       const deps = await serverlessProject(runner);
-      await expect(runProvision(deps)).rejects.toMatchObject(notYet("`opscrew provision`"));
-      // Only git's repository check ran: no engine, no SSH, no Dockerfile check.
-      expect(runner.calls.map((call) => call.args.at(-1))).toEqual(["--is-inside-work-tree"]);
+      await expect(runProvision(deps)).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining("no GitHub remote"),
+      });
+      // Only git ran: no engine, no SSH, no Dockerfile check.
+      expect(runner.calls.every((call) => call.command === "git")).toBe(true);
+      expect(runner.calls.some((call) => call.args.includes("ls-files"))).toBe(false);
       expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
     },
   );

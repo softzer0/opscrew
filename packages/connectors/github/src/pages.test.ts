@@ -154,6 +154,13 @@ describe("updatePages", () => {
     expect(calls[0]?.body).toEqual({ cname: null });
   });
 
+  it("switches a site published from a branch to the workflow, keeping its domain", async () => {
+    const { client, calls } = setup({ [`PUT ${API}/pages`]: { status: 204 } });
+    await client.updatePages("acme", "shop", { buildType: "workflow" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.body).toEqual({ build_type: "workflow" });
+  });
+
   it("enforces HTTPS without touching the domain", async () => {
     const { client, calls } = setup({ [`PUT ${API}/pages`]: { status: 204 } });
     await client.updatePages("acme", "shop", { httpsEnforced: true });
