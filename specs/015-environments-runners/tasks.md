@@ -657,6 +657,9 @@ Effort`.
     - A rollback looks its digest up in both the promotion record and its `previous`, so a rollback to the image before the last promotion from another computer is still checked (T1520's re-review).
     - Design's derived `app.env` entries (service URLs) can name a service the copied shared parts leave out, for example `REDIS_URL` when the code uses Redis and the source's plan has none yet (T1520's re-review).
     - `promote/run.ts`'s `registryCredential` duplicates `ghcrReadCredential` (T1520's review).
+    - The emulation note's sentence is in `localhost/image.ts`, `localhost/preflight.ts:187` and `localhost/design.ts:162`: one shared `emulationNote` (T1521's review).
+    - A promoted localhost environment with `target.image: local-build` builds the code here but copies its source's shared parts: refuse local-build for a promoted environment, or say why it is allowed (T1521).
+    - `promote` has no CPU check: an arm64-only image (a dev on Apple silicon builds for its CPU, FR-1540) could be promoted to an amd64 server. Compare the image's platforms with the target's CPU before the approval (T1521's review).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
