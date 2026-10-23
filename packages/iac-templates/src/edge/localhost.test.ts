@@ -127,7 +127,7 @@ describe("the app's Compose project on this computer", () => {
     ]);
   });
 
-  it("never pulls an image built on this computer (image: local-build), and pulls the production one", () => {
+  it("pulls the app's images only when this computer does not have them, in both image modes", () => {
     const built = DeployPlanSchema.parse({
       ...withProcesses(shop, {
         workers: [{ name: "worker", command: "node worker.js" }],
@@ -137,13 +137,16 @@ describe("the app's Compose project on this computer", () => {
       target: { ...shop.target, image: "local-build" },
     });
     const doc = parse(renderCompose(built).content) as ComposeFile;
-    for (const name of ["app", "release", "worker", "cron"]) {
-      expect(doc.services[name]?.pull_policy, name).toBe("never");
-    }
-    expect(doc.services.db?.pull_policy).toBeUndefined();
     const registry = parse(renderCompose(shop).content) as ComposeFile;
-    for (const service of Object.values(registry.services)) {
-      expect(service.pull_policy).toBeUndefined();
+    for (const [mode, file] of [
+      ["local-build", doc],
+      ["registry", registry],
+    ] as const) {
+      for (const name of ["app", "release", "worker", "cron"]) {
+        if (file.services[name] === undefined) continue;
+        expect(file.services[name]?.pull_policy, `${mode}: ${name}`).toBe("missing");
+      }
+      expect(file.services.db?.pull_policy, `${mode}: db`).toBeUndefined();
     }
   });
 });

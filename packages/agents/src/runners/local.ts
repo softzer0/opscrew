@@ -87,8 +87,8 @@ const KILL_AFTER_MS = 30_000;
 
 /**
  * Stops plainly when the localhost plan builds its image on this computer (`image: local-build`):
- * the local runner's workflow deploys the image GitHub Actions built, which `pull_policy: never`
- * would never pull.
+ * the local runner's workflow deploys the image GitHub Actions built, and each provision would
+ * build and start a local image in its place.
  * @throws OpsCrewError `PHASE_PRECONDITION`.
  */
 export async function requireLocalRunnerImage(root: string, plan: DeployPlan): Promise<void> {

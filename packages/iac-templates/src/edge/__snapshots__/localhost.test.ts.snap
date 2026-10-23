@@ -8,6 +8,7 @@ name: opscrew-shop
 services:
   app:
     image: \${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}
+    pull_policy: missing
     restart: unless-stopped
     env_file:
       - app.env
@@ -194,6 +195,7 @@ name: opscrew-shop
 services:
   app:
     image: \${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}
+    pull_policy: missing
     restart: unless-stopped
     env_file:
       - app.env

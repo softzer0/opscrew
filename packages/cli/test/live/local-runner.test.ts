@@ -244,6 +244,8 @@ describe.skipIf(MISSING.length > 0)(
             "The local runner test runs only on a private repository: OPSCREW_E2E_GITHUB_REPO is public, and a self-hosted runner must never serve a public repository. Point it at a private throwaway repository.",
           );
         }
+        // The cleanup removes only the GitHub environments that appear during the run.
+        await envs.snapshotGithub();
         await designProd(run, envs, SETTINGS.region);
       },
     );
@@ -423,7 +425,11 @@ describe.skipIf(MISSING.length > 0)(
           });
         }
         await attempt("remove the images this run pulled", async () => {
-          const refs = [`ghcr.io/${SETTINGS.githubRepo.toLowerCase()}`];
+          // GHCR's images of the app, and the ones dev's first provision may build here (FR-1540).
+          const refs = [
+            `ghcr.io/${SETTINGS.githubRepo.toLowerCase()}`,
+            `opscrew-local/${envs.app(DEV)}`,
+          ];
           for (const name of ["compose.yaml", "edge/compose.yaml"]) {
             const file = join(run.repo, runtimeDir(devPlan()), name);
             const text = await readFile(file, "utf8").catch(() => "");

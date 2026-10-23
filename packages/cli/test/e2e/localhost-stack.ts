@@ -185,8 +185,8 @@ const LISTED: readonly ListedDifference[] = [
     ),
   },
   {
-    item: "R4: the image is built on this computer (never pulled)",
-    local: new RegExp(`^${COMPOSE}: services\\.[\\w-]+\\.pull_policy = never$`),
+    item: "R4: the app's images are pulled only when this computer does not have them",
+    local: new RegExp(`^${COMPOSE}: services\\.[\\w-]+\\.pull_policy = missing$`),
   },
   {
     item: "FR-1504: no Cloudflare (the visitor's address is not read from Cloudflare's header)",

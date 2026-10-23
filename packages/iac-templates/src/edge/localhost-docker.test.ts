@@ -85,8 +85,21 @@ function published(container: string, port: number): number {
 }
 
 describe.skipIf(reason !== undefined)(
-  "the localhost switch's pull with image: local-build (OPSCREW_DOCKER_TESTS=1)",
+  "the localhost switch's pull of an image only this computer has (OPSCREW_DOCKER_TESTS=1)",
   () => {
+    /** An image only this computer has: built here from `scratch`, with no network. */
+    const LOCAL_IMAGE = `opscrew-test-local-build-${process.pid}:present`;
+    beforeAll(() => {
+      const built = spawnSync("docker", ["build", "-q", "-t", LOCAL_IMAGE, "-"], {
+        encoding: "utf8",
+        input: "FROM scratch\nLABEL opscrew-test=1\n",
+      });
+      if (built.status !== 0) throw new Error(`docker build failed: ${built.stderr}`);
+    });
+    afterAll(() => {
+      spawnSync("docker", ["rmi", LOCAL_IMAGE], { encoding: "utf8" });
+    });
+
     /** `docker compose pull` of `plan`'s Compose file, with the app's image only this computer has. */
     function pull(plan: DeployPlan) {
       const work = mkdtempSync(join(tmpdir(), "opscrew-localhost-pull-"));
@@ -96,14 +109,14 @@ describe.skipIf(reason !== undefined)(
         return spawnSync("docker", ["compose", "-f", join(work, "compose.yaml"), "pull"], {
           encoding: "utf8",
           timeout: 120_000,
-          env: { ...process.env, APP_IMAGE: `opscrew-test-local-build-${process.pid}:absent` },
+          env: { ...process.env, APP_IMAGE: LOCAL_IMAGE },
         });
       } finally {
         rmSync(work, { recursive: true, force: true });
       }
     }
 
-    it("pulls nothing for the app's locally built image, its workers' or cron's", () => {
+    it("pulls none of the app's, its workers' or cron's images when this computer has them", () => {
       const plan = withProcesses(onThisComputer(testPlan({ postgres: false })), {
         workers: [{ name: "worker", command: "node worker.js" }],
         cron: [NIGHTLY],
@@ -112,10 +125,15 @@ describe.skipIf(reason !== undefined)(
         ...plan,
         target: { ...plan.target, image: "local-build" },
       });
-      const pulled = pull(built);
-      expect(pulled.status, `${pulled.stdout}${pulled.stderr}`).toBe(0);
-      // Without `pull_policy: never` the same pull fails: no registry has the image.
-      expect(pull(plan).status).not.toBe(0);
+      // `pull_policy: missing` in both image modes: the image built here is not pulled, so a first
+      // start from a local build works before the environment has an image of its own (FR-1540).
+      for (const [mode, file] of [
+        ["local-build", built],
+        ["registry", plan],
+      ] as const) {
+        const pulled = pull(file);
+        expect(pulled.status, `${mode}: ${pulled.stdout}${pulled.stderr}`).toBe(0);
+      }
     }, 300_000);
   },
 );
