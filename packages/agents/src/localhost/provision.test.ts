@@ -508,7 +508,9 @@ describe("the local deploy lock", () => {
         release = resolve;
       });
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Until the first holds the lock: a fixed wait was too short on a slow Windows runner, whose
+    // first `mkdir` of the lock's folder let the second deploy take the lock first.
+    while (!order.includes("first")) await new Promise((resolve) => setTimeout(resolve, 5));
     const second = withLocalLock(
       deps.paths,
       async () => {
