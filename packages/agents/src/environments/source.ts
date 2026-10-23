@@ -26,9 +26,21 @@ export async function setDeploySource(
   from: string,
 ): Promise<DeployPlan> {
   // Only the repository's files are read and written, so no OpsCrew home is read for the paths.
-  const own = await resolveEnvironmentPaths(root, environment, { env: {} });
-  const { files } = own;
+  const { files } = await resolveEnvironmentPaths(root, environment, { env: {} });
   const plan = await readArtifact("plan", files.plan);
+  const changed = await withDeploySource(root, environment, plan, from);
+  if (changed !== plan) await writeArtifact("plan", files.plan, changed);
+  return changed;
+}
+
+/** `plan` with the source `from` ({@link setDeploySource}); `plan` itself when it is unchanged. */
+export async function withDeploySource(
+  root: string,
+  environment: string,
+  plan: DeployPlan,
+  from: string,
+): Promise<DeployPlan> {
+  const own = await resolveEnvironmentPaths(root, environment, { env: {} });
   let deploySource: DeploySource = { from: "main" };
   if (from !== "main") {
     if (from === environment) {
@@ -60,10 +72,5 @@ export async function setDeploySource(
   if (canonicalJson(before) === canonicalJson(deploySource)) return plan;
   // Built from main again, it follows the branch its plan kept: no other environment's.
   if (deploySource.from === "main") await requireBranchFree(own, plan.cicd.branch);
-  const changed: DeployPlan = {
-    ...plan,
-    environment: EnvironmentSchema.parse({ ...plan.environment, deploySource }),
-  };
-  await writeArtifact("plan", files.plan, changed);
-  return changed;
+  return { ...plan, environment: EnvironmentSchema.parse({ ...plan.environment, deploySource }) };
 }

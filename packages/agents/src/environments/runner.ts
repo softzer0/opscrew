@@ -180,6 +180,17 @@ export async function setEnvironmentRunner(
   answer: RunnerAnswer,
 ): Promise<DeployPlan> {
   const plan = await readArtifact("plan", paths.files.plan);
+  const changed = await withRunner(paths, plan, answer);
+  if (changed !== plan) await writeArtifact("plan", paths.files.plan, changed);
+  return changed;
+}
+
+/** `plan` with the runner `answer` sets ({@link setEnvironmentRunner}); `plan` itself when it is unchanged. */
+export async function withRunner(
+  paths: ProjectPaths,
+  plan: DeployPlan,
+  answer: RunnerAnswer,
+): Promise<DeployPlan> {
   const current = plan.environment;
   const runner = answer.runner.trim().toLowerCase();
   const kept =
@@ -198,7 +209,5 @@ export async function setEnvironmentRunner(
   const { runner: _runner, runnerHost: _host, build: _build, ...rest } = current ?? {};
   const environment = EnvironmentSchema.parse({ ...rest, ...choice });
   if (current !== undefined && canonicalJson(current) === canonicalJson(environment)) return plan;
-  const changed: DeployPlan = { ...plan, environment };
-  await writeArtifact("plan", paths.files.plan, changed);
-  return changed;
+  return { ...plan, environment };
 }

@@ -48,6 +48,7 @@ import {
   requireSharedParts,
   resolveEnvironment,
   setDeploySource,
+  setEnvironment,
   sharedPartsDiffer,
   withSharedParts,
 } from "./index";
@@ -347,6 +348,41 @@ describe("setDeploySource", () => {
       "The staging environment cannot be promoted from qa, since qa takes its releases from staging itself.",
     );
     expect(cycle.hint).toBe("Deploy one of them from main: `opscrew env set qa --from main`.");
+  });
+});
+
+describe("setEnvironment (env set with several settings)", () => {
+  async function staging() {
+    const prod = prodPlan();
+    const deps = await project({ prod, staging: inEnvironment(prod, "staging") });
+    const own = await createTestPhaseDeps({ root: deps.paths.root, environment: "staging" });
+    return { own, before: await readFile(own.paths.files.plan, "utf8") };
+  }
+
+  it("sets the source and the runner together, checking the runner for the new source", async () => {
+    const { own } = await staging();
+    const plan = await setEnvironment(own, { from: "prod", runner: { runner: "server" } });
+    expect(plan.environment).toMatchObject({
+      deploySource: { from: "promote", source: "prod" },
+      runner: "server",
+    });
+    expect((await readArtifact("plan", own.paths.files.plan)).environment).toEqual(
+      plan.environment,
+    );
+  });
+
+  it("saves nothing when the source or the runner is refused", async () => {
+    const { own, before } = await staging();
+    const source = await failure(
+      setEnvironment(own, { from: "dev", runner: { runner: "server" } }),
+    );
+    expect(source.message).toContain('The app has no environment "dev"');
+    expect(await readFile(own.paths.files.plan, "utf8")).toBe(before);
+    const runner = await failure(
+      setEnvironment(own, { from: "prod", runner: { runner: "github", build: "runner" } }),
+    );
+    expect(runner.code).toBe("INVALID_INPUT");
+    expect(await readFile(own.paths.files.plan, "utf8")).toBe(before);
   });
 });
 

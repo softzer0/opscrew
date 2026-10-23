@@ -6,9 +6,7 @@ import {
   type InterviewAnswers,
   listEnvironments,
   removeEnvironment,
-  setDeploySource,
-  setEnvironmentBranch,
-  setEnvironmentRunner,
+  setEnvironment,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployProviderSchema } from "@opscrew/plan-schema";
@@ -173,26 +171,28 @@ async function set(ctx: CliContext, name: string, flags: SetFlags) {
       },
     );
   }
-  const lines: string[] = [];
   const deps = createPhaseDeps(ctx, { ai: false, environment: name });
-  // The runner first, then the branch: their checks refuse most often, and a refusal then saves
-  // nothing of the source.
-  if (flags.runner !== undefined) {
-    const plan = await setEnvironmentRunner(deps.paths, {
-      runner: flags.runner,
-      ...(flags.runnerHost === undefined ? {} : { runnerHost: flags.runnerHost }),
-      ...(flags.build === undefined ? {} : { build: flags.build }),
-    });
-    lines.push(settingLine(name, plan, "runner"));
-  }
-  if (flags.branch !== undefined) {
-    const plan = await setEnvironmentBranch(deps, flags.branch);
+  const plan = await setEnvironment(deps, {
+    ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
+    ...(flags.branch === undefined ? {} : { branch: flags.branch }),
+    ...(flags.runner === undefined
+      ? {}
+      : {
+          runner: {
+            runner: flags.runner,
+            ...(flags.runnerHost === undefined ? {} : { runnerHost: flags.runnerHost }),
+            ...(flags.build === undefined ? {} : { build: flags.build }),
+          },
+        }),
+  });
+  const lines = [
+    ...(flags.runner === undefined ? [] : [settingLine(name, plan, "runner")]),
     // With --from the source's line names the branch too.
-    if (flags.from === undefined) lines.push(settingLine(name, plan, "branch"));
-  }
-  if (flags.from !== undefined) {
-    lines.push(settingLine(name, await setDeploySource(ctx.cwd, name, flags.from.trim()), "from"));
-  }
+    ...(flags.branch === undefined || flags.from !== undefined
+      ? []
+      : [settingLine(name, plan, "branch")]),
+    ...(flags.from === undefined ? [] : [settingLine(name, plan, "from")]),
+  ];
   ctx.stdout(`${lines.join("\n")}\n`);
   printNextSteps(ctx, [
     `run \`opscrew provision --env ${name}\` to apply the change to its deploy workflow (it shows the change first).`,

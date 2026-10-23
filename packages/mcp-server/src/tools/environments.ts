@@ -6,13 +6,10 @@ import {
   type PromoteServices,
   promote,
   removeEnvironment,
-  setDeploySource,
-  setEnvironmentBranch,
-  setEnvironmentRunner,
+  setEnvironment,
 } from "@opscrew/agents";
 import type { ApprovalHandler, ComputeCatalog } from "@opscrew/contracts";
 import { formatMoney, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
@@ -173,34 +170,35 @@ export function registerEnvironmentTools(
           });
         }
         const lines: string[] = [];
-        let plan: DeployPlan | undefined;
         const phase = await call.phaseDeps({ environment: name });
-        // The runner first, then the branch: their checks refuse most often, and a refusal then
-        // saves nothing of the source.
+        const plan = await setEnvironment(phase, {
+          ...(from === undefined ? {} : { from }),
+          ...(branch === undefined ? {} : { branch }),
+          ...(runner === undefined
+            ? {}
+            : {
+                runner: {
+                  runner,
+                  ...(runnerHost === undefined ? {} : { runnerHost }),
+                  ...(build === undefined ? {} : { build }),
+                },
+              }),
+        });
+        const environment = plan.environment;
+        const source = environment?.deploySource ?? { from: "main" as const };
         if (runner !== undefined) {
-          plan = await setEnvironmentRunner(phase.paths, {
-            runner,
-            ...(runnerHost === undefined ? {} : { runnerHost }),
-            ...(build === undefined ? {} : { build }),
-          });
-          const environment = plan.environment;
           lines.push(
             `The ${name} environment's deploy job runs on ${deployJobPlace(environment?.runner ?? "github", environment?.runnerHost?.name)}${environment?.build === "runner" ? ", which also builds its image" : "; GitHub's machines build its image"}.`,
           );
         }
-        if (branch !== undefined) {
-          plan = await setEnvironmentBranch(phase, branch);
-          if (from === undefined) {
-            lines.push(
-              plan.environment?.deploySource.from === "promote"
-                ? `The ${name} environment follows ${plan.cicd.branch} once it is built from main again (from main); until then only opscrew_promote deploys it.`
-                : `The ${name} environment is built and deployed on each push to ${plan.cicd.branch}.`,
-            );
-          }
+        if (branch !== undefined && from === undefined) {
+          lines.push(
+            source.from === "promote"
+              ? `The ${name} environment follows ${plan.cicd.branch} once it is built from main again (from main); until then only opscrew_promote deploys it.`
+              : `The ${name} environment is built and deployed on each push to ${plan.cicd.branch}.`,
+          );
         }
         if (from !== undefined) {
-          plan = await setDeploySource(call.projectDir, name, from);
-          const source = plan.environment?.deploySource ?? { from: "main" as const };
           lines.push(
             `The ${name} environment ${source.from === "promote" ? `is deployed only by opscrew_promote, with the image ${source.source} runs` : `is built and deployed on each push to ${plan.cicd.branch}`}.`,
           );
@@ -211,13 +209,13 @@ export function registerEnvironmentTools(
         return {
           text: lines.join(" "),
           data: {
-            deploySource: plan?.environment?.deploySource ?? { from: "main" },
-            ...(plan === undefined ? {} : { branch: plan.cicd.branch }),
-            runner: plan?.environment?.runner ?? "github",
-            ...(plan?.environment?.runnerHost === undefined
+            deploySource: source,
+            branch: plan.cicd.branch,
+            runner: environment?.runner ?? "github",
+            ...(environment?.runnerHost === undefined
               ? {}
-              : { runnerHost: plan.environment.runnerHost }),
-            build: plan?.environment?.build ?? "github",
+              : { runnerHost: environment.runnerHost }),
+            build: environment?.build ?? "github",
           },
         };
       }),

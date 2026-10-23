@@ -25,5 +25,6 @@ export {
   runnerChoice,
   setEnvironmentRunner,
 } from "./runner";
+export { type EnvironmentSettings, setEnvironment } from "./set";
 export { requireSharedParts, sharedPartsDiffer, withSharedParts } from "./shared-parts";
 export { type DeploySource, setDeploySource } from "./source";
