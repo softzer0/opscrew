@@ -4,7 +4,8 @@
 
 ```ts
 // plan.app.key?: string    // a further app's key; absent for the repository's first app
-// requirements.appDir stays the app's folder in the repository.
+// requirements.appDir stays the app's folder in the repository (filled by the interview).
+// opscrew/apps/<key>/app.yaml: AppRecordSchema = { schemaVersion: 1, dir: RepoPath }; the key is the folder name.
 const APP_KEY_PATTERN: RegExp;                       // as ENVIRONMENT_NAME_PATTERN
 function appsOf(root, fs?): Promise<{ key?: string; dir: string }[]>;   // the first app, then opscrew/apps/*
 function environmentsOf(root, fs?, app?: string): Promise<...>;         // per app
@@ -27,7 +28,7 @@ The first app's paths are unchanged (a snapshot of every field). A further app's
 
 ## CLI and MCP (T1617d)
 
-- **`opscrew app add <key> --dir <folder>`:** writes `opscrew/apps/<key>/requirements.yaml` with `appDir`, after the uniqueness check.
+- **`opscrew app add <key> --dir <folder>`:** writes the app record `opscrew/apps/<key>/app.yaml` (`{ schemaVersion: 1, dir }`), after the uniqueness check. Requirements stay a full interview output; the interview fills `appDir` from the record.
 - **`app list`:** each app's key (or "first app"), its folder, and whether it's deployed.
 - **`app remove <key>`:** refused while the app is deployed.
 - **`--app <key>`:** on every command that takes `--env`, and on `analyze`, `interview`, `design` and `adapt`. `analyze --dir <folder>` replaces `analyze --app <dir>`.

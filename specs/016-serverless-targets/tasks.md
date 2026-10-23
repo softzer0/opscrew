@@ -257,7 +257,7 @@ Effort`.
   - Reads: spec US6; contracts/apps.md; data-model.md "Apps in a repository"; T1617a's and T1617b's reports
   - Depends: T1617a, T1617b, T1607
   - Accept:
-    - **`addApp(root, key, dir)`:** checks the folder holds a deployable app (detection's candidates) and the uniqueness of every derived name; writes `opscrew/apps/<key>/requirements.yaml` with `appDir`. `listApps`, and `removeApp`, which is refused while the app is deployed.
+    - **`addApp(root, key, dir)`:** checks the folder holds a deployable app (detection's candidates) and the uniqueness of every derived name; writes the app record `opscrew/apps/<key>/app.yaml` (`{ schemaVersion: 1, dir }`); the interview later fills `requirements.yaml`'s `appDir` from it, so no reader sees partial requirements. `listApps`, and `removeApp`, which is refused while the app is deployed.
     - **`resolveApp`:** like `resolveEnvironment`, with `appFlag` for suggested commands.
     - **Phase deps** take `app` next to `environment`. Analyze and interview read the app's `appDir`. Design writes `app.key`, and `app.name` defaults to the key.
     - **The two branches** use `appBranch`. Dependabot covers every app. `env add` runs the uniqueness check too.
