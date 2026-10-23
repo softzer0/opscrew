@@ -13,6 +13,7 @@ import {
   type ServerAddress,
   sameIp,
 } from "../shared";
+import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { serverOps, startService, stopService } from "./server-ops";
@@ -28,7 +29,7 @@ import {
   waitsOf,
   withApply,
 } from "./session";
-import { pendingStop, reasonOf } from "./steps";
+import { pendingStop } from "./steps";
 import {
   ABORT_COMMAND,
   FINISH_COMMAND,
@@ -38,15 +39,7 @@ import {
   untilSwitched,
 } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
-import {
-  asOpsCrewError,
-  codeOf,
-  hintOf,
-  maintenanceWindow,
-  newRemote,
-  oldRemote,
-  restartOldApp,
-} from "./window";
+import { asOpsCrewError, maintenanceWindow, newRemote, oldRemote, restartOldApp } from "./window";
 
 const URL_WAIT_MS = 5 * 60_000;
 const URL_INTERVAL_MS = 10_000;

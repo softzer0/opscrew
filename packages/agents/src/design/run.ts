@@ -57,7 +57,6 @@ import {
   vpsConnector,
 } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
-import { reasonOf } from "../retarget/steps";
 import {
   appMemoryMb,
   designOptionLine,
@@ -69,6 +68,7 @@ import {
   serverAddress,
   serviceFilledNames,
 } from "../shared";
+import { reasonOf } from "../shared/errors";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { vercelAdditions } from "./additions";
 import { backgroundJobsWarning } from "./background-jobs";

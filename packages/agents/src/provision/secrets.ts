@@ -22,7 +22,6 @@ import { type DeployPlan, EnvironmentSchema, environmentsOf } from "@opscrew/pla
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
-import { codeOf, hintOf } from "../retarget/window";
 import {
   type AppEnvironment,
   assembleAppEnv,
@@ -33,6 +32,7 @@ import {
   readValidJson,
   type StorageLogin,
 } from "../shared";
+import { codeOf, hintOf } from "../shared/errors";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 

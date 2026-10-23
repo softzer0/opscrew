@@ -14,6 +14,7 @@ import {
 import { providerProfile } from "../providers";
 import { publishDeploySetup } from "../provision";
 import { describeChanges, trackedFiles } from "../shared";
+import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
 import { previousTarget } from "./layouts";
@@ -32,7 +33,6 @@ import {
   warnUnusedApproval,
   writeFinalFiles,
 } from "./session";
-import { reasonOf } from "./steps";
 import { requireSwitchSettled } from "./switch";
 import {
   ABORT_COMMAND,

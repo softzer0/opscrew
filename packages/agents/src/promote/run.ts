@@ -24,8 +24,6 @@ import { builderBranch } from "../environments/branches";
 import { REGISTRY_TOKEN_VAR } from "../provision";
 import { missing } from "../provision/credentials";
 import { secretsEnvironment } from "../provision/secrets";
-import { reasonOf } from "../retarget/steps";
-import { codeOf, hintOf } from "../retarget/window";
 import {
   gitClient,
   githubClientFromToken,
@@ -33,6 +31,7 @@ import {
   hasDeployment,
   PlanRefusedError,
 } from "../shared";
+import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import {
   type AppImage,
   type ChosenImage,

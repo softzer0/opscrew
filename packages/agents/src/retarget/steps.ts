@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { errorMessage, formatMoney, OpsCrewError } from "@opscrew/core";
+import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
 import { providerProfile } from "../providers";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../provision";
 import { originTlsSecret } from "../provision/origin-tls";
 import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
+import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
 import { planThenApply } from "./plans";
 import { serverOps, stopService, waitAppHealthy } from "./server-ops";
@@ -32,7 +33,7 @@ import {
 } from "./session";
 import { ABORT_COMMAND, approveCommand, providerWords, RUN_COMMAND } from "./texts";
 import type { RetargetResult } from "./types";
-import { codeOf, hintOf, newRemote } from "./window";
+import { newRemote } from "./window";
 
 const WORKFLOW_WAIT_MS = 30 * 60_000;
 
@@ -52,11 +53,6 @@ export function pendingStop(
       `Review the plan above, then run \`${approveCommand(session.command, planHash, flags)}\` to apply it and continue.`,
     ],
   };
-}
-
-/** The reason of an error in plain words, without a trailing full stop. */
-export function reasonOf(error: unknown): string {
-  return errorMessage(error).replace(/[.\s]+$/, "");
 }
 
 /**

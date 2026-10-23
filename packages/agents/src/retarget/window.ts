@@ -1,8 +1,9 @@
 import type { RemoteExec } from "@opscrew/contracts";
-import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import { edgeProxy } from "@opscrew/iac-templates";
 import type { Retarget } from "@opscrew/plan-schema";
 import { failureReason } from "../destroy/deletion";
+import { codeOf, hintOf } from "../shared/errors";
 import {
   copyDump,
   databaseSize,
@@ -422,16 +423,6 @@ async function rollBackWindow(
       hint: `${hintOf(cause)}Then run \`${RUN_COMMAND}\` again (it repeats the maintenance window), or \`${ABORT_COMMAND}\` to undo the move.`,
     },
   );
-}
-
-/** The error's code when it is OpsCrew's, else `COMMAND_FAILED`. */
-export function codeOf(error: unknown): ErrorCode {
-  return error instanceof OpsCrewError ? error.code : "COMMAND_FAILED";
-}
-
-/** The error's hint followed by a space, or nothing. */
-export function hintOf(error: unknown): string {
-  return isUserFacingError(error) && error.hint ? `${error.hint} ` : "";
 }
 
 /** `error` itself when it is an `OpsCrewError`, else a plain internal error. */
