@@ -496,7 +496,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1520 [US2] The shared parts follow the image (FR-1539)
+- [X] T1520 [US2] The shared parts follow the image (FR-1539)
   - Owns: agents' `environments/shared-parts.ts`, `design/run.ts` (`sharedPartsSource` and its callers), `provision/run.ts` and `localhost/provision.ts` (the preflight's call), `promote/**` (the readiness check); the CLI's and MCP's texts only where they name prod's plan as the source; `docs/guide/environments.md` (+ tests)
   - Reads: spec FR-1517, FR-1537 and FR-1539; data-model.md "Shared parts"; contracts/environments.md "Promotion"
   - Depends: T1518 and T1519 (the same files)
@@ -652,6 +652,11 @@ Effort`.
     - Agents' `stateFile(paths)` (`shared/engine.ts`) is only an alias of core's `tfstateFile`: import `tfstateFile` directly and drop it (T1508a).
     - Verify fetches the repository's default branch on every run; only a promoted plan needs it (`verify/run.ts:230`), so fetch it only then (T1518's re-review).
     - The CLI's provision next steps test `base !== undefined`, which every producer sets (`cli/src/commands/provision.ts:472`): drop it (T1518's re-review).
+    - Design's first `sharedPartsSource` call has no target yet for a new localhost environment: assume `{ provider: "localhost", image: "registry" }` when `requirements.provider` is localhost, so the fields derived from the components start from prod's plan too (T1520's re-review).
+    - `sharedPartsSource` reads the source plan again after `imageSource` read it: have `imageSource` return the plan (T1520's re-review).
+    - A rollback looks its digest up in both the promotion record and its `previous`, so a rollback to the image before the last promotion from another computer is still checked (T1520's re-review).
+    - Design's derived `app.env` entries (service URLs) can name a service the copied shared parts leave out, for example `REDIS_URL` when the code uses Redis and the source's plan has none yet (T1520's re-review).
+    - `promote/run.ts`'s `registryCredential` duplicates `ghcrReadCredential` (T1520's review).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
