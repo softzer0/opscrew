@@ -15,6 +15,7 @@ import {
   environmentsOf,
   readArtifact,
   resolveEnvironmentPaths,
+  targetArch,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
@@ -35,6 +36,7 @@ import {
 import {
   type AppImage,
   type ChosenImage,
+  checkPlatform,
   checkProvenance,
   chooseImage,
   type ImageBuild,
@@ -284,7 +286,8 @@ function promotionDetails(input: {
  *    branch that builds the images the target is promoted with (`builderBranch`: the branch of the
  *    first environment along its sources that follows one, as its workflow's verify job checks), at
  *    the commit the image is tagged with (in the form of the environment that built it: `<commit>`
- *    for prod, `<commit>-<env>` for another).
+ *    for prod, `<commit>-<env>` for another). Its manifest, or one image of its index, is built for
+ *    the target's CPU (`targetArch`).
  * 3. The target: provisioned; ready for the source's image (every service of the source's plan
  *    with the same settings, and every other shared part equal, FR-1539), or for a rollback still
  *    with every service its recorded previous promotion ran with (without that record, the approval
@@ -344,7 +347,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     );
   }
 
-  // 1. The image, and 2. where it was built.
+  // 1. The image, and 2. where and for which CPU it was built.
   const github = await githubRepository(deps, services);
   const { owner, repo, defaultBranch } = github;
   const actions = `https://github.com/${owner}/${repo}/actions`;
@@ -372,6 +375,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   deps.reporter.step("Checking where the image was built (its build provenance)");
   const environments = await environmentsOf(deps.paths.root);
   const build = await checkProvenance(image, digest, branch, environments);
+  await checkPlatform(image, digest, target, targetArch(plan.target));
 
   // 3. The target: ready for the source's image (for a rollback, still with the services its
   // previous image ran with), nothing pending, and the workflow on the default branch the one it

@@ -446,6 +446,72 @@ describe("promote", () => {
     });
   });
 
+  describe("the image's CPU (T1522)", () => {
+    const ARM64 = { architecture: "arm64", os: "linux" };
+    const AMD64 = { architecture: "amd64", os: "linux" };
+
+    /** Promote stopped before the drift check, the approval and the dispatch. */
+    function nothingChanged(world: PromoteWorld) {
+      expect(world.driftPaths).toEqual([]);
+      expect(world.handler.requests).toEqual([]);
+      expect(world.github.dispatches).toEqual([]);
+    }
+
+    it("refuses an arm64 image for an amd64 target, naming both CPUs and the fix", async () => {
+      const world = await promoteWorld();
+      world.github.platforms.set(STAGING_IMAGE, [ARM64]);
+      const error = await failure(
+        promote(world.deps, { target: "prod", services: world.services }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        `The image ghcr.io/acme/shop@${STAGING_IMAGE} is built for arm64 only, but prod runs on amd64, so it would not start there. Nothing was deployed.`,
+      );
+      expect(error.hint).toBe(
+        "Build the image for amd64: let it be built by a source environment on an amd64 server, or by the GitHub-hosted build, then run `opscrew promote --to prod` again.",
+      );
+      nothingChanged(world);
+    });
+
+    it("passes a single image built for the target's CPU", async () => {
+      const world = await promoteWorld();
+      world.github.platforms.set(STAGING_IMAGE, [AMD64]);
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+      expect(result.status).toBe("deployed");
+    });
+
+    it("passes an index with both CPUs", async () => {
+      const world = await promoteWorld();
+      world.github.platforms.set(STAGING_IMAGE, [ARM64, AMD64]);
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+      expect(result.status).toBe("deployed");
+    });
+
+    it("stops when GHCR shows no platforms, never guessing the CPU", async () => {
+      const world = await promoteWorld();
+      world.github.platforms.delete(STAGING_IMAGE);
+      const error = await failure(
+        promote(world.deps, { target: "prod", services: world.services }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        `GitHub Container Registry names no CPU for the image ghcr.io/acme/shop@${STAGING_IMAGE}, so OpsCrew cannot tell whether it runs on prod's amd64. Nothing was deployed.`,
+      );
+      nothingChanged(world);
+    });
+
+    it("checks a rollback's image the same way", async () => {
+      const world = await promoteWorld();
+      world.github.platforms.set(PREVIOUS_IMAGE, [ARM64]);
+      const error = await failure(
+        promote(world.deps, { target: "prod", digest: PREVIOUS_IMAGE, services: world.services }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain("is built for arm64 only, but prod runs on amd64");
+      nothingChanged(world);
+    });
+  });
+
   describe("the approval", () => {
     it("is never granted by --yes: the kinds --yes grants cannot deploy", async () => {
       const world = await promoteWorld({

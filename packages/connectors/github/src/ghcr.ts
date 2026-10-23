@@ -46,6 +46,21 @@ const ManifestSchema = z.looseObject({
     z.looseObject({ mediaType: z.string(), digest: DigestSchema, annotations: AnnotationsSchema }),
   ),
 });
+/** A platform, as an index entry or an image config names it. */
+const PlatformSchema = z.object({
+  architecture: z.string(),
+  os: z.string(),
+  variant: z.string().optional(),
+});
+/** An index, with its entries' platforms; else a single manifest, whose config holds its platform. */
+const PlatformsSchema = z.union([
+  z.object({
+    manifests: z.array(
+      z.object({ annotations: AnnotationsSchema, platform: PlatformSchema.optional() }),
+    ),
+  }),
+  z.object({ config: z.object({ digest: DigestSchema }) }),
+]);
 const StatementSchema = z.looseObject({ predicateType: z.string() });
 const SlsaV1Schema = z.looseObject({
   predicate: z.looseObject({
@@ -56,6 +71,13 @@ const PullTokenSchema = z.looseObject({ token: z.string().min(1) });
 
 const DENIED_HINT =
   "GitHub's container registry needs a classic token with read:packages, since it may not accept fine-grained tokens. Set OPSCREW_GHCR_READ_TOKEN to one (or use the GitHub CLI's login after `gh auth refresh -s read:packages`), then run the command again.";
+
+/** The CPU and operating system an image runs on (`linux`/`amd64`, `linux`/`arm64`/`v8`). */
+export interface ImagePlatform {
+  architecture: string;
+  os: string;
+  variant?: string;
+}
 
 /** A user name and token for GHCR's basic authentication. */
 export interface RegistryCredential {
@@ -89,6 +111,17 @@ function imageName(owner: string, image: string): string {
     throw new OpsCrewError("INVALID_INPUT", `"${owner}/${image}" is not a GHCR image name.`);
   }
   return name;
+}
+
+function requireDigest(digest: string): void {
+  if (!DIGEST.test(digest)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${digest}" is not an image digest (sha256:…).`);
+  }
+}
+
+/** An index entry that holds the attestations of another entry, not an image of its own. */
+function isAttestation(entry: { annotations?: Record<string, string> | undefined }): boolean {
+  return entry.annotations?.["vnd.docker.reference.type"] === "attestation-manifest";
 }
 
 function parseJson<S extends z.ZodType>(schema: S, bytes: Buffer, what: string): z.output<S> {
@@ -139,16 +172,12 @@ export class GhcrReader {
     credential?: RegistryCredential,
   ): Promise<ImageProvenance | undefined> {
     const name = imageName(owner, image);
-    if (!DIGEST.test(digest)) {
-      throw new OpsCrewError("INVALID_INPUT", `"${digest}" is not an image digest (sha256:…).`);
-    }
+    requireDigest(digest);
     const what = `read the provenance of ghcr.io/${name}@${digest}`;
     const token = await this.#pullToken(name, what, credential);
     const index = await this.#getByDigest(token, name, "manifests", digest, what);
     if (index === undefined) return undefined;
-    const attestation = parseJson(IndexSchema, index, what).manifests?.find(
-      (entry) => entry.annotations?.["vnd.docker.reference.type"] === "attestation-manifest",
-    );
+    const attestation = parseJson(IndexSchema, index, what).manifests?.find(isAttestation);
     if (attestation === undefined) return undefined;
     const manifest = await this.#getByDigest(token, name, "manifests", attestation.digest, what);
     if (manifest === undefined) return undefined;
@@ -166,6 +195,33 @@ export class GhcrReader {
         : { builderId };
     }
     return undefined;
+  }
+
+  /**
+   * The platforms of the image `digest`: for an index, each entry's (its attestation manifests
+   * left out); for a single manifest, the one its config names. `undefined` when GHCR has no such
+   * digest or config.
+   */
+  async imagePlatforms(
+    owner: string,
+    image: string,
+    digest: string,
+    credential?: RegistryCredential,
+  ): Promise<ImagePlatform[] | undefined> {
+    const name = imageName(owner, image);
+    requireDigest(digest);
+    const what = `read the platforms of ghcr.io/${name}@${digest}`;
+    const token = await this.#pullToken(name, what, credential);
+    const found = await this.#getByDigest(token, name, "manifests", digest, what);
+    if (found === undefined) return undefined;
+    const manifest = parseJson(PlatformsSchema, found, what);
+    if ("manifests" in manifest) {
+      return manifest.manifests.flatMap((entry) =>
+        entry.platform !== undefined && !isAttestation(entry) ? [entry.platform] : [],
+      );
+    }
+    const config = await this.#getByDigest(token, name, "blobs", manifest.config.digest, what);
+    return config === undefined ? undefined : [parseJson(PlatformSchema, config, what)];
   }
 
   /**

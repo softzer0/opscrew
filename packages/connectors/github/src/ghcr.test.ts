@@ -21,7 +21,13 @@ const digestOf = (text: string) => `sha256:${sha256Hex(text)}`;
 
 /** An image as buildx pushes it with provenance: an index, an attestation manifest, the statement. */
 function image(
-  options: { builderId?: string; predicateType?: string; attestation?: boolean } = {},
+  options: {
+    builderId?: string;
+    predicateType?: string;
+    attestation?: boolean;
+    /** The platform of each image manifest in the index (default: linux/amd64). */
+    platforms?: { architecture: string; os: string; variant?: string }[];
+  } = {},
 ) {
   const statement = JSON.stringify({
     _type: "https://in-toto.io/Statement/v0.1",
@@ -52,17 +58,17 @@ function image(
       },
     ],
   });
-  const platform = digestOf("platform manifest");
+  const platform = digestOf("platform manifest amd64");
   const index = JSON.stringify({
     schemaVersion: 2,
     mediaType: INDEX_TYPE,
     manifests: [
-      {
+      ...(options.platforms ?? [{ architecture: "amd64", os: "linux" }]).map((entry) => ({
         mediaType: MANIFEST_TYPE,
-        digest: platform,
+        digest: digestOf(`platform manifest ${entry.architecture}`),
         size: 1,
-        platform: { architecture: "amd64", os: "linux" },
-      },
+        platform: entry,
+      })),
       ...(options.attestation === false
         ? []
         : [
@@ -349,6 +355,74 @@ describe("imageProvenance", () => {
     );
     expect(error.code).toBe("INVALID_INPUT");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("imagePlatforms", () => {
+  it("reads each platform of an index, without its attestation manifests", async () => {
+    const { digest, routes } = image({
+      platforms: [
+        { architecture: "amd64", os: "linux" },
+        { architecture: "arm64", os: "linux", variant: "v8" },
+      ],
+    });
+    const { fetch, calls } = fakeFetch(routes);
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
+    ).toEqual([
+      { architecture: "amd64", os: "linux" },
+      { architecture: "arm64", os: "linux", variant: "v8" },
+    ]);
+    // The index alone answers: no manifest or blob beyond it is read.
+    expect(calls.filter((c) => c.url.includes("/v2/"))).toHaveLength(1);
+  });
+
+  it("reads a single manifest's platform from its config", async () => {
+    const config = JSON.stringify({
+      architecture: "arm64",
+      os: "linux",
+      rootfs: { type: "layers", diff_ids: [] },
+    });
+    const manifest = JSON.stringify({
+      schemaVersion: 2,
+      mediaType: MANIFEST_TYPE,
+      config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: digestOf(config) },
+      layers: [],
+    });
+    const digest = digestOf(manifest);
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${V2}/manifests/${digest}`]: { text: manifest, headers: { "content-type": MANIFEST_TYPE } },
+      [`${V2}/blobs/${digestOf(config)}`]: { text: config },
+    });
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
+    ).toEqual([{ architecture: "arm64", os: "linux" }]);
+  });
+
+  it("is undefined for a digest GHCR does not have (404)", async () => {
+    const digest = digestOf("gone");
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${V2}/manifests/${digest}`]: { status: 404 },
+    });
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
+    ).toBeUndefined();
+  });
+
+  it("refuses an index that does not match its digest", async () => {
+    const { digest, routes } = image();
+    const { fetch } = fakeFetch({
+      ...routes,
+      [`${V2}/manifests/${digest}`]: { text: "{}", headers: { "content-type": INDEX_TYPE } },
+    });
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
   });
 });
 

@@ -71,6 +71,9 @@ class FakePromoteGitHub implements PromoteGitHubApi {
       repository: "acme/shop",
     };
   }
+  async imagePlatforms() {
+    return [{ os: "linux", architecture: "amd64" }];
+  }
   async workflowRun() {
     return {
       repository: "acme/shop",

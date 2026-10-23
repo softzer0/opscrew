@@ -10,6 +10,7 @@ export type PromoteGitHubApi = Pick<
   | "getEnvironment"
   | "taggedDigest"
   | "imageProvenance"
+  | "imagePlatforms"
   | "workflowRun"
   | "getWorkflowRun"
   | "dispatchWorkflow"

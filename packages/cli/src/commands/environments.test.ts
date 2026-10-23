@@ -244,6 +244,7 @@ describe("opscrew promote", () => {
         runId: 501,
         repository: "acme/shop",
       }),
+      imagePlatforms: async () => [{ os: "linux", architecture: "amd64" }],
       workflowRun: async () => ({
         repository: "acme/shop",
         headRepository: "acme/shop",

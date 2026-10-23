@@ -1,5 +1,5 @@
 import type { RegistryCredential } from "@opscrew/connector-github";
-import { OpsCrewError, upperFirst } from "@opscrew/core";
+import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import { environmentTag } from "@opscrew/iac-templates";
 import type { PromoteGitHubApi } from "./types";
 
@@ -95,6 +95,44 @@ export async function chooseImage(
         choices.length > 0
           ? `${upperFirst(choices.join(", or "))}.`
           : `Let a deploy of ${source} finish, ${again}.`,
+    },
+  );
+}
+
+/**
+ * The image is built for the target's CPU (`arch`, from `targetArch`): its manifest, or one image
+ * of its index, names that architecture. Platforms GHCR does not name stop the promotion too, so
+ * an image of unknown CPU is never deployed.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming both CPUs and how to build for the target's.
+ */
+export async function checkPlatform(
+  image: AppImage,
+  digest: string,
+  target: string,
+  arch: "amd64" | "arm64",
+): Promise<void> {
+  const reference = imageReference(image, digest);
+  const again = `then run \`opscrew promote --to ${target}\` again`;
+  const platforms = await image.github.imagePlatforms(
+    image.owner,
+    image.repo,
+    digest,
+    image.credential,
+  );
+  if (platforms === undefined || platforms.length === 0) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `GitHub Container Registry names no CPU for the image ${reference}, so OpsCrew cannot tell whether it runs on ${target}'s ${arch}. ${nothing}`,
+      { hint: `Promote an image OpsCrew's deploy workflow pushed, which names its CPU, ${again}.` },
+    );
+  }
+  const built = [...new Set(platforms.map((platform) => platform.architecture))];
+  if (built.includes(arch)) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The image ${reference} is built for ${listText(built)} only, but ${target} runs on ${arch}, so it would not start there. ${nothing}`,
+    {
+      hint: `Build the image for ${arch}: let it be built by a source environment on an ${arch} server, or by the GitHub-hosted build, ${again}.`,
     },
   );
 }

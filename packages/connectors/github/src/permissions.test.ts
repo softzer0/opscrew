@@ -200,6 +200,15 @@ const ROWS: Row[] = [
     withoutHeader: "ghcr",
     notFound: "undefined",
   },
+  {
+    method: "imagePlatforms",
+    route: `${GHCR}/${DIGEST}`,
+    call: (c) => c.imagePlatforms("acme", "shop", DIGEST, credential),
+    around: PULL,
+    withHeader: "ghcr",
+    withoutHeader: "ghcr",
+    notFound: "undefined",
+  },
 ];
 
 const ANSWERS: Record<"withHeader" | "withoutHeader" | "notFound", FakeReply> = {

@@ -330,6 +330,8 @@ npx opscrew promote --to prod
    this repository's own workflow run, at the commit the image is tagged with (`<commit>`, or
    `<commit>-<env>` for the environment that built it). In a chain dev → staging → prod, dev built
    the image, so it must come from a push to dev's branch. A pull request from a fork never passes.
+   It also refuses an image built for another CPU than prod's, for example one a dev on Apple
+   silicon built, promoted to an x86 server.
 3. It checks that prod is ready for staging's image: every service of staging's plan, with the same
    settings, and everything else
    [every environment shares](#what-every-environment-shares-and-what-each-runs-on-its-own) the

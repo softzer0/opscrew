@@ -12,7 +12,12 @@ import {
   realSleep,
 } from "@opscrew/core";
 import { z } from "zod";
-import { GhcrReader, type ImageProvenance, type RegistryCredential } from "./ghcr";
+import {
+  GhcrReader,
+  type ImagePlatform,
+  type ImageProvenance,
+  type RegistryCredential,
+} from "./ghcr";
 import { sealSecret } from "./seal";
 
 export const GITHUB_API = "https://api.github.com";
@@ -1465,5 +1470,19 @@ export class GitHubClient {
     credential?: RegistryCredential,
   ): Promise<ImageProvenance | undefined> {
     return this.#ghcr.imageProvenance(owner, image, digest, credential);
+  }
+
+  /**
+   * The platforms (CPU and operating system) of the image `digest` on GHCR, read with
+   * `credential`, else the client's token: each of an index's images, or a single manifest's.
+   * `undefined` when GHCR has no such digest.
+   */
+  async imagePlatforms(
+    owner: string,
+    image: string,
+    digest: string,
+    credential?: RegistryCredential,
+  ): Promise<ImagePlatform[] | undefined> {
+    return this.#ghcr.imagePlatforms(owner, image, digest, credential);
   }
 }

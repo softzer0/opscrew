@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   EnvironmentView,
+  ImagePlatform,
   ImageProvenance,
   RegistryCredential,
   WorkflowRunSource,
@@ -65,6 +66,8 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
   readonly tags = new Map<string, string>();
   /** The SLSA provenance of each image, by digest. */
   readonly provenance = new Map<string, ImageProvenance>();
+  /** The platforms of each image, by digest (`build` gives linux/amd64). */
+  readonly platforms = new Map<string, ImagePlatform[]>();
   /** GitHub's records of workflow runs, by id. */
   readonly runs = new Map<number, WorkflowRunSource>();
   /** The registry credential of every GHCR read. */
@@ -109,6 +112,16 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
   ) {
     this.credentials.push(credential);
     return this.provenance.get(digest);
+  }
+
+  async imagePlatforms(
+    _owner: string,
+    _image: string,
+    digest: string,
+    credential?: RegistryCredential,
+  ) {
+    this.credentials.push(credential);
+    return this.platforms.get(digest);
   }
 
   async workflowRun(_owner: string, _repo: string, runId: number) {
@@ -173,7 +186,8 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
    * An image the deploy workflow of `environment` (default staging) built: its provenance names
    * run `runId`, GitHub's record of that run shows a push of `commit` to `main` from that
    * environment's workflow, and GHCR tags the image with the environment's commit tag (`<commit>`
-   * for prod, `<commit>-<env>` for another). `run` changes the record.
+   * for prod, `<commit>-<env>` for another). The image is built for linux/amd64. `run` changes the
+   * record.
    */
   build(
     digest: string,
@@ -190,6 +204,7 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
       runId: build.runId,
       repository: "acme/shop",
     });
+    this.platforms.set(digest, [{ architecture: "amd64", os: "linux" }]);
     this.runs.set(build.runId, {
       repository: "acme/shop",
       headRepository: "acme/shop",
