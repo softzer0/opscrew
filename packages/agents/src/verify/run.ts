@@ -28,9 +28,11 @@ import {
   githubClientFromToken,
   hasDeployment,
   hidesServerAddress,
+  isServerless,
   lookupPublicAddresses,
   type ServerAddress,
   serverAddress,
+  serverlessNotSupported,
   summarizeChecks,
   writePlanIfChanged,
   writeRenderedFiles,
@@ -139,6 +141,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   const plan = await readArtifact("plan", paths.files.plan);
   if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("`opscrew verify`", plan.target.provider);
+  }
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
   // ` --env <name>` for the commands verify names; `--env prod` beside other environments.

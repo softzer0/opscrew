@@ -55,6 +55,7 @@ import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer
 import { CLOUDFLARE_TUNNEL_PERMISSIONS, tunnelTokenPermissions } from "../provision/zero-trust";
 import { gitClient, githubClientFromToken } from "../shared/github";
 import { ownServerLogin, readOwnServerRecord, requireOwnServerKey } from "../shared/own-server";
+import { isServerless, type ServerlessProvider, serverlessName } from "../shared/vps-target";
 import { type CheckResult, failFrom } from "./check-result";
 import {
   describeGitignoreEntries,
@@ -485,15 +486,15 @@ function checkSsh(which: (name: string) => string | undefined): CheckResult {
 /** Which provider's token the provider check looks at, and why. */
 interface ProviderChoice {
   /** Undefined before a provider is chosen when zero or both tokens are set. */
-  provider?: VpsProviderId | "portainer" | "localhost";
+  provider?: VpsProviderId | "portainer" | "localhost" | ServerlessProvider;
   /** The plan, the interview answers, or the only token that is set. */
   source: "plan" | "requirements" | "token" | "none";
 }
 
 /**
  * The planned target, else the requested one, else the provider whose token alone is set. A
- * Portainer target (`portainer`) and the localhost target (`localhost`) are recognised in the
- * plan and in the answers.
+ * Portainer target (`portainer`), the localhost target (`localhost`) and the server-less targets
+ * are recognised in the plan and in the answers.
  */
 function providerChoice(
   { plan, requirements }: ProjectArtifacts,
@@ -503,7 +504,9 @@ function providerChoice(
     const { provider } = plan.target;
     return {
       provider:
-        provider === "portainer" || provider === "localhost" ? provider : planProvider(plan),
+        provider === "portainer" || provider === "localhost" || isServerless(provider)
+          ? provider
+          : planProvider(plan),
       source: "plan",
     };
   }
@@ -511,7 +514,7 @@ function providerChoice(
     const { provider } = requirements;
     return {
       provider:
-        provider === "portainer" || provider === "localhost"
+        provider === "portainer" || provider === "localhost" || isServerless(provider)
           ? provider
           : requestedProvider(requirements),
       source: "requirements",
@@ -529,6 +532,7 @@ function providerTitle(choice: ProviderChoice): string {
   if (choice.provider === "own") return "Your own server (SSH login)";
   if (choice.provider === "portainer") return "Your Portainer";
   if (choice.provider === "localhost") return "This computer";
+  if (isServerless(choice.provider)) return serverlessName(choice.provider);
   return choice.provider
     ? `${providerProfile(choice.provider).displayName} token`
     : "Cloud provider token";
@@ -538,6 +542,7 @@ function providerTitle(choice: ProviderChoice): string {
 function providerService(choice: ProviderChoice): string {
   if (choice.provider === "portainer") return "Your Portainer";
   if (choice.provider === "localhost") return "This computer";
+  if (isServerless(choice.provider)) return serverlessName(choice.provider);
   return choice.provider ? providerProfile(choice.provider).displayName : "The cloud provider";
 }
 
@@ -644,6 +649,12 @@ async function checkProviderToken(
     };
   }
   if (provider === "own") return checkOwnServerLogin(deps, choice);
+  if (isServerless(provider)) {
+    return {
+      status: "skip",
+      message: `Not needed: the app has no server on ${serverlessName(provider)}, so it needs no server provider token.`,
+    };
+  }
   if (provider === "localhost") {
     const docker = which("docker");
     if (docker === undefined) {

@@ -5,6 +5,7 @@ import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
 import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import { assertServerTarget } from "../providers";
 import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { sshHostname, tunnelMode } from "../tunnel";
@@ -603,6 +604,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
  * need no connection secret.
  */
 export function deploySecretNamesFor(plan: DeployPlan): string[] {
+  assertServerTarget(plan.target, "server deploy secrets");
   const build: string[] = promoted(plan)
     ? []
     : [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets];

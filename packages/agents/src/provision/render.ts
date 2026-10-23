@@ -23,11 +23,13 @@ import {
   ensureDeployKey,
   githubCoordinates,
   hidesServerAddress,
+  isServerless,
   readDeployPublicKey,
   readServerAddresses,
   readValidJson,
   requireGitRepo,
   type ServerAddress,
+  serverlessNotSupported,
 } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
 import { type CloudflareSetup, setupCloudflare } from "./credentials";
@@ -266,6 +268,9 @@ export async function previewDeploymentFiles(
 ): Promise<DeploymentPreview> {
   let plan = await readArtifact("plan", deps.paths.files.plan);
   if (plan.target.provider === "localhost") return previewLocalStack(deps, plan);
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("Previewing the deployment files", plan.target.provider);
+  }
   const requirements = await readRequirements(deps);
   const git = await requireGitRepo(deps);
   const github = await githubCoordinates(git);

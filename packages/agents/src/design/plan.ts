@@ -21,7 +21,10 @@ import {
   deepDomainProblem,
   FRAMEWORK_ENV,
   hostListKind,
+  isServerless,
+  onOneServer,
   STORAGE_VARIABLES,
+  serverlessNotSupported,
   serviceAppVariables,
   serviceUrlKind,
   storageVariableKind,
@@ -122,6 +125,10 @@ function targetFor(
       web: portainer.web,
     } as const;
   }
+  // Design offers no option for the server-less targets yet.
+  if (isServerless(target.provider)) {
+    throw serverlessNotSupported("Designing an app", target.provider);
+  }
   return {
     provider: target.provider,
     mode: "vps-compose",
@@ -150,15 +157,14 @@ export function appPortFor(facts: ProjectFacts): number {
 
 /**
  * The services with each Dragonfly's most threads (`options.threads`) set to the chosen server's
- * vCPUs, unless plan.yaml already sets them (an edit is kept). A Portainer host's and this
- * computer's are not known.
+ * vCPUs, unless plan.yaml already sets them (an edit is kept). Only a server's are known: not a
+ * Portainer host's or this computer's.
  */
 function withServerThreads(services: readonly PlanService[], option: DesignOption): PlanService[] {
   return services.map((service) =>
     service.kind === "dragonfly" &&
     service.options.threads === undefined &&
-    option.target.provider !== "portainer" &&
-    option.target.provider !== "localhost"
+    onOneServer(option.target.provider)
       ? { ...service, options: { ...service.options, threads: option.target.vcpus } }
       : service,
   );

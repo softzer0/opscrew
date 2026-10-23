@@ -62,10 +62,13 @@ import {
   designOptionLine,
   hasDeployment,
   hasState,
+  isServerless,
   memoryHeadroom,
   readOwnServer,
   readPortainerConnection,
   serverAddress,
+  serverlessName,
+  serverlessNotSupported,
   serviceFilledNames,
 } from "../shared";
 import { reasonOf } from "../shared/errors";
@@ -467,6 +470,9 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   const resolvedFacts =
     facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const answered = await readEnvironmentRequirements(paths);
+  if (isServerless(answered.provider)) {
+    throw serverlessNotSupported("`opscrew design`", answered.provider);
+  }
   // This computer has no region, domain or DNS, whatever prod's answers say.
   const requirements = answered.provider === "localhost" ? onThisComputer(answered) : answered;
   await requireChosenApp(paths.root, resolvedFacts, requirements);
@@ -583,8 +589,12 @@ async function priceOptions(
   if (requirements.provider === "localhost") {
     return priceLocalhost(deps, inputs, warnings, designed, basis);
   }
-  // The server's proxy carries over from the earlier plan (`keepPlanSettings`).
-  const edge = previous === undefined ? "caddy" : edgeProxy(previous);
+  // The server's proxy carries over from the earlier plan (`keepPlanSettings`); a server-less
+  // plan had none.
+  const edge =
+    previous === undefined || isServerless(previous.target.provider)
+      ? "caddy"
+      : edgeProxy(previous);
   if (ownCatalog !== undefined) {
     return priceOwnServer(deps, inputs, ownCatalog, warnings, ownServer, designed, edge);
   }
@@ -1113,6 +1123,7 @@ function providerName(id: DeployProvider): string {
   if (id === "own") return "your own server";
   if (id === "portainer") return "your Portainer";
   if (id === "localhost") return "this computer";
+  if (isServerless(id)) return serverlessName(id);
   return providerProfile(id).displayName;
 }
 
@@ -1138,7 +1149,12 @@ function providerSwitchBlock(
   const from = providerName(current);
   const to = providerName(requested);
   const deployed = hasServer || hasDeployment(previous);
-  const owned = current === "own" || current === "portainer" || current === "localhost";
+  const serverless = isServerless(current) ? current : undefined;
+  const owned =
+    current === "own" ||
+    current === "portainer" ||
+    current === "localhost" ||
+    serverless !== undefined;
   const where = deployed
     ? `Your app is deployed ${current === "portainer" ? "in" : "on"} ${from}`
     : `An earlier apply may have created resources ${owned ? "for" : "at"} ${from}`;
@@ -1147,14 +1163,16 @@ function providerSwitchBlock(
   const portainer = current === "portainer" || requested === "portainer";
   const localhost = current === "localhost";
   let hint: string;
-  if (portainer || localhost || current === "own" || requested === "own") {
-    // `opscrew retarget` does not move an app to or from a Portainer, a server the user owns or
-    // this computer.
+  if (portainer || localhost || serverless || current === "own" || requested === "own") {
+    // `opscrew retarget` does not move an app to or from a Portainer, a server the user owns,
+    // this computer or a server-less target.
     const what = portainer
       ? "your Portainer"
       : localhost
         ? "this computer"
-        : "a server you already own";
+        : serverless !== undefined
+          ? serverlessName(serverless)
+          : "a server you already own";
     const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
     hint = `OpsCrew cannot move an app to or from ${what}. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
   } else if (hasServer) {
@@ -1356,10 +1374,10 @@ function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] 
   const before = previous.target;
   const after = plan.target;
   if (before.provider !== after.provider) return [];
-  // A server the user owns (or a Portainer, or this computer) is never moved or resized by OpsCrew.
-  if (before.provider === "own" || after.provider === "own") return [];
-  if (before.provider === "portainer" || after.provider === "portainer") return [];
-  if (before.provider === "localhost" || after.provider === "localhost") return [];
+  // Only a server OpsCrew creates is moved or resized: never a server the user owns, a Portainer,
+  // this computer or a server-less target.
+  if (before.provider !== "hetzner" && before.provider !== "digitalocean") return [];
+  if (after.provider !== "hetzner" && after.provider !== "digitalocean") return [];
   const server = providerProfile(after.provider).serverNoun;
   if (before.location !== after.location) {
     return [

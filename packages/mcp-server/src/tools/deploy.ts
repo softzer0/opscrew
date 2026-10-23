@@ -6,6 +6,7 @@ import {
   describePlan,
   findSavedPlan,
   OWN_SERVER_BACKUPS_NOTE,
+  onOneServer,
   PORTAINER_NOTES,
   type ProvisionResult,
   type ProvisionServices,
@@ -723,7 +724,7 @@ export function registerDeployTools(
           readSavedPlanChanges(phase.paths, kind, planHash, PLAN_AGAIN);
         // A server (the user's own, or the server runner's on one OpsCrew created) whose
         // infrastructure needs no change: the hash names the host plan.
-        const onServer = !portainer && !local;
+        const onServer = onOneServer(plan.target.provider);
         const hostOnly =
           hash !== undefined &&
           saved === undefined &&

@@ -34,7 +34,15 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["hetzner", "digitalocean", "own", "portainer", "localhost"]
+      "enum": [
+        "hetzner",
+        "digitalocean",
+        "own",
+        "portainer",
+        "localhost",
+        "cloudflare-workers",
+        "github-pages"
+      ]
     },
     "region": {
       "type": "string",

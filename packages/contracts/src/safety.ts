@@ -54,6 +54,12 @@ export type ApprovalKind =
    */
   | "cloudflare-apply"
   /**
+   * Applying a Pages plan to a repository's GitHub Pages site (the workflow source, the custom
+   * domain, HTTPS, or deleting the site); bound to the Pages plan's SHA-256 hash, never granted by
+   * `--yes`.
+   */
+  | "pages-apply"
+  /**
    * Deploying the image another environment runs to the next one (a promotion, or a rollback);
    * bound to the SHA-256 hash of the target environment's plan hash, the image digest and both
    * environments, never granted by `--yes`.
@@ -84,7 +90,7 @@ export interface ApprovalRequest {
   details: string;
   /**
    * SHA-256 hex of the plan file. Required for `iac-apply`, `host-apply`, `stack-apply`,
-   * `cloudflare-apply` and `promote` (the promotion's own hash).
+   * `cloudflare-apply`, `pages-apply` and `promote` (the promotion's own hash).
    */
   planHash?: string;
   /** True when the change deletes or replaces anything. Requires `confirmPhrase`. */

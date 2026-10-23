@@ -29,7 +29,9 @@ import {
   githubClientFromToken,
   githubCoordinates,
   hasDeployment,
+  isServerless,
   PlanRefusedError,
+  serverlessNotSupported,
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import {
@@ -312,6 +314,9 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     env: { OPSCREW_HOME: deps.paths.homeDir },
   });
   const plan = await readArtifact("plan", targetPaths.files.plan);
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("`opscrew promote`", plan.target.provider);
+  }
   const deploySource = plan.environment?.deploySource;
   if (deploySource?.from !== "promote") {
     throw new OpsCrewError(

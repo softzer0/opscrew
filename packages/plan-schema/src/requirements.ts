@@ -28,9 +28,10 @@ export const RequirementsSchema = z
     /** Where to run the app. */
     provider: DeployProviderSchema,
     /**
-     * Where most users are; picks the provider's location. Required unless `provider` is `own`,
-     * `portainer` or `localhost` (a server the user owns or runs Portainer on, and the user's own
-     * computer, stay where they are, so a region given for them is ignored).
+     * Where most users are; picks the provider's location. Required only for a server OpsCrew
+     * creates (`hetzner`, `digitalocean`): a server the user owns or runs Portainer on and the
+     * user's own computer stay where they are, and the server-less targets have no location, so a
+     * region given for them is ignored.
      */
     region: RegionSchema.optional(),
     uptime: UptimeSchema,

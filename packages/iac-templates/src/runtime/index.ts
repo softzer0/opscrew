@@ -14,7 +14,7 @@ import {
 } from "../edge";
 import { localhostSite } from "../edge/localhost";
 import { type NginxSite, nginxAdditionsFile, nginxSite } from "../edge/nginx";
-import { wrongTarget } from "../providers";
+import { assertServerTarget, wrongTarget } from "../providers";
 import { runtimeDir } from "../runtime-dir";
 import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -116,6 +116,7 @@ export function siteHosts(plan: DeployPlan): string[] {
  */
 export function renderCompose(plan: DeployPlan): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
+  assertServerTarget(plan.target, "Compose file");
   const local = plan.target.provider === "localhost";
   const pull = local ? { pull_policy: "missing" } : {};
   const header = [

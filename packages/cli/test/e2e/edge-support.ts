@@ -193,7 +193,7 @@ export function withSite(
   plan: DeployPlan,
   o: { edge?: EdgeProxy; name?: string; domain?: string; www?: boolean; proxied?: boolean },
 ): DeployPlan {
-  if (plan.target.provider === "portainer") throw new Error("Not a server target.");
+  if (!("edge" in plan.target)) throw new Error("Not a server target.");
   return DeployPlanSchema.parse({
     ...plan,
     app: { ...plan.app, name: o.name ?? plan.app.name },

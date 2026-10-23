@@ -14,7 +14,15 @@ import {
   runnerRepository,
   serverRunnerName,
 } from "../runners";
-import { describeChanges, hasDeployment, planStop, refusalReason, serverAddress } from "../shared";
+import {
+  describeChanges,
+  hasDeployment,
+  isServerless,
+  planStop,
+  refusalReason,
+  serverAddress,
+  serverlessNotSupported,
+} from "../shared";
 import {
   deletedTunnels,
   requireTunnelClosed,
@@ -482,6 +490,9 @@ export async function runDestroy(
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
   if (plan.target.provider === "localhost") return destroyLocalhost(deps, plan, options);
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("`opscrew destroy`", plan.target.provider);
+  }
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
   if (plan.target.provider === "portainer") return destroyPortainer(deps, plan, options);
   const name = plan.app.name;

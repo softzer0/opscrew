@@ -6,7 +6,14 @@ import { localComponentStatus } from "../localhost/status";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { runnerStatusLines } from "../runners";
-import { localhostNotSupported, portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
+import {
+  isServerless,
+  localhostNotSupported,
+  portainerClientFor,
+  SshRemoteExec,
+  serverAddress,
+  serverlessNotSupported,
+} from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import {
   type AppContainer,
@@ -55,6 +62,9 @@ export async function readServerContainers(
   }
   if (plan.target.provider === "localhost") {
     throw localhostNotSupported("Reading the app's containers");
+  }
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("Reading the app's containers", plan.target.provider);
   }
   if (plan.target.provider === "own") {
     const { facts } = await connectAndInspectOwnServer(deps, {

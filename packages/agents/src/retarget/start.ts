@@ -19,9 +19,11 @@ import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { providerBucket, readRequirements, requireStorageKey } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
 import {
+  isServerless,
   localhostTargetNoMove,
   ownServerNoMove,
   portainerTargetNoMove,
+  serverlessTargetNoMove,
 } from "../shared/vps-target";
 import { databaseSize, serverOps } from "./server-ops";
 import { recordMoveServers } from "./servers";
@@ -106,6 +108,7 @@ function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudD
   if (provider === "own") throw ownServerNoMove();
   if (provider === "portainer") throw portainerTargetNoMove();
   if (provider === "localhost") throw localhostTargetNoMove();
+  if (isServerless(provider)) throw serverlessTargetNoMove(provider);
   return {
     provider,
     mode: "vps-compose",
@@ -276,8 +279,9 @@ export async function startMove(
 ): Promise<MoveSession> {
   // A Portainer target never moves (feature 010): it is destroyed and provisioned again instead.
   if (plan.target.provider === "portainer") throw portainerTargetNoMove();
-  // Nor does an app on this computer (feature 015).
+  // Nor does an app on this computer (feature 015), or a server-less one (feature 016).
   if (plan.target.provider === "localhost") throw localhostTargetNoMove();
+  if (isServerless(plan.target.provider)) throw serverlessTargetNoMove(plan.target.provider);
   const address =
     plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
       ? await serverAddress(deps, plan, {
@@ -309,6 +313,9 @@ export async function startMove(
   }
   if (options.to === undefined && requirements.provider === "localhost") {
     throw localhostTargetNoMove();
+  }
+  if (options.to === undefined && isServerless(requirements.provider)) {
+    throw serverlessTargetNoMove(requirements.provider);
   }
   const to = options.to ?? requestedProvider(requirements);
   if (to === "own") throw ownServerNoMove();

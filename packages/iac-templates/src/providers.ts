@@ -14,19 +14,16 @@ export function wrongTarget(message: string): OpsCrewError {
 
 /**
  * `target` when OpsCrew creates the server (Hetzner Cloud, DigitalOcean): a plan's target, a
- * server of a move layout, or just `{ provider }`. Throws {@link wrongTarget} for a server the
- * user owns, a Portainer target and the localhost target.
+ * server of a move layout, or just `{ provider }`. Throws {@link wrongTarget} for every other
+ * target: a server the user owns, a Portainer, the localhost target and the server-less ones.
  */
 export function cloudTarget<T extends Pick<DeployTarget, "provider">>(
   target: T,
 ): T & { provider: CloudProvider } {
-  if (
-    target.provider === "own" ||
-    target.provider === "portainer" ||
-    target.provider === "localhost"
-  ) {
+  const { provider } = target;
+  if (provider !== "hetzner" && provider !== "digitalocean") {
     throw wrongTarget(
-      `This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to ${NOT_CLOUD[target.provider]}.`,
+      `This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to ${NOT_CLOUD[provider]}.`,
     );
   }
   return target as T & { provider: CloudProvider };
@@ -37,7 +34,30 @@ const NOT_CLOUD = {
   own: "a server you already own",
   portainer: "an app in your existing Portainer",
   localhost: "an app on this computer (the localhost target)",
-} as const;
+  "cloudflare-workers": "an app on Cloudflare's hosting",
+  "github-pages": "a site on GitHub Pages",
+} as const satisfies Record<Exclude<DeployTarget["provider"], CloudProvider>, string>;
+
+/** A target that runs the app on a server, in a Portainer or on this computer; not server-less. */
+export type ServerDeployTarget = Exclude<
+  DeployTarget,
+  { provider: "cloudflare-workers" | "github-pages" }
+>;
+
+/**
+ * Throws {@link wrongTarget} for a server-less target (Cloudflare's hosting, GitHub Pages), which
+ * has no `what` (for example `Compose file`): code for servers reached with one is a bug.
+ */
+export function assertServerTarget(
+  target: DeployTarget,
+  what: string,
+): asserts target is ServerDeployTarget {
+  if (target.provider === "cloudflare-workers" || target.provider === "github-pages") {
+    throw wrongTarget(
+      `This step only applies to an app on a server, not to ${NOT_CLOUD[target.provider]}, which has no ${what}.`,
+    );
+  }
+}
 
 /** `target` when the app runs in the user's existing Portainer; throws {@link wrongTarget} otherwise. */
 export function portainerTarget(target: DeployTarget): PortainerDeployTarget {

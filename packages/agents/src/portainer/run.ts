@@ -53,12 +53,14 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  isServerless,
   localhostNotSupported,
   PlanRefusedError,
   projectEngine,
   readServerAddresses,
   requireGitRepo,
   SshRemoteExec,
+  serverlessNotSupported,
   stringOutput,
   writePlanIfChanged,
 } from "../shared";
@@ -1011,6 +1013,9 @@ async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise
   if (before.target.provider === "localhost") {
     throw localhostNotSupported("`opscrew portainer enable`");
   }
+  if (isServerless(before.target.provider)) {
+    throw serverlessNotSupported("`opscrew portainer enable`", before.target.provider);
+  }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("enable");
   const approving = (options.approvePlanHashes ?? []).length > 0;
@@ -1040,6 +1045,9 @@ async function disable(
   const before = await readArtifact("plan", deps.paths.files.plan);
   if (before.target.provider === "localhost") {
     throw localhostNotSupported("`opscrew portainer disable`");
+  }
+  if (isServerless(before.target.provider)) {
+    throw serverlessNotSupported("`opscrew portainer disable`", before.target.provider);
   }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("disable");

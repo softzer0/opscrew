@@ -951,3 +951,173 @@ describe("github-settings approvals", () => {
     expect(audit.entries[0]).toMatchObject({ action: "github-settings", decision: "approved" });
   });
 });
+
+// Feature 016: a GitHub Pages plan's approval is its own kind, bound to that plan's hash.
+describe("pages-apply approvals", () => {
+  const pagesRequest: ApprovalRequest = {
+    kind: "pages-apply",
+    title: "Turn on GitHub Pages for example-app with the custom domain docs.example.com",
+    details: "create the site (workflow), set the custom domain docs.example.com",
+    planHash: HASH_C_UPPER,
+  };
+
+  it("records an approved Pages plan, lower-casing the hash", async () => {
+    const { gate, store, audit } = makeGate();
+    const result = await gate.request(pagesRequest);
+    expect(result).toMatchObject({
+      kind: "pages-apply",
+      approved: true,
+      planHash: HASH_C_UPPER.toLowerCase(),
+    });
+    expect(await store.list()).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({ action: "pages-apply", decision: "approved" });
+  });
+
+  it("rejects a pages-apply request without a valid plan hash, in plain words", async () => {
+    const { gate, handler } = makeGate();
+    for (const planHash of [undefined, "", "abc", `${"a".repeat(63)}z`]) {
+      const error = await gate.request({ ...pagesRequest, planHash }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    }
+    const missing = await gate
+      .request({ ...pagesRequest, planHash: undefined })
+      .catch((e: unknown) => e);
+    expect(missing).toMatchObject({
+      message:
+        "A change to a GitHub Pages site can only be approved for a specific Pages plan, but no valid plan hash was given.",
+      hint: "Pass the Pages plan's SHA-256 hash (64 hexadecimal characters) with the request.",
+    });
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("asks for the typed name before a Pages plan that deletes anything", async () => {
+    const { gate, handler } = makeGate();
+    const error = await gate
+      .request({ ...pagesRequest, allowDestroy: true })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("reads pages-apply records back from the JSONL store", async () => {
+    const store = new JsonlApprovalStore(join(root, "pages", "approvals.jsonl"));
+    await store.append(record({ id: "p", kind: "pages-apply" }));
+    expect((await store.list()).map((r) => r.kind)).toEqual(["pages-apply"]);
+  });
+
+  describe.each([
+    ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+    ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, "approvals.jsonl"))],
+  ])("assertApprovedPagesPlan with %s", (_name, makeStore) => {
+    it("returns the latest approved pages-apply record, matching the hash in any case", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "1", kind: "pages-apply", planHash: HASH_A }));
+      await store.append(record({ id: "2", kind: "pages-apply", planHash: HASH_A }));
+      await store.append(record({ id: "3", kind: "pages-apply", planHash: HASH_B }));
+      expect((await gateOver(store).assertApprovedPagesPlan(HASH_A.toUpperCase())).id).toBe("2");
+    });
+
+    it("refuses another hash in plain words and tells the user about --approve", async () => {
+      const store = makeStore();
+      await store.append(record({ kind: "pages-apply", planHash: HASH_A }));
+      const error = await gateOver(store)
+        .assertApprovedPagesPlan(HASH_B)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({
+        code: "PLAN_NOT_APPROVED",
+        message:
+          "This Pages plan has not been approved, so OpsCrew will not change the GitHub Pages site.",
+        hint: `Review the Pages plan, then approve it when asked or re-run with --approve ${HASH_B}.`,
+      });
+    });
+
+    it("refuses a refused approval, every other kind's approval and an invalid hash", async () => {
+      const store = makeStore();
+      const HASH_E = "e".repeat(64);
+      const HASH_F = "f".repeat(64);
+      await store.append(
+        record({ id: "r", kind: "pages-apply", planHash: HASH_A, approved: false }),
+      );
+      await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
+      await store.append(record({ id: "h", kind: "host-apply", planHash: HASH_C_UPPER }));
+      await store.append(record({ id: "s", kind: "stack-apply", planHash: HASH_D }));
+      await store.append(record({ id: "c", kind: "cloudflare-apply", planHash: HASH_E }));
+      await store.append(record({ id: "p", kind: "promote", planHash: HASH_F }));
+      for (const hash of [HASH_A, HASH_B, HASH_C_UPPER, HASH_D, HASH_E, HASH_F, "not-a-hash"]) {
+        await expect(gateOver(store).assertApprovedPagesPlan(hash)).rejects.toMatchObject({
+          code: "PLAN_NOT_APPROVED",
+        });
+      }
+    });
+
+    it("refuses deleting unless the approval allowed it, in plain words", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "k", kind: "pages-apply", planHash: HASH_A }));
+      await store.append(
+        record({ id: "d", kind: "pages-apply", planHash: HASH_B, allowDestroy: true }),
+      );
+      const error = await gateOver(store)
+        .assertApprovedPagesPlan(HASH_A, { allowDestroy: true })
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        code: "DESTROY_NOT_APPROVED",
+        message:
+          "This Pages plan removes the site's custom domain or deletes the GitHub Pages site, but the approval did not allow deleting them.",
+        hint: "Run the command interactively and type the confirmation phrase to approve deleting them.",
+      });
+      expect(
+        (await gateOver(store).assertApprovedPagesPlan(HASH_B, { allowDestroy: true })).id,
+      ).toBe("d");
+    });
+  });
+
+  it("never lets a pages-apply approval authorise another kind, nor another kind a Pages plan", async () => {
+    const { gate } = makeGate();
+    await gate.request({ ...pagesRequest, planHash: HASH_A });
+    for (const assert of [
+      () => gate.assertApprovedPlan(HASH_A),
+      () => gate.assertApprovedHostPlan(HASH_A),
+      () => gate.assertApprovedStackPlan(HASH_A),
+      () => gate.assertApprovedCloudflarePlan(HASH_A),
+      () => gate.assertApprovedPromotion(HASH_A),
+    ]) {
+      await expect(assert()).rejects.toMatchObject({ code: "PLAN_NOT_APPROVED" });
+    }
+    await gate.request({ ...pagesRequest, kind: "cloudflare-apply", planHash: HASH_B });
+    await expect(gate.assertApprovedPagesPlan(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("audits each refusal with what was not approved", async () => {
+    const { gate, audit } = makeGate({ confirmation: "example-app" });
+    await expect(gate.assertApprovedPagesPlan(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    expect(audit.entries.at(-1)).toMatchObject({
+      kind: "approval",
+      action: "pages-apply",
+      target: HASH_B,
+      decision: "refused",
+      detail: "no approval recorded for this Pages plan",
+    });
+    await gate.request({ ...pagesRequest, planHash: HASH_A });
+    await expect(
+      gate.assertApprovedPagesPlan(HASH_A, { allowDestroy: true }),
+    ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+    expect(audit.entries.at(-1)).toMatchObject({
+      action: "pages-apply",
+      decision: "refused",
+      detail: "Pages plan removes the custom domain or the site; deleting them was not approved",
+    });
+    await gate.request({
+      ...pagesRequest,
+      planHash: HASH_D,
+      allowDestroy: true,
+      confirmPhrase: "example-app",
+    });
+    const approved = await gate.assertApprovedPagesPlan(HASH_D, { allowDestroy: true });
+    expect(approved.allowDestroy).toBe(true);
+  });
+});

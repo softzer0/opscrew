@@ -42,7 +42,14 @@ import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { PortainerServices } from "../provision/types";
 import { type RunnerGitHubApi, runnerChecks } from "../runners";
-import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
+import {
+  hidesServerAddress,
+  isServerless,
+  SshRemoteExec,
+  serverAddress,
+  serverlessNotSupported,
+  withoutServerAddress,
+} from "../shared";
 import { runPhase } from "../shared/phase-status";
 import {
   proxyCertificateHosts,
@@ -385,6 +392,9 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("`opscrew secure`", plan.target.provider);
+  }
   // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the
   // user's Portainer through its API (see `portainerSecurityChecks`), never its host; this
   // computer through its Docker (see `localSecurityChecks`).

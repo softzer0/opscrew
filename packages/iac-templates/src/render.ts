@@ -1,6 +1,7 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { renderInfra } from "./infra";
 import { renderPortainerDeployment } from "./portainer-target";
+import { assertServerTarget } from "./providers";
 import { type RuntimeContext, renderCompose, renderEdgeSite, renderRuntimeFiles } from "./runtime";
 import type { RenderedFile } from "./types";
 import { renderWorkflow } from "./workflow";
@@ -14,6 +15,7 @@ import { renderWorkflow } from "./workflow";
  * Lead-owned.
  */
 export function renderDeployment(plan: DeployPlan, ctx: RuntimeContext): RenderedFile[] {
+  assertServerTarget(plan.target, "server files to render");
   if (plan.target.provider === "portainer") return renderPortainerDeployment(plan, ctx);
   return [
     ...renderInfra(plan, ctx),

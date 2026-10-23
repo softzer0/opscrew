@@ -11,6 +11,7 @@ import {
 } from "@opscrew/plan-schema";
 import { frameworkName } from "../analyze/summary";
 import { hostedKinds } from "../design/components";
+import { isServerless } from "../shared/vps-target";
 import { withDefault } from "./follow-ups";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
@@ -54,12 +55,16 @@ export function signingPublicLog(repositoryPrivate: boolean | undefined): string
     : `If your repository is private, ${log} once images are signed.`;
 }
 
-/** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
+/**
+ * The provider default: the previous answer, else the one inferred from tokens, else Hetzner. A
+ * previous server-less target is no default: the question does not offer it yet.
+ */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): DeployProvider {
-  return previous?.provider ?? context.inferredProvider ?? "hetzner";
+  const answered = isServerless(previous?.provider) ? undefined : previous?.provider;
+  return answered ?? context.inferredProvider ?? "hetzner";
 }
 
 /**

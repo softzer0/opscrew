@@ -10,7 +10,7 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
-import { hasDeployment, stringOutput } from "../shared";
+import { hasDeployment, isServerless, serverlessNotSupported, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { cloudRunnerDrift, type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
@@ -60,6 +60,9 @@ const NO_CLOUD_RESOURCES_NOTE =
 export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Promise<DriftReport> {
   const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported("`opscrew drift`", plan.target.provider);
+  }
   const ownServer = plan.target.provider === "own";
 
   // 1. Preconditions: no move in progress, a deployment and its state (no network yet)

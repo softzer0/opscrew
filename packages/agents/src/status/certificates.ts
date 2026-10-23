@@ -31,15 +31,17 @@ import { clientCertificateWarning, deployLogin } from "../provision/origin-tls";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
 import { recoveryStatus } from "../secrets";
-import { checkResult, SshRemoteExec } from "../shared";
+import { checkResult, isServerless, SshRemoteExec } from "../shared";
 import { defaultTlsConnect, type TlsConnect } from "../verify/net";
 
 /**
  * The app's hostnames whose certificate the proxy OpsCrew runs gets itself (ACME): DNS-only ones,
  * on a server or in OpsCrew's Caddy in a Portainer stack. None behind Cloudflare's proxy or a
- * tunnel (Cloudflare's edge serves those), nor behind the user's own proxy.
+ * tunnel (Cloudflare's edge serves those), nor behind the user's own proxy, nor on a server-less
+ * target (its host gets them).
  */
 export function proxyCertificateHosts(plan: DeployPlan): string[] {
+  if (isServerless(plan.target.provider)) return [];
   if (plan.dns.proxied || tunnelMode(plan)) return [];
   if (plan.target.provider === "portainer" && plan.target.web.mode !== "caddy") return [];
   return siteHosts(plan);
@@ -252,6 +254,9 @@ function proxyLine(plan: DeployPlan): string {
         ? "Proxy: your own reverse proxy"
         : "Proxy: none (the app is served through a Cloudflare Tunnel)";
   }
+  if (plan.target.provider === "cloudflare-workers")
+    return "Proxy: none (Cloudflare serves the site)";
+  if (plan.target.provider === "github-pages") return "Proxy: none (GitHub serves the site)";
   return `Proxy: ${EDGE_PROXIES[edgeProxy(plan)].label}`;
 }
 

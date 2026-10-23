@@ -34,7 +34,13 @@ import { buildQuestions, type InterviewAnswers } from "../interview/questions";
 import { portainerAnswers } from "../interview/run";
 import type { OwnServerServices } from "../provision/types";
 import { listRunnerHosts } from "../runners/machine";
-import { gitClient, readOwnServer, readPortainerConnection } from "../shared";
+import {
+  gitClient,
+  isServerless,
+  readOwnServer,
+  readPortainerConnection,
+  serverlessNotSupported,
+} from "../shared";
 import { inspectOwnServerForDesign } from "../shared/own-server-design";
 import {
   type BranchMatches,
@@ -427,6 +433,8 @@ export async function addEnvironment(
     build: _build,
     ...rest
   } = portainerSplit.rest;
+  const target = typeof rest.provider === "string" ? rest.provider.trim().toLowerCase() : undefined;
+  if (isServerless(target)) throw serverlessNotSupported("`opscrew env add`", target);
   const requirements = answersToRequirements(rest, {
     now: deps.clock.now(),
     facts,

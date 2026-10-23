@@ -16,7 +16,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { environmentPaths } from "../environments/paths";
 import { REGISTRY_TOKEN_VAR } from "../provision/portainer";
-import { githubClientFromToken, githubCoordinates, requireGitRepo } from "../shared";
+import { githubClientFromToken, githubCoordinates, isServerless, requireGitRepo } from "../shared";
 import { runningImage } from "./plan";
 import { appFolder } from "./services";
 
@@ -67,7 +67,7 @@ export interface ImageSource {
 
 /**
  * `environment`, the CPU its images are built for and its plan; `undefined` when it has no plan
- * yet or runs on this computer too.
+ * yet, runs on this computer too, or is server-less (it builds no image).
  */
 async function builtElsewhere(
   paths: ProjectPaths,
@@ -75,6 +75,7 @@ async function builtElsewhere(
 ): Promise<ImageSource | undefined> {
   const plan = await readOptionalArtifact("plan", environmentPaths(paths, environment).files.plan);
   if (plan === undefined || plan.target.provider === "localhost") return undefined;
+  if (isServerless(plan.target.provider)) return undefined;
   return { environment, arch: targetArch(plan.target), plan };
 }
 

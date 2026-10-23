@@ -383,6 +383,134 @@
           },
           "required": ["provider", "mode", "arch", "ports", "image"],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "cloudflare-workers"
+            },
+            "mode": {
+              "type": "string",
+              "const": "workers-assets"
+            },
+            "worker": {
+              "type": "string",
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+            },
+            "render": {
+              "type": "string",
+              "enum": ["static", "ssr"]
+            },
+            "notFound": {
+              "type": "string",
+              "enum": ["single-page-application", "404-page", "none"]
+            },
+            "workersDev": {
+              "default": false,
+              "type": "boolean"
+            },
+            "previewUrls": {
+              "default": false,
+              "type": "boolean"
+            },
+            "site": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "enum": ["node", "hugo", "none"]
+                },
+                "packageManager": {
+                  "type": "string",
+                  "enum": ["npm", "pnpm", "yarn", "bun"]
+                },
+                "nodeVersion": {
+                  "type": "string",
+                  "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+                },
+                "command": {
+                  "type": "string",
+                  "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                },
+                "outputDir": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "entry": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "compatibilityFlags": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9_]+$"
+                  }
+                }
+              },
+              "required": ["tool", "outputDir"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["provider", "mode", "worker", "render", "notFound", "site"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "github-pages"
+            },
+            "mode": {
+              "type": "string",
+              "const": "pages-workflow"
+            },
+            "site": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "enum": ["node", "hugo", "none"]
+                },
+                "packageManager": {
+                  "type": "string",
+                  "enum": ["npm", "pnpm", "yarn", "bun"]
+                },
+                "nodeVersion": {
+                  "type": "string",
+                  "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+                },
+                "command": {
+                  "type": "string",
+                  "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                },
+                "outputDir": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "entry": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "compatibilityFlags": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9_]+$"
+                  }
+                }
+              },
+              "required": ["tool", "outputDir"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["provider", "mode", "site"],
+          "additionalProperties": false
         }
       ]
     },

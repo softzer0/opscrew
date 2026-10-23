@@ -20,6 +20,7 @@ import {
   RuntimeLanguageSchema,
   ServiceKindSchema,
   UrlPathSchema,
+  VpsProviderSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
 
@@ -124,14 +125,165 @@ export const LocalhostTargetSchema = z.strictObject({
 });
 
 /**
+ * How the deploy job builds a server-less site (`target.site`), in `app.buildContext`: the tool,
+ * the build command and the folder of files it uploads, and for server rendering on Cloudflare the
+ * Worker module the adapter builds and its compatibility flags (`entry` and `compatibilityFlags`,
+ * checked by each target).
+ */
+export const SiteSchema = z
+  .strictObject({
+    /** `node` or `hugo` builds the site; `none`: the files are in the repository as they are. */
+    tool: z.enum(["node", "hugo", "none"]),
+    /** The package manager that installs and builds a `node` site. */
+    packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional(),
+    /** Node.js for a `node` site: as the app declares it, else OpsCrew's default. */
+    nodeVersion: z
+      .string()
+      .regex(/^\d+(?:\.\d+){0,2}$/, { message: "must be a version such as `24` or `22.12`" })
+      .optional(),
+    /** The build command. */
+    command: CommandLineSchema.optional(),
+    /** The folder of static files that is uploaded. */
+    outputDir: RepoPathSchema,
+    /** The Worker module the adapter builds, for server rendering on Cloudflare only. */
+    entry: RepoPathSchema.optional(),
+    /**
+     * The Cloudflare compatibility flags the adapter's Worker needs, such as `nodejs_compat`, for
+     * server rendering on Cloudflare only. Design sets them from the framework's adapter.
+     */
+    compatibilityFlags: z
+      .array(
+        z.string().regex(/^[a-z0-9_]+$/, {
+          message:
+            "must be a Cloudflare compatibility flag such as `nodejs_compat`: lower-case letters, digits and underscores",
+        }),
+      )
+      .default(() => []),
+  })
+  .superRefine((site, ctx) => {
+    const node = site.tool === "node";
+    if (node !== (site.packageManager !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["packageManager"],
+        message: node
+          ? 'is required with tool "node": it installs the site\'s dependencies and runs its build (required with node, refused otherwise)'
+          : `is refused with tool "${site.tool}": a package manager is required with node and refused otherwise`,
+      });
+    }
+    if (!node && site.nodeVersion !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["nodeVersion"],
+        message: `is refused with tool "${site.tool}": the Node.js version is for a node site only`,
+      });
+    }
+    const builds = site.tool !== "none";
+    if (builds !== (site.command !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["command"],
+        message: builds
+          ? `is required with tool "${site.tool}": the command that builds the site (required with node and hugo, refused with none)`
+          : 'is refused with tool "none": the files are in the repository as they are, with nothing to build (required with node and hugo, refused with none)',
+      });
+    }
+  });
+
+/** A Worker's name at Cloudflare: lower-case letters, digits and hyphens, up to 63. */
+const WorkerNameSchema = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
+  message:
+    "must be a Worker name: 1-63 lower-case letters, digits or hyphens, starting and ending with a letter or digit",
+});
+
+/**
+ * Cloudflare's hosting, on Workers with static assets: Cloudflare serves the built site from its
+ * edge, and runs the app's server code as the Worker for a server-rendered app (`render: ssr`).
+ * There is no server: no location, server type, image or reverse proxy.
+ */
+export const CloudflareWorkersTargetSchema = z
+  .strictObject({
+    provider: z.literal("cloudflare-workers"),
+    mode: z.literal("workers-assets"),
+    /**
+     * The Worker's name, unique in the account: the app's name, `<app>-<env>` for another
+     * environment.
+     */
+    worker: WorkerNameSchema,
+    /** `static`: files only. `ssr`: the adapter's Worker renders pages per request. */
+    render: z.enum(["static", "ssr"]),
+    /**
+     * What a path that is no file gets: the app itself (a single-page app), `404.html`, or a
+     * plain 404.
+     */
+    notFound: z.enum(["single-page-application", "404-page", "none"]),
+    /** The Worker's `workers.dev` address. */
+    workersDev: z.boolean().default(false),
+    /** Cloudflare's URL for each version. */
+    previewUrls: z.boolean().default(false),
+    site: SiteSchema,
+  })
+  .superRefine((target, ctx) => {
+    const ssr = target.render === "ssr";
+    if (ssr !== (target.site.entry !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["site", "entry"],
+        message: ssr
+          ? 'is required with render "ssr": the Worker module the adapter builds (Cloudflare with render "ssr" only, and required there)'
+          : 'is refused with render "static": a static site runs no server code (Cloudflare with render "ssr" only, and required there)',
+      });
+    }
+    if (!ssr && target.site.compatibilityFlags.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["site", "compatibilityFlags"],
+        message:
+          'must be empty with render "static": compatibility flags are for server-rendered apps on Cloudflare',
+      });
+    }
+  });
+
+/**
+ * GitHub Pages: the repository's own workflow builds the site and GitHub publishes it, static files
+ * only. There is no server, and no server code.
+ */
+export const GithubPagesTargetSchema = z
+  .strictObject({
+    provider: z.literal("github-pages"),
+    mode: z.literal("pages-workflow"),
+    site: SiteSchema,
+  })
+  .superRefine((target, ctx) => {
+    if (target.site.entry !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["site", "entry"],
+        message:
+          'is refused with GitHub Pages: it serves static files only and runs no server code (Cloudflare with render "ssr" only)',
+      });
+    }
+    if (target.site.compatibilityFlags.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["site", "compatibilityFlags"],
+        message:
+          "must be empty with GitHub Pages: compatibility flags are for server-rendered apps on Cloudflare",
+      });
+    }
+  });
+
+/**
  * Where the app runs: a server OpsCrew creates (Hetzner, DigitalOcean), the user's own server, the
- * user's existing Portainer, or the user's own computer.
+ * user's existing Portainer, the user's own computer, Cloudflare's hosting or GitHub Pages.
  */
 export const DeployTargetSchema = z.discriminatedUnion("provider", [
   CloudTargetSchema,
   OwnTargetSchema,
   PortainerTargetSchema,
   LocalhostTargetSchema,
+  CloudflareWorkersTargetSchema,
+  GithubPagesTargetSchema,
 ]);
 
 /**
@@ -486,6 +638,104 @@ function checkLocalhostTarget(plan: DeployPlanFields, ctx: z.RefinementCtx): voi
 }
 
 /**
+ * The rules of the server-less targets, Cloudflare's hosting and GitHub Pages: the site answers on
+ * a domain on Cloudflare (behind Cloudflare's proxy on Cloudflare, DNS-only on GitHub Pages),
+ * nothing in the plan needs a server or an image, and the app does not move to or from a server.
+ */
+function checkServerlessTarget(
+  target: z.output<typeof CloudflareWorkersTargetSchema> | z.output<typeof GithubPagesTargetSchema>,
+  plan: DeployPlanFields,
+  ctx: z.RefinementCtx,
+): void {
+  const pages = target.provider === "github-pages";
+  const name = pages ? "GitHub Pages" : "Cloudflare hosting";
+  const issue = (path: (string | number)[], message: string) =>
+    ctx.addIssue({ code: "custom", path, message });
+  const { dns } = plan;
+  if (dns.provider !== "cloudflare") {
+    const why = pages
+      ? "OpsCrew creates the site's DNS records, and GitHub's verification record, in the domain's Cloudflare zone"
+      : "the site answers on your domain as a custom domain of its Worker, which needs the domain on Cloudflare";
+    issue(
+      ["dns", "provider"],
+      `must be "cloudflare" with ${name}: ${why}; move your domain's DNS to Cloudflare (opscrew domain connect), then set dns.provider to "cloudflare" with dns.domain`,
+    );
+  }
+  if (!pages && !dns.proxied) {
+    issue(
+      ["dns", "proxied"],
+      "must be true with Cloudflare hosting: a custom domain of a Worker is always behind Cloudflare's proxy; set dns.proxied to true",
+    );
+  }
+  if (pages && dns.proxied) {
+    issue(
+      ["dns", "proxied"],
+      "must be false with GitHub Pages: Cloudflare's proxy stops GitHub from issuing and renewing the site's certificate; set dns.proxied to false (DNS only)",
+    );
+  }
+  if (pages && plan.security.wafCustomRules) {
+    issue(
+      ["security", "wafCustomRules"],
+      "must be false with GitHub Pages: the site's hostnames are DNS-only, so Cloudflare's WAF never sees their traffic; set security.wafCustomRules to false",
+    );
+  }
+  for (const [i, service] of plan.services.entries()) {
+    issue(
+      ["services", i],
+      `is refused with ${name}: the service ${service.name} (${service.kind}) runs on a server, and ${name} has none; keep the app's own hosted service instead, or choose a server target`,
+    );
+  }
+  for (const [i, worker] of plan.processes.workers.entries()) {
+    issue(
+      ["processes", "workers", i],
+      `is refused with ${name}: the worker ${worker.name} runs as a process on a server, and ${name} has none; choose a server target`,
+    );
+  }
+  for (const [i, job] of plan.processes.cron.entries()) {
+    issue(
+      ["processes", "cron", i],
+      `is refused with ${name}: the cron job ${job.name} runs on a server, and ${name} has none; choose a server target`,
+    );
+  }
+  if (plan.storage?.sqlite !== undefined) {
+    issue(
+      ["storage", "sqlite"],
+      `is refused with ${name}: an SQLite database keeps its file on a server's disk, and ${name} has none; use a hosted database, or choose a server target`,
+    );
+  }
+  if (plan.storage?.objectStorage !== undefined) {
+    issue(
+      ["storage", "objectStorage"],
+      `is refused with ${name}: OpsCrew's bucket (${plan.storage.objectStorage.bucket}) gives its keys to the app on a server, and ${name} has none; keep the app's own storage, or choose a server target`,
+    );
+  }
+  if (plan.app.releaseCommand !== undefined) {
+    issue(
+      ["app", "releaseCommand"],
+      `is refused with ${name}: it runs in a container of the app's image on the server before each deploy, and ${name} has no server or image; remove it, or choose a server target`,
+    );
+  }
+  if (plan.portainer !== undefined) {
+    issue(
+      ["portainer"],
+      `is refused with ${name}: Portainer CE runs on a server, and ${name} has none; remove it`,
+    );
+  }
+  if (plan.supplyChain.sign) {
+    issue(
+      ["supplyChain", "sign"],
+      `must be false with ${name}: cosign signs the app's image, and ${name} builds no image`,
+    );
+  }
+  if (plan.retarget !== undefined) {
+    issue(
+      ["retarget"],
+      `moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere`,
+    );
+  }
+}
+
+/**
  * The rules of `plan.environment`: an environment is never promoted from itself, its runner fits
  * its target, and a named environment's app name ends with `-<name>`.
  */
@@ -504,7 +754,8 @@ function checkEnvironment(
     });
   }
   const { provider } = plan.target;
-  const onServer = provider !== "portainer" && provider !== "localhost";
+  // A positive list, so a new target is never taken for a server.
+  const onServer = VpsProviderSchema.safeParse(provider).success;
   if (runner === "server" && !onServer) {
     ctx.addIssue({
       code: "custom",
@@ -931,6 +1182,9 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   }
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
+  if (plan.target.provider === "cloudflare-workers" || plan.target.provider === "github-pages") {
+    checkServerlessTarget(plan.target, plan, ctx);
+  }
   if (plan.environment !== undefined) checkEnvironment(plan.environment, plan, ctx);
   checkPortainerSubdomain(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
@@ -1007,13 +1261,16 @@ function withImage(target: z.output<typeof CloudTargetSchema>) {
   return { ...target, image: target.image ?? DEFAULT_IMAGES[target.provider] };
 }
 
+/** True for a server OpsCrew creates on Hetzner Cloud or DigitalOcean. */
+function isCloudTarget(
+  target: z.output<typeof DeployTargetSchema>,
+): target is z.output<typeof CloudTargetSchema> {
+  return target.provider === "hetzner" || target.provider === "digitalocean";
+}
+
 /** The target with a cloud target's image filled in; any other target as it is. */
 function withTargetDefaults(target: z.output<typeof DeployTargetSchema>) {
-  return target.provider === "own" ||
-    target.provider === "portainer" ||
-    target.provider === "localhost"
-    ? target
-    : withImage(target);
+  return isCloudTarget(target) ? withImage(target) : target;
 }
 
 /**
@@ -1052,6 +1309,15 @@ export type OwnDeployTarget = Extract<DeployTarget, { provider: "own" }>;
 export type PortainerDeployTarget = Extract<DeployTarget, { provider: "portainer" }>;
 /** The user's own computer. */
 export type LocalhostDeployTarget = Extract<DeployTarget, { provider: "localhost" }>;
+/** Cloudflare's hosting, on Workers with static assets. */
+export type CloudflareWorkersDeployTarget = Extract<
+  DeployTarget,
+  { provider: "cloudflare-workers" }
+>;
+/** GitHub Pages. */
+export type GithubPagesDeployTarget = Extract<DeployTarget, { provider: "github-pages" }>;
+/** How the deploy job builds a server-less site. */
+export type Site = z.output<typeof SiteSchema>;
 /**
  * The plain refusal (code `PHASE_PRECONDITION`) of `opscrew retarget` for a Portainer target,
  * which never moves to or from another target. Callers throw it as an `OpsCrewError`.

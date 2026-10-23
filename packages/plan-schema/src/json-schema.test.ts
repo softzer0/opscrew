@@ -51,6 +51,43 @@ describe("JSON Schema export", () => {
                 edge,
               },
             },
+            {
+              properties: {
+                provider: { const: "cloudflare-workers" },
+                mode: { const: "workers-assets" },
+                worker: { pattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$" },
+                render: { enum: ["static", "ssr"] },
+                notFound: { enum: ["single-page-application", "404-page", "none"] },
+                workersDev: { type: "boolean", default: false },
+                previewUrls: { type: "boolean", default: false },
+                site: {
+                  properties: {
+                    tool: { enum: ["node", "hugo", "none"] },
+                    compatibilityFlags: {
+                      default: [],
+                      type: "array",
+                      items: { type: "string", pattern: "^[a-z0-9_]+$" },
+                    },
+                  },
+                },
+              },
+              required: ["provider", "mode", "worker", "render", "notFound", "site"],
+            },
+            {
+              properties: {
+                provider: { const: "github-pages" },
+                mode: { const: "pages-workflow" },
+                site: {
+                  properties: {
+                    packageManager: { enum: ["npm", "pnpm", "yarn", "bun"] },
+                    outputDir: { type: "string" },
+                  },
+                  required: ["tool", "outputDir"],
+                  additionalProperties: false,
+                },
+              },
+              required: ["provider", "mode", "site"],
+            },
           ],
         },
         environment: {

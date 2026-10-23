@@ -41,6 +41,15 @@ export function insideDomain(host: string, domain: string): boolean {
   return host === domain || host.endsWith(`.${domain}`);
 }
 
+/**
+ * True when recording `hostname` moves the plan to a new name behind Cloudflare's proxy. A GitHub
+ * Pages site never goes behind it: the proxy stops GitHub from issuing the site's certificate.
+ */
+function switchesToProxy(plan: DeployPlan, hostname: string): boolean {
+  if (plan.target.provider === "github-pages") return false;
+  return plan.dns.provider !== "cloudflare" || plan.dns.domain !== hostname;
+}
+
 /** How recording a bought domain changes the project files. */
 export interface ProjectChanges {
   /** Hostname the app will be served at: the bought domain or the plan's name inside it. */
@@ -63,7 +72,7 @@ export function projectChanges(files: ProjectFiles, domain: string): ProjectChan
     lines.push(
       `opscrew/plan.yaml: the app is served at ${hostname} through Cloudflare (dns.provider cloudflare, dns.domain ${hostname}, dns.zone ${domain}) and dns.registration records the registration.`,
     );
-    const switching = plan.dns.provider !== "cloudflare" || plan.dns.domain !== hostname;
+    const switching = switchesToProxy(plan, hostname);
     const proxy = switching && !plan.dns.proxied;
     const ports = switching && plan.security.httpAllowedFrom !== "cloudflare";
     if (proxy || ports) {
@@ -146,7 +155,8 @@ export interface RecordOptions {
  * Records the bought domain: requirements (`domain`, `dnsProvider: cloudflare`) and the plan
  * (`dns.provider`, `dns.domain`, `dns.zone`, `dns.registration`). Moving the plan to a new
  * hostname also turns on the Cloudflare proxy and limits web ports to Cloudflare, as
- * `opscrew dns --domain` does, so a later `opscrew dns` sets it up the same way.
+ * `opscrew dns --domain` does, so a later `opscrew dns` sets it up the same way; a GitHub Pages
+ * site stays DNS-only.
  */
 export async function recordDomain(
   deps: PhaseDeps,
@@ -156,7 +166,7 @@ export async function recordDomain(
   const { domain, hostname, info } = options;
   if (files.plan !== undefined) {
     const plan = files.plan;
-    const switching = plan.dns.provider !== "cloudflare" || plan.dns.domain !== hostname;
+    const switching = switchesToProxy(plan, hostname);
     await writePlanIfChanged(deps, {
       ...plan,
       dns: {

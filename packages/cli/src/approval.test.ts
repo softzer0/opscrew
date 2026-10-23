@@ -264,6 +264,52 @@ describe("NonInteractiveApprovalHandler with a promotion", () => {
   });
 });
 
+describe("NonInteractiveApprovalHandler with a Pages plan (a GitHub Pages site)", () => {
+  const PAGES = "78".repeat(32);
+  const handler = (hashes: string[], assumeYes = false) =>
+    new NonInteractiveApprovalHandler({
+      approvePlanHashes: hashes,
+      ...(assumeYes ? { assumeYes: true } : {}),
+      approver: assumeYes ? "--yes flag" : "--approve flag",
+      clock,
+    });
+  const pagesApply = (overrides: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+    kind: "pages-apply",
+    title: "Apply the Pages plan to example-app's GitHub Pages site (2 changes)",
+    details: `Pages plan hash: ${PAGES}`,
+    planHash: PAGES,
+    ...overrides,
+  });
+
+  it("grants a Pages plan only when its hash is listed with --approve", async () => {
+    expect((await handler([HASH, PAGES.toUpperCase()]).request(pagesApply())).approved).toBe(true);
+    const unlisted = await handler([HASH]).request(pagesApply());
+    expect(unlisted.approved).toBe(false);
+    expect(unlisted.reason).toContain("The Pages plan's hash does not match --approve");
+    expect((await handler([PAGES]).request(pagesApply({ planHash: undefined }))).approved).toBe(
+      false,
+    );
+  });
+
+  it("never grants a Pages plan through --yes, with or without other hashes", async () => {
+    const yes = new NonInteractiveApprovalHandler({ assumeYes: true, approver: "--yes", clock });
+    const refused = await yes.request(pagesApply());
+    expect(refused.approved).toBe(false);
+    expect(refused.reason).toContain("No plan hash was approved");
+    expect((await handler([HASH], true).request(pagesApply())).approved).toBe(false);
+  });
+
+  it("refuses a Pages plan that deletes (typed app name) even when its hash is listed", async () => {
+    for (const assumeYes of [false, true]) {
+      const decision = await handler([PAGES], assumeYes).request(
+        pagesApply({ allowDestroy: true, confirmPhrase: "example-app" }),
+      );
+      expect(decision.approved).toBe(false);
+      expect(decision.reason).toMatch(/typed confirmation/);
+    }
+  });
+});
+
 describe("NonInteractiveApprovalHandler with --yes", () => {
   const handler = new NonInteractiveApprovalHandler({
     assumeYes: true,

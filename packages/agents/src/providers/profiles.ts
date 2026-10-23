@@ -264,17 +264,23 @@ export function providerProfile(
 }
 
 /**
- * `provider` when the app runs on one server; a Portainer or localhost target here is a bug in
- * OpsCrew.
+ * `provider` when the app runs on one server; any other target here (a Portainer, this computer,
+ * a server-less target) is a bug in OpsCrew.
  */
 function serverProvider(provider: DeployProvider): VpsProviderId {
-  if (provider === "portainer" || provider === "localhost") {
-    throw wrongTarget(
-      `This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to ${provider === "portainer" ? "an app in your existing Portainer" : "an app on this computer (the localhost target)"}.`,
-    );
-  }
-  return provider;
+  if (provider === "hetzner" || provider === "digitalocean" || provider === "own") return provider;
+  throw wrongTarget(
+    `This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to ${NOT_ON_SERVER[provider]}.`,
+  );
 }
+
+/** How {@link serverProvider} names a target that is not one server. */
+const NOT_ON_SERVER = {
+  portainer: "an app in your existing Portainer",
+  localhost: "an app on this computer (the localhost target)",
+  "cloudflare-workers": "an app on Cloudflare's hosting",
+  "github-pages": "a site on GitHub Pages",
+} as const satisfies Record<Exclude<DeployProvider, VpsProviderId>, string>;
 
 /** The provider of a plan whose app runs on one server. */
 export function planProvider(plan: Pick<DeployPlan, "target">): VpsProviderId {

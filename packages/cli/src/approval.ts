@@ -161,13 +161,14 @@ const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
 /**
  * Request kinds `--approve <hash>` may grant, each only for its exact hash: infrastructure, the
  * host plan of the user's own server, the stack plan of the user's Portainer, the Cloudflare plan
- * of OpsCrew's shared Cloudflare resources and a promotion.
+ * of OpsCrew's shared Cloudflare resources, the Pages plan of a GitHub Pages site and a promotion.
  */
 export const APPROVE_BY_HASH_KINDS: readonly ApprovalRequest["kind"][] = [
   "iac-apply",
   "host-apply",
   "stack-apply",
   "cloudflare-apply",
+  "pages-apply",
   "promote",
 ];
 
@@ -178,7 +179,8 @@ const RUN_INTERACTIVELY =
  * Approves without a human only when the user named the exact plan: an `iac-apply`
  * (infrastructure), `host-apply` (the host plan of the user's own server), `stack-apply` (the
  * stack plan of the user's Portainer), `cloudflare-apply` (the Cloudflare plan of OpsCrew's
- * shared Cloudflare resources) or `promote` (a promotion) whose `planHash` equals one of the `--approve <hash>` values
+ * shared Cloudflare resources), `pages-apply` (the Pages plan of a GitHub Pages site) or `promote`
+ * (a promotion) whose `planHash` equals one of the `--approve <hash>` values
  * (case-insensitive) and that destroys nothing and needs no typed confirmation. `--yes` never
  * grants any of these kinds. Everything else is refused with a reason that says how to approve it.
  */
@@ -230,9 +232,11 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
             ? "The stack plan's hash"
             : request.kind === "cloudflare-apply"
               ? "The Cloudflare plan's hash"
-              : request.kind === "promote"
-                ? "The promotion's hash"
-                : "The plan hash";
+              : request.kind === "pages-apply"
+                ? "The Pages plan's hash"
+                : request.kind === "promote"
+                  ? "The promotion's hash"
+                  : "The plan hash";
       return `${what} does not match --approve ${hashes.join(" / ")}; the plan changed since you reviewed it, or it was not approved. ${RUN_INTERACTIVELY}`;
     }
     return undefined;

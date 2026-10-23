@@ -34,6 +34,7 @@ const APPROVAL_KINDS = [
   "host-apply",
   "stack-apply",
   "cloudflare-apply",
+  "pages-apply",
   "promote",
   "github-settings",
 ] as const satisfies readonly ApprovalKind[];
@@ -51,7 +52,13 @@ const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
 });
 
 /** Approval kinds bound to a SHA-256 hash: a plan's, or a promotion's (`promote`). */
-type HashBoundKind = "iac-apply" | "host-apply" | "stack-apply" | "cloudflare-apply" | "promote";
+type HashBoundKind =
+  | "iac-apply"
+  | "host-apply"
+  | "stack-apply"
+  | "cloudflare-apply"
+  | "pages-apply"
+  | "promote";
 /** Hash-bound kinds whose approval may also allow deleting; a promotion deletes nothing. */
 type DestroyingKind = Exclude<HashBoundKind, "promote">;
 
@@ -143,6 +150,25 @@ const HASH_BOUND: {
       audit: "Cloudflare plan deletes OpsCrew's rules; deleting them was not approved",
     },
   },
+  "pages-apply": {
+    noHash: {
+      message:
+        "A change to a GitHub Pages site can only be approved for a specific Pages plan, but no valid plan hash was given.",
+      hint: "Pass the Pages plan's SHA-256 hash (64 hexadecimal characters) with the request.",
+    },
+    notApproved: (planHash) => ({
+      message:
+        "This Pages plan has not been approved, so OpsCrew will not change the GitHub Pages site.",
+      hint: `Review the Pages plan, then approve it when asked or re-run with --approve ${planHash}.`,
+      audit: "no approval recorded for this Pages plan",
+    }),
+    destroyNotApproved: {
+      message:
+        "This Pages plan removes the site's custom domain or deletes the GitHub Pages site, but the approval did not allow deleting them.",
+      hint: "Run the command interactively and type the confirmation phrase to approve deleting them.",
+      audit: "Pages plan removes the custom domain or the site; deleting them was not approved",
+    },
+  },
   promote: {
     noHash: {
       message:
@@ -221,9 +247,9 @@ export function approvalDecision(
 /**
  * The single place where humans approve mutations (constitution I). Every decision, approved or
  * not, is written to the approval store and the audit log; `iac-apply`, `host-apply`,
- * `stack-apply` and `cloudflare-apply` approvals are bound to the plan's SHA-256 hash, `promote`
- * approvals to the promotion's, and destroys need `allowDestroy` plus the exact typed confirmation
- * phrase.
+ * `stack-apply`, `cloudflare-apply` and `pages-apply` approvals are bound to the plan's SHA-256
+ * hash, `promote` approvals to the promotion's, and destroys need `allowDestroy` plus the exact
+ * typed confirmation phrase.
  */
 export class ApprovalGate {
   private readonly handler: ApprovalHandler;
@@ -243,8 +269,9 @@ export class ApprovalGate {
   /**
    * Validates the request, asks the handler and records the decision. Throws
    * `OpsCrewError("INVALID_INPUT")` for an `iac-apply`, `host-apply`, `stack-apply`,
-   * `cloudflare-apply` or `promote` without a valid hash, an `allowDestroy`, `domain-purchase` or
-   * `domain-settings` request without a confirmation phrase. A refusal is returned, not thrown.
+   * `cloudflare-apply`, `pages-apply` or `promote` without a valid hash, an `allowDestroy`,
+   * `domain-purchase` or `domain-settings` request without a confirmation phrase. A refusal is
+   * returned, not thrown.
    */
   async request(request: ApprovalRequest): Promise<ApprovalRecord> {
     validateRequest(request);
@@ -328,6 +355,18 @@ export class ApprovalGate {
     options: { allowDestroy?: boolean } = {},
   ): Promise<ApprovalRecord> {
     return this.assertApproved("cloudflare-apply", planHash, options);
+  }
+
+  /**
+   * {@link assertApprovedPlan} for the `pages-apply` approval of a GitHub Pages plan
+   * (`allowDestroy` for a plan that removes the custom domain or deletes the site). Call before
+   * every Pages apply.
+   */
+  assertApprovedPagesPlan(
+    planHash: string,
+    options: { allowDestroy?: boolean } = {},
+  ): Promise<ApprovalRecord> {
+    return this.assertApproved("pages-apply", planHash, options);
   }
 
   /**

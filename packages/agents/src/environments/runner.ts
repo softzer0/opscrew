@@ -7,6 +7,7 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { listRunnerHosts, requireOtherMachine, requireRunnerHost } from "../runners/machine";
+import { onOneServer } from "../shared/vps-target";
 
 type Environment = NonNullable<DeployPlan["environment"]>;
 type Runner = Environment["runner"];
@@ -33,15 +34,15 @@ export interface RunnerTarget {
 
 /** Why `runner` cannot serve the target, or undefined. */
 function misfit(runner: Runner, provider: DeployProvider): string | undefined {
-  const onServer = provider !== "portainer" && provider !== "localhost";
+  const onServer = onOneServer(provider);
   if (runner === "local" && provider !== "localhost") {
     return "runner local runs the deploy on this computer, so it needs this computer (localhost) as the target.";
   }
   if (runner === "server" && !onServer) {
-    return "runner server needs a server OpsCrew creates or your own server as the target: a Portainer redeploys by itself, and this computer has no server.";
+    return "runner server needs a server OpsCrew creates or your own server as the target: a Portainer redeploys by itself, and this computer, Cloudflare hosting and GitHub Pages have no server.";
   }
   if (runner === "host" && !onServer) {
-    return "runner host needs a server OpsCrew creates or your own server as the target: the runner machine deploys to it over SSH, which a Portainer and this computer do not take.";
+    return "runner host needs a server OpsCrew creates or your own server as the target: the runner machine deploys to it over SSH, which a Portainer, this computer, Cloudflare hosting and GitHub Pages do not take.";
   }
   return undefined;
 }

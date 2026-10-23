@@ -57,11 +57,7 @@ function issuesOf(kind: ArtifactKind, text: string) {
 
 /** The target as a Hetzner/DigitalOcean target; fails the test for any other target. */
 function cloud(target: DeployTarget): CloudDeployTarget {
-  if (
-    target.provider === "own" ||
-    target.provider === "portainer" ||
-    target.provider === "localhost"
-  ) {
+  if (target.provider !== "hetzner" && target.provider !== "digitalocean") {
     throw new Error("expected a Hetzner or DigitalOcean target");
   }
   return target;
@@ -1195,6 +1191,8 @@ describe("DeployPlan target on an existing Portainer", () => {
       "own",
       "portainer",
       "localhost",
+      "cloudflare-workers",
+      "github-pages",
     ]);
     expect(DesignOptionSchema.shape.target.shape.provider.options).toEqual(
       DeployProviderSchema.options,

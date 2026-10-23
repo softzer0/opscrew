@@ -32,6 +32,7 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  isServerless,
   localhostNotSupported,
   type PlanApproval,
   readyNewServer,
@@ -40,6 +41,7 @@ import {
   requireGitRepo,
   type ServerAddress,
   serverAddress,
+  serverlessNotSupported,
   stringOutput,
   trackedFiles,
   writePlanIfChanged,
@@ -283,6 +285,9 @@ async function provisionFlow(
   if (plan.target.provider === "localhost") {
     if (phase !== "provision") throw localhostNotSupported(`\`${command}\``);
     return provisionLocalhost(deps, plan, options);
+  }
+  if (isServerless(plan.target.provider)) {
+    throw serverlessNotSupported(`\`${command}\``, plan.target.provider);
   }
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
