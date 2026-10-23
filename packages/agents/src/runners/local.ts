@@ -285,6 +285,23 @@ export function runnerEnvironment(
 }
 
 /**
+ * The runner's own script `base` (`config` or `run`) with `args`, run from its folder `dir`:
+ * `<dir>/<base>.sh`, or on Windows `.\<base>.cmd` through cmd.exe. The `.\` keeps it found when
+ * `NoDefaultCurrentDirectoryInExePath` is set (Claude Code and some security settings set it),
+ * which stops cmd.exe from looking in the current folder for a bare name.
+ */
+export function runnerScript(
+  windows: boolean,
+  dir: string,
+  base: "config" | "run",
+  args: readonly string[],
+): [string, string[]] {
+  return windows
+    ? ["cmd.exe", ["/d", "/c", `.\\${base}.cmd`, ...args]]
+    : [join(dir, `${base}.sh`), [...args]];
+}
+
+/**
  * Starts the local runner of the localhost environment `environment` (contracts/runners.md
  * "Agents"): checks that its deploy job runs here and deploys an image GitHub Actions built, and
  * the repository (a public one needs every outside contributor's runs approved, set after its
@@ -348,10 +365,8 @@ export async function startLocalRunner(
   await writeFile(join(dir, ".env"), localRunnerEnv(paths, windows));
   const name = runnerName(local.computerName, plan);
   const env = runnerEnvironment(deps.env, shell === undefined ? undefined : dirname(shell));
-  const script = (base: string, args: readonly string[]): [string, string[]] =>
-    windows
-      ? ["cmd.exe", ["/d", "/c", `${base}.cmd`, ...args]]
-      : [join(dir, `${base}.sh`), [...args]];
+  const script = (base: "config" | "run", args: readonly string[]) =>
+    runnerScript(windows, dir, base, args);
 
   let stopping = false;
   let running: RunnerProcess | undefined;

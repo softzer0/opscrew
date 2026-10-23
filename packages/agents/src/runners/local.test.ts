@@ -20,6 +20,7 @@ import {
   type LocalRunnerServices,
   type RunnerProcess,
   requireLocalRunnerImage,
+  runnerScript,
   startLocalRunner,
 } from "./local";
 
@@ -45,7 +46,7 @@ class RunnerComputer implements CommandRunner {
         ? { ...ok, stdout: "https://github.com/acme/shop.git\n" }
         : ok;
     }
-    return /config\.(sh|cmd)$/.test(command) || args.includes("config.cmd") ? this.config : ok;
+    return /config\.(sh|cmd)$/.test(command) || args.includes(".\\config.cmd") ? this.config : ok;
   }
 }
 
@@ -379,5 +380,22 @@ describe("startLocalRunner", () => {
       requireLocalRunnerImage(built.deps.paths.root, devPlan()),
     ).resolves.toBeUndefined();
     expect(built.github.calls).toEqual([]);
+  });
+});
+
+describe("runnerScript", () => {
+  it("names the runner's script with its folder, so Windows finds it with NoDefaultCurrentDirectoryInExePath set", () => {
+    expect(runnerScript(true, "C:\\runners\\shop-dev", "config", ["--unattended"])).toEqual([
+      "cmd.exe",
+      ["/d", "/c", ".\\config.cmd", "--unattended"],
+    ]);
+    expect(runnerScript(true, "C:\\runners\\shop-dev", "run", [])).toEqual([
+      "cmd.exe",
+      ["/d", "/c", ".\\run.cmd"],
+    ]);
+    expect(runnerScript(false, "/home/ana/runners/shop-dev", "config", ["--unattended"])).toEqual([
+      join("/home/ana/runners/shop-dev", "config.sh"),
+      ["--unattended"],
+    ]);
   });
 });
