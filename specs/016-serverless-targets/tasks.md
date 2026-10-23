@@ -219,7 +219,7 @@ Effort`.
 
 ## Phase 3b: Several apps in one repository (US6)
 
-- [ ] T1617a Contracts for several apps, and the plan-schema rules found in wave 2, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/paths.ts`, `packages/core/src/index.ts`
+- [X] T1617a Contracts for several apps, and the plan-schema rules found in wave 2, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/paths.ts`, `packages/core/src/index.ts`
   - Owns: those paths (+ the generated JSON schema, tests and fixtures)
   - Reads: spec US6, FR-1613–FR-1616; data-model.md "Apps in a repository"; contracts/apps.md; plan.md "15."; ADR 0020; the "What T1601a left", `www`, `notFound` and repository-root notes in T1607 below
   - Depends: T1606
@@ -247,6 +247,7 @@ Effort`.
       - the proxy additions (`opscrew/apps/<key>/proxy/…`);
       - the storage and verification roots.
     - **dependabot** renders entries for every app's folders.
+    - **One path cleaner:** iac-templates' `clean` in `serverless/site.ts` gives way to plan-schema's exported `cleanRepoPath` (T1617a's review).
     - **The GHCR image in shell** (T1617a's report): `ghcrImageFor` lower-cases its whole result, so the workflows keep `${GITHUB_REPOSITORY,,}` and append `/<key>` themselves for a further app.
     - **The first app's output is byte-identical** (every existing snapshot unchanged).
     - **Tests:** a further app's static Cloudflare workflow, a server workflow, and dependabot with two apps.
@@ -262,6 +263,8 @@ Effort`.
     - **`resolveApp`:** like `resolveEnvironment`, with `appFlag` for suggested commands.
     - **Phase deps** take `app` next to `environment`. Analyze and interview read the app's `appDir`. Design writes `app.key`, and `app.name` defaults to the key.
     - **The two branches** use `appBranch`. Their numbered fallbacks (`-2`, `-3`) must not collide across keys: app `a`'s `opscrew/prepare-deploy-a-2` is app `a-2`'s first branch, so number after a separator no key can hold, or check the other keys (T1617a's report).
+    - **The uniqueness check reads the real values** (T1617a's review): besides `derivedNames(key, env, app.name)` for every app and environment, it compares each plan's actual `infra.dir`, `cicd.workflowPath` and `app.name`, which a user may have set by hand. Design writes a further app's values from the helpers, and never builds its plan by spreading a parsed plan of another app (the transform fills only missing fields).
+    - **One GitHub Pages site per repository, across apps** (T1617a's review): `app add`, design and `env add` refuse a second app or environment on `github-pages` in the same repository, naming the one already there.
     - **`environmentPaths(paths, name)`** keeps `paths.app`. `environmentInfraDir` and `environmentWorkflowPath` give way to plan-schema's `infraDirFor` and `workflowPathFor`, and `environmentsOf(root, key)` lists an app's environments (T1617a's report). Dependabot covers every app. `env add` runs the uniqueness check too.
     - **`policy.ts`** denies agent edits to every OpsCrew workflow file pattern, a further app's and environments' included.
     - **Tests:** two apps in one repository end to end on fakes: design and provision of a static Cloudflare app for each; their files, secrets, state and approvals never shared; destroying one leaving the other. Plus the clash refusal.
