@@ -178,7 +178,7 @@ Effort`.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1606 [P] [US1] [US2] [US3] [US5] The deploy workflows for both targets, and the generated wrangler config, `_headers` and the SSR headers wrapper, in `packages/iac-templates/src/workflow/{cloudflare-workers,github-pages}.ts` (new), `packages/iac-templates/src/serverless/**` (new), and the dispatch in `packages/iac-templates/src/workflow/index.ts` and `packages/iac-templates/src/render.ts`
+- [X] T1606 [P] [US1] [US2] [US3] [US5] The deploy workflows for both targets, and the generated wrangler config, `_headers` and the SSR headers wrapper, in `packages/iac-templates/src/workflow/{cloudflare-workers,github-pages}.ts` (new), `packages/iac-templates/src/serverless/**` (new), and the dispatch in `packages/iac-templates/src/workflow/index.ts` and `packages/iac-templates/src/render.ts`
   - Owns: those paths (+ tests, snapshots); `packages/iac-templates/src/index.ts` for the new exports only
   - Reads: data-model.md "The site block", "Generated files"; plan.md "7."; research.md R1 "Deploy", "Operations", R2 "Deploy" and "Spike results" 4, 5, 6, 9, 11
   - Depends: T1601a, T1601b, T1602
@@ -268,6 +268,8 @@ Effort`.
 
       Origin TLS, Authenticated Origin Pulls, the host plan and the edge are skipped: there is no origin.
     - **No Dockerfile is needed**, and no image is built or pushed.
+    - **The render context** gets `builderWorkflowPath` (next to `builderBranch`) for a promoted environment, or the workflow refuses to render (T1606).
+    - **Check live** (T1606's review): the build job's bundle step runs wrangler-action with no `apiToken`; `deploy --dry-run --outdir` then `versions upload --no-bundle` keeps the bundle's extra modules.
     - **An existing deployment:** a second run shows no change. A changed setting (`notFound`, `workersDev`) shows a config change in the pull request and, where IaC owns it, in the plan.
     - **Tests** (fakes: engine, Cloudflare, GitHub):
       - a static and an SSR app end to end, with every approval's hash checked;
