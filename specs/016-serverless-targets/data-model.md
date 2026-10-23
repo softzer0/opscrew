@@ -104,7 +104,7 @@ The deploy job runs in GitHub Actions and never writes `plan.yaml`, so OpsCrew r
 | Field | Rule |
 |---|---|
 | `enabled` | Pages with `build_type: "workflow"`. |
-| `cname` | The app's domain. It is set before the DNS records exist and cleared before they are deleted. |
+| `cname` | The app's domain. It is set before the DNS records exist, set again once GitHub sees the records valid (so GitHub requests its certificate), and cleared only after the records are deleted. While a DNS record points at GitHub, this site claims the domain. |
 | `httpsEnforced` | Set once GitHub reports the certificate. |
 
 The Pages plan is the change from the site GitHub reports to these fields, in steps (create, set `cname`, enforce HTTPS, or the reverse on destroy). Its SHA-256 hash covers the canonical JSON of the steps; the new hash-bound approval kind `pages-apply` approves it, and a plan that deletes the site needs `allowDestroy`. Applying re-reads the site and refuses when it no longer matches what was planned.

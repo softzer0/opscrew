@@ -205,6 +205,7 @@ Research's open items 1–13, in the e2e zone and the throwaway repositories. Ea
   - the Pages plan (`pages-apply`): Pages with the workflow source and `cname`;
   - then the IaC plan for the DNS records and the verification record;
   - the workflow pull request;
+  - once `pagesHealth` reports the DNS valid, the custom domain saved again (`cname` null, then set, about a second apart): GitHub requests the certificate only when the domain is saved with valid DNS (spike result 7);
   - `https_enforced` set once GitHub reports the certificate, through a Pages plan in this run or a later `provision` (`verify` stays read-only and says when to run it);
   - the manual Verify step printed with its page.
 
@@ -215,7 +216,7 @@ Research's open items 1–13, in the e2e zone and the throwaway repositories. Ea
 - **secure:** the headers on Cloudflare; the "GitHub Pages cannot set headers" finding.
 - **destroy:**
   - Cloudflare: the custom domains, then the Worker, by IaC; its secrets go with it.
-  - GitHub Pages: `https_enforced` off and `cname` null, then the DNS records removed at once, then Pages deleted. The verification record stays unless `--delete-verification`.
+  - GitHub Pages: the DNS records removed first, while the site still claims the domain, then `cname` null, then Pages deleted, then its `github-pages` environment. The verification record stays unless `--delete-verification`.
 - **promote:**
   - Cloudflare: the source's running version names its run and build SHA-256; the target's workflow is dispatched with them after the `promote` approval. A rollback is `promote --to <env> --version <id>`, an earlier version of the environment's own Worker, activated through the connector.
   - GitHub Pages: promotion refused, with the reason. A rollback is `promote --to <env> --version <run id>`: a re-run of that earlier successful Pages run, after the `promote` approval (its hash covers the target plan hash and the run id).

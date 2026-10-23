@@ -115,7 +115,7 @@ Effort`.
 
 ## Phase 2: Spike (lead)
 
-- [ ] T1602 The spike (lead): research.md's open items 1–13, in the e2e Cloudflare zone and the throwaway repositories (GitHub Pages on the public one, `OPSCREW_E2E_GITHUB_REPO_C`). The results go into research.md as "Spike results", one line per item: what was run, and what was seen. They decide the open details of T1603–T1609, and any finding that changes a design goes back into plan.md before wave 2.
+- [X] T1602 The spike (lead): research.md's open items 1–13, in the e2e Cloudflare zone and the throwaway repositories (GitHub Pages on the public one, `OPSCREW_E2E_GITHUB_REPO_C`). The results go into research.md as "Spike results", one line per item: what was run, and what was seen. They decide the open details of T1603–T1609, and any finding that changes a design goes back into plan.md before wave 2.
   - The e2e Cloudflare token needs the Workers permissions first (item 3 names them). That token edit is the founder's.
 
 ## Phase 3: Packages (parallel)
@@ -586,6 +586,7 @@ Effort`.
       3. the workflow pull request.
 ) before `renderPagesVerification` renders it (T1605's review), and recovered on later runs from the verification root's `terraform.tfvars.json` (key `verification`). Its value comes as spike item 13 settled, from the API, or else pasted by the user from the page OpsCrew names (an interactive prompt or `--pages-verification <value>`). OpsCrew then prints the one manual step: Verify, with the exact page.
     - **`pagesHealth`** is called only after `cname` is set (without a custom domain GitHub refuses the health check). `updatePages({ httpsEnforced: true })` before the certificate exists answers 404 "The certificate does not exist yet", a `PHASE_PRECONDITION` from T1604.
+    - **The certificate trigger** (spike result 7): GitHub requests the certificate only when the domain is saved with valid DNS, so with the takeover-safe order none ever comes (95 minutes seen). Once `pagesHealth` reports the DNS valid, the Pages plan's next step saves the domain again (`cname` null, then set, back to back). The certificate was approved 31 s later. The plan shows this step, and the guide says that verifying the domain removes even that second's gap.
     - **HTTPS:** once `pagesHealth` reports the certificate, `https_enforced` is set through a Pages plan (`pages-apply`), in this run or a later `provision`. Until then, the run says it's pending, when to look again, and to run `opscrew provision` then.
     - **Tests:**
       - an apex and a subdomain end to end;
@@ -621,15 +622,15 @@ Effort`.
     - **destroy:**
       - **Cloudflare:** the redirect rule (`inspectShared` with `redirect: true`, T1603), then the custom domains and the Worker by IaC (its secrets go with the Worker), then the GitHub secrets.
       - **GitHub Pages:**
-        1. a Pages plan (`pages-apply` with `allowDestroy`): `https_enforced` off and `cname` removed;
-        2. the DNS records removed at once by IaC;
-        3. Pages deleted.
+        1. the DNS records removed by IaC first, while the site still claims the domain (so no record ever points at GitHub with no site claiming it, spike result 7);
+        2. a Pages plan (`pages-apply` with `allowDestroy`): `cname` removed, then Pages deleted, then its `github-pages` environment (deleting Pages leaves it behind).
 
         The verification record's root stays unless `deleteVerification` is set. No DNS record points at GitHub while no site claims the domain (SC-1605).
       - Both need the typed app name, as today.
     - **promote:**
       - **A Cloudflare promotion** (`deploySource.from: promote`): the source's running version → its run id and SHA-256 from the version's message → the `promote` approval, whose hash covers the target plan hash, both environments, the run id and the SHA-256 → `dispatchWorkflow` with `run` and `sha256`. A version without OpsCrew's message, or an expired artifact, is refused with what to do.
       - **A rollback, any environment:** `version`. Cloudflare blocks a rollback to a version older than a secret change unless `force` is sent; T1614 checks what it answers, and an approved rollback sends `force=true` if that's needed (T1603's review). On Cloudflare it activates that version of the environment's own Worker through `deployWorkerVersion`. On GitHub Pages it re-runs that run with `rerunWorkflowRun`. Both need a `promote` approval over the target plan hash and the id.
+      - **The promoted workflow's render context** carries `builderBranch` and `builderWorkflowPath`: the branch and workflow path of the first source environment that follows a branch, through any chain (dev → staging → prod). The deploy job checks the run's event, repository, branch, workflow and conclusion against them (T1606's review).
       - **Refused:** `digest` on these targets, `version` on server targets, and promotion on GitHub Pages (each environment builds its own).
     - **retarget:** refused to and from both targets (FR-1611). Its hint names `opscrew destroy`, which works for them after this task.
     - **Entry refusals T1601a added** in verify, drift, secure, destroy, promote and `env add` are replaced by the real branches (T1610a and this task). `opscrew dns` and `portainer enable`/`disable` stay refused for both targets: provision manages their DNS.
