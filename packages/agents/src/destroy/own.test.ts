@@ -10,6 +10,7 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { TOOLS } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
@@ -399,7 +400,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
           registered: true,
           active: true,
           unitCurrent: true,
-          version: "2.338.0",
+          version: TOOLS.githubRunner.version,
           label: "opscrew-shop-prod",
           repositoryUrl: "https://github.com/acme/shop",
         },

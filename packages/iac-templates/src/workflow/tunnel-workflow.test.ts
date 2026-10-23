@@ -34,9 +34,7 @@ describe("renderWorkflow for an own server in tunnel mode", () => {
       names.indexOf("Configure SSH with the pinned host key"),
     );
     const run = install?.run ?? "";
-    expect(run).toContain(
-      "https://github.com/cloudflare/cloudflared/releases/download/2026.5.1/cloudflared-linux-amd64",
-    );
+    expect(run).toContain(toolDownloadUrl("cloudflared", "amd64"));
     expect(run).toContain(toolDownloadUrl("cloudflared", "arm64"));
     expect(run).toContain(TOOLS.cloudflared.sha256.amd64);
     expect(run).toContain(TOOLS.cloudflared.sha256.arm64);

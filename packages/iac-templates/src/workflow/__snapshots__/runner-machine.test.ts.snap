@@ -24,7 +24,7 @@ exports[`the build job on the environment's runner (build: runner) > runs on the
           if [[ -d "$plugins" ]]; then ln -s "$plugins" "$RUNNER_TEMP/docker/cli-plugins"; fi
           printf '{"auths":{"ghcr.io":{}}}\\n' > "$RUNNER_TEMP/docker/config.json"
           echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: <pin:ACTIONS.checkout>
         with:
           persist-credentials: false
       - id: image
@@ -37,18 +37,18 @@ exports[`the build job on the environment's runner (build: runner) > runs on the
       # Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the
       # workflow run, and the repository and commit of the checkout.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        uses: <pin:ACTIONS.setupBuildx>
         with:
           driver-opts: provenance-add-gha=false
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: <pin:ACTIONS.login>
         with:
           registry: ghcr.io
           username: \${{ github.actor }}
           password: \${{ secrets.GITHUB_TOKEN }}
       - id: push
         name: Build and push the image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        uses: <pin:ACTIONS.buildPush>
         with:
           context: "."
           file: "Dockerfile"
@@ -83,7 +83,7 @@ exports[`the build job on the environment's runner (build: runner) > runs on the
           set -euo pipefail
           docker pull --quiet "$IMAGE"
           docker logout ghcr.io
-          if ! MSYS_NO_PATHCONV=1 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then
+          if ! MSYS_NO_PATHCONV=1 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock <pin:IMAGES.trivy> image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then
             echo "::warning::The image scan (Trivy) could not run, so this build has no scan report. The deploy goes on: the scan only reports."
           fi"
 `;
@@ -102,7 +102,7 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
     outputs:
       previous: \${{ steps.start.outputs.previous }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: <pin:ACTIONS.checkout>
         with:
           persist-credentials: false
       - name: Validate the edge's configuration with Caddy

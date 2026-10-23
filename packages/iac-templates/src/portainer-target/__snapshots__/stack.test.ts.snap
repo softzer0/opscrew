@@ -6,7 +6,7 @@ exports[`renderPlaceholderStack > is the deploy branch's first compose.yaml: one
 name: opscrew-shop
 services:
   app:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: unless-stopped
     entrypoint:
       - /bin/sh
@@ -56,7 +56,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: no
     user: 0:0
     network_mode: none
@@ -84,7 +84,7 @@ services:
     cap_drop:
       - ALL
   caddy:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: <pin:IMAGES.caddy>
     restart: unless-stopped
     ports:
       - 80:80
@@ -191,7 +191,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: no
     user: 0:0
     network_mode: none
@@ -219,7 +219,7 @@ services:
     cap_drop:
       - ALL
   caddy:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: <pin:IMAGES.caddy>
     restart: unless-stopped
     ports:
       - 8080:80
@@ -359,7 +359,7 @@ services:
     networks:
       - internal
   db:
-    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    image: <pin:IMAGES.postgres>
     restart: unless-stopped
     environment:
       POSTGRES_USER: \${OPSCREW_DB_USER}
@@ -386,7 +386,7 @@ services:
     networks:
       - internal
   cache:
-    image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
+    image: <pin:IMAGES.valkey>
     restart: unless-stopped
     command:
       - sh
@@ -415,7 +415,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: no
     user: 0:0
     network_mode: none
@@ -443,7 +443,7 @@ services:
     cap_drop:
       - ALL
   caddy:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: <pin:IMAGES.caddy>
     restart: unless-stopped
     labels:
       dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
@@ -466,7 +466,7 @@ services:
     networks:
       - internal
   cloudflared:
-    image: cloudflare/cloudflared:2026.5.1@sha256:a5b5e6fd9a372f054b9a843c219bfbcdceb54691605312a8b1ee72978bdf1aa1
+    image: <pin:IMAGES.cloudflared>
     restart: unless-stopped
     command:
       - tunnel
@@ -543,7 +543,7 @@ exports[`renderUpdaterStack > POSTs to the webhook every 60 seconds with Portain
 name: opscrew-shop-updater
 services:
   updater:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: unless-stopped
     entrypoint:
       - /bin/sh
@@ -753,7 +753,7 @@ services:
       release:
         condition: service_completed_successfully
   mysql:
-    image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+    image: <pin:IMAGES.mysql>
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: app
@@ -790,7 +790,7 @@ services:
     networks:
       - internal
   rabbitmq:
-    image: rabbitmq:4.3@sha256:3e5cc23235b0eb850f604e8ace10d9a9b6d05be3e36730e53522ee9ead707a9e
+    image: <pin:IMAGES.rabbitmq>
     restart: unless-stopped
     hostname: rabbitmq
     environment:
@@ -825,7 +825,7 @@ services:
     networks:
       - internal
   kafka:
-    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    image: <pin:IMAGES.kafka>
     restart: unless-stopped
     environment:
       CLUSTER_ID: Z7fMi5enXVzrHJHHv8gYxg
@@ -869,7 +869,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: no
     user: 0:0
     network_mode: none
@@ -897,7 +897,7 @@ services:
     cap_drop:
       - ALL
   caddy:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: <pin:IMAGES.caddy>
     restart: unless-stopped
     labels:
       dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
@@ -920,7 +920,7 @@ services:
     networks:
       - internal
   cloudflared:
-    image: cloudflare/cloudflared:2026.5.1@sha256:a5b5e6fd9a372f054b9a843c219bfbcdceb54691605312a8b1ee72978bdf1aa1
+    image: <pin:IMAGES.cloudflared>
     restart: unless-stopped
     command:
       - tunnel
@@ -1187,7 +1187,7 @@ services:
       release:
         condition: service_completed_successfully
   mysql:
-    image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+    image: <pin:IMAGES.mysql>
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: app
@@ -1224,7 +1224,7 @@ services:
     networks:
       - internal
   rabbitmq:
-    image: rabbitmq:4.3@sha256:3e5cc23235b0eb850f604e8ace10d9a9b6d05be3e36730e53522ee9ead707a9e
+    image: <pin:IMAGES.rabbitmq>
     restart: unless-stopped
     hostname: rabbitmq
     environment:
@@ -1259,7 +1259,7 @@ services:
     networks:
       - internal
   kafka:
-    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    image: <pin:IMAGES.kafka>
     restart: unless-stopped
     environment:
       CLUSTER_ID: Z7fMi5enXVzrHJHHv8gYxg
@@ -1303,7 +1303,7 @@ services:
     networks:
       - internal
   stamp:
-    image: curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac
+    image: <pin:IMAGES.curl>
     restart: no
     user: 0:0
     network_mode: none
@@ -1331,7 +1331,7 @@ services:
     cap_drop:
       - ALL
   caddy:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: <pin:IMAGES.caddy>
     restart: unless-stopped
     labels:
       dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
@@ -1354,7 +1354,7 @@ services:
     networks:
       - internal
   cloudflared:
-    image: cloudflare/cloudflared:2026.5.1@sha256:a5b5e6fd9a372f054b9a843c219bfbcdceb54691605312a8b1ee72978bdf1aa1
+    image: <pin:IMAGES.cloudflared>
     restart: unless-stopped
     command:
       - tunnel

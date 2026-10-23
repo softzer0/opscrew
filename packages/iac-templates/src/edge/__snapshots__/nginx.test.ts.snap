@@ -153,7 +153,7 @@ x-opscrew-edge-version: 2026102103
 x-opscrew-edge-proxy: nginx
 services:
   kamal-proxy:
-    image: basecamp/kamal-proxy:v0.10.2@sha256:a686220c2aa42c4f9bbcfe851b1d21b2cedee0b5c389890c29d205282379da7c
+    image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:
       - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
@@ -171,7 +171,7 @@ services:
     networks:
       - opscrew-edge
   nginx:
-    image: nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
+    image: <pin:IMAGES.nginx>
     restart: unless-stopped
     user: \${OPSCREW_DEPLOY_UID:?the OpsCrew deploy writes it to /srv/edge/.env}:\${OPSCREW_DEPLOY_GID:?the OpsCrew deploy writes it to /srv/edge/.env}
     init: true
@@ -230,7 +230,7 @@ services:
     networks:
       - opscrew-edge
   certbot:
-    image: certbot/certbot:v5.8.0@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20
+    image: <pin:IMAGES.certbot>
     restart: unless-stopped
     user: \${OPSCREW_DEPLOY_UID:?the OpsCrew deploy writes it to /srv/edge/.env}:\${OPSCREW_DEPLOY_GID:?the OpsCrew deploy writes it to /srv/edge/.env}
     init: true

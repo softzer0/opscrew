@@ -12,7 +12,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
     outputs:
       previous: \${{ steps.start.outputs.previous }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: <pin:ACTIONS.checkout>
       - name: Validate the edge's configuration with Caddy
         run: |
           set -euo pipefail
@@ -221,7 +221,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
     outputs:
       previous: \${{ steps.start.outputs.previous }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: <pin:ACTIONS.checkout>
       - name: Validate the edge's configuration with Caddy
         run: |
           set -euo pipefail
@@ -440,7 +440,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
     outputs:
       previous: \${{ steps.start.outputs.previous }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: <pin:ACTIONS.checkout>
       - name: Validate the edge's configuration with Caddy
         run: |
           set -euo pipefail

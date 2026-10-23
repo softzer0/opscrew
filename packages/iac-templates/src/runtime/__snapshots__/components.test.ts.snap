@@ -137,7 +137,7 @@ services:
       mysql:
         condition: service_healthy
   mysql:
-    image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+    image: <pin:IMAGES.mysql>
     restart: unless-stopped
     env_file:
       - mysql.env
@@ -211,7 +211,7 @@ services:
       meilisearch:
         condition: service_healthy
   sysctl:
-    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: <pin:IMAGES.caddy>
     privileged: true
     network_mode: none
     command:
@@ -230,7 +230,7 @@ services:
         max-size: 10m
         max-file: "3"
   opensearch:
-    image: opensearchproject/opensearch:3.9.0@sha256:adfa61f85025d06b4aeb562e7e74fde7e31c437039c93c3862c17e9acebd6c7c
+    image: <pin:IMAGES.opensearch>
     restart: unless-stopped
     environment:
       discovery.type: single-node
@@ -265,7 +265,7 @@ services:
       sysctl:
         condition: service_completed_successfully
   elasticsearch:
-    image: elasticsearch:9.5.5@sha256:33cae13fc18ef105e960cdd32327d402fbd7c6d4376c0b879ad703ee289d45d8
+    image: <pin:IMAGES.elasticsearch>
     restart: unless-stopped
     env_file:
       - elasticsearch.env
@@ -297,7 +297,7 @@ services:
       sysctl:
         condition: service_completed_successfully
   meilisearch:
-    image: getmeili/meilisearch:v1.55.0@sha256:ff546679970126f8822e15d1b6a06bfbff1f2ce2e43f810cfb5258012f92de5c
+    image: <pin:IMAGES.meilisearch>
     restart: unless-stopped
     env_file:
       - meilisearch.env
@@ -479,7 +479,7 @@ services:
       rabbitmq:
         condition: service_healthy
   mysql:
-    image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+    image: <pin:IMAGES.mysql>
     restart: unless-stopped
     env_file:
       - mysql.env
@@ -510,7 +510,7 @@ services:
     networks:
       - internal
   rabbitmq:
-    image: rabbitmq:4.3@sha256:3e5cc23235b0eb850f604e8ace10d9a9b6d05be3e36730e53522ee9ead707a9e
+    image: <pin:IMAGES.rabbitmq>
     restart: unless-stopped
     hostname: rabbitmq
     env_file:

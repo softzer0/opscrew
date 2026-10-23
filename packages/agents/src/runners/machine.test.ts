@@ -3,7 +3,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError, sha256Hex, tfstateFile } from "@opscrew/core";
-import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { DEPLOY_SECRETS, TOOLS } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -309,7 +309,7 @@ describe.skipIf(!findExecutable("git"))("a runner machine", () => {
           registered: true,
           active: true,
           unitCurrent: true,
-          version: "2.338.0",
+          version: TOOLS.githubRunner.version,
           label: "opscrew-shop-prod",
           repositoryUrl: "https://github.com/someone/shop",
         },

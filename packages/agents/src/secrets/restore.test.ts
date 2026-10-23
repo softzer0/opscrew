@@ -1,6 +1,7 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { generateAgeIdentity, NodeCommandRunner, sha256Hex, sopsEncrypt } from "@opscrew/core";
+import { LOCAL_TOOLS } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { FAKE_SOPS } from "./__fixtures__/fake-sops";
 import {
@@ -249,7 +250,7 @@ describe.skipIf(!SOPS)("the recovery copy through real sops", () => {
     for (const secret of Object.values(VALUES)) expect(copy).not.toContain(secret);
     const parsed = JSON.parse(copy) as { files: Record<string, string>; sops: { version: string } };
     expect(Object.keys(parsed.files).sort()).toEqual([...PATHS].sort());
-    expect(parsed.sops.version).toBe("3.13.3");
+    expect(parsed.sops.version).toBe(LOCAL_TOOLS.sops.version);
 
     const wrong = await failure(
       restoreRecoveryCopy(deps, { identity: generateAgeIdentity().identity }),

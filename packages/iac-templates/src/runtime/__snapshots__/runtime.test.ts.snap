@@ -66,7 +66,7 @@ services:
       cache:
         condition: service_healthy
   db:
-    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    image: <pin:IMAGES.postgres>
     restart: unless-stopped
     env_file:
       - db.env
@@ -90,7 +90,7 @@ services:
     networks:
       - internal
   cache:
-    image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
+    image: <pin:IMAGES.valkey>
     restart: unless-stopped
     command:
       - sh
@@ -182,7 +182,7 @@ services:
     networks:
       - internal
   db:
-    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    image: <pin:IMAGES.postgres>
     restart: unless-stopped
     env_file:
       - db.env
@@ -206,7 +206,7 @@ services:
     networks:
       - internal
   cache:
-    image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
+    image: <pin:IMAGES.valkey>
     restart: unless-stopped
     command:
       - sh
