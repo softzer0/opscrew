@@ -65,6 +65,10 @@ export const RULES: Record<SharedRuleRef, { name: string; kind: string }> = {
     name: "Verify the origin certificate (Full (strict) TLS)",
     kind: "configuration rules",
   },
+  "opscrew-www-redirect": {
+    name: "Redirect www to the domain",
+    kind: "single redirect rules",
+  },
 };
 
 const RECORD_FILE = ".opscrew/cloudflare.json";

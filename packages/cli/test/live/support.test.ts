@@ -230,6 +230,7 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
   const zone = (custom: ZoneRule[] | undefined, config: ZoneRule[] | undefined) => ({
     http_request_firewall_custom: custom && { id: "ruleset-custom", rules: custom },
     http_config_settings: config && { id: "ruleset-config", rules: config },
+    http_request_dynamic_redirect: undefined,
   });
 
   it("reads the hostnames of OpsCrew's rules by ref, never of the user's rules", () => {
@@ -281,6 +282,7 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     const before = {
       "opscrew-block-probes": ["shop.example.com"],
       "opscrew-strict-tls": undefined,
+      "opscrew-www-redirect": undefined,
     };
     const a = { "opscrew-block-probes": ["e2e-abc.example.com"] };
     const b = { "opscrew-block-probes": ["e2e-abc-b.example.com"] };
@@ -291,12 +293,19 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     // After the last destroy: as before the run, so a rule is gone only when it listed nothing.
     expect(expectedSharedHosts(before, [{}, {}])).toEqual(before);
     expect(
-      expectedSharedHosts({ "opscrew-block-probes": undefined, "opscrew-strict-tls": undefined }, [
+      expectedSharedHosts(
         {
-          "opscrew-block-probes": ["E2E-abc.example.com"],
-          "opscrew-strict-tls": ["e2e-abc.example.com"],
+          "opscrew-block-probes": undefined,
+          "opscrew-strict-tls": undefined,
+          "opscrew-www-redirect": undefined,
         },
-      ]),
+        [
+          {
+            "opscrew-block-probes": ["E2E-abc.example.com"],
+            "opscrew-strict-tls": ["e2e-abc.example.com"],
+          },
+        ],
+      ),
     ).toEqual({
       "opscrew-block-probes": ["e2e-abc.example.com"],
       "opscrew-strict-tls": ["e2e-abc.example.com"],

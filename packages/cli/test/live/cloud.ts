@@ -590,7 +590,7 @@ export class Cloudflare {
   }
 
   /**
-   * The zone's entrypoint rulesets of OpsCrew's two phases with their rules, as Cloudflare
+   * The zone's entrypoint rulesets of OpsCrew's three phases with their rules, as Cloudflare
    * returns them; a phase without one (HTTP 404) is `undefined`. Throws on any other answer.
    */
   async sharedEntrypoints(zone: CloudflareZone): Promise<ZoneEntrypoints> {
@@ -605,7 +605,7 @@ export class Cloudflare {
         entrypoints[phase] = { id: result.id, rules: result.rules ?? [] };
       } else {
         throw new Error(
-          `Cloudflare did not show the zone's ${phase} rules (HTTP ${read.status}); check the token's Zone WAF and Config Rules permissions in docs/e2e.md.`,
+          `Cloudflare did not show the zone's ${phase} rules (HTTP ${read.status}); check the token's Zone WAF, Config Rules and Single Redirect permissions in docs/e2e.md.`,
         );
       }
     }
