@@ -341,7 +341,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   ask the user for tokens, API keys or contact details (name, address, email,
   phone): registrars use the account's own contact, and OpsCrew never collects one.
 - **Environments.** Beside prod, an app can have more environments (staging, dev, …), each with
-  its own plan, state, secrets and approvals, sharing prod's build and components.
+  its own plan, state, secrets and approvals, whose build and components follow the image: an
+  environment built from a branch has its own, and a promoted one copies its source's at each
+  design; promote refuses a target that lacks its source's services.
   `opscrew_env_list` shows them: where each runs, how it gets new versions, where its deploy job
   runs and whether it is deployed. To add one, ask the user its few questions (where it runs, the
   user's computer `localhost` included; its size; its hostname; whether it is built on each push

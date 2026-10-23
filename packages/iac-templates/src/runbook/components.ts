@@ -125,12 +125,13 @@ export function componentsSection(plan: DeployPlan, environments?: readonly stri
   const status = `\`${opscrew(plan, "status", environments)}\``;
   const design = `\`${opscrew(plan, "design", environments)}\``;
   const provision = `\`${opscrew(plan, "provision", environments)}\``;
-  // Every environment shares prod's components: they change in prod's plan, and each
-  // environment's design copies them.
+  // The components follow the image (FR-1539): a promoted environment's design copies them from
+  // its source's plan, so they change there; any other environment's are its own plan's.
+  const from = plan.environment?.deploySource;
   const where =
-    plan.environment?.name === undefined
-      ? "`opscrew/plan.yaml`"
-      : "`opscrew/plan.yaml` (prod's plan: every environment shares its components)";
+    from?.from === "promote"
+      ? `\`${from.source}\`'s plan (\`${from.source === "prod" ? "opscrew/plan.yaml" : `opscrew/environments/${from.source}/plan.yaml`}\`): ${plan.environment?.name ?? "prod"} copies its components from it at its next design`
+      : `\`${runbookFolders(plan, undefined).artefacts}/plan.yaml\``;
   lines.push(
     portainer
       ? `${status} shows whether each component runs, and Portainer shows each container's log. Change a`

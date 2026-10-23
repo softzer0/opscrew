@@ -698,7 +698,7 @@ describe("design per environment", () => {
     );
   });
 
-  it("takes prod's shared parts again when staging's copy drifted", async () => {
+  it("designs staging's shared parts again when its copy drifted", async () => {
     const { prod, staging } = await prodApp();
     await addEnvironment(staging, { design: { catalog: euCatalog() } });
     const plan = await readArtifact("plan", staging.paths.files.plan);

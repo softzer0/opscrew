@@ -9,6 +9,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { selfHostedServices } from "../design/sizing";
 import { dependabotStep } from "../provision/dependabot";
 import { pullPemFile } from "../provision/origin-tls";
 import { writeCloudflareRecord } from "../provision/shared-cloudflare";
@@ -141,7 +142,7 @@ describe("the shared parts", () => {
     supplyChain: { sign: true },
   });
 
-  it("copies prod's build, components, port, health route and signing, and keeps the rest", () => {
+  it("copies the source's build, components, port, health route and signing, and keeps the rest", () => {
     const own = inEnvironment(testPlan({ postgres: false }), "staging");
     const staging = DeployPlanSchema.parse({
       ...own,
@@ -149,10 +150,10 @@ describe("the shared parts", () => {
       target: { ...own.target, serverType: "cx33" },
     });
     expect(sharedPartsDiffer(prod, staging)).toEqual([
+      "services.db (missing)",
       "app.port",
       "app.healthPath",
       "app.releaseCommand",
-      "services",
       "supplyChain.sign",
     ]);
     const copied = withSharedParts(staging, prod);
@@ -168,7 +169,19 @@ describe("the shared parts", () => {
     expect(DeployPlanSchema.parse(copied)).toEqual(copied);
   });
 
-  it("keeps the environment's own bucket and takes prod's SQLite folder", () => {
+  it("allows services beyond the source's, and names a service with other settings", () => {
+    const [db, cache] = selfHostedServices({ postgres: true, redis: true });
+    if (db === undefined || cache === undefined) throw new Error("no services");
+    const staging = inEnvironment(prodPlan(), "staging");
+    const extra = DeployPlanSchema.parse({ ...staging, services: [db, cache] });
+    expect(sharedPartsDiffer(prodPlan(), extra)).toEqual([]);
+    const bigger = DeployPlanSchema.parse({ ...staging, services: [{ ...db, memoryMb: 1024 }] });
+    expect(sharedPartsDiffer(prodPlan(), bigger)).toEqual(["services.db (other settings)"]);
+    // The copy has the source's services, then those the environment keeps.
+    expect(withSharedParts(bigger, prodPlan(), [cache]).services).toEqual([db, cache]);
+  });
+
+  it("keeps the environment's own bucket and takes the source's SQLite folder", () => {
     const sqlite = DeployPlanSchema.parse({
       ...prod,
       services: [],
@@ -181,20 +194,34 @@ describe("the shared parts", () => {
     expect(withSharedParts(staging, prod)).not.toHaveProperty("storage");
   });
 
-  it("stops provision's preflight naming the parts, with the design hint", async () => {
+  it("stops a promoted environment's provision preflight naming its source and the parts", async () => {
     const deps = await project({ prod });
-    const staging = inEnvironment(prodPlan(), "staging");
+    const staging = inEnvironment(prodPlan(), "staging", {
+      deploySource: { from: "promote", source: "prod" },
+    });
     const paths = environmentPaths(deps.paths, "staging");
     const stop = await failure(requireSharedParts(paths, staging));
     expect(stop.code).toBe("PHASE_PRECONDITION");
     expect(stop.message).toBe(
-      "The staging environment's plan differs from prod's in what every environment shares: app.releaseCommand and supplyChain.sign. Nothing was changed.",
+      "The staging environment runs prod's image, and its plan differs from prod's in what every environment shares: app.releaseCommand and supplyChain.sign. Nothing was changed.",
     );
     expect(stop.hint).toBe(
       "Run `opscrew design --env staging` to take them from prod's plan, then run the command again.",
     );
     await requireSharedParts(paths, withSharedParts(staging, prod));
-    await requireSharedParts(deps.paths, prodPlan());
+  });
+
+  it("checks nothing in the preflight of an environment that builds, prod included", async () => {
+    const deps = await project({ prod });
+    await requireSharedParts(
+      environmentPaths(deps.paths, "staging"),
+      inEnvironment(prodPlan(), "staging"),
+    );
+    const building = DeployPlanSchema.parse({
+      ...prod,
+      environment: { deploySource: { from: "main" } },
+    });
+    await requireSharedParts(deps.paths, building);
   });
 });
 

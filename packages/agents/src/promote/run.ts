@@ -18,7 +18,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
-import { environmentPaths } from "../environments";
+import { environmentPaths, sharedPartsDiffer } from "../environments";
 import { builderBranch } from "../environments/branches";
 import { REGISTRY_TOKEN_VAR } from "../provision";
 import { missing } from "../provision/credentials";
@@ -42,8 +42,10 @@ import {
 } from "./image";
 import {
   clearPendingPromotion,
+  type PromotionRecord,
   promotionHash,
   readPendingPromotion,
+  readPromotion,
   writePendingPromotion,
   writePromotion,
 } from "./record";
@@ -100,6 +102,62 @@ function pendingChanges(report: DriftReport): string[] {
   ];
 }
 
+/**
+ * The target is ready for the image its source runs (FR-1539): it has every service of the
+ * source's plan with the same settings, and every other shared part equal; services beyond the
+ * source's are allowed.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming each difference and the commands that fix it.
+ */
+function requireReady(
+  target: string,
+  source: string,
+  sourcePlan: DeployPlan,
+  plan: DeployPlan,
+): void {
+  const differ = sharedPartsDiffer(sourcePlan, plan);
+  if (differ.length === 0) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The ${target} environment is not ready for the image ${source} runs: its plan differs from ${source}'s in what every environment shares: ${listText(differ)}. ${NOTHING}`,
+    {
+      hint: `Run \`opscrew design --env ${target}\`, then \`opscrew provision --env ${target}\`, then \`opscrew promote --to ${target}\` again.`,
+    },
+  );
+}
+
+/** The names of the plan's services, as a promotion records them. */
+function serviceNames(plan: DeployPlan): string[] {
+  return plan.services.map((service) => service.name);
+}
+
+/**
+ * A rollback to the target's previous image: that image ran with the services its promotion
+ * recorded (the `previous` of the target's record), so the target's plan must still have each of
+ * them. Returns false when this computer has no record of that image's promotion, so nothing
+ * could be checked.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming the services the plan no longer has.
+ */
+function requireRollbackServices(
+  run: { target: string; source: string; digest: string },
+  plan: DeployPlan,
+  record: PromotionRecord | undefined,
+): boolean {
+  const { target, source } = run;
+  const before = record?.previous;
+  if (before?.digest !== run.digest) return false;
+  const have = new Set(serviceNames(plan));
+  const gone = before.services.filter((name) => !have.has(name));
+  if (gone.length === 0) return true;
+  const one = gone.length === 1;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${target}'s previous image ran with the ${one ? "service" : "services"} ${listText(gone)}, which ${target}'s plan no longer has, so rolling back would run that image without ${one ? "it" : "them"}. ${NOTHING}`,
+    {
+      hint: `Promote forward instead: once ${source} runs a fixed image, run \`opscrew promote --to ${target}\`.`,
+    },
+  );
+}
+
 /** At most {@link LISTED} items, then how many more. */
 function shortList(items: readonly string[]): string {
   const more = items.length - LISTED;
@@ -127,11 +185,11 @@ async function checkPending(
   deps: PhaseDeps,
   paths: ProjectPaths,
   image: AppImage,
-  run: { target: string; command: string },
+  run: { target: string; command: string; services: string[] },
 ): Promise<PromoteResult | undefined> {
   const pending = await readPendingPromotion(paths);
   if (pending === undefined) return undefined;
-  const { target, command } = run;
+  const { target, command, services } = run;
   const { digest, source } = pending;
   deps.reporter.step(`Checking ${target}'s deploy run that waited for a reviewer`);
   const last = await image.github.getWorkflowRun(image.owner, image.repo, pending.runId);
@@ -164,6 +222,7 @@ async function checkPending(
     source,
     runUrl: last.htmlUrl,
     at: deps.clock.now().toISOString(),
+    services,
   });
   deps.reporter.success(`${target} now runs ${imageReference(image, digest)} (${last.htmlUrl}).`);
   return { status: "deployed", digest, runUrl: last.htmlUrl };
@@ -184,6 +243,8 @@ function promotionDetails(input: {
   hash: string;
   /** The target's GitHub environment, when it has required reviewers. */
   reviewed: string | undefined;
+  /** A rollback this computer has no record of, so its image was not checked against the plan. */
+  unchecked: boolean;
 }): string {
   const { target, source, plan, chosen, build } = input;
   const url = plan.deployment.url;
@@ -192,6 +253,11 @@ function promotionDetails(input: {
     chosen.rollback
       ? `  ${target}'s previous image (labelled opscrew-${target}-previous): a rollback`
       : `  the image ${source} runs (labelled opscrew-${source})`,
+    ...(input.unchecked
+      ? [
+          `  OpsCrew has no record on this computer of what that image ran with, so it cannot check it against ${target}'s plan: a component removed since that image ran is not brought back`,
+        ]
+      : []),
     `Built by: ${build.runUrl}, from ${build.branch} at ${build.commit}`,
     `Target: ${target}${url !== undefined ? ` (${url})` : ""}, ${input.planFile} with plan hash ${input.targetPlanHash}; nothing is waiting for \`opscrew provision\``,
     `Deploy: ${input.workflowFile} on ${input.defaultBranch}, the one this plan generates, given the digest; nothing is rebuilt`,
@@ -219,8 +285,12 @@ function promotionDetails(input: {
  *    first environment along its sources that follows one, as its workflow's verify job checks), at
  *    the commit the image is tagged with (in the form of the environment that built it: `<commit>`
  *    for prod, `<commit>-<env>` for another).
- * 3. The target: provisioned, with nothing `opscrew provision` would apply (read-only drift), and
- *    the workflow on the default branch the one its plan generates (by git blob hash).
+ * 3. The target: provisioned; ready for the source's image (every service of the source's plan
+ *    with the same settings, and every other shared part equal, FR-1539), or for a rollback still
+ *    with every service its recorded previous promotion ran with (without that record, the approval
+ *    says it was not checked); with nothing `opscrew provision` would apply (read-only drift); and
+ *    the workflow on the default branch the one its plan generates (by git blob hash). Each
+ *    promotion is recorded with the plan's services and the record it replaces.
  * 4. The `promote` approval, bound to {@link promotionHash} of both environments, the digest and
  *    the target plan's hash; never granted by `--yes`.
  * 5. The target's workflow, dispatched on the default branch with the digest and that commit tag
@@ -285,7 +355,11 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     repo,
     ...(credential !== undefined ? { credential } : {}),
   };
-  const followed = await checkPending(deps, targetPaths, image, { target, command });
+  const followed = await checkPending(deps, targetPaths, image, {
+    target,
+    command,
+    services: serviceNames(plan),
+  });
   if (followed !== undefined) return followed;
   deps.reporter.step(`Finding the image to deploy to ${target}`);
   const chosen = await chooseImage(image, {
@@ -299,7 +373,16 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   const environments = await environmentsOf(deps.paths.root);
   const build = await checkProvenance(image, digest, branch, environments);
 
-  // 3. The target: nothing pending, and the workflow on the default branch the one it generates.
+  // 3. The target: ready for the source's image (for a rollback, still with the services its
+  // previous image ran with), nothing pending, and the workflow on the default branch the one it
+  // generates.
+  let unchecked = false;
+  if (chosen.rollback) {
+    const record = await readPromotion(targetPaths);
+    unchecked = !requireRollbackServices({ target, source, digest }, plan, record);
+  } else {
+    requireReady(target, source, sourcePlan, plan);
+  }
   deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
   const report = await (services.drift ?? runDrift)({ ...deps, paths: targetPaths });
   const pending = pendingChanges(report);
@@ -352,6 +435,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     defaultBranch,
     hash,
     reviewed: reviewers.length > 0 ? environment : undefined,
+    unchecked,
   });
   deps.reporter.info(details);
   const later = `${command} --digest ${digest} --approve ${hash}`;
@@ -499,6 +583,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     source,
     runUrl: run.htmlUrl,
     at: deps.clock.now().toISOString(),
+    services: serviceNames(plan),
   });
   deps.reporter.success(`${target} now runs ${imageReference(image, digest)} (${run.htmlUrl}).`);
   return { status: "deployed", digest, runUrl: run.htmlUrl };

@@ -199,13 +199,17 @@ describe.skipIf(!findExecutable("git"))("provision for an environment", () => {
     ).not.toContain("opscrew-deploy-staging.yml");
   });
 
-  it("refuses staging when its shared parts differ from prod's, before anything", async () => {
+  it("refuses staging promoted from prod when its shared parts differ from prod's, before anything", async () => {
     const app = await appInProd();
     const staging = await app.deps("staging");
+    const promoted = promotedOf(app.prod, "staging", "prod");
     await writeArtifact(
       "plan",
       staging.paths.files.plan,
-      stagingOf(app.prod, { port: 9999, healthPath: "/up" }),
+      DeployPlanSchema.parse({
+        ...promoted,
+        app: { ...promoted.app, port: 9999, healthPath: "/up" },
+      }),
     );
     const engine = new FakeEngine();
     const error = await runProvision(staging, { services: app.services(engine) }).then(
@@ -216,7 +220,7 @@ describe.skipIf(!findExecutable("git"))("provision for an environment", () => {
     expect(error).toMatchObject({
       code: "PHASE_PRECONDITION",
       message:
-        "The staging environment's plan differs from prod's in what every environment shares: app.port and app.healthPath. Nothing was changed.",
+        "The staging environment runs prod's image, and its plan differs from prod's in what every environment shares: app.port and app.healthPath. Nothing was changed.",
       hint: "Run `opscrew design --env staging` to take them from prod's plan, then run the command again.",
     });
     expect(engine.calls).toEqual([]);

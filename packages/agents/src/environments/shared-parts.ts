@@ -1,11 +1,25 @@
-import { canonicalJson, listText, OpsCrewError, type ProjectPaths } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import {
+  canonicalJson,
+  listText,
+  OpsCrewError,
+  type ProjectPaths,
+  toPosixRelative,
+} from "@opscrew/core";
+import {
+  type DeployPlan,
+  type PlanService,
+  readArtifact,
+  readOptionalArtifact,
+} from "@opscrew/plan-schema";
+import { imageSource } from "../localhost/image";
 import { environmentPaths } from "./paths";
 
 /**
  * The parts of the app every environment shares (data-model.md "Shared parts"), by their place in
- * the plan: how it is built and served, and what runs next to it. Design copies them from prod's
- * plan; provision refuses an environment whose copy differs.
+ * the plan, besides its services: how it is built and served, and what runs next to it. They
+ * follow the image (FR-1539): an environment that builds takes them from its own design, and the
+ * design of one that runs another environment's image ({@link sharedPartsSource}) copies them from
+ * that environment's plan; provision refuses such an environment whose copy differs.
  */
 const SHARED_PARTS = {
   "app.build": (plan) => plan.app.build,
@@ -13,61 +27,122 @@ const SHARED_PARTS = {
   "app.healthPath": (plan) => plan.app.healthPath,
   "app.releaseCommand": (plan) => plan.app.releaseCommand,
   processes: (plan) => plan.processes,
-  services: (plan) => plan.services,
   "storage.sqlite": (plan) => plan.storage?.sqlite,
   externalServices: (plan) => plan.externalServices,
   // The source environment's workflow signs, and the promoted one's verify job checks it.
   "supplyChain.sign": (plan) => plan.supplyChain.sign,
 } satisfies Record<string, (plan: DeployPlan) => unknown>;
 
-/** The shared parts (by their place in the plan, `app.port`) in which `plan` differs from prod's. */
-export function sharedPartsDiffer(prodPlan: DeployPlan, plan: DeployPlan): string[] {
-  return Object.entries(SHARED_PARTS)
-    .filter(([, part]) => canonicalJson(part(prodPlan)) !== canonicalJson(part(plan)))
+/**
+ * What `plan` lacks of the shared parts of `source`, the plan it takes them from: each service of
+ * `source` missing in `plan` or with other settings (`services.cache (missing)`), then each other
+ * part that differs (by its place in the plan, `app.port`). Services `plan` has beyond the
+ * source's are not differences: the image it runs may still use them.
+ */
+export function sharedPartsDiffer(source: DeployPlan, plan: DeployPlan): string[] {
+  const own = new Map(plan.services.map((service) => [service.name, canonicalJson(service)]));
+  const services = source.services.flatMap((service) => {
+    const theirs = own.get(service.name);
+    if (theirs === canonicalJson(service)) return [];
+    return [`services.${service.name} (${theirs === undefined ? "missing" : "other settings"})`];
+  });
+  const parts = Object.entries(SHARED_PARTS)
+    .filter(([, part]) => canonicalJson(part(source)) !== canonicalJson(part(plan)))
     .map(([name]) => name);
+  return [...services, ...parts];
 }
 
-/** `plan` with the shared parts of prod's plan (the rest of `storage` stays the plan's own). */
-export function withSharedParts(plan: DeployPlan, prodPlan: DeployPlan): DeployPlan {
+/**
+ * `plan` with the shared parts of `source` (the rest of `storage` stays the plan's own): the
+ * source's services, then the `kept` ones the image the environment runs may still use.
+ */
+export function withSharedParts(
+  plan: DeployPlan,
+  source: DeployPlan,
+  kept: readonly PlanService[] = [],
+): DeployPlan {
   const { build: _build, releaseCommand: _release, ...app } = plan.app;
   const { storage: _storage, ...rest } = plan;
   const { sqlite: _sqlite, ...ownStorage } = plan.storage ?? {};
-  const sqlite = prodPlan.storage?.sqlite;
+  const sqlite = source.storage?.sqlite;
   const storage = { ...ownStorage, ...(sqlite === undefined ? {} : { sqlite }) };
   return {
     ...rest,
     app: {
       ...app,
-      port: prodPlan.app.port,
-      healthPath: prodPlan.app.healthPath,
-      ...(prodPlan.app.build === undefined ? {} : { build: prodPlan.app.build }),
-      ...(prodPlan.app.releaseCommand === undefined
+      port: source.app.port,
+      healthPath: source.app.healthPath,
+      ...(source.app.build === undefined ? {} : { build: source.app.build }),
+      ...(source.app.releaseCommand === undefined
         ? {}
-        : { releaseCommand: prodPlan.app.releaseCommand }),
+        : { releaseCommand: source.app.releaseCommand }),
     },
-    processes: prodPlan.processes,
-    services: prodPlan.services,
-    externalServices: prodPlan.externalServices,
+    processes: source.processes,
+    services: [...source.services, ...kept],
+    externalServices: source.externalServices,
     ...(Object.keys(storage).length === 0 ? {} : { storage }),
-    supplyChain: { ...plan.supplyChain, sign: prodPlan.supplyChain.sign },
+    supplyChain: { ...plan.supplyChain, sign: source.supplyChain.sign },
   };
 }
 
+/** The environment whose image another one runs, with its plan: where its shared parts come from. */
+export interface SharedPartsSource {
+  name: string;
+  plan: DeployPlan;
+}
+
 /**
- * Provision's preflight for an environment other than prod: stops (`PHASE_PRECONDITION`, nothing
- * changed) when its plan's shared parts differ from prod's plan, naming them.
+ * Where the environment `paths` belong to takes its shared parts from (FR-1539): the environment
+ * whose image it runs. That is the one it is promoted from (by its plan's `environment` block), or
+ * for a plan on this computer that pulls its image (`target.image: registry`) the one
+ * `imageSource` names, prod's for one built from main. `undefined` when it builds its own image
+ * (prod included, or before its target is known), since it then takes them from its own design.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming the source when it is promoted from an
+ * environment that has no plan yet.
  */
-export async function requireSharedParts(paths: ProjectPaths, plan: DeployPlan): Promise<void> {
+export async function sharedPartsSource(
+  paths: ProjectPaths,
+  plan: Pick<DeployPlan, "environment"> & Partial<Pick<DeployPlan, "target">>,
+): Promise<SharedPartsSource | undefined> {
+  const from = plan.environment?.deploySource;
+  if (from?.from !== "promote") {
+    if (plan.target?.provider !== "localhost" || plan.target.image !== "registry") return undefined;
+    const image = await imageSource(paths, plan);
+    if (image === undefined) return undefined;
+    const file = environmentPaths(paths, image.environment).files.plan;
+    return { name: image.environment, plan: await readArtifact("plan", file) };
+  }
+  const { source } = from;
+  const file = environmentPaths(paths, source).files.plan;
+  const sourcePlan = await readOptionalArtifact("plan", file);
+  if (sourcePlan !== undefined) return { name: source, plan: sourcePlan };
   const name = paths.environment;
-  if (name === "prod") return;
-  const prodPlan = await readArtifact("plan", environmentPaths(paths, "prod").files.plan);
-  const differ = sharedPartsDiffer(prodPlan, plan);
-  if (differ.length === 0) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The ${name} environment's plan differs from prod's in what every environment shares: ${listText(differ)}. Nothing was changed.`,
+    `The ${name} environment is promoted from ${source}, so it takes what every environment shares (the build, the components, the port) from ${source}'s plan, and ${toPosixRelative(paths.root, file)} does not exist yet. Nothing was changed.`,
     {
-      hint: `Run \`opscrew design --env ${name}\` to take them from prod's plan, then run the command again.`,
+      hint: `Run \`opscrew design --env ${source}\` first, then \`opscrew design --env ${name}\`.`,
+    },
+  );
+}
+
+/**
+ * Provision's preflight: stops (`PHASE_PRECONDITION`, nothing changed) when the plan of an
+ * environment that runs another one's image lacks shared parts of that environment's plan
+ * ({@link sharedPartsSource}, {@link sharedPartsDiffer}), naming them and the source. An
+ * environment that builds its own image is not checked.
+ */
+export async function requireSharedParts(paths: ProjectPaths, plan: DeployPlan): Promise<void> {
+  const source = await sharedPartsSource(paths, plan);
+  if (source === undefined) return;
+  const differ = sharedPartsDiffer(source.plan, plan);
+  if (differ.length === 0) return;
+  const name = paths.environment;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The ${name} environment runs ${source.name}'s image, and its plan differs from ${source.name}'s in what every environment shares: ${listText(differ)}. Nothing was changed.`,
+    {
+      hint: `Run \`opscrew design --env ${name}\` to take them from ${source.name}'s plan, then run the command again.`,
     },
   );
 }

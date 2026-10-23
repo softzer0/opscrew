@@ -1,7 +1,8 @@
 /**
  * An app's environments (feature 015): the choice of environment, `env add`, `env set`,
- * `env list` and `env remove`, the branches each follows (FR-1537), the shared parts every
- * environment takes from prod's plan, and the environment's own answers and paths.
+ * `env list` and `env remove`, the branches each follows (FR-1537), the shared parts, which follow
+ * the image (an environment's own design when it builds, its source's plan when it is promoted,
+ * FR-1539), and the environment's own answers and paths.
  */
 export {
   type AddEnvironmentOptions,

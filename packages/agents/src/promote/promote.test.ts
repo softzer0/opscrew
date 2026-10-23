@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -100,11 +102,13 @@ describe("promote", () => {
     expect(promotionFile(deps.paths).replaceAll("\\", "/")).toMatch(
       /\/\.opscrew\/promotion\.json$/,
     );
+    // With the services of the plan it was deployed with, as a later rollback checks them.
     expect(await recordedPromotion(deps.paths)).toEqual({
       digest: STAGING_IMAGE,
       source: "staging",
       runUrl: DEPLOY_RUN_URL,
       at: "2026-10-11T12:00:00.000Z",
+      services: ["db"],
     });
     // The approval and the dispatch are audited.
     const actions = deps.audit.entries.map((entry) => `${entry.kind}:${entry.action}`);
@@ -162,6 +166,71 @@ describe("promote", () => {
       tag: `${PREVIOUS_COMMIT}-staging`,
     });
     expect(await recordedPromotion(world.deps.paths)).toMatchObject({ digest: PREVIOUS_IMAGE });
+    // This computer has no record of what the previous image ran with: the approval says so.
+    expect(request.details).toContain(
+      "  OpsCrew has no record on this computer of what that image ran with, so it cannot check it against prod's plan: a component removed since that image ran is not brought back",
+    );
+  });
+
+  describe("a rollback checked against the recorded promotion", () => {
+    /** prod's record: it runs PROD_IMAGE, and before it ran PREVIOUS_IMAGE with `services`. */
+    async function recorded(world: PromoteWorld, services: string[]) {
+      const promotion = (digest: string, names: string[]) => ({
+        digest,
+        source: "staging",
+        runUrl: DEPLOY_RUN_URL,
+        at: "2026-10-10T12:00:00.000Z",
+        services: names,
+      });
+      const file = promotionFile(world.deps.paths);
+      await mkdir(dirname(file), { recursive: true });
+      const record = {
+        ...promotion(PROD_IMAGE, ["db"]),
+        previous: promotion(PREVIOUS_IMAGE, services),
+      };
+      await writeFile(file, JSON.stringify(record));
+    }
+
+    it("records each promotion with the one it replaces", async () => {
+      const world = await promoteWorld();
+      await recorded(world, ["db"]);
+      await promote(world.deps, { target: "prod", services: world.services });
+      expect(await recordedPromotion(world.deps.paths)).toMatchObject({
+        digest: STAGING_IMAGE,
+        services: ["db"],
+        previous: { digest: PROD_IMAGE, services: ["db"] },
+      });
+    });
+
+    it("refuses when the previous image ran with a service the plan no longer has, before the check and the approval", async () => {
+      const world = await promoteWorld();
+      await recorded(world, ["db", "cache"]);
+      const error = await failure(
+        promote(world.deps, { target: "prod", digest: PREVIOUS_IMAGE, services: world.services }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        "prod's previous image ran with the service cache, which prod's plan no longer has, so rolling back would run that image without it. Nothing was deployed.",
+      );
+      expect(error.hint).toBe(
+        "Promote forward instead: once staging runs a fixed image, run `opscrew promote --to prod`.",
+      );
+      expect(world.driftPaths).toEqual([]);
+      expect(world.handler.requests).toEqual([]);
+      expect(world.github.dispatches).toEqual([]);
+    });
+
+    it("goes ahead, without the note, when the plan still has every service it ran with", async () => {
+      const world = await promoteWorld();
+      await recorded(world, ["db"]);
+      const result = await promote(world.deps, {
+        target: "prod",
+        digest: PREVIOUS_IMAGE,
+        services: world.services,
+      });
+      expect(result.digest).toBe(PREVIOUS_IMAGE);
+      expect(world.handler.requests[0]?.details).not.toContain("no record");
+    });
   });
 
   it("accepts the source's digest given explicitly", async () => {
@@ -457,7 +526,7 @@ describe("promote", () => {
         "prod",
         DeployPlanSchema.parse({
           ...world.prodPlan,
-          app: { ...world.prodPlan.app, healthPath: "/healthz" },
+          app: { ...world.prodPlan.app, maxBodyMb: 50 },
         }),
       );
 
@@ -749,6 +818,38 @@ describe("promote", () => {
       );
       expect(world.handler.requests).toEqual([]);
       expect(world.github.dispatches).toEqual([]);
+    });
+
+    it("a target not ready for the source's image, naming each difference, before the check and the approval", async () => {
+      const world = await promoteWorld({
+        prod: (plan) =>
+          DeployPlanSchema.parse({
+            ...plan,
+            app: { ...plan.app, port: 8080, healthPath: "/healthz" },
+            services: [],
+          }),
+      });
+      const error = await failure(
+        promote(world.deps, { target: "prod", services: world.services }),
+      );
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        "The prod environment is not ready for the image staging runs: its plan differs from staging's in what every environment shares: services.db (missing), app.port and app.healthPath. Nothing was deployed.",
+      );
+      expect(error.hint).toBe(
+        "Run `opscrew design --env prod`, then `opscrew provision --env prod`, then `opscrew promote --to prod` again.",
+      );
+      expect(world.driftPaths).toEqual([]);
+      expect(world.handler.requests).toEqual([]);
+      expect(world.github.dispatches).toEqual([]);
+
+      // A rollback deploys the target's own previous image, which ran with its plan: not checked.
+      const rollback = await promote(world.deps, {
+        target: "prod",
+        digest: PREVIOUS_IMAGE,
+        services: world.services,
+      });
+      expect(rollback.digest).toBe(PREVIOUS_IMAGE);
     });
 
     it("pending infrastructure changes in the target", async () => {

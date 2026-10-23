@@ -3,7 +3,7 @@
 One app can have several environments, for example `dev` on your computer, `staging` on a small
 server and `prod` on the live server. Each environment has its own target, size, hostnames, deploy
 secrets, infrastructure state and approvals. The app itself (how it is built, which components it
-uses, its port and its health route) is defined once and is the same in every environment, while
+uses, its port and its health route) moves from one environment to the next with its image, while
 each environment runs its own copies: its own containers and databases, with their own data (see
 [What every environment shares](#what-every-environment-shares-and-what-each-runs-on-its-own)).
 
@@ -106,14 +106,52 @@ server, a Portainer and a Cloudflare zone the way two apps do.
 
 ### What every environment shares, and what each runs on its own
 
-Every environment runs the same app, defined once in prod's plan, `opscrew/plan.yaml`: how it is
-built, its port, its health route, its release command, its workers and cron jobs, which
-components it uses (databases, caches and the other services, SQLite), which external services it
-uses, and image signing. `npx opscrew design --env <env>` copies that definition into the
-environment's plan. When you change it, run `design` for each environment: each shows the change
-as a pending change and applies it only with its own approved plan.
-`npx opscrew provision --env <env>` refuses an environment whose copy differs from prod's, and says
-to run `design` for it first.
+Every environment runs the same app: how it is built, its port, its health route, its release
+command, its workers and cron jobs, which components it uses (databases, caches and the other
+services, SQLite), which external services it uses, and image signing. This definition goes with
+the image, because the image is what needs it:
+
+- An environment that builds its own image (it follows a branch, prod too when it does) takes the
+  definition from its own design, `npx opscrew design --env <env>`.
+- A promoted environment runs the image of the environment it is promoted from, so its design
+  copies the definition from that environment's plan. `npx opscrew provision --env <env>` refuses a
+  promoted environment whose copy differs from its source's, and says to run `design` for it first.
+- An environment on [this computer](localhost.md) that runs prod's image, rather than building
+  its own, copies the definition from prod's plan in the same way.
+
+So a new service starts where the new code first runs. Say you add Redis to the app, with
+promotion first (dev → staging → prod):
+
+1. On dev: `npx opscrew design --env dev` adds Redis to dev's plan, and
+   `npx opscrew provision --env dev` starts it once you approve dev's plan. Pushes of the new code
+   deploy to dev.
+2. On staging: `npx opscrew promote --to staging` stops, because staging has no Redis yet and the
+   image dev runs needs it. OpsCrew names what differs and the two commands that fix it: run
+   `npx opscrew design --env staging`, then `npx opscrew provision --env staging`, which asks you to
+   approve staging's own plan. Then promote again.
+3. On prod: `npx opscrew promote --to prod` stops the same way until you run
+   `npx opscrew design --env prod` and `npx opscrew provision --env prod`, with prod's own approved
+   plan.
+
+Before it asks for your approval, `promote` checks that the target has every service of its source,
+with the same settings, and every other shared part the same. The target may have services its
+source no longer has.
+
+A service you remove in dev stays in staging and prod until their next promotion, because the image
+they run may still use it. Until an environment runs its source's image, its design keeps the
+service and says why. After the promotion, the next `npx opscrew design --env staging` drops the
+service from staging's plan, and `npx opscrew provision --env staging` removes it, asking as usual
+before any data is deleted. OpsCrew tells which image each environment runs from its label in GitHub
+Container Registry (`opscrew-<env>`), read with your GitHub token. Without a token, design keeps the
+service.
+
+Change one environment at a time. Finish the change in dev (its design, its provision, and the
+push that deploys the new code) before you design or promote staging. Staging's design copies dev's
+plan as it is at that moment, so a change still under way in dev would reach staging before dev
+runs it. Removing a component always asks you to type its confirmation before its data is deleted.
+
+When each environment follows its own branch, each one builds its own image and takes the
+definition from its own design, so OpsCrew compares nothing between them.
 
 Sharing the definition shares nothing that runs. Each environment runs its own copies:
 
@@ -290,10 +328,14 @@ npx opscrew promote --to prod
    this repository's own workflow run, at the commit the image is tagged with (`<commit>`, or
    `<commit>-<env>` for the environment that built it). In a chain dev → staging → prod, dev built
    the image, so it must come from a push to dev's branch. A pull request from a fork never passes.
-3. It checks that prod has no change waiting for `npx opscrew provision --env prod` (infrastructure,
-   generated files, the server, Cloudflare rules or the Portainer stack), and that prod's workflow on
-   the default branch is the one its plan generates. Otherwise it stops and says to provision prod
-   first.
+3. It checks that prod is ready for staging's image: every service of staging's plan, with the same
+   settings, and everything else
+   [every environment shares](#what-every-environment-shares-and-what-each-runs-on-its-own) the
+   same. Otherwise it stops, names what differs, and says to run `npx opscrew design --env prod`,
+   then `npx opscrew provision --env prod`. It also checks that prod has no change waiting for
+   `npx opscrew provision --env prod` (infrastructure, generated files, the server, Cloudflare rules
+   or the Portainer stack), and that prod's workflow on the default branch is the one its plan
+   generates. Otherwise it stops and says to provision prod first.
 4. It shows the image, its provenance and prod's plan, with the promotion's hash, and asks for your
    approval. The approval is bound to the target, the source, the image's digest and prod's plan
    hash: if any of them changes, it no longer applies.
@@ -340,7 +382,12 @@ docker buildx imagetools inspect ghcr.io/<owner>/<repo>:opscrew-prod-previous   
 npx opscrew promote --to prod --digest sha256:<that digest>
 ```
 
-A rollback runs the same checks and asks for the same approval. `promote` accepts only the image
+A rollback runs the same checks and asks for the same approval. Instead of comparing prod with
+staging's plan, it checks that prod's plan still has every service the previous image ran with,
+which OpsCrew records on this computer at each promotion. When one is gone, it stops before asking:
+promote a fixed image forward instead. Without that record, for example on another computer, the
+approval says OpsCrew could not check the previous image, and a component removed since that image
+ran is not brought back. `promote` accepts only the image
 the source environment runs or the target's previous one, and it names both digests when you give
 it another.
 

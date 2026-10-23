@@ -75,12 +75,28 @@ describe("renderRunbook per environment", () => {
     );
   });
 
-  it("changes the shared components in prod's plan, and designs the environment again", () => {
-    expect(file.content).toContain(
-      "in `opscrew/plan.yaml` (prod's plan: every environment shares its components), then run",
-    );
+  it("changes the components in the environment's own plan, and designs it again", () => {
+    expect(file.content).toContain("in `opscrew/environments/staging/plan.yaml`, then run");
     expect(file.content).toContain(
       "`opscrew design --env staging` (it checks that everything fits",
+    );
+  });
+
+  it("changes a promoted environment's components in its source's plan", () => {
+    const qa = named(testPlan({ domain: "shop.example.com" }), {
+      name: "qa",
+      deploySource: PROMOTE,
+    });
+    const promoted = { ...ctx, builderBranch: "main" };
+    expect(renderRunbook(qa, promoted).content).toContain(
+      "in `staging`'s plan (`opscrew/environments/staging/plan.yaml`): qa copies its components from it at its next design, then run",
+    );
+    const fromProd = named(testPlan({ domain: "shop.example.com" }), {
+      name: "qa",
+      deploySource: { from: "promote", source: "prod" },
+    });
+    expect(renderRunbook(fromProd, promoted).content).toContain(
+      "in `prod`'s plan (`opscrew/plan.yaml`): qa copies its components from it at its next design",
     );
   });
 

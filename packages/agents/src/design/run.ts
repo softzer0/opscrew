@@ -3,19 +3,21 @@ import {
   canonicalJson,
   formatMoney,
   isUserFacingError,
+  listText,
   lowerFirst,
   OpsCrewError,
   plural,
   toPosixRelative,
 } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
-import { type EdgeProxy, edgeMemoryMb, edgeProxy } from "@opscrew/iac-templates";
+import { type EdgeProxy, edgeMemoryMb, edgeProxy, serviceSpec } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
   type DeployProvider,
   type DesignOption,
   EnvironmentSchema,
+  type PlanService,
   type ProjectFacts,
   type Region,
   type Requirements,
@@ -32,7 +34,11 @@ import {
   environmentWorkflowPath,
 } from "../environments/paths";
 import { readEnvironmentRequirements } from "../environments/requirements";
-import { withSharedParts } from "../environments/shared-parts";
+import {
+  type SharedPartsSource,
+  sharedPartsSource,
+  withSharedParts,
+} from "../environments/shared-parts";
 import {
   buildLocalhostOption,
   LOCALHOST_PRICE_NOTE,
@@ -41,6 +47,7 @@ import {
   localhostImageWarnings,
   onThisComputer,
 } from "../localhost/design";
+import { githubRegistry, type LocalRegistry } from "../localhost/image";
 import type { LocalhostServices } from "../localhost/services";
 import {
   type OwnServerFacts,
@@ -50,6 +57,7 @@ import {
   vpsConnector,
 } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
+import { reasonOf } from "../retarget/steps";
 import {
   appMemoryMb,
   designOptionLine,
@@ -139,6 +147,12 @@ export interface RunDesignOptions {
   branch?: string;
   /** This computer (the localhost target): its CPU and the port probe (fakes in tests). */
   localhost?: Pick<LocalhostServices, "arch" | "portFree">;
+  /**
+   * The app's image on GHCR (a fake in tests; default `githubRegistry`, with the user's GitHub
+   * token). A promoted environment's design reads which image it and its source run when it has a
+   * service its source no longer has.
+   */
+  registry?: Pick<LocalRegistry, "taggedDigest">;
 }
 
 /**
@@ -188,13 +202,18 @@ export interface DesignResult {
  *
  * For an environment other than prod (`deps.paths.environment`) the requirements are prod's with
  * the environment's own answers over them, and the plan (`opscrew/environments/<env>/plan.yaml`)
- * takes what every environment shares from prod's plan: the components are designed from it and
- * its shared parts copied (`withSharedParts`). Its app name is `<app>-<env>`, with its own
- * infrastructure root, workflow and `environment` block. A hostname another environment uses
- * stops design.
+ * is named after prod's: its app name is `<app>-<env>`, with its own infrastructure root, workflow
+ * and `environment` block. What every environment shares follows the image (FR-1539): an
+ * environment that builds, prod included, takes it from its own design; one that runs another
+ * environment's image (`sharedPartsSource`: the one it is promoted from, or prod's for this
+ * computer pulling prod's image) takes it from that plan, whose components it is designed from and
+ * whose shared parts it copies (`withSharedParts`). A promoted one keeps the services its source no
+ * longer has while it does not run the source's image yet ({@link servicesToKeep}). A hostname
+ * another environment uses stops design.
  * @throws OpsCrewError `PHASE_PRECONDITION` (nothing written) when the plan has a live deployment
  * on another provider than the one requested, before prod's plan exists for another environment,
- * and (before reading anything else) while `opscrew retarget` is moving the deployment.
+ * before a promoted environment's source has a plan, and (before reading anything else) while
+ * `opscrew retarget` is moving the deployment.
  */
 export async function runDesign(
   deps: PhaseDeps,
@@ -263,9 +282,9 @@ export async function previewDesignOptions(
   options: PreviewDesignOptions = {},
 ): Promise<DesignPreview> {
   const inputs = await readInputs(deps, options.facts);
-  const shared = await sharedPartsSource(deps);
   const warnings: string[] = [];
   const previous = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
+  const source = await sharedPartsSource(deps.paths, previous ?? {});
   const move = previous === undefined ? undefined : moveInProgress(previous);
   if (move !== undefined) {
     const notice = `${move.message} \`opscrew design\` will stop without changing opscrew/plan.yaml until the move is finished or aborted. ${move.hint}`;
@@ -282,19 +301,17 @@ export async function previewDesignOptions(
   }
   return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer, {
     previous,
-    shared,
+    shared: source?.plan,
     localhost: { services: options.localhost, environment: previous ?? {} },
   });
 }
 
 /**
- * For an environment other than prod: prod's plan, which the environment takes what every
- * environment shares from; `undefined` for prod.
- * @throws OpsCrewError `PHASE_PRECONDITION` when prod's plan does not exist yet.
+ * Prod's plan, which an environment other than prod is named after (`<app>-<env>`).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when it does not exist yet.
  */
-async function sharedPartsSource(deps: PhaseDeps): Promise<DeployPlan | undefined> {
+async function prodPlanOf(deps: PhaseDeps): Promise<DeployPlan> {
   const name = deps.paths.environment;
-  if (name === "prod") return undefined;
   const prodPlan = await readOptionalArtifact(
     "plan",
     environmentPaths(deps.paths, "prod").files.plan,
@@ -302,7 +319,7 @@ async function sharedPartsSource(deps: PhaseDeps): Promise<DeployPlan | undefine
   if (prodPlan !== undefined) return prodPlan;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The ${name} environment takes what every environment shares (the build, the components, the port) from prod's plan, and opscrew/plan.yaml does not exist yet. Nothing was written.`,
+    `The ${name} environment's app is named after prod's (\`<app>-${name}\`), and opscrew/plan.yaml does not exist yet. Nothing was written.`,
     { hint: `Run \`opscrew design\` for prod first, then \`opscrew design --env ${name}\`.` },
   );
 }
@@ -455,7 +472,7 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
 
 /**
  * What runs next to the app ({@link designComponents}, keeping the edits of `previous`: the
- * plan's own, or prod's for another environment), its warnings said, after refusing an SQLite
+ * plan's own, or its source's for a promoted environment), its warnings said, after refusing an SQLite
  * folder a persistent volume cannot take (the folder the database is moved to, when the framework
  * reads its path from the environment, `sqliteMove`).
  */
@@ -474,8 +491,8 @@ async function componentsFor(
 }
 
 /**
- * The plans design starts from: the environment's own `previous` plan, and for an environment
- * other than prod prod's plan (`shared`), whose shared parts it takes.
+ * The plans design starts from: the environment's own `previous` plan, and for a promoted
+ * environment its source's plan (`shared`), whose shared parts it takes.
  */
 interface PlanBasis {
   previous: DeployPlan | undefined;
@@ -648,7 +665,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const warn = warner(deps, warnings);
 
   const inputs = await readInputs(deps);
-  const shared = await sharedPartsSource(deps);
+  const name = paths.environment;
+  const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
   const previous = await readArtifact("plan", paths.files.plan).catch((error: unknown) => {
     if (!(isUserFacingError(error) && error.code === "ARTIFACT_MISSING")) {
       warn(
@@ -665,6 +683,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       await knowsDeployment(deps, previous),
     );
   }
+  // The plan the components are designed from, as far as the earlier plan (or a new
+  // environment's block) tells; the plan's own target decides it below.
+  const basis = await sharedPartsSource(paths, previous ?? { environment: options.environment });
 
   let ownServer = options.ownServer;
   if (inputs.requirements.provider === "own") {
@@ -680,7 +701,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
 
   const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer, {
     previous,
-    shared,
+    shared: basis?.plan,
     localhost: {
       services: options.localhost,
       environment:
@@ -695,7 +716,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const chosen = await pick(designOptions, options);
   const build = chooseBuilder(
     facts,
-    shared ?? previous,
+    basis?.plan ?? previous,
     chosen.target.architecture === "arm" ? "arm64" : "amd64",
   );
   if ("refused" in build) {
@@ -734,10 +755,21 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     );
     fresh = planFor({ ...components, processes: { ...components.processes, cron } });
   }
-  const named =
-    shared === undefined ? fresh : environmentNames(fresh, shared, paths.environment, options);
+  const named = prodPlan === undefined ? fresh : environmentNames(fresh, prodPlan, name, options);
   const own = previous ? keepPlanSettings(named, previous, requirements) : named;
-  const kept = shared === undefined ? own : environmentPlan(own, shared, paths);
+  // Where the shared parts come from, now that the plan's target (on this computer, where its
+  // image comes from) is chosen.
+  const source = await sharedPartsSource(paths, own);
+  const keep =
+    source === undefined ||
+    previous === undefined ||
+    own.environment?.deploySource.from !== "promote"
+      ? []
+      : await servicesToKeep(deps, previous, source, options.registry, warn);
+  const kept =
+    prodPlan === undefined && source === undefined
+      ? own
+      : environmentPlan(own, source, keep, paths);
   // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
   // a newer interview it is written anyway: its date then says the answers are in it, so the next
   // design keeps what the user edits in plan.yaml instead of taking the answers again.
@@ -800,8 +832,15 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const serverMb = chosen.target.memoryGb * 1024;
   const edgeMb = edgeMemoryMb(edgeProxy(plan));
   const componentLines = [
-    ...preview.lines.filter((line) => !off.some((name) => line.startsWith(`Cron job ${name} (`))),
-    ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
+    // Copied from a source, the components are its plan's, not those designed from the code here.
+    ...(source !== undefined
+      ? [copiedComponentsLine(plan, source.name)]
+      : [
+          ...preview.lines.filter(
+            (line) => !off.some((name) => line.startsWith(`Cron job ${name} (`)),
+          ),
+          ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
+        ]),
     ...(inPortainer
       ? []
       : [memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)]),
@@ -819,9 +858,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   for (const line of additionLines) reporter.info(line);
   for (const warning of additions.warnings) warn(warning);
   reporter.info(
-    shared === undefined
+    prodPlan === undefined
       ? "Next: run `opscrew adapt` to prepare the code in a pull request."
-      : `Next: run \`opscrew provision --env ${paths.environment}\`. The code is prod's, which \`opscrew adapt\` prepares.`,
+      : `Next: run \`opscrew provision --env ${name}\`. The code is prod's, which \`opscrew adapt\` prepares.`,
   );
   await deps.state.markPhase(
     "design",
@@ -881,18 +920,21 @@ function environmentNames(
 }
 
 /**
- * The plan of the environment `paths` belong to: `plan` with prod's shared parts
- * (`withSharedParts`), validated.
+ * The plan of the environment `paths` belong to, validated: `plan`, with the shared parts of its
+ * `source` and the services it keeps (`withSharedParts`) when it is promoted.
  * @throws OpsCrewError `INVALID_INPUT` when the result is no valid plan (for example a runner its
  * target does not take), naming the field.
  */
 function environmentPlan(
   plan: DeployPlan,
-  prodPlan: DeployPlan,
+  source: SharedPartsSource | undefined,
+  keep: readonly PlanService[],
   paths: PhaseDeps["paths"],
 ): DeployPlan {
   const name = paths.environment;
-  const parsed = DeployPlanSchema.safeParse(withSharedParts(plan, prodPlan));
+  const parsed = DeployPlanSchema.safeParse(
+    source === undefined ? plan : withSharedParts(plan, source.plan, keep),
+  );
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
   throw new OpsCrewError(
@@ -902,6 +944,67 @@ function environmentPlan(
       hint: `Fix the field shown above in ${toPosixRelative(paths.root, paths.files.plan)}, or change the environment's answers in ${toPosixRelative(paths.root, paths.files.requirements)}, then run \`opscrew design --env ${name}\` again.`,
     },
   );
+}
+
+/**
+ * The services a promoted environment's earlier plan has and its source's plan no longer has
+ * (FR-1539). They are kept while the environment does not run the source's image yet, since the
+ * image it runs may still use them: GHCR's labels of the images each runs (`opscrew-<env>`, as
+ * `opscrew promote` reads the source's) differ, or cannot be read (no token, no GitHub remote, a
+ * refusal or a network error). Once both run the same image none is kept, so the plan no longer
+ * has them and provision asks before their data is deleted. Says which, and why.
+ */
+async function servicesToKeep(
+  deps: PhaseDeps,
+  previous: DeployPlan,
+  source: SharedPartsSource,
+  registry: Pick<LocalRegistry, "taggedDigest"> | undefined,
+  warn: (text: string) => void,
+): Promise<PlanService[]> {
+  const theirs = new Set(source.plan.services.map((service) => service.name));
+  const dropped = previous.services.filter((service) => !theirs.has(service.name));
+  if (dropped.length === 0) return [];
+  const name = deps.paths.environment;
+  const from = source.name;
+  const one = dropped.length === 1;
+  const services = `the ${one ? "service" : "services"} ${listText(dropped.map((s) => s.name))}`;
+  const it = one ? "it" : "them";
+  let why = `${name} does not run ${from}'s image yet`;
+  try {
+    const ghcr = registry ?? (await githubRegistry(deps));
+    const own = await ghcr.taggedDigest(`opscrew-${name}`);
+    if (own !== undefined && own === (await ghcr.taggedDigest(`opscrew-${from}`))) {
+      deps.reporter.info(
+        deps.redactor.redact(
+          `The ${name} environment runs ${from}'s image now, so its plan drops ${services}, as ${from}'s did. \`opscrew provision --env ${name}\` removes ${it}, asking as usual before any data is deleted.`,
+        ),
+      );
+      return [];
+    }
+  } catch (error) {
+    // Unknown is kept: design never removes a service it cannot tell is unused.
+    why = `OpsCrew cannot tell whether ${name} runs ${from}'s image yet (${reasonOf(error)})`;
+  }
+  warn(
+    `The ${name} environment keeps ${services}, which ${from}'s plan no longer has: ${why}, and the image it runs may still use ${it}. Once \`opscrew promote --to ${name}\` has deployed ${from}'s image, the next \`opscrew design --env ${name}\` removes ${it}.`,
+  );
+  return dropped;
+}
+
+/**
+ * The one line design says of the components a plan copied from `source`'s plan, instead of those
+ * designed from the code here: its enabled services, workers and cron jobs, and its SQLite folder.
+ */
+function copiedComponentsLine(plan: DeployPlan, source: string): string {
+  const components = [
+    ...plan.services
+      .filter((service) => service.enabled)
+      .map((service) => `${serviceSpec(service.kind).title} ${service.version} (${service.name})`),
+    ...plan.processes.workers.filter((w) => w.enabled).map((worker) => `worker ${worker.name}`),
+    ...plan.processes.cron.filter((job) => job.enabled).map((job) => `cron job ${job.name}`),
+    ...(plan.storage?.sqlite === undefined ? [] : [`SQLite in ${plan.storage.sqlite.dir}/`]),
+  ];
+  return `Components (copied from ${source}'s plan): ${components.length === 0 ? "none besides the app" : listText(components)}.`;
 }
 
 /**

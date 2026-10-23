@@ -223,7 +223,8 @@ function addRunnerOptions(command: Command): Command {
 /**
  * `opscrew env add|set|list|remove`: the app's environments beside prod (staging, dev, a copy on
  * this computer). Each has its own plan, state, secrets and approvals; the build and the
- * components are prod's. Every deployment command acts on one of them with `--env <name>`.
+ * components follow the image (its own design's when it builds, its source's when it is
+ * promoted). Every deployment command acts on one of them with `--env <name>`.
  */
 export function register(program: Command, ctx: CliContext): void {
   const env = program

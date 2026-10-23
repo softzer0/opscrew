@@ -23,18 +23,34 @@ export function promotionHash(parts: PromotionParts): string {
   return sha256Hex(canonicalJson({ target, source, digest, targetPlanHash }));
 }
 
-/** The image an environment last got by `opscrew promote`, once the deploy run succeeded. */
-interface Promotion {
-  digest: string;
-  source: string;
-  runUrl: string;
+/** The image an environment got by `opscrew promote`, once the deploy run succeeded. */
+const PromotionSchema = z.object({
+  digest: z.string(),
+  source: z.string(),
+  runUrl: z.string(),
   /** When the run had succeeded. */
-  at: string;
-}
+  at: z.string(),
+  /** The services of the environment's plan the image was deployed with, by name. */
+  services: z.array(z.string()),
+});
+
+type Promotion = z.infer<typeof PromotionSchema>;
+
+/** `promotion.json`: the environment's last promotion, with the one it replaced. */
+const PromotionRecordSchema = PromotionSchema.extend({ previous: PromotionSchema.optional() });
+
+export type PromotionRecord = z.infer<typeof PromotionRecordSchema>;
 
 /** `promotion.json` in the environment's local state folder (`.opscrew/…`, gitignored). */
 export function promotionFile(paths: Pick<ProjectPaths, "stateDir">): string {
   return join(paths.stateDir, "promotion.json");
+}
+
+/** The environment's recorded promotion on this computer, if any. */
+export async function readPromotion(
+  paths: Pick<ProjectPaths, "stateDir">,
+): Promise<PromotionRecord | undefined> {
+  return readValidJson(promotionFile(paths), PromotionRecordSchema);
 }
 
 /** A promotion whose deploy run still waited for a required reviewer when promote ended. */
@@ -73,10 +89,18 @@ export async function clearPendingPromotion(paths: Pick<ProjectPaths, "stateDir"
   await rm(pendingFile(paths), { force: true });
 }
 
-/** Records the environment's promotion, replacing the one before. */
+/**
+ * Records the environment's promotion, with the one it replaces as `previous` (what a rollback to
+ * the image before is checked against).
+ */
 export async function writePromotion(
   paths: Pick<ProjectPaths, "stateDir">,
   promotion: Promotion,
 ): Promise<void> {
-  await writeFileAtomic(promotionFile(paths), `${JSON.stringify(promotion, null, 2)}\n`);
+  const replaced = await readPromotion(paths);
+  const record: PromotionRecord =
+    replaced === undefined
+      ? promotion
+      : { ...promotion, previous: PromotionSchema.parse(replaced) };
+  await writeFileAtomic(promotionFile(paths), `${JSON.stringify(record, null, 2)}\n`);
 }

@@ -287,9 +287,9 @@ async function provisionFlow(
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
 
-  // 1–2. Preconditions and credentials. Another environment's plan must share prod's build,
-  // components and port, and serve hostnames of its own; a recovery copy another computer updated
-  // stops the run before any plan or change (FR-1417).
+  // 1–2. Preconditions and credentials. A promoted environment's plan must have its source's
+  // build, components and port (FR-1539), and every environment serves hostnames of its own; a
+  // recovery copy another computer updated stops the run before any plan or change (FR-1417).
   await requireSharedParts(deps.paths, plan);
   await requireOwnHostnames(deps.paths, plan);
   requireOwnCopy(deps.paths, await readRepositoryCopy(deps.paths), await readRecord(deps.paths));

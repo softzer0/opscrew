@@ -362,7 +362,8 @@ function setupDefaults(
  * shows its monthly cost). Nothing is written when an answer is invalid, apart from a runner
  * machine that does not fit the user's own server, which only its inspection shows.
  * @throws OpsCrewError `INVALID_INPUT` for prod or an invalid answer, `PHASE_PRECONDITION` when
- * the environment exists or prod's plan does not yet.
+ * the environment exists or prod's plan, whose app name it is named after (`<app>-<env>`), does
+ * not yet.
  */
 export async function addEnvironment(
   deps: PhaseDeps,
@@ -386,7 +387,7 @@ export async function addEnvironment(
   if (prodPlan === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "Every environment takes the app's shared parts from prod's plan, and opscrew/plan.yaml does not exist yet.",
+      `The ${name} environment's app is named after prod's (\`<app>-${name}\`), and opscrew/plan.yaml does not exist yet.`,
       { hint: "Run `opscrew design` first, then add the environment." },
     );
   }
