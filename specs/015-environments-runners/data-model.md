@@ -68,7 +68,7 @@ Shared by every environment: `architecture.json`, `ARCHITECTURE.md`, the scan re
 |---|---|
 | `source`, `target` | environments of the app; the target's `deploySource.source` is `source` |
 | `digest` | `sha256:<64 hex>`: the source's `opscrew-<source>` tag, or a rollback digest (the target's `opscrew-<target>-previous`) |
-| `provenance` | the build run named by the image's SLSA v1 provenance (`runDetails.builder.id`); that run must be in this repository, on the default branch, with `head_sha` matching the image's commit tag |
+| `provenance` | the build run named by the image's SLSA v1 provenance (`runDetails.builder.id`); that run must be in this repository, on the branch the source chain's building environment follows (its `cicd.branch`, FR-1537), with `head_sha` matching the image's commit tag |
 | `signature` | checked when the app signs images |
 | `targetPlanHash` | the target's plan hash with no pending change |
 | approval | kind `promote`, `planHash` = SHA-256 of the canonical `{ target, source, digest, targetPlanHash }` |
