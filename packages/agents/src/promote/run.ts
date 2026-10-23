@@ -121,9 +121,10 @@ function serviceNames(plan: DeployPlan): string[] {
 
 /**
  * A rollback to the target's previous image: that image ran with the services its promotion
- * recorded (the `previous` of the target's record), so the target's plan must still have each of
- * them. Returns false when this computer has no record of that image's promotion, so nothing
- * could be checked.
+ * recorded, so the target's plan must still have each of them. Its promotion is the `previous` of
+ * the target's record, or the record itself when another computer promoted the target since.
+ * Returns false when this computer has no record of that image's promotion, so nothing could be
+ * checked.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming the services the plan no longer has.
  */
 function requireRollbackServices(
@@ -132,8 +133,8 @@ function requireRollbackServices(
   record: PromotionRecord | undefined,
 ): boolean {
   const { target, source } = run;
-  const before = record?.previous;
-  if (before?.digest !== run.digest) return false;
+  const before = [record?.previous, record].find((promotion) => promotion?.digest === run.digest);
+  if (before === undefined) return false;
   const have = new Set(serviceNames(plan));
   const gone = before.services.filter((name) => !have.has(name));
   if (gone.length === 0) return true;

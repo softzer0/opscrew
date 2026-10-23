@@ -220,6 +220,31 @@ describe("promote", () => {
       expect(world.github.dispatches).toEqual([]);
     });
 
+    it("checks the image of the last recorded promotion when another computer promoted since", async () => {
+      // Another computer promoted prod after this one: PROD_IMAGE, this computer's last
+      // promotion, is now prod's previous image.
+      const world = await promoteWorld();
+      const file = promotionFile(world.deps.paths);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(
+        file,
+        JSON.stringify({
+          digest: PREVIOUS_IMAGE,
+          source: "staging",
+          runUrl: DEPLOY_RUN_URL,
+          at: "2026-10-10T12:00:00.000Z",
+          services: ["db", "cache"],
+        }),
+      );
+      const error = await failure(
+        promote(world.deps, { target: "prod", digest: PREVIOUS_IMAGE, services: world.services }),
+      );
+      expect(error.message).toBe(
+        "prod's previous image ran with the service cache, which prod's plan no longer has, so rolling back would run that image without it. Nothing was deployed.",
+      );
+      expect(world.github.dispatches).toEqual([]);
+    });
+
     it("goes ahead, without the note, when the plan still has every service it ran with", async () => {
       const world = await promoteWorld();
       await recorded(world, ["db"]);
