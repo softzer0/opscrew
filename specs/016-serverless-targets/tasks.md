@@ -321,7 +321,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/detect --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1608 [P] [US1] [US2] Provision for Cloudflare, in `packages/agents/src/serverless/cloudflare/**` (new), `packages/agents/src/serverless/shared.ts` (new)
+- [X] T1608 [P] [US1] [US2] Provision for Cloudflare, in `packages/agents/src/serverless/cloudflare/**` (new), `packages/agents/src/serverless/shared.ts` (new)
   - Owns: those paths (+ tests, fakes in `packages/agents/src/testing/serverless.ts` (new)); `provisionCloudflareWorkers` in `serverless/index.ts`
   - Reads: spec US1, US2, FR-1603–FR-1607; plan.md "9."; research.md "Spike results" 1–3, 5, 10, 12; T1605's and T1606's reports
   - Depends: T1603, T1605, T1606, T1607
