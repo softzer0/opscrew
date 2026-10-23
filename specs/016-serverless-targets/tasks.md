@@ -241,6 +241,8 @@ Effort`.
     - **The interview's provider question** offers "Cloudflare (no server)" and "GitHub Pages (no server)" where they fit.
     - **What T1601a left to design** (its report): replace the entry refusals in design and the interview with real branches. `deployStrategyFor`, `dragonflyFits`, `refuseDeepDomain`, `isUnpriced`, the CLI interview's `nextStep` default and the options table must not assume a server. Design writes `security.wafCustomRules: false` for GitHub Pages, since the schema defaults it to true and refuses that there.
     - **Profiles** next to Portainer's and localhost's, outside `VPS_PROVIDERS` and `vpsConnector`.
+    - **No publishing from the repository root** (T1606's report): `site.outputDir` resolving to `app.buildContext` itself (`"."`) would publish the whole checkout (`opscrew/`, `.github/`, `.git` on Cloudflare, every other file). `checkServerlessTarget` refuses it on both targets: "put the site's files in a folder of their own, for example `public/`, so only they are published". Detection of a site with no build reports the folder holding `index.html`, never the root.
+    - **`notFound: "none"` for SSR** (T1606's report): with `single-page-application` Cloudflare serves `index.html` for navigations before the Worker runs, so server-rendered pages never render. `checkServerlessTarget` refuses any other value with `render: "ssr"`, and design writes `"none"`.
     - **`www` on GitHub Pages only at an apex** (T1605's review): GitHub redirects `www` only for an apex domain, so a `www.docs.example.com` CNAME would point at GitHub with no site claiming it (SC-1605). `checkServerlessTarget` in plan-schema (added to this task's Owns for this rule) refuses `dns.www` with `github-pages` unless `dns.domain` is the zone apex (`dns.zone`), and design offers `www` there only.
     - **`init`:** when either target is in use, it checks the Cloudflare token's Workers permissions (`workersPermissions`), the deploy token, and the GitHub token's Pages permission, naming what's missing and where to add it (FR-1610).
     - **The provision seam:** `serverless/index.ts` exports `provisionCloudflareWorkers` and `provisionGithubPages`, each refusing with "not available yet" until T1608 and T1609. `provision/run.ts` dispatches to them before `requireDockerfile`.
@@ -260,7 +262,7 @@ Effort`.
       4. the IaC plan (the Worker's shell and custom domains, `iac-apply`);
       5. the `www` redirect rule (`cloudflare-apply`), when `www` is on. `inspectShared` must be called with `redirect: true` for a Cloudflare-hosted app, or the redirect phase isn't read (T1603's report); the main token then also needs Zone → Single Redirect → Edit;
       6. the shared WAF rule (011), which applies to the Worker's custom domains (spike result 10);
-      7. the deploy secrets (`github-secrets`): the deploy token, the account id, and the app's values;
+      7. the deploy secrets (`github-secrets`): `OPSCREW_CLOUDFLARE_API_TOKEN` (the deploy token), `OPSCREW_CLOUDFLARE_ACCOUNT_ID`, and one `OPSCREW_ENV_<NAME>` per app value, all repository secrets, since the build job runs outside any GitHub environment (T1606's report: `CLOUDFLARE_DEPLOY_SECRETS`, `siteEnvSecret`);
       8. the generated files and the workflow in the deploy-setup pull request;
       9. the record (`deploymentRecord`).
 
@@ -749,6 +751,7 @@ Effort`.
   - `pagesVerificationRootDir` and `renderInfra`'s modules folder share the "folder beside `infra.dir`" logic: one helper (T1605's review).
   - `serverless.test.ts`'s env-stub leak test can't fail; keep the rendered-file check and the engine run's scan (T1605's review).
   - The `RenderContext.cloudflare.accountId` doc in iac-templates' `src/types.ts` names the Worker too (T1605's report).
+  - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
 
 ## Dependencies
 
