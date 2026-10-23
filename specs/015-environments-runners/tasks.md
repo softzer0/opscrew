@@ -692,7 +692,7 @@ Effort`.
 
 ## After the live runs
 
-- [ ] T1524 The three items left after T1516 (the lead, 2026-10-23)
+- [X] T1524 The three items left after T1516 (the lead, 2026-10-23)
   - Owns: agents' `design/**` (the derived service URLs) and `promote/**`; `packages/connectors/github/src/{ghcr,github,index}.ts` with their tests; the CLI's and MCP's fakes of the changed connector methods (+ tests)
   - Reads: spec FR-1539 and FR-1540; contracts/environments.md "Promotion"
   - Depends: T1516
