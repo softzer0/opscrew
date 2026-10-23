@@ -284,7 +284,10 @@ export async function previewDesignOptions(
   const inputs = await readInputs(deps, options.facts);
   const warnings: string[] = [];
   const previous = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
-  const source = await sharedPartsSource(deps.paths, previous ?? {});
+  const source = await sharedPartsSource(
+    deps.paths,
+    previous ?? newPlanBasis(inputs.requirements, undefined),
+  );
   const move = previous === undefined ? undefined : moveInProgress(previous);
   if (move !== undefined) {
     const notice = `${move.message} \`opscrew design\` will stop without changing opscrew/plan.yaml until the move is finished or aborted. ${move.hint}`;
@@ -685,7 +688,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   }
   // The plan the components are designed from, as far as the earlier plan (or a new
   // environment's block) tells; the plan's own target decides it below.
-  const basis = await sharedPartsSource(paths, previous ?? { environment: options.environment });
+  const basis = await sharedPartsSource(
+    paths,
+    previous ?? newPlanBasis(inputs.requirements, options.environment),
+  );
 
   let ownServer = options.ownServer;
   if (inputs.requirements.provider === "own") {
@@ -916,6 +922,24 @@ function environmentNames(
       workflowPath: environmentWorkflowPath(name),
       ...(options.branch !== undefined ? { branch: options.branch } : {}),
     },
+  };
+}
+
+/**
+ * What `sharedPartsSource` is asked about an environment that has no plan yet: its new block
+ * (`opscrew env add`), and on this computer the image pulled from GitHub Container Registry
+ * (`target.image: registry`), so a new localhost environment's components start from the plan of
+ * the environment whose image it runs, as its later designs do.
+ */
+function newPlanBasis(
+  requirements: Requirements,
+  environment: RunDesignOptions["environment"],
+): Parameters<typeof sharedPartsSource>[1] {
+  return {
+    ...(environment !== undefined ? { environment } : {}),
+    ...(requirements.provider === "localhost"
+      ? { target: { provider: "localhost", image: "registry" } }
+      : {}),
   };
 }
 

@@ -214,6 +214,30 @@ describe("a localhost environment beside prod", () => {
     expect(lines.some((line) => line.includes("is built for"))).toBe(false);
   });
 
+  it("designs a new one's components from prod's plan, whose image it pulls", async () => {
+    const deps = await setup({ provider: "hetzner", region: "eu-central" });
+    const { euCatalog } = await import("../testing");
+    const first = (await runDesign(deps, { catalog: euCatalog() })).plan;
+    // The user turned prod's Postgres off: prod's app then gets DATABASE_URL from them.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first,
+      services: first.services.map((service) =>
+        service.kind === "postgres" ? { ...service, enabled: false } : service,
+      ),
+    });
+    const prod = (await runDesign(deps, { catalog: euCatalog() })).plan;
+    const databaseUrl = (plan: typeof prod) =>
+      plan.app.env.find((variable) => variable.name === "DATABASE_URL");
+    expect(databaseUrl(prod)?.source).not.toBe("derived");
+    const env = { ...deps, paths: environmentPaths(deps.paths, "dev") };
+    const { design } = await addEnvironment(env, {
+      answers: { provider: "localhost" },
+      design: { localhost: computer("x64") },
+    });
+    expect(design.plan.target).toMatchObject({ image: "registry" });
+    expect(databaseUrl(design.plan)).toEqual(databaseUrl(prod));
+  });
+
   it("names two localhost environments of one app <env>.<app>.localhost", async () => {
     const { deps, result } = await beside("dev", "x64");
     const qa = { ...deps, paths: environmentPaths(deps.paths, "qa") };
