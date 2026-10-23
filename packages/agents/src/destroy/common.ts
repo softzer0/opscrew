@@ -14,6 +14,7 @@ import {
 import { engineLabel } from "@opscrew/iac-engine";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { VPS_PROVIDERS } from "../providers";
 import {
   deploySecretNames,
   deploySecretPlaces,
@@ -542,11 +543,13 @@ export async function removeDeploySecrets(
     ].join("\n"),
   });
   if (!approval.approved) {
+    // Only a server OpsCrew created has a pinned host key that destroy forgets.
+    const vps = (VPS_PROVIDERS as readonly string[]).includes(input.plan.target.provider);
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       `The deploy secrets were not removed from ${where}. ${input.done}`,
       {
-        hint: "Run `opscrew destroy` again to remove them and finish the cleanup (the pinned host key and opscrew/plan.yaml).",
+        hint: `Run \`opscrew destroy\` again to remove them and finish the cleanup (${vps ? "the pinned host key and " : ""}opscrew/plan.yaml).`,
       },
     );
   }

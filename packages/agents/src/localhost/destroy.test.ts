@@ -103,6 +103,21 @@ describe.skipIf(!findExecutable("git"))("destroy on this computer with the local
     expect(s.handler.requests.map((r) => r.kind)).toEqual(["host-apply"]);
   });
 
+  it("names only opscrew/plan.yaml as left when the deploy secrets' removal is refused", async () => {
+    const s = await deployedDev(true);
+    const approve = s.handler.request.bind(s.handler);
+    s.handler.request = async (request) => ({
+      ...(await approve(request)),
+      ...(request.kind === "github-secrets" ? { approved: false } : {}),
+    });
+    const error = (await s.destroy().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    // This computer has no pinned host key.
+    expect(error.hint).toBe(
+      "Run `opscrew destroy` again to remove them and finish the cleanup (opscrew/plan.yaml).",
+    );
+  });
+
   it("says what is left and how to finish when GitHub fails", async () => {
     const s = await deployedDev(true);
     const token = fakeSecret("github-token");
