@@ -469,7 +469,7 @@ export async function runInfraCommand(
   const { published, pushed, prUrl, branch, base } = result.result;
   const deploys = published !== false || prUrl !== undefined;
   const push =
-    published === true && pushed === false && branch !== undefined && base !== undefined
+    published === true && pushed === false && branch !== undefined
       ? [
           `push ${branch} (\`git push -u origin ${branch}\`) and open a pull request into ${base}; merging it deploys the app.`,
         ]

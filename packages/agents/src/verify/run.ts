@@ -13,7 +13,7 @@ import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, environmentsOf, readArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { builderBranch, workflowBranch } from "../environments/branches";
+import { builderBranch, followsBranch } from "../environments/branches";
 import { environmentFlag } from "../environments/choice";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
@@ -227,8 +227,10 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     deployRuns: async () => {
       if (!github.client || !github.repo) return undefined;
       const { owner, repo } = github.repo;
-      const { defaultBranch } = await github.client.getRepo(owner, repo);
-      const branch = workflowBranch(plan, defaultBranch);
+      // `workflowBranch`, reading the default branch only for a promoted plan, which runs there.
+      const branch = followsBranch(plan)
+        ? plan.cicd.branch
+        : (await github.client.getRepo(owner, repo)).defaultBranch;
       const runs = await github.client.listWorkflowRuns(owner, repo, {
         workflowFile: plan.cicd.workflowPath,
         branch,

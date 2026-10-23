@@ -67,7 +67,7 @@ export function branchRoleOf(name: string): Exclude<BranchRole, "prod"> | undefi
 const BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
 
 /** True when the plan is deployed on each push to its `cicd.branch` (not promoted). */
-function followsBranch(plan: Pick<DeployPlan, "environment">): boolean {
+export function followsBranch(plan: Pick<DeployPlan, "environment">): boolean {
   return plan.environment?.deploySource.from !== "promote";
 }
 
