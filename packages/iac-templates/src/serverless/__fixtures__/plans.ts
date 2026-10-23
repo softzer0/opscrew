@@ -120,7 +120,7 @@ export function cloudflarePlan(o: ServerlessPlanOptions = {}): DeployPlan {
     mode: "workers-assets",
     worker: name,
     render: o.render ?? "static",
-    notFound: o.notFound ?? "single-page-application",
+    notFound: o.notFound ?? (o.render === "ssr" ? "none" : "single-page-application"),
     ...(o.workersDev === undefined ? {} : { workersDev: o.workersDev }),
     ...(o.previewUrls === undefined ? {} : { previewUrls: o.previewUrls }),
     site: o.site ?? NPM_SITE,

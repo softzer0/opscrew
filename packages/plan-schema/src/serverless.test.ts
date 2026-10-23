@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   type CloudflareWorkersDeployTarget,
   CloudProviderSchema,
+  cleanRepoPath,
   DeployPlanSchema,
   DeployProviderSchema,
   DesignOptionSchema,
@@ -115,7 +116,7 @@ describe("the Cloudflare hosting target", () => {
     for (const variant of [
       cloudflare({ notFound: "404-page", workersDev: true, previewUrls: true }),
       cloudflare({ notFound: "none" }),
-      cloudflare({ render: "ssr", site: ssrSite }),
+      cloudflare({ render: "ssr", notFound: "none", site: ssrSite }),
     ]) {
       expect(DeployPlanSchema.parse(await serverlessPlan(variant)).target).toEqual({
         workersDev: false,
@@ -127,7 +128,10 @@ describe("the Cloudflare hosting target", () => {
 
   it("round-trips a static and a server-rendered plan through plan.yaml unchanged", async () => {
     const texts: string[] = [];
-    for (const target of [cloudflare(), cloudflare({ render: "ssr", site: ssrSite })]) {
+    for (const target of [
+      cloudflare(),
+      cloudflare({ render: "ssr", notFound: "none", site: ssrSite }),
+    ]) {
       const plan = DeployPlanSchema.parse(await serverlessPlan(target));
       const text = serializeArtifact("plan", plan);
       expect(text).toContain("provider: cloudflare-workers");
@@ -185,7 +189,7 @@ describe("the Cloudflare hosting target", () => {
 
   it("needs the Worker entry for server rendering, and only there", async () => {
     const ssr = DeployPlanSchema.safeParse(
-      await serverlessPlan(cloudflare({ render: "ssr", site: staticSite })),
+      await serverlessPlan(cloudflare({ render: "ssr", notFound: "none", site: staticSite })),
     );
     expect(issues(ssr)).toEqual([
       {
@@ -266,7 +270,7 @@ describe("the site block", () => {
         outputDir: "build/client",
       },
       { tool: "hugo", command: "hugo --minify", outputDir: "public" },
-      { tool: "none", outputDir: "." },
+      { tool: "none", outputDir: "site" },
     ]) {
       const parsed = DeployPlanSchema.parse(await serverlessPlan(pages({ site })));
       expect(parsed.target.provider === "github-pages" && parsed.target.site).toEqual(site);
@@ -302,7 +306,7 @@ describe("the site block", () => {
   });
 
   it("takes a Node version with node only, as a version", async () => {
-    expect(await siteIssues({ tool: "none", nodeVersion: "24", outputDir: "." })).toEqual([
+    expect(await siteIssues({ tool: "none", nodeVersion: "24", outputDir: "site" })).toEqual([
       {
         path: "target.site.nodeVersion",
         message: 'is refused with tool "none": the Node.js version is for a node site only',
@@ -325,7 +329,7 @@ describe("the site block", () => {
     ]);
     const { command: _command, ...noCommand } = staticSite;
     expect((await siteIssues(noCommand))?.[0]?.message).toContain('is required with tool "node"');
-    expect(await siteIssues({ tool: "none", command: "make", outputDir: "." })).toEqual([
+    expect(await siteIssues({ tool: "none", command: "make", outputDir: "site" })).toEqual([
       {
         path: "target.site.command",
         message:
@@ -345,7 +349,9 @@ describe("the site block", () => {
       );
     }
     const entry = DeployPlanSchema.safeParse(
-      await serverlessPlan(cloudflare({ render: "ssr", site: { ...ssrSite, entry: "../w.js" } })),
+      await serverlessPlan(
+        cloudflare({ render: "ssr", notFound: "none", site: { ...ssrSite, entry: "../w.js" } }),
+      ),
     );
     expect(issues(entry)?.map((i) => i.path)).toEqual(["target.site.entry"]);
     expect((await siteIssues({ tool: "none" }))?.[0]?.path).toBe("target.site.outputDir");
@@ -367,7 +373,7 @@ describe("compatibility flags", () => {
         message: `is refused with render "static": ${message}`,
       },
     ]);
-    const site = { tool: "none", outputDir: ".", compatibilityFlags: ["nodejs_compat"] };
+    const site = { tool: "none", outputDir: "site", compatibilityFlags: ["nodejs_compat"] };
     const github = DeployPlanSchema.safeParse(await serverlessPlan(pages({ site })));
     expect(issues(github)).toEqual([
       {
@@ -380,8 +386,12 @@ describe("compatibility flags", () => {
   it("are none when absent or empty", async () => {
     for (const target of [
       cloudflare({ site: { ...staticSite, compatibilityFlags: [] } }),
-      cloudflare({ render: "ssr", site: { ...staticSite, entry: "dist/_worker.js/index.js" } }),
-      pages({ site: { tool: "none", outputDir: ".", compatibilityFlags: [] } }),
+      cloudflare({
+        render: "ssr",
+        notFound: "none",
+        site: { ...staticSite, entry: "dist/_worker.js/index.js" },
+      }),
+      pages({ site: { tool: "none", outputDir: "site", compatibilityFlags: [] } }),
     ]) {
       const result = DeployPlanSchema.safeParse(await serverlessPlan(target));
       expect(result.success, JSON.stringify(target)).toBe(true);
@@ -392,7 +402,7 @@ describe("compatibility flags", () => {
     for (const flag of ["nodejs-compat", "Nodejs_compat", "nodejs compat", ""]) {
       const site = { ...ssrSite, compatibilityFlags: ["nodejs_compat", flag] };
       const result = DeployPlanSchema.safeParse(
-        await serverlessPlan(cloudflare({ render: "ssr", site })),
+        await serverlessPlan(cloudflare({ render: "ssr", notFound: "none", site })),
       );
       expect(issues(result), flag).toEqual([
         {
@@ -432,17 +442,101 @@ describe("the plan's rules for the server-less targets", () => {
     ]);
   });
 
-  it.each(targets)("%s serves a hostname two levels below the zone", async (_name, target) => {
+  it.each(targets)("%s serves a hostname two levels below the zone", async (name, target) => {
     // A Worker's custom domain gets a certificate of its own, and GitHub issues GitHub Pages'
     // certificates: Cloudflare's free certificate, which reaches one level, is not involved.
+    // GitHub Pages has www only at the zone's apex (below).
     const plan = await serverlessPlan(target);
-    const dns = { ...plan.dns, domain: "docs.shop.example.com", www: true };
+    const dns = { ...plan.dns, domain: "docs.shop.example.com", www: name !== "GitHub Pages" };
     const parsed = DeployPlanSchema.parse({
       ...plan,
       dns,
       deployment: { url: "https://docs.shop.example.com" },
     });
     expect(parsed.dns).toMatchObject({ domain: "docs.shop.example.com", zone: "example.com" });
+  });
+
+  it("has www on GitHub Pages only at the zone's apex, where GitHub redirects it", async () => {
+    const apex = { ...dnsOnly, domain: "example.com", www: true };
+    const atApex = await serverlessPlan(pages(), {
+      dns: apex,
+      deployment: { url: "https://example.com" },
+    });
+    expect(DeployPlanSchema.parse(atApex).dns).toMatchObject({ domain: "example.com", www: true });
+    const { zone: _zone, ...apexBeforeProvision } = apex;
+    expect(DeployPlanSchema.safeParse({ ...atApex, dns: apexBeforeProvision }).success).toBe(true);
+
+    const message = (domain: string, zone: string) =>
+      `can be true with GitHub Pages only when dns.domain is the zone's apex (${zone}): GitHub redirects between www and the domain only for an apex domain, so the record for www.${domain} would point at GitHub with no Pages site claiming it, which another GitHub user could take over; set dns.www to false, or use ${zone} as dns.domain`;
+    const below = await serverlessPlan(pages(), { dns: { ...dnsOnly, www: true } });
+    expect(issues(DeployPlanSchema.safeParse(below))).toEqual([
+      { path: "dns.www", message: message("docs.example.com", "example.com") },
+    ]);
+    // Before provision learns the zone, the zone the domain most likely belongs to.
+    const { zone: _z, ...noZone } = below.dns;
+    expect(issues(DeployPlanSchema.safeParse({ ...below, dns: noZone }))).toEqual([
+      { path: "dns.www", message: message("docs.example.com", "example.com") },
+    ]);
+    // A zone of its own: the domain is its apex.
+    const ownZone = { ...below.dns, zone: "docs.example.com" };
+    expect(DeployPlanSchema.safeParse({ ...below, dns: ownZone }).success).toBe(true);
+    // Cloudflare redirects www to any domain with its own rule.
+    const worker = await serverlessPlan(cloudflare(), { dns: { ...proxiedDns, www: true } });
+    expect(DeployPlanSchema.safeParse(worker).success).toBe(true);
+  });
+
+  it("leaves a server-rendered app's not-found pages to the app", async () => {
+    const ssr = (notFound: string) =>
+      serverlessPlan(cloudflare({ render: "ssr", notFound, site: ssrSite }));
+    expect(DeployPlanSchema.safeParse(await ssr("none")).success).toBe(true);
+    const start =
+      'must be "none" with render "ssr": the app\'s server renders every page, its own not-found page included, and with';
+    expect(issues(DeployPlanSchema.safeParse(await ssr("single-page-application")))).toEqual([
+      {
+        path: "target.notFound",
+        message: `${start} "single-page-application" Cloudflare would answer paths that are no file itself, with index.html for every page load, before the Worker runs, so the server-rendered pages would never render; set target.notFound to "none"`,
+      },
+    ]);
+    expect(issues(DeployPlanSchema.safeParse(await ssr("404-page")))).toEqual([
+      {
+        path: "target.notFound",
+        message: `${start} "404-page" Cloudflare would answer paths that are no file itself, with the site's 404.html; set target.notFound to "none"`,
+      },
+    ]);
+    for (const notFound of ["single-page-application", "404-page", "none"]) {
+      const result = DeployPlanSchema.safeParse(await serverlessPlan(cloudflare({ notFound })));
+      expect(result.success, notFound).toBe(true);
+    }
+  });
+
+  it.each(targets)("%s never publishes the app's folder itself", async (name, target) => {
+    const withOutput = (outputDir: string, buildContext = ".") => {
+      const site = { tool: "none", outputDir };
+      return serverlessPlan({ ...target, site }).then((plan) => ({
+        ...plan,
+        app: { ...plan.app, buildContext },
+      }));
+    };
+    const fix =
+      "put the site's files in a folder of their own, for example public/, and set target.site.outputDir to it";
+    for (const outputDir of [".", "./", "./."]) {
+      expect(issues(DeployPlanSchema.safeParse(await withOutput(outputDir))), outputDir).toEqual([
+        {
+          path: "target.site.outputDir",
+          message: `must be a folder inside the app's folder (app.buildContext .), not that folder itself: ${name} would publish the whole repository (opscrew/, .github/, .git and the app's sources); ${fix}`,
+        },
+      ]);
+    }
+    expect(issues(DeployPlanSchema.safeParse(await withOutput(".", "sites/docs/")))).toEqual([
+      {
+        path: "target.site.outputDir",
+        message: `must be a folder inside the app's folder (app.buildContext sites/docs), not that folder itself: ${name} would publish everything in sites/docs, the app's sources included; ${fix}`,
+      },
+    ]);
+    for (const outputDir of ["public", "./public", "public/"]) {
+      const result = DeployPlanSchema.safeParse(await withOutput(outputDir, "sites/docs"));
+      expect(result.success, outputDir).toBe(true);
+    }
   });
 
   it("keeps a Worker's custom domain behind Cloudflare's proxy", async () => {
@@ -707,5 +801,13 @@ describe("the unions", () => {
     const { image: _image, ...noImage } = (await serverPlan()).target as { image?: string };
     const cloud = DeployPlanSchema.parse({ ...(await serverPlan()), target: noImage });
     expect(cloud.target).toHaveProperty("image", "ubuntu-24.04");
+  });
+});
+
+describe("cleanRepoPath", () => {
+  it("drops ./ and trailing slashes, and is . for the folder itself", () => {
+    expect(
+      [".", "./", "./.", "", "public", "./public/", "sites//docs/"].map(cleanRepoPath),
+    ).toEqual([".", ".", ".", ".", "public", "public", "sites/docs"]);
   });
 });

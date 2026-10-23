@@ -93,7 +93,7 @@ describe("JSON Schema export", () => {
           properties: {
             name: {
               pattern:
-                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production)$)(?!storage(?:-|$))(?!(?:.*-)?service(?:-|$))[a-z][a-z0-9-]{0,15}$",
+                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$",
             },
             deploySource: {
               oneOf: [
@@ -120,6 +120,23 @@ describe("JSON Schema export", () => {
     // Portainer stacks keep Caddy: no proxy choice there.
     const plan = schemas.plan as { properties: { target: { oneOf: { properties: object }[] } } };
     expect(plan.properties.target.oneOf[2]?.properties).not.toHaveProperty("edge");
+    // A further app: its key in its plans, and its record.
+    expect(schemas.plan).toMatchObject({
+      properties: {
+        app: {
+          properties: {
+            key: {
+              pattern:
+                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$",
+            },
+          },
+        },
+      },
+    });
+    expect(schemas.app).toMatchObject({
+      properties: { schemaVersion: { const: 1 }, dir: { type: "string" } },
+      required: ["schemaVersion", "dir"],
+    });
   });
 
   it("renders deterministic 2-space JSON with a trailing newline", () => {

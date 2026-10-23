@@ -1418,16 +1418,27 @@ describe("DeployPlan environment", () => {
 
   it("accepts names of lower-case letters, digits and hyphens, starting with a letter, up to 16", async () => {
     const plan = await validPlan();
-    for (const name of ["dev", "staging", "qa-2", "a", "e".repeat(16), "console", "com10"]) {
+    for (const name of [
+      "dev",
+      "staging",
+      "qa-2",
+      "a",
+      "e".repeat(16),
+      "console",
+      "com10",
+      "venv",
+      "environment",
+    ]) {
       const app = { ...plan.app, name: `acme-${name}` };
       const parsed = DeployPlanSchema.parse({ ...plan, app, environment: { name } });
       expect(parsed.environment?.name, name).toBe(name);
     }
     const message =
-      "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, storage, a name starting with storage-, or a name with service as one of its hyphen-separated parts, such as service or db-service)";
+      "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage, a name starting with storage-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env)";
     const reserved = [
       ...["con", "prn", "aux", "nul", "com0", "com9", "lpt0", "lpt9"],
-      ...["production", "service", "db-service", "service-2"],
+      ...["production", "github-pages", "modules", "service", "db-service", "service-2"],
+      ...["env", "x-env", "env-2"],
     ];
     for (const name of [
       "",

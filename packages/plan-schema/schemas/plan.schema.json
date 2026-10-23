@@ -23,7 +23,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production)$)(?!storage(?:-|$))(?!(?:.*-)?service(?:-|$))[a-z][a-z0-9-]{0,15}$"
+          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
         },
         "deploySource": {
           "default": {
@@ -50,7 +50,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production)$)(?!storage(?:-|$))(?!(?:.*-)?service(?:-|$))[a-z][a-z0-9-]{0,15}$"
+                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
                 }
               },
               "required": ["from", "source"],
@@ -95,6 +95,10 @@
         "name": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9-]{0,40}$"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
         },
         "port": {
           "type": "integer",
@@ -1130,7 +1134,6 @@
           "enum": ["auto", "tofu", "terraform"]
         },
         "dir": {
-          "default": "opscrew/infra/prod",
           "type": "string",
           "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
         },
@@ -1206,7 +1209,6 @@
           "const": "github-actions"
         },
         "workflowPath": {
-          "default": ".github/workflows/opscrew-deploy.yml",
           "type": "string",
           "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
         },

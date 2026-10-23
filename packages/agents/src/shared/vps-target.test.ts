@@ -210,7 +210,7 @@ describe.each([
   ["GitHub Pages", "a site on GitHub Pages"],
 ] as const)("%s in steps that do not support it yet", (name, words) => {
   const github = name === "GitHub Pages";
-  const site = { tool: "none", outputDir: "." } as const;
+  const site = { tool: "none", outputDir: "site" } as const;
   function serverlessPlan(): DeployPlan {
     return DeployPlanSchema.parse({
       ...testPlan({ deployed: true }),

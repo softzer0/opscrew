@@ -7,21 +7,24 @@ import {
 } from "@opscrew/core";
 import { parseDocument, stringify } from "yaml";
 import type { z } from "zod";
+import { type AppRecord, AppRecordSchema } from "./apps";
 import { type Architecture, ArchitectureSchema } from "./architecture";
 import { type DeployPlan, DeployPlanSchema } from "./plan";
 import { type Requirements, RequirementsSchema } from "./requirements";
 
-/** The three committed OpsCrew artefacts. */
-export type ArtifactKind = "architecture" | "requirements" | "plan";
+/** The committed OpsCrew artefacts: a further app's record, then each app's three. */
+export type ArtifactKind = "app" | "architecture" | "requirements" | "plan";
 
 /** All artefact kinds, in pipeline order. */
 export const ARTIFACT_KINDS = [
+  "app",
   "architecture",
   "requirements",
   "plan",
 ] as const satisfies readonly ArtifactKind[];
 
 interface ArtifactMap {
+  app: AppRecord;
   architecture: Architecture;
   requirements: Requirements;
   plan: DeployPlan;
@@ -32,13 +35,15 @@ export type ArtifactOf<K extends ArtifactKind> = ArtifactMap[K];
 
 /** The zod schema of each artefact kind. */
 export const ARTIFACT_SCHEMAS = {
+  app: AppRecordSchema,
   architecture: ArchitectureSchema,
   requirements: RequirementsSchema,
   plan: DeployPlanSchema,
 } as const satisfies Record<ArtifactKind, z.ZodType>;
 
-/** Repo-relative location of each artefact. */
+/** Repo-relative location of each artefact (the first app's; a further app's are in its folder). */
 export const ARTIFACT_FILES: Record<ArtifactKind, string> = {
+  app: "opscrew/apps/<key>/app.yaml",
   architecture: "opscrew/architecture.json",
   requirements: "opscrew/requirements.yaml",
   plan: "opscrew/plan.yaml",
@@ -46,6 +51,7 @@ export const ARTIFACT_FILES: Record<ArtifactKind, string> = {
 
 /** Next step shown when an artefact is invalid. */
 const ARTIFACT_HINTS: Record<ArtifactKind, string> = {
+  app: "Fix the field shown above, or remove the app's folder and add the app again with `opscrew app add <key> --dir <folder>`.",
   architecture: "Run `opscrew analyze` to regenerate it.",
   requirements: "Run `opscrew interview` to answer the questions again.",
   plan: "Run `opscrew design` to regenerate the plan, or fix the field shown above.",
@@ -53,6 +59,7 @@ const ARTIFACT_HINTS: Record<ArtifactKind, string> = {
 
 /** Next step shown when an artefact does not exist yet. */
 const ARTIFACT_MISSING_HINTS: Record<ArtifactKind, string> = {
+  app: "Run `opscrew app add <key> --dir <folder>` to add the app.",
   architecture: "Run `opscrew analyze` to create it.",
   requirements: "Run `opscrew interview` to answer the deployment questions.",
   plan: "Run `opscrew design` to create the plan (after `opscrew analyze` and `opscrew interview`).",

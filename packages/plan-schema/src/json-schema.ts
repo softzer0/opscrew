@@ -2,13 +2,14 @@ import { z } from "zod";
 import { ARTIFACT_FILES, ARTIFACT_KINDS, ARTIFACT_SCHEMAS, type ArtifactKind } from "./io";
 
 const TITLES: Record<ArtifactKind, string> = {
+  app: "OpsCrew app record (opscrew/apps/<key>/app.yaml)",
   architecture: "OpsCrew architecture (opscrew/architecture.json)",
   requirements: "OpsCrew requirements (opscrew/requirements.yaml)",
   plan: "OpsCrew deploy plan (opscrew/plan.yaml)",
 };
 
 /**
- * Draft-07 JSON Schemas for the three artefacts, for editors and external tools.
+ * Draft-07 JSON Schemas for the artefacts, for editors and external tools.
  * Generated in `input` mode: they describe what OpsCrew accepts when reading a file, so fields
  * that have defaults are optional. Cross-field rules are enforced by zod only.
  */

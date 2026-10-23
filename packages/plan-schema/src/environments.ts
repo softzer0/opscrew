@@ -1,6 +1,8 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import {
+  APP_KEY_MESSAGE,
+  APP_KEY_PATTERN,
   ENVIRONMENT_NAME_MESSAGE,
   ENVIRONMENT_NAME_PATTERN,
   OpsCrewError,
@@ -8,19 +10,87 @@ import {
   type ResolveProjectPathsOptions,
   resolveProjectPaths,
 } from "@opscrew/core";
+import type { AppRecord } from "./apps";
 import { ArtifactError, readOptionalArtifact } from "./io";
+import type { DeployPlan } from "./plan";
+
+/** An app of the repository: a further app's key (none for the first app) and its folder. */
+export interface RepositoryApp {
+  key?: string;
+  /** The app's folder in the repository, `.` for the repository's root. */
+  dir: string;
+}
 
 /**
- * The app's environments: `prod` when `opscrew/plan.yaml` exists, then each
- * `opscrew/environments/<name>/plan.yaml`, every one after the environment it is promoted from
- * (prod first, otherwise by name). Each plan is validated when read.
- * @throws ArtifactError for an invalid plan, a prod plan that names itself, or a plan whose name
- * is not its folder's.
- * @throws OpsCrewError `INVALID_INPUT` for a folder that is not an environment's name, an
- * environment promoted from one that does not exist, or environments promoted in a cycle.
+ * The repository's apps: the first app, always, at the requirements' `appDir`, else the analysed
+ * facts' `appDir`, else `.`; then every further app by key, from its record
+ * `opscrew/apps/<key>/app.yaml`. Each file is validated when read.
+ * @throws ArtifactError for an invalid file, or a further app's folder with no record.
+ * @throws OpsCrewError `INVALID_INPUT` for a folder in `opscrew/apps` that is not an app's key.
  */
-export async function environmentsOf(root: string): Promise<string[]> {
+export async function appsOf(root: string): Promise<RepositoryApp[]> {
   const paths = resolveProjectPaths(root);
+  const requirements = await readOptionalArtifact("requirements", paths.files.requirements);
+  const dir = requirements?.appDir ?? (await analysedAppDir(paths)) ?? ".";
+  const further = await furtherApps(root);
+  return [{ dir }, ...further.map(({ key, record }) => ({ key, dir: record.dir }))];
+}
+
+/** The folder of the app `opscrew/architecture.json` describes, when it exists. */
+async function analysedAppDir(paths: ProjectPaths): Promise<string | undefined> {
+  return (await readOptionalArtifact("architecture", paths.files.architecture))?.facts.appDir;
+}
+
+/** Every further app's key and record, by key. */
+async function furtherApps(root: string): Promise<{ key: string; record: AppRecord }[]> {
+  const appsDir = path.join(resolveProjectPaths(root).artefactsDir, "apps");
+  const apps: { key: string; record: AppRecord }[] = [];
+  for (const key of await folderNames(appsDir)) {
+    if (!APP_KEY_PATTERN.test(key)) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `opscrew/apps/${key} is not an app's folder: an app's key ${APP_KEY_MESSAGE}.`,
+        { hint: "Rename the folder after its app's key, or remove it." },
+      );
+    }
+    const file = path.join(appsDir, key, "app.yaml");
+    const hint = `Add the app again with \`opscrew app add ${key} --dir <folder>\`, or remove opscrew/apps/${key}.`;
+    let record: AppRecord | undefined;
+    try {
+      record = await readOptionalArtifact("app", file);
+    } catch (error) {
+      if (!(error instanceof ArtifactError)) throw error;
+      throw new ArtifactError({ code: "ARTIFACT_INVALID", file, issues: error.issues, hint });
+    }
+    if (record === undefined) {
+      throw new ArtifactError({
+        code: "ARTIFACT_MISSING",
+        file,
+        hint,
+        message: `opscrew/apps/${key} has no app.yaml, the record of the app's folder in the repository. ${hint}`,
+      });
+    }
+    apps.push({ key, record });
+  }
+  return apps;
+}
+
+/**
+ * The environments of the repository's first app, or of the further app `app`: `prod` when its
+ * `plan.yaml` exists, then each `environments/<name>/plan.yaml` in its folder (`opscrew/`, or
+ * `opscrew/apps/<key>/`), every one after the environment it is promoted from (prod first,
+ * otherwise by name). Each plan is validated when read.
+ * @throws ArtifactError for an invalid plan, a prod plan that names itself, a plan whose name is
+ * not its folder's, or a plan whose `app.key` is not its app's.
+ * @throws OpsCrewError `INVALID_INPUT` for an app the repository does not have (listing its apps),
+ * a folder that is not an environment's name, an environment promoted from one that does not
+ * exist, or environments promoted in a cycle.
+ */
+export async function environmentsOf(root: string, app?: string): Promise<string[]> {
+  if (app !== undefined) await requireApp(root, app);
+  const paths = resolveProjectPaths(root, app === undefined ? {} : { app });
+  const folder = app === undefined ? "opscrew" : `opscrew/apps/${app}`;
+  const appFlag = app === undefined ? "" : ` --app ${app}`;
   const sources = new Map<string, string | undefined>();
   const prod = await readOptionalArtifact("plan", paths.files.plan);
   if (prod?.environment?.name !== undefined) {
@@ -28,18 +98,24 @@ export async function environmentsOf(root: string): Promise<string[]> {
       code: "ARTIFACT_INVALID",
       file: paths.files.plan,
       issues: [
-        { path: "environment.name", message: "must be absent: opscrew/plan.yaml is prod's plan" },
+        {
+          path: "environment.name",
+          message: `must be absent: ${folder}/plan.yaml is prod's plan`,
+        },
       ],
-      hint: "Remove environment.name, or move the plan to opscrew/environments/<name>/plan.yaml.",
+      hint: `Remove environment.name, or move the plan to ${folder}/environments/<name>/plan.yaml.`,
     });
   }
-  if (prod !== undefined) sources.set("prod", sourceOf(prod.environment?.deploySource));
+  if (prod !== undefined) {
+    checkKey(prod, paths.files.plan, app);
+    sources.set("prod", sourceOf(prod.environment?.deploySource));
+  }
 
   for (const name of await folderNames(path.join(paths.artefactsDir, "environments"))) {
     if (!ENVIRONMENT_NAME_PATTERN.test(name) || name === "prod") {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        `opscrew/environments/${name} is not an environment's folder: an environment's name ${ENVIRONMENT_NAME_MESSAGE}, and never "prod".`,
+        `${folder}/environments/${name} is not an environment's folder: an environment's name ${ENVIRONMENT_NAME_MESSAGE}, and never "prod".`,
         { hint: "Rename the folder after its environment, or remove it." },
       );
     }
@@ -54,6 +130,7 @@ export async function environmentsOf(root: string): Promise<string[]> {
         hint: "Fix environment.name, or move the plan to the folder of its environment.",
       });
     }
+    checkKey(plan, file, app);
     sources.set(name, sourceOf(plan.environment.deploySource));
   }
 
@@ -63,7 +140,7 @@ export async function environmentsOf(root: string): Promise<string[]> {
         "INVALID_INPUT",
         `The environment "${name}" is promoted from "${source}", which does not exist.`,
         {
-          hint: `Add "${source}" with \`opscrew env add ${source}\`, or deploy "${name}" from main.`,
+          hint: `Add "${source}" with \`opscrew env add ${source}${appFlag}\`, or deploy "${name}" from main.`,
         },
       );
     }
@@ -72,24 +149,65 @@ export async function environmentsOf(root: string): Promise<string[]> {
 }
 
 /**
- * {@link resolveProjectPaths} for an environment of the app, checked against
- * {@link environmentsOf}: an unknown name is `INVALID_INPUT` with the list of names.
+ * {@link resolveProjectPaths} for an environment of the first app or of the further app
+ * `options.app`, checked against {@link environmentsOf}: an unknown name is `INVALID_INPUT` with
+ * the list of names.
  */
 export async function resolveEnvironmentPaths(
   root: string,
   environment: string,
   options: Omit<ResolveProjectPathsOptions, "environment"> = {},
 ): Promise<ProjectPaths> {
-  const names = await environmentsOf(root);
+  const { app } = options;
+  const names = await environmentsOf(root, app);
   if (!names.includes(environment)) {
     const known = names.length === 0 ? "none yet" : names.map((name) => `"${name}"`).join(", ");
+    const which = app === undefined ? "The app" : `The app ${app}`;
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The app has no environment "${environment}". Its environments: ${known}.`,
-      { hint: "Run `opscrew env list` to see the app's environments." },
+      `${which} has no environment "${environment}". Its environments: ${known}.`,
+      {
+        hint: `Run \`opscrew env list${app === undefined ? "" : ` --app ${app}`}\` to see the app's environments.`,
+      },
     );
   }
   return resolveProjectPaths(root, { ...options, environment });
+}
+
+/** Refuses `app`, a key the repository has no further app of, listing its apps. */
+async function requireApp(root: string, app: string): Promise<void> {
+  const keys = (await furtherApps(root)).map(({ key }) => key);
+  if (keys.includes(app)) return;
+  const known = keys.length === 0 ? "none yet" : keys.map((key) => `"${key}"`).join(", ");
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `The repository has no app "${app}". Its further apps: ${known}.`,
+    {
+      hint: "Run `opscrew app list` to see the repository's apps, or add this one with `opscrew app add <key> --dir <folder>`.",
+    },
+  );
+}
+
+/** Refuses a plan whose `app.key` is not the key of the app whose folder holds it. */
+function checkKey(plan: DeployPlan, file: string, app: string | undefined): void {
+  if (plan.app.key === app) return;
+  throw new ArtifactError({
+    code: "ARTIFACT_INVALID",
+    file,
+    issues: [
+      {
+        path: "app.key",
+        message:
+          app === undefined
+            ? "must be absent: the plan is in the repository's first app's folder (opscrew/)"
+            : `must be "${app}", the key of the app's folder (opscrew/apps/${app})`,
+      },
+    ],
+    hint:
+      app === undefined
+        ? "Remove app.key, or move the plan to the folder of its app (opscrew/apps/<key>/)."
+        : `Set app.key to "${app}", or move the plan to the folder of its app.`,
+  });
 }
 
 type DeploySource = { from: "main" } | { from: "promote"; source: string } | undefined;

@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpsCrew app record (opscrew/apps/<key>/app.yaml)",
+  "description": "Schema v1 of opscrew/apps/<key>/app.yaml. Generated from @opscrew/plan-schema; do not edit.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "dir": {
+      "type": "string",
+      "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+    }
+  },
+  "required": ["schemaVersion", "dir"],
+  "additionalProperties": false
+}

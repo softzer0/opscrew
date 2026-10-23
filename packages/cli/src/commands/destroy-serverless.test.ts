@@ -17,7 +17,7 @@ describe.each([
 ] as const)("opscrew destroy for %s", (name, provider) => {
   it("is refused plainly before anything is asked or checked", async () => {
     project = await tempProject();
-    const site = { tool: "none", outputDir: "." } as const;
+    const site = { tool: "none", outputDir: "site" } as const;
     const plan = DeployPlanSchema.parse({
       ...testPlan({ deployed: true }),
       app: { ...testPlan().app, name: "example-app", env: [] },

@@ -1,5 +1,7 @@
+import { posix } from "node:path";
 import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN } from "@opscrew/core";
 import { z } from "zod";
+import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
 import { PlanServiceSchema, ProcessesSchema, StorageSchema, serviceOf } from "./components";
 import { CostEstimateSchema } from "./design";
 import {
@@ -650,10 +652,17 @@ function checkLocalhostTarget(plan: DeployPlanFields, ctx: z.RefinementCtx): voi
   }
 }
 
+/** A repository path without `./` or a trailing `/`: `.` for the folder itself. */
+export function cleanRepoPath(path: string): string {
+  return posix.normalize(path).replace(/\/+$/, "") || ".";
+}
+
 /**
  * The rules of the server-less targets, Cloudflare's hosting and GitHub Pages: the site answers on
- * a domain on Cloudflare (behind Cloudflare's proxy on Cloudflare, DNS-only on GitHub Pages),
- * nothing in the plan needs a server or an image, and the app does not move to or from a server.
+ * a domain on Cloudflare (behind Cloudflare's proxy on Cloudflare, DNS-only on GitHub Pages, with
+ * `www` only at the zone's apex), nothing in the plan needs a server or an image, the uploaded
+ * folder is never the app's folder itself, a server-rendered app handles its own not-found pages,
+ * and the app does not move to or from a server.
  */
 function checkServerlessTarget(
   target: z.output<typeof CloudflareWorkersTargetSchema> | z.output<typeof GithubPagesTargetSchema>,
@@ -690,6 +699,36 @@ function checkServerlessTarget(
     issue(
       ["security", "wafCustomRules"],
       "must be false with GitHub Pages: the site's hostnames are DNS-only, so Cloudflare's WAF never sees their traffic; set security.wafCustomRules to false",
+    );
+  }
+  const { domain } = dns;
+  // Before provision learns the zone from Cloudflare, the zone the domain most likely belongs to.
+  const zone = domain === undefined ? undefined : (dns.zone ?? likelyCloudflareZone(domain));
+  if (pages && dns.www && domain !== undefined && domain !== zone) {
+    issue(
+      ["dns", "www"],
+      `can be true with GitHub Pages only when dns.domain is the zone's apex (${zone}): GitHub redirects between www and the domain only for an apex domain, so the record for www.${domain} would point at GitHub with no Pages site claiming it, which another GitHub user could take over; set dns.www to false, or use ${zone} as dns.domain`,
+    );
+  }
+  if (!pages && target.render === "ssr" && target.notFound !== "none") {
+    const instead =
+      target.notFound === "single-page-application"
+        ? "index.html for every page load, before the Worker runs, so the server-rendered pages would never render"
+        : "the site's 404.html";
+    issue(
+      ["target", "notFound"],
+      `must be "none" with render "ssr": the app's server renders every page, its own not-found page included, and with "${target.notFound}" Cloudflare would answer paths that are no file itself, with ${instead}; set target.notFound to "none"`,
+    );
+  }
+  if (cleanRepoPath(target.site.outputDir) === ".") {
+    const folder = cleanRepoPath(plan.app.buildContext);
+    const what =
+      folder === "."
+        ? "the whole repository (opscrew/, .github/, .git and the app's sources)"
+        : `everything in ${folder}, the app's sources included`;
+    issue(
+      ["target", "site", "outputDir"],
+      `must be a folder inside the app's folder (app.buildContext ${folder}), not that folder itself: ${name} would publish ${what}; put the site's files in a folder of their own, for example public/, and set target.site.outputDir to it`,
     );
   }
   for (const [i, service] of plan.services.entries()) {
@@ -977,11 +1016,20 @@ const DeployPlanFieldsSchema = z.strictObject({
   /** The environment this plan deploys; absent for prod. */
   environment: EnvironmentSchema.optional(),
   app: z.strictObject({
-    /** DNS-label safe; used for resource names. */
+    /**
+     * DNS-label safe; used for resource names. Unique in the repository: a further app's is its
+     * key unless the user names it, and another environment's is `<name>-<env>`.
+     */
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
       message:
         "must be 1-41 lower-case letters, digits or hyphens and start with a letter or digit",
     }),
+    /**
+     * A further app's key (`opscrew/apps/<key>/`), in every environment's plan of the app; absent
+     * for the repository's first app. Every per-repository name derives from it (`workflowPathFor`,
+     * `deploySecretPrefix`, `githubEnvironmentFor`, `ghcrImageFor`, `appBranch`).
+     */
+    key: AppKeySchema.optional(),
     /** Container port. */
     port: PortSchema,
     healthPath: UrlPathSchema.default("/health"),
@@ -1041,7 +1089,8 @@ const DeployPlanFieldsSchema = z.strictObject({
   infra: z
     .strictObject({
       engine: z.enum(["auto", "tofu", "terraform"]).default("auto"),
-      dir: RepoPathSchema.default("opscrew/infra/prod"),
+      /** Defaults to the app's environment's own, `infraDirFor(app.key, environment.name)`. */
+      dir: RepoPathSchema.optional(),
       /** Effective only with OpenTofu. */
       stateEncryption: z.boolean().default(true),
     })
@@ -1069,7 +1118,8 @@ const DeployPlanFieldsSchema = z.strictObject({
   }),
   cicd: z.strictObject({
     provider: z.literal("github-actions"),
-    workflowPath: RepoPathSchema.default(".github/workflows/opscrew-deploy.yml"),
+    /** Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name)`. */
+    workflowPath: RepoPathSchema.optional(),
     registry: z.literal("ghcr"),
     /** Deploys run on pushes to this branch. */
     branch: z.string().min(1).default("main"),
@@ -1285,28 +1335,38 @@ function withTargetDefaults(target: z.output<typeof DeployTargetSchema>) {
 
 /**
  * `opscrew/plan.yaml`: the chosen deployment. Parsing fills every documented default, including
- * `security.httpAllowedFrom` (`cloudflare` when `dns.proxied`, else `any`).
+ * `security.httpAllowedFrom` (`cloudflare` when `dns.proxied`, else `any`), and `infra.dir` and
+ * `cicd.workflowPath` from the app's key and the environment's name. The filled objects keep
+ * their fields' order, so a plan's file keeps its bytes.
  */
-export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => ({
-  ...plan,
-  target: withTargetDefaults(plan.target),
-  ...(plan.retarget === undefined
-    ? {}
-    : {
-        retarget: {
-          ...plan.retarget,
-          from: { ...plan.retarget.from, target: withImage(plan.retarget.from.target) },
-        },
-      }),
-  security: {
-    sshAllowedCidrs: plan.security.sshAllowedCidrs,
-    httpAllowedFrom:
-      plan.security.httpAllowedFrom ??
-      (plan.dns.proxied ? ("cloudflare" as const) : ("any" as const)),
-    wafCustomRules: plan.security.wafCustomRules,
-    imageScan: plan.security.imageScan,
-  },
-}));
+export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
+  const { engine, dir, ...infra } = plan.infra;
+  const { provider, workflowPath, ...cicd } = plan.cicd;
+  const key = plan.app.key;
+  const environment = plan.environment?.name;
+  return {
+    ...plan,
+    target: withTargetDefaults(plan.target),
+    infra: { engine, dir: dir ?? infraDirFor(key, environment), ...infra },
+    cicd: { provider, workflowPath: workflowPath ?? workflowPathFor(key, environment), ...cicd },
+    ...(plan.retarget === undefined
+      ? {}
+      : {
+          retarget: {
+            ...plan.retarget,
+            from: { ...plan.retarget.from, target: withImage(plan.retarget.from.target) },
+          },
+        }),
+    security: {
+      sshAllowedCidrs: plan.security.sshAllowedCidrs,
+      httpAllowedFrom:
+        plan.security.httpAllowedFrom ??
+        (plan.dns.proxied ? ("cloudflare" as const) : ("any" as const)),
+      wafCustomRules: plan.security.wafCustomRules,
+      imageScan: plan.security.imageScan,
+    },
+  };
+});
 export type DeployPlan = z.output<typeof DeployPlanSchema>;
 
 /** Where the app runs, with a cloud target's image filled in. */

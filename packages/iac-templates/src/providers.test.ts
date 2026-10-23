@@ -46,7 +46,7 @@ describe("target guards and move layouts (package root)", () => {
     ["an app on Cloudflare's hosting", "cloudflare-workers"],
     ["a site on GitHub Pages", "github-pages"],
   ] as const)("refuse %s in the code for servers, as a bug", (words, provider) => {
-    const site = { tool: "none", outputDir: "." } as const;
+    const site = { tool: "none", outputDir: "site" } as const;
     const plan = DeployPlanSchema.parse({
       ...testPlan(),
       target:
