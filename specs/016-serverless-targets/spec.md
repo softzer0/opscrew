@@ -7,6 +7,7 @@
 - Cloudflare's hosting through Workers with static assets, which Cloudflare now recommends for new projects over Pages;
 - the first version covers static sites and server-side rendering;
 - GitHub Pages alongside, for static sites.
+- several apps in one repository (US6), added later the same day.
 
 Research of 2026-10-23: `research.md`.
 
@@ -106,6 +107,23 @@ A user with staging and production on Cloudflare promotes the exact version stag
 
 ---
 
+### User Story 6 - Several apps in one repository (Priority: P1)
+
+A repository holds more than one deployable app: for example a landing page in `sites/landing` and its documentation in `sites/docs`. The user deploys each as its own OpsCrew app, from the same checkout and the same GitHub repository. Each has its own target, hostnames, environments, workflows, secrets, state and approvals.
+
+**Why this priority**: monorepos are common, and a project's landing page with its docs is a typical one. The founder chose it for this feature on 2026-10-23, so that two sites from one repository can go live.
+
+**Independent Test**: in a repository with two static sites, the first app is set up as today. Add the second with `opscrew app add docs --dir sites/docs`, then design and provision both on Cloudflare. Each answers on its own hostname and has its own workflow, secrets and state. Destroying one leaves the other answering.
+
+**Acceptance Scenarios**:
+
+1. **Given** a repository whose first app is set up, **When** the user runs `opscrew app add <key> --dir <folder>`, **Then** OpsCrew keeps the new app in a folder of its own (`opscrew/apps/<key>/`), and every later command acts on it with `--app <key>`. With several apps and no `--app`, an interactive run asks, and a script is told the app names.
+2. **Given** two apps, **When** each is provisioned, **Then** their workflows, deploy secrets, GitHub environments, images, branches, state and approvals never share a name. Adding an app or an environment whose names would equal existing ones is refused, naming the clash.
+3. **Given** two apps, **When** one is destroyed, **Then** the other's resources, files and secrets are untouched.
+4. **Given** both apps follow the default branch, **When** a change is pushed, **Then** each app's own workflow builds and deploys that app.
+
+---
+
 ### Edge Cases
 
 - **An app with components:** databases, caches, queues, workers, cron jobs or SQLite, which need a server. Neither target is offered, and design names what needs the server. External services the app reaches by URL are allowed.
@@ -119,6 +137,8 @@ A user with staging and production on Cloudflare promotes the exact version stag
 - **A CAA record** on the domain that doesn't allow Let's Encrypt: refused for GitHub Pages, naming the record.
 - **GitHub Pages already turned on** in the repository (by hand, from a branch): shown in the plan as a change to the workflow source, and applied only with the approval.
 - **Retarget** to or from these targets: refused for now, with a plain message ("moving to and from server-less targets comes with retarget anywhere").
+- **Several apps and one scan:** `opscrew scan` reads the whole repository, so its report is shared by every app. Each app's workflow runs on every push to its branch; filtering by the app's folder comes later.
+- **Two apps with the same detected name:** a further app's `app.name` defaults to its key, which is unique in the repository.
 - **A localhost environment** with a server-less prod: refused for now, with a plain message. The framework's own dev or preview server is the local copy. Every environment of a server-less app uses prod's target: any number on Cloudflare, and only prod on GitHub Pages, which allows one site per repository.
 
 ## Requirements *(mandatory)*
@@ -160,11 +180,22 @@ A user with staging and production on Cloudflare promotes the exact version stag
   - its costs and limits;
   - how deploys, rollbacks and destroy work;
   - for GitHub Pages: the manual verification step, the lack of headers, and GitHub's terms.
+- **FR-1613**: A repository MAY hold several OpsCrew apps.
+  - The repository's first app keeps today's layout (`opscrew/`, `.opscrew/`).
+  - Each further app lives under `opscrew/apps/<key>/`: its plan, requirements, architecture, environments and generated files. Its local state is under `.opscrew/apps/<key>/`, and its user-level files are under the project's home folder in `apps/<key>/`. Its plan records `app.key`.
+- **FR-1614**: `opscrew app add <key> --dir <folder>`, `app list` and `app remove` MUST manage the apps.
+  - Every command that acts on an app MUST take `--app <key>`, and the MCP tools an `app` input, chosen the way `--env` is.
+  - `analyze`'s folder option becomes `--dir`.
+- **FR-1615**: For a further app, every per-repository name MUST include its key: the workflow files, the deploy secrets, the GitHub environments, the GHCR image, the branches OpsCrew opens, and the concurrency group.
+  - Adding an app or an environment whose derived names equal existing ones MUST be refused, naming the clash.
+  - `dependabot.yml` MUST cover every app's folders.
+- **FR-1616**: `opscrew destroy --app <key>` MUST remove only that app's resources, secrets and files. `app remove` MUST be refused while the app is deployed.
 
 ### Key Entities
 
 - **Cloudflare hosting target:** an app's hosting project on Cloudflare: its name, its custom domains, its settings (the not-found handling, whether server code runs first, headers, the preview and `workers.dev` switches), its versions, and the version running.
 - **GitHub Pages target:** a repository's Pages site: published by the workflow, with its custom domain, HTTPS state, certificate state, and the domain verification record.
+- **App in a repository:** a deployable app's key, its folder in the repository, and its own plan, environments, state and derived names. The repository's first app has no key.
 - **Deployed version:** what runs now and what ran before, for status, rollback and promotion. On Cloudflare it's a version id; on GitHub Pages, the deployment of a workflow run.
 
 ## Success Criteria *(mandatory)*
@@ -177,6 +208,7 @@ A user with staging and production on Cloudflare promotes the exact version stag
 - **SC-1604**: A rollback on Cloudflare puts the previous version back within one minute, with no build.
 - **SC-1605**: After `destroy`, nothing OpsCrew created remains at Cloudflare or GitHub, apart from the domain verification record the user chose to keep. No DNS record points at GitHub Pages while no Pages site claims the domain.
 - **SC-1606**: An app with a database, or a server-rendered app whose framework has no adapter, is never offered either target, and design says why in one sentence.
+- **SC-1607**: Two apps from one repository are live on two hostnames, each deployed by its own workflow. Destroying one leaves the other answering.
 
 ## Assumptions
 

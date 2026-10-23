@@ -217,12 +217,77 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
+## Phase 3b: Several apps in one repository (US6)
+
+- [ ] T1617a Contracts for several apps, and the plan-schema rules found in wave 2, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/paths.ts`, `packages/core/src/index.ts`
+  - Owns: those paths (+ the generated JSON schema, tests and fixtures)
+  - Reads: spec US6, FR-1613–FR-1616; data-model.md "Apps in a repository"; contracts/apps.md; plan.md "15."; ADR 0020; the "What T1601a left", `www`, `notFound` and repository-root notes in T1607 below
+  - Depends: T1606
+  - Accept:
+    - **`app.key`** (optional, `APP_KEY_PATTERN`, the environment-name rules). An environment plan of a further app carries the same key. `app.name` stays unique per repository; a further app's defaults to its key.
+    - **`resolveProjectPaths(root, { app, environment })`** and `ProjectPaths.app`, per data-model.md: the first app's paths byte-identical (a snapshot of every field), a further app's folders under `apps/<key>`, its environments nested, `files.shared` holding the app's own architecture and the repository's scan files.
+    - **`appsOf(root)`** and **`environmentsOf(root, fs, app)`**, zod-checked, with plain errors for an unknown key listing the keys.
+    - **The derived-name helpers** of contracts/apps.md (`workflowPathFor`, `deploySecretPrefix`, `githubEnvironmentFor`, `ghcrImageFor`, `appBranch`, `derivedNames`), the only place these names are built. The first app's values equal today's. `infra.dir` and `cicd.workflowPath` defaults follow the key.
+    - **The rules T1607 noted:** `checkServerlessTarget` refuses `dns.www` with `github-pages` unless `dns.domain` is the zone apex; `notFound` other than `"none"` with `render: "ssr"`; a `site.outputDir` that is `app.buildContext` itself. Each refusal says why and the fix.
+    - **Tests:** paths for the first app and a further app with an environment; every helper for both; a clash between a further app `docs` and a first app's environment `docs`; the three rules.
+  - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1617b [P] [US6] The renderers per app, in `packages/iac-templates/src/**`
+  - Owns: that path (+ tests, snapshots)
+  - Reads: data-model.md "Apps in a repository"; contracts/apps.md; T1617a's report
+  - Depends: T1617a
+  - Accept:
+    - **Every per-repository name the renderers write comes from T1617a's helpers and `plan.app.key`:**
+      - the workflow file and name, the concurrency group;
+      - deploy secret names (servers, Portainer, Cloudflare);
+      - the GitHub environment;
+      - the GHCR image (`build.ts`, `jobs.ts`, retention per package);
+      - `runtimeDir`, `cloudflareDir`, `planFilePath`;
+      - the proxy additions (`opscrew/apps/<key>/proxy/…`);
+      - the storage and verification roots.
+    - **dependabot** renders entries for every app's folders.
+    - **The first app's output is byte-identical** (every existing snapshot unchanged).
+    - **Tests:** a further app's static Cloudflare workflow, a server workflow, and dependabot with two apps.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1617c [US6] Apps in agents: `opscrew app add|list|remove`, the app choice, every phase's paths per app, and the uniqueness check, in `packages/agents/src/apps/**` (new), `packages/agents/src/{shared,analyze,interview,environments}/**`, the branch names in `adapt/run.ts` and `provision/publish.ts`, `provision/dependabot.ts`, `design/` (the app's name and key only), and `packages/core/src/policy.ts`
+  - Owns: those paths (+ tests)
+  - Reads: spec US6; contracts/apps.md; data-model.md "Apps in a repository"; T1617a's and T1617b's reports
+  - Depends: T1617a, T1617b, T1607
+  - Accept:
+    - **`addApp(root, key, dir)`:** checks the folder holds a deployable app (detection's candidates) and the uniqueness of every derived name; writes `opscrew/apps/<key>/requirements.yaml` with `appDir`. `listApps`, and `removeApp`, which is refused while the app is deployed.
+    - **`resolveApp`:** like `resolveEnvironment`, with `appFlag` for suggested commands.
+    - **Phase deps** take `app` next to `environment`. Analyze and interview read the app's `appDir`. Design writes `app.key`, and `app.name` defaults to the key.
+    - **The two branches** use `appBranch`. Dependabot covers every app. `env add` runs the uniqueness check too.
+    - **`policy.ts`** denies agent edits to every OpsCrew workflow file pattern, a further app's and environments' included.
+    - **Tests:** two apps in one repository end to end on fakes: design and provision of a static Cloudflare app for each; their files, secrets, state and approvals never shared; destroying one leaving the other. Plus the clash refusal.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/core --concurrency=2` and `pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1617d [P] [US6] `--app` and `opscrew app` in the CLI, MCP, the plugin and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
+  - Owns: those paths (+ tests); only the app parts
+  - Reads: contracts/apps.md "CLI and MCP"; T1617c's report
+  - Depends: T1617c
+  - Accept:
+    - **The CLI:**
+      - `app add|list|remove`;
+      - `--app <key>` wherever `--env` is, and on analyze, interview, design and adapt;
+      - `analyze --dir` replacing `analyze --app`;
+      - messages naming a command for a further app include `--app <key>`.
+    - **MCP:** an `app` input next to `environment`; `opscrew_app_add`, `opscrew_app_list` and `opscrew_app_remove`.
+    - **The plugin's skills** learn apps. `node plugin/validate.mjs` passes.
+    - **The guide:** `docs/guide/several-apps.md`, and the index.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
+  - Effort: high
+
 ## Phase 4: The agents
 
 - [ ] T1607 [US1] [US2] [US3] Design, the interview, the profiles, detection, `init`, and the provision seam, in `packages/agents/src/{design,interview,providers,init}/**`, `packages/agents/src/serverless/index.ts` (new), the dispatch in `packages/agents/src/provision/run.ts`, and the detection of adapters in `packages/detect/**`
   - Owns: those paths (+ tests); the provision dispatch lines only in `provision/run.ts`
   - Reads: spec FR-1602, FR-1610, SC-1606, US1–US3 scenarios 1–2; data-model.md "Plan targets", "The site block"; research.md R1 "Limits", "Frameworks", R2 "Plans", "Limits and terms" and "Spike results" 6, 8, 13; plan.md "8."
-  - Depends: T1601a, T1603, T1604
+  - Depends: T1601a, T1603, T1604, T1617a
   - Accept:
     - **Detection** (`packages/detect`):
       - the Cloudflare adapters: `@astrojs/cloudflare`, `@opennextjs/cloudflare`, Nitro's `cloudflare_module` preset, `@sveltejs/adapter-cloudflare`;
@@ -241,9 +306,7 @@ Effort`.
     - **The interview's provider question** offers "Cloudflare (no server)" and "GitHub Pages (no server)" where they fit.
     - **What T1601a left to design** (its report): replace the entry refusals in design and the interview with real branches. `deployStrategyFor`, `dragonflyFits`, `refuseDeepDomain`, `isUnpriced`, the CLI interview's `nextStep` default and the options table must not assume a server. Design writes `security.wafCustomRules: false` for GitHub Pages, since the schema defaults it to true and refuses that there.
     - **Profiles** next to Portainer's and localhost's, outside `VPS_PROVIDERS` and `vpsConnector`.
-    - **No publishing from the repository root** (T1606's report): `site.outputDir` resolving to `app.buildContext` itself (`"."`) would publish the whole checkout (`opscrew/`, `.github/`, `.git` on Cloudflare, every other file). `checkServerlessTarget` refuses it on both targets: "put the site's files in a folder of their own, for example `public/`, so only they are published". Detection of a site with no build reports the folder holding `index.html`, never the root.
-    - **`notFound: "none"` for SSR** (T1606's report): with `single-page-application` Cloudflare serves `index.html` for navigations before the Worker runs, so server-rendered pages never render. `checkServerlessTarget` refuses any other value with `render: "ssr"`, and design writes `"none"`.
-    - **`www` on GitHub Pages only at an apex** (T1605's review): GitHub redirects `www` only for an apex domain, so a `www.docs.example.com` CNAME would point at GitHub with no site claiming it (SC-1605). `checkServerlessTarget` in plan-schema (added to this task's Owns for this rule) refuses `dns.www` with `github-pages` unless `dns.domain` is the zone apex (`dns.zone`), and design offers `www` there only.
+    - **Design follows T1617a's three schema rules** (T1605's and T1606's findings): it writes `notFound: "none"` for SSR; it offers `www` on GitHub Pages only for an apex domain; and detection of a site with no build reports the folder holding `index.html`, never the repository root, so `site.outputDir` is never `app.buildContext` itself.
     - **`init`:** when either target is in use, it checks the Cloudflare token's Workers permissions (`workersPermissions`), the deploy token, and the GitHub token's Pages permission, naming what's missing and where to add it (FR-1610).
     - **The provision seam:** `serverless/index.ts` exports `provisionCloudflareWorkers` and `provisionGithubPages`, each refusing with "not available yet" until T1608 and T1609. `provision/run.ts` dispatches to them before `requireDockerfile`.
     - **Tests:** design for static-vite, astro-ssr (with and without the adapter), a Hugo fixture and an app with Postgres (refused, with its reason); a private repository without Pages; `init`'s missing permissions.
@@ -449,6 +512,7 @@ Effort`.
       - destroy in the takeover-safe order, with no record left pointing at GitHub (SC-1605).
 
       The certificate wait has a long, logged timeout.
+    - **Two apps in one repository** (`OPSCREW_E2E_SEVERAL_APPS=1`, US6): a static site as the first app and a second static site added with `opscrew app add`, both on Cloudflare in the e2e zone with `e2e-` hostnames. Each answers on its own hostname with its own workflow and secrets, and destroying the second leaves the first answering (SC-1607).
     - **Leftover checks:** the helper scripts learn Workers, custom domains and Pages sites.
     - **The docs:** `docs/e2e.md` sections, and the coverage page's rows as "Not run yet".
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
@@ -466,7 +530,7 @@ Effort`.
 
 ## Dependencies
 
-{T1601a, T1601b} with T1602 (lead) alongside → {T1603, T1604, T1605, T1606} → T1607 → {T1608, T1609, T1611} → {T1610a, T1610b} → {T1612a, T1612b, T1613} → T1614 → T1615 → T1616.
+{T1601a, T1601b} with T1602 (lead) alongside → {T1603, T1604, T1605, T1606} → T1617a → {T1607, T1617b} → T1617c → {T1608, T1609, T1611, T1617d} → {T1610a, T1610b} → {T1612a, T1612b, T1613} → T1614 → T1615 → T1616.
 
 **User stories:**
 - **US1** (static on Cloudflare): T1601a, T1601b, T1603, T1605, T1606, T1607, T1608, T1613.
@@ -474,16 +538,19 @@ Effort`.
 - **US3** (GitHub Pages): T1604, T1605, T1606, T1607, T1609.
 - **US4** (day-2): T1603, T1604, T1610a, T1610b.
 - **US5** (promotion on Cloudflare): T1606, T1610b.
+- **US6** (several apps in one repository): T1617a–T1617d, and the two-app live test in T1614.
 
 ## Parallel waves
 
 1. T1601a, T1601b (and T1602, the lead's spike, once T1601b's pins exist).
 2. T1603, T1604, T1605, T1606. Their Owns are disjoint: the Cloudflare connector; the GitHub connector; the modules and `infra/`; the workflows and `serverless/` with the two dispatch lines.
-3. T1607.
-4. T1608, T1609, T1611: `serverless/cloudflare/`, `serverless/pages/`, `adapt/`. Each fills only its own export in `serverless/index.ts`.
-5. T1610a, T1610b: the read-only day-2 commands; destroy, promote, environments and retarget.
-6. T1612a, T1612b, T1613.
-7. T1614, then T1615, then T1616.
+3. T1617a (contracts, serial).
+4. T1607 and T1617b: agents' design, interview, detection and init; iac-templates' names per app.
+5. T1617c (apps in agents).
+6. T1608, T1609, T1611, T1617d: `serverless/cloudflare/`, `serverless/pages/`, `adapt/`, the CLI and MCP's app parts. Each fills only its own export in `serverless/index.ts`.
+7. T1610a, T1610b: the read-only day-2 commands; destroy, promote, environments and retarget.
+8. T1612a, T1612b, T1613.
+9. T1614, then T1615, then T1616.
 
 ## Implementation strategy
 

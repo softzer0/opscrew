@@ -126,3 +126,27 @@ The Pages plan is the change from the site GitHub reports to these fields, in st
 | `<output>/_headers` (written at build) | Cloudflare | OpsCrew's security headers for static responses |
 | `opscrew/cloudflare/headers-entry.js` | Cloudflare SSR | A wrapper that sets the same headers on the Worker's responses (as the spike settles) |
 | `.github/workflows/opscrew-deploy*.yml` | both | The build and deploy jobs |
+
+## Apps in a repository (US6)
+
+The repository's first app has no key and keeps today's paths and names. A further app has a key (`app.key`, the same rules as an environment name: `^[a-z][a-z0-9-]{0,15}$`, never `prod` or `production`). Its environments nest inside it.
+
+| Item | First app (prod / `<env>`) | Further app `<key>` (prod / `<env>`) |
+|---|---|---|
+| Artefacts folder | `opscrew/` / `opscrew/environments/<env>/` | `opscrew/apps/<key>/` / `opscrew/apps/<key>/environments/<env>/` |
+| Local state | `.opscrew/` / `.opscrew/environments/<env>/` | `.opscrew/apps/<key>/` / `.opscrew/apps/<key>/environments/<env>/` |
+| User-level files | `~/.opscrew/projects/<id>/` / `…/environments/<env>/` | `~/.opscrew/projects/<id>/apps/<key>/` / `…/apps/<key>/environments/<env>/` |
+| `architecture.json`, `ARCHITECTURE.md` | `opscrew/` (shared by its environments) | `opscrew/apps/<key>/` (shared by its environments) |
+| `SECURITY_SCAN.md`, `scan.json` | `opscrew/`, `.opscrew/` | the same files: one scan of the repository |
+| `infra.dir` | `opscrew/infra/prod` / `opscrew/infra/<env>` | `opscrew/infra/<key>` / `opscrew/infra/<key>-<env>` |
+| Workflow file | `opscrew-deploy.yml` / `opscrew-deploy-<env>.yml` | `opscrew-deploy-<key>.yml` / `opscrew-deploy-<key>-<env>.yml` |
+| Workflow name | `OpsCrew deploy` / `OpsCrew deploy (<env>)` | `OpsCrew deploy <key>` / `OpsCrew deploy <key> (<env>)` |
+| Deploy secret prefix | `OPSCREW_` / `OPSCREW_<ENV>_` | `OPSCREW_<KEY>_` / `OPSCREW_<KEY>_<ENV>_` |
+| GitHub environment | `production` / `<env>` | `<key>-production` / `<key>-<env>` |
+| GHCR image | `ghcr.io/<owner>/<repo>` | `ghcr.io/<owner>/<repo>/<key>` |
+| Branches OpsCrew opens | `opscrew/prepare-deploy`, `opscrew/deploy-setup` | `opscrew/prepare-deploy-<key>`, `opscrew/deploy-setup-<key>` |
+| Concurrency group | `opscrew-deploy` / `opscrew-deploy-<app.name>` | `opscrew-deploy-<app.name>` |
+| `app.name` (resource names) | from detection / `<app>-<env>` | `<key>` by default / `<key>-<env>` |
+| `dependabot.yml` | one file for the repository, covering every app's folders | the same |
+
+**Uniqueness:** OpsCrew derives every name above for every app and environment in the repository. `app add` and `env add` refuse a key or a name whose derived names equal existing ones, naming the clash; for example, a further app `docs` beside a first app's environment `docs` gives the same secret prefix. `appsOf(root)` lists the first app (when `opscrew/plan.yaml` or `opscrew/requirements.yaml` exists), then every `opscrew/apps/*/`.

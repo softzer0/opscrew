@@ -240,9 +240,19 @@ Every static example builds to its output, and is served from a container with t
 - **GitHub Pages:** a static example in the public throwaway repository: Pages on, the custom domain, the certificate, HTTPS enforced, destroy in the takeover-safe order.
 - **The leak search** over everything.
 
+### 15. Several apps in one repository (T1617a–d, US6, ADR 0020)
+- **Layout** (data-model.md "Apps in a repository"):
+  - the first app keeps today's paths;
+  - a further app lives in `opscrew/apps/<key>/`, `.opscrew/apps/<key>/` and `~/.opscrew/projects/<id>/apps/<key>/`, with its environments nested inside.
+  - `resolveProjectPaths(root, { app, environment })` is the single seam, as 015's environment was.
+- **Names:** plan-schema owns the derived-name helpers (workflow file, secret prefix, GitHub environment, GHCR image, branches). The renderers and agents read the key from `plan.app.key`, never from a path. A uniqueness check over every app's and environment's derived names guards `app add` and `env add`.
+- **Commands:** `opscrew app add|list|remove`, and `--app <key>` chosen as `--env` is. `analyze --dir` replaces `analyze --app <dir>`.
+- **dependabot.yml:** one file for the repository, covering every app's folders.
+- **Out of scope here:** path filters per app in the workflows (each app's workflow runs on every push to its branch), and moving an app between keys.
+- **The schema rules T1607 found** (`www` only at an apex on GitHub Pages, `notFound: "none"` with SSR, no publishing from the repository root) go into T1617a, so plan-schema has one serial owner.
 ## Order
 
-T1601a → T1601b → T1602 (spike) → {T1603, T1604, T1605, T1606} in parallel → T1607 → {T1608, T1609} → T1610 → T1611 → T1612 → T1613 → T1614 → T1615 → T1616.
+T1601a → T1601b → T1602 (spike) → {T1603, T1604, T1605, T1606} in parallel → T1617a (several apps: contracts) → {T1607, T1617b} → T1617c → {T1608, T1609, T1611, T1617d} → {T1610a, T1610b} → {T1612a, T1612b, T1613} → T1614 → T1615 → T1616.
 
 ## Complexity Tracking
 
