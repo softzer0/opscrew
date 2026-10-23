@@ -51,15 +51,18 @@ function load(
       return now;
     }
   };
-  // The workflow runs this text with Node.js; here it gets fake globals instead.
+  // The workflow runs this text with Node.js; here it gets fake globals instead. Its waits pass
+  // at once.
+  const setTimeout = (resolve: () => void) => resolve();
   const factory = new Function(
     "process",
     "fetch",
     "console",
     "Date",
+    "setTimeout",
     `${script.replace(/main\(\);\s*$/, "")}\nreturn { prunable, main };`,
   );
-  return factory(fakes.process, fakes.fetch, console, FakeDate) as {
+  return factory(fakes.process, fakes.fetch, console, FakeDate, setTimeout) as {
     prunable: Prunable;
     main: () => Promise<void>;
   };
@@ -370,7 +373,10 @@ describe("the retention step's program", () => {
     type?: "User" | "Organization";
     pushes: { versions: Version[]; children: Record<string, string[]> }[];
     failManifest?: boolean;
+    /** How many manifest reads answer 404 first, as when another environment's deploy deletes. */
+    goneManifests?: number;
     failDelete?: number[];
+    goneDelete?: number[];
   }) {
     const calls: string[] = [];
     const listed = o.pushes.flatMap((p) => p.versions);
@@ -410,6 +416,10 @@ describe("the retention step's program", () => {
         /^https:\/\/ghcr\.io\/v2\/acme\/shop\/manifests\/(sha256:[0-9a-f]{64})$/.exec(url);
       if (manifest) {
         if (o.failManifest) return { ok: false, status: 500, json: async () => ({}) };
+        if ((o.goneManifests ?? 0) > 0) {
+          o.goneManifests = (o.goneManifests ?? 0) - 1;
+          return notFound;
+        }
         expect(init.headers?.Authorization).toBe("Bearer registry-placeholder");
         // The same manifest types OpsCrew's own registry lookups ask for.
         expect(init.headers?.Accept).toBe(MANIFEST_ACCEPT);
@@ -421,6 +431,7 @@ describe("the retention step's program", () => {
       const del = new RegExp(`^${base}/(\\d+)$`).exec(url);
       if (del && method === "DELETE") {
         const id = Number(del[1]);
+        if (o.goneDelete?.includes(id)) return notFound;
         return o.failDelete?.includes(id)
           ? { ok: false, status: 403, json: async () => ({}) }
           : { ok: true, status: 204, json: async () => ({}) };
@@ -573,6 +584,32 @@ describe("the retention step's program", () => {
     expect(result.exitCode).toBe(1);
     expect(api.deleted()).toEqual([]);
     expect(result.log.at(-1)).toContain("could not list the images, so it deleted none");
+  });
+
+  it("reads the package again when a version goes while it reads it, then deletes as usual", async () => {
+    const api = github({ pushes, goneManifests: 1 });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(result.log).toContain(
+      "A version went while OpsCrew read the package (HTTP 404); reading it again in 20 s.",
+    );
+    expect(api.deleted()).toHaveLength(9);
+  });
+
+  it("deletes nothing when a 404 stays after three reads", async () => {
+    const api = github({ pushes, goneManifests: 1000 });
+    const result = await runMain(api);
+    expect(result.exitCode).toBe(1);
+    expect(api.deleted()).toEqual([]);
+    expect(result.log.at(-1)).toContain("could not list the images, so it deleted none");
+  });
+
+  it("counts a version another environment's deploy deleted first as deleted", async () => {
+    const gone = a.index.id;
+    const api = github({ pushes, goneDelete: [gone] });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(result.log).toContain(`Already deleted: ${a.index.digest} (${commit(1)})`);
   });
 
   it("goes on when a deletion fails, and fails the step", async () => {

@@ -113,7 +113,9 @@ async function main() {
   const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
   const token = process.env.TOKEN;
   const read = async (response, what) => {
-    if (!response.ok) throw new Error(what + " answered HTTP " + response.status);
+    if (!response.ok) {
+      throw Object.assign(new Error(what + " answered HTTP " + response.status), { status: response.status });
+    }
     return response.json();
   };
   const github = (method, path) =>
@@ -132,34 +134,52 @@ async function main() {
     const base =
       (user.type === "Organization" ? "/orgs/" : "/users/") +
       owner + "/packages/container/" + encodeURIComponent(name) + "/versions";
-    const versions = [];
-    for (let page = 1; ; page++) {
-      const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
-      for (const v of batch) {
-        versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
+    // The package's versions, and what each tagged or protected one lists.
+    const survey = async () => {
+      const versions = [];
+      for (let page = 1; ; page++) {
+        const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
+        for (const v of batch) {
+          versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
+        }
+        if (batch.length < 100) break;
       }
-      if (batch.length < 100) break;
-    }
-
-    const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
-    const scope = "repository:" + owner + "/" + name + ":pull";
-    const login = await read(
-      await fetch("https://ghcr.io/token?service=ghcr.io&scope=" + scope, { headers: { Authorization: "Basic " + basic } }),
-      "GitHub Container Registry",
-    );
-    const children = {};
-    const tagged = versions.filter((v) => v.tags.length > 0).map((v) => v.digest);
-    for (const digest of new Set([...protect, ...tagged])) {
-      const manifest = await read(
-        await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
-          headers: {
-            Authorization: "Bearer " + login.token,
-            Accept: ${JSON.stringify(MANIFEST_ACCEPT)},
-          },
-        }),
+      const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
+      const scope = "repository:" + owner + "/" + name + ":pull";
+      const login = await read(
+        await fetch("https://ghcr.io/token?service=ghcr.io&scope=" + scope, { headers: { Authorization: "Basic " + basic } }),
         "GitHub Container Registry",
       );
-      children[digest] = (manifest.manifests || []).map((m) => m.digest);
+      const children = {};
+      const tagged = versions.filter((v) => v.tags.length > 0).map((v) => v.digest);
+      for (const digest of new Set([...protect, ...tagged])) {
+        const manifest = await read(
+          await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
+            headers: {
+              Authorization: "Bearer " + login.token,
+              Accept: ${JSON.stringify(MANIFEST_ACCEPT)},
+            },
+          }),
+          "GitHub Container Registry",
+        );
+        children[digest] = (manifest.manifests || []).map((m) => m.digest);
+      }
+      return { versions, children };
+    };
+    // Another environment's deploy may delete versions while this one reads them (one merge runs
+    // several environments' workflows): the registry then answers 404 for a version the list still
+    // has. Read it all again; a 404 that stays still stops, so nothing is deleted on a guess.
+    let versions = [];
+    let children = {};
+    for (let attempt = 1; ; attempt++) {
+      try {
+        ({ versions, children } = await survey());
+        break;
+      } catch (error) {
+        if (error.status !== 404 || attempt === 3) throw error;
+        console.log("A version went while OpsCrew read the package (HTTP 404); reading it again in 20 s.");
+        await new Promise((resolve) => setTimeout(resolve, 20000));
+      }
     }
 
     const ids = new Set(prunable(versions, children, keep, protect, recent));
@@ -171,6 +191,9 @@ async function main() {
       const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
       if (response.ok) {
         console.log("Deleted " + what);
+      } else if (response.status === 404) {
+        // Another environment's deploy deleted it first.
+        console.log("Already deleted: " + what);
       } else {
         failed++;
         console.log("::warning::GitHub did not delete " + what + ": HTTP " + response.status + ".");
