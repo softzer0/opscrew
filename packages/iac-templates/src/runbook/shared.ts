@@ -9,6 +9,7 @@ import {
   githubEnvironment,
   runnerLabel,
   selfHosted,
+  workflowName,
 } from "../workflow/shared";
 
 /** Text for a Markdown table cell: pipes escaped, newlines turned into spaces. */
@@ -69,12 +70,6 @@ export function runbookFolders(
     home: own(`~/.opscrew/projects/${projectId ?? "<project-id>"}`),
     infra: env === undefined ? "opscrew/infra" : plan.infra.dir,
   };
-}
-
-/** The deploy workflow's name in GitHub → Actions: `OpsCrew deploy`, `OpsCrew deploy (<env>)`. */
-function workflowName(plan: DeployPlan): string {
-  const env = plan.environment?.name;
-  return env === undefined ? "OpsCrew deploy" : `OpsCrew deploy (${env})`;
 }
 
 /**

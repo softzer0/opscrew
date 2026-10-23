@@ -354,7 +354,7 @@ describe("the deploy job", () => {
     expect(workflow(staging).jobs.deploy?.["runs-on"]).toBe("ubuntu-latest");
   });
 
-  it("serialises each environment's deploys in a group of its own and never cancels one", () => {
+  it("serialises each environment's deploys in a group of its own and never cancels a running one", () => {
     expect(workflow(prod).concurrency).toEqual({
       group: "opscrew-deploy",
       "cancel-in-progress": false,

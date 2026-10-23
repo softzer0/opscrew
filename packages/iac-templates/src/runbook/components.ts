@@ -10,6 +10,7 @@ import { STORAGE_NAMES } from "../prices";
 import { cronMemoryMb } from "../runtime/components";
 import { runtimeDir } from "../runtime-dir";
 import { tunnelMode } from "../tunnel";
+import { planFilePath } from "../workflow/shared";
 import { cell, opscrew, runbookFolders } from "./shared";
 
 /** True for an app in the user's Portainer, whose components are the app's stack. */
@@ -130,7 +131,7 @@ export function componentsSection(plan: DeployPlan, environments?: readonly stri
   const from = plan.environment?.deploySource;
   const where =
     from?.from === "promote"
-      ? `\`${from.source}\`'s plan (\`${from.source === "prod" ? "opscrew/plan.yaml" : `opscrew/environments/${from.source}/plan.yaml`}\`): ${plan.environment?.name ?? "prod"} copies its components from it at its next design`
+      ? `\`${from.source}\`'s plan (\`${planFilePath(from.source)}\`): ${plan.environment?.name ?? "prod"} copies its components from it at its next design`
       : `\`${runbookFolders(plan, undefined).artefacts}/plan.yaml\``;
   lines.push(
     portainer
