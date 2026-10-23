@@ -690,6 +690,12 @@ Effort`.
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
 
+## Open after 015
+
+- A derived service URL in `app.env` (`DATABASE_URL`, `REDIS_URL`, …) can stay after a promoted environment's copied shared parts drop its service, when the code still uses the service: derive the URLs only for the services the written plan has, or take the source's entries (T1516, item 19; the lead decides when it is picked up).
+- Promote reads GHCR's index twice (`imageProvenance`, then `imagePlatforms`): one connector method returning both would save a token request and an index read per promote (T1516, item 25).
+- GitHub's answer to a workflow dispatch (a 204, as the spike saw, or the documented 200 with `workflow_run_id`) was not recorded live; both paths stay until a live run logs it (T1516, item 27).
+
 ## Dependencies
 
 {T1501a, T1501b} with T1502 (lead) alongside → {T1503, T1504, T1505, T1506, T1507} → {T1508a, T1508c} →
