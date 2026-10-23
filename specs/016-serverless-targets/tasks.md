@@ -290,7 +290,7 @@ Effort`.
 
 ## Phase 4: The agents
 
-- [ ] T1607 [US1] [US2] [US3] Design, the interview, the profiles, detection, `init`, and the provision seam, in `packages/agents/src/{design,interview,providers,init}/**`, `packages/agents/src/serverless/index.ts` (new), the dispatch in `packages/agents/src/provision/run.ts`, and the detection of adapters in `packages/detect/**`
+- [X] T1607 [US1] [US2] [US3] Design, the interview, the profiles, detection, `init`, and the provision seam, in `packages/agents/src/{design,interview,providers,init}/**`, `packages/agents/src/serverless/index.ts` (new), the dispatch in `packages/agents/src/provision/run.ts`, and the detection of adapters in `packages/detect/**`
   - Owns: those paths (+ tests); the provision dispatch lines only in `provision/run.ts`
   - Reads: spec FR-1602, FR-1610, SC-1606, US1–US3 scenarios 1–2; data-model.md "Plan targets", "The site block"; research.md R1 "Limits", "Frameworks", R2 "Plans", "Limits and terms" and "Spike results" 6, 8, 13; plan.md "8."
   - Depends: T1601a, T1603, T1604, T1617a
