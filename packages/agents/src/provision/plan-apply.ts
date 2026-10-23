@@ -1,6 +1,10 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CLOUDFLARE_TOKEN_PAGE, CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
+import {
+  CLOUDFLARE_HOSTING_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
+  CLOUDFLARE_TOKEN_PERMISSIONS,
+} from "@opscrew/connector-cloudflare";
 import {
   type ApprovalRecord,
   type IacEngine,
@@ -24,7 +28,12 @@ import {
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isServerlessProvider,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -146,7 +155,16 @@ function applyFailureHint(
   command: string,
 ): string {
   const { deployPlan } = options;
-  if (deployPlan.target.provider === "portainer") return portainerFailureHint(log, command);
+  switch (deployPlan.target.provider) {
+    case "portainer":
+      return cloudflareFailureHint(log, tunnelTokenPermissions(), command);
+    case "cloudflare-workers": {
+      const permissions = [...CLOUDFLARE_TOKEN_PERMISSIONS, ...CLOUDFLARE_HOSTING_PERMISSIONS];
+      return cloudflareFailureHint(log, permissions.join(", "), command);
+    }
+    case "github-pages":
+      return cloudflareFailureHint(log, CLOUDFLARE_TOKEN_PERMISSIONS.join(", "), command);
+  }
   const provider = planProvider(deployPlan);
   const profile = providerProfile(provider);
   const { displayName, serverNoun } = profile;
@@ -188,13 +206,15 @@ function applyFailureHint(
 }
 
 /**
- * Next step after a failed apply for the user's Portainer, whose infrastructure is only Cloudflare
- * (tunnels, their routes and Access): a refused request is the Cloudflare token's, anything else
- * is "fix and re-run". OpsCrew creates no server there, so no provider limit or size applies.
+ * Next step after a failed apply of infrastructure that is only Cloudflare's: the user's Portainer
+ * (tunnels, their routes and Access) and the server-less targets (a Worker and its custom domains,
+ * or GitHub Pages' DNS records). A refused request is the Cloudflare token's, which needs
+ * `permissions`; anything else is "fix and re-run". OpsCrew creates no server there, so no
+ * provider limit or size applies.
  */
-function portainerFailureHint(log: string, command: string): string {
+function cloudflareFailureHint(log: string, permissions: string, command: string): string {
   if (errorBlocks(log).some((block) => FORBIDDEN.test(block))) {
-    return cloudflareRefusedHint(tunnelTokenPermissions(), command);
+    return cloudflareRefusedHint(permissions, command);
   }
   return plansRemainingHint(command);
 }
@@ -625,17 +645,19 @@ export async function planAndApply(
   const { create, update, delete: del, replace } = saved.counts;
   const cloudflare = deployPlan.dns.provider === "cloudflare";
   // A server the user owns has no provider API: only Cloudflare resources are planned. The user's
-  // Portainer has only Cloudflare resources (tunnels, their routes and Access).
+  // Portainer has only Cloudflare resources (tunnels, their routes and Access), and so do the
+  // server-less targets (a Worker and its custom domains, or GitHub Pages' DNS records).
   const cloud = () => providerProfile(planProvider(deployPlan)).displayName;
-  const providers = portainer
-    ? "Cloudflare"
-    : ownServer
-      ? cloudflare
-        ? "Cloudflare"
-        : "your server's configuration"
-      : cloudflare
-        ? `${cloud()} and Cloudflare`
-        : cloud();
+  const providers =
+    portainer || isServerlessProvider(deployPlan.target.provider)
+      ? "Cloudflare"
+      : ownServer
+        ? cloudflare
+          ? "Cloudflare"
+          : "your server's configuration"
+        : cloudflare
+          ? `${cloud()} and Cloudflare`
+          : cloud();
   const notes =
     typeof options.approvalNotes === "function"
       ? options.approvalNotes(saved)

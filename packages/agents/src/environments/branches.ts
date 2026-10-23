@@ -151,19 +151,36 @@ export async function requireBranch(
 /**
  * The branch whose pushes build the images the promoted environment of `plan` (the one `paths`
  * belong to) is promoted with: the `cicd.branch` of the first environment along its sources that
- * follows a branch. `undefined` when `plan` follows a branch itself.
- * @throws OpsCrewError `PHASE_PRECONDITION` naming the sources when one of them has no plan, or
- * they lead back to an environment already on the way.
+ * follows a branch ({@link builderCicd}). `undefined` when `plan` follows a branch itself.
+ * @throws OpsCrewError `PHASE_PRECONDITION` as {@link builderCicd} does.
  */
 export async function builderBranch(
   paths: ProjectPaths,
   plan: DeployPlan,
 ): Promise<string | undefined> {
+  return (await builderCicd(paths, plan))?.branch;
+}
+
+/**
+ * The branch and workflow of the environment that builds what the promoted environment of `plan`
+ * (the one `paths` belong to) is promoted with: the `cicd.branch` and `cicd.workflowPath` of the
+ * first environment along its sources that follows a branch. `undefined` when `plan` follows a
+ * branch itself.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming the sources when one of them has no plan, or
+ * they lead back to an environment already on the way.
+ */
+export async function builderCicd(
+  paths: ProjectPaths,
+  plan: DeployPlan,
+): Promise<Pick<DeployPlan["cicd"], "branch" | "workflowPath"> | undefined> {
   const chain = [paths.environment];
   let current = plan;
   for (;;) {
     const source = current.environment?.deploySource;
-    if (source?.from !== "promote") return chain.length === 1 ? undefined : current.cicd.branch;
+    if (source?.from !== "promote") {
+      if (chain.length === 1) return undefined;
+      return { branch: current.cicd.branch, workflowPath: current.cicd.workflowPath };
+    }
     const name = source.source;
     const looped = chain.includes(name);
     chain.push(name);

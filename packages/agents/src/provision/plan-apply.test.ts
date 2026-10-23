@@ -12,6 +12,7 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
+import { sitePlan, workerCreate } from "../testing/serverless";
 import {
   describePlan,
   findSavedPlan,
@@ -514,6 +515,54 @@ describe("planAndApply for the user's Portainer", () => {
     });
     const error = (await planAndApply(deps, options).catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toBe(
+      "Fix the cause shown above, then run `opscrew provision` again; it plans the remaining changes.",
+    );
+  });
+});
+
+describe.each([
+  ["Cloudflare's hosting", "cloudflare-workers", "Account → Workers Scripts → Edit"],
+  ["GitHub Pages", "github-pages", "Zone → DNS → Edit"],
+] as const)("planAndApply for %s", (_name, provider, permission) => {
+  // What the plan creates does not matter here: only how the approval and the hints name it.
+  const changes = workerCreate(sitePlan());
+
+  async function siteSetup(scenario: FakeEngineScenario) {
+    const base = await setup({ changes, ...scenario });
+    return { ...base, options: { ...base.options, deployPlan: sitePlan({ provider }) } };
+  }
+
+  it("asks for the plan in Cloudflare's words, never as a server's, and applies it", async () => {
+    const { deps, engine, handler, options } = await siteSetup({
+      outputs: { url: "https://docs.example.com" },
+    });
+    const result = await planAndApply(deps, options);
+    expect(result.applied).toBe(true);
+    expect(engine.calls).toEqual(["init", "validate", "plan", "apply"]);
+    expect(handler.requests[0]?.title).toBe(
+      "Apply the infrastructure plan on Cloudflare (4 to create, 0 to update, 0 to delete, 0 to replace)",
+    );
+  });
+
+  it("blames a refused request on the Cloudflare token, with the target's permissions", async () => {
+    const { deps, options } = await siteSetup({
+      applyOk: false,
+      applyLog: "Error: failed to create the resource\n  403 Forbidden",
+    });
+    const error = (await planAndApply(deps, options).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toContain("Cloudflare refused the request");
+    expect(error.hint).toContain("CLOUDFLARE_API_TOKEN");
+    expect(error.hint).toContain(permission);
+  });
+
+  it("gives the plain next step for any other failed apply", async () => {
+    const { deps, options } = await siteSetup({
+      applyOk: false,
+      applyLog: "Error: something else went wrong",
+    });
+    const error = (await planAndApply(deps, options).catch((e: unknown) => e)) as OpsCrewError;
     expect(error.hint).toBe(
       "Fix the cause shown above, then run `opscrew provision` again; it plans the remaining changes.",
     );

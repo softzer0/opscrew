@@ -19,18 +19,7 @@ export interface ServerlessProvisionInput {
   saved: SavedInfrastructureHashes;
 }
 
-/**
- * Provisions an app on Cloudflare's hosting: the Worker's shell and custom domains, the `www`
- * redirect, the deploy secrets and the deploy-setup pull request.
- * @throws OpsCrewError `PHASE_PRECONDITION` until T1608: not available yet.
- */
-export async function provisionCloudflareWorkers(
-  _deps: PhaseDeps,
-  _options: ProvisionOptions,
-  _input: ServerlessProvisionInput,
-): Promise<ProvisionResult> {
-  throw serverlessNotSupported("`opscrew provision`", "cloudflare-workers");
-}
+export { provisionCloudflareWorkers } from "./cloudflare/provision";
 
 /**
  * Provisions a site on GitHub Pages: the Pages site and its custom domain, its DNS records and

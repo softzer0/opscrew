@@ -293,18 +293,22 @@ describe.each([
     expect(provider).toBe(github ? "github-pages" : "cloudflare-workers");
   });
 
-  it("reaches its own provision after the repository checks, with no Dockerfile, and stops there", async () => {
-    const runner = new ScriptedRunner((_command, args) => ({
-      exitCode: 0,
-      stdout: args.includes("--is-inside-work-tree") ? "true\n" : "",
-      stderr: "",
-    }));
-    const deps = await serverlessProject(runner);
-    await expect(runProvision(deps)).rejects.toMatchObject(notYet("`opscrew provision`"));
-    // Only git's repository check ran: no engine, no SSH, no Dockerfile check.
-    expect(runner.calls.map((call) => call.args.at(-1))).toEqual(["--is-inside-work-tree"]);
-    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
-  });
+  // Cloudflare's hosting has its provision since T1608 (`serverless/cloudflare/provision.test.ts`).
+  it.runIf(github)(
+    "reaches its own provision after the repository checks, with no Dockerfile, and stops there",
+    async () => {
+      const runner = new ScriptedRunner((_command, args) => ({
+        exitCode: 0,
+        stdout: args.includes("--is-inside-work-tree") ? "true\n" : "",
+        stderr: "",
+      }));
+      const deps = await serverlessProject(runner);
+      await expect(runProvision(deps)).rejects.toMatchObject(notYet("`opscrew provision`"));
+      // Only git's repository check ran: no engine, no SSH, no Dockerfile check.
+      expect(runner.calls.map((call) => call.args.at(-1))).toEqual(["--is-inside-work-tree"]);
+      expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
+    },
+  );
 
   it("is an interview answer with no region, and a new environment refuses it yet", async () => {
     const provider = serverlessPlan().target.provider;

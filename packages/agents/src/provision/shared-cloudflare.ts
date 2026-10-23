@@ -372,8 +372,9 @@ export function cloudflarePlanHashes(planned: PlannedCloudflare | undefined): st
 
 /**
  * One zone's plan, reading the app's origin TLS and the zone's minimum TLS when `desired` asks
- * for them; stops (`PHASE_PRECONDITION`, nothing changed) on its findings. `notes` adds lines to
- * the plan's text.
+ * for them, and the `www` redirect rule's phase with `redirect` (a site on Cloudflare's hosting);
+ * stops (`PHASE_PRECONDITION`, nothing changed) on its findings. `notes` adds lines to the plan's
+ * text.
  */
 export async function zonePlan(
   deps: Pick<PhaseDeps, "reporter" | "clock">,
@@ -385,6 +386,7 @@ export async function zonePlan(
     desired: SharedDesired;
     record: SharedRecord | undefined;
     command: string;
+    redirect?: boolean;
     notes?: (plan: SharedPlan) => string[];
   },
 ): Promise<ZonePlan> {
@@ -393,6 +395,7 @@ export async function zonePlan(
     zoneId: input.zoneId,
     accountId: input.accountId,
     access: desired.access !== undefined,
+    ...(input.redirect === true ? { redirect: true } : {}),
     ...(desired.tls !== undefined
       ? { tls: { proxied: desired.tls.proxied, record: input.record } }
       : {}),

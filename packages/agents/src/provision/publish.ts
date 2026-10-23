@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, upperFirst, writeFileAtomic } from "@opscrew/core";
@@ -7,10 +7,11 @@ import {
   portainerStackTemplatePath,
   portainerTarget,
   type RenderedFile,
+  renderWranglerConfig,
   runnerLabel,
   runtimeDir,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { workflowBranch } from "../environments/branches";
@@ -117,6 +118,9 @@ export function deploySetupPullRequestBody(
 ): string {
   if (plan.target.provider === "portainer") return portainerPullRequestBody(plan, version, options);
   if (plan.target.provider === "localhost") return localPullRequestBody(plan, version, options);
+  if (isServerlessProvider(plan.target.provider)) {
+    return sitePullRequestBody(plan, version, options);
+  }
   const profile = providerProfile(planProvider(plan));
   const own = plan.target.provider === "own";
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
@@ -196,6 +200,65 @@ function localPullRequestBody(
     "Review checklist:",
     PINNED_ACTIONS_CHECK,
     `- [ ] The deploy job runs only on your computer's runner (\`runs-on: [self-hosted, ${runnerLabel(plan)}]\`).`,
+    "",
+    `Opened by OpsCrew ${version}.`,
+  ].join("\n");
+}
+
+/**
+ * The pull request body for a site with no server (Cloudflare's hosting, GitHub Pages): the
+ * infrastructure code (the Worker's shell and custom domains, or the site's DNS records), on
+ * Cloudflare the Worker's settings, the workflow and the plan. The site's secrets are in GitHub
+ * Actions only.
+ */
+function sitePullRequestBody(
+  plan: DeployPlan,
+  version: string,
+  options: DeploySetupBodyOptions,
+): string {
+  const workers = plan.target.provider === "cloudflare-workers" ? plan.target : undefined;
+  const file = planFile(plan);
+  const flag = options.flag ?? "";
+  const where = workers !== undefined ? "Cloudflare" : "GitHub Pages";
+  const source = plan.environment?.deploySource;
+  const app = plan.app.key === undefined ? "" : ` --app ${plan.app.key}`;
+  const workflow =
+    source?.from === "promote"
+      ? `deploys the build the \`${source.source}\` environment runs, started with \`opscrew promote${app} --to ${plan.environment?.name ?? "prod"}\` (it never builds), as a new version of the Worker, and activates the version that ran before again when the new one does not answer.`
+      : workers !== undefined
+        ? `builds the site on every push to \`${plan.cicd.branch}\` and uploads it to Cloudflare as a new version of the Worker with OpsCrew's security headers, and activates the version that ran before again when the new one does not answer.`
+        : `builds the site on every push to \`${plan.cicd.branch}\` and publishes it to GitHub Pages.`;
+  return [
+    `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**, which ${where} serves with no server:`,
+    "",
+    workers !== undefined
+      ? `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: the Worker ${workers.worker}'s shell and a custom domain for each hostname, which bring their own DNS records and certificates (works with OpenTofu and Terraform). The Worker's code, files and secrets come only from the deploy workflow.`
+      : `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: the site's DNS records at Cloudflare, all DNS only (works with OpenTofu and Terraform).`,
+    ...(workers !== undefined
+      ? [
+          // The Worker's settings live in its Wrangler config, never in Terraform (spike result 1).
+          `- \`${posix.dirname(renderWranglerConfig(plan).path)}/\`: the Worker's settings for Wrangler (the site's files, how a missing page is answered, the workers.dev address and preview URLs)${workers.render === "ssr" ? ", and the module that adds OpsCrew's security headers to the pages the Worker renders" : ""}.`,
+        ]
+      : []),
+    `- \`${plan.cicd.workflowPath}\`: ${workflow}`,
+    `- \`${file}\`: the deployment plan.`,
+    ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
+    ...dependabotPullRequestLines(options.dependabot),
+    "",
+    ...nextStepLines(
+      options.secretsStored,
+      workers !== undefined
+        ? "The Worker and its custom domains are set up"
+        : "The site's DNS records are set up",
+      plan.dns.domain ?? where,
+      flag,
+    ),
+    "",
+    "Review checklist:",
+    PINNED_ACTIONS_CHECK,
+    workers !== undefined
+      ? `- [ ] The Worker's settings in \`${renderWranglerConfig(plan).path}\` match what you expect.`
+      : "- [ ] The DNS records in the infrastructure code match what you expect.",
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
