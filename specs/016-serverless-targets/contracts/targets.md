@@ -56,7 +56,8 @@ createPages(owner, repo): Promise<void>;                                   // bu
 updatePages(owner, repo, change: { cname?: string | null; httpsEnforced?: boolean }): Promise<void>;
 deletePages(owner, repo): Promise<void>;
 pagesHealth(owner, repo): Promise<{ certificate: "pending" | "issued" | "error"; dns: "ok" | "pending" | "error" } | undefined>;
-latestPagesDeployment(owner, repo): Promise<{ runId: number; status: string } | undefined>;
+pagesRuns(owner, repo, workflowFile): Promise<{ runId: number; attempt: number; startedAt: string; headSha: string }[]>; // successful runs, newest run_started_at first: [0] is live, [1] the rollback target
+pagesAllowed(owner, repo): Promise<"yes" | "no" | "unknown">;
 rerunWorkflowRun(owner, repo, runId): Promise<void>;
 ```
 

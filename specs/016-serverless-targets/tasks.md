@@ -141,7 +141,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare` and `pnpm lint`
   - Effort: high
 
-- [ ] T1604 [P] [US3] [US4] The GitHub connector: Pages, its health, its deployments, re-running a run, and the Pages permission, in `packages/connectors/github/**`
+- [X] T1604 [P] [US3] [US4] The GitHub connector: Pages, its health, its deployments, re-running a run, and the Pages permission, in `packages/connectors/github/**`
   - Owns: that path (+ tests and fakes)
   - Reads: contracts/targets.md "The GitHub connector"; research.md R2 and "Spike results" 7, 13; plan.md "5."
   - Depends: T1601a, T1602
@@ -257,7 +257,7 @@ Effort`.
       2. the Worker name: unique in the account (refused when a Worker of that name exists and isn't in this app's state);
       3. a DNS record already at a hostname, refused with its name, as for servers;
       4. the IaC plan (the Worker's shell and custom domains, `iac-apply`);
-      5. the `www` redirect rule (`cloudflare-apply`), when `www` is on;
+      5. the `www` redirect rule (`cloudflare-apply`), when `www` is on. `inspectShared` must be called with `redirect: true` for a Cloudflare-hosted app, or the redirect phase isn't read (T1603's report); the main token then also needs Zone → Single Redirect → Edit;
       6. the shared WAF rule (011), which applies to the Worker's custom domains (spike result 10);
       7. the deploy secrets (`github-secrets`): the deploy token, the account id, and the app's values;
       8. the generated files and the workflow in the deploy-setup pull request;
@@ -290,6 +290,7 @@ Effort`.
       2. the IaC plans (`iac-apply`, one per root) for the DNS records and for the verification record;
       3. the workflow pull request.
     - **The verification record:** its value comes as spike item 13 settled, from the API, or else pasted by the user from the page OpsCrew names (an interactive prompt or `--pages-verification <value>`). OpsCrew then prints the one manual step: Verify, with the exact page.
+    - **`pagesHealth`** is called only after `cname` is set (without a custom domain GitHub refuses the health check). `updatePages({ httpsEnforced: true })` before the certificate exists answers 404 "The certificate does not exist yet", a `PHASE_PRECONDITION` from T1604.
     - **HTTPS:** once `pagesHealth` reports the certificate, `https_enforced` is set through a Pages plan (`pages-apply`), in this run or a later `provision`. Until then, the run says it's pending, when to look again, and to run `opscrew provision` then.
     - **Tests:**
       - an apex and a subdomain end to end;
@@ -310,7 +311,7 @@ Effort`.
     - **status:**
       - **Cloudflare:** the version running and the one before (read, never stored), when each was deployed, the run each came from, the custom domains' state, and the rollback command for the one before.
       - **GitHub Pages:** the site, its certificate state, HTTPS, the last Pages run and the one before.
-    - **drift:** the Worker's settings and custom domains against the plan and the IaC state; the Pages settings (`build_type`, `cname`, HTTPS) against the plan; the redirect rule. Each difference says how `provision` puts it back.
+    - **drift:** the Worker's settings and custom domains against the plan and the IaC state; the Pages settings (`build_type`, `cname`, HTTPS) against the plan; the redirect rule (`inspectShared` with `redirect: true`, T1603). Each difference says how `provision` puts it back.
     - **secure:** the headers on Cloudflare. On GitHub Pages, the finding "GitHub Pages cannot set security headers", with what it means and that Cloudflare can.
     - **Server targets are unchanged** (the existing tests pass untouched).
     - **Tests:** each command on both targets with fakes, and a drifted custom domain and Pages `cname`.
@@ -323,7 +324,7 @@ Effort`.
   - Depends: T1608, T1609
   - Accept:
     - **destroy:**
-      - **Cloudflare:** the redirect rule, then the custom domains and the Worker by IaC (its secrets go with the Worker), then the GitHub secrets.
+      - **Cloudflare:** the redirect rule (`inspectShared` with `redirect: true`, T1603), then the custom domains and the Worker by IaC (its secrets go with the Worker), then the GitHub secrets.
       - **GitHub Pages:**
         1. a Pages plan (`pages-apply` with `allowDestroy`): `https_enforced` off and `cname` removed;
         2. the DNS records removed at once by IaC;
@@ -410,6 +411,7 @@ Effort`.
       - the manual Verify step with its page, HTTPS once the certificate is issued;
       - rollbacks by re-run, and destroy with the verification record kept.
     - **The index and the README's target list** name both. The runbook for these targets covers status, rollback and destroy.
+    - **`docs/guide/security.md`'s token list** gains what T1603 and T1604 added to the permission lists: Account → Workers Scripts → Edit (and the deploy token), Pages and Administration for GitHub Pages, Plan: Read as optional, and whatever the Pages rollback settles (T1604's report).
     - No "before X" framing.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: high
