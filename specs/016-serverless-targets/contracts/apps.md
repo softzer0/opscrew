@@ -32,5 +32,5 @@ The first app's paths are unchanged (a snapshot of every field). A further app's
 - **`app list`:** each app's key (or "first app"), its folder, and whether it's deployed.
 - **`app remove <key>`:** refused while the app is deployed.
 - **`--app <key>`:** on every command that takes `--env`, and on `analyze`, `interview`, `design` and `adapt`. `analyze --dir <folder>` replaces `analyze --app <dir>`.
-- **Choice:** one app means that app. With several, an interactive run asks, and a script gets `PHASE_PRECONDITION` listing the keys and `--app`.
+- **Choice:** one app means that app. With several, an interactive run asks (showing "the first app (<dir>)"), and a script gets `PHASE_PRECONDITION` listing the keys and `--app`. `--app .` names the repository's first app, which has no key (as `--env prod` names prod).
 - **MCP:** an `app` input next to `environment`; `opscrew_app_add`, `opscrew_app_list`, `opscrew_app_remove`.
