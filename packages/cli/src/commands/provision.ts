@@ -4,7 +4,6 @@ import {
   approveLaterHint,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
-  localChanges,
   type PhaseDeps,
   type ProvisionOptions,
   type ProvisionResult,
@@ -13,11 +12,11 @@ import {
   REPLACEABLE_TOKENS,
   REPOSITORY_TOKEN_VAR,
   type ReplaceableToken,
-  readSavedLocalPlan,
   readSavedPlanChanges,
   runProvision,
   type SavedPlanKind,
   SOPS_CONFIG_PATH,
+  savedLocalPlanChanges,
   stackFollowsReason,
   stringOutput,
 } from "@opscrew/agents";
@@ -198,24 +197,6 @@ export async function planChanges(
   return (await readSavedPlanChanges(deps.paths, kind, hash, DAMAGED_PLAN_HINT[kind])) === true;
 }
 
-/**
- * True when the saved local plan `hash` (this computer, the localhost target) creates, changes or
- * removes something, so it needs its own approval; false when it keeps everything or none was
- * saved. A damaged one stops with what to do.
- */
-async function localPlanChanges(
-  deps: Pick<PhaseDeps, "paths">,
-  hash: string,
-  flag: string,
-): Promise<boolean> {
-  const saved = await readSavedLocalPlan(
-    deps.paths,
-    hash,
-    `Run \`opscrew provision${flag} --plan-only\` again to save a new local plan, then approve its hash.`,
-  );
-  return saved !== undefined && localChanges(saved).length > 0;
-}
-
 /** `opscrew dns` for an environment on this computer, which has no DNS to set. */
 function localhostHasNoDns(environment: ChosenEnvironment): OpsCrewError {
   return new OpsCrewError(
@@ -370,7 +351,11 @@ export async function runInfraCommand(
         // This computer: the local plan, approved by its hash like a host plan.
         if (
           result.localPlanHash !== undefined &&
-          (await localPlanChanges(deps, result.localPlanHash, flag))
+          (await savedLocalPlanChanges(
+            deps.paths,
+            result.localPlanHash,
+            `Run \`opscrew provision${flag} --plan-only\` again to save a new local plan, then approve its hash.`,
+          ))
         ) {
           planned.push({ label: "local plan for this computer", hash: result.localPlanHash });
         }

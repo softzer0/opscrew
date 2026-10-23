@@ -20,6 +20,7 @@ export {
   localPlanHash,
   planLocal,
   readSavedLocalPlan,
+  savedLocalPlanChanges,
   savedLocalPlanPurpose,
 } from "./plan";
 export { localPreflight } from "./preflight";

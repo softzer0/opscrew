@@ -123,6 +123,19 @@ export function localChanges(plan: LocalPlan): LocalItem[] {
   return plan.items.filter((item) => item.action !== "keep");
 }
 
+/**
+ * True when the saved local plan `hash` creates, changes or removes something, so it needs its
+ * own approval; false when it keeps everything or none was saved. A damaged one stops with `hint`.
+ */
+export async function savedLocalPlanChanges(
+  paths: Pick<ProjectPaths, "root" | "files">,
+  hash: string,
+  hint: string,
+): Promise<boolean> {
+  const saved = await readSavedLocalPlan(paths, hash, hint);
+  return saved !== undefined && localChanges(saved).length > 0;
+}
+
 const SYMBOL: Record<LocalItem["action"], string> = {
   create: "+",
   change: "~",

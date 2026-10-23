@@ -33,8 +33,7 @@ import {
   shellPath,
 } from "../localhost/services";
 import {
-  applyRunnerSettings,
-  checkRunnerRepository,
+  allowRunnerOn,
   deleteRegistrations,
   type RunnerGitHubApi,
   repositoryUrl,
@@ -348,15 +347,7 @@ export async function startLocalRunner(
   const shell = windows ? await requireShell(local) : undefined;
 
   const repository = await runnerRepository(deps, services.github);
-  const check = await checkRunnerRepository(repository);
-  if (check.settings !== undefined && check.refusal !== undefined) {
-    await applyRunnerSettings(
-      deps,
-      repository,
-      { settings: check.settings, refusal: check.refusal },
-      { command },
-    );
-  }
+  await allowRunnerOn(deps, repository, { command });
 
   const label = runnerLabel(plan);
   const dir = join(paths.homeDir, "runners", runnerSuffix(plan));

@@ -36,6 +36,7 @@ import {
   stateCopyPaths,
   stateNotHere,
 } from "../shared";
+import { hintOf } from "../shared/errors";
 import {
   requireTunnelClosed,
   tunnelBusyError,
@@ -618,13 +619,12 @@ function gitHubFailed(
   input: { done: string; what: string },
 ): OpsCrewError {
   const reason = isUserFacingError(error) ? error.message : "unexpected error";
-  const hint = error instanceof OpsCrewError && error.hint ? `${error.hint} ` : "";
   return new OpsCrewError(
     error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
     deps.redactor.redact(`${input.done}, but ${input.what} failed: ${reason}`),
     {
       hint: deps.redactor.redact(
-        `${hint}Then run \`opscrew destroy\` again to finish the cleanup.`,
+        `${hintOf(error)}Then run \`opscrew destroy\` again to finish the cleanup.`,
       ),
       cause: error,
     },

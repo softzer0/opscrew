@@ -154,6 +154,21 @@ export async function applyRunnerSettings(
 }
 
 /**
+ * {@link checkRunnerRepository}, then {@link applyRunnerSettings} when a self-hosted runner may
+ * serve the repository only after the change.
+ */
+export async function allowRunnerOn(
+  deps: PhaseDeps,
+  repository: RunnerRepository,
+  run: { phase?: PhaseName; command: string; planOnly?: boolean },
+): Promise<void> {
+  const { settings, refusal } = await checkRunnerRepository(repository);
+  if (settings !== undefined && refusal !== undefined) {
+    await applyRunnerSettings(deps, repository, { settings, refusal }, run);
+  }
+}
+
+/**
  * Deletes the environment's runner registrations through GitHub's API (those with its label,
  * `opscrew-<app>-<env>`, and with `name`, only that one); audited. Returns how many it deleted.
  */

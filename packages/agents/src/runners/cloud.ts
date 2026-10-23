@@ -18,13 +18,7 @@ import type { PhaseDeps } from "../context";
 import type { ProvisionServices } from "../provision/types";
 import { approveAndApplyHostPlan, type HostAdapterApi, type HostPlanOutcome } from "../shared";
 import { deployShell } from "../status/certificates";
-import {
-  applyRunnerSettings,
-  checkRunnerRepository,
-  lazyRepository,
-  type RunnerRepository,
-  runnerRepository,
-} from "./github";
+import { allowRunnerOn, lazyRepository, type RunnerRepository, runnerRepository } from "./github";
 import { removeKeptRegistrations, runnerTokens, serverRunner } from "./server";
 import { planWhere } from "./words";
 
@@ -80,10 +74,7 @@ export async function checkCloudRunner(
   if (read !== undefined && !read.facts.prepared)
     throw await unpreparedServer(deps.paths.root, plan);
   const repository = await runnerRepository(deps, services.runnerGitHub);
-  const { settings, refusal } = await checkRunnerRepository(repository);
-  if (settings !== undefined && refusal !== undefined) {
-    await applyRunnerSettings(deps, repository, { settings, refusal }, run);
-  }
+  await allowRunnerOn(deps, repository, run);
   return repository;
 }
 

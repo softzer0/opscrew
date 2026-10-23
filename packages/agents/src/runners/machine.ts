@@ -66,8 +66,7 @@ import {
   ownServerLoginCheck,
 } from "../shared/own-server";
 import {
-  applyRunnerSettings,
-  checkRunnerRepository,
+  allowRunnerOn,
   deleteRegistrations,
   lazyRepository,
   type RunnerGitHubApi,
@@ -1021,10 +1020,7 @@ export async function checkMachineRunner(
   await requireOtherMachine(deps.paths, record, deps.paths.environment);
   await requirePlannedArch(deps.paths.root, plan, record.arch);
   const repository = await runnerRepository(deps, services.runnerGitHub);
-  const { settings, refusal } = await checkRunnerRepository(repository);
-  if (settings !== undefined && refusal !== undefined) {
-    await applyRunnerSettings(deps, repository, { settings, refusal }, run);
-  }
+  await allowRunnerOn(deps, repository, run);
   return repository;
 }
 

@@ -5,9 +5,7 @@ import {
   describeChanges,
   describePlan,
   findSavedPlan,
-  localChanges,
   OWN_SERVER_BACKUPS_NOTE,
-  type PhaseDeps,
   PORTAINER_NOTES,
   type ProvisionResult,
   type ProvisionServices,
@@ -23,6 +21,7 @@ import {
   runVerify,
   type SavedPlan,
   STORAGE_PLAN_SUFFIX,
+  savedLocalPlanChanges,
   stackFollowsReason,
   stringOutput,
   summarizeChecks,
@@ -190,12 +189,6 @@ function noSavedPlan(what: string, hash: string): OpsCrewError {
   return new OpsCrewError("PLAN_HASH_MISMATCH", `No saved ${what} has the hash ${hash}.`, {
     hint: PLAN_AGAIN,
   });
-}
-
-/** True when the saved local plan `hash` (the user's computer) creates, changes or removes something. */
-async function localPlanChanges(paths: PhaseDeps["paths"], hash: string): Promise<boolean> {
-  const saved = await readSavedLocalPlan(paths, hash, PLAN_AGAIN);
-  return saved !== undefined && localChanges(saved).length > 0;
 }
 
 /**
@@ -447,7 +440,7 @@ export function registerDeployTools(
         // This computer: the local plan, approved on its own by its hash.
         const localHash =
           result.localPlanHash !== undefined &&
-          (await localPlanChanges(phase.paths, result.localPlanHash))
+          (await savedLocalPlanChanges(phase.paths, result.localPlanHash, PLAN_AGAIN))
             ? result.localPlanHash
             : undefined;
         // The user's Portainer: the stack plan, approved on its own by its hash.
