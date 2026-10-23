@@ -363,8 +363,10 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   const { digest } = chosen;
   deps.reporter.step("Checking where the image was built (its build provenance)");
   const environments = await environmentsOf(deps.paths.root);
-  const build = await checkProvenance(image, digest, branch, environments);
-  await checkPlatform(image, digest, target, targetArch(plan.target));
+  // One read of GHCR's record of the image gives both its provenance and its CPUs.
+  const facts = await github.api.imageFacts(owner, repo, digest, credential);
+  const build = await checkProvenance(image, digest, facts?.provenance, branch, environments);
+  checkPlatform(image, digest, facts?.platforms, target, targetArch(plan.target));
 
   // 3. The target: ready for the source's image (for a rollback, still with the services its
   // previous image ran with), nothing pending, and the workflow on the default branch the one it

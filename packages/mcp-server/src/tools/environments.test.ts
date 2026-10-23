@@ -64,15 +64,15 @@ class FakePromoteGitHub implements PromoteGitHubApi {
       ? STAGING_IMAGE
       : undefined;
   }
-  async imageProvenance() {
+  async imageFacts() {
     return {
-      builderId: "https://github.com/acme/shop/actions/runs/501/attempts/1",
-      runId: 501,
-      repository: "acme/shop",
+      provenance: {
+        builderId: "https://github.com/acme/shop/actions/runs/501/attempts/1",
+        runId: 501,
+        repository: "acme/shop",
+      },
+      platforms: [{ os: "linux", architecture: "amd64" }],
     };
-  }
-  async imagePlatforms() {
-    return [{ os: "linux", architecture: "amd64" }];
   }
   async workflowRun() {
     return {

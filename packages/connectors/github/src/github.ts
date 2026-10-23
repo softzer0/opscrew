@@ -12,12 +12,7 @@ import {
   realSleep,
 } from "@opscrew/core";
 import { z } from "zod";
-import {
-  GhcrReader,
-  type ImagePlatform,
-  type ImageProvenance,
-  type RegistryCredential,
-} from "./ghcr";
+import { GhcrReader, type ImageFacts, type RegistryCredential } from "./ghcr";
 import { sealSecret } from "./seal";
 
 export const GITHUB_API = "https://api.github.com";
@@ -1402,30 +1397,17 @@ export class GitHubClient {
   }
 
   /**
-   * The build an image names in its SLSA v1 provenance, read from GHCR with `credential`, else
-   * the client's token: the image index `digest`, its attestation manifest and the in-toto
-   * statement. `undefined` when GHCR has no such digest or the image carries no SLSA v1 provenance.
+   * What GHCR shows of the image `digest`, read once with `credential`, else the client's token:
+   * the build its SLSA v1 provenance names (the index's attestation manifest and in-toto
+   * statement), and its platforms (CPU and operating system: each of an index's images, or a
+   * single manifest's). `undefined` when GHCR has no such digest.
    */
-  async imageProvenance(
+  async imageFacts(
     owner: string,
     image: string,
     digest: string,
     credential?: RegistryCredential,
-  ): Promise<ImageProvenance | undefined> {
-    return this.#ghcr.imageProvenance(owner, image, digest, credential);
-  }
-
-  /**
-   * The platforms (CPU and operating system) of the image `digest` on GHCR, read with
-   * `credential`, else the client's token: each of an index's images, or a single manifest's.
-   * `undefined` when GHCR has no such digest.
-   */
-  async imagePlatforms(
-    owner: string,
-    image: string,
-    digest: string,
-    credential?: RegistryCredential,
-  ): Promise<ImagePlatform[] | undefined> {
-    return this.#ghcr.imagePlatforms(owner, image, digest, credential);
+  ): Promise<ImageFacts | undefined> {
+    return this.#ghcr.imageFacts(owner, image, digest, credential);
   }
 }

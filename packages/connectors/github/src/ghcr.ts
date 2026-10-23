@@ -36,11 +36,6 @@ const BUILD_RUN =
 
 const DigestSchema = z.string().regex(DIGEST);
 const AnnotationsSchema = z.record(z.string(), z.string()).optional();
-const IndexSchema = z.looseObject({
-  manifests: z
-    .array(z.looseObject({ digest: DigestSchema, annotations: AnnotationsSchema }))
-    .optional(),
-});
 const ManifestSchema = z.looseObject({
   layers: z.array(
     z.looseObject({ mediaType: z.string(), digest: DigestSchema, annotations: AnnotationsSchema }),
@@ -53,10 +48,14 @@ const PlatformSchema = z.object({
   variant: z.string().optional(),
 });
 /** An index, with its entries' platforms; else a single manifest, whose config holds its platform. */
-const PlatformsSchema = z.union([
+const ImageSchema = z.union([
   z.object({
     manifests: z.array(
-      z.object({ annotations: AnnotationsSchema, platform: PlatformSchema.optional() }),
+      z.object({
+        digest: DigestSchema,
+        annotations: AnnotationsSchema,
+        platform: PlatformSchema.optional(),
+      }),
     ),
   }),
   z.object({ config: z.object({ digest: DigestSchema }) }),
@@ -93,6 +92,17 @@ export interface ImageProvenance {
   runId?: number;
   /** `owner/repo` of that run. */
   repository?: string;
+}
+
+/** What GHCR's record of an image tells: where it was built, and for which CPUs. */
+export interface ImageFacts {
+  /** Its SLSA v1 provenance; `undefined` when it carries none (a single manifest never does). */
+  provenance: ImageProvenance | undefined;
+  /**
+   * Its platforms: each of an index's images (its attestation manifests left out), or the one a
+   * single manifest's config names; `undefined` when GHCR has no such config.
+   */
+  platforms: ImagePlatform[] | undefined;
 }
 
 export interface GhcrReaderOptions {
@@ -134,7 +144,7 @@ function parseJson<S extends z.ZodType>(schema: S, bytes: Buffer, what: string):
   return parseAnswer(schema, json, "GHCR", what);
 }
 
-/** Reads tags, manifests and provenance from GHCR. */
+/** Reads tags, provenance and platforms from GHCR. */
 export class GhcrReader {
   readonly #options: GhcrReaderOptions;
 
@@ -162,24 +172,49 @@ export class GhcrReader {
   }
 
   /**
-   * The SLSA v1 provenance of the image index `digest`: its attestation manifest's in-toto layer.
-   * `undefined` when GHCR has no such digest, or the image carries no SLSA v1 provenance.
+   * The provenance and platforms of the image `digest`, from one read of its index (or single
+   * manifest) with one pull token. `undefined` when GHCR has no such digest.
    */
-  async imageProvenance(
+  async imageFacts(
     owner: string,
     image: string,
     digest: string,
     credential?: RegistryCredential,
-  ): Promise<ImageProvenance | undefined> {
+  ): Promise<ImageFacts | undefined> {
     const name = imageName(owner, image);
     requireDigest(digest);
-    const what = `read the provenance of ghcr.io/${name}@${digest}`;
+    const what = `read ghcr.io/${name}@${digest}`;
     const token = await this.#pullToken(name, what, credential);
-    const index = await this.#getByDigest(token, name, "manifests", digest, what);
-    if (index === undefined) return undefined;
-    const attestation = parseJson(IndexSchema, index, what).manifests?.find(isAttestation);
-    if (attestation === undefined) return undefined;
-    const manifest = await this.#getByDigest(token, name, "manifests", attestation.digest, what);
+    const found = await this.#getByDigest(token, name, "manifests", digest, what);
+    if (found === undefined) return undefined;
+    const manifest = parseJson(ImageSchema, found, what);
+    if (!("manifests" in manifest)) {
+      const config = await this.#getByDigest(token, name, "blobs", manifest.config.digest, what);
+      return {
+        provenance: undefined,
+        platforms: config === undefined ? undefined : [parseJson(PlatformSchema, config, what)],
+      };
+    }
+    const attestation = manifest.manifests.find(isAttestation);
+    return {
+      provenance:
+        attestation === undefined
+          ? undefined
+          : await this.#provenance(token, name, attestation.digest, what),
+      platforms: manifest.manifests.flatMap((entry) =>
+        entry.platform !== undefined && !isAttestation(entry) ? [entry.platform] : [],
+      ),
+    };
+  }
+
+  /** The SLSA v1 provenance in the attestation manifest `digest`: its in-toto layer. */
+  async #provenance(
+    token: string,
+    name: string,
+    digest: string,
+    what: string,
+  ): Promise<ImageProvenance | undefined> {
+    const manifest = await this.#getByDigest(token, name, "manifests", digest, what);
     if (manifest === undefined) return undefined;
     for (const layer of parseJson(ManifestSchema, manifest, what).layers) {
       const predicateType = layer.annotations?.["in-toto.io/predicate-type"];
@@ -195,33 +230,6 @@ export class GhcrReader {
         : { builderId };
     }
     return undefined;
-  }
-
-  /**
-   * The platforms of the image `digest`: for an index, each entry's (its attestation manifests
-   * left out); for a single manifest, the one its config names. `undefined` when GHCR has no such
-   * digest or config.
-   */
-  async imagePlatforms(
-    owner: string,
-    image: string,
-    digest: string,
-    credential?: RegistryCredential,
-  ): Promise<ImagePlatform[] | undefined> {
-    const name = imageName(owner, image);
-    requireDigest(digest);
-    const what = `read the platforms of ghcr.io/${name}@${digest}`;
-    const token = await this.#pullToken(name, what, credential);
-    const found = await this.#getByDigest(token, name, "manifests", digest, what);
-    if (found === undefined) return undefined;
-    const manifest = parseJson(PlatformsSchema, found, what);
-    if ("manifests" in manifest) {
-      return manifest.manifests.flatMap((entry) =>
-        entry.platform !== undefined && !isAttestation(entry) ? [entry.platform] : [],
-      );
-    }
-    const config = await this.#getByDigest(token, name, "blobs", manifest.config.digest, what);
-    return config === undefined ? undefined : [parseJson(PlatformSchema, config, what)];
   }
 
   /**

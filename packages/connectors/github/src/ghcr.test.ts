@@ -209,20 +209,6 @@ describe("taggedDigest", () => {
     expect(redactor.redact(readToken)).not.toContain(readToken);
   });
 
-  it("reads provenance with an explicit registry credential", async () => {
-    const readToken = fakeSecret("github-token", "ghcr-read");
-    const { digest, routes } = image();
-    const { "GET /user": _user, ...registry } = routes;
-    const { fetch, calls } = fakeFetch(registry);
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest, {
-        username: "deployer",
-        token: readToken,
-      }),
-    ).toMatchObject({ runId: 123456 });
-    expect(JSON.stringify(calls)).not.toContain(TOKEN);
-  });
-
   it("explains a refused pull token without printing either token", async () => {
     for (const status of [401, 403]) {
       const { fetch } = fakeFetch({
@@ -260,106 +246,11 @@ describe("taggedDigest", () => {
   });
 });
 
-describe("imageProvenance", () => {
-  it("reads the build run from the SLSA v1 provenance in the image's attestation", async () => {
-    const { digest, routes } = image();
-    const { fetch, calls } = fakeFetch(routes);
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    ).toEqual({ builderId: BUILDER, runId: 123456, repository: "acme/shop" });
-    // Only the provenance layer is fetched, not the SBOM beside it.
-    expect(calls.filter((c) => c.url.includes("/blobs/"))).toHaveLength(1);
-  });
+describe("imageFacts", () => {
+  const facts = (fetch: ReturnType<typeof fakeFetch>["fetch"], digest: string) =>
+    new GitHubClient({ token: TOKEN, fetch }).imageFacts("acme", "shop", digest);
 
-  it("gives only the builder when it is not a GitHub Actions run", async () => {
-    const { digest, routes } = image({ builderId: "https://example.com/builder" });
-    const { fetch } = fakeFetch(routes);
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    ).toEqual({ builderId: "https://example.com/builder" });
-  });
-
-  it("is undefined for an image without an attestation", async () => {
-    const { digest, routes } = image({ attestation: false });
-    const { fetch } = fakeFetch(routes);
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    ).toBeUndefined();
-  });
-
-  it("is undefined for provenance that is not SLSA v1", async () => {
-    const { digest, routes } = image({ predicateType: "https://slsa.dev/provenance/v0.2" });
-    const { fetch } = fakeFetch(routes);
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    ).toBeUndefined();
-  });
-
-  it("is undefined for a single manifest, which holds no attestation", async () => {
-    const manifest = JSON.stringify({ schemaVersion: 2, mediaType: MANIFEST_TYPE, layers: [] });
-    const digest = digestOf(manifest);
-    const { fetch } = fakeFetch({
-      "GET /user": { body: ME },
-      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
-      [`${V2}/manifests/${digest}`]: { text: manifest, headers: { "content-type": MANIFEST_TYPE } },
-    });
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    ).toBeUndefined();
-  });
-
-  it("is undefined for a digest GHCR does not have (404)", async () => {
-    const digest = digestOf("gone");
-    const { fetch } = fakeFetch({
-      "GET /user": { body: ME },
-      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
-      [`${V2}/manifests/${digest}`]: { status: 404 },
-    });
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    ).toBeUndefined();
-  });
-
-  it("refuses content that does not match its digest", async () => {
-    const { digest, routes } = image();
-    const { fetch } = fakeFetch({
-      ...routes,
-      [`${V2}/manifests/${digest}`]: { text: "{}", headers: { "content-type": INDEX_TYPE } },
-    });
-    const error = await failure(
-      new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    );
-    expect(error.code).toBe("PROVIDER_ERROR");
-    expect(error.message).toContain("does not match");
-  });
-
-  it("refuses a provenance blob that does not match its digest", async () => {
-    const { digest, routes } = image();
-    const blob = Object.keys(routes).find((key) => key.includes("/blobs/")) ?? "";
-    const forged = JSON.stringify({
-      predicateType: SLSA_V1,
-      predicate: { runDetails: { builder: { id: "https://github.com/evil/fork/actions/runs/1" } } },
-    });
-    const { fetch } = fakeFetch({ ...routes, [blob]: { text: forged } });
-    const error = await failure(
-      new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", digest),
-    );
-    expect(error.code).toBe("PROVIDER_ERROR");
-    expect(error.message).toContain("does not match");
-  });
-
-  it("refuses a digest that is not one before calling GHCR", async () => {
-    const { fetch, calls } = fakeFetch({});
-    const error = await failure(
-      new GitHubClient({ token: TOKEN, fetch }).imageProvenance("acme", "shop", "latest"),
-    );
-    expect(error.code).toBe("INVALID_INPUT");
-    expect(calls).toHaveLength(0);
-  });
-});
-
-describe("imagePlatforms", () => {
-  it("reads each platform of an index, without its attestation manifests", async () => {
+  it("reads the build run and the platforms with one pull token and one read of the index", async () => {
     const { digest, routes } = image({
       platforms: [
         { architecture: "amd64", os: "linux" },
@@ -367,17 +258,58 @@ describe("imagePlatforms", () => {
       ],
     });
     const { fetch, calls } = fakeFetch(routes);
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
-    ).toEqual([
-      { architecture: "amd64", os: "linux" },
-      { architecture: "arm64", os: "linux", variant: "v8" },
-    ]);
-    // The index alone answers: no manifest or blob beyond it is read.
-    expect(calls.filter((c) => c.url.includes("/v2/"))).toHaveLength(1);
+    expect(await facts(fetch, digest)).toEqual({
+      provenance: { builderId: BUILDER, runId: 123456, repository: "acme/shop" },
+      // The attestation manifest is no platform of the image.
+      platforms: [
+        { architecture: "amd64", os: "linux" },
+        { architecture: "arm64", os: "linux", variant: "v8" },
+      ],
+    });
+    expect(calls.filter((c) => c.url.startsWith("https://ghcr.io/token"))).toHaveLength(1);
+    expect(calls.filter((c) => c.url.endsWith(`/manifests/${digest}`))).toHaveLength(1);
+    // Only the provenance layer is fetched, not the SBOM beside it.
+    expect(calls.filter((c) => c.url.includes("/blobs/"))).toHaveLength(1);
   });
 
-  it("reads a single manifest's platform from its config", async () => {
+  it("reads with an explicit registry credential", async () => {
+    const readToken = fakeSecret("github-token", "ghcr-read");
+    const { digest, routes } = image();
+    const { "GET /user": _user, ...registry } = routes;
+    const { fetch, calls } = fakeFetch(registry);
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).imageFacts("acme", "shop", digest, {
+        username: "deployer",
+        token: readToken,
+      }),
+    ).toMatchObject({ provenance: { runId: 123456 } });
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+  });
+
+  it("gives only the builder when it is not a GitHub Actions run", async () => {
+    const { digest, routes } = image({ builderId: "https://example.com/builder" });
+    const { fetch } = fakeFetch(routes);
+    expect((await facts(fetch, digest))?.provenance).toEqual({
+      builderId: "https://example.com/builder",
+    });
+  });
+
+  it("has no provenance for an image without an attestation, and still its platforms", async () => {
+    const { digest, routes } = image({ attestation: false });
+    const { fetch } = fakeFetch(routes);
+    expect(await facts(fetch, digest)).toEqual({
+      provenance: undefined,
+      platforms: [{ architecture: "amd64", os: "linux" }],
+    });
+  });
+
+  it("has no provenance for provenance that is not SLSA v1", async () => {
+    const { digest, routes } = image({ predicateType: "https://slsa.dev/provenance/v0.2" });
+    const { fetch } = fakeFetch(routes);
+    expect((await facts(fetch, digest))?.provenance).toBeUndefined();
+  });
+
+  it("reads a single manifest's platform from its config, and no provenance", async () => {
     const config = JSON.stringify({
       architecture: "arm64",
       os: "linux",
@@ -396,9 +328,10 @@ describe("imagePlatforms", () => {
       [`${V2}/manifests/${digest}`]: { text: manifest, headers: { "content-type": MANIFEST_TYPE } },
       [`${V2}/blobs/${digestOf(config)}`]: { text: config },
     });
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
-    ).toEqual([{ architecture: "arm64", os: "linux" }]);
+    expect(await facts(fetch, digest)).toEqual({
+      provenance: undefined,
+      platforms: [{ architecture: "arm64", os: "linux" }],
+    });
   });
 
   it("reads each platform of a Docker manifest list", async () => {
@@ -427,12 +360,13 @@ describe("imagePlatforms", () => {
       [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
       [`${V2}/manifests/${digest}`]: { text: list, headers: { "content-type": LIST_TYPE } },
     });
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
-    ).toEqual([
-      { architecture: "amd64", os: "linux" },
-      { architecture: "arm", os: "linux", variant: "v7" },
-    ]);
+    expect(await facts(fetch, digest)).toEqual({
+      provenance: undefined,
+      platforms: [
+        { architecture: "amd64", os: "linux" },
+        { architecture: "arm", os: "linux", variant: "v7" },
+      ],
+    });
   });
 
   it("refuses a single manifest's config that does not match its digest", async () => {
@@ -453,9 +387,7 @@ describe("imagePlatforms", () => {
         text: JSON.stringify({ architecture: "amd64", os: "linux" }),
       },
     });
-    const error = await failure(
-      new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
-    );
+    const error = await failure(facts(fetch, digest));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain(`GHCR sent content for ${digestOf(config)}`);
   });
@@ -467,9 +399,7 @@ describe("imagePlatforms", () => {
       [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
       [`${V2}/manifests/${digest}`]: { status: 404 },
     });
-    expect(
-      await new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
-    ).toBeUndefined();
+    expect(await facts(fetch, digest)).toBeUndefined();
   });
 
   it("refuses an index that does not match its digest", async () => {
@@ -478,10 +408,29 @@ describe("imagePlatforms", () => {
       ...routes,
       [`${V2}/manifests/${digest}`]: { text: "{}", headers: { "content-type": INDEX_TYPE } },
     });
-    const error = await failure(
-      new GitHubClient({ token: TOKEN, fetch }).imagePlatforms("acme", "shop", digest),
-    );
+    const error = await failure(facts(fetch, digest));
     expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("does not match");
+  });
+
+  it("refuses a provenance blob that does not match its digest", async () => {
+    const { digest, routes } = image();
+    const blob = Object.keys(routes).find((key) => key.includes("/blobs/")) ?? "";
+    const forged = JSON.stringify({
+      predicateType: SLSA_V1,
+      predicate: { runDetails: { builder: { id: "https://github.com/evil/fork/actions/runs/1" } } },
+    });
+    const { fetch } = fakeFetch({ ...routes, [blob]: { text: forged } });
+    const error = await failure(facts(fetch, digest));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("does not match");
+  });
+
+  it("refuses a digest that is not one before calling GHCR", async () => {
+    const { fetch, calls } = fakeFetch({});
+    const error = await failure(facts(fetch, "latest"));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
   });
 });
 

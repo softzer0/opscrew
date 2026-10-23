@@ -1,4 +1,4 @@
-import type { RegistryCredential } from "@opscrew/connector-github";
+import type { ImageFacts, RegistryCredential } from "@opscrew/connector-github";
 import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import { environmentTag } from "@opscrew/iac-templates";
 import type { PromoteGitHubApi } from "./types";
@@ -101,24 +101,19 @@ export async function chooseImage(
 
 /**
  * The image is built for the target's CPU (`arch`, from `targetArch`): its manifest, or one image
- * of its index, names that architecture. Platforms GHCR does not name stop the promotion too, so
- * an image of unknown CPU is never deployed.
+ * of its index, names that architecture (`platforms`, as GHCR shows them). Platforms GHCR does not
+ * name stop the promotion too, so an image of unknown CPU is never deployed.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming both CPUs and how to build for the target's.
  */
-export async function checkPlatform(
+export function checkPlatform(
   image: AppImage,
   digest: string,
+  platforms: ImageFacts["platforms"],
   target: string,
   arch: "amd64" | "arm64",
-): Promise<void> {
+): void {
   const reference = imageReference(image, digest);
   const again = `then run \`opscrew promote --to ${target}\` again`;
-  const platforms = await image.github.imagePlatforms(
-    image.owner,
-    image.repo,
-    digest,
-    image.credential,
-  );
   if (platforms === undefined || platforms.length === 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -138,7 +133,8 @@ export async function checkPlatform(
 }
 
 /**
- * Step 2: the image's SLSA v1 provenance names its build run (`runDetails.builder.id`), which must
+ * Step 2: the image's SLSA v1 provenance (`provenance`, as GHCR shows it) names its build run
+ * (`runDetails.builder.id`), which must
  * be this repository's; GitHub's record of the run must show a `push` of this repository's own
  * commits (a fork's pull request runs here too) to `branch`, the branch that builds the images the
  * target is promoted with (`builderBranch`, as its workflow's verify job checks); and the image
@@ -151,6 +147,7 @@ export async function checkPlatform(
 export async function checkProvenance(
   image: AppImage,
   digest: string,
+  provenance: ImageFacts["provenance"],
   branch: string,
   environments: readonly string[],
 ): Promise<ImageBuild> {
@@ -160,12 +157,6 @@ export async function checkProvenance(
     new OpsCrewError("PHASE_PRECONDITION", `${why} ${nothing}`, {
       hint: `OpsCrew promotes only images ${repository}'s deploy workflow built from ${branch}. Promote the image another environment runs, built by a push to ${branch}.`,
     });
-  const provenance = await image.github.imageProvenance(
-    image.owner,
-    image.repo,
-    digest,
-    image.credential,
-  );
   if (provenance === undefined) {
     throw refuse(
       `The image ${reference} carries no SLSA build provenance, so OpsCrew cannot tell where it was built.`,

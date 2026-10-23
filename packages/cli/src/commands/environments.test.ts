@@ -237,12 +237,14 @@ describe("opscrew promote", () => {
       getEnvironment: async () => undefined,
       taggedDigest: async (_owner, _image, tag) =>
         tag === "opscrew-staging" || tag === `${commit}-staging` ? digest : undefined,
-      imageProvenance: async () => ({
-        builderId: "https://github.com/acme/shop/actions/runs/501/attempts/1",
-        runId: 501,
-        repository: "acme/shop",
+      imageFacts: async () => ({
+        provenance: {
+          builderId: "https://github.com/acme/shop/actions/runs/501/attempts/1",
+          runId: 501,
+          repository: "acme/shop",
+        },
+        platforms: [{ os: "linux", architecture: "amd64" }],
       }),
-      imagePlatforms: async () => [{ os: "linux", architecture: "amd64" }],
       workflowRun: async () => ({
         repository: "acme/shop",
         headRepository: "acme/shop",

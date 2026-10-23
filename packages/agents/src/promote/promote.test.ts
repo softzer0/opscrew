@@ -498,6 +498,13 @@ describe("promote", () => {
       nothingChanged(world);
     });
 
+    it("reads the image's provenance and CPUs from GHCR once", async () => {
+      const world = await promoteWorld();
+      const result = await promote(world.deps, { target: "prod", services: world.services });
+      expect(result.status).toBe("deployed");
+      expect(world.github.factReads).toEqual([STAGING_IMAGE]);
+    });
+
     it("passes a single image built for the target's CPU", async () => {
       const world = await promoteWorld();
       world.github.platforms.set(STAGING_IMAGE, [AMD64]);

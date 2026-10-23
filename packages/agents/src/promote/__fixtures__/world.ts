@@ -104,24 +104,12 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     return this.tags.get(tag);
   }
 
-  async imageProvenance(
-    _owner: string,
-    _image: string,
-    digest: string,
-    credential?: RegistryCredential,
-  ) {
+  /** The digest of each `imageFacts` read. */
+  readonly factReads: string[] = [];
+  async imageFacts(_owner: string, _image: string, digest: string, credential?: RegistryCredential) {
     this.credentials.push(credential);
-    return this.provenance.get(digest);
-  }
-
-  async imagePlatforms(
-    _owner: string,
-    _image: string,
-    digest: string,
-    credential?: RegistryCredential,
-  ) {
-    this.credentials.push(credential);
-    return this.platforms.get(digest);
+    this.factReads.push(digest);
+    return { provenance: this.provenance.get(digest), platforms: this.platforms.get(digest) };
   }
 
   async workflowRun(_owner: string, _repo: string, runId: number) {
