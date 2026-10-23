@@ -71,6 +71,8 @@ Refusals (`PHASE_PRECONDITION`, plain English):
 - no deployed source;
 - a digest that isn't the source's or a rollback;
 - a provenance mismatch;
+- an image built for another CPU than the target's (`imagePlatforms(digest)` against `targetArch(target)`), or one whose CPU cannot be read;
+- a target not ready for the source's image (FR-1539), or a rollback to an image that needs a service the target no longer has;
 - pending changes;
 - a target workflow missing on the default branch.
 

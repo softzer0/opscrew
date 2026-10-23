@@ -524,7 +524,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1522 [US3] Promote checks the image's CPU (FR-1540, T1521's review)
+- [X] T1522 [US3] Promote checks the image's CPU (FR-1540, T1521's review)
   - Owns: agents' `promote/**` (the check and its tests); `docs/guide/environments.md` (one sentence in the promotion section)
   - Reads: spec FR-1540; contracts/environments.md "Promotion"; plan-schema's `targetArch`
   - Depends: T1521
@@ -671,6 +671,8 @@ Effort`.
     - `promote/run.ts`'s `registryCredential` duplicates `ghcrReadCredential` (T1520's review).
     - The emulation note's sentence is in `localhost/image.ts`, `localhost/preflight.ts:187` and `localhost/design.ts:162`: one shared `emulationNote` (T1521's review).
     - A promoted localhost environment with `target.image: local-build` builds the code here but copies its source's shared parts: refuse local-build for a promoted environment, or say why it is allowed (T1521).
+    - The connector's `imagePlatforms` has no Docker manifest list case in its tests, and its config blob's digest check is untested (T1522's review).
+    - Promote reads GHCR's index twice (`imageProvenance`, then `imagePlatforms`): two extra requests per promote. Its single-manifest branch never runs from promote, since provenance needs an index (T1522's review).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
