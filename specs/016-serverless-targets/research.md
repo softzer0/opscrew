@@ -222,3 +222,13 @@ Run in the e2e Cloudflare zone, on a hostname two levels below it, and in the pr
    - Build times with dependencies installed: 2–17 s.
    - The artifact upload must keep hidden files (`.assetsignore`).
    - npm 11.19 skips install scripts by default (esbuild, workerd); the builds and `wrangler dev` worked anyway.
+7. **GitHub Pages** (the public throwaway repository; the certificate, HTTPS, rollback and destroy steps follow):
+   - **Turning Pages on:** `POST /repos/{o}/{r}/pages` with only `build_type: "workflow"` and no `source` answered 201. GitHub created the `github-pages` environment itself, its branch policy allowing `main`.
+   - **The custom domain:** `PUT …/pages` with `cname` answered 204 before any DNS record existed, so the takeover-safe order works. `https_enforced` then reads false until the certificate exists.
+   - **The workflow:** checkout, a build, `actions/configure-pages` v6, `actions/upload-pages-artifact` v5 (with `include-hidden-files: true`, a `.well-known` file kept) and `actions/deploy-pages` v5. With `pages: write`, `id-token: write` and `contents: read`, it published in 39 s.
+   - **DNS:** a DNS-only CNAME to `<owner>.github.io` was created at Cloudflare.
+   - **The certificate:** `GET …/pages/health` answered 202 while GitHub was still checking.
+13. **Private repositories and verification:**
+    - On a Free account, enabling Pages on a private repository answers 422 "Your current plan does not support GitHub Pages for this repository", and nothing changes. A fine-grained token's `GET /user` has no `plan` unless it holds Plan: read.
+    - So `pagesAllowed` answers "yes" for a public repository, the plan where it can read it, and "unknown" otherwise. Design then offers GitHub Pages with that caveat, and the Pages plan's first step reports GitHub's refusal plainly, with nothing changed.
+    - The verification record's value appears only on the owner's settings page (GitHub's docs and REST reference have no endpoint for it), so the user pastes it.
