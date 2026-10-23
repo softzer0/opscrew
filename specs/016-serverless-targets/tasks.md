@@ -497,7 +497,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: high
 
-- [ ] T1613 [P] The Docker pass, in `packages/cli/test/e2e/**`, `examples/**`
+- [X] T1613 [P] The Docker pass, in `packages/cli/test/e2e/**`, `examples/**`
   - Owns: those paths
   - Reads: plan.md "13."; quickstart.md "1."–"3."; research.md "Spike results" 5, 6
   - Depends: T1606, T1611
