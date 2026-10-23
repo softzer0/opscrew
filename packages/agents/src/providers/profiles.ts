@@ -1,4 +1,4 @@
-import type { VpsProviderId } from "@opscrew/contracts";
+import type { Money, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { wrongTarget } from "@opscrew/iac-templates";
 import {
@@ -8,6 +8,7 @@ import {
   onOneServer,
   type Region,
   type Requirements,
+  type ServerlessProvider,
 } from "@opscrew/plan-schema";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
@@ -230,6 +231,95 @@ const LOCALHOST: LocalhostProfile = {
   tokenVars: [],
 };
 
+/**
+ * What the phases need to know about Cloudflare's hosting (`cloudflare-workers`): no server, so no
+ * catalogue or region; the deploy token's variable, and Cloudflare's published Workers plans and
+ * limits with their sources and the day they were read (016's spike, result 8).
+ */
+export interface CloudflareHostingProfile {
+  id: "cloudflare-workers";
+  /** `Cloudflare (no server)`. */
+  displayName: string;
+  /**
+   * The deploy token's variable: a token of its own holding only Account → Workers Scripts → Edit,
+   * which `opscrew provision` stores as a GitHub secret for the deploy workflow (never OpsCrew's
+   * own token, which can edit DNS).
+   */
+  deployTokenVar: string;
+  plans: {
+    /** The day the plans below were read. */
+    asOf: string;
+    /** Cloudflare's pricing and limits pages. */
+    sources: readonly string[];
+    /** Workers Paid: the monthly minimum per account. */
+    paidMonthly: Money;
+    /** What Workers Paid's minimum includes, and what more costs. */
+    paidIncludes: string;
+    /** Workers Free: requests a day to the Worker (static files are free and unlimited). */
+    freeRequestsPerDay: number;
+    /** Workers Free: CPU time per request, in milliseconds. */
+    freeCpuMs: number;
+    /** Files a version may have on Workers Free and Workers Paid. */
+    files: { free: number; paid: number };
+    /** The largest file, in MiB. */
+    fileMiB: number;
+  };
+}
+
+const CLOUDFLARE_HOSTING: CloudflareHostingProfile = {
+  id: "cloudflare-workers",
+  displayName: "Cloudflare (no server)",
+  deployTokenVar: "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN",
+  plans: {
+    asOf: "2026-10-23T00:00:00.000Z",
+    sources: [
+      "https://developers.cloudflare.com/workers/platform/pricing/",
+      "https://developers.cloudflare.com/workers/platform/limits/",
+    ],
+    paidMonthly: { amount: 5, currency: "USD" },
+    paidIncludes:
+      "10 million requests (then $0.30 per million) and 30 million CPU-ms (then $0.02 per million) a month",
+    freeRequestsPerDay: 100_000,
+    freeCpuMs: 10,
+    files: { free: 20_000, paid: 100_000 },
+    fileMiB: 25,
+  },
+};
+
+/**
+ * What the phases need to know about GitHub Pages (`github-pages`): no server, no price, and
+ * GitHub's published limits and terms with their sources and the day they were read.
+ */
+export interface GithubPagesProfile {
+  id: "github-pages";
+  /** `GitHub Pages (no server)`. */
+  displayName: string;
+  limits: {
+    /** The day the limits below were read. */
+    asOf: string;
+    /** GitHub's Pages limits page and its terms for Pages. */
+    sources: readonly string[];
+    /** The largest site, in GB. */
+    siteGb: number;
+    /** The soft limit of traffic a month, in GB. */
+    trafficGbPerMonth: number;
+  };
+}
+
+const GITHUB_PAGES: GithubPagesProfile = {
+  id: "github-pages",
+  displayName: "GitHub Pages (no server)",
+  limits: {
+    asOf: "2026-10-23T00:00:00.000Z",
+    sources: [
+      "https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits",
+      "https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features#pages",
+    ],
+    siteGb: 1,
+    trafficGbPerMonth: 100,
+  },
+};
+
 const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
   hetzner: HETZNER,
   digitalocean: DIGITALOCEAN,
@@ -244,17 +334,30 @@ export const VPS_PROVIDERS: readonly CloudProvider[] = ["hetzner", "digitalocean
 
 /**
  * The provider's profile, including `own` ("Your own server"), `portainer` ("My existing
- * Portainer", see {@link PortainerProfile}) and `localhost` ("This computer", see
- * {@link LocalhostProfile}).
+ * Portainer", see {@link PortainerProfile}), `localhost` ("This computer", see
+ * {@link LocalhostProfile}) and the server-less targets (see {@link CloudflareHostingProfile} and
+ * {@link GithubPagesProfile}), which are not in {@link VPS_PROVIDERS}.
  */
 export function providerProfile(id: "portainer"): PortainerProfile;
 export function providerProfile(id: "localhost"): LocalhostProfile;
+export function providerProfile(id: "cloudflare-workers"): CloudflareHostingProfile;
+export function providerProfile(id: "github-pages"): GithubPagesProfile;
+export function providerProfile(
+  id: ServerlessProvider,
+): CloudflareHostingProfile | GithubPagesProfile;
 export function providerProfile(id: VpsProviderId): ProviderProfile;
 export function providerProfile(
-  id: VpsProviderId | "portainer" | "localhost",
-): ProviderProfile | PortainerProfile | LocalhostProfile {
+  id: VpsProviderId | "portainer" | "localhost" | ServerlessProvider,
+):
+  | ProviderProfile
+  | PortainerProfile
+  | LocalhostProfile
+  | CloudflareHostingProfile
+  | GithubPagesProfile {
   if (id === "portainer") return PORTAINER;
   if (id === "localhost") return LOCALHOST;
+  if (id === "cloudflare-workers") return CLOUDFLARE_HOSTING;
+  if (id === "github-pages") return GITHUB_PAGES;
   const profile = PROFILES[id];
   if (profile === undefined) {
     throw new OpsCrewError("INVALID_INPUT", `OpsCrew does not know the server provider "${id}".`, {

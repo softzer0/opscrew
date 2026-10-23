@@ -141,7 +141,8 @@ const ASTRO_CONFIG = /^astro\.config\.[cm]?[jt]s$/;
 const DEV_DOCKERFILE =
   /^(?:dockerfile\.(?:dev|development|test|local)|(?:dev|development|test|local)\.dockerfile)$/i;
 
-type JsPackageManager = "npm" | "pnpm" | "yarn" | "bun";
+/** The package managers of a JavaScript project. */
+export type JsPackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type PyPackageManager = "pip" | "poetry" | "uv" | "pipenv";
 
 const LANGUAGE_BY_EXTENSION: Record<string, Language> = {
@@ -221,7 +222,8 @@ function jsInstallCommand(pm: JsPackageManager, locked: boolean, berry: boolean)
   }
 }
 
-function jsExec(pm: JsPackageManager): string {
+/** How the package manager runs a package's binary: `npx`, `pnpm exec`, `yarn`, `bunx`. */
+export function jsExec(pm: JsPackageManager): string {
   return { npm: "npx", pnpm: "pnpm exec", yarn: "yarn", bun: "bunx" }[pm];
 }
 
@@ -250,7 +252,11 @@ function builtEntryPoint(
 }
 
 /** `pm run <script>` (or the workspace-filtered form for a monorepo member). */
-function jsRun(pm: JsPackageManager, script: string, member?: { name: string; dir: string }) {
+export function jsRun(
+  pm: JsPackageManager,
+  script: string,
+  member?: { name: string; dir: string },
+) {
   const start = script === "start";
   if (member) {
     switch (pm) {

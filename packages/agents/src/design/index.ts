@@ -17,3 +17,4 @@ export {
   type RunDesignOptions,
   runDesign,
 } from "./run";
+export { serverlessTargetsFor } from "./serverless";

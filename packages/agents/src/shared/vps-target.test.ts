@@ -9,7 +9,6 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { runDesign } from "../design/run";
 import { runDestroy } from "../destroy/run";
 import { runDns } from "../dns/run";
 import { buyDomain, connectDomain } from "../domain";
@@ -275,7 +274,6 @@ describe.each([
     const deps = await serverlessProject(runner);
     const provider = serverlessPlan().target.provider;
     const commands: [string, () => Promise<unknown>][] = [
-      ["`opscrew provision`", () => runProvision(deps)],
       ["`opscrew dns`", () => runDns(deps, { domain: "docs.example.com" })],
       ["Previewing the deployment files", () => previewDeploymentFiles(deps)],
       ["`opscrew verify`", () => runVerify(deps)],
@@ -295,14 +293,32 @@ describe.each([
     expect(provider).toBe(github ? "github-pages" : "cloudflare-workers");
   });
 
-  it("is not offered by the interview, design or a new environment yet", async () => {
+  it("reaches its own provision after the repository checks, with no Dockerfile, and stops there", async () => {
+    const runner = new ScriptedRunner((_command, args) => ({
+      exitCode: 0,
+      stdout: args.includes("--is-inside-work-tree") ? "true\n" : "",
+      stderr: "",
+    }));
+    const deps = await serverlessProject(runner);
+    await expect(runProvision(deps)).rejects.toMatchObject(notYet("`opscrew provision`"));
+    // Only git's repository check ran: no engine, no SSH, no Dockerfile check.
+    expect(runner.calls.map((call) => call.args.at(-1))).toEqual(["--is-inside-work-tree"]);
+    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
+  });
+
+  it("is an interview answer with no region, and a new environment refuses it yet", async () => {
     const provider = serverlessPlan().target.provider;
     const now = new Date("2026-10-23T10:00:00.000Z");
-    expect(refusal(() => answersToRequirements({ provider }, { now }))).toMatchObject(
-      notYet("`opscrew interview`"),
+    const answered = answersToRequirements(
+      { ...makeRequirements({ provider }), domain: "docs.example.com", dnsProvider: "cloudflare" },
+      { now },
     );
-    // A previous answer for it is no default: the question does not offer it.
+    expect(answered).toMatchObject({ provider, domain: "docs.example.com" });
+    expect(answered.region).toBeUndefined();
+    // A previous answer for it is the default only while the question offers it.
     expect(defaultProvider({ provider })).toBe("hetzner");
+    const offered = github ? "github-pages" : "cloudflare-workers";
+    expect(defaultProvider({ provider }, { serverless: [offered] })).toBe(provider);
 
     const deps = await createTestPhaseDeps();
     await writeArtifact("architecture", deps.paths.files.architecture, {
@@ -316,8 +332,6 @@ describe.each([
     });
     const { region: _region, ...requirements } = makeRequirements({ provider });
     await writeArtifact("requirements", deps.paths.files.requirements, requirements);
-    await expect(runDesign(deps)).rejects.toMatchObject(notYet("`opscrew design`"));
-
     await writeArtifact("plan", deps.paths.files.plan, testPlan());
     const staging = await createTestPhaseDeps({ root: deps.paths.root, environment: "staging" });
     await expect(addEnvironment(staging, { answers: { provider } })).rejects.toMatchObject(
@@ -331,7 +345,7 @@ describe.each([
     expect(lines[0]).toBe(`Proxy: none (${github ? "GitHub" : "Cloudflare"} serves the site)`);
   });
 
-  it("needs no server provider token in opscrew init", async () => {
+  it("checks its own tokens in opscrew init, never a server provider's", async () => {
     const deps = await serverlessProject();
     const checks = await runInitChecks(deps, {
       offline: true,
@@ -339,8 +353,10 @@ describe.each([
     });
     expect(checks.find((check) => check.id === "provider")).toMatchObject({
       title: name,
-      status: "skip",
-      message: `Not needed: the app has no server on ${name}, so it needs no server provider token.`,
+      status: "fail",
+      message: github
+        ? expect.stringContaining("No GitHub token is set")
+        : "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN is not set: the deploy workflow needs a token of its own that holds only Account → Workers Scripts → Edit.",
     });
   });
 

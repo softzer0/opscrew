@@ -21,6 +21,7 @@ import {
   type RunnerRepository,
 } from "../runners";
 import { readRecord, readRepositoryCopy, requireOwnCopy } from "../secrets/store";
+import { provisionCloudflareWorkers, provisionGithubPages } from "../serverless";
 import {
   addressFromOutputs,
   approvalEntry,
@@ -285,7 +286,8 @@ async function provisionFlow(
     if (phase !== "provision") throw localhostNotSupported(`\`${command}\``);
     return provisionLocalhost(deps, plan, options);
   }
-  if (isServerlessProvider(plan.target.provider)) {
+  // `opscrew dns` stays refused for the server-less targets: provision manages their DNS.
+  if (isServerlessProvider(plan.target.provider) && phase !== "provision") {
     throw serverlessNotSupported(`\`${command}\``, plan.target.provider);
   }
   const requirements = await readRequirements(deps);
@@ -298,6 +300,14 @@ async function provisionFlow(
   await requireOwnHostnames(deps.paths, plan);
   requireOwnCopy(deps.paths, await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
   const git = await requireGitRepo(deps);
+  // A server-less site needs no Dockerfile, server or deploy key.
+  if (isServerlessProvider(plan.target.provider)) {
+    const saved = await savedInfrastructureHashes(deps, options, plan);
+    const input = { plan, requirements, git, saved };
+    return plan.target.provider === "cloudflare-workers"
+      ? provisionCloudflareWorkers(deps, options, input)
+      : provisionGithubPages(deps, options, input);
+  }
   await requireDockerfile(deps, git, plan);
   if (plan.target.provider === "portainer") {
     // The user's Portainer: no server, SSH or deploy key; stacks through Portainer's API.

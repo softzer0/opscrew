@@ -24,7 +24,6 @@ import {
   FRAMEWORK_ENV,
   hostListKind,
   STORAGE_VARIABLES,
-  serverlessNotSupported,
   serviceAppVariables,
   serviceUrlKind,
   storageVariableKind,
@@ -42,6 +41,7 @@ import {
 import { appNameFor, type Components, designComponents } from "./components";
 import type { OwnServerAccess, OwnServerServing } from "./own";
 import type { PortainerDesignChoice } from "./portainer";
+import { type ServerlessDesignChoice, serverlessTargetFor } from "./serverless";
 import { sqliteMove } from "./storage";
 import { deployStrategyFor } from "./strategy";
 
@@ -72,8 +72,10 @@ export interface OptionToPlanInput {
   portainer?: PortainerDesignChoice;
   /** This computer only (required there): its CPU, the edge's ports and the image's source. */
   localhost?: LocalhostDesignChoice;
-  /** Who builds the image (`chooseBuilder`). */
-  build: BuilderChoice;
+  /** A server-less target only (required there): the site as detection describes it. */
+  serverless?: ServerlessDesignChoice;
+  /** Who builds the image (`chooseBuilder`); required on every target with an image. */
+  build?: BuilderChoice;
   /** What runs next to the app (`designComponents`); by default designed from the facts. */
   components?: Components;
 }
@@ -82,12 +84,14 @@ export interface OptionToPlanInput {
  * The plan's target for the chosen option: a cloud server with the provider's default image and
  * the option's backups, the user's own server with its architecture and access mode (never its
  * address or login, which stay in local state), the user's Portainer with the environment and
- * the chosen modes (never its address), or this computer with its CPU, ports and image source.
+ * the chosen modes (never its address), this computer with its CPU, ports and image source, or a
+ * server-less target with its site block (on Cloudflare a Worker named `appName`).
  */
 function targetFor(
   option: DesignOption,
-  input: Pick<OptionToPlanInput, "access" | "portainer" | "localhost" | "build">,
+  input: Pick<OptionToPlanInput, "access" | "portainer" | "localhost" | "build" | "serverless">,
   components: Components,
+  appName: string,
 ) {
   const { access, portainer } = input;
   const { target } = option;
@@ -107,7 +111,7 @@ function targetFor(
       throw new Error("A design for this computer needs its CPU and the edge's ports.");
     }
     return localhostTarget(input.localhost, {
-      builder: input.build.builder,
+      builder: input.build?.builder,
       cron: components.processes.cron.some((job) => job.enabled),
       sqlite: components.storage?.sqlite !== undefined,
     });
@@ -125,9 +129,11 @@ function targetFor(
       web: portainer.web,
     } as const;
   }
-  // Design offers no option for the server-less targets yet.
   if (isServerlessProvider(target.provider)) {
-    throw serverlessNotSupported("Designing an app", target.provider);
+    if (input.serverless === undefined) {
+      throw new Error("A design for a server-less target needs the site's detection.");
+    }
+    return serverlessTargetFor(input.serverless, appName);
   }
   return {
     provider: target.provider,
@@ -232,6 +238,10 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   if (components.processes.cron.some((job) => job.enabled && job.route !== undefined)) {
     env.set("CRON_SECRET", { name: "CRON_SECRET", secret: true, source: "generated" });
   }
+  const { build, serverless } = input;
+  // A server-less site is published on its domain by Cloudflare (always behind its proxy) or by
+  // GitHub (DNS only), and builds no image.
+  const pages = serverless?.provider === "github-pages";
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
   const ownDirect = option.target.provider === "own" && input.access === "public";
@@ -239,10 +249,12 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   // In a Portainer only the tunnel goes through Cloudflare: OpsCrew cannot keep visitors from
   // going around Cloudflare's proxy on a host it does not manage, so the other modes are DNS only.
   const dnsOnly =
+    pages ||
     (ownDirect && !webFilter) ||
     (option.target.provider === "portainer" && input.portainer?.web.mode !== "tunnel");
   const onCloudflare = requirements.dnsProvider === "cloudflare" ? requirements.domain : undefined;
-  if (onCloudflare !== undefined && !dnsOnly) {
+  // A Worker's custom domain gets a certificate of its own, so any depth below the zone works.
+  if (onCloudflare !== undefined && !dnsOnly && serverless === undefined) {
     refuseDeepDomain(onCloudflare, option.target.provider, input.access);
   }
   const dns: Record<string, unknown> =
@@ -255,25 +267,30 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
           ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
         };
 
-  const releaseCommand = releaseCommandInImage(facts);
-  const { build } = input;
+  let buildContext: string;
+  if (serverless !== undefined) buildContext = serverless.site.dir;
+  else if (build !== undefined) buildContext = buildContextFor(facts, build.builder);
+  else throw new Error("A design for a target with an image needs its image builder.");
+  const releaseCommand = serverless === undefined ? releaseCommandInImage(facts) : undefined;
   const tags = requirements.deployTags;
   // The user's own Dockerfile is built where detection found it; OpsCrew's goes into the app's
-  // folder.
+  // folder. A server-less site is built in its own folder, with no Dockerfile.
   const dockerfile =
-    build.builder === "own-dockerfile" && facts.docker.dockerfile !== undefined
-      ? facts.docker.dockerfile
-      : appDirOf(facts) !== "."
-        ? appDockerfile(facts).path
-        : undefined;
-  const buildContext = buildContextFor(facts, build.builder);
+    build === undefined
+      ? undefined
+      : build.builder === "own-dockerfile" && facts.docker.dockerfile !== undefined
+        ? facts.docker.dockerfile
+        : appDirOf(facts) !== "."
+          ? appDockerfile(facts).path
+          : undefined;
+  const name = appNameFor(facts);
 
   const plan = DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: input.createdAt ?? now,
     updatedAt: now,
     app: {
-      name: appNameFor(facts),
+      name,
       port: appPortFor(facts),
       healthPath: healthRouteFor(facts, input.signals).path,
       buildContext,
@@ -282,20 +299,24 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       memoryMb: components.app.memoryMb,
       env: [...env.values()],
-      build: {
-        builder: build.builder,
-        chosen: build.chosen,
-        reason: build.reason,
-        runtime: build.runtime,
-        probe: build.probe,
-        automatic: build.automatic,
-        // Where the app runs in the user's own image, as detection read it.
-        ...(build.builder === "own-dockerfile" && facts.build.workdir !== undefined
-          ? { workdir: facts.build.workdir }
-          : {}),
-      },
+      ...(build === undefined
+        ? {}
+        : {
+            build: {
+              builder: build.builder,
+              chosen: build.chosen,
+              reason: build.reason,
+              runtime: build.runtime,
+              probe: build.probe,
+              automatic: build.automatic,
+              // Where the app runs in the user's own image, as detection read it.
+              ...(build.builder === "own-dockerfile" && facts.build.workdir !== undefined
+                ? { workdir: facts.build.workdir }
+                : {}),
+            },
+          }),
     },
-    target: targetFor(option, input, components),
+    target: targetFor(option, input, components, name),
     deploy: deployStrategyFor(option, components.storage?.sqlite !== undefined),
     processes: components.processes,
     services: withServerThreads(components.services, option),
@@ -305,6 +326,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     codeChanges: input.codeChanges,
     dns,
     ...(webFilter ? { security: { httpAllowedFrom: "cloudflare" } } : {}),
+    // GitHub Pages' hostnames are DNS-only, so Cloudflare's WAF never sees their traffic.
+    ...(pages ? { security: { wafCustomRules: false } } : {}),
     cicd: {
       provider: "github-actions",
       registry: "ghcr",
@@ -314,7 +337,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         release: tags === "tag-and-release",
       },
     },
-    supplyChain: { sign: requirements.signImages ?? false },
+    // cosign signs an image, and a server-less site has none.
+    supplyChain: { sign: serverless === undefined && (requirements.signImages ?? false) },
   });
   for (const variable of storageEnv(facts, plan)) env.set(variable.name, variable);
   // The SQLite volume is mounted in the folder the app runs in, which OpsCrew must know (the user's

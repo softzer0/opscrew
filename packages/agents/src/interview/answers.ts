@@ -10,7 +10,7 @@ import {
   RequirementsSchema,
 } from "@opscrew/plan-schema";
 import { hostedKinds } from "../design/components";
-import { deepDomainProblem, serverlessNotSupported } from "../shared";
+import { deepDomainProblem } from "../shared";
 import { isBlank } from "./follow-ups";
 import {
   defaultProvider,
@@ -177,7 +177,7 @@ function keepAnswers(
  * describe a chosen app folder, then from the previous requirements. For a server the user already
  * has (`provider: own`) or an existing Portainer (`provider: portainer`) no region is needed and
  * none is recorded; their follow-up answers (`server.*`, `portainer.*`) are not requirements (see
- * `splitFollowUps`). Throws
+ * `splitFollowUps`). Cloudflare's hosting and GitHub Pages record no region either. Throws
  * `OpsCrewError("INVALID_INPUT")` listing unknown keys, missing required answers or invalid values.
  */
 export function answersToRequirements(
@@ -212,13 +212,14 @@ export function answersToRequirements(
   // for or recorded.
   const provider = given("provider") ? answers.provider : (previous?.provider ?? inferred.provider);
   const chosenProvider = typeof provider === "string" ? provider.trim().toLowerCase() : undefined;
-  // The schema knows the server-less targets, but the interview does not offer them yet.
-  if (isServerlessProvider(chosenProvider)) {
-    throw serverlessNotSupported("`opscrew interview`", chosenProvider);
-  }
   // This computer has no region, domain or DNS either: the app is served at its .localhost address.
   const localhost = chosenProvider === "localhost";
-  const ownServer = chosenProvider === "own" || chosenProvider === "portainer" || localhost;
+  // Nor does a server-less target, which has no location; design checks that it fits the app.
+  const ownServer =
+    chosenProvider === "own" ||
+    chosenProvider === "portainer" ||
+    localhost ||
+    isServerlessProvider(chosenProvider);
   const required: readonly QuestionId[] = [
     ...REQUIRED.filter((id) => !(ownServer && id === "region")),
     ...(appCandidates.length > 1 ? (["appDir"] as const) : []),
@@ -301,11 +302,12 @@ export function answersToRequirements(
   } else {
     // A Hetzner or DigitalOcean server is always served behind Cloudflare's proxy when its
     // domain is on Cloudflare; a server the user owns or a Portainer is checked with its serving
-    // answer.
+    // answer. A Worker's custom domain and GitHub Pages get certificates of their own.
     const { provider: chosen, dnsProvider, domain } = parsed.data;
     const deep =
       chosen !== "own" &&
       chosen !== "portainer" &&
+      !isServerlessProvider(chosen) &&
       dnsProvider === "cloudflare" &&
       domain !== undefined
         ? deepDomainProblem(

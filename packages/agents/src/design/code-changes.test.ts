@@ -40,6 +40,13 @@ describe("deriveCodeChanges", () => {
       files: ["src/app/page.tsx", "src/db.ts"],
       hardcodedPortFiles: ["server.ts"],
     });
+    // With no image (a server-less target) only the example env file and the secrets remain.
+    const signals = { files: ["src/app/page.tsx", "src/db.ts"], hardcodedPortFiles: ["server.ts"] };
+    expect(deriveCodeChanges(facts, undefined, scan, signals).map((c) => c.id)).toEqual([
+      "env-example",
+      "secret-removal-1",
+      "secret-removal-2",
+    ]);
     expect(changes.map((c) => [c.id, c.kind, c.path])).toEqual([
       ["dockerfile", "dockerfile", "Dockerfile"],
       ["dockerignore", "dockerignore", ".dockerignore"],

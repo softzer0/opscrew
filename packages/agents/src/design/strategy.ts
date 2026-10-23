@@ -1,4 +1,4 @@
-import type { DeployPlan, DesignOption } from "@opscrew/plan-schema";
+import { type DeployPlan, type DesignOption, isServerlessProvider } from "@opscrew/plan-schema";
 
 /** FR-1217: what a redeploy in the user's Portainer does. */
 export const PORTAINER_RECREATE_NOTE =
@@ -21,13 +21,15 @@ const ROLLING_MIN_MEMORY_GB = 1;
  * How a new version replaces the running one (FR-1215, FR-1217, FR-1313): `recreate` in a
  * Portainer, which recreates the stack, for an app on SQLite (`sqlite`), and on a server with less
  * than 1 GiB of memory (the provider's server type, or what inspection read on the user's own
- * server); `rolling` otherwise, also on this computer. The reason is present only for `recreate`.
+ * server); `rolling` otherwise, also on this computer and on a server-less target, whose host
+ * activates each new version itself. The reason is present only for `recreate`.
  */
 export function deployStrategyFor(
   option: Pick<DesignOption, "target">,
   sqlite = false,
 ): Pick<DeployPlan["deploy"], "strategy" | "reason"> {
   const { target } = option;
+  if (isServerlessProvider(target.provider)) return { strategy: "rolling" };
   if (target.provider === "portainer") {
     return { strategy: "recreate", reason: PORTAINER_RECREATE_NOTE };
   }

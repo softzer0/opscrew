@@ -15,6 +15,7 @@ import {
 import {
   ComponentNameSchema,
   type DeployPlan,
+  isServerlessProvider,
   type Money,
   type PlanService,
   PlanServiceSchema,
@@ -182,6 +183,24 @@ function keepsExternal(
   const keeps = (kind: ServiceKind) => answers[kind] ?? hosted.has(kind);
   return (kind) =>
     keeps(kind) || (kind === "postgres" && hosted.has("supabase") && keeps("supabase"));
+}
+
+/**
+ * The app's services OpsCrew would run next to it on a server, by kind with their names: each kind
+ * OpsCrew can run (Redis as Valkey) that the app does not keep where it is hosted
+ * ({@link keepsExternal}), in schema order. A server-less target has no server for them.
+ */
+export function selfHostedServices(
+  facts: ProjectFacts,
+  answers: Requirements["keepExternalServices"],
+): { kind: ServiceKind; title: string }[] {
+  const keeps = keepsExternal(facts, answers);
+  const used = new Set(facts.services.map((service) => service.kind));
+  return ServiceKindSchema.options.flatMap((kind) => {
+    const runs = RUNS[kind];
+    if (runs === undefined || !used.has(kind) || keeps(kind)) return [];
+    return [{ kind, title: kind === "redis" ? "Redis" : serviceSpec(runs).title }];
+  });
 }
 
 /** `text` in the plan's name form (`[a-z][a-z0-9-]*`), or empty: `celery_beat` → `celery-beat`. */
@@ -995,9 +1014,9 @@ export function designComponents(input: {
       : [];
   // Whether the server has the vCPUs Dragonfly needs: OpsCrew sizes a server it creates for it,
   // the user's own server has its inspected count, and a Portainer host or this computer is not
-  // known.
+  // known. A server-less target has no server at all.
   const dragonflyFits =
-    portainer || local
+    portainer || local || isServerlessProvider(requirements.provider)
       ? undefined
       : requirements.provider !== "own"
         ? true

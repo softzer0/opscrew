@@ -8,10 +8,12 @@ import {
   type QuestionId,
   QuestionSchema,
   type Requirements,
+  type ServerlessProvider,
   type ServiceKind,
 } from "@opscrew/plan-schema";
 import { frameworkName } from "../analyze/summary";
 import { hostedKinds } from "../design/components";
+import { providerProfile } from "../providers";
 import { withDefault } from "./follow-ups";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
@@ -44,7 +46,20 @@ export interface InterviewContext {
    * its name becomes public (FR-1219).
    */
   repositoryPrivate?: boolean;
+  /**
+   * The server-less targets that fit the app (`serverlessTargetsFor`), which the provider question
+   * offers; none without it.
+   */
+  serverless?: readonly ServerlessProvider[];
 }
+
+/** The provider question's hints for the server-less targets. */
+const SERVERLESS_HINTS: Readonly<Record<ServerlessProvider, string>> = {
+  "cloudflare-workers":
+    "Cloudflare serves the site from its edge, with no server to rent or patch; free for static files, and server-side rendering for Astro, Next.js, Nuxt and SvelteKit; needs the domain's DNS on Cloudflare",
+  "github-pages":
+    "GitHub publishes the static site from your repository's workflow at no cost; public repositories, or private ones on a paid GitHub plan; no custom headers and no commercial use; needs the domain's DNS on Cloudflare",
+};
 
 /** FR-1219: what signing makes public for a private repository. */
 export function signingPublicLog(repositoryPrivate: boolean | undefined): string | undefined {
@@ -57,14 +72,16 @@ export function signingPublicLog(repositoryPrivate: boolean | undefined): string
 
 /**
  * The provider default: the previous answer, else the one inferred from tokens, else Hetzner. A
- * previous server-less target is no default: the question does not offer it yet.
+ * previous server-less target is the default only while the question offers it
+ * (`context.serverless`).
  */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): DeployProvider {
-  const answered = isServerlessProvider(previous?.provider) ? undefined : previous?.provider;
-  return answered ?? context.inferredProvider ?? "hetzner";
+  const before = previous?.provider;
+  const offered = !isServerlessProvider(before) || (context.serverless ?? []).includes(before);
+  return (offered ? before : undefined) ?? context.inferredProvider ?? "hetzner";
 }
 
 /**
@@ -106,8 +123,9 @@ function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
  * one to deploy (`appDir`). The provider question offers Hetzner Cloud, DigitalOcean and a server
  * the user already has (`own`, whose follow-ups come from `buildServerQuestions`) and an existing
  * Portainer (`portainer`, whose follow-ups come from `buildPortainerQuestions`); for both the
- * region is ignored. This computer (`localhost`) ignores the region, the domain and its DNS. It
- * defaults to the previous answer, then `context.inferredProvider`, then
+ * region is ignored. This computer (`localhost`) ignores the region, the domain and its DNS.
+ * Cloudflare's hosting and GitHub Pages are offered where they fit (`context.serverless`); they
+ * ignore the region too. It defaults to the previous answer, then `context.inferredProvider`, then
  * `hetzner`. The last two offer image signing (saying what a private repository makes public,
  * from `context.repositoryPrivate`) and deploy tags, both off by default. The questions about the
  * app's components (its hosted services, its workers' commands) come from
@@ -175,6 +193,11 @@ export function buildQuestions(
           label: "DigitalOcean",
           hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
         },
+        ...(context.serverless ?? []).map((id) => ({
+          value: id,
+          label: providerProfile(id).displayName,
+          hint: SERVERLESS_HINTS[id],
+        })),
         {
           value: "own",
           label: "A server you already have",

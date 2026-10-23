@@ -262,11 +262,12 @@ function hasEnvExample(facts: ProjectFacts, signals: CodeChangeSignals): boolean
  * for kinds that can repeat (`port-config-1`, `secret-removal-2`). All start `pending`. The
  * Dockerfile change is derived only when OpsCrew's Dockerfile builds the image (`builder`
  * `generated-dockerfile`): Buildpacks, Railpack and the user's own Dockerfile need none. The
- * `.dockerignore` goes to the root of the build context ({@link buildContextFor}).
+ * `.dockerignore` goes to the root of the build context ({@link buildContextFor}). With no image
+ * (`builder` undefined, a server-less target) only `.env.example` and the secret removals apply.
  */
 export function deriveCodeChanges(
   facts: ProjectFacts,
-  builder: ImageBuilder,
+  builder: ImageBuilder | undefined,
   scan?: ScanFindings,
   signals: CodeChangeSignals = {},
 ): CodeChange[] {
@@ -285,8 +286,9 @@ export function deriveCodeChanges(
     );
   }
   // Only the `.dockerignore` at the root of the build context applies to the build.
-  const dockerignore = under(buildContextFor(facts, builder), ".dockerignore");
-  if (facts.docker.dockerignore !== dockerignore) {
+  const dockerignore =
+    builder === undefined ? undefined : under(buildContextFor(facts, builder), ".dockerignore");
+  if (dockerignore !== undefined && facts.docker.dockerignore !== dockerignore) {
     add(
       "dockerignore",
       "dockerignore",
@@ -296,7 +298,7 @@ export function deriveCodeChanges(
   }
 
   const health = healthRouteFor(facts, signals);
-  if (health.file !== undefined) {
+  if (builder !== undefined && health.file !== undefined) {
     add(
       "health-endpoint",
       "health-endpoint",
@@ -305,7 +307,7 @@ export function deriveCodeChanges(
     );
   }
 
-  if (facts.appKind !== "static-spa") {
+  if (builder !== undefined && facts.appKind !== "static-spa") {
     (signals.hardcodedPortFiles ?? []).forEach((file, i) => {
       add(
         `port-config-${i + 1}`,
@@ -326,7 +328,7 @@ export function deriveCodeChanges(
   }
 
   const next = nextDir(facts);
-  if (next !== undefined && facts.appKind !== "static-spa") {
+  if (builder !== undefined && next !== undefined && facts.appKind !== "static-spa") {
     const config = signals.nextConfig;
     const inFolder = !isRootDir(next);
     if (!config?.standalone || (inFolder && config.tracingRoot === false)) {
@@ -343,7 +345,7 @@ export function deriveCodeChanges(
   }
 
   const django = signals.djangoSettings;
-  if (django !== undefined && !django.staticRoot) {
+  if (builder !== undefined && django !== undefined && !django.staticRoot) {
     add(
       "build-config",
       "build-config",

@@ -9,7 +9,7 @@ import {
   plural,
   toPosixRelative,
 } from "@opscrew/core";
-import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
+import { detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/detect";
 import { type EdgeProxy, edgeMemoryMb, edgeProxy, serviceSpec } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -18,12 +18,14 @@ import {
   type DesignOption,
   EnvironmentSchema,
   isServerlessProvider,
+  isServerlessTarget,
   type PlanService,
   type ProjectFacts,
   type Region,
   type Requirements,
   readArtifact,
   readOptionalArtifact,
+  type ServerlessProvider,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { appCandidatesText } from "../analyze/summary";
@@ -68,14 +70,13 @@ import {
   readPortainerConnection,
   serverAddress,
   serverlessName,
-  serverlessNotSupported,
   serviceFilledNames,
 } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { vercelAdditions } from "./additions";
 import { backgroundJobsWarning } from "./background-jobs";
-import { chooseBuilder } from "./builder";
+import { type BuilderChoice, chooseBuilder } from "./builder";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -115,6 +116,16 @@ import {
   portainerDesignChoice,
 } from "./portainer";
 import { releaseCommandNote } from "./release";
+import { resolveRuntime } from "./runtime-version";
+import {
+  buildServerlessOption,
+  pagesAllowedFor,
+  requireServerlessFit,
+  type ServerlessDesignChoice,
+  serverlessCodeChanges,
+  serverlessDeployLine,
+  serverlessSecretWarnings,
+} from "./serverless";
 import { ownServerMemory, type ServerApp } from "./sizing";
 import { checkSqliteFolder, sqliteOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
@@ -253,6 +264,8 @@ export interface DesignPreview {
   portainer?: PortainerDesignChoice;
   /** This computer: its CPU, the edge's ports and where the image comes from. */
   localhost?: LocalhostDesignChoice;
+  /** A server-less target: the site as detection describes it, and the Node.js its build uses. */
+  serverless?: ServerlessDesignChoice;
   /** What runs next to the app, with the previous plan's edits kept. */
   components: Components;
   /** One plain sentence per component, licence, storage choice and kept edit. */
@@ -470,9 +483,6 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   const resolvedFacts =
     facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const answered = await readEnvironmentRequirements(paths);
-  if (isServerlessProvider(answered.provider)) {
-    throw serverlessNotSupported("`opscrew design`", answered.provider);
-  }
   // This computer has no region, domain or DNS, whatever prod's answers say.
   const requirements = answered.provider === "localhost" ? onThisComputer(answered) : answered;
   await requireChosenApp(paths.root, resolvedFacts, requirements);
@@ -555,6 +565,73 @@ async function priceLocalhost(
   };
 }
 
+/**
+ * The single option on a server-less target (FR-1602): the site as detection describes it, refused
+ * plainly when the target does not fit the app (`requireServerlessFit`), priced from the
+ * provider's published plans, with the Node.js version the build uses (kept from `previous`'s site
+ * as the runtime rules keep a recorded version) and a warning when its price is over the budget.
+ */
+async function priceServerless(
+  deps: PhaseDeps,
+  provider: ServerlessProvider,
+  { facts, requirements }: DesignInputs,
+  warnings: string[],
+  designed: Designed,
+  previous: DeployPlan | undefined,
+): Promise<DesignPreview> {
+  const warn = warner(deps, warnings);
+  const site = await detectSite(deps.paths.root, facts);
+  const pages = provider === "github-pages" ? await pagesAllowedFor(deps, facts) : undefined;
+  requireServerlessFit(provider, facts, site, requirements, pages);
+  const recorded =
+    previous !== undefined && isServerlessTarget(previous.target)
+      ? previous.target.site.nodeVersion
+      : undefined;
+  const node =
+    site.tool === "node"
+      ? resolveRuntime(
+          "node",
+          facts,
+          recorded === undefined ? undefined : { language: "node", version: recorded },
+        )
+      : undefined;
+  for (const warning of node?.warnings ?? []) warn(warning);
+  const choice: ServerlessDesignChoice = {
+    provider,
+    site,
+    ...(node?.runtime.version === undefined ? {} : { nodeVersion: node.runtime.version }),
+  };
+  const option = buildServerlessOption({
+    choice,
+    requirements,
+    externalServices: designed.components.externalServices,
+    ...(pages === undefined ? {} : { pages }),
+  });
+  const say = (text: string) => deps.redactor.redact(text);
+  deps.reporter.info(say(designOptionLine(option)));
+  for (const tradeoff of option.tradeoffs) deps.reporter.info(say(`  - ${tradeoff}`));
+  const budget = requirements.budgetMonthly;
+  if (!option.fitsBudget) {
+    const inBudget =
+      option.cost.monthly.currency === budget.currency
+        ? ""
+        : ` (about ${formatMoney(convertMoney(option.cost.monthly, budget.currency))})`;
+    warn(
+      `${option.title} costs ${formatMoney(option.cost.monthly)}/month${inBudget} for your expected traffic, over your budget of ${formatMoney(budget)}/month. Raise the budget with \`opscrew interview\`, or choose a server target there.`,
+    );
+  }
+  appWarnings(facts, designed.components, warn);
+  return {
+    options: [option],
+    priceSource: "static",
+    warnings,
+    facts,
+    requirements,
+    serverless: choice,
+    ...designed,
+  };
+}
+
 async function priceOptions(
   deps: PhaseDeps,
   inputs: DesignInputs,
@@ -588,6 +665,9 @@ async function priceOptions(
   }
   if (requirements.provider === "localhost") {
     return priceLocalhost(deps, inputs, warnings, designed, basis);
+  }
+  if (isServerlessProvider(requirements.provider)) {
+    return priceServerless(deps, requirements.provider, inputs, warnings, designed, previous);
   }
   // The server's proxy carries over from the earlier plan (`keepPlanSettings`); a server-less
   // plan had none.
@@ -730,23 +810,31 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const now = deps.clock.now();
 
   const chosen = await pick(designOptions, options);
-  const build = chooseBuilder(
-    facts,
-    basis?.plan ?? previous,
-    chosen.target.architecture === "arm" ? "arm64" : "amd64",
-  );
-  if ("refused" in build) {
-    throw new OpsCrewError("INVALID_INPUT", build.refused, {
-      hint: "Change app.build.builder in opscrew/plan.yaml, then run `opscrew design` again.",
-    });
+  // A server-less site builds no image, so no builder is chosen for it.
+  const { serverless } = preview;
+  let build: BuilderChoice | undefined;
+  if (serverless === undefined) {
+    const choice = chooseBuilder(
+      facts,
+      basis?.plan ?? previous,
+      chosen.target.architecture === "arm" ? "arm64" : "amd64",
+    );
+    if ("refused" in choice) {
+      throw new OpsCrewError("INVALID_INPUT", choice.refused, {
+        hint: "Change app.build.builder in opscrew/plan.yaml, then run `opscrew design` again.",
+      });
+    }
+    for (const warning of choice.warnings) warn(warning);
+    build = choice;
   }
-  for (const warning of build.warnings) warn(warning);
 
   const [signals, scan] = await Promise.all([
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
     readScanReport(paths.files.scanReportJson),
   ]);
-  const codeChanges = deriveCodeChanges(facts, build.builder, scan, signals);
+  const derivedChanges = deriveCodeChanges(facts, build?.builder, scan, signals);
+  const codeChanges =
+    serverless === undefined ? derivedChanges : serverlessCodeChanges(serverless, derivedChanges);
   const planFor = (planned: Components) =>
     optionToPlan(chosen, {
       facts,
@@ -759,7 +847,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
       ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
       ...(preview.localhost !== undefined ? { localhost: preview.localhost } : {}),
-      build,
+      ...(serverless !== undefined ? { serverless } : {}),
+      ...(build !== undefined ? { build } : {}),
       components: planned,
     });
   let planned = components;
@@ -837,8 +926,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const inPortainer = chosen.target.provider === "portainer" || onComputer;
   const ownsServer = chosen.target.provider === "own" || inPortainer;
   const cost = formatMoney(chosen.cost.monthly);
+  // Nothing needs no conversion (a free server-less site).
   const inBudget =
-    chosen.cost.monthly.currency === budget.currency
+    chosen.cost.monthly.currency === budget.currency || chosen.cost.monthly.amount === 0
       ? ""
       : ` (about ${formatMoney(convertMoney(chosen.cost.monthly, budget.currency))})`;
   const price = onComputer
@@ -853,12 +943,19 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       `${plan === previous ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
   );
-  const buildLines = buildStatusLines(plan, fresh.deploy).map(say);
-  const supplyLines = supplyChainLines(plan);
+  // A server-less site has no server: no image builder or strategy, memory, migrations, image
+  // signing or proxy of its own; its secrets get warnings of their own (FR-1605).
+  const buildLines = (
+    serverless === undefined
+      ? buildStatusLines(plan, fresh.deploy)
+      : [serverlessDeployLine(serverless.provider)]
+  ).map(say);
+  const supplyLines = serverless === undefined ? supplyChainLines(plan) : [];
   for (const line of buildLines) reporter.info(line);
+  if (serverless !== undefined) for (const warning of serverlessSecretWarnings(plan)) warn(warning);
   // The components, with each one's memory on the chosen server (SC-1308).
   const serverMb = chosen.target.memoryGb * 1024;
-  const edgeMb = edgeMemoryMb(edgeProxy(plan));
+  const edgeMb = serverless === undefined ? edgeMemoryMb(edgeProxy(plan)) : 0;
   const componentLines = [
     // Copied from a source, the components are its plan's, not those designed from the code here.
     ...(source !== undefined
@@ -869,19 +966,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
           ),
           ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
         ]),
-    ...(inPortainer
+    ...(inPortainer || serverless !== undefined
       ? []
       : [memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
   const headroom = memoryHeadroom(serverMb, appMemoryMb(plan), edgeMb);
-  if (!ownsServer && headroom.low) warn(lowHeadroomText(chosen.target.serverType, headroom.free));
-  const migrations = releaseCommandNote(plan, facts);
+  if (!ownsServer && serverless === undefined && headroom.low) {
+    warn(lowHeadroomText(chosen.target.serverType, headroom.free));
+  }
+  const migrations = serverless === undefined ? releaseCommandNote(plan, facts) : undefined;
   if (migrations?.warning) warn(migrations.text);
   else if (migrations !== undefined) reporter.info(say(migrations.text));
   for (const line of supplyLines) reporter.info(line);
   // vercel.json's routing rules become the app's additions for the server's proxy (FR-1446).
-  const additions = await vercelAdditions(paths.root, plan, facts);
+  const additions =
+    serverless === undefined
+      ? await vercelAdditions(paths.root, plan, facts)
+      : { lines: [], warnings: [] };
   const additionLines = additions.lines.map(say);
   for (const line of additionLines) reporter.info(line);
   for (const warning of additions.warnings) warn(warning);
@@ -925,8 +1027,8 @@ function samePlan(a: DeployPlan, b: DeployPlan): boolean {
 /**
  * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>`, its own
  * workflow and infrastructure root, and its `environment` block (with the deploy source and runner
- * `opscrew env add` chose) and branch (`--branch`). An earlier plan's root, block and branch are
- * kept over these (`keepPlanSettings`).
+ * `opscrew env add` chose) and branch (`--branch`). On Cloudflare's hosting its Worker is named
+ * like its app. An earlier plan's root, block and branch are kept over these (`keepPlanSettings`).
  */
 function environmentNames(
   plan: DeployPlan,
@@ -934,10 +1036,14 @@ function environmentNames(
   name: string,
   options: Pick<RunDesignOptions, "environment" | "branch">,
 ): DeployPlan {
+  const app = `${prodPlan.app.name}-${name}`;
   return {
     ...plan,
     environment: EnvironmentSchema.parse({ ...options.environment, name }),
-    app: { ...plan.app, name: `${prodPlan.app.name}-${name}` },
+    app: { ...plan.app, name: app },
+    ...(plan.target.provider === "cloudflare-workers"
+      ? { target: { ...plan.target, worker: app } }
+      : {}),
     infra: { ...plan.infra, dir: environmentInfraDir(name) },
     cicd: {
       ...plan.cicd,
@@ -1149,12 +1255,17 @@ function providerSwitchBlock(
   const from = providerName(current);
   const to = providerName(requested);
   const deployed = hasServer || hasDeployment(previous);
-  const serverless = isServerlessProvider(current) ? current : undefined;
+  // `opscrew retarget` moves an app neither to nor from a server-less target.
+  const serverless = isServerlessProvider(current)
+    ? current
+    : isServerlessProvider(requested)
+      ? requested
+      : undefined;
   const owned =
     current === "own" ||
     current === "portainer" ||
     current === "localhost" ||
-    serverless !== undefined;
+    isServerlessProvider(current);
   const where = deployed
     ? `Your app is deployed ${current === "portainer" ? "in" : "on"} ${from}`
     : `An earlier apply may have created resources ${owned ? "for" : "at"} ${from}`;
@@ -1265,7 +1376,8 @@ async function requireChosenApp(
  * while the app's domain is still on Cloudflare inside that zone. A Portainer subdomain the new
  * DNS settings no longer allow stops design before plan.yaml changes. Image retention is kept, and
  * signing and deploy tags too unless the interview was answered after the previous plan was
- * written. The deploy settings come from {@link keptDeploy}. Of the app, each variable that is
+ * written. A server-less plan keeps no signing and no Portainer CE, and GitHub Pages no WAF rules.
+ * The deploy settings come from {@link keptDeploy}. Of the app, each variable that is
  * still there keeps its `secret` (secret if either plan says so), `source` and `optional`, except
  * the variables what runs fills in either plan (`serviceFilledNames`), which follow it, and one it
  * filled that nothing fills now, which is the user's again; and the user's own
@@ -1295,6 +1407,10 @@ function keepPlanSettings(
   const answeredLater = Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const filledBefore = serviceFilledNames(previous);
   const filledNow = serviceFilledNames(fresh);
+  // A server-less site has no image to sign and no server for Portainer CE, and GitHub Pages'
+  // DNS-only hostnames no WAF rules, whatever an earlier plan had.
+  const serverless = isServerlessTarget(fresh.target);
+  const keptSecurity = previous.dns.proxied === fresh.dns.proxied ? previous.security : security;
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
     ...("edge" in fresh.target && "edge" in previous.target
@@ -1324,10 +1440,13 @@ function keepPlanSettings(
     })),
     infra: previous.infra,
     ...(previous.environment === undefined ? {} : { environment: previous.environment }),
-    security: previous.dns.proxied === fresh.dns.proxied ? previous.security : security,
+    security:
+      fresh.target.provider === "github-pages"
+        ? { ...keptSecurity, wafCustomRules: false }
+        : keptSecurity,
     approvals: previous.approvals,
     deployment: previous.deployment,
-    ...(previous.portainer === undefined ? {} : { portainer: previous.portainer }),
+    ...(previous.portainer === undefined || serverless ? {} : { portainer: previous.portainer }),
     deploy: keptDeploy(fresh, previous),
     cicd: {
       ...fresh.cicd,
@@ -1336,7 +1455,7 @@ function keepPlanSettings(
       imageRetention: previous.cicd.imageRetention,
       ...(answeredLater ? {} : { deployTags: previous.cicd.deployTags }),
     },
-    supplyChain: answeredLater ? fresh.supplyChain : previous.supplyChain,
+    supplyChain: answeredLater || serverless ? fresh.supplyChain : previous.supplyChain,
   });
   if (kept.success) return kept.data;
   const portainer = previous.portainer;

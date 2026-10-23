@@ -8,6 +8,7 @@ import {
 } from "@opscrew/core";
 import { detectProject, detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
+  isServerlessProvider,
   type ProjectFacts,
   type Question,
   type Requirements,
@@ -16,6 +17,7 @@ import {
 } from "@opscrew/plan-schema";
 import { runAnalyze } from "../analyze";
 import type { PhaseDeps } from "../context";
+import { serverlessTargetsFor } from "../design/serverless";
 import { defaultBranchOf, remoteEnvironmentBranches } from "../environments/branches";
 import { setupNote } from "../environments/setup";
 import { PORTAINER_TOKEN_VAR, providerFromTokens } from "../providers";
@@ -25,6 +27,7 @@ import {
   type OwnServerConnection,
   readOwnServer,
   readPortainerConnection,
+  serverlessName,
   setAsideServerAddresses,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
@@ -334,11 +337,18 @@ export async function runInterview(
     const previous = await loadPrevious(deps);
     const appCandidates = await appCandidatesFor(deps, facts);
     const inferredProvider = providerFromTokens(deps.env);
+    // Offered where they fit the app, as design will check them.
+    const serverless = await serverlessTargetsFor(
+      paths.root,
+      facts,
+      previous?.keepExternalServices ?? {},
+    );
     const context = {
       ...(inferredProvider !== undefined ? { inferredProvider } : {}),
       ...(options.repositoryPrivate !== undefined
         ? { repositoryPrivate: options.repositoryPrivate }
         : {}),
+      ...(serverless.length > 0 ? { serverless } : {}),
     };
     const questions = buildQuestions(facts, previous, appCandidates, context);
     if (previous !== undefined) reporter.info("Your previous answers are pre-filled.");
@@ -466,9 +476,11 @@ export async function runInterview(
         ? ", your own server"
         : requirements.provider === "portainer"
           ? ", your Portainer"
-          : requirements.region === undefined
-            ? ""
-            : `, ${requirements.region}`;
+          : isServerlessProvider(requirements.provider)
+            ? `, ${serverlessName(requirements.provider)}`
+            : requirements.region === undefined
+              ? ""
+              : `, ${requirements.region}`;
     await deps.state.markPhase(
       "interview",
       "ok",

@@ -1,4 +1,6 @@
 import {
+  CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
+  CLOUDFLARE_HOSTING_PERMISSIONS,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -8,7 +10,11 @@ import {
   planShared,
   type SharedFinding,
 } from "@opscrew/connector-cloudflare";
-import { GITHUB_TOKEN_PERMISSIONS, parseGitHubRepo } from "@opscrew/connector-github";
+import {
+  GITHUB_TOKEN_PERMISSIONS,
+  type GitHubClient,
+  parseGitHubRepo,
+} from "@opscrew/connector-github";
 import type {
   CredentialCheck,
   CredentialRequirement,
@@ -34,6 +40,7 @@ import {
   type ServerlessProvider,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { PAGES_NOT_ALLOWED } from "../design/serverless";
 import {
   hasEnv,
   OTHER_REGISTRAR_IDS,
@@ -165,6 +172,8 @@ interface CloudflareUsage {
   tunnel?: boolean;
   /** The plan keeps the app's files in a bucket on Cloudflare R2 (one more permission). */
   r2?: boolean;
+  /** The plan hosts the site on Cloudflare with `www`, redirected by a shared Single Redirect rule. */
+  redirect?: boolean;
 }
 
 /** The plan and the interview answers, each when there is a usable one. */
@@ -199,6 +208,7 @@ function cloudflareUsage({ plan, requirements }: ProjectArtifacts): CloudflareUs
           domain: plan.dns.domain,
           tunnel: usesTunnel(plan),
           r2: plan.storage?.objectStorage?.provider === "r2",
+          redirect: plan.target.provider === "cloudflare-workers" && plan.dns.www,
         }
       : { needed: false };
   }
@@ -241,6 +251,7 @@ export async function runInitChecks(
   for (const name of [
     ...providerTokens,
     "CLOUDFLARE_API_TOKEN",
+    CLOUDFLARE_HOSTING.deployTokenVar,
     "GITHUB_TOKEN",
     "GH_TOKEN",
     PORTAINER_TOKEN_VAR,
@@ -259,6 +270,7 @@ export async function runInitChecks(
     requirements: await readUsable("requirements", deps.paths.files.requirements),
   };
   const choice = providerChoice(artifacts, env);
+  const { provider, source } = choice;
   // Read before any check runs, so Portainer's address is registered with the redactor first.
   const portainer: PortainerRecord | undefined =
     choice.provider === "portainer" ? await readPortainerRecord(deps) : undefined;
@@ -281,7 +293,16 @@ export async function runInitChecks(
     ),
     guard("provider", providerTitle(choice), true, () =>
       withBudget(
-        checkProviderToken(deps, offline, choice, which, portainer, services.portainerClient),
+        isServerlessProvider(provider)
+          ? checkServerlessTarget(deps, offline, provider, artifacts, cloudflare, github)
+          : checkProviderToken(
+              deps,
+              offline,
+              provider === undefined ? { source } : { provider, source },
+              which,
+              portainer,
+              services.portainerClient,
+            ),
         budget,
         providerService(choice),
         true,
@@ -493,6 +514,11 @@ interface ProviderChoice {
   source: "plan" | "requirements" | "token" | "none";
 }
 
+/** A provider choice whose target has a server, a Portainer or this computer: not server-less. */
+type ServerChoice = Omit<ProviderChoice, "provider"> & {
+  provider?: Exclude<ProviderChoice["provider"], ServerlessProvider | undefined>;
+};
+
 /**
  * The planned target, else the requested one, else the provider whose token alone is set. A
  * Portainer target (`portainer`), the localhost target (`localhost`) and the server-less targets
@@ -554,7 +580,7 @@ function providerService(choice: ProviderChoice): string {
  * connects and confirms the host key. It never connects (provision does) and never names the
  * server's address.
  */
-async function checkOwnServerLogin(deps: PhaseDeps, choice: ProviderChoice): Promise<CheckResult> {
+async function checkOwnServerLogin(deps: PhaseDeps, choice: ServerChoice): Promise<CheckResult> {
   let connection: Awaited<ReturnType<typeof readOwnServerRecord>>;
   try {
     connection = await readOwnServerRecord(deps.paths);
@@ -619,12 +645,13 @@ const ONLY_ONE =
  * the other provider's token is never checked), or before a choice either token. A server the
  * user owns and the user's Portainer have their own checks and no cloud provider token. Before a
  * choice, no token is only a note: this computer (localhost) and a server the user already has
- * need none. The localhost target needs Docker; before a choice, its absence is only noted.
+ * need none. The localhost target needs Docker; before a choice, its absence is only noted. The
+ * server-less targets have {@link checkServerlessTarget} instead.
  */
 async function checkProviderToken(
   deps: PhaseDeps,
   offline: boolean,
-  choice: ProviderChoice,
+  choice: ServerChoice,
   which: (name: string) => string | undefined,
   portainer: PortainerRecord | undefined,
   portainerClient: InitPortainerClient | undefined,
@@ -651,12 +678,6 @@ async function checkProviderToken(
     };
   }
   if (provider === "own") return checkOwnServerLogin(deps, choice);
-  if (isServerlessProvider(provider)) {
-    return {
-      status: "skip",
-      message: `Not needed: the app has no server on ${serverlessName(provider)}, so it needs no server provider token.`,
-    };
-  }
   if (provider === "localhost") {
     const docker = which("docker");
     if (docker === undefined) {
@@ -852,6 +873,7 @@ async function checkCloudflare(
       zoneId: zone.id,
       accountId: zone.accountId ?? "",
       access: false,
+      ...(usage.redirect === true ? { redirect: true } : {}),
     });
     // Only a missing permission is the token's problem; provision stops on the other findings.
     denied = planShared(facts, { hostnames: {} }, undefined).findings.filter(
@@ -874,6 +896,198 @@ async function checkCloudflare(
   return {
     status: "pass",
     message: `CLOUDFLARE_API_TOKEN works and can see the zone ${zone.name}.${tunnelNote(usage)}`,
+  };
+}
+
+/** Cloudflare's hosting: its profile, and the one permission its Workers need. */
+const CLOUDFLARE_HOSTING = providerProfile("cloudflare-workers");
+const WORKERS_PERMISSION = CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS[0];
+
+/**
+ * The provider check of a server-less target (FR-1610), in place of a server's token: Cloudflare's
+ * hosting ({@link checkCloudflareHosting}) or GitHub Pages ({@link checkGithubPages}).
+ */
+async function checkServerlessTarget(
+  deps: PhaseDeps,
+  offline: boolean,
+  provider: ServerlessProvider,
+  { plan, requirements }: ProjectArtifacts,
+  cloudflare: CloudflareAccess,
+  github: () => Promise<GitHubLookup>,
+): Promise<CheckResult> {
+  if (provider === "github-pages") return checkGithubPages(offline, github);
+  // Offline, the Cloudflare access says so (`state: "offline"`).
+  return checkCloudflareHosting(deps, plan?.dns.domain ?? requirements?.domain, cloudflare);
+}
+
+/**
+ * Cloudflare's hosting: OpsCrew's Cloudflare token (`CLOUDFLARE_API_TOKEN`), which creates the
+ * Worker and its custom domains, and the deploy token (`OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`), which
+ * the deploy workflow uploads each version with, both hold Account → Workers Scripts → Edit for
+ * the account of the domain's zone (`workersPermissions`, read-only). Offline, only that both are
+ * set. Each failure names the token, the missing permission and the page to add it on.
+ */
+async function checkCloudflareHosting(
+  deps: PhaseDeps,
+  domain: string | undefined,
+  access: CloudflareAccess,
+): Promise<CheckResult> {
+  const deployVar = CLOUDFLARE_HOSTING.deployTokenVar;
+  const deployToken = deps.env[deployVar]?.trim();
+  const account =
+    domain === undefined ? "your domain's account" : `the account that holds ${domain}`;
+  const deployFix = `Create a second token at ${CLOUDFLARE_TOKEN_PAGE} with only ${WORKERS_PERMISSION} for ${account}, and set ${deployVar} to it: \`opscrew provision\` stores it as a GitHub secret for the deploy workflow, which uploads each version with it.`;
+  const mainFix = `Add ${CLOUDFLARE_HOSTING_PERMISSIONS.join(" and ")} to CLOUDFLARE_API_TOKEN at ${CLOUDFLARE_TOKEN_PAGE}.`;
+  if (access.state === "unset") {
+    return {
+      status: "fail",
+      message:
+        "CLOUDFLARE_API_TOKEN is not set, and Cloudflare hosting creates the app's Worker and its custom domains with it.",
+      fix: `${cloudflareFix(domain)} ${mainFix}`,
+    };
+  }
+  if (deployToken === undefined || deployToken === "") {
+    return {
+      status: "fail",
+      message: `${deployVar} is not set: the deploy workflow needs a token of its own that holds only ${WORKERS_PERMISSION}.`,
+      fix: deployFix,
+    };
+  }
+  if (access.state === "offline") {
+    return {
+      status: "pass",
+      message: `CLOUDFLARE_API_TOKEN and ${deployVar} are set (${OFFLINE_NOTE}). Both need ${WORKERS_PERMISSION}.`,
+    };
+  }
+  if (domain === undefined) {
+    return {
+      status: "fail",
+      message:
+        "Cloudflare hosting serves the site on your domain, and no domain is chosen yet, so the tokens' Workers permission cannot be checked.",
+      fix: "Give a domain whose DNS is on Cloudflare in `opscrew interview`, then run `opscrew init` again.",
+    };
+  }
+  const { client } = access;
+  const deployClient = cloudflareConnector({
+    env: { CLOUDFLARE_API_TOKEN: deployToken },
+    fetch: deps.fetch,
+    redactor: deps.redactor,
+    version: deps.version,
+  }).client;
+  let missing: string[];
+  let zoneName: string;
+  try {
+    const zone = await client.findZone(domain);
+    if (zone?.accountId === undefined) {
+      return {
+        status: "fail",
+        message: `CLOUDFLARE_API_TOKEN cannot see the zone of ${domain}, so the tokens' Workers permission cannot be checked.`,
+        fix: `Add the domain to Cloudflare if it is not there yet. ${cloudflareFix(domain)}`,
+      };
+    }
+    zoneName = zone.name;
+    const main = await client.workersPermissions(zone.accountId);
+    missing = main.missing.map((permission) => `CLOUDFLARE_API_TOKEN lacks ${permission}`);
+    try {
+      const deploy = await deployClient?.workersPermissions(zone.accountId);
+      missing.push(
+        ...(deploy?.missing ?? []).map((permission) => `${deployVar} lacks ${permission}`),
+      );
+    } catch (error) {
+      return {
+        status: "fail",
+        message: `${deployVar} does not work: ${errorText(error)}`,
+        fix: deployFix,
+      };
+    }
+  } catch (error) {
+    return {
+      status: "fail",
+      message: `CLOUDFLARE_API_TOKEN could not check its Workers permission: ${errorText(error)}`,
+      fix: `${cloudflareFix(domain)} ${mainFix}`,
+    };
+  }
+  if (missing.length > 0) {
+    const fixes = [
+      ...(missing.some((text) => text.startsWith("CLOUDFLARE_API_TOKEN")) ? [mainFix] : []),
+      ...(missing.some((text) => text.startsWith(deployVar)) ? [deployFix] : []),
+    ];
+    return {
+      status: "fail",
+      message: `${missing.join("; ")} for the account that holds ${zoneName}.`,
+      fix: fixes.join(" "),
+    };
+  }
+  return {
+    status: "pass",
+    message: `CLOUDFLARE_API_TOKEN and ${deployVar} both hold ${WORKERS_PERMISSION} for the account that holds ${zoneName}.`,
+  };
+}
+
+/**
+ * GitHub Pages: the GitHub token reads the repository's Pages settings (`getPages`; a refusal
+ * names the permission) and the repository's plan allows Pages (`pagesAllowed`: a private
+ * repository on GitHub's free plan does not; without Plan: Read OpsCrew cannot tell, a warning).
+ * Offline, only that a token is available. The write permissions GitHub checks only on a change.
+ */
+async function checkGithubPages(
+  offline: boolean,
+  github: () => Promise<GitHubLookup>,
+): Promise<CheckResult> {
+  const { info, source, client } = await github();
+  const needs =
+    "GitHub Pages needs the token's Pages and Administration permissions, both Read and write, on the repository";
+  if (source === undefined) {
+    return {
+      status: "fail",
+      message: `No GitHub token is set (GITHUB_TOKEN and GH_TOKEN are empty) and the GitHub CLI is not logged in; ${lowerFirst(needs)}.`,
+      fix: githubFix(info.coordinates),
+    };
+  }
+  if (offline) {
+    return {
+      status: "pass",
+      message: `A GitHub token is available from ${source} (${OFFLINE_NOTE}). ${needs}.`,
+    };
+  }
+  const coordinates = info.coordinates;
+  if (coordinates === undefined || client === undefined) {
+    return {
+      status: "fail",
+      message:
+        "There is no GitHub origin, and GitHub Pages publishes the site from the repository on GitHub.",
+      fix: REMOTE_FIX,
+    };
+  }
+  const { owner, repo } = coordinates;
+  const name = `${owner}/${repo}`;
+  let allowed: Awaited<ReturnType<GitHubClient["pagesAllowed"]>>;
+  try {
+    await client.getPages(owner, repo);
+    allowed = await client.pagesAllowed(owner, repo);
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    return failFrom(error);
+  }
+  if (allowed === "no") {
+    return {
+      status: "fail",
+      message: `GitHub Pages is not available for ${name}: ${PAGES_NOT_ALLOWED.reason}.`,
+      fix: PAGES_NOT_ALLOWED.fix,
+    };
+  }
+  const writes =
+    "Turning the site on and setting its domain also need Pages and Administration: Read and write, which GitHub checks only on a change: `opscrew provision` names a missing one before anything changes.";
+  if (allowed === "unknown") {
+    return {
+      status: "warn",
+      message: `The GitHub token from ${source} can read the GitHub Pages settings of ${name}, but OpsCrew cannot tell whether the owner's plan allows GitHub Pages for this private repository. ${writes}`,
+      fix: "Give the token Plan: Read (an account permission, or an organization permission for an organization's repository) at https://github.com/settings/personal-access-tokens. Without it, `opscrew provision` stops at its first step with nothing changed if the plan has no GitHub Pages.",
+    };
+  }
+  return {
+    status: "pass",
+    message: `The GitHub token from ${source} can read the GitHub Pages settings of ${name}, and GitHub allows Pages for it. ${writes}`,
   };
 }
 
@@ -1058,6 +1272,8 @@ interface GitHubLookup {
   repo?: { canPush: boolean; private: boolean };
   /** Why the repository could not be read. */
   error?: unknown;
+  /** The client with the token, online with a GitHub origin. */
+  client?: GitHubClient;
 }
 
 /**
@@ -1083,9 +1299,9 @@ function githubLookup(
     if (offline || !coordinates) return { info, source };
     try {
       const repo = await client.getRepo(coordinates.owner, coordinates.repo);
-      return { info, source, repo: { canPush: repo.canPush, private: repo.private } };
+      return { info, source, client, repo: { canPush: repo.canPush, private: repo.private } };
     } catch (error) {
-      return { info, source, error };
+      return { info, source, client, error };
     }
   };
   return () => {

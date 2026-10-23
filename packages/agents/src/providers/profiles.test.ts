@@ -114,6 +114,34 @@ describe("provider choice", () => {
     expect(providerFromTokens({ PORTAINER_API_KEY: "x", HCLOUD_TOKEN: "y" })).toBe("hetzner");
   });
 
+  it("describes the server-less targets outside the server providers, with their published plans", () => {
+    expect(providerProfile("cloudflare-workers")).toMatchObject({
+      id: "cloudflare-workers",
+      displayName: "Cloudflare (no server)",
+      deployTokenVar: "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN",
+      plans: {
+        asOf: "2026-10-23T00:00:00.000Z",
+        sources: [
+          "https://developers.cloudflare.com/workers/platform/pricing/",
+          "https://developers.cloudflare.com/workers/platform/limits/",
+        ],
+        paidMonthly: { amount: 5, currency: "USD" },
+        freeRequestsPerDay: 100_000,
+        freeCpuMs: 10,
+        files: { free: 20_000, paid: 100_000 },
+      },
+    });
+    expect(providerProfile("github-pages")).toMatchObject({
+      id: "github-pages",
+      displayName: "GitHub Pages (no server)",
+      limits: { siteGb: 1, trafficGbPerMonth: 100 },
+    });
+    // Never a server provider: not in the list, never inferred from a token.
+    expect(VPS_PROVIDERS).not.toContain("cloudflare-workers");
+    expect(VPS_PROVIDERS).not.toContain("github-pages");
+    expect(providerFromTokens({ CLOUDFLARE_API_TOKEN: "x", GITHUB_TOKEN: "y" })).toBeUndefined();
+  });
+
   it("refuses an unknown provider id instead of using another provider", () => {
     expect(() => providerProfile("aws" as never)).toThrow(
       expect.objectContaining({ code: "INVALID_INPUT", message: expect.stringContaining('"aws"') }),
