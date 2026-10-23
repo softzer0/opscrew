@@ -1,11 +1,11 @@
 /**
  * Every version OpsCrew pins: images by the digest of their multi-arch index, tools by version and
- * SHA-256 (sops, for the user's machine, and the GitHub Actions runner per platform), GitHub
- * Actions by commit, the Python
+ * SHA-256 (sops, for the user's machine, the GitHub Actions runner per platform, and Hugo), Wrangler
+ * by its npm version, GitHub Actions by commit, the Python
  * packages and package managers the generated Dockerfiles install by version, the runtime defaults
  * and what the pinned Buildpacks builder offers. `scripts/update-pins.mjs` refreshes the digests, checksums and commits (change a tag or
- * version here first) and moves the packages to their newest releases; with `--offers` it
- * refreshes the Buildpacks offers instead:
+ * version here first) and moves the packages and Wrangler to their newest releases; with
+ * `--offers` it refreshes the Buildpacks offers instead:
  * `pnpm --filter @opscrew/iac-templates exec tsx scripts/update-pins.mjs [--offers]`.
  */
 import type { LocalPlatform, LocalToolPin } from "@opscrew/core";
@@ -218,6 +218,25 @@ function runnerAsset(platform: RunnerPlatform, sha256: string): { url: string; s
   };
 }
 
+/**
+ * Where Hugo releases: the extended Linux amd64 tarball, and the checksums file the pin script
+ * checks GitHub's SHA-256 of it against.
+ */
+export const HUGO_RELEASE = {
+  repo: "gohugoio/hugo",
+  tag: (v: string) => `v${v}`,
+  asset: (v: string) => `hugo_extended_${v}_linux-amd64.tar.gz`,
+  checksums: (v: string) => `hugo_${v}_checksums.txt`,
+};
+
+const HUGO_VERSION = "0.168.0";
+
+/** The download URL of the Hugo release tarball at `version`. */
+function hugoUrl(version: string): string {
+  const { repo, tag, asset } = HUGO_RELEASE;
+  return `https://github.com/${repo}/releases/download/${tag(version)}/${asset(version)}`;
+}
+
 export const TOOLS = {
   /** The Cloud Native Buildpacks CLI. */
   pack: {
@@ -275,6 +294,22 @@ export const TOOLS = {
     sha256: "b5314a07fd85fa3ffc7da57b508f0108ec3280d84e4af823f805d95cbbc2428c",
   },
   /**
+   * The Wrangler release on npm that `cloudflare/wrangler-action` installs (its `wranglerVersion`
+   * input); the pin script moves it to npm's latest.
+   */
+  wrangler: {
+    version: "4.152.0",
+  },
+  /**
+   * Hugo extended for Linux amd64, which the server-less build job installs for a Hugo site
+   * ({@link HUGO_RELEASE}); change the version in `HUGO_VERSION`.
+   */
+  hugo: {
+    version: HUGO_VERSION,
+    url: hugoUrl(HUGO_VERSION),
+    sha256: "787f100057328824f38c6ad7c87ff10d6451ae0a7bc39cedaad0dd2bcde17e53",
+  },
+  /**
    * The GitHub Actions runner for self-hosted runners, on the server and on the user's machine
    * ({@link GITHUB_RUNNER_RELEASE}); change the version in `GITHUB_RUNNER_VERSION`.
    */
@@ -310,7 +345,10 @@ export type ToolKey = keyof typeof TOOLS;
 export const LYNIS_DOWNLOADS_PAGE = "https://cisofy.com/downloads/lynis/";
 
 /** A tool {@link TOOL_RELEASES} lists: every tool with a checksum per architecture. */
-export type ReleasedTool = Exclude<ToolKey, "cosign" | "lynis" | "githubRunner">;
+export type ReleasedTool = Exclude<
+  ToolKey,
+  "cosign" | "lynis" | "githubRunner" | "wrangler" | "hugo"
+>;
 
 /**
  * Where each tool with a checksum releases: the GitHub repository, its tag and archive per
@@ -436,6 +474,16 @@ export const ACTIONS = {
   buildPush: "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0",
   cosignInstaller: "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2",
   login: "docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0",
+  // The server-less targets' workflows (016).
+  wranglerAction: "cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3",
+  setupNode: "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0",
+  setupBun: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
+  uploadArtifact: "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2",
+  downloadArtifact: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
+  configurePages: "actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0",
+  uploadPagesArtifact:
+    "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0",
+  deployPages: "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5",
 } as const satisfies Record<string, string>;
 
 /**

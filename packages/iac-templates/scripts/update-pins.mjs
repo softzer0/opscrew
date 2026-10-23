@@ -5,12 +5,12 @@
 // index), tool checksums from the GitHub releases (each asset's SHA-256 digest; for a release whose
 // notes give only a SHA-1, the asset is downloaded, checked against it and hashed), action commits
 // from the GitHub tags, sops's checksums from its GitHub release (each one checked against the
-// release's checksums file), the GitHub Actions runner's from its release body (the
-// `BEGIN SHA <platform>` markers; a release without one is refused) and Lynis's from CISOfy's
+// release's checksums file), Hugo's the same way, the GitHub Actions runner's from its release
+// body (the `BEGIN SHA <platform>` markers; a release without one is refused) and Lynis's from CISOfy's
 // downloads page (checked against the downloaded tarball; a newer release there is only
 // reported). Tags and versions stay as written in pins.ts: change one there first, then run
-// this. The Python packages (PYPI_PACKAGES) and package managers (PACKAGE_MANAGERS) move to
-// their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
+// this. The Python packages (PYPI_PACKAGES), package managers (PACKAGE_MANAGERS) and Wrangler
+// (TOOLS.wrangler) move to their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
 //
 // With --offers it refreshes only BUILDPACKS_OFFERS: it reads the pinned Paketo builder's metadata
 // label from the registry, then each dependency buildpack's buildpack.toml at the version the
@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import {
   ACTIONS,
   GITHUB_RUNNER_RELEASE,
+  HUGO_RELEASE,
   IMAGES,
   LOCAL_TOOLS,
   LYNIS_DOWNLOADS_PAGE,
@@ -59,6 +60,7 @@ import {
   setAssetChecksum,
   setPackageVersion,
   setToolChecksum,
+  setToolVersion,
   verifiedSha256,
 } from "./update-pins-lib.ts";
 
@@ -147,6 +149,29 @@ async function updatePins(source) {
     if (sha256 === sops.assets[platform].sha256) continue;
     source = setAssetChecksum(source, "sopsAsset", platform, sha256);
     changes.push(`LOCAL_TOOLS.sops.${platform}: ${sha256}`);
+  }
+  const hugo = TOOLS.hugo;
+  const hugoTag = HUGO_RELEASE.tag(hugo.version);
+  const hugoRelease = await github(`/repos/${HUGO_RELEASE.repo}/releases/tags/${hugoTag}`);
+  const hugoChecksums = await fetchText(
+    `https://github.com/${HUGO_RELEASE.repo}/releases/download/${hugoTag}/${HUGO_RELEASE.checksums(hugo.version)}`,
+  );
+  const hugoSha256 = checkedAssetSha256(
+    hugoRelease,
+    hugoChecksums,
+    HUGO_RELEASE.asset(hugo.version),
+  );
+  if (hugoSha256 !== hugo.sha256) {
+    source = setToolChecksum(source, "hugo", "sha256", hugoSha256);
+    changes.push(`TOOLS.hugo.sha256: ${hugoSha256}`);
+  }
+  const wranglerUrl = latestReleaseUrl("npm", "wrangler");
+  const wranglerAnswer = await fetch(wranglerUrl);
+  if (!wranglerAnswer.ok) throw new Error(`${wranglerUrl} answered ${wranglerAnswer.status}.`);
+  const wrangler = latestReleaseVersion("npm", await wranglerAnswer.json());
+  if (wrangler !== TOOLS.wrangler.version) {
+    source = setToolVersion(source, "wrangler", wrangler);
+    changes.push(`TOOLS.wrangler: ${TOOLS.wrangler.version} → ${wrangler}`);
   }
   const runner = TOOLS.githubRunner;
   const runnerRelease = await github(

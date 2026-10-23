@@ -23,6 +23,7 @@ import {
   setAssetChecksum,
   setPackageVersion,
   setToolChecksum,
+  setToolVersion,
   verifiedSha256,
 } from "../scripts/update-pins-lib";
 import {
@@ -30,6 +31,7 @@ import {
   BUILDPACKS_OFFERS,
   detectStack,
   GITHUB_RUNNER_RELEASE,
+  HUGO_RELEASE,
   IMAGES,
   LOCAL_TOOLS,
   LYNIS_DOWNLOADS_PAGE,
@@ -241,11 +243,52 @@ describe("pins.ts", () => {
     const actions = Object.values(ACTIONS).map((value) => parseActionPin(value).action);
     expect(actions.sort()).toEqual([
       "actions/checkout",
+      "actions/configure-pages",
+      "actions/deploy-pages",
+      "actions/download-artifact",
+      "actions/setup-node",
+      "actions/upload-artifact",
+      "actions/upload-pages-artifact",
+      "cloudflare/wrangler-action",
       "docker/build-push-action",
       "docker/login-action",
       "docker/setup-buildx-action",
+      "oven-sh/setup-bun",
       "sigstore/cosign-installer",
     ]);
+  });
+
+  it("pins the server-less workflows' actions at the majors their research names", () => {
+    const major = (value: string) => parseActionPin(value).tag.split(".")[0];
+    expect(major(ACTIONS.wranglerAction)).toBe("v4");
+    expect(major(ACTIONS.configurePages)).toBe("v5");
+    expect(major(ACTIONS.uploadPagesArtifact)).toBe("v4");
+    expect(major(ACTIONS.deployPages)).toBe("v4");
+    for (const key of [
+      "wranglerAction",
+      "setupNode",
+      "setupBun",
+      "uploadArtifact",
+      "downloadArtifact",
+      "configurePages",
+      "uploadPagesArtifact",
+      "deployPages",
+    ] as const) {
+      expect(parseActionPin(ACTIONS[key]).tag, key).toMatch(/^v\d+\.\d+\.\d+$/);
+      expect(parseActionPin(ACTIONS[key]).sha, key).not.toBe("0".repeat(40));
+    }
+  });
+
+  it("pins Wrangler by its npm version and Hugo extended by its tarball and SHA-256", () => {
+    expect(TOOLS.wrangler).toEqual({ version: expect.stringMatching(/^4\.\d+\.\d+$/) });
+    const { version } = TOOLS.hugo;
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(TOOLS.hugo).toEqual({
+      version,
+      url: `https://github.com/gohugoio/hugo/releases/download/v${version}/hugo_extended_${version}_linux-amd64.tar.gz`,
+      sha256: expect.stringMatching(HEX64),
+    });
+    expect(HUGO_RELEASE.checksums("0.168.0")).toBe("hugo_0.168.0_checksums.txt");
   });
 
   it("pins the Python packages and package managers the Dockerfiles install by exact version", () => {
@@ -535,6 +578,44 @@ describe("the pin script's helpers", () => {
     expect(() => checkedAssetSha256(release, `${a}  ${name}.spdx.sbom.json\n`, name)).toThrow(
       /lists no sops-v3\.13\.3\.linux\.arm64/,
     );
+  });
+
+  it("takes Hugo's SHA-256 from GitHub only when the release's checksums file agrees", () => {
+    const [a, b] = ["a".repeat(64), "b".repeat(64)];
+    const name = HUGO_RELEASE.asset("0.168.0");
+    expect(name).toBe("hugo_extended_0.168.0_linux-amd64.tar.gz");
+    const plain = "hugo_0.168.0_linux-amd64.tar.gz";
+    const withDeploy = "hugo_extended_withdeploy_0.168.0_linux-amd64.tar.gz";
+    const release = {
+      assets: [
+        { name: plain, digest: `sha256:${b}` },
+        { name, digest: `sha256:${a}` },
+        { name: withDeploy, digest: `sha256:${b}` },
+      ],
+    };
+    const checksums = `${b}  ${plain}\n${a}  ${name}\n${b}  ${withDeploy}\n`;
+    expect(checkedAssetSha256(release, checksums, name)).toBe(a);
+    expect(() => checkedAssetSha256(release, `${b}  ${name}\n`, name)).toThrow(
+      /differs from the checksums file/,
+    );
+    expect(() => checkedAssetSha256(release, `${a}  ${withDeploy}\n`, name)).toThrow(
+      /lists no hugo_extended_0\.168\.0/,
+    );
+  });
+
+  it("sets Hugo's checksum and Wrangler's version in TOOLS, and leaves the rest alone", async () => {
+    const source = await SOURCE;
+    const sha = "f".repeat(64);
+    const before = source.split("\n");
+    const changed = (next: string) => next.split("\n").filter((line, i) => line !== before[i]);
+    expect(changed(setToolChecksum(source, "hugo", "sha256", sha))).toEqual([
+      `    sha256: "${sha}",`,
+    ]);
+    expect(changed(setToolVersion(source, "wrangler", "4.999.0"))).toEqual([
+      '    version: "4.999.0",',
+    ]);
+    expect(latestReleaseVersion("npm", { name: "wrangler", version: "4.152.0" })).toBe("4.152.0");
+    expect(() => setToolVersion(source, "hugo", "1.0.0")).toThrow(/hugo version/);
   });
 
   it("reads the version and SHA-256 from Lynis's downloads page", () => {

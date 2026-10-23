@@ -99,7 +99,7 @@ export function verifiedSha256(bytes: Uint8Array, published: string, name: strin
 
 /**
  * The SHA-256 GitHub records for the asset `name` of a release, once the release's checksums file
- * (`<sha256>  <name>` lines, as sops publishes) lists the same.
+ * (`<sha256>  <name>` lines, as sops and Hugo publish) lists the same.
  */
 export function checkedAssetSha256(release: unknown, checksums: string, name: string): string {
   const sha256 = assetSha256(release, name);
@@ -282,6 +282,15 @@ export function setToolChecksum(
   return inTable(source, "TOOLS", (table) => {
     if (!pattern.test(table)) throw new Error(`pins.ts has no ${tool} ${field} checksum in TOOLS.`);
     return table.replace(pattern, `$1"${sha256}"`);
+  });
+}
+
+/** Sets `TOOLS[tool].version` in the source of pins.ts (Wrangler, which npm publishes). */
+export function setToolVersion(source: string, tool: string, version: string): string {
+  const pattern = new RegExp(`(\\n {2}${escapeRegExp(tool)}: \\{\\s*version: )"[^"]*"`);
+  return inTable(source, "TOOLS", (table) => {
+    if (!pattern.test(table)) throw new Error(`pins.ts has no ${tool} version in TOOLS.`);
+    return table.replace(pattern, `$1"${version}"`);
   });
 }
 
