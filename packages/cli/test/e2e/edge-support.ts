@@ -5,7 +5,7 @@
  * CA standing in for Cloudflare's Origin CA, and HTTPS probes and request loops from this computer.
  */
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { createServer } from "node:net";
@@ -145,7 +145,8 @@ export function unique(prefix: string): string {
  * `examples/<example>` designed by the real CLI, offline and without a model (`analyze --no-ai` →
  * `interview --answers` → `design`), with `answers` over {@link BASE_ANSWERS} (a Hetzner server by
  * default), then `edit` applied to `opscrew/plan.yaml` as a user would. `services` are the CLI's
- * services for the interview (a fake Portainer); `interview` its extra flags.
+ * services for the interview (a fake Portainer); `interview` its extra flags; `overlay` a folder
+ * copied over the example before anything runs.
  */
 export async function designedPlan(
   example: string,
@@ -155,11 +156,13 @@ export async function designedPlan(
     services?: CliServices;
     interview?: string[];
     env?: Record<string, string>;
+    overlay?: string;
   } = {},
 ): Promise<{ project: TempProject; plan: DeployPlan }> {
   const project = await tempProject(example);
   const { env, root, dir } = project;
   Object.assign(env, o.env);
+  if (o.overlay !== undefined) await cp(o.overlay, root, { recursive: true });
   await git(env, root, "init", "-q", "-b", "main");
   await git(env, root, "add", "-A");
   await git(env, root, "commit", "-q", "-m", "initial import");

@@ -1,0 +1,4 @@
+baseURL = "https://example.com/"
+languageCode = "en"
+title = "Hugo on OpsCrew"
+disableKinds = ["taxonomy", "term", "rss", "sitemap"]

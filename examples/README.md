@@ -21,6 +21,10 @@ They are not part of the pnpm workspace.
   written through its component), with workers `POST /jobs/<id>` and `GET /jobs/<id>` (200 once
   the job ran), with cron `GET /cron` (200 once the cron job ran): the local Docker pass checks
   them.
+- `hugo-site` (feature 016) is a Hugo site for the server-less targets only, so it has no
+  `expected.json` and the passes over every example leave it out. The server-less Docker pass
+  (`serverless.test.ts`) builds and serves it with `static-vite`, `angular-static` and
+  `astro-ssr`.
 
 `expected.json` per example:
 
