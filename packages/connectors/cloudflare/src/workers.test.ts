@@ -1,7 +1,8 @@
 import { errorText, OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
+  CLOUDFLARE_API,
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
   CLOUDFLARE_HOSTING_PERMISSIONS,
   CloudflareClient,
@@ -187,6 +188,39 @@ describe("CloudflareClient Workers calls", () => {
       `/accounts/${ACCOUNT_ID}/workers/domains?service=${WORKER}`,
     );
     expect(await client.listWorkerCustomDomains(ACCOUNT_ID, "new-app")).toEqual([]);
+  });
+
+  it("reads Cloudflare's real answer, whose errors and messages are null", async () => {
+    const domain = (id: string, hostname: string) => ({
+      id,
+      zone_id: ZONE_ID,
+      zone_name: "example.com",
+      hostname,
+      service: WORKER,
+      environment: "production",
+      cert_id: `cert-${id}`,
+      previews_enabled: false,
+      enabled: true,
+    });
+    const { fetch } = fakeFetch(
+      {
+        [`/accounts/${ACCOUNT_ID}/workers/domains?service=${WORKER}`]: {
+          body: {
+            result: [domain("dom-1", "example.com"), domain("dom-2", "www.example.com")],
+            success: true,
+            errors: null,
+            messages: null,
+            result_info: { page: 1, per_page: 2, count: 2, total_count: 2 },
+          },
+        },
+      },
+      { base: CLOUDFLARE_API },
+    );
+    const client = new CloudflareClient({ token: TOKEN, fetch, sleep: async () => {} });
+    expect(await client.listWorkerCustomDomains(ACCOUNT_ID, WORKER)).toEqual([
+      { hostname: "example.com", zoneId: ZONE_ID },
+      { hostname: "www.example.com", zoneId: ZONE_ID },
+    ]);
   });
 
   it("names the missing Workers permission on a 403, and never the token", async () => {

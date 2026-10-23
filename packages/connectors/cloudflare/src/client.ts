@@ -288,6 +288,7 @@ export type TunnelConnectionState = "active" | "closed" | "gone";
 
 const Envelope = z.looseObject({
   success: z.boolean(),
+  // Some lists (the Workers custom domains) answer `"errors": null` on success.
   errors: z
     .array(
       z.looseObject({
@@ -295,7 +296,8 @@ const Envelope = z.looseObject({
         message: z.string().default(""),
       }),
     )
-    .default([]),
+    .nullish()
+    .transform((errors) => errors ?? []),
   result: z.unknown().optional(),
   result_info: z.looseObject({ total_pages: z.number().optional() }).optional(),
 });

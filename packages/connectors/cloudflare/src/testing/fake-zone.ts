@@ -467,7 +467,30 @@ export class FakeZone {
     }
     if (rest === "/domains" && method === "GET") {
       const service = url.searchParams.get("service");
-      return ok(this.workerDomains.filter((d) => service === null || d.service === service));
+      const domains = this.workerDomains
+        .filter((d) => service === null || d.service === service)
+        .map((d) => ({
+          ...d,
+          environment: "production",
+          cert_id: `cert-${d.id}`,
+          previews_enabled: false,
+          enabled: true,
+        }));
+      // As Cloudflare answers this list: `errors` and `messages` are null, not empty arrays.
+      return {
+        body: {
+          result: domains,
+          success: true,
+          errors: null,
+          messages: null,
+          result_info: {
+            page: 1,
+            per_page: domains.length,
+            count: domains.length,
+            total_count: domains.length,
+          },
+        },
+      };
     }
     const script = /^\/scripts\/([^/]+)\/(versions|deployments)$/.exec(rest);
     if (!script?.[1]) throw new Error(`fake zone: ${method} on Workers ${rest}`);
