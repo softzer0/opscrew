@@ -274,7 +274,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/core --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1617d [P] [US6] `--app` and `opscrew app` in the CLI, MCP, the plugin and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
+- [X] T1617d [P] [US6] `--app` and `opscrew app` in the CLI, MCP, the plugin and the guide, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
   - Owns: those paths (+ tests); only the app parts
   - Reads: contracts/apps.md "CLI and MCP"; T1617c's report
   - Depends: T1617c
@@ -467,6 +467,8 @@ Effort`.
       - the interview tool's provider help lists every target, localhost included (an existing gap);
       - `pages-apply` is never granted without the user, like the other hash-bound kinds.
     - **The plugin's deploy skill** learns both targets. `node plugin/validate.mjs` passes.
+    - **From T1617d's review:** a test that `opscrew_app_remove` refuses a deployed further app without opening its dialog; MCP's tool suggestions (`tools/status.ts` `nextStep`, `tools/design.ts` ~43) append `andApp(appKey)` like the others, and `tools/interview.ts` ~449 uses `andApp`; `hiddenNames` (`tools/shared.ts` ~252) falls back to the folder names under `opscrew/apps/` when a record can't be read, so it never hides fewer addresses; `app remove` checks the GitHub Pages verification state before asking for the key.
+    - **From T1617d's report:** the secrets command's hints (for example "Run `opscrew secrets restore` in a terminal") name `--app`/`--env` where needed, and MCP's status next step names the app's real plan path. `portainer enable|disable|status` and `domain` per app are a follow-up, out of 016 unless a live run needs them.
     - **From T1607's report:** the CLI interview's `nextStep` default and the options table (`cli/src/commands/interview.ts`, `cli/src/ui/options.ts`) handle the server-less targets; the MCP interview tool passes the server-less context through `serverlessTargetsFor` (from `@opscrew/agents`), so MCP offers them.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
@@ -537,6 +539,7 @@ Effort`.
   - `serverless.test.ts`'s env-stub leak test can't fail; keep the rendered-file check and the engine run's scan (T1605's review).
   - The `RenderContext.cloudflare.accountId` doc in iac-templates' `src/types.ts` names the Worker too (T1605's report).
   - `frameworkName` in analyze's summary lacks a "react-router" entry (T1607's report).
+  - Core's `NodeCommandRunner` (`shell: false`) likely can't start npm's and pnpm's `.cmd` shims on Windows, so adapt's lockfile update falls back to a warning there: resolve `.cmd` shims on win32 in core (T1611's report).
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
 
