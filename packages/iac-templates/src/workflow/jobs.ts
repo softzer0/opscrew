@@ -13,6 +13,7 @@ import {
   GHCR_LOGIN,
   imageJob,
   imageOutput,
+  imageSubpath,
   job,
   promoted,
   run,
@@ -63,16 +64,17 @@ const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
  * (`$BUILD_BRANCH`: the `cicd.branch` of the first of its sources that follows a branch), and the image
  * with the commit tag `$TAG` must be this digest. `$TAG` is the run's commit, or `<commit>-<env>`
  * ({@link environmentTag} of the environment that built it, which this workflow cannot know: the
- * source may itself be promoted from another). Outputs `image`, `tag` (`<name>:<commit tag>`) and
- * `identity`, the signing identity of the run's workflow on that branch.
+ * source may itself be promoted from another). The image is the app's ({@link imageSubpath}).
+ * Outputs `image`, `tag` (`<name>:<commit tag>`) and `identity`, the signing identity of the run's
+ * workflow on that branch.
  */
-const PROVENANCE_CHECK = [
+const provenanceCheck = (plan: DeployPlan) => [
   "set -euo pipefail",
   'if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then',
   '  echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\`opscrew promote\\`, which fills it in."',
   "  exit 1",
   "fi",
-  'name="ghcr.io/${GITHUB_REPOSITORY,,}"',
+  `name="ghcr.io/\${GITHUB_REPOSITORY,,}${imageSubpath(plan)}"`,
   'image="$name@$DIGEST"',
   'if ! provenance="$(docker buildx imagetools inspect "$image" --format \'{{json .Provenance}}\')"; then',
   '  echo "::error::GitHub Container Registry has no image $image. Promote an image another environment runs: \\`opscrew promote\\` reads it from that environment\'s label."',
@@ -129,7 +131,7 @@ const PROVENANCE_CHECK = [
 
 /**
  * A promoted environment's first job, on GitHub's machines with `actions: read` and
- * `packages: read` only: the digest input's provenance check ({@link PROVENANCE_CHECK}) against the
+ * `packages: read` only: the digest input's provenance check ({@link provenanceCheck}) against the
  * branch that builds its images ({@link builderBranchOf}) and, with `supplyChain.sign`, its cosign
  * signature by the build run's workflow. Its outputs `image` and `tag` stand for the build job's.
  */
@@ -151,7 +153,7 @@ function verifyJob(plan: DeployPlan, ctx: Pick<RenderContext, "builderBranch">):
       "    TAG: ${{ inputs.tag }}",
       `    BUILD_BRANCH: ${JSON.stringify(builderBranchOf(plan, ctx))}`,
       "    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
-      ...run(PROVENANCE_CHECK),
+      ...run(provenanceCheck(plan)),
       ...(plan.supplyChain.sign
         ? [
             ...INSTALL_COSIGN,
@@ -221,11 +223,13 @@ function labelJob(plan: DeployPlan): string[] {
 }
 
 /**
- * `cicd.deployTags`: after a healthy deploy, the tag `deploy-<UTC yyyymmdd-hhmmss>` on the deployed
- * commit and, with `release`, a GitHub Release naming the image digest; the only job that holds
- * `contents: write`. Tags made with the job's token start no other workflow.
+ * `cicd.deployTags`: after a healthy deploy, the tag `deploy-<UTC yyyymmdd-hhmmss>` (a further
+ * app's `deploy-<key>-<UTC yyyymmdd-hhmmss>`, so two apps' deploys of a commit never take the same
+ * tag) on the deployed commit and, with `release`, a GitHub Release naming the image digest; the
+ * only job that holds `contents: write`. Tags made with the job's token start no other workflow.
  */
 function deployTagsJob(plan: DeployPlan): string[] {
+  const key = plan.app.key;
   const create = plan.cicd.deployTags.release
     ? [
         'gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" --notes "Deployed image: \\`$IMAGE\\`"',
@@ -246,7 +250,7 @@ function deployTagsJob(plan: DeployPlan): string[] {
       ...run([
         "set -euo pipefail",
         ...CHECK_IMAGE,
-        'tag="deploy-$(date -u +%Y%m%d-%H%M%S)"',
+        `tag="deploy-${key === undefined ? "" : `${key}-`}$(date -u +%Y%m%d-%H%M%S)"`,
         ...create,
         'echo "Tagged \\`$GITHUB_SHA\\` as \\`$tag\\`." >> "$GITHUB_STEP_SUMMARY"',
       ]),
@@ -278,7 +282,7 @@ function retentionJob(plan: DeployPlan): string[] {
       "    PREVIOUS: ${{ needs.deploy.outputs.previous }}",
       ...(enabled ? [`    KEEP: "${keep}"`] : []),
       "  run: |",
-      ...block([...retentionScript(environmentName(plan)).split("\n"), "main();"], 4),
+      ...block([...retentionScript(plan).split("\n"), "main();"], 4),
     ],
   });
 }

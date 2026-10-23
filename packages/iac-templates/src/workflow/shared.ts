@@ -1,13 +1,30 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import { posix } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, targetArch } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  deploySecretPrefix,
+  githubEnvironmentFor,
+  targetArch,
+} from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
 import { ACTIONS, type PinArch } from "../pins";
+import { type AppEnvironment, artefactsFolder } from "../runtime-dir";
 import type { RenderContext } from "../types";
 
-/** Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
+/**
+ * Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>[/<key>]@sha256:<hex>`.
+ */
 export const DIGEST_REF_PATTERN = "^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$";
+
+/**
+ * What a workflow appends to `ghcr.io/<owner>/<repo>`, which it lower-cases in shell
+ * (`${GITHUB_REPOSITORY,,}`), for the app's image as plan-schema's `ghcrImageFor` names it:
+ * `/<key>` for a further app (a key is lower case), nothing for the repository's first app.
+ */
+export function imageSubpath(plan: Pick<AppEnvironment, "app">): string {
+  return plan.app.key === undefined ? "" : `/${plan.app.key}`;
+}
 
 /** Names of the GitHub Actions secrets the workflow reads. `opscrew provision` sets them. */
 export const DEPLOY_SECRETS = {
@@ -86,14 +103,14 @@ export function sqliteFolder(plan: DeployPlan): string | undefined {
   if (folder === root) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `storage.sqlite.dir in opscrew/plan.yaml is the app's own folder (${root}), so the SQLite volume would hide the app's code from its image.`,
+      `storage.sqlite.dir in ${planFilePath(plan)} is the app's own folder (${root}), so the SQLite volume would hide the app's code from its image.`,
       { hint: ownFolder },
     );
   }
   if (!SQLITE_FOLDER.test(folder)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The SQLite folder ${folder} (storage.sqlite.dir in opscrew/plan.yaml) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.`,
+      `The SQLite folder ${folder} (storage.sqlite.dir in ${planFilePath(plan)}) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.`,
       {
         hint: "Rename the database's folder (for example to data/), change the app's database path to it, then run `opscrew analyze` and `opscrew design` again.",
       },
@@ -126,16 +143,17 @@ export function healthPath(plan: DeployPlan): string {
 
 /**
  * The name of the GitHub Actions secret that holds `name` (one of {@link DEPLOY_SECRETS}' names,
- * {@link serviceEnvSecret}'s, or the tunnel's and Portainer's) for the plan's environment: today's
- * name for prod, and `OPSCREW_<ENV>_…` (`OPSCREW_STAGING_HOST`) for any other environment, also
- * inside its GitHub environment. GitHub falls back from an environment secret to a repository
- * secret of the same name, so a missing staging secret never resolves to prod's.
+ * {@link serviceEnvSecret}'s, or the tunnel's and Portainer's, each `OPSCREW_…`) for the plan's app
+ * and environment: `name` after the app's environment's prefix ({@link deploySecretPrefix}) in
+ * place of `OPSCREW_`. That is today's name for the first app's prod, `OPSCREW_<ENV>_…`
+ * (`OPSCREW_STAGING_HOST`) for its other environments, also inside their GitHub environments, and
+ * `OPSCREW_<KEY>_…` and `OPSCREW_<KEY>_<ENV>_…` for a further app. GitHub falls back from an
+ * environment secret to a repository secret of the same name, so a missing staging secret never
+ * resolves to prod's.
  */
 export function deploySecretName(plan: DeployPlan, name: string): string {
-  const environment = plan.environment?.name;
-  if (environment === undefined) return name;
-  const prefix = environment.toUpperCase().replaceAll("-", "_");
-  return `OPSCREW_${prefix}_${name.replace(/^OPSCREW_/, "")}`;
+  const prefix = deploySecretPrefix(plan.app.key, plan.environment?.name);
+  return `${prefix}${name.replace(/^OPSCREW_/, "")}`;
 }
 
 /** `${{ secrets.<name> }}` for the plan's environment ({@link deploySecretName}). */
@@ -144,7 +162,7 @@ export function secret(plan: DeployPlan, name: string): string {
 }
 
 /** The plan's environment name: `prod` for the plan without one. */
-export function environmentName(plan: DeployPlan): string {
+export function environmentName(plan: Pick<AppEnvironment, "environment">): string {
   return plan.environment?.name ?? "prod";
 }
 
@@ -159,10 +177,34 @@ export function environmentTag(tag: string, environment: string): string {
   return environment === "prod" ? tag : `${tag}-${environment}`;
 }
 
-/** `opscrew provision`, with `--env <env>` for an environment other than prod. */
+/**
+ * ` --app <key>` for a further app, which every command that acts on one of its environments names
+ * as it names `--env`; nothing for the repository's first app.
+ */
+export function appFlag(plan: Pick<AppEnvironment, "app">): string {
+  return plan.app.key === undefined ? "" : ` --app ${plan.app.key}`;
+}
+
+/**
+ * `opscrew provision` for the plan's app and environment: `--app <key>` for a further app
+ * ({@link appFlag}), then `--env <env>` for an environment other than prod.
+ */
 export function provisionCommand(plan: DeployPlan): string {
   const name = plan.environment?.name;
-  return name === undefined ? "opscrew provision" : `opscrew provision --env ${name}`;
+  return `opscrew provision${appFlag(plan)}${name === undefined ? "" : ` --env ${name}`}`;
+}
+
+/**
+ * `opscrew runner start --env <env>` for the plan's environment, prod's included, with a further
+ * app's {@link appFlag}.
+ */
+export function runnerStartCommand(plan: AppEnvironment): string {
+  return `opscrew runner start${appFlag(plan)} --env ${environmentName(plan)}`;
+}
+
+/** `opscrew promote --to <env>` for the plan's environment, with a further app's {@link appFlag}. */
+export function promoteCommand(plan: AppEnvironment): string {
+  return `opscrew promote${appFlag(plan)} --to ${environmentName(plan)}`;
 }
 
 /** True when the environment is deployed only by `opscrew promote`, from a digest. */
@@ -201,15 +243,16 @@ export function imageOutput(plan: DeployPlan, output: "image" | "tag"): string {
 }
 
 /**
- * The GitHub environment the deploy job runs in: the environment's own name (prod's is
- * `production`) when its secrets live there, and prod's `production` too before provision has
- * checked what the repository supports (as before environments); none with prefixed secrets.
+ * The GitHub environment the deploy job runs in, the app's environment's own
+ * ({@link githubEnvironmentFor}: `production` for the first app's prod, `<env>`, `<key>-production`
+ * or `<key>-<env>`): when its secrets live there, and for prod also before provision has checked
+ * what the repository supports; none with prefixed secrets.
  */
 export function githubEnvironment(plan: DeployPlan): string | undefined {
   const environment = plan.environment;
   if (environment?.secrets === "prefixed") return undefined;
-  if (environment?.name === undefined) return "production";
-  return environment.secrets === "environment" ? environment.name : undefined;
+  if (environment?.name !== undefined && environment.secrets !== "environment") return undefined;
+  return githubEnvironmentFor(plan.app.key, environment?.name);
 }
 
 /** The label of the environment's self-hosted runner, `opscrew-<app>-<env>`. */
@@ -296,7 +339,7 @@ export function promotedAbout(
 ): string[] {
   const source = plan.environment?.deploySource;
   return [
-    `# \`opscrew promote --to ${environmentName(plan)}\` starts this workflow with the digest of an image the ${source?.from === "promote" ? source.source : ""}`,
+    `# \`${promoteCommand(plan)}\` starts this workflow with the digest of an image the ${source?.from === "promote" ? source.source : ""}`,
     `# environment runs. It checks that a push to ${builderBranchOf(plan, ctx)} in this repository built that image, then`,
   ];
 }
@@ -319,35 +362,51 @@ const DISPATCH_WITH_DIGEST = [
   "        type: string",
 ];
 
-/** The deploy workflow's name in GitHub → Actions: `OpsCrew deploy`, `OpsCrew deploy (<env>)`. */
-export function workflowName(plan: Pick<DeployPlan, "environment">): string {
+/**
+ * The deploy workflow's name in GitHub → Actions: `OpsCrew deploy`, then a further app's key, then
+ * `(<env>)` outside prod (`OpsCrew deploy`, `OpsCrew deploy (staging)`, `OpsCrew deploy docs`,
+ * `OpsCrew deploy docs (staging)`).
+ */
+export function workflowName(plan: AppEnvironment): string {
+  const key = plan.app.key;
   const env = plan.environment?.name;
-  return env === undefined ? "OpsCrew deploy" : `OpsCrew deploy (${env})`;
+  return `OpsCrew deploy${key === undefined ? "" : ` ${key}`}${env === undefined ? "" : ` (${env})`}`;
 }
 
-/** The plan of `environment` in the repository: `opscrew/plan.yaml` for prod, else its own. */
-export function planFilePath(environment: string): string {
-  return environment === "prod"
-    ? "opscrew/plan.yaml"
-    : `opscrew/environments/${environment}/plan.yaml`;
+/**
+ * The plan of the app's environment `environment` (the plan's own unless given) in the
+ * repository: `plan.yaml` in its {@link artefactsFolder} (`opscrew/plan.yaml` for the first app's
+ * prod).
+ */
+export function planFilePath(plan: AppEnvironment, environment?: string): string {
+  return `${artefactsFolder(plan, environment)}/plan.yaml`;
+}
+
+/**
+ * The runbook of the plan's app's environment in the repository: `RUNBOOK.md` in its
+ * {@link artefactsFolder} (`opscrew/RUNBOOK.md` for the first app's prod).
+ */
+export function runbookFilePath(plan: AppEnvironment): string {
+  return `${artefactsFolder(plan)}/RUNBOOK.md`;
 }
 
 /**
  * The workflow's header comment (`about`), triggers, default permissions and concurrency. An
  * environment that follows the branch deploys on each push to it (and by hand); a promoted one only
  * through a dispatch with `dispatch`'s inputs (by default the image's digest and commit tag). Each
- * environment's runs queue in a group of their own (prod's `opscrew-deploy`, any other's
- * `opscrew-deploy-<app>-<env>`), so one environment never deploys twice at once. A running deploy
- * is never cancelled; of the runs waiting behind it, GitHub keeps only the newest.
+ * environment's runs queue in a group of their own (the first app's prod's `opscrew-deploy`, any
+ * other's `opscrew-deploy-<app name>`, which is unique in the repository), so one environment never
+ * deploys twice at once. A running deploy is never cancelled; of the runs waiting behind it, GitHub
+ * keeps only the newest.
  */
 export function workflowStart(
   plan: DeployPlan,
   about: readonly string[],
   dispatch: readonly string[] = DISPATCH_WITH_DIGEST,
 ): string[] {
-  const name = plan.environment?.name;
+  const first = plan.app.key === undefined && plan.environment?.name === undefined;
   return [
-    `# Generated by OpsCrew from ${planFilePath(name ?? "prod")}; \`opscrew provision\` regenerates it.`,
+    `# Generated by OpsCrew from ${planFilePath(plan)}; \`opscrew provision\` regenerates it.`,
     ...about,
     `name: ${workflowName(plan)}`,
     "",
@@ -364,7 +423,7 @@ export function workflowStart(
     "  contents: read",
     "",
     "concurrency:",
-    `  group: opscrew-deploy${name === undefined ? "" : `-${plan.app.name}`}`,
+    `  group: opscrew-deploy${first ? "" : `-${plan.app.name}`}`,
     "  cancel-in-progress: false",
     "",
     "jobs:",

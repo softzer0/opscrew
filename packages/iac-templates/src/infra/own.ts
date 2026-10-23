@@ -9,8 +9,8 @@ import {
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   output,
-  ROOT_HEADER,
   type RootFiles,
+  rootHeader,
   type VariableSpec,
   variablesTf,
   versionsTf,
@@ -52,7 +52,7 @@ function variables(plan: DeployPlan, pieces: TunnelPieces | undefined): Variable
 }
 
 function mainTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
-  const lines = [ROOT_HEADER, ""];
+  const lines = [rootHeader(plan), ""];
   if (usesCloudflare(plan)) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   lines.push(...OWN_NOTE);
   if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
@@ -72,7 +72,7 @@ function mainTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
 }
 
 function outputsTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
-  const lines = [ROOT_HEADER, ""];
+  const lines = [rootHeader(plan), ""];
   if (tunnelMode(plan)) {
     lines.push(...output("url", '"https://${var.domain}"'));
   } else {
@@ -108,9 +108,9 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const cloudflare = usesCloudflare(plan);
   const tunnel = tunnelMode(plan);
   return {
-    versions: versionsTf(cloudflare ? [CLOUDFLARE_PROVIDER] : []),
+    versions: versionsTf(plan, cloudflare ? [CLOUDFLARE_PROVIDER] : []),
     main: mainTf(plan, pieces),
-    variables: variablesTf(variables(plan, pieces)),
+    variables: variablesTf(plan, variables(plan, pieces)),
     outputs: outputsTf(plan, pieces),
     tfvars: {
       app_name: plan.app.name,

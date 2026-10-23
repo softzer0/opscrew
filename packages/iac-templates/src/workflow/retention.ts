@@ -1,11 +1,19 @@
 import { MANIFEST_ACCEPT } from "../registry";
-import { DIGEST_REF_PATTERN, environmentTag } from "./shared";
+import type { AppEnvironment } from "../runtime-dir";
+import {
+  DIGEST_REF_PATTERN,
+  environmentName,
+  environmentTag,
+  planFilePath,
+  workflowName,
+} from "./shared";
 
 /**
- * The image retention step's program (FR-1229) in `environment`'s workflow, run with the runner's
- * Node.js (`shell: node {0}`, followed by `main();`). It is plain JavaScript in the committed
- * workflow, so the user can read it and it needs no action or download; the tests run this exact
- * text.
+ * The image retention step's program (FR-1229) in the workflow of the plan's app's environment,
+ * run with the runner's Node.js (`shell: node {0}`, followed by `main();`). It is plain JavaScript
+ * in the committed workflow, so the user can read it and it needs no action or download; the tests
+ * run this exact text. It works on the app's own package: `<owner>/<repo>`, a further app's
+ * `<owner>/<repo>/<key>` (plan-schema's `ghcrImageFor`).
  *
  * It deletes only the environment's own builds: the versions with its commit tag
  * ({@link environmentTag}: `<commit>` in prod's workflow, `<commit>-<env>` in another's) and its
@@ -22,15 +30,28 @@ import { DIGEST_REF_PATTERN, environmentTag } from "./shared";
  * `IMAGE` (the running image), `PREVIOUS` (the image that ran before, empty on the first deploy),
  * `KEEP` (absent: delete only the intermediate images), `TOKEN`, `GITHUB_REPOSITORY` and
  * `GITHUB_ACTOR`; lists the app's environments from the repository's workflows (one OpsCrew deploy
- * workflow each, by its name: {@link workflowName}), the package's versions through the GitHub API
- * and the image indexes' children from GitHub Container Registry, and deletes what `prunable`
- * selects. Any error before the first deletion deletes nothing. The image reference
- * pattern and the manifest types are OpsCrew's own ({@link DIGEST_REF_PATTERN},
+ * workflow each, by its name: {@link workflowName}, which names the app), the package's versions
+ * through the GitHub API and the image indexes' children from GitHub Container Registry, and
+ * deletes what `prunable` selects. Any error before the first deletion deletes nothing. The image
+ * reference pattern and the manifest types are OpsCrew's own ({@link DIGEST_REF_PATTERN},
  * {@link MANIFEST_ACCEPT}), written into the program as literals.
  */
-export function retentionScript(environment: string): string {
-  const own = (commit: string) => environmentTag(commit, environment);
-  return String.raw`// OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+export function retentionScript(plan: AppEnvironment): string {
+  const own = (commit: string) => environmentTag(commit, environmentName(plan));
+  const key = plan.app.key;
+  /** The app's prod workflow's name; another environment's adds ` (<env>)`. */
+  const workflow = workflowName({ app: plan.app });
+  /** The variable holding the repository's name, which the workflows API takes. */
+  const repo = key === undefined ? "name" : "repo";
+  const packageName =
+    key === undefined
+      ? 'const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");'
+      : [
+          'const [owner, repo] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");',
+          `  // The app's own package: ghcr.io/<owner>/<repo>/${key}.`,
+          `  const name = repo + "/${key}";`,
+        ].join("\n");
+  return String.raw`// OpsCrew image retention (${planFilePath(plan)}, cicd.imageRetention): deletes old versions of
 // this repository's image from GitHub Container Registry.
 
 /**
@@ -117,7 +138,7 @@ async function main() {
   const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
   // Untagged versions younger than 30 minutes stay: another environment may be pushing them.
   const recent = Date.now() - 30 * 60 * 1000;
-  const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
+  ${packageName}
   const token = process.env.TOKEN;
   const read = async (response, what) => {
     if (!response.ok) {
@@ -137,16 +158,16 @@ async function main() {
 
   let deleting = false;
   try {
-    // The app's environments: each has its OpsCrew deploy workflow, named "OpsCrew deploy" (prod)
-    // or "OpsCrew deploy (<env>)".
+    // The app's environments: each has its OpsCrew deploy workflow, named "${workflow}" (prod)
+    // or "${workflow} (<env>)".
     const environments = [];
     for (let page = 1; ; page++) {
       const batch = await read(
-        await github("GET", "/repos/" + owner + "/" + name + "/actions/workflows?per_page=100&page=" + page),
+        await github("GET", "/repos/" + owner + "/" + ${repo} + "/actions/workflows?per_page=100&page=" + page),
         "The GitHub workflows API",
       );
       for (const w of batch.workflows) {
-        const match = /^OpsCrew deploy(?: \(([a-z][a-z0-9-]*)\))?$/.exec(w.name);
+        const match = /^${workflow}(?: \(([a-z][a-z0-9-]*)\))?$/.exec(w.name);
         if (match && w.state !== "deleted") environments.push(match[1] || "prod");
       }
       if (batch.workflows.length < 100) break;
@@ -154,7 +175,7 @@ async function main() {
     // None found means the workflows were renamed: no environment's labels could be kept.
     if (environments.length === 0) {
       fail(
-        'OpsCrew found no workflow named "OpsCrew deploy" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
+        'OpsCrew found no workflow named "${workflow}" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
       );
       return;
     }

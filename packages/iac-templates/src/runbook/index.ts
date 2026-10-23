@@ -1,9 +1,15 @@
 import { formatMoney, taxLabel } from "@opscrew/core";
-import { type CloudDeployTarget, type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import {
+  type CloudDeployTarget,
+  type DeployPlan,
+  ghcrImageFor,
+  serviceOf,
+} from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
 import { siteHosts } from "../runtime";
 import type { RenderedFile } from "../types";
+import { runbookFilePath } from "../workflow/shared";
 import {
   componentsSection,
   dataCell,
@@ -180,7 +186,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     ...troubleshooting(plan, environments),
     ...teardown(plan, target, repo, provider, ctx.environments),
   );
-  return { path: `${folders.artefacts}/RUNBOOK.md`, content: lines.join("\n"), kind: "doc" };
+  return { path: runbookFilePath(plan), content: lines.join("\n"), kind: "doc" };
 }
 
 /**
@@ -313,7 +319,7 @@ function teardown(
     ...(keepsData
       ? [`- **Snapshot first:** because ${reason}, ${snapshotLead}`, ...snapshotRest]
       : text.noSnapshot),
-    ...text.whatRemains(repo.toLowerCase(), plan.cicd.workflowPath, backups),
+    ...text.whatRemains(ghcrImageFor(repo, plan.app.key), plan.cicd.workflowPath, backups),
     ...(plan.storage?.objectStorage === undefined
       ? []
       : [

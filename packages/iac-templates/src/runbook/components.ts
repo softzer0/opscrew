@@ -1,7 +1,7 @@
 import { formatMoney, listText } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { dataDirs, enabledServices, serviceSpec } from "../catalog";
-import { appDir, EDGE_PROXIES, type EdgeProxy, edgeProxy } from "../edge";
+import { additionsPath, appDir, EDGE_PROXIES, type EdgeProxy, edgeProxy } from "../edge";
 import { CAA_ISSUERS } from "../infra/cloudflare";
 import { storageRootDir } from "../infra/storage";
 import { portainerStackName } from "../portainer-target/stack";
@@ -131,7 +131,7 @@ export function componentsSection(plan: DeployPlan, environments?: readonly stri
   const from = plan.environment?.deploySource;
   const where =
     from?.from === "promote"
-      ? `\`${from.source}\`'s plan (\`${planFilePath(from.source)}\`): ${plan.environment?.name ?? "prod"} copies its components from it at its next design`
+      ? `\`${from.source}\`'s plan (\`${planFilePath(plan, from.source)}\`): ${plan.environment?.name ?? "prod"} copies its components from it at its next design`
       : `\`${runbookFolders(plan, undefined).artefacts}/plan.yaml\``;
   lines.push(
     portainer
@@ -161,7 +161,8 @@ export function edgeSection(
 ): string[] {
   const name = plan.app.name;
   const proxy = edgeProxy(plan);
-  const { label, site, additions } = EDGE_PROXIES[proxy];
+  const { label, site } = EDGE_PROXIES[proxy];
+  const additions = additionsPath(plan, proxy);
   return [
     shared ? "## The shared edge" : "## The edge",
     "",

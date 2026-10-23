@@ -4,7 +4,14 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { MANIFEST_ACCEPT } from "../registry";
-import { inEnvironment, jobYaml, serverPlan, withBuild, withPlan } from "./__fixtures__/plans";
+import {
+  inEnvironment,
+  jobYaml,
+  ofApp,
+  serverPlan,
+  withBuild,
+  withPlan,
+} from "./__fixtures__/plans";
 import { renderWorkflow } from "./index";
 import { retentionScript } from "./retention";
 
@@ -79,12 +86,16 @@ const WORKFLOWS = [
   { name: "CI", state: "active" },
 ];
 
+/** The server plan of the environment `name` (prod's for `prod`). */
+const planOf = (name: string) =>
+  name === "prod" ? serverPlan() : inEnvironment(serverPlan(), { name });
+
 /**
  * `prunable` of `environment`'s program, with no version recent unless `recent` says so, for
  * {@link ENVIRONMENTS} unless `environments` says otherwise.
  */
 function selection(environment: string) {
-  const loaded = load(retentionScript(environment)).prunable;
+  const loaded = load(retentionScript(planOf(environment))).prunable;
   return (
     versions: Version[],
     children: Record<string, string[]>,
@@ -400,8 +411,10 @@ describe("the retention step's program", () => {
   const RUNNING = `ghcr.io/acme/shop@${digest("e", "0")}`;
   const PREVIOUS = `ghcr.io/acme/shop@${digest("d", "0")}`;
 
-  /** A fake GitHub API and registry for `pushes` of package `acme/shop`. */
+  /** A fake GitHub API and registry for `pushes` of package `acme/<pkg>` (default `acme/shop`). */
   function github(o: {
+    /** The package's name: the repository's, or a further app's `<repo>/<key>`. */
+    pkg?: string;
     type?: "User" | "Organization";
     pushes: { versions: Version[]; children: Record<string, string[]> }[];
     failManifest?: boolean;
@@ -419,6 +432,7 @@ describe("the retention step's program", () => {
       ...o.pushes.map((p) => p.children),
     );
     const owner = o.type === "Organization" ? "orgs" : "users";
+    const pkg = o.pkg ?? "shop";
     const fetch: Fetch = async (url, init = {}) => {
       const method = init.method ?? "GET";
       calls.push(`${method} ${url}`);
@@ -429,7 +443,7 @@ describe("the retention step's program", () => {
         return ok({ workflows: o.workflows ?? WORKFLOWS });
       }
       if (url === "https://api.github.com/users/acme") return ok({ type: o.type ?? "User" });
-      const base = `https://api.github.com/${owner}/acme/packages/container/shop/versions`;
+      const base = `https://api.github.com/${owner}/acme/packages/container/${encodeURIComponent(pkg)}/versions`;
       const page = new RegExp(`^${base}\\?per_page=100&page=(\\d+)$`).exec(url);
       if (page) {
         expect(init.headers?.Authorization).toBe("Bearer token-placeholder");
@@ -444,14 +458,15 @@ describe("the retention step's program", () => {
         );
       }
       if (url.startsWith("https://ghcr.io/token?")) {
-        expect(url).toBe("https://ghcr.io/token?service=ghcr.io&scope=repository:acme/shop:pull");
+        expect(url).toBe(`https://ghcr.io/token?service=ghcr.io&scope=repository:acme/${pkg}:pull`);
         expect(init.headers?.Authorization).toBe(
           `Basic ${Buffer.from("octocat:token-placeholder").toString("base64")}`,
         );
         return ok({ token: "registry-placeholder" });
       }
-      const manifest =
-        /^https:\/\/ghcr\.io\/v2\/acme\/shop\/manifests\/(sha256:[0-9a-f]{64})$/.exec(url);
+      const manifest = new RegExp(
+        `^https://ghcr\\.io/v2/acme/${pkg}/manifests/(sha256:[0-9a-f]{64})$`,
+      ).exec(url);
       if (manifest) {
         if (o.failManifest) return { ok: false, status: 500, json: async () => ({}) };
         if ((o.goneManifests ?? 0) > 0) {
@@ -521,8 +536,8 @@ describe("the retention step's program", () => {
   const base = "https://api.github.com/users/acme/packages/container/shop/versions";
 
   it("is the tested program followed by main(), with the environment's own commit tag", () => {
-    expect(script).toBe(`${retentionScript("prod")}\nmain();\n`);
-    expect(program(staging)).toBe(`${retentionScript("staging")}\nmain();\n`);
+    expect(script).toBe(`${retentionScript(serverPlan())}\nmain();\n`);
+    expect(program(staging)).toBe(`${retentionScript(staging)}\nmain();\n`);
     expect(program(staging)).toContain("/^[0-9a-f]{40}-staging$/");
     expect(program(staging)).toContain("/^build-[0-9a-f]{40}-staging$/");
   });
@@ -593,6 +608,49 @@ describe("the retention step's program", () => {
     expect(api.deleted()).toEqual(
       [...stagingRan.versions, ...c.versions].map((v) => `DELETE ${base}/${v.id}`),
     );
+  });
+
+  it("works on a further app's own package, with the labels of that app's environments", async () => {
+    // The app docs pushes ghcr.io/acme/shop/docs; its workflows are "OpsCrew deploy docs …".
+    const docs = ofApp(serverPlan(), "docs");
+    const stagingRuns = push("a", 1, [commit(1), "opscrew-staging"]);
+    // qa is the first app's environment: in docs's package its label is a stray one.
+    const qaLabel = push("b", 2, [commit(2), "opscrew-qa"]);
+    const api = github({
+      pkg: "shop/docs",
+      pushes: [stagingRuns, qaLabel, c, push("d", 4), push("e", 5)],
+      workflows: [
+        { name: "OpsCrew deploy", state: "active" },
+        { name: "OpsCrew deploy (qa)", state: "active" },
+        { name: "OpsCrew deploy docs", state: "active" },
+        { name: "OpsCrew deploy docs (staging)", state: "active" },
+      ],
+    });
+    const image = (d: string) => `ghcr.io/acme/shop/docs@${d}`;
+    const result = await runMain(
+      api,
+      { IMAGE: image(digest("e", "0")), PREVIOUS: image(digest("d", "0")) },
+      { text: program(docs) },
+    );
+    expect(result.exitCode).toBeUndefined();
+    const docsBase = "https://api.github.com/users/acme/packages/container/shop%2Fdocs/versions";
+    expect(api.deleted()).toEqual(
+      [...qaLabel.versions, ...c.versions].map((v) => `DELETE ${docsBase}/${v.id}`),
+    );
+    expect(api.calls).toContain(
+      "GET https://api.github.com/repos/acme/shop/actions/workflows?per_page=100&page=1",
+    );
+    expect(api.calls.some((call) => call.includes("/container/shop/"))).toBe(false);
+  });
+
+  it("deletes nothing in a further app's workflow when no workflow names that app", async () => {
+    const api = github({ pkg: "shop/docs", pushes });
+    const result = await runMain(api, {}, { text: program(ofApp(serverPlan(), "docs")) });
+    expect(result.exitCode).toBe(1);
+    expect(api.deleted()).toEqual([]);
+    expect(result.log).toEqual([
+      '::error::OpsCrew found no workflow named "OpsCrew deploy docs" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
+    ]);
   });
 
   it("deletes nothing when the workflows cannot be listed", async () => {

@@ -1,11 +1,13 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: shell syntax in expected values, not JavaScript templates.
 import {
   type DeployPlan,
+  type PlanService,
   type SelfHostedServiceKind,
   SelfHostedServiceKindSchema,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
+import { inEnvironment, ofApp } from "../workflow/__fixtures__/plans";
 import { GARAGE_STORAGE, withServices } from "./__fixtures__/plans";
 import {
   appVariables,
@@ -681,15 +683,27 @@ describe("the search and analytics engines' settings", () => {
 
 describe("the versions", () => {
   it("accept the pinned version at the plan's precision and refuse any other", () => {
-    const mysql = only("mysql").service;
-    expect(() => checkServiceVersion(mysql, serviceSpec("mysql"))).not.toThrow();
-    expect(() => checkServiceVersion(only("kafka").service, serviceSpec("kafka"))).not.toThrow();
-    expect(() => checkServiceVersion({ ...mysql, version: "9.7" }, serviceSpec("mysql"))).toThrow(
+    const { plan, service: mysql } = only("mysql");
+    const kafka = only("kafka");
+    const check = (p: DeployPlan, service: PlanService, kind: SelfHostedServiceKind) => () =>
+      checkServiceVersion(p, service, serviceSpec(kind));
+    expect(check(plan, mysql, "mysql")).not.toThrow();
+    expect(check(kafka.plan, kafka.service, "kafka")).not.toThrow();
+    expect(check(plan, { ...mysql, version: "9.7" }, "mysql")).toThrow(
       "opscrew/plan.yaml asks for MySQL 9.7 (the service mysql), but this version of OpsCrew runs MySQL 8.4.",
     );
-    expect(() =>
-      checkServiceVersion({ ...mysql, version: "8.4.11" }, serviceSpec("mysql")),
-    ).toThrow("MySQL 8.4.11");
+    expect(check(plan, { ...mysql, version: "8.4.11" }, "mysql")).toThrow("MySQL 8.4.11");
+    // Another environment's plan, and a further app's, name their own file.
+    const staging = inEnvironment(plan, { name: "staging" });
+    expect(check(staging, { ...mysql, version: "9.7" }, "mysql")).toThrow(
+      expect.objectContaining({
+        message: expect.stringMatching(/^opscrew\/environments\/staging\/plan\.yaml asks for/),
+        hint: "Set the service's version to 8.4 in opscrew/environments/staging/plan.yaml (services), then run the command again.",
+      }),
+    );
+    expect(check(ofApp(plan, "docs"), { ...mysql, version: "9.7" }, "mysql")).toThrow(
+      "opscrew/apps/docs/plan.yaml asks for MySQL 9.7",
+    );
   });
 });
 

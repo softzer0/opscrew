@@ -1,10 +1,15 @@
-import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  ghcrImageFor,
+  type OwnDeployTarget,
+  serviceOf,
+} from "@opscrew/plan-schema";
 import { providerBucket } from "../infra/storage";
 import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
-import { selfHosted } from "../workflow/shared";
+import { runbookFilePath, selfHosted } from "../workflow/shared";
 import {
   componentsSection,
   dataCell,
@@ -228,10 +233,10 @@ export function renderOwnRunbook(
     `- **Undo OpsCrew's host changes:** \`${opscrew(plan, "destroy --undo-host", environments)}\` also plans the reverse of what OpsCrew changed on the`,
     "  server (deploy user, SSH settings, firewall, automatic updates, Docker if OpsCrew installed it), from the record in",
     "  `/etc/opscrew/host.json`. It is a separate plan that you approve on its own.",
-    `- **What remains:** your server, the container images in GitHub Container Registry (\`ghcr.io/${repo.toLowerCase()}\`), and`,
+    `- **What remains:** your server, the container images in GitHub Container Registry (\`${ghcrImageFor(repo, plan.app.key)}\`), and`,
     `  the files in this repository (\`opscrew/\` and \`${plan.cicd.workflowPath}\`).`,
     "",
     ...deployAgain(plan, environments),
   );
-  return { path: `${folders.artefacts}/RUNBOOK.md`, content: lines.join("\n"), kind: "doc" };
+  return { path: runbookFilePath(plan), content: lines.join("\n"), kind: "doc" };
 }

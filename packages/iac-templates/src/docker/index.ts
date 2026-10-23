@@ -2,6 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import type { PinArch } from "../pins";
 import type { RenderedFile } from "../types";
+import { planFilePath } from "../workflow/shared";
 import { nodeImage, nodeMajor, pythonImage, pythonMinor, type ResolveImageDigest } from "./images";
 import {
   appDirectory,
@@ -34,10 +35,11 @@ export interface DockerAssetOptions {
   healthPath: string;
   /**
    * The plan's `app`: `build.runtime.version` picks the runtime version, `releaseCommand` the
-   * migration tool a Node.js server image keeps. Absent: the version the app declares (else
-   * OpsCrew's default) and the detected release command.
+   * migration tool a Node.js server image keeps, and a further app's `key` the plan the
+   * Dockerfile's notes name. Absent: the version the app declares (else OpsCrew's default), the
+   * detected release command and the first app's plan.
    */
-  app?: Pick<DeployPlan["app"], "build" | "releaseCommand">;
+  app?: Pick<DeployPlan["app"], "build" | "releaseCommand" | "key">;
   /**
    * Finds the digest of a runtime image OpsCrew has no pin for (a declared non-default version).
    * Without it, or when it finds none, that image is pinned by tag only and the Dockerfile says so.
@@ -78,19 +80,21 @@ function dockerfile(
   const release = options.app ? options.app.releaseCommand : facts.build.releaseCommand;
   const cron = options.supercronic;
   const sqlite = options.sqliteFolder;
+  // The app's Dockerfile serves all its environments: its notes name the app's prod plan.
+  const planFile = planFilePath({ app: { key: options.app?.key } }, "prod");
   switch (stack) {
     case "next-standalone":
-      return nextStandaloneDockerfile(facts, port, node(), release, cron, sqlite);
+      return nextStandaloneDockerfile(facts, planFile, port, node(), release, cron, sqlite);
     case "node-server":
-      return nodeServerDockerfile(facts, port, node(), release, cron, sqlite);
+      return nodeServerDockerfile(facts, planFile, port, node(), release, cron, sqlite);
     case "static-spa":
-      return staticSpaDockerfile(facts, node(), cron);
+      return staticSpaDockerfile(facts, planFile, node(), cron);
     case "python-fastapi":
-      return fastapiDockerfile(facts, port, python(), cron, sqlite);
+      return fastapiDockerfile(facts, planFile, port, python(), cron, sqlite);
     case "python-django":
-      return djangoDockerfile(facts, port, python(), cron, sqlite);
+      return djangoDockerfile(facts, planFile, port, python(), cron, sqlite);
     case "python-generic":
-      return pythonGenericDockerfile(facts, port, python(), cron, sqlite);
+      return pythonGenericDockerfile(facts, planFile, port, python(), cron, sqlite);
   }
 }
 

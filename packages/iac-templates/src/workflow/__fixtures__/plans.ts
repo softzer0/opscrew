@@ -145,6 +145,23 @@ export function inEnvironment(
 }
 
 /**
+ * `plan` as the further app `key`'s, as design writes it: the key, the app name `key` (`<key>-<env>`
+ * in a named environment's plan), and the infrastructure folder and workflow file the key gives
+ * (`infraDirFor`, `workflowPathFor`).
+ */
+export function ofApp(plan: DeployPlan, key: string): DeployPlan {
+  const env = plan.environment?.name;
+  const { dir: _dir, ...infra } = plan.infra;
+  const { workflowPath: _workflowPath, ...cicd } = plan.cicd;
+  return DeployPlanSchema.parse({
+    ...plan,
+    app: { ...plan.app, key, name: env === undefined ? key : `${key}-${env}` },
+    infra,
+    cicd,
+  });
+}
+
+/**
  * `plan` on SQLite: `storage.sqlite.dir` `dir` (default `storage`), the `recreate` strategy it
  * needs, and for the user's own Dockerfile the folder the app runs in (`workdir`).
  */

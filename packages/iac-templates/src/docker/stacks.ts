@@ -73,11 +73,14 @@ export function supercronicAdd(arch: PinArch): string {
   return `ADD --checksum=sha256:${TOOLS.supercronic.sha256[arch]} --chmod=755 ${toolDownloadUrl("supercronic", arch)} /usr/local/bin/supercronic`;
 }
 
-/** The runtime stage's supercronic lines for `arch`, with a note for the file's owner; or none. */
-function supercronic(arch: PinArch | undefined): string[] {
+/**
+ * The runtime stage's supercronic lines for `arch`, with a note for the file's owner naming the
+ * app's plan (`planFile`); or none.
+ */
+function supercronic(arch: PinArch | undefined, planFile: string): string[] {
   if (arch === undefined) return [];
   return [
-    "# supercronic runs the cron jobs in opscrew/plan.yaml (the cron service).",
+    `# supercronic runs the cron jobs in ${planFile} (the cron service).`,
     supercronicAdd(arch),
   ];
 }
@@ -95,13 +98,14 @@ export const GENERATED_USERS = {
 /**
  * The runtime stage's `USER` line, then for an app on SQLite the database's folder (`sqlite`,
  * absolute): `WORKDIR` makes a missing folder as that user (the app's files are already theirs),
- * so Docker gives a new volume on it that owner; the stage then returns to `/app`.
+ * so Docker gives a new volume on it that owner; the stage then returns to `/app`. The note names
+ * the app's plan (`planFile`).
  */
-function runAs(user: string, sqlite: string | undefined): string[] {
+function runAs(user: string, sqlite: string | undefined, planFile: string): string[] {
   if (sqlite === undefined) return [`USER ${user}`];
   return [
     `USER ${user}`,
-    "# SQLite's folder (storage.sqlite in opscrew/plan.yaml), made as the app's user: Docker gives a new volume on it the folder's owner.",
+    `# SQLite's folder (storage.sqlite in ${planFile}), made as the app's user: Docker gives a new volume on it the folder's owner.`,
     `WORKDIR ${sqlite}`,
     "WORKDIR /app",
   ];
@@ -551,6 +555,7 @@ function standaloneToOut(dir: string, serverDir: string): string[] {
  */
 export function nextStandaloneDockerfile(
   facts: ProjectFacts,
+  planFile: string,
   port: number,
   base: BaseImage,
   releaseCommand?: string,
@@ -616,10 +621,10 @@ export function nextStandaloneDockerfile(
     "",
     `FROM ${base.ref} AS runtime`,
     "WORKDIR /app",
-    ...supercronic(cron),
+    ...supercronic(cron, planFile),
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
     copyFromBuild("/out", "./"),
-    ...runAs(GENERATED_USERS.node.name, sqlite),
+    ...runAs(GENERATED_USERS.node.name, sqlite, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
     "",
@@ -634,6 +639,7 @@ export function nextStandaloneDockerfile(
  */
 export function nodeServerDockerfile(
   facts: ProjectFacts,
+  planFile: string,
   port: number,
   base: BaseImage,
   releaseCommand?: string,
@@ -661,12 +667,12 @@ export function nodeServerDockerfile(
     "",
     `FROM ${base.ref} AS runtime`,
     "WORKDIR /app",
-    ...supercronic(cron),
+    ...supercronic(cron, planFile),
     // HOST: servers such as @astrojs/node standalone listen on localhost unless told otherwise.
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
     "COPY --from=build --chown=node:node /app ./",
     ...runtime.lines,
-    ...runAs(GENERATED_USERS.node.name, sqlite),
+    ...runAs(GENERATED_USERS.node.name, sqlite, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
     "",
@@ -678,7 +684,12 @@ export function nodeServerDockerfile(
  * Static site image. For an app in a subfolder, the default output folder is `<dir>/dist`
  * (a detected `outputDir` is already relative to the repository root).
  */
-export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage, cron?: PinArch): string {
+export function staticSpaDockerfile(
+  facts: ProjectFacts,
+  planFile: string,
+  base: BaseImage,
+  cron?: PinArch,
+): string {
   const dir = appDirectory(facts);
   const build = facts.build.buildCommand ?? jsScript(facts, dir, "build");
   const outputDir = facts.build.outputDir ?? (dir === "." ? "dist" : `${dir}/dist`);
@@ -706,7 +717,7 @@ export function staticSpaDockerfile(facts: ProjectFacts, base: BaseImage, cron?:
     `RUN ${values.mounts}${build}`,
     "",
     `FROM ${IMAGES.caddy.ref}`,
-    ...supercronic(cron),
+    ...supercronic(cron, planFile),
     copy("COPY --from=build", [`/app/${outputDir}`], "/srv"),
     `RUN printf '%s\\n' ${caddyfile.map((line) => `'${line}'`).join(" ")} > /etc/caddy/Caddyfile \\`,
     "  && chown -R 65534:65534 /data /config \\",
@@ -731,6 +742,7 @@ function pythonBase(
   facts: ProjectFacts,
   base: BaseImage,
   cron: PinArch | undefined,
+  planFile: string,
 ): string[] {
   const dir = appDirectory(facts);
   return [
@@ -742,7 +754,7 @@ function pythonBase(
     `FROM ${base.ref}`,
     `ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=${port}`,
     "WORKDIR /app",
-    ...supercronic(cron),
+    ...supercronic(cron, planFile),
     `RUN useradd --create-home --uid ${GENERATED_USERS.python.uid} ${GENERATED_USERS.python.name}`,
     ...pythonInstall(facts, dir),
     copy("COPY --chown=app:app", [dir], "."),
@@ -968,16 +980,17 @@ function uvicornTarget(facts: ProjectFacts): string {
 
 export function fastapiDockerfile(
   facts: ProjectFacts,
+  planFile: string,
   port: number,
   base: BaseImage,
   cron?: PinArch,
   sqlite?: string,
 ): string {
   return [
-    ...pythonBase("python-fastapi", port, facts, base, cron),
+    ...pythonBase("python-fastapi", port, facts, base, cron, planFile),
     "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("uvicorn"),
-    ...runAs(GENERATED_USERS.python.name, sqlite),
+    ...runAs(GENERATED_USERS.python.name, sqlite, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
     "",
@@ -999,6 +1012,7 @@ const DJANGO_COLLECTSTATIC =
 
 export function djangoDockerfile(
   facts: ProjectFacts,
+  planFile: string,
   port: number,
   base: BaseImage,
   cron?: PinArch,
@@ -1006,7 +1020,7 @@ export function djangoDockerfile(
 ): string {
   const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
-    ...pythonBase("python-django", port, facts, base, cron),
+    ...pythonBase("python-django", port, facts, base, cron, planFile),
     "# gunicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("gunicorn"),
     `ENV DJANGO_WSGI_MODULE=${module}.wsgi`,
@@ -1014,11 +1028,11 @@ export function djangoDockerfile(
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
     "# container runs.",
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
-    ...runAs(GENERATED_USERS.python.name, sqlite),
+    ...runAs(GENERATED_USERS.python.name, sqlite, planFile),
     `EXPOSE ${port}`,
     facts.build.releaseCommand === undefined
       ? "# Run migrations as part of your release process (for example `python manage.py migrate`)."
-      : "# The OpsCrew deploy runs the migrations (app.releaseCommand in opscrew/plan.yaml) first.",
+      : `# The OpsCrew deploy runs the migrations (app.releaseCommand in ${planFile}) first.`,
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variables expanded inside the container.
     'CMD ["sh", "-c", "gunicorn ${DJANGO_WSGI_MODULE} --bind 0.0.0.0:${PORT}"]',
     "",
@@ -1027,6 +1041,7 @@ export function djangoDockerfile(
 
 export function pythonGenericDockerfile(
   facts: ProjectFacts,
+  planFile: string,
   port: number,
   base: BaseImage,
   cron?: PinArch,
@@ -1034,8 +1049,8 @@ export function pythonGenericDockerfile(
 ): string {
   const start = pythonStart(facts) ?? "python main.py";
   return [
-    ...pythonBase("python-generic", port, facts, base, cron),
-    ...runAs(GENERATED_USERS.python.name, sqlite),
+    ...pythonBase("python-generic", port, facts, base, cron, planFile),
+    ...runAs(GENERATED_USERS.python.name, sqlite, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(start)}]`,
     "",

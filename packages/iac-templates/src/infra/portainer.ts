@@ -18,8 +18,8 @@ import {
   CLOUDFLARE_PROVIDER_BLOCK,
   moduleBlock,
   output,
-  ROOT_HEADER,
   type RootFiles,
+  rootHeader,
   sensitiveOutput,
   type VariableSpec,
   variablesTf,
@@ -72,7 +72,7 @@ export function portainerWebhookHostname(plan: DeployPlan): string | undefined {
 
 function mainTf(plan: DeployPlan, s: Shape): string {
   const lines = [
-    ROOT_HEADER,
+    rootHeader(plan),
     "",
     ...CLOUDFLARE_PROVIDER_BLOCK,
     "# Your existing Portainer: OpsCrew creates no server and changes nothing on the host, and the",
@@ -184,8 +184,8 @@ function variables(s: Shape): VariableSpec[] {
   return specs;
 }
 
-function outputsTf(s: Shape): string {
-  const lines = [ROOT_HEADER, ""];
+function outputsTf(plan: DeployPlan, s: Shape): string {
+  const lines = [rootHeader(plan), ""];
   if (s.appTunnel) {
     lines.push(
       ...output("url", '"https://${var.domain}"'),
@@ -237,10 +237,10 @@ export function portainerRoot(plan: DeployPlan, ctx: RenderContext): RootFiles |
     );
   }
   return {
-    versions: versionsTf([CLOUDFLARE_PROVIDER]),
+    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
     main: mainTf(plan, s),
-    variables: variablesTf(variables(s)),
-    outputs: outputsTf(s),
+    variables: variablesTf(plan, variables(s)),
+    outputs: outputsTf(plan, s),
     tfvars: tfvars(plan, ctx, s),
     modules: ["cloudflare-tunnel", ...(s.webhook ? ["cloudflare-access"] : [])],
   };

@@ -1,12 +1,14 @@
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, ghcrImageFor } from "@opscrew/plan-schema";
 import { appDir } from "../edge";
-import { runtimeDir } from "../runtime-dir";
+import { appFolder, artefactsFolder, runtimeDir } from "../runtime-dir";
 import type { RenderContext } from "../types";
 import {
+  appFlag,
   builderBranchOf,
   deploySecretName,
   environmentName,
   githubEnvironment,
+  promoteCommand,
   runnerLabel,
   selfHosted,
   workflowName,
@@ -40,9 +42,10 @@ function several(environments: readonly string[] | undefined): boolean {
 }
 
 /**
- * `opscrew <command>` for the plan's environment: `--env <name>` after it outside prod, and
- * `--env prod` for prod when the app has other `environments` (a bare command then asks which one,
- * or stops in scripts), so every command a runbook names acts on that environment only.
+ * `opscrew <command>` for the plan's app and environment: a further app's `--app <key>`
+ * ({@link appFlag}), then `--env <name>` outside prod, and `--env prod` for prod when the app has
+ * other `environments` (a bare command then asks which one, or stops in scripts), so every command
+ * a runbook names acts on that environment only.
  */
 export function opscrew(
   plan: DeployPlan,
@@ -50,25 +53,25 @@ export function opscrew(
   environments?: readonly string[],
 ): string {
   const env = commandEnvironment(plan, environments);
-  return env === undefined ? `opscrew ${command}` : `opscrew ${command} --env ${env}`;
+  return `opscrew ${command}${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
 }
 
 /**
- * The environment's folders as a runbook names them (data-model.md "Paths per environment"): its
- * artefacts (`opscrew`), its state (`.opscrew`), its OpsCrew home folder and its infrastructure
- * root, each prod's for prod and the environment's own (`…/environments/<env>`) for the others.
+ * The app's environment's folders as a runbook names them (data-model.md "Apps in a repository"):
+ * its artefacts (`opscrew`), its state (`.opscrew`), its OpsCrew home folder and its
+ * infrastructure root: the first app's prod's as they are, with `…/environments/<env>` for another
+ * environment and `…/apps/<key>/…` for a further app ({@link appFolder}).
  */
 export function runbookFolders(
   plan: DeployPlan,
   projectId: string | undefined,
 ): { artefacts: string; state: string; home: string; infra: string } {
-  const env = plan.environment?.name;
-  const own = (dir: string) => (env === undefined ? dir : `${dir}/environments/${env}`);
+  const first = plan.app.key === undefined && plan.environment?.name === undefined;
   return {
-    artefacts: own("opscrew"),
-    state: own(".opscrew"),
-    home: own(`~/.opscrew/projects/${projectId ?? "<project-id>"}`),
-    infra: env === undefined ? "opscrew/infra" : plan.infra.dir,
+    artefacts: artefactsFolder(plan),
+    state: appFolder(".opscrew", plan),
+    home: appFolder(`~/.opscrew/projects/${projectId ?? "<project-id>"}`, plan),
+    infra: first ? "opscrew/infra" : plan.infra.dir,
   };
 }
 
@@ -106,10 +109,12 @@ function environmentRows(plan: DeployPlan, environments: readonly string[] | und
   const env = commandEnvironment(plan, environments);
   if (environment === undefined && env === undefined) return [];
   const name = environmentName(plan);
+  const list = `opscrew env list${appFlag(plan)}`;
+  const key = plan.app.key;
   const rows = [
     env === undefined
-      ? "| Environment | `prod`, one of the app's environments (`opscrew env list` shows them all) |"
-      : `| Environment | \`${name}\` (\`opscrew env list\` shows them all): \`opscrew promote\` takes \`--to ${name}\`, every other command \`--env ${name}\` |`,
+      ? `| Environment | \`prod\`, one of the app's environments (\`${list}\` shows them all) |`
+      : `| Environment | \`${name}\` (\`${list}\` shows them all): \`opscrew promote\` takes \`--to ${name}\`, every other command \`--env ${name}\`${key === undefined ? "" : `, and every command \`--app ${key}\``} |`,
   ];
   if (selfHosted(plan)) {
     const label = `(label \`${runnerLabel(plan)}\`)`;
@@ -146,11 +151,11 @@ export function deployRows(plan: DeployPlan, repo: string): string[] {
   const source = plan.environment?.deploySource;
   const deploys =
     source?.from === "promote"
-      ? `only by \`opscrew promote --to ${environmentName(plan)}\`, which runs \`${plan.cicd.workflowPath}\` with the image the \`${source.source}\` environment runs`
+      ? `only by \`${promoteCommand(plan)}\`, which runs \`${plan.cicd.workflowPath}\` with the image the \`${source.source}\` environment runs`
       : `every push to \`${plan.cicd.branch}\` runs \`${plan.cicd.workflowPath}\``;
   return [
     `| Deploys | ${cell(deploys)} |`,
-    `| Image | \`ghcr.io/${repo.toLowerCase()}\` (GitHub Container Registry) |`,
+    `| Image | \`${ghcrImageFor(repo, plan.app.key)}\` (GitHub Container Registry) |`,
   ];
 }
 
@@ -172,7 +177,7 @@ export function deploySections(
   const first =
     source?.from === "promote"
       ? [
-          `1. \`opscrew promote --to ${name}\` finds the image the \`${source.source}\` environment runs, checks that a push to`,
+          `1. \`${promoteCommand(plan)}\` finds the image the \`${source.source}\` environment runs, checks that a push to`,
           `   \`${builderBranchOf(plan, ctx)}\` in this repository built it, checks that ${name} has no change waiting for \`${opscrew(plan, "provision", environments)}\`, and`,
           "   shows it all with the approval's hash. Only after your approval does it start the deploy workflow with the image's",
           "   digest; `--yes` never approves a promotion.",
@@ -207,7 +212,7 @@ export function deploySections(
     "",
     ...(source?.from === "promote"
       ? [
-          `- **The previous image:** \`opscrew promote --to ${name} --digest <digest>\`, with the digest of the image tagged`,
+          `- **The previous image:** \`${promoteCommand(plan)} --digest <digest>\`, with the digest of the image tagged`,
           `  \`opscrew-${name}-previous\` in GitHub Container Registry. It runs the same checks and asks for the same approval.`,
           `- **A fix:** push it to \`${branch}\`, let the \`${source.source}\` environment deploy it, then promote it.`,
         ]

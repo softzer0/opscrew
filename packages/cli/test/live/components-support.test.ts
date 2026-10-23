@@ -393,7 +393,10 @@ describe("what the server shows", () => {
     ] as const) {
       const probe = HONOURED_SETTINGS[kind];
       const file = serviceSpec(kind)
-        .configFiles?.({ service: { memoryMb: kind === "mysql" ? 512 : 1024 } } as never)
+        .configFiles?.({
+          plan: plan({}),
+          service: { memoryMb: kind === "mysql" ? 512 : 1024 },
+        } as never)
         .find((f) => f.name === probe?.file);
       expect(file, `${kind}'s ${probe?.file}`).toBeDefined();
       expect(probe?.expected(file?.content ?? "")).toBe(expected);

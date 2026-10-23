@@ -2,12 +2,13 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext, RenderedFile } from "../types";
+import { planFilePath } from "../workflow/shared";
 import { accountId } from "./cloudflare";
 import {
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   type ProviderRequirement,
-  ROOT_HEADER,
+  rootHeader,
   type VariableSpec,
   variablesTf,
   versionsTf,
@@ -80,7 +81,7 @@ function corsOrigins(plan: DeployPlan): string[] {
       "PHASE_PRECONDITION",
       "The bucket's browser uploads need the app's domain: without one, OpsCrew cannot tell which site may upload.",
       {
-        hint: "Give the app a domain in opscrew/plan.yaml (dns.domain), or set storage.objectStorage.cors to false if the app does not upload from the browser, then run the command again.",
+        hint: `Give the app a domain in ${planFilePath(plan)} (dns.domain), or set storage.objectStorage.cors to false if the app does not upload from the browser, then run the command again.`,
       },
     );
   }
@@ -176,13 +177,18 @@ function s3Main(
 }
 
 /**
- * The `storage` root's folder, beside `plan.infra.dir`: `opscrew/infra/storage` for prod,
- * `opscrew/infra/storage-<env>` for a named environment.
+ * The `storage` root's folder, beside `plan.infra.dir`: `storage`, then a further app's key and
+ * the environment's name outside prod, each after `-` (`opscrew/infra/storage` for the first app's
+ * prod, `opscrew/infra/storage-<env>`, `opscrew/infra/storage-<key>`,
+ * `opscrew/infra/storage-<key>-<env>`). No key or environment name starts with `storage`, so it is
+ * never an infrastructure root of its own.
  */
-export function storageRootDir(plan: Pick<DeployPlan, "infra" | "environment">): string {
+export function storageRootDir(plan: Pick<DeployPlan, "app" | "infra" | "environment">): string {
   const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const env = plan.environment?.name;
-  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}storage${env === undefined ? "" : `-${env}`}`;
+  const name = ["storage", plan.app.key, plan.environment?.name]
+    .filter((part) => part !== undefined)
+    .join("-");
+  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}${name}`;
 }
 
 /**
@@ -243,9 +249,13 @@ export function renderStorage(
   }
   const dir = storageRootDir(plan);
   return [
-    { path: `${dir}/versions.tf`, content: versionsTf([provider]), kind: "infra" },
-    { path: `${dir}/main.tf`, content: [ROOT_HEADER, "", ...main, ""].join("\n"), kind: "infra" },
-    { path: `${dir}/variables.tf`, content: variablesTf(variables), kind: "infra" },
+    { path: `${dir}/versions.tf`, content: versionsTf(plan, [provider]), kind: "infra" },
+    {
+      path: `${dir}/main.tf`,
+      content: [rootHeader(plan), "", ...main, ""].join("\n"),
+      kind: "infra",
+    },
+    { path: `${dir}/variables.tf`, content: variablesTf(plan, variables), kind: "infra" },
     {
       path: `${dir}/terraform.tfvars.json`,
       content: `${JSON.stringify(values, null, 2)}\n`,

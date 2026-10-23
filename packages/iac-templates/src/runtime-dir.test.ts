@@ -24,7 +24,7 @@ import {
 import { runtimeDir } from "./runtime-dir";
 import type { RenderedFile } from "./types";
 import { renderWorkflow } from "./workflow";
-import { inEnvironment, NIGHTLY, withProcesses } from "./workflow/__fixtures__/plans";
+import { inEnvironment, NIGHTLY, ofApp, withProcesses } from "./workflow/__fixtures__/plans";
 
 const ctx: RuntimeContext = { ...testContext(), localhost: { hostname: "shop.localhost" } };
 
@@ -138,6 +138,67 @@ describe("runtimeDir", () => {
       "opscrew/environments/staging/runtime/compose.yaml",
     );
     expect(portainerStackTemplatePath(staging)).toBe(renderPortainerStack(staging, ctx).path);
+  });
+});
+
+describe("two apps in one repository", () => {
+  for (const [name, plan] of [
+    ["a server", server],
+    ["this computer", withProcesses(localhostPlan(), { cron: [NIGHTLY] })],
+  ] as const) {
+    it(`keeps the first app's files and a further app's apart on ${name}`, () => {
+      // A server's runbook too; this computer's is where the caller puts it.
+      const files = (p: DeployPlan) => [
+        ...serverFiles(p),
+        ...(p.target.provider === "localhost" ? [] : [renderRunbook(p, ctx)]),
+      ];
+      const first = files(plan);
+      const docs = ofApp(plan, "docs");
+      const docsStaging = ofApp(inEnvironment(plan, { name: "staging" }), "docs");
+      const further = files(docs);
+      const furtherStaging = files(docsStaging);
+      const paths = (files: RenderedFile[]) => new Set(files.map((file) => file.path));
+      const taken = paths(first);
+      expect(further.filter((file) => taken.has(file.path))).toEqual([]);
+      const docsPaths = paths(further);
+      expect(
+        furtherStaging.filter((file) => taken.has(file.path) || docsPaths.has(file.path)),
+      ).toEqual([]);
+      for (const [files, dir] of [
+        [further, "opscrew/apps/docs/"],
+        [furtherStaging, "opscrew/apps/docs/environments/staging/"],
+      ] as const) {
+        for (const file of files.filter((f) => f.kind !== "workflow")) {
+          expect(file.path.startsWith(dir), file.path).toBe(true);
+        }
+      }
+      // The further app's workflow uploads, checks and names only its own runtime files.
+      const workflow = further.find((file) => file.kind === "workflow")?.content ?? "";
+      expect(workflow).toContain("opscrew/apps/docs/runtime/");
+      expect(workflow).not.toMatch(/opscrew\/(?:runtime|environments)\//);
+    });
+  }
+
+  it("keeps a further app's storage root apart from the first app's", () => {
+    expect(storageRootDir(ofApp(server, "docs"))).toBe("opscrew/infra/storage-docs");
+    expect(storageRootDir(ofApp(inEnvironment(server, { name: "staging" }), "docs"))).toBe(
+      "opscrew/infra/storage-docs-staging",
+    );
+  });
+
+  it("gives a further app on Portainer a deploy branch and stack template of its own", () => {
+    const docs = ofApp(portainerTestPlan(), "docs");
+    expect(portainerDeployBranch(docs)).toBe("opscrew-deploy-docs");
+    expect(portainerStackTemplatePath(docs)).toBe("opscrew/apps/docs/runtime/compose.yaml");
+    const workflow = renderWorkflow(docs, ctx).content;
+    expect(workflow).toContain('git push origin "$deployed:refs/heads/opscrew-deploy-docs"');
+    expect(workflow).not.toMatch(/refs\/heads\/opscrew-deploy(?!-docs)/);
+    expect(renderPortainerStack(docs, ctx).content).toContain(
+      "# this file to the opscrew-deploy-docs branch, which Portainer deploys.",
+    );
+    expect(
+      portainerDeployBranch(ofApp(inEnvironment(portainerTestPlan(), { name: "staging" }), "docs")),
+    ).toBe("opscrew-deploy-docs-staging");
   });
 });
 

@@ -160,7 +160,7 @@ describe("OpsCrew's headers in _headers (the deploy step's program)", () => {
 
   it("is the program, run with Node.js", () => {
     expect(step?.shell).toBe("node {0}");
-    expect(step?.run).toBe(`${headersProgram()}\nmain();\n`);
+    expect(step?.run).toBe(`${headersProgram(cloudflarePlan())}\nmain();\n`);
     expect(SITE_HEADERS.map(([name]) => name)).toEqual([
       "Strict-Transport-Security",
       "X-Content-Type-Options",

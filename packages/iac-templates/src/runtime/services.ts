@@ -1,11 +1,14 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
 import { httpsPortSuffix, LOCALHOST_TLS } from "../edge/localhost";
 import { IMAGES } from "../pins";
+import type { AppEnvironment } from "../runtime-dir";
 import { CLOUDFLARED_METRICS } from "../tunnel";
+import { planFilePath } from "../workflow/shared";
 
-/** The header line of a Compose file with a `release` service. */
-export const RELEASE_NOTE =
-  "# `release` runs app.releaseCommand from opscrew/plan.yaml before each new version starts.";
+/** The header line of a Compose file with a `release` service, naming the plan's file. */
+export function releaseNote(plan: AppEnvironment): string {
+  return `# \`release\` runs app.releaseCommand from ${planFilePath(plan)} before each new version starts.`;
+}
 
 /** `$` doubled, so Compose leaves it for the container (Compose interpolates `configs.content` too). */
 export function composeLiteral(text: string): string {
@@ -113,8 +116,11 @@ export interface CaddySite {
    * HTTP redirects to HTTPS on `httpsPort`, and the headers leave out HSTS.
    */
   local?: { dir: string; httpsPort: number } | undefined;
-  /** A file the site imports inside its block: the user's own additions. */
-  additions?: string | undefined;
+  /**
+   * The user's own additions: the `file` the site imports inside its block, from `source` in the
+   * repository (`additionsPath`).
+   */
+  additions?: { file: string; source: string } | undefined;
   /**
    * The hostnames among `hosts` that only redirect to `https://<the first other host>` with the
    * path and query (308): a server's `www.<domain>`. They keep their certificate, and with origin
@@ -357,7 +363,7 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
     "\t}",
     ...(site.additions === undefined
       ? []
-      : ["\t# Your own additions (opscrew/proxy/additions.caddy).", `\timport ${site.additions}`]),
+      : [`\t# Your own additions (${site.additions.source}).`, `\timport ${site.additions.file}`]),
     "}",
     "",
   );

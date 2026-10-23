@@ -2,6 +2,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { localComposeProject } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import type { RenderedFile } from "../types";
+import { appFlag } from "../workflow/shared";
 
 /**
  * The runbook of an app on this computer (`RUNBOOK.md` beside the plan): where it runs, the
@@ -19,7 +20,7 @@ export function renderLocalRunbook(
       ? "built on this computer from the app's Dockerfile, for its CPU: it differs from production's image"
       : "the image production runs, from GitHub Container Registry by its digest";
   const env = plan.environment?.name;
-  const flag = env === undefined ? "" : ` --env ${env}`;
+  const flag = `${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
   const lines = [
     `# Runbook: ${plan.app.name} on this computer`,
     "",

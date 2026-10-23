@@ -2,14 +2,15 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext, RenderedFile } from "../types";
+import { planFilePath } from "../workflow/shared";
 import { accountId, WWW_VARIABLE, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   moduleBlock,
   output,
-  ROOT_HEADER,
   type RootFiles,
+  rootHeader,
   type VariableSpec,
   variablesTf,
   versionsTf,
@@ -40,7 +41,7 @@ export function workersRoot(
   ctx: RenderContext,
 ): RootFiles {
   const main = [
-    ROOT_HEADER,
+    rootHeader(plan),
     "",
     ...CLOUDFLARE_PROVIDER_BLOCK,
     ...moduleBlock({
@@ -63,9 +64,9 @@ export function workersRoot(
     }),
   ];
   return {
-    versions: versionsTf([CLOUDFLARE_PROVIDER]),
+    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
     main: main.join("\n"),
-    variables: variablesTf([
+    variables: variablesTf(plan, [
       ...zoneVariables("domain"),
       WWW_VARIABLE,
       {
@@ -89,7 +90,7 @@ export function workersRoot(
         description: "Give each version of the Worker its own preview URL.",
       },
     ]),
-    outputs: [ROOT_HEADER, "", ...output("url", "module.worker.url")].join("\n"),
+    outputs: [rootHeader(plan), "", ...output("url", "module.worker.url")].join("\n"),
     tfvars: {
       ...zoneTfvars(plan, ctx, "domain"),
       www: plan.dns.www,
@@ -113,7 +114,7 @@ function onApex(plan: DeployPlan): boolean {
       "PHASE_PRECONDITION",
       "GitHub Pages needs the domain's Cloudflare zone (dns.zone) in the plan: an apex domain gets A and AAAA records, a subdomain a CNAME.",
       {
-        hint: "Set dns.zone in opscrew/plan.yaml to the domain's zone on Cloudflare, for example example.com, or run `opscrew design` again, then run the command again.",
+        hint: `Set dns.zone in ${planFilePath(plan)} to the domain's zone on Cloudflare, for example example.com, or run \`opscrew design\` again, then run the command again.`,
       },
     );
   }
@@ -127,7 +128,7 @@ function onApex(plan: DeployPlan): boolean {
  */
 export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const main = [
-    ROOT_HEADER,
+    rootHeader(plan),
     "",
     ...CLOUDFLARE_PROVIDER_BLOCK,
     ...moduleBlock({
@@ -148,9 +149,9 @@ export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
     }),
   ];
   return {
-    versions: versionsTf([CLOUDFLARE_PROVIDER]),
+    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
     main: main.join("\n"),
-    variables: variablesTf([
+    variables: variablesTf(plan, [
       ...zoneVariables("domain"),
       WWW_VARIABLE,
       {
@@ -160,7 +161,7 @@ export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       },
       GITHUB_OWNER_VARIABLE,
     ]),
-    outputs: [ROOT_HEADER, "", ...output("url", "module.dns.url")].join("\n"),
+    outputs: [rootHeader(plan), "", ...output("url", "module.dns.url")].join("\n"),
     tfvars: {
       ...zoneTfvars(plan, ctx, "domain"),
       www: plan.dns.www,
@@ -173,12 +174,14 @@ export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
 
 /**
  * The folder of GitHub's domain verification record's root, beside `plan.infra.dir`:
- * `opscrew/infra/github-pages-verification`. GitHub Pages has one site per repository, so there is
- * one such root.
+ * `opscrew/infra/github-pages-verification` for the repository's first app,
+ * `opscrew/infra/github-pages-verification-<key>` for a further app, whose state is its own.
+ * GitHub Pages has one site per repository, so an app has one such root for its environments.
  */
-export function pagesVerificationRootDir(plan: Pick<DeployPlan, "infra">): string {
+export function pagesVerificationRootDir(plan: Pick<DeployPlan, "app" | "infra">): string {
   const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}github-pages-verification`;
+  const key = plan.app.key;
+  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}github-pages-verification${key === undefined ? "" : `-${key}`}`;
 }
 
 /**
@@ -198,7 +201,7 @@ export function renderPagesVerification(
   }
   const dir = pagesVerificationRootDir(plan);
   const main = [
-    ROOT_HEADER,
+    rootHeader(plan),
     "",
     ...CLOUDFLARE_PROVIDER_BLOCK,
     "# GitHub's domain verification record for the site's domain, quoted as Cloudflare takes TXT",
@@ -215,7 +218,7 @@ export function renderPagesVerification(
     "}",
     "",
   ];
-  const variables = variablesTf([
+  const variables = variablesTf(plan, [
     ...zoneVariables("domain"),
     GITHUB_OWNER_VARIABLE,
     {
@@ -231,7 +234,7 @@ export function renderPagesVerification(
     verification,
   };
   return [
-    { path: `${dir}/versions.tf`, content: versionsTf([CLOUDFLARE_PROVIDER]), kind: "infra" },
+    { path: `${dir}/versions.tf`, content: versionsTf(plan, [CLOUDFLARE_PROVIDER]), kind: "infra" },
     { path: `${dir}/main.tf`, content: main.join("\n"), kind: "infra" },
     { path: `${dir}/variables.tf`, content: variables, kind: "infra" },
     {

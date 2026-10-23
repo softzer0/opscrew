@@ -1,6 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan, PlanService, SelfHostedServiceKind } from "@opscrew/plan-schema";
 import { IMAGES } from "../pins";
+import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
 import { DRAGONFLY_MIN_VCPUS, SERVICE_SPECS } from "./entries";
 import type { ServiceContext, ServiceSpec } from "./types";
@@ -52,15 +53,20 @@ export function pinnedVersion(spec: ServiceSpec): string {
  * matches `8.4`, `4.3` matches `4.3.1`): the version would otherwise change in the plan only.
  * @throws OpsCrewError `INVALID_INPUT` naming both versions.
  */
-export function checkServiceVersion(service: PlanService, spec: ServiceSpec): void {
+export function checkServiceVersion(
+  plan: DeployPlan,
+  service: PlanService,
+  spec: ServiceSpec,
+): void {
   const wanted = service.version.split(".");
   const pinned = pinnedVersion(spec).split(".");
   if (wanted.length <= pinned.length && wanted.every((part, i) => part === pinned[i])) return;
+  const file = planFilePath(plan);
   throw new OpsCrewError(
     "INVALID_INPUT",
-    `opscrew/plan.yaml asks for ${spec.title} ${service.version} (the service ${service.name}), but this version of OpsCrew runs ${spec.title} ${pinnedVersion(spec)}.`,
+    `${file} asks for ${spec.title} ${service.version} (the service ${service.name}), but this version of OpsCrew runs ${spec.title} ${pinnedVersion(spec)}.`,
     {
-      hint: `Set the service's version to ${spec.defaultVersion} in opscrew/plan.yaml (services), then run the command again.`,
+      hint: `Set the service's version to ${spec.defaultVersion} in ${file} (services), then run the command again.`,
     },
   );
 }

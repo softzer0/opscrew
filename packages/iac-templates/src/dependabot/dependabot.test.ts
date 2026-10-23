@@ -5,7 +5,8 @@ import { designProbe, testPlan } from "../__fixtures__/plans";
 import { SERVICE_SPECS } from "../catalog";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { portainerStackTemplatePath } from "../portainer-target/stack";
-import { inEnvironment } from "../workflow/__fixtures__/plans";
+import { cloudflarePlan, pagesPlan, ssrPlan } from "../serverless/__fixtures__/plans";
+import { inEnvironment, ofApp } from "../workflow/__fixtures__/plans";
 import { NO_MAJOR_UPDATES, renderDependabot } from "./index";
 
 function facts(overrides: Partial<ProjectFacts>): ProjectFacts {
@@ -207,6 +208,122 @@ describe("renderDependabot", () => {
     expect(renderDependabot(facts({}), portainerTestPlan(), undefined, ["prod"])).toEqual(
       renderDependabot(facts({}), portainerTestPlan()),
     );
+  });
+
+  describe("with several apps in the repository", () => {
+    // The first app, a pnpm workspace member with prod and staging, and the further app api, a uv
+    // app with prod alone.
+    const web = facts({ packageManager: "pnpm", monorepo: true, appDir: "apps/web" });
+    const webPlan = plan("generated-dockerfile", "node", { dockerfile: "apps/web/Dockerfile" });
+    const api = facts({ languages: ["python"], packageManager: "uv", appDir: "apps/api" });
+    const apiPlan = plan("generated-dockerfile", "python", {
+      key: "api",
+      name: "api",
+      dockerfile: "apps/api/Dockerfile",
+    });
+
+    it("covers every app's folders in one file", () => {
+      const file = renderDependabot(
+        web,
+        webPlan,
+        undefined,
+        ["prod", "staging"],
+        [{ facts: api, plan: apiPlan, environments: ["prod"] }],
+      );
+      const list = (parse(file.content) as { updates: Update[] }).updates;
+      expect(entries(list)).toEqual([
+        "npm /",
+        "docker /apps/web",
+        "uv /apps/api",
+        "docker /apps/api",
+        [
+          "docker-compose /opscrew/runtime",
+          "/opscrew/runtime/cloudflared",
+          "/opscrew/runtime/portainer",
+          "/opscrew/environments/staging/runtime",
+          "/opscrew/environments/staging/runtime/cloudflared",
+          "/opscrew/environments/staging/runtime/portainer",
+          "/opscrew/apps/api/runtime",
+          "/opscrew/apps/api/runtime/cloudflared",
+          "/opscrew/apps/api/runtime/portainer",
+        ].join(","),
+        "github-actions /",
+      ]);
+      // Each Dockerfile's base images keep their majors.
+      for (const update of list.filter((u) => u["package-ecosystem"] === "docker")) {
+        expect(update.ignore?.map((rule) => rule["dependency-name"])).toEqual(NO_MAJOR_UPDATES);
+      }
+      expect(file.content).toMatchSnapshot();
+    });
+
+    it("is the same file whichever app's provision renders it", () => {
+      const fromWeb = renderDependabot(
+        web,
+        webPlan,
+        undefined,
+        ["prod", "staging"],
+        [{ facts: api, plan: apiPlan, environments: ["prod"] }],
+      );
+      const fromApi = renderDependabot(
+        api,
+        apiPlan,
+        undefined,
+        ["prod"],
+        [{ facts: web, plan: webPlan, environments: ["prod", "staging"] }],
+      );
+      expect(fromApi).toEqual(fromWeb);
+    });
+
+    it("lists an entry two apps share once", () => {
+      const docs = facts({ packageManager: "pnpm", monorepo: true, appDir: "apps/docs" });
+      const docsPlan = plan("generated-dockerfile", "node", {
+        key: "docs",
+        name: "docs",
+        dockerfile: "apps/docs/Dockerfile",
+      });
+      const file = renderDependabot(
+        web,
+        webPlan,
+        undefined,
+        ["prod"],
+        [{ facts: docs, plan: docsPlan, environments: ["prod"] }],
+      );
+      // Both workspace members' JavaScript dependencies are in the root lockfile.
+      expect(entries((parse(file.content) as { updates: Update[] }).updates).slice(0, 3)).toEqual([
+        "npm /",
+        "docker /apps/web",
+        "docker /apps/docs",
+      ]);
+    });
+  });
+
+  it("gives a server-less site only its packages and the actions: no image, no Compose files", () => {
+    const site = facts({ packageManager: "pnpm", appKind: "static-spa" });
+    for (const serverless of [cloudflarePlan(), ssrPlan(), pagesPlan()]) {
+      expect(entries(updates(site, serverless))).toEqual(["npm /", "github-actions /"]);
+    }
+    // A Hugo site has no package manager: only the actions.
+    expect(entries(updates(facts({ packageManager: "none" }), pagesPlan()))).toEqual([
+      "github-actions /",
+    ]);
+    // Beside a server app, only the server app's runtime folders.
+    const web = facts({ packageManager: "pnpm", monorepo: true, appDir: "apps/web" });
+    const webPlan = plan("generated-dockerfile", "node", { dockerfile: "apps/web/Dockerfile" });
+    const docs = facts({ packageManager: "npm", appDir: "apps/docs", appKind: "static-spa" });
+    const file = renderDependabot(
+      web,
+      webPlan,
+      undefined,
+      ["prod"],
+      [{ facts: docs, plan: ofApp(cloudflarePlan(), "docs"), environments: ["prod", "staging"] }],
+    );
+    expect(entries((parse(file.content) as { updates: Update[] }).updates)).toEqual([
+      "npm /",
+      "docker /apps/web",
+      "npm /apps/docs",
+      "docker-compose /opscrew/runtime,/opscrew/runtime/cloudflared,/opscrew/runtime/portainer",
+      "github-actions /",
+    ]);
   });
 
   it("leaves the shared edge out: its pins move only with OpsCrew's version stamp", () => {

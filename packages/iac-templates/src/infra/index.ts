@@ -10,8 +10,8 @@ import {
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   output,
-  ROOT_HEADER,
   type RootFiles,
+  rootHeader,
   type VariableSpec,
   variablesTf,
   versionsTf,
@@ -124,7 +124,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
 }
 
 function mainTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
-  const lines = [ROOT_HEADER, ""];
+  const lines = [rootHeader(plan), ""];
   if (shape.moving) lines.push(MOVE_NOTE, "");
   for (const provider of shape.providers) {
     lines.push(
@@ -255,7 +255,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
   const live = shape.live.module;
   const url = usesCloudflare(plan) ? "module.dns.url" : `"http://\${module.${live}.ipv4_address}"`;
   return [
-    ROOT_HEADER,
+    rootHeader(plan),
     "",
     ...output("server_ipv4", `module.${live}.ipv4_address`),
     ...output("server_ipv6", `module.${live}.ipv6_address`),
@@ -285,12 +285,12 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   values.ssh_allowed_cidrs = plan.security.sshAllowedCidrs;
   values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   return {
-    versions: versionsTf([
+    versions: versionsTf(plan, [
       ...shape.providers.map((provider) => provider.terraformProvider),
       ...(usesCloudflare(plan) ? [CLOUDFLARE_PROVIDER] : []),
     ]),
     main: mainTf(plan, shape, pieces),
-    variables: variablesTf(variables(plan, shape, pieces)),
+    variables: variablesTf(plan, variables(plan, shape, pieces)),
     outputs: outputsTf(plan, shape, pieces),
     tfvars: {
       ...values,

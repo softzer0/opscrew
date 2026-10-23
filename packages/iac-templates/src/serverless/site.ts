@@ -2,6 +2,7 @@
 import { posix } from "node:path";
 import {
   type CloudflareWorkersDeployTarget,
+  cleanRepoPath,
   type DeployPlan,
   type GithubPagesDeployTarget,
   isServerlessTarget,
@@ -11,7 +12,8 @@ import { packageManagerSpec } from "../docker/stacks";
 import { ACTIONS, RUNTIME_DEFAULTS, TOOLS } from "../pins";
 import { wrongTarget } from "../providers";
 import { shellQuote } from "../runtime/services";
-import { environmentName, planFilePath, provisionCommand, run, secret } from "../workflow/shared";
+import { artefactsFolder } from "../runtime-dir";
+import { planFilePath, provisionCommand, run, secret } from "../workflow/shared";
 
 /** A server-less target: Cloudflare's hosting or GitHub Pages. */
 export type ServerlessTarget = CloudflareWorkersDeployTarget | GithubPagesDeployTarget;
@@ -34,12 +36,12 @@ export function workersTarget(plan: DeployPlan): CloudflareWorkersDeployTarget {
 
 /**
  * The repository folder of the environment's Cloudflare files (the Wrangler config and, for
- * server rendering, the headers wrapper): `opscrew/cloudflare` for prod,
- * `opscrew/environments/<env>/cloudflare` for a named environment.
+ * server rendering, the headers wrapper), `<artefactsFolder>/cloudflare` ({@link artefactsFolder}):
+ * `opscrew/cloudflare` for the first app's prod, `opscrew/environments/<env>/cloudflare` for a
+ * named environment, `opscrew/apps/<key>/…` for a further app.
  */
 export function cloudflareDir(plan: DeployPlan): string {
-  const env = plan.environment?.name;
-  return env === undefined ? "opscrew/cloudflare" : `opscrew/environments/${env}/cloudflare`;
+  return `${artefactsFolder(plan)}/cloudflare`;
 }
 
 /**
@@ -63,24 +65,14 @@ export interface SiteFiles {
   entry?: string;
 }
 
-/** `path` without `./` or a trailing `/`. */
-function clean(path: string): string {
-  return posix.normalize(path).replace(/\/+$/, "") || ".";
-}
-
 /** The site's built files: `site.outputDir` and, for server rendering, `site.entry`. */
 export function siteFiles(plan: DeployPlan): SiteFiles {
   const { site } = serverlessTarget(plan);
-  const at = (path: string) => clean(posix.join(plan.app.buildContext, path));
+  const at = (path: string) => cleanRepoPath(posix.join(plan.app.buildContext, path));
   return {
     assets: at(site.outputDir),
     ...(site.entry === undefined ? {} : { entry: at(site.entry) }),
   };
-}
-
-/** The plan's file in the repository, for messages. */
-function planFile(plan: DeployPlan): string {
-  return planFilePath(environmentName(plan));
 }
 
 /** How each package manager installs the site's dependencies: from its lockfile when there is one. */
@@ -199,17 +191,17 @@ export function siteBuildSteps(
  * no Worker module) where the plan says.
  */
 export function siteExists(plan: DeployPlan, files: SiteFiles): string[] {
-  const fix = `change target.site in ${planFile(plan)} to what the build writes, then run \\\`${provisionCommand(plan)}\\\` again`;
+  const fix = `change target.site in ${planFilePath(plan)} to what the build writes, then run \\\`${provisionCommand(plan)}\\\` again`;
   return [
     `if [[ ! -d ${shellQuote(files.assets)} ]]; then`,
-    `  echo "::error::The build left no folder ${files.assets}, where ${planFile(plan)} expects the site's files (target.site.outputDir): ${fix}."`,
+    `  echo "::error::The build left no folder ${files.assets}, where ${planFilePath(plan)} expects the site's files (target.site.outputDir): ${fix}."`,
     "  exit 1",
     "fi",
     ...(files.entry === undefined
       ? []
       : [
           `if [[ ! -f ${shellQuote(files.entry)} ]]; then`,
-          `  echo "::error::The build left no ${files.entry}, the Worker module ${planFile(plan)} names (target.site.entry): ${fix}."`,
+          `  echo "::error::The build left no ${files.entry}, the Worker module ${planFilePath(plan)} names (target.site.entry): ${fix}."`,
           "  exit 1",
           "fi",
         ]),

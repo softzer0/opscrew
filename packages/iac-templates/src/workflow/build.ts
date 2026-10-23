@@ -15,6 +15,7 @@ import {
   environmentTag,
   GHCR_LOGIN,
   hasCronJobs,
+  imageSubpath,
   job,
   run,
   secret,
@@ -98,11 +99,12 @@ export const RAILPACK_USER = "10001:10001";
 const uses = (key: keyof typeof ACTIONS) => `  uses: ${ACTIONS[key]}`;
 
 /**
- * `name` (`ghcr.io/<owner>/<repo>`) and `image` (`<name>:<commit tag>`, {@link environmentTag}),
- * lower case as GHCR needs. On the environment's own runner without bash 4's `${…,,}` (macOS's
- * bash 3.2), with `tr`.
+ * `name` (`ghcr.io/<owner>/<repo>`, a further app's `…/<key>`: {@link imageSubpath}) and `image`
+ * (`<name>:<commit tag>`, {@link environmentTag}), lower case as GHCR needs. On the environment's
+ * own runner without bash 4's `${…,,}` (macOS's bash 3.2), with `tr`.
  */
 function imageName(plan: DeployPlan): string[] {
+  const name = `ghcr.io/\${repo}${imageSubpath(plan)}`;
   return [
     "- id: image",
     "  name: Choose the image name",
@@ -111,8 +113,8 @@ function imageName(plan: DeployPlan): string[] {
       buildsOnRunner(plan)
         ? `repo="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"`
         : 'repo="${GITHUB_REPOSITORY,,}"',
-      'echo "name=ghcr.io/${repo}" >> "$GITHUB_OUTPUT"',
-      `echo "image=ghcr.io/\${repo}:${environmentTag("${GITHUB_SHA}", environmentName(plan))}" >> "$GITHUB_OUTPUT"`,
+      `echo "name=${name}" >> "$GITHUB_OUTPUT"`,
+      `echo "image=${name}:${environmentTag("${GITHUB_SHA}", environmentName(plan))}" >> "$GITHUB_OUTPUT"`,
     ]),
   ];
 }

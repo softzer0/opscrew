@@ -231,8 +231,11 @@ export interface NginxSite {
   origin?: readonly string[] | undefined;
   /** `client_max_body_size`, in MB (`app.maxBodyMb`). */
   maxBodyMb: number;
-  /** The user's additions, included in every server that serves the app. */
-  additions?: string | undefined;
+  /**
+   * The user's additions, included in every server that serves the app: the `file` included, from
+   * `source` in the repository (`additionsPath`).
+   */
+  additions?: { file: string; source: string } | undefined;
   /**
    * The site before certbot's first certificate: the hostnames certbot serves are served over HTTP,
    * with the webroot, and the HTTPS server for them is left out.
@@ -301,8 +304,8 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     ...(site.additions === undefined
       ? []
       : [
-          "\t# Your own additions (opscrew/proxy/additions.nginx).",
-          `\tinclude ${site.additions};`,
+          `\t# Your own additions (${site.additions.source}).`,
+          `\tinclude ${site.additions.file};`,
         ]),
   ];
 }

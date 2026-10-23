@@ -180,7 +180,7 @@ jobs:
             proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
-              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/environments/staging/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
               cp "$EDGE_DIR"/compose.yaml .edge.previous
               cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
@@ -227,7 +227,7 @@ jobs:
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -331,7 +331,7 @@ jobs:
           PREVIOUS: \${{ needs.deploy.outputs.previous }}
           KEEP: "10"
         run: |
-          // OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+          // OpsCrew image retention (opscrew/environments/staging/plan.yaml, cicd.imageRetention): deletes old versions of
           // this repository's image from GitHub Container Registry.
 
           /**
@@ -1034,7 +1034,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
-              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/environments/eu-staging/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
               cp "$EDGE_DIR"/compose.yaml .edge.previous
               cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
@@ -1081,7 +1081,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! edge exec -T kamal-proxy kamal-proxy deploy shop-eu-staging --target "\${name#/}:3000" --host eu-staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/environments/eu-staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -1254,7 +1254,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
-              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/environments/staging/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
               cp "$EDGE_DIR"/compose.yaml .edge.previous
               cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
@@ -1301,7 +1301,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -1508,7 +1508,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             proxy="$(sed -n 's/^x-opscrew-edge-proxy: //p' "$EDGE_DIR"/compose.yaml 2> /dev/null || true)"
             rm -f .edge.previous
             if [ -n "$proxy" ] && [ "$proxy" != caddy ]; then
-              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
+              echo '::notice::OpsCrew switches this server'\\''s proxy from nginx to Caddy (target.edge in opscrew/environments/dev/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while Caddy starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while Caddy gets their certificates.'
               cp "$EDGE_DIR"/compose.yaml .edge.previous
               cp edge/compose.yaml "$EDGE_DIR"/compose.yaml
             elif [ "$uploaded" -gt "\${current:-0}" ]; then
@@ -1556,7 +1556,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! edge exec -T kamal-proxy kamal-proxy deploy shop-dev --target "\${name#/}:3000" --host shop.localhost --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/environments/dev/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

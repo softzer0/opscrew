@@ -24,6 +24,7 @@ import {
   environmentName,
   githubEnvironment,
   job,
+  promoteCommand,
   promoted,
   run,
   secret,
@@ -250,7 +251,7 @@ function buildRunCheck(
   plan: DeployPlan,
   ctx: Pick<RenderContext, "builderBranch" | "builderWorkflowPath">,
 ): string[] {
-  const promote = `\\\`opscrew promote --to ${environmentName(plan)}\\\``;
+  const promote = `\\\`${promoteCommand(plan)}\\\``;
   const only = "OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW.";
   const refuse = (condition: string, message: string) => [
     `if [[ ${condition} ]]; then`,
@@ -341,7 +342,7 @@ function deployJob(
   const stored = (name: string) => deploySecretName(plan, siteEnvSecret(name));
   const values = secrets.map((variable) => `"${variable.name}": env.${stored(variable.name)}`);
   const mismatch = fromRun
-    ? `The site run $RUN built has the SHA-256 $sha256, not $SHA256, the one \\\`opscrew promote\\\` asked for. Promote again with \\\`opscrew promote --to ${environmentName(plan)}\\\`, which reads the build the source environment runs.`
+    ? `The site run $RUN built has the SHA-256 $sha256, not $SHA256, the one \\\`opscrew promote\\\` asked for. Promote again with \\\`${promoteCommand(plan)}\\\`, which reads the build the source environment runs.`
     : "The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again.";
   const failed =
     "failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')";
@@ -378,7 +379,7 @@ function deployJob(
     "  env:",
     `    SITE: ${JSON.stringify(files.assets)}`,
     "  run: |",
-    ...block([...headersProgram().split("\n"), "main();"], 4),
+    ...block([...headersProgram(plan).split("\n"), "main();"], 4),
     ...prepareWrangler(
       secrets.map(
         (variable) => `    ${stored(variable.name)}: ${secret(plan, siteEnvSecret(variable.name))}`,
@@ -479,7 +480,7 @@ function deployJob(
       "  skipped)",
       '    echo "::error::The deploy failed, and the Worker had no earlier version to activate. Fix the problem and deploy again." ;;',
       "  *)",
-      `    echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`opscrew promote --to ${environmentName(plan)} --version $PREVIOUS\\\`." ;;`,
+      `    echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`${promoteCommand(plan)} --version $PREVIOUS\\\`." ;;`,
       "esac",
       "exit 1",
     ]),
@@ -514,7 +515,7 @@ export function renderCloudflareWorkersWorkflow(
   const about =
     source?.from === "promote"
       ? [
-          `# \`opscrew promote --to ${environmentName(plan)}\` starts this workflow with the run and SHA-256 of the build the`,
+          `# \`${promoteCommand(plan)}\` starts this workflow with the run and SHA-256 of the build the`,
           `# ${source.source} environment runs, and it deploys exactly that build to the Worker ${target.worker}, without`,
           "# building. Secrets are set by `opscrew provision`; their values never appear in this file.",
         ]

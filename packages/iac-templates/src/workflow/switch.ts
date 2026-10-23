@@ -2,6 +2,7 @@
 import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 import {
   APPS_DIR,
+  additionsPath,
   appDir,
   EDGE_DIR,
   EDGE_PROJECT,
@@ -26,7 +27,7 @@ import {
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
-import { hasCronJobs, healthPath } from "./shared";
+import { hasCronJobs, healthPath, planFilePath, runbookFilePath } from "./shared";
 
 /**
  * The first lines of every script (contracts/localhost.md "The script roots"): the apps' and the
@@ -77,7 +78,7 @@ export function dockerConfig(plan: DeployPlan): string {
 
 /** Shown when the release command fails; names neither the server nor any secret. */
 function releaseFailed(plan: DeployPlan): string {
-  return `::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${releaseLog(plan)} (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.`;
+  return `::error::The release command (app.releaseCommand in ${planFilePath(plan)}) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${releaseLog(plan)} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command): fix the command or the app and push again.`;
 }
 
 /** How long kamal-proxy waits for the new copy to pass its health check. */
@@ -111,13 +112,13 @@ function builderHint(plan: DeployPlan): string {
     return `It was built from ${plan.app.dockerfile}; to let OpsCrew choose a builder, ${RERUN}.`;
   }
   const { builder, automatic } = build;
-  const line = `(app.build.builder: ${builder} in opscrew/plan.yaml)`;
+  const line = `(app.build.builder: ${builder} in ${planFilePath(plan)})`;
   if (automatic === builder) {
     return `It was built with ${BUILDER_LABEL[builder]}, the builder OpsCrew chooses for this app ${line}.`;
   }
   const built = `It was built with ${BUILDER_LABEL[builder]} ${line}.`;
   if (automatic === undefined) return built;
-  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} and app.build.chosen: user in opscrew/plan.yaml, then ${RERUN}.`;
+  return `${built} OpsCrew would choose ${BUILDER_LABEL[automatic]}: set app.build.builder: ${automatic} and app.build.chosen: user in ${planFilePath(plan)}, then ${RERUN}.`;
 }
 
 /**
@@ -157,16 +158,16 @@ function exec(service: string, words: readonly string[]): string {
 }
 
 /** Shown when a setup step fails; names the service only. */
-function initFailed(service: string, log: string): string {
-  return `::error::The one-time setup of the ${service} service failed, so the new version was not started and the previous version keeps serving. The step's output stays on the server in ${log} (it can quote a key, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the cause and push again. The steps already done are skipped.`;
+function initFailed(plan: DeployPlan, service: string, log: string): string {
+  return `::error::The one-time setup of the ${service} service failed, so the new version was not started and the previous version keeps serving. The step's output stays on the server in ${log} (it can quote a key, so it is not printed here; ${runbookFilePath(plan)} has the SSH command): fix the cause and push again. The steps already done are skipped.`;
 }
 
 /** The one-time setup steps in order, each run only when its check fails; a failure stops here. */
-function serviceInit(steps: readonly ServiceInitStep[], log: string): string[] {
+function serviceInit(plan: DeployPlan, steps: readonly ServiceInitStep[], log: string): string[] {
   return steps.flatMap(({ service, check, run }) => [
     `if ! ${exec(service, check)} > /dev/null 2>&1; then`,
     `  if ! (umask 077; ${exec(service, run)} > ${log} 2>&1); then`,
-    `    echo ${shellMessage(initFailed(service, log))}`,
+    `    echo ${shellMessage(initFailed(plan, service, log))}`,
     "    exit 1",
     "  fi",
     "fi",
@@ -186,7 +187,7 @@ const PROCESS_CHECK_SECONDS = 30;
 
 /** printf's format for a worker that stopped: `%s` is its Compose service, twice. */
 function processFailed(plan: DeployPlan): string {
-  return `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in ${appFolder(plan)} (opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\\n`;
+  return `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in ${appFolder(plan)} (${runbookFilePath(plan)} has the SSH command), fix its command (processes in ${planFilePath(plan)}) or the app, and push again.\\n`;
 }
 
 /**
@@ -350,7 +351,7 @@ function healthFailed(plan: DeployPlan): string {
     plan.deploy.strategy === "rolling"
       ? " It received no traffic: the previous version keeps serving."
       : "";
-  return `::error::The new version did not pass its health check (GET ${path} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it.${traffic} Check that the app listens on port ${plan.app.port} (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers ${path}. ${builderHint(plan)}`;
+  return `::error::The new version did not pass its health check (GET ${path} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it.${traffic} Check that the app listens on port ${plan.app.port} (app.port in ${planFilePath(plan)}, passed to the app as PORT) and answers ${path}. ${builderHint(plan)}`;
 }
 
 /** The app's site as the server had it before this deploy, while the edge takes the new one. */
@@ -369,8 +370,8 @@ function siteFile(plan: DeployPlan): string {
 
 /** Shown when the edge did not start or refused the app's site; names no server and no secret. */
 function edgeFailed(plan: DeployPlan, additions: boolean): string {
-  const { label, additions: file } = EDGE_PROXIES[edgeProxy(plan)];
-  const yours = additions ? ` or your additions (${file})` : "";
+  const { label } = EDGE_PROXIES[edgeProxy(plan)];
+  const yours = additions ? ` or your additions (${additionsPath(plan)})` : "";
   return `::error::OpsCrew's shared edge on the server (${label} and kamal-proxy, in ${EDGE}) did not start or did not accept this app's site (${siteFile(plan)})${yours}, so the new version was not started, the previous version keeps serving and ${label} keeps the site it had. The error is above: fix its cause (for example a port another program uses, or a hostname another app on the server serves) and push again.`;
 }
 
@@ -382,7 +383,7 @@ function switchNotice(plan: DeployPlan): string {
   const to = EDGE_PROXIES[edgeProxy(plan)].label;
   const from = EDGE_PROXIES[otherProxy(edgeProxy(plan))].label;
   const issuer = edgeProxy(plan) === "nginx" ? "certbot gets" : "Caddy gets";
-  return `::notice::OpsCrew switches this server's proxy from ${from} to ${to} (target.edge in opscrew/plan.yaml). kamal-proxy and the apps keep running; the sites stop for a few seconds while ${to} starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while ${issuer} their certificates.`;
+  return `::notice::OpsCrew switches this server's proxy from ${from} to ${to} (target.edge in ${planFilePath(plan)}). kamal-proxy and the apps keep running; the sites stop for a few seconds while ${to} starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while ${issuer} their certificates.`;
 }
 
 /** Shown when the switch failed and the server's previous proxy is back. */
@@ -698,7 +699,7 @@ export function switchCommands(
     "docker compose pull",
     ...edgeCommands(plan, edgeFiles),
     ...(steady.length === 0 ? [] : [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]),
-    ...serviceInit(init, initLog(plan)),
+    ...serviceInit(plan, init, initLog(plan)),
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),

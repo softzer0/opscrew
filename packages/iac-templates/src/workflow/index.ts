@@ -2,7 +2,7 @@
 
 import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
-import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy, type LocalhostSite } from "../edge";
+import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
@@ -24,7 +24,6 @@ import {
   deployJob,
   deploySecretName,
   deploysInPlace,
-  environmentName,
   healthPath,
   imageOutput,
   onRunnerMachine,
@@ -32,6 +31,7 @@ import {
   promotedAbout,
   provisionCommand,
   run,
+  runnerStartCommand,
   secret,
   selfHosted,
   serviceEnvSecret,
@@ -166,7 +166,7 @@ function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): st
       ? []
       : [
           '    if [[ -z "${OPSCREW_LOCAL_CA_FILE:-}" ]]; then',
-          `      echo "::error::This runner does not set OPSCREW_LOCAL_CA_FILE, the certificate of OpsCrew's local CA that the app's HTTPS is checked with. Start it with \\\`opscrew runner start --env ${environmentName(plan)}\\\`, which sets it."`,
+          `      echo "::error::This runner does not set OPSCREW_LOCAL_CA_FILE, the certificate of OpsCrew's local CA that the app's HTTPS is checked with. Start it with \\\`${runnerStartCommand(plan)}\\\`, which sets it."`,
           "      exit 1",
           "    fi",
         ]),
@@ -519,7 +519,7 @@ const LOCAL_LOCK_TRIES = 300;
 function localDeployLock(plan: DeployPlan): string[] {
   return [
     '    if [[ -z "${OPSCREW_LOCAL_LOCK:-}" ]]; then',
-    `      echo "::error::This runner does not set OPSCREW_LOCAL_LOCK, OpsCrew's deploy lock on this computer. Start it with \\\`opscrew runner start --env ${environmentName(plan)}\\\`, which sets it."`,
+    `      echo "::error::This runner does not set OPSCREW_LOCAL_LOCK, OpsCrew's deploy lock on this computer. Start it with \\\`${runnerStartCommand(plan)}\\\`, which sets it."`,
     "      exit 1",
     "    fi",
     '    mkdir -p "$(dirname "$OPSCREW_LOCAL_LOCK")"',
@@ -559,7 +559,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
     ...(local
       ? [
           '    if [[ -z "${OPSCREW_APPS_DIR:-}" || -z "${OPSCREW_EDGE_DIR:-}" ]]; then',
-          `      echo "::error::This runner does not set OPSCREW_APPS_DIR and OPSCREW_EDGE_DIR, the folders of this computer's stack. Start it with \\\`opscrew runner start --env ${environmentName(plan)}\\\`, which sets them."`,
+          `      echo "::error::This runner does not set OPSCREW_APPS_DIR and OPSCREW_EDGE_DIR, the folders of this computer's stack. Start it with \\\`${runnerStartCommand(plan)}\\\`, which sets them."`,
           "      exit 1",
           "    fi",
         ]
@@ -704,7 +704,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     files: [
       `${runtimeDir(plan)}/compose.yaml`,
       ...runtimeUploads(plan),
-      ...(edgeFiles.additions ? [EDGE_PROXIES[edgeProxy(plan)].additions] : []),
+      ...(edgeFiles.additions ? [additionsPath(plan)] : []),
     ],
     edgeFiles,
   };

@@ -106,8 +106,11 @@ export interface ProviderText {
     snapshotFirst: readonly string[];
     noSnapshot: readonly string[];
     deleteProtectionNote: readonly string[];
-    /** "What remains" bullet; `backups` is whether the plan has automated backups on. */
-    whatRemains: (repo: string, workflowPath: string, backups: boolean) => readonly string[];
+    /**
+     * "What remains" bullet: `image` is the app's on GitHub Container Registry, `backups` whether
+     * the plan has automated backups on.
+     */
+    whatRemains: (image: string, workflowPath: string, backups: boolean) => readonly string[];
     hostKey: string;
   };
 }
@@ -168,10 +171,10 @@ export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
         "  before deleting the server. Hetzner's automated backups would be deleted together with the server.",
       ],
       deleteProtectionNote: [],
-      whatRemains: (repo, workflowPath) => [
+      whatRemains: (image, workflowPath) => [
         "- **What remains:** the snapshot, if one was taken (Hetzner bills it per GB per month at the rate listed on",
         "  https://www.hetzner.com/cloud until you delete it in Hetzner Console → Snapshots), the container images in",
-        `  GitHub Container Registry (\`ghcr.io/${repo}\`), and the files in this repository (\`opscrew/\` and`,
+        `  GitHub Container Registry (\`${image}\`), and the files in this repository (\`opscrew/\` and`,
         `  \`${workflowPath}\`).`,
       ],
       hostKey: "the server's host key",
@@ -234,7 +237,7 @@ export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
         "  control panel removes it and its data immediately; `opscrew destroy` is the safe way, because it shows the plan,",
         "  offers a snapshot and asks for the typed name first.",
       ],
-      whatRemains: (repo, workflowPath, backups) => [
+      whatRemains: (image, workflowPath, backups) => [
         "- **What remains:** the snapshot, if one was taken (DigitalOcean bills it per GB per month at the rate listed on",
         "  https://www.digitalocean.com/pricing until you delete it in the control panel at https://cloud.digitalocean.com/),",
         ...(backups
@@ -243,7 +246,7 @@ export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
             ]
           : []),
         "  the `managed-by:opscrew` tag (other OpsCrew apps in this account may use it), the container images in GitHub",
-        `  Container Registry (\`ghcr.io/${repo}\`), and the files in this repository (\`opscrew/\` and \`${workflowPath}\`).`,
+        `  Container Registry (\`${image}\`), and the files in this repository (\`opscrew/\` and \`${workflowPath}\`).`,
       ],
       hostKey: "the Droplet's host key",
     },

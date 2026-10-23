@@ -17,6 +17,7 @@ import {
   deployJob,
   healthPath,
   imageOutput,
+  planFilePath,
   promoted,
   promotedAbout,
   provisionCommand,
@@ -292,7 +293,7 @@ export function renderPortainerWorkflow(
     "- name: Check the app",
     ...(condition === undefined ? [] : [`  if: ${condition}`]),
     "  run: |",
-    `    echo "::notice::OpsCrew wrote the new version to the ${branch} branch; Portainer deploys it${cloudflare ? "" : " within about a minute"}. GitHub cannot reach the app (opscrew/plan.yaml has no domain, or the domain answers only on your network), so this run does not check it: open the address your proxy serves it on."`,
+    `    echo "::notice::OpsCrew wrote the new version to the ${branch} branch; Portainer deploys it${cloudflare ? "" : " within about a minute"}. GitHub cannot reach the app (${planFilePath(plan)} has no domain, or the domain answers only on your network), so this run does not check it: open the address your proxy serves it on."`,
   ];
   if (url === undefined) {
     steps.push(...notice());

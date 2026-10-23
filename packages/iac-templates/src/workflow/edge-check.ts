@@ -1,11 +1,17 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { EDGE_PROJECT, EDGE_PROXIES, edgeProxy, originPullPem } from "../edge";
+import { additionsPath, EDGE_PROJECT, EDGE_PROXIES, edgeProxy, originPullPem } from "../edge";
 import { LOCALHOST_TLS } from "../edge/localhost";
 import { LETSENCRYPT } from "../edge/nginx";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
-import { environmentName, onRunnerMachine, provisionCommand } from "./shared";
+import {
+  appFlag,
+  environmentName,
+  onRunnerMachine,
+  provisionCommand,
+  runnerStartCommand,
+} from "./shared";
 import type { EdgeFiles } from "./switch";
 
 /** Where the step lays the edge out as the server has it, on the runner. */
@@ -18,8 +24,8 @@ function placeholder(key: string, certificate: string): string {
 
 /** Shown when the proxy's own checker refused the edge; nothing has reached the server. */
 function checkFailed(plan: DeployPlan, file: string, additions: boolean): string {
-  const { label, additions: yours } = EDGE_PROXIES[edgeProxy(plan)];
-  const also = additions ? ` with your additions in ${yours}` : "";
+  const { label } = EDGE_PROXIES[edgeProxy(plan)];
+  const also = additions ? ` with your additions in ${additionsPath(plan)}` : "";
   return `::error::${label} refused this app's edge configuration (${file}${also}) for the reason above. Nothing was sent to the server, which keeps serving the previous version: fix the cause (${provisionCommand(plan)} renders the site again), then push again.`;
 }
 
@@ -31,8 +37,8 @@ function localLeaf(plan: DeployPlan, tls: string): string[] {
   const app = plan.app.name;
   const { certificate, key } = LOCALHOST_TLS;
   const [pem, pemKey] = [certificate, key].map((file) => `"$OPSCREW_EDGE_DIR"/tls/${app}/${file}`);
-  const env = environmentName(plan);
-  const missing = `::error::This runner finds no leaf certificate for the app in this computer's edge (tls/${app}/${certificate} and ${key} in OPSCREW_EDGE_DIR). Run \`opscrew provision --env ${env}\`, which issues it, and start the runner with \`opscrew runner start --env ${env}\`, which sets OPSCREW_EDGE_DIR; then run the workflow again.`;
+  const provision = `opscrew provision${appFlag(plan)} --env ${environmentName(plan)}`;
+  const missing = `::error::This runner finds no leaf certificate for the app in this computer's edge (tls/${app}/${certificate} and ${key} in OPSCREW_EDGE_DIR). Run \`${provision}\`, which issues it, and start the runner with \`${runnerStartCommand(plan)}\`, which sets OPSCREW_EDGE_DIR; then run the workflow again.`;
   return [
     `    if [[ -z "\${OPSCREW_EDGE_DIR:-}" || ! -f ${pem} || ! -f ${pemKey} ]]; then`,
     `      echo ${shellQuote(missing)}`,
@@ -55,7 +61,8 @@ function localLeaf(plan: DeployPlan, tls: string): string[] {
  */
 export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
   const proxy = edgeProxy(plan);
-  const { label, site, additions } = EDGE_PROXIES[proxy];
+  const { label, site } = EDGE_PROXIES[proxy];
+  const additions = additionsPath(plan, proxy);
   const app = plan.app.name;
   const dir = runtimeDir(plan);
   const tls = `${CHECK}/tls/${app}`;
