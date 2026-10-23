@@ -127,6 +127,11 @@ describe("the build job", () => {
     expect(at('docker pull --quiet "$IMAGE"')).toBeLessThan(at("docker logout ghcr.io"));
     expect(at("docker logout ghcr.io")).toBeLessThan(at(IMAGES.trivy.ref));
     expect(script).toContain("--exit-code 0");
+    // A scan that cannot run (Trivy's database out of reach) warns; the deploy goes on.
+    expect(script).toContain(`if ! docker run --rm`);
+    expect(at("::warning::The image scan (Trivy) could not run")).toBeGreaterThan(
+      at(IMAGES.trivy.ref),
+    );
     const off = buildJob({
       ...planFor(builder),
       security: { ...serverPlan().security, imageScan: false },

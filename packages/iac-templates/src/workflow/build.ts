@@ -579,7 +579,10 @@ function scan(plan: DeployPlan): string[] {
       "set -euo pipefail",
       'docker pull --quiet "$IMAGE"',
       "docker logout ghcr.io",
-      `${noPathConv}docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
+      // It only reports, so a scan that cannot run (Trivy's database out of reach) warns instead.
+      `if ! ${noPathConv}docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then`,
+      '  echo "::warning::The image scan (Trivy) could not run, so this build has no scan report. The deploy goes on: the scan only reports."',
+      "fi",
     ]),
   ];
 }

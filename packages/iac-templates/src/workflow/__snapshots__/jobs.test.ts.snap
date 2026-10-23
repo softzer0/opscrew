@@ -163,7 +163,9 @@ jobs:
           set -euo pipefail
           docker pull --quiet "$IMAGE"
           docker logout ghcr.io
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"
+          if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then
+            echo "::warning::The image scan (Trivy) could not run, so this build has no scan report. The deploy goes on: the scan only reports."
+          fi
 
   deploy:
     name: Deploy to the server
