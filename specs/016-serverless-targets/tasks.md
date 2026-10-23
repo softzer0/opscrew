@@ -363,7 +363,7 @@ Effort`.
     - **The Pages plan** (`pages-apply`): the steps from the site GitHub reports to `enabled` with `build_type: "workflow"` and `cname` (data-model.md). Its hash covers the canonical JSON of the steps. It is checked by core's safety policy before the approval, as the other typed adapters' plans are, and each change is an audit entry. Applying re-reads the site and refuses if it changed since the plan.
     - **The takeover-safe order:**
       1. the Pages plan (the site, and `cname`);
-      2. the IaC plans (`iac-apply`, one per root) for the DNS records and for the verification record;
+      2. the IaC plans (`iac-apply`, one per root) for the DNS records and for the verification record. The verification root's state is exactly `pagesVerificationStateFile(paths)` (agents `shared/engine.ts`, T1617c), which `app remove` reads;
       3. the workflow pull request.
     - **The verification record:** checked with zod (`^[A-Za-z0-9]+$`) before `renderPagesVerification` renders it (T1605's review), and recovered on later runs from the verification root's `terraform.tfvars.json` (key `verification`). Its value comes as spike item 13 settled, from the API, or else pasted by the user from the page OpsCrew names (an interactive prompt or `--pages-verification <value>`). OpsCrew then prints the one manual step: Verify, with the exact page.
     - **`pagesHealth`** is called only after `cname` is set (without a custom domain GitHub refuses the health check). `updatePages({ httpsEnforced: true })` before the certificate exists answers 404 "The certificate does not exist yet", a `PHASE_PRECONDITION` from T1604.
@@ -406,7 +406,7 @@ Effort`.
         1. the DNS records removed by IaC first, while the site still claims the domain (so no record ever points at GitHub with no site claiming it, spike result 7);
         2. a Pages plan (`pages-apply` with `allowDestroy`): `cname` removed, then Pages deleted, then its `github-pages` environment (deleting Pages leaves it behind).
 
-        The verification record's root stays unless `deleteVerification` is set. No DNS record points at GitHub while no site claims the domain (SC-1605).
+        The verification record's root stays unless `deleteVerification` is set; with it, its state (`pagesVerificationStateFile(paths)`, T1617c) ends empty or removed, so `app remove` can go ahead. No DNS record points at GitHub while no site claims the domain (SC-1605).
       - Both need the typed app name, as today.
     - **promote:**
       - **A Cloudflare promotion** (`deploySource.from: promote`): the source's running version → its run id and SHA-256 from the version's message → the `promote` approval, whose hash covers the target plan hash, both environments, the run id and the SHA-256 → `dispatchWorkflow` with `run` and `sha256`. A version without OpsCrew's message, or an expired artifact, is refused with what to do.
