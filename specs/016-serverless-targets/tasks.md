@@ -265,6 +265,7 @@ Effort`.
     - **The two branches** use `appBranch`. Their numbered fallbacks (`-2`, `-3`) must not collide across keys: app `a`'s `opscrew/prepare-deploy-a-2` is app `a-2`'s first branch, so number after a separator no key can hold, or check the other keys (T1617a's report).
     - **The uniqueness check reads the real values** (T1617a's review): besides `derivedNames(key, env, app.name)` for every app and environment, it compares each plan's actual `infra.dir`, `cicd.workflowPath` and `app.name`, which a user may have set by hand. Design writes a further app's values from the helpers, and never builds its plan by spreading a parsed plan of another app (the transform fills only missing fields).
     - **One GitHub Pages site per repository, across apps** (T1617a's review): `app add`, design and `env add` refuse a second app or environment on `github-pages` in the same repository, naming the one already there.
+    - **The proxy additions path** (T1617b's report): agents' five readers of `EDGE_PROXIES[proxy].additions` (`localhost/stack.ts`, `provision/additions.ts`, `provision/render.ts`, `provision/run.ts`, `design/additions.ts`) switch to iac-templates' `additionsPath(plan, proxy)`, and the field goes. `renderDependabot` gets the repository's other apps (its `others` parameter) at every call site.
     - **`environmentPaths(paths, name)`** keeps `paths.app`. `environmentInfraDir` and `environmentWorkflowPath` give way to plan-schema's `infraDirFor` and `workflowPathFor`, and `environmentsOf(root, key)` lists an app's environments (T1617a's report). Dependabot covers every app. `env add` runs the uniqueness check too.
     - **`policy.ts`** denies agent edits to every OpsCrew workflow file pattern, a further app's and environments' included.
     - **Tests:** two apps in one repository end to end on fakes: design and provision of a static Cloudflare app for each; their files, secrets, state and approvals never shared; destroying one leaving the other. Plus the clash refusal.
@@ -324,7 +325,7 @@ Effort`.
   - Depends: T1603, T1605, T1606, T1607
   - Accept:
     - **The order:**
-      1. the token check;
+      1. the token check, with the deploy token read from `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` (`providerProfile("cloudflare-workers").deployTokenVar`, T1607);
       2. the Worker name: unique in the account (refused when a Worker of that name exists and isn't in this app's state);
       3. a DNS record already at a hostname, refused with its name, as for servers;
       4. the IaC plan (the Worker's shell and custom domains, `iac-apply`);
@@ -440,6 +441,7 @@ Effort`.
     - **Astro** also gets `wrangler` as a dev dependency. **Next.js** gets `open-next.config.ts` written by OpsCrew (never `opennextjs-cloudflare migrate`, which waits for a browser login), and `cacheComponents` and `partialPrefetching` turned off when on.
     - **Static apps** need no change, beyond a note when the output directory is unusual.
     - **No adapter is proposed** for a framework outside the four.
+    - **Next.js's `cacheComponents` and `partialPrefetching`** are turned off when the app's next.config sets them (create-next-app 16 writes them on; T1607 detects them there).
     - **Tests:** the four playbooks against `examples/astro-ssr`, `examples/nuxt-ssr`, `examples/sveltekit-ssr` and a Next.js fixture (snapshots of the proposed diffs).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
@@ -463,6 +465,7 @@ Effort`.
       - the interview tool's provider help lists every target, localhost included (an existing gap);
       - `pages-apply` is never granted without the user, like the other hash-bound kinds.
     - **The plugin's deploy skill** learns both targets. `node plugin/validate.mjs` passes.
+    - **From T1607's report:** the CLI interview's `nextStep` default and the options table (`cli/src/commands/interview.ts`, `cli/src/ui/options.ts`) handle the server-less targets; the MCP interview tool passes the server-less context through `serverlessTargetsFor` (from `@opscrew/agents`), so MCP offers them.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
@@ -531,6 +534,8 @@ Effort`.
   - `pagesVerificationRootDir` and `renderInfra`'s modules folder share the "folder beside `infra.dir`" logic: one helper (T1605's review).
   - `serverless.test.ts`'s env-stub leak test can't fail; keep the rendered-file check and the engine run's scan (T1605's review).
   - The `RenderContext.cloudflare.accountId` doc in iac-templates' `src/types.ts` names the Worker too (T1605's report).
+  - `frameworkName` in analyze's summary lacks a "react-router" entry (T1607's report).
+  - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
 
 ## Dependencies
