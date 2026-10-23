@@ -1004,7 +1004,7 @@ describe("the deploy job on a self-hosted runner", { timeout: 60_000 }, () => {
       const healthy = runScript(health.run ?? "", fakes, { URL, OPSCREW_LOCAL_CA_FILE: ca });
       expect(healthy.status, healthy.out).toBe(0);
       expect(healthy.calls).toEqual([
-        `curl -fsS --max-time 10 --resolve shop.localhost:8443:127.0.0.1 --cacert ${ca} --ssl-no-revoke -o /dev/null https://shop.localhost:8443/api/health`,
+        `curl -fsS --max-time 10 --resolve shop.localhost:8443:127.0.0.1 --cacert ${ca} --ssl-no-revoke https://shop.localhost:8443/api/health`,
       ]);
       // A server's runner checks the public certificate, revocation included.
       expect(stepOf(deploy(server), "health").run).not.toMatch(

@@ -1526,7 +1526,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             exit 1
           fi
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 --resolve shop.localhost:8443:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE" --ssl-no-revoke -o /dev/null "$URL"; then
+            if curl -fsS --max-time 10 --resolve shop.localhost:8443:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE" --ssl-no-revoke "$URL" > /dev/null; then
               echo "Healthy after $attempt attempt(s)."
               exit 0
             fi

@@ -173,7 +173,9 @@ function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): st
           '      status="$(curl -fsS --max-time 10 -o /dev/null -w \'%{http_code}\' "$URL")" || code=$?',
           '      if [ "$code" -eq 0 ]; then',
         ]
-      : [`      if ${curl} -o /dev/null "$URL"; then`]),
+      : // bash discards the body: Windows' curl gets `/dev/null` unchanged on the local runner
+        // (MSYS_NO_PATHCONV), where there is no such file.
+        [`      if ${curl} "$URL" > /dev/null; then`]),
     '        echo "Healthy after $attempt attempt(s)."',
     "        exit 0",
     "      fi",

@@ -149,7 +149,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+            if curl -fsS --max-time 10 "$URL" > /dev/null; then
               echo "Healthy after $attempt attempt(s)."
               exit 0
             fi
@@ -363,7 +363,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+            if curl -fsS --max-time 10 "$URL" > /dev/null; then
               echo "Healthy after $attempt attempt(s)."
               exit 0
             fi
@@ -608,7 +608,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+            if curl -fsS --max-time 10 "$URL" > /dev/null; then
               echo "Healthy after $attempt attempt(s)."
               exit 0
             fi
