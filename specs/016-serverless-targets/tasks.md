@@ -254,7 +254,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1617c [US6] Apps in agents: `opscrew app add|list|remove`, the app choice, every phase's paths per app, and the uniqueness check, in `packages/agents/src/apps/**` (new), `packages/agents/src/{shared,analyze,interview,environments}/**`, the branch names in `adapt/run.ts` and `provision/publish.ts`, `provision/dependabot.ts`, `design/` (the app's name and key only), and `packages/core/src/policy.ts`
+- [X] T1617c [US6] Apps in agents: `opscrew app add|list|remove`, the app choice, every phase's paths per app, and the uniqueness check, in `packages/agents/src/apps/**` (new), `packages/agents/src/{shared,analyze,interview,environments}/**`, the branch names in `adapt/run.ts` and `provision/publish.ts`, `provision/dependabot.ts`, `design/` (the app's name and key only), and `packages/core/src/policy.ts`
   - Owns: those paths (+ tests)
   - Reads: spec US6; contracts/apps.md; data-model.md "Apps in a repository"; T1617a's and T1617b's reports
   - Depends: T1617a, T1617b, T1607
