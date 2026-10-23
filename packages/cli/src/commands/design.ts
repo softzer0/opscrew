@@ -15,6 +15,8 @@ import { addHostKeyOption, checkApproveFlags } from "./provision";
 interface DesignFlags {
   option?: string;
   hostKey?: string;
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment (one `opscrew env add` added, or prod). */
   env?: string;
 }
@@ -36,8 +38,8 @@ export function register(program: Command, ctx: CliContext): void {
   addEnvOption(command);
   addHostKeyOption(command).action(async (flags: DesignFlags) => {
     checkApproveFlags("design", flags);
-    const { name, flag } = await chooseEnvironment(ctx, flags.env, "design");
-    const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "design");
+    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const optionId = flags.option?.trim() || undefined;
     const interactive = optionId === undefined && ctx.isInteractive;
 

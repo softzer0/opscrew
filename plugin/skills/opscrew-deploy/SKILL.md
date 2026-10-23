@@ -394,8 +394,24 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   it, and know that it replaces the earlier sources. Each change goes through the host plan's
   dialog, and OpsCrew refuses a firewall that leaves out the address it connects from. `noHarden`
   removes only that part, and `opscrew_runner_host_remove` takes both off.
-- **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
-  to deploy (`appDir`); ask the user, never guess.
+- **Monorepos.** When the repository has several deployable folders, `opscrew_interview_questions`
+  asks which one the first app is (`appDir`); ask the user, never guess.
+- **Several apps in one repository.** A repository can hold more than one app, for example a
+  landing page in `sites/landing` and its documentation in `sites/docs`, each deployed on its own.
+  The first app is the repository's own and is set up as above. Each further app gets a key and
+  its own folder: `opscrew_app_add` with `key` and `dir` (for example `docs` and `sites/docs`)
+  checks that the folder holds an app and that none of the names it gives (workflow, deploy
+  secrets, GitHub environment, image, branches) clash, then the app has its own plans,
+  environments, workflows, deploy secrets, state and approvals, and the planning steps above run
+  again for it. `opscrew_app_list` names the apps, their folders and whether each is deployed.
+  Every planning, deploy, status, drift, secrets, environment and design tool takes `app`: once
+  the repository has several, always pass the one the user means (a further app's key, or `.` for
+  the first app; a call without it fails with the apps), and in the terminal commands you pass on
+  add `--app <key>`, for example `npx opscrew provision --app docs`. A further app's files are
+  under `opscrew/apps/<key>/` (its plan is `opscrew/apps/<key>/plan.yaml`). The security scan
+  covers the whole repository, so every app shares its report. Removing a further app stays in the
+  terminal first: `npx opscrew destroy --app <key>`, then `opscrew_app_remove` only when the user
+  asks (they type its key in a dialog).
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
   in their own terminal: it offers a snapshot first (the database is deleted with the server), asks
   them to type the server name and removes the deploy secrets from GitHub. The app's bucket stays,

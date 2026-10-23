@@ -34,6 +34,8 @@ export interface DestroyFlags {
   hostKey?: string;
   /** Repeated `--approve <hash>`: the undo host plan (`--undo-host`) in a script. */
   approve?: string[];
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
 }
@@ -205,9 +207,13 @@ export async function runDestroyCommand(
   const result = await runPhaseCommand(ctx, async () => {
     const hashes = checkApproveFlags("destroy", flags);
     const hostKey = flags.hostKey?.trim();
-    const environment = await chooseEnvironment(ctx, flags.env, "destroy");
+    const environment = await chooseEnvironment(ctx, flags, "destroy");
     flag = environment.flag;
-    const deps0 = createPhaseDeps(ctx, { ai: false, environment: environment.name });
+    const deps0 = createPhaseDeps(ctx, {
+      ai: false,
+      app: environment.app,
+      environment: environment.name,
+    });
     const plan = await readArtifact("plan", deps0.paths.files.plan);
     const name = plan.app.name;
     provider = plan.target.provider;
@@ -261,6 +267,7 @@ export async function runDestroyCommand(
       local ? savedLocalPlanPurpose(deps0.paths, hash) : savedHostPlanPurpose(deps0.paths, hash);
     const deps = createPhaseDeps(ctx, {
       ai: false,
+      app: environment.app,
       environment: environment.name,
       approveHashes: hashes,
       wrapApprovals: (base, clock) =>

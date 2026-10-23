@@ -15,6 +15,8 @@ interface DriftFlags {
   engine?: "tofu" | "terraform";
   /** Your own server: the host key fingerprint to trust on the first connection (scripts). */
   hostKey?: string;
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
 }
@@ -42,10 +44,11 @@ export function register(program: Command, ctx: CliContext): void {
     // so scripts never mistake missing state or a missing passphrase for drift.
     const { report, plan, flag } = await runPhaseCommand(ctx, async () => {
       checkApproveFlags("drift", flags);
-      const { name, flag } = await chooseEnvironment(ctx, flags.env, "drift");
+      const { app, name, flag } = await chooseEnvironment(ctx, flags, "drift");
       // Progress is dropped for `--json` so stdout holds only the report; problems go to stderr.
       const deps = createPhaseDeps(ctx, {
         ai: false,
+        app,
         environment: name,
         ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
       });

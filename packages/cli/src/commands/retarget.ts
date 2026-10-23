@@ -49,6 +49,8 @@ export interface RetargetFlags {
   snapshot?: boolean;
   confirm?: string;
   yes?: boolean;
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
 }
@@ -193,7 +195,11 @@ async function runCommand(
   }
   const approve = flags.approve?.trim() || undefined;
   const mode = flags.finish ? "finish" : flags.abort ? "abort" : "run";
-  const deps0 = createPhaseDeps(ctx, { ai: false, environment: environment.name });
+  const deps0 = createPhaseDeps(ctx, {
+    ai: false,
+    app: environment.app,
+    environment: environment.name,
+  });
   // The key of the app's bucket, which stays where it is, when this computer has none yet.
   const services: RetargetServices = {
     ...(ctx.isInteractive
@@ -210,6 +216,7 @@ async function runCommand(
 
   if (mode === "run") {
     const deps = createPhaseDeps(ctx, {
+      app: environment.app,
       environment: environment.name,
       ai: false,
       approveHashes: approve === undefined ? [] : [approve],
@@ -282,6 +289,7 @@ async function runCommand(
   }
   let typed = scripted ? name : undefined;
   const deps = createPhaseDeps(ctx, {
+    app: environment.app,
     environment: environment.name,
     ai: false,
     approveHashes: approve === undefined ? [] : [approve],
@@ -382,11 +390,11 @@ export function register(program: Command, ctx: CliContext): void {
       ].join("\n"),
     )
     .action(async (flags: RetargetFlags) => {
-      let environment: ChosenEnvironment = { name: "prod", flag: "" };
+      let environment: ChosenEnvironment = { app: undefined, name: "prod", flag: "" };
       const result = await runPhaseCommand(
         ctx,
         async () => {
-          environment = await chooseEnvironment(ctx, flags.env, "retarget");
+          environment = await chooseEnvironment(ctx, flags, "retarget");
           return runCommand(ctx, flags, environment);
         },
         scriptHint(ctx, flags),

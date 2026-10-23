@@ -11,6 +11,8 @@ import { secureServerStep } from "./provision";
 interface VerifyFlags {
   /** `--url <route>`: the user's Portainer behind their own reverse proxy only. */
   url?: string;
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
 }
@@ -35,8 +37,8 @@ export function register(program: Command, ctx: CliContext): void {
     );
   addEnvOption(command).action(async (flags: VerifyFlags) => {
     const url = flags.url?.trim();
-    const { name, flag } = await chooseEnvironment(ctx, flags.env, "verify");
-    const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "verify");
+    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const report = toPosixRelative(deps.paths.root, deps.paths.files.securityReport);
     const result = await runVerify(deps, {
       ...servicesOf(ctx).verify,

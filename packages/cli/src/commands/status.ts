@@ -22,6 +22,8 @@ import { addHostKeyOption, checkApproveFlags } from "./provision";
 interface StatusFlags {
   ip?: boolean;
   hostKey?: string;
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
 }
@@ -112,8 +114,8 @@ export function register(program: Command, ctx: CliContext): void {
   addEnvOption(command);
   addHostKeyOption(command).action(async (flags: StatusFlags) => {
     checkApproveFlags("status", flags);
-    const { name, flag } = await chooseEnvironment(ctx, flags.env, "status");
-    const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "status");
+    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const { paths } = deps;
     // A missing or unreadable plan simply means nothing is deployed and no move is recorded.
     const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);

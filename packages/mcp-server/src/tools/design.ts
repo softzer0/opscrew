@@ -29,6 +29,7 @@ import {
   hostKeyNeedsTerminal,
 } from "./elicitation";
 import {
+  appInput,
   environmentInput,
   IDEMPOTENT_WRITE,
   isMissingArtifact,
@@ -251,14 +252,15 @@ export function registerDesignTools(
       title: "Deployment options",
       description:
         "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
-      inputSchema: { ...projectDirInput, ...environmentInput },
+      inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir, environment }, extra: CallExtra) =>
+    ({ projectDir, app, environment }, extra: CallExtra) =>
       runTool(deps, "opscrew_design_options", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({
           ...designApprovals(server, deps, extra),
+          app: appKey,
           environment: name,
         });
         await requireRequirements(phase);
@@ -330,6 +332,7 @@ export function registerDesignTools(
         "Write opscrew/plan.yaml for the deployment option the user chose (an id from opscrew_design_options), including the code changes the app needs before it can be deployed. Returns the image builder, the deploy strategy and the supply-chain settings (image signing, deploy tags, image retention), each with its reason; settings the user changed in opscrew/plan.yaml (app.build.builder with app.build.chosen: user, deploy.strategy, supplyChain.sign, cicd.deployTags, cicd.imageRetention) are kept. Also writes opscrew/architecture.json from deterministic detection when it does not exist yet. Creates no infrastructure.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         ...environmentInput,
         optionId: z
           .string()
@@ -338,11 +341,12 @@ export function registerDesignTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, environment, optionId }, extra: CallExtra) =>
+    ({ projectDir, app, environment, optionId }, extra: CallExtra) =>
       runTool(deps, "opscrew_select_design", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({
           ...designApprovals(server, deps, extra),
+          app: appKey,
           environment: name,
         });
         await requireRequirements(phase);

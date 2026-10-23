@@ -6,13 +6,13 @@ const USE_LOCAL = "use-local";
 const TYPE = "type";
 const SKIP = "skip";
 
-function cancelledEnv(environment: string): OpsCrewError {
+function cancelledEnv(environment: string, flag: string): OpsCrewError {
   const prod = environment === "prod";
   return new OpsCrewError(
     "APPROVAL_REFUSED",
     `You cancelled entering the ${prod ? "production environment" : `${environment} environment's values`}, so no deploy secrets were stored.`,
     {
-      hint: `Run \`opscrew provision${prod ? "" : ` --env ${environment}`}\` again to enter the values; it continues where it stopped.`,
+      hint: `Run \`opscrew provision${flag}\` again to enter the values; it continues where it stopped.`,
     },
   );
 }
@@ -22,9 +22,13 @@ function cancelledEnv(environment: string): OpsCrewError {
  * value in its local file (`.env` for prod, `.env.<env>` for another; only when there is one and
  * the user picks it), type a value (always masked for a secret) or leave it unset. Prod's values
  * are called production values, another environment's are named for it. Values are returned to
- * the phase and never printed.
+ * the phase and never printed. `flag` is the run's `--app` and `--env` (`ChosenEnvironment.flag`),
+ * for the command a cancelled prompt names.
  */
-export function createEnvPrompt(prompts: UiPrompts): (question: EnvQuestion) => Promise<EnvAnswer> {
+export function createEnvPrompt(
+  prompts: UiPrompts,
+  flag: string,
+): (question: EnvQuestion) => Promise<EnvAnswer> {
   return async (question) => {
     const prod = question.environment === "prod";
     const valueFor = prod
@@ -50,7 +54,7 @@ export function createEnvPrompt(prompts: UiPrompts): (question: EnvQuestion) => 
         ],
         initialValue: USE_LOCAL,
       });
-      if (prompts.isCancel(choice)) throw cancelledEnv(question.environment);
+      if (prompts.isCancel(choice)) throw cancelledEnv(question.environment, flag);
       if (choice === USE_LOCAL) return { useLocal: true };
       if (choice === SKIP) return { skip: true };
     }
@@ -60,7 +64,7 @@ export function createEnvPrompt(prompts: UiPrompts): (question: EnvQuestion) => 
     const answer = question.secret
       ? await prompts.password({ message })
       : await prompts.text({ message });
-    if (prompts.isCancel(answer)) throw cancelledEnv(question.environment);
+    if (prompts.isCancel(answer)) throw cancelledEnv(question.environment, flag);
     const value = typeof answer === "string" ? answer : "";
     return value.trim() === "" ? { skip: true } : { value };
   };

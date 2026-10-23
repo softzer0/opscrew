@@ -15,7 +15,7 @@ import { type Command, Option } from "commander";
 import { checkConfirmName, FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
-import { addEnvOption, chooseEnvironment } from "../ui/environment";
+import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { textTable } from "../ui/output";
 import { checkApproveFlags } from "./provision";
 
@@ -310,13 +310,16 @@ export function register(program: Command, ctx: CliContext): void {
     .description(
       "Start the runner in the foreground until Ctrl+C, which stops it and removes it from GitHub",
     );
-  addEnvOption(start).action(async (flags: { env?: string }) => {
-    const { name } = await chooseEnvironment(ctx, flags.env, "runner start");
+  addEnvOption(start).action(async (flags: AppEnvFlags) => {
+    const { app, name } = await chooseEnvironment(ctx, flags, "runner start");
     const services = servicesOf(ctx).localRunner;
-    const local = await startLocalRunner(createPhaseDeps(ctx, { ai: false, environment: name }), {
-      environment: name,
-      ...(services === undefined ? {} : { services }),
-    });
+    const local = await startLocalRunner(
+      createPhaseDeps(ctx, { ai: false, app, environment: name }),
+      {
+        environment: name,
+        ...(services === undefined ? {} : { services }),
+      },
+    );
     await local.finished;
   });
 

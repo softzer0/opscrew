@@ -15,7 +15,7 @@ const question = (localValueAvailable: boolean, secret = true) => ({
 describe("createEnvPrompt", () => {
   it("offers the local .env value and returns the choice", async () => {
     const prompts = new ScriptedPrompts(["use-local", "skip"]);
-    const ask = createEnvPrompt(prompts);
+    const ask = createEnvPrompt(prompts, "");
     expect(await ask(question(true))).toEqual({ useLocal: true });
     expect(await ask(question(true))).toEqual({ skip: true });
     expect(prompts.calls[0]?.options?.map((o) => o.value)).toEqual(["use-local", "type", "skip"]);
@@ -29,7 +29,7 @@ describe("createEnvPrompt", () => {
 
   it("names another environment and its own file, never production or .env", async () => {
     const prompts = new ScriptedPrompts(["type", "typed-secret", ""]);
-    const ask = createEnvPrompt(prompts);
+    const ask = createEnvPrompt(prompts, "");
     const staging = { environment: "staging", localFile: ".env.staging" };
     expect(await ask({ ...question(true), ...staging })).toEqual({ value: "typed-secret" });
     expect(prompts.calls[0]?.message).toBe(
@@ -49,7 +49,7 @@ describe("createEnvPrompt", () => {
 
   it("asks secrets with the masked prompt and plain values with text; empty skips", async () => {
     const prompts = new ScriptedPrompts(["type", "typed-secret", "plain-value", ""]);
-    const ask = createEnvPrompt(prompts);
+    const ask = createEnvPrompt(prompts, "");
     expect(await ask(question(true))).toEqual({ value: "typed-secret" });
     expect(prompts.calls[1]).toEqual({
       kind: "password",
@@ -62,7 +62,7 @@ describe("createEnvPrompt", () => {
 
   it("says a variable with a default in the code is optional and keeps the default on empty", async () => {
     const prompts = new ScriptedPrompts(["", "skip"]);
-    const ask = createEnvPrompt(prompts);
+    const ask = createEnvPrompt(prompts, "");
     const debug = { name: "DJANGO_DEBUG", secret: false, optional: true, ...PROD };
     expect(await ask({ ...debug, localValueAvailable: false })).toEqual({ skip: true });
     expect(prompts.calls[0]?.message).toBe(
@@ -74,7 +74,10 @@ describe("createEnvPrompt", () => {
   });
 
   it("stops with a refusal when the user cancels", async () => {
-    const ask = createEnvPrompt(new ScriptedPrompts([CANCEL]));
-    await expect(ask(question(false))).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    const ask = createEnvPrompt(new ScriptedPrompts([CANCEL]), " --app docs --env staging");
+    await expect(ask(question(false))).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      hint: expect.stringContaining("`opscrew provision --app docs --env staging` again"),
+    });
   });
 });

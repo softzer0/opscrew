@@ -62,6 +62,8 @@ export interface InfraFlags {
   replaceToken?: ReplaceableToken[];
   /** `--key-out <path>` (`provision` only): the file the recovery copy's first age key goes to. */
   keyOut?: string;
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
 }
@@ -233,10 +235,13 @@ export async function runInfraCommand(
       const publicImage = imageChoice(flags);
       const hostKey = flags.hostKey?.trim();
       const confirm = flags.confirm?.trim();
-      const environment = await chooseEnvironment(ctx, flags.env, command);
+      const environment = await chooseEnvironment(ctx, flags, command);
       flag = environment.flag;
-      const planFile = createPhaseDeps(ctx, { ai: false, environment: environment.name }).paths
-        .files.plan;
+      const planFile = createPhaseDeps(ctx, {
+        ai: false,
+        app: environment.app,
+        environment: environment.name,
+      }).paths.files.plan;
       if (command === "dns") {
         const plan = await readArtifact("plan", planFile).catch(() => undefined);
         if (plan?.target.provider === "localhost") throw localhostHasNoDns(environment);
@@ -262,6 +267,7 @@ export async function runInfraCommand(
       }
       const deps = createPhaseDeps(ctx, {
         ai: false,
+        app: environment.app,
         environment: environment.name,
         approveHashes: hashes,
         ...(flags.yes === true ? { assumeYes: true } : {}),
@@ -293,7 +299,7 @@ export async function runInfraCommand(
         services: {
           ...(ctx.isInteractive
             ? {
-                askEnv: createEnvPrompt(promptsOf(ctx)),
+                askEnv: createEnvPrompt(promptsOf(ctx), flag),
                 askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout),
               }
             : {}),

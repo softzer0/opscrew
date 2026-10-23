@@ -214,7 +214,7 @@ describe("the environment tools", () => {
     const promote = byName.get("opscrew_promote");
     expect(promote?.inputSchema.required).toContain("to");
     expect(Object.keys(promote?.inputSchema.properties ?? {}).sort()).toEqual(
-      ["digest", "projectDir", "to"].sort(),
+      ["app", "digest", "projectDir", "to"].sort(),
     );
     expect(promote?._meta).toMatchObject({ "anthropic/requiresUserInteraction": true });
     expect(byName.get("opscrew_env_list")?.annotations?.readOnlyHint).toBe(true);

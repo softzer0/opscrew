@@ -56,6 +56,8 @@ export interface PhaseDepsExtras {
    * when absent, the default factory refuses every approval with a plain-English reason.
    */
   approvalHandler?: ApprovalHandler;
+  /** The further app's key the call acts on (its `app` input, resolved); default the first app. */
+  app?: string | undefined;
   /** The app's environment the call acts on (its `environment` input, resolved); default prod. */
   environment?: string;
 }
@@ -143,6 +145,7 @@ function createDefaultPhaseDepsFactory(
     buildPhaseDeps({
       root: projectDir,
       env: deps.env,
+      ...(extras.app === undefined ? {} : { app: extras.app }),
       ...(extras.environment === undefined ? {} : { environment: extras.environment }),
       reporter: extras.reporter,
       redactor: extras.redactor,

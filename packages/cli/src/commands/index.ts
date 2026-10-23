@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import * as adapt from "./adapt";
 import * as analyze from "./analyze";
+import * as app from "./app";
 import * as design from "./design";
 import * as destroy from "./destroy";
 import * as dns from "./dns";
@@ -32,6 +33,7 @@ export interface CommandModule {
 export const ALL_COMMANDS: readonly CommandModule[] = [
   init,
   scan,
+  app,
   analyze,
   interview,
   design,

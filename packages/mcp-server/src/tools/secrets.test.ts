@@ -152,7 +152,7 @@ describe.skipIf(!findExecutable("git"))("the recovery copy's tools", () => {
     const restore = byName.get("opscrew_secrets_restore");
     expect(restore?.inputSchema.required).toContain("keyFile");
     expect(Object.keys(restore?.inputSchema.properties ?? {}).sort()).toEqual(
-      ["environment", "from", "keyFile", "onConflict", "projectDir"].sort(),
+      ["app", "environment", "from", "keyFile", "onConflict", "projectDir"].sort(),
     );
     expect(byName.get("opscrew_secrets_rotate")?.inputSchema.required).toContain("keyOut");
     expect(byName.get("opscrew_secrets_folder")?.inputSchema.required).toContain("folder");

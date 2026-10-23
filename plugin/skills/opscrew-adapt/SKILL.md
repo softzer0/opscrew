@@ -9,6 +9,10 @@ The list of required changes is `codeChanges` in `opscrew/plan.yaml` (read it; d
 Work on a new branch, change only what each item needs, keep the app's behaviour, and do not add
 dependencies unless there is no other way (then tell the user which and why).
 
+In a repository with several apps, a further app's plan is `opscrew/apps/<key>/plan.yaml`
+(`opscrew_app_list` names the apps): read the plan of the app the user means, and change only the
+files in that app's folder.
+
 ## Per change kind
 
 - **dockerfile / dockerignore / env-example:** prefer OpsCrew's templates — they run as a non-root

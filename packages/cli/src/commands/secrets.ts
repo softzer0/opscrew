@@ -15,7 +15,7 @@ import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
-import { addEnvOption, chooseEnvironment } from "../ui/environment";
+import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { cancelled } from "../ui/prompts";
 import { askKeyOut, userPath } from "../ui/recovery";
 
@@ -49,18 +49,16 @@ async function readIdentity(ctx: CliContext, keyFile: string | undefined): Promi
   return answer;
 }
 
-/** `--env <name>`, on every subcommand. */
-interface EnvFlags {
-  env?: string;
+/**
+ * The phase deps of the app and environment `--app` and `--env` name, and their flags for
+ * suggestions.
+ */
+async function environmentDeps(ctx: CliContext, flags: AppEnvFlags) {
+  const { app, name, flag } = await chooseEnvironment(ctx, flags, "secrets");
+  return { deps: createPhaseDeps(ctx, { ai: false, app, environment: name }), flag };
 }
 
-/** The phase deps of the environment `--env` names, and its ` --env <name>` for suggestions. */
-async function environmentDeps(ctx: CliContext, flags: EnvFlags) {
-  const { name, flag } = await chooseEnvironment(ctx, flags.env, "secrets");
-  return { deps: createPhaseDeps(ctx, { ai: false, environment: name }), flag };
-}
-
-interface RestoreFlags extends EnvFlags {
+interface RestoreFlags extends AppEnvFlags {
   keyFile?: string;
   from?: string;
   useCopy?: boolean;
@@ -93,7 +91,7 @@ async function restore(ctx: CliContext, flags: RestoreFlags): Promise<void> {
   );
 }
 
-interface RotateFlags extends EnvFlags {
+interface RotateFlags extends AppEnvFlags {
   keyOut?: string;
   /** `--backup <age1…>`, or false with `--no-backup`. */
   backup?: string | false;
@@ -157,7 +155,7 @@ export function register(program: Command, ctx: CliContext): void {
     .description(
       "Show when the recovery copy was last updated, how many keys open it, whether it is behind and the folder copy",
     );
-  addEnvOption(status).action(async (flags: EnvFlags) => {
+  addEnvOption(status).action(async (flags: AppEnvFlags) => {
     const { deps } = await environmentDeps(ctx, flags);
     const lines = recoveryStatusLines(await recoveryStatus(deps));
     ctx.stdout(`${lines.join("\n")}\n`);
@@ -192,7 +190,7 @@ export function register(program: Command, ctx: CliContext): void {
     .argument("[path]", "The folder, outside the repository");
   addEnvOption(folderCommand)
     .option("--none", "Stop writing the folder copy")
-    .action(async (folder: string | undefined, flags: EnvFlags & { none?: boolean }) => {
+    .action(async (folder: string | undefined, flags: AppEnvFlags & { none?: boolean }) => {
       if ((folder === undefined) === (flags.none !== true)) {
         throw new OpsCrewError("INVALID_INPUT", "Give either a folder or --none.", {
           hint: "Run `opscrew secrets folder <path>` to set the folder, or `opscrew secrets folder --none` to stop writing the folder copy.",

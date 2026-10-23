@@ -34,6 +34,7 @@ describe("opscrew program", () => {
     for (const name of [
       "init",
       "scan",
+      "app",
       "analyze",
       "interview",
       "design",
@@ -57,7 +58,7 @@ describe("opscrew program", () => {
     ]) {
       expect(ctx.output).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
     }
-    expect(ALL_COMMANDS).toHaveLength(22);
+    expect(ALL_COMMANDS).toHaveLength(23);
   });
 
   it("exits 2 for an unknown command", async () => {

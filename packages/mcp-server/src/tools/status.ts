@@ -17,16 +17,26 @@ import { exists, toPosixRelative } from "@opscrew/core";
 import { type DeployPlan, type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { hostKeyNeedsTerminal } from "./elicitation";
-import { environmentInput, projectDirInput, runTool, toolEnvironment, withHint } from "./shared";
+import {
+  appInput,
+  environmentInput,
+  projectDirInput,
+  runTool,
+  toolEnvironment,
+  withHint,
+} from "./shared";
 
-/** The next planning step for the plugin flow, given which artefacts exist. */
-function nextStep(have: Record<string, boolean>): string {
+/**
+ * The next planning step for the plugin flow, given which artefacts exist; `flag` is the app's
+ * and environment's flags for the terminal command (`ToolEnvironment.flag`).
+ */
+function nextStep(have: Record<string, boolean>, flag: string): string {
   if (!have.scanReport) return "Call opscrew_scan to check the repository for security problems.";
   if (!have.requirements) {
     return "Call opscrew_detect, then opscrew_interview_questions and opscrew_save_requirements.";
   }
   if (!have.plan) return "Call opscrew_design_options and then opscrew_select_design.";
-  return "Apply the pending code changes from opscrew/plan.yaml (opscrew-adapt skill), then provision with `npx opscrew provision` in a terminal.";
+  return `Apply the pending code changes from opscrew/plan.yaml (opscrew-adapt skill), then provision with \`npx opscrew provision${flag}\` in a terminal.`;
 }
 
 /**
@@ -104,13 +114,13 @@ export function registerStatusTool(
       title: "OpsCrew status",
       description:
         "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) and, once the app was deployed, whether each runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
-      inputSchema: { ...projectDirInput, ...environmentInput },
+      inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir, environment }) =>
+    ({ projectDir, app, environment }) =>
       runTool(deps, "opscrew_status", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
-        const phase = await call.phaseDeps({ environment: name });
+        const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
+        const phase = await call.phaseDeps({ app: appKey, environment: name });
         const { paths, state } = phase;
         const current = await state
           .read()
@@ -161,7 +171,7 @@ export function registerStatusTool(
               ];
         const step =
           move === undefined
-            ? nextStep(have)
+            ? nextStep(have, flag)
             : `${move.message} ${move.hint} Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.`;
         const components =
           plan === undefined ? undefined : await componentsOf(phase, plan, options);

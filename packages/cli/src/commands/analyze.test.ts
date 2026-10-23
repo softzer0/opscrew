@@ -38,7 +38,7 @@ describe("opscrew analyze", () => {
     expect(state.phases.analyze?.status).toBe("ok");
   });
 
-  it("describes the app chosen with --app in a repository with several apps", async () => {
+  it("describes the app chosen with --dir in a repository with several apps", async () => {
     project = await tempProject();
     await materializeFixture(
       fileURLToPath(new URL("../../../detect/test/fixtures/monorepo-two-apps/", import.meta.url)),
@@ -48,12 +48,12 @@ describe("opscrew analyze", () => {
     expect(await run(ctx, "analyze", "--no-ai")).toBe(0);
     expect(ctx.output).toContain("several deployable apps");
 
-    expect(await run(ctx, "analyze", "--no-ai", "--app", "apps/web")).toBe(0);
+    expect(await run(ctx, "analyze", "--no-ai", "--dir", "apps/web")).toBe(0);
     const paths = resolveProjectPaths(project.root, { env: ctx.env });
     const architecture = JSON.parse(await readFile(paths.files.architecture, "utf8"));
     expect(architecture.facts.appDir).toBe("apps/web");
 
-    expect(await run(ctx, "analyze", "--no-ai", "--app", "apps/nope")).toBe(2);
+    expect(await run(ctx, "analyze", "--no-ai", "--dir", "apps/nope")).toBe(2);
     expect(ctx.errors).toMatch(/apps\/api, apps\/web/);
   });
 

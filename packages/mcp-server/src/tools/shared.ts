@@ -2,16 +2,17 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
-  environmentFlag,
+  commandFlags,
   type PhaseDeps,
   portainerAddressNames,
   readServerAddresses,
+  resolveApp,
   resolveEnvironment,
   runnerHostAddresses,
 } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, replaceNames, resolveProjectPaths } from "@opscrew/core";
-import { environmentsOf } from "@opscrew/plan-schema";
+import { appsOf, environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
 
@@ -37,32 +38,77 @@ export const environmentInput = {
     ),
 };
 
-/** The environment a tool call acts on, and ` --env <name>` for the commands it suggests. */
+/** The `app` input of the tools that act on one of the repository's apps. */
+export const appInput = {
+  app: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "The repository's app to act on: the key opscrew_app_add gave it, or . for the first app (opscrew_app_list names them). Leave it out while the repository has one app; with several, name the one the user means.",
+    ),
+};
+
+/**
+ * The further app's key a call acts on (agents' `resolveApp`, which asks no one here):
+ * `requested` (`.` is the first app, `undefined`), else the only one; with several and none
+ * named, `PHASE_PRECONDITION` with the apps.
+ */
+export async function toolApp(
+  projectDir: string,
+  requested: string | undefined,
+): Promise<string | undefined> {
+  try {
+    return await resolveApp(projectDir, requested);
+  } catch (error) {
+    // Several apps and none named: the tools take `app`, not `--app`.
+    if (requested !== undefined || !isUserFacingError(error)) throw error;
+    if (error.code !== "PHASE_PRECONDITION") throw error;
+    const example = (await appsOf(projectDir)).find((one) => one.key !== undefined)?.key;
+    withHint(error, `Pass app, for example ${example}, or . for the first app.`);
+  }
+}
+
+/** ` and app <key>` after the other inputs a result names for a tool call on the further app `appKey`, else "". */
+export function andApp(appKey: string | undefined): string {
+  return appKey === undefined ? "" : ` and app ${appKey}`;
+}
+
+/** The app and environment a tool call acts on, and their flags for the commands it suggests. */
 export interface ToolEnvironment {
+  /** The further app's key; `undefined` for the repository's first app. */
+  appKey: string | undefined;
   name: string;
-  /** ` --env <name>` while the app has several environments (a terminal run needs it), else empty. */
+  /**
+   * The app's ` --app <key>` (` --app .` for the first app beside further apps), then
+   * ` --env <name>` while the app has several environments (a terminal run needs them), else
+   * empty.
+   */
   flag: string;
 }
 
 /**
- * The environment of a call (agents' `resolveEnvironment`, which asks no one here): `requested`,
- * else the only one; with several and none named, `PHASE_PRECONDITION` with their names.
+ * The app ({@link toolApp}) and environment of a call (agents' `resolveEnvironment`, which asks
+ * no one here): each as requested, else the only one; with several and none named,
+ * `PHASE_PRECONDITION` with their names.
  */
 export async function toolEnvironment(
   projectDir: string,
+  app: string | undefined,
   requested: string | undefined,
 ): Promise<ToolEnvironment> {
+  const appKey = await toolApp(projectDir, app);
   let name: string;
   try {
-    name = await resolveEnvironment(projectDir, requested);
+    name = await resolveEnvironment(projectDir, requested, { app: appKey });
   } catch (error) {
     // Several environments and none named: the tools take `environment`, not `--env`.
     if (requested !== undefined || !isUserFacingError(error)) throw error;
     if (error.code !== "PHASE_PRECONDITION") throw error;
-    const names = await environmentsOf(projectDir);
+    const names = await environmentsOf(projectDir, appKey);
     withHint(error, `Pass environment, for example ${names.find((n) => n !== "prod")}.`);
   }
-  return { name, flag: await environmentFlag(projectDir, name) };
+  return { appKey, name, flag: await commandFlags(projectDir, name, appKey) };
 }
 
 /** The annotations of a tool that writes files but deletes nothing and can safely run again. */
@@ -91,11 +137,13 @@ export interface ToolCall {
   /** Collects phase messages; they are returned as `messages` in the structured content. */
   reporter: CollectingReporter;
   /**
-   * Builds (once) the `PhaseDeps` for this call with the collecting reporter, for `environment`
+   * Builds (once) the `PhaseDeps` for this call with the collecting reporter, for the app `app`
+   * (a further app's key, {@link toolApp}; default the first app) at `environment`
    * ({@link toolEnvironment}; default prod).
    */
   phaseDeps(extras?: {
     approvalHandler?: ApprovalHandler;
+    app?: string | undefined;
     environment?: string;
   }): Promise<PhaseDeps>;
 }
@@ -197,16 +245,23 @@ interface HiddenNames {
 }
 
 /**
- * {@link HiddenNames} from every environment's `server.json` (local state only); an environment
- * whose record is unreadable adds none.
+ * {@link HiddenNames} from the `server.json` of every app's environments (local state only); an
+ * environment whose record is unreadable adds none.
  */
 async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<HiddenNames> {
-  const environments = await environmentsOf(projectDir).catch(() => ["prod"]);
+  const apps = await appsOf(projectDir).catch(() => [{ key: undefined }]);
+  const places: { app?: string; environment: string }[] = [];
+  for (const { key } of apps) {
+    const environments = await environmentsOf(projectDir, key).catch(() => ["prod"]);
+    for (const environment of environments.length === 0 ? ["prod"] : environments) {
+      places.push({ ...(key === undefined ? {} : { app: key }), environment });
+    }
+  }
   const names: HiddenNames = { server: [], portainer: [], runner: [], sources: [] };
-  for (const environment of environments.length === 0 ? ["prod"] : environments) {
+  for (const place of places) {
     try {
       const { own, portainer } = await readServerAddresses(
-        resolveProjectPaths(projectDir, { env: deps.env, environment }),
+        resolveProjectPaths(projectDir, { env: deps.env, ...place }),
       );
       names.server.push(
         ...[own?.host, own?.publicIpv4, own?.publicIpv6].filter(

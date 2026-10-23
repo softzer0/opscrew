@@ -27,6 +27,7 @@ import {
 import { isUserFacingError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
+  appsOf,
   type ProjectFacts,
   type Question,
   QuestionIdSchema,
@@ -36,11 +37,15 @@ import {
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, clientSupportsElicitation, elicitOptions } from "./elicitation";
-import { projectDirInput, runTool, withHint } from "./shared";
+import { appInput, projectDirInput, runTool, toolApp, withHint } from "./shared";
 
-/** Facts from `opscrew/architecture.json` when it is valid, otherwise fresh detection. */
+/**
+ * Facts from the app's `architecture.json` when it is valid, otherwise fresh detection (of the
+ * folder `appDir`, a further app's record's, when given).
+ */
 async function loadFacts(
   paths: ProjectPaths,
+  appDir: string | undefined,
 ): Promise<{ facts: ProjectFacts; source: "architecture" | "detected" }> {
   try {
     return {
@@ -48,7 +53,10 @@ async function loadFacts(
       source: "architecture",
     };
   } catch {
-    return { facts: await detectProject(paths.root), source: "detected" };
+    return {
+      facts: await detectProject(paths.root, appDir === undefined ? {} : { appDir }),
+      source: "detected",
+    };
   }
 }
 
@@ -263,17 +271,25 @@ export function registerInterviewTools(
       title: "Interview questions",
       description:
         "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
-      inputSchema: { ...projectDirInput },
+      inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir }) =>
+    ({ projectDir, app }) =>
       runTool(deps, "opscrew_interview_questions", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const appKey = await toolApp(call.projectDir, app);
+        const phase = await call.phaseDeps({ app: appKey });
         const { paths } = phase;
-        const { facts, source } = await loadFacts(paths);
+        // A further app is the one in its record's folder (opscrew_app_add).
+        const appDir =
+          appKey === undefined
+            ? undefined
+            : (await appsOf(paths.root)).find((one) => one.key === appKey)?.dir;
+        const { facts, source } = await loadFacts(paths, appDir);
         const previous = await loadPrevious(paths);
-        // In a repository with several apps, the first question is which one to deploy.
-        const { appCandidates } = await detectProjectDetails(paths.root);
+        // In a repository with several deployable folders, the first app's first question is
+        // which one to deploy; a further app's folder is its record's.
+        const { appCandidates } =
+          appKey === undefined ? await detectProjectDetails(paths.root) : { appCandidates: [] };
         // The provider default follows the token that is set, as in `opscrew init`/`interview`.
         const inferredProvider = providerFromTokens(deps.env);
         // The signing question says what signing makes public for this repository.
@@ -381,6 +397,7 @@ export function registerInterviewTools(
         "Validate the user's interview answers and write opscrew/requirements.yaml. Pass the answers keyed by the answer ids returned by opscrew_interview_questions. Answers that are not given fall back to the previous requirements, then to values inferred from the code. For a Portainer the user already runs it connects to Portainer with PORTAINER_API_KEY to list its environments; the first time (or when the certificate changed) the USER confirms Portainer's certificate in a dialog, which the coding agent cannot answer. Returns the saved requirements, or which answers are missing or invalid.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         answers: z
           .looseObject(answersShape)
           .describe(
@@ -394,9 +411,10 @@ export function registerInterviewTools(
         openWorldHint: true,
       },
     },
-    ({ projectDir, answers }, extra: CallExtra) =>
+    ({ projectDir, app, answers }, extra: CallExtra) =>
       runTool(deps, "opscrew_save_requirements", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const appKey = await toolApp(call.projectDir, app);
+        const phase = await call.phaseDeps({ app: appKey });
         // The certificate is confirmed only by the user in a dialog, never from the tool's input;
         // a client without dialogs leaves nobody to confirm it, so the call stops.
         const portainer: PortainerInterviewOptions = {
@@ -428,6 +446,7 @@ export function registerInterviewTools(
         }
         const { requirements } = result;
         const file = toPosixRelative(phase.paths.root, phase.paths.files.requirements);
+        const design = `opscrew_design_options${appKey === undefined ? "" : ` with app ${appKey}`}`;
         const budget = requirements.budgetMonthly;
         const own = requirements.provider === "own";
         const inPortainer = requirements.provider === "portainer";
@@ -449,10 +468,10 @@ export function registerInterviewTools(
           ...componentAnswerLines(requirements).map((line) => `- ${line}`),
           "",
           own
-            ? "Next: call opscrew_design_options; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key."
+            ? `Next: call ${design}; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key.`
             : inPortainer
-              ? "Next: call opscrew_design_options to see the deployment in the user's Portainer (no server price: they already run it)."
-              : "Next: call opscrew_design_options to see deployment options with monthly costs.",
+              ? `Next: call ${design} to see the deployment in the user's Portainer (no server price: they already run it).`
+              : `Next: call ${design} to see deployment options with monthly costs.`,
         ].join("\n");
         return { text, data: { requirements, file } };
       }),

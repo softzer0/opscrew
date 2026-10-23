@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type OpscrewMcpDeps, resolveMcpDeps } from "./deps";
+import { registerAppTools } from "./tools/apps";
 import { registerDeployTools } from "./tools/deploy";
 import { registerDesignTools } from "./tools/design";
 import { registerDetectTool } from "./tools/detect";
@@ -57,6 +58,7 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerPortainerTools(server, resolved);
   registerSecretsTools(server, resolved);
   registerEnvironmentTools(server, resolved);
+  registerAppTools(server, resolved);
   registerRunnerHostTools(server, resolved);
   return server;
 }

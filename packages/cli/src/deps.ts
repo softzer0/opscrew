@@ -110,6 +110,8 @@ export function promptsOf(ctx: CliContext): UiPrompts {
 
 /** Per-command options for {@link createPhaseDeps}. */
 interface PhaseDepsOptions {
+  /** The further app's key the command acts on (`chooseApp`, `chooseEnvironment`); default the first app. */
+  app?: string | undefined;
   /** The app's environment the command acts on (`chooseEnvironment`); default prod. */
   environment?: string;
   /** Allow a model for this run (`--no-ai` sets false). Default true. */
@@ -170,6 +172,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     root: ctx.cwd,
     env: ctx.env,
     ...(extra.homedir === undefined ? {} : { homedir: extra.homedir }),
+    ...(options.app === undefined ? {} : { app: options.app }),
     ...(options.environment === undefined ? {} : { environment: options.environment }),
     reporter: options.reporter ?? ctx.reporter,
     redactor: ctx.redactor,

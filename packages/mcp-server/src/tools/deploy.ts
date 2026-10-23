@@ -53,6 +53,7 @@ import {
   requireDialogs,
 } from "./elicitation";
 import {
+  appInput,
   appliedCloudflarePlan,
   environmentInput,
   IDEMPOTENT_WRITE,
@@ -336,13 +337,13 @@ export function registerDeployTools(
       title: "Preview the deployment files",
       description:
         "Preview the deployment files OpsCrew generates from opscrew/plan.yaml: the OpenTofu/Terraform code under opscrew/infra, the Docker Compose and Caddy files under opscrew/runtime and the GitHub Actions deploy workflow. Lists each file as new, changed or unchanged compared with the repository. Writes nothing (opscrew_plan writes the files). It reads the GitHub origin remote (and the Cloudflare zone when the plan has a Cloudflare domain) to fill in the files, and creates the project deploy key in the OpsCrew home when it is missing.",
-      inputSchema: { ...projectDirInput, ...environmentInput },
+      inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir, environment }) =>
+    ({ projectDir, app, environment }) =>
       runTool(deps, "opscrew_render", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
-        const phase = await call.phaseDeps({ environment: name });
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
+        const phase = await call.phaseDeps({ app: appKey, environment: name });
         const preview = await previewDeploymentFiles(phase, servicesOption(options));
         const kindOf = new Map(preview.files.map((f) => [f.path, f.kind]));
         const line = (status: string) => (path: string) =>
@@ -378,6 +379,7 @@ export function registerDeployTools(
         "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. When other users on that server log in with a password and no SSH key, OpsCrew stops until the user chooses: pass passwordLogins 'off' (turn password logins off anyway) or 'keep' (leave them on), the CLI's --password-logins, and pass the same value to opscrew_apply. In a Portainer the user already runs, it inspects Portainer read-only (with PORTAINER_API_KEY and the certificate the user confirmed in the interview) and returns the stack plan (the app's stacks, the registry entry, the repository access and the redeploy setting, each marked as already in place or a change) with its own hash, next to the Cloudflare infrastructure plan when the app uses a tunnel or Cloudflare redeploys; when the stack plan needs the tunnel's token it follows after the infrastructure apply. When the app uses a Cloudflare zone it also returns the Cloudflare plan (cloudflarePlanHash): what OpsCrew changes in its shared rules in the zone (the probe block and the strict TLS rule, which list the hostnames of every OpsCrew app there; rules OpsCrew did not create are never changed) and in the account's Zero Trust organization and one-time PIN login. It is approved on its own, before the other plans; when only it is returned, the infrastructure plan follows after it is applied. When the app keeps its files in a bucket on Cloudflare R2, DigitalOcean Spaces or Hetzner Object Storage, it also returns the bucket's plan (storagePlanHash, the opscrew/infra/storage root, with its monthly price), approved on its own; the bucket's key is the user's own and comes only from their terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, and in the user's Portainer the stack plan follows once the bucket exists. For an environment on the user's computer (localhost) it returns the local plan (the containers, networks, volumes and files OpsCrew would create or change there) with its hash, which opscrew_apply takes as planHash. When the environment's deploy job runs on a runner machine of the user's, or leaves one, it also returns each machine's host plan (runnerHostPlanHashes), each approved on its own. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean; none for the user's own server, whose SSH host key must have been confirmed once; PORTAINER_API_KEY for the user's Portainer) and GitHub access in the MCP server's environment.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         ...environmentInput,
         engine: z
           .enum(["auto", "tofu", "terraform"])
@@ -397,11 +399,12 @@ export function registerDeployTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, environment, engine, passwordLogins, publicImage, replaceTokens }) =>
+    ({ projectDir, app, environment, engine, passwordLogins, publicImage, replaceTokens }) =>
       runTool(deps, "opscrew_plan", projectDir, async (call) => {
-        const { name, flag } = await toolEnvironment(call.projectDir, environment);
+        const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({
           approvalHandler: new PlanToolApprovalHandler(deps.clock),
+          app: appKey,
           environment: name,
         });
         const result = await (options.runProvision ?? runProvision)(phase, {
@@ -593,6 +596,7 @@ export function registerDeployTools(
         "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash), with the same passwordLogins choice given to opscrew_plan, if any. In a Portainer the user already runs, also pass stackPlanHash: the stack plan is shown and approved in its own dialog before OpsCrew changes anything in Portainer (when only a stack plan was returned, pass it as planHash; when the stack plan followed the infrastructure plan, it is shown in a dialog after that apply), with the same publicImage and replaceTokens given to opscrew_plan, if any. When opscrew_plan returned a Cloudflare plan, also pass its cloudflarePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog first, and a Cloudflare plan with another hash is refused before any dialog. A Cloudflare plan that deletes OpsCrew's rule asks the user to type the app's name in its dialog. When opscrew_plan returned a bucket plan, also pass its storagePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog. On the user's computer (localhost), pass the local plan's hash as planHash: it is shown and approved in its own dialog. When opscrew_plan returned runnerHostPlanHashes, pass them too: each runner machine's host plan is shown and approved in its own dialog. Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         ...environmentInput,
         planHash: z
           .string()
@@ -653,6 +657,7 @@ export function registerDeployTools(
     (
       {
         projectDir,
+        app,
         environment,
         planHash,
         cloudflarePlanHash,
@@ -694,7 +699,7 @@ export function registerDeployTools(
           ),
           ...runnerHashes,
         ];
-        const { name, flag } = await toolEnvironment(call.projectDir, environment);
+        const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
         const terminal = applyCommand(`provision${flag}`, hashes, {
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...(publicImage === undefined ? {} : { publicImage }),
@@ -707,12 +712,19 @@ export function registerDeployTools(
           cloudflareHash,
           {
             hash: storageHash,
-            plansDir: resolveProjectPaths(call.projectDir, { env: deps.env, environment: name })
-              .files.plansDir,
+            plansDir: resolveProjectPaths(call.projectDir, {
+              env: deps.env,
+              app: appKey,
+              environment: name,
+            }).files.plansDir,
           },
           deps.clock,
         );
-        const phase = await call.phaseDeps({ approvalHandler: gate, environment: name });
+        const phase = await call.phaseDeps({
+          approvalHandler: gate,
+          app: appKey,
+          environment: name,
+        });
         const saved =
           hash === undefined ? undefined : await findSavedPlan(phase.paths.files.plansDir, hash);
         const plan = await readArtifact("plan", phase.paths.files.plan);
@@ -897,6 +909,7 @@ export function registerDeployTools(
         "Re-scan the repository, re-check the applied plan against the security policies, run hardening checks on the server over SSH (password and root login, firewall, fail2ban, automatic updates, Docker exposure, listening ports, pending reboot, disk) and probe from outside that only the expected ports answer. In a Portainer the user already runs it checks the app's stack through Portainer's API instead (never the host: its firewall, SSH and Portainer's own security stay the user's, as do backups). With deep, it also runs three pinned audits, read-only: Lynis on the server (through Docker over SSH), and ssh-audit and testssl.sh in Docker on the user's computer (skipped with how to enable them when Docker is missing; in a Portainer only testssl.sh), each with its known noise set apart; this takes a few minutes. Writes opscrew/SECURITY_REPORT.md and returns every check result and the problems to fix. Changes nothing on the server or in Portainer.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         ...environmentInput,
         offline: z
           .boolean()
@@ -911,10 +924,10 @@ export function registerDeployTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, environment, offline, deep }) =>
+    ({ projectDir, app, environment, offline, deep }) =>
       runTool(deps, "opscrew_secure", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
-        const phase = await call.phaseDeps({ environment: name });
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
+        const phase = await call.phaseDeps({ app: appKey, environment: name });
         const result = await runSecure(phase, {
           offline: offline ?? false,
           scanners: deps.scanners(),
@@ -965,6 +978,7 @@ export function registerDeployTools(
         "Check the live deployment from outside: DNS, HTTPS and certificate validity, the HTTP-to-HTTPS redirect, the health endpoint, security headers, that .env and .git are not served, that the origin is not reachable around Cloudflare, and the latest GitHub Actions deploy run. Writes opscrew/RUNBOOK.md (deploys, rollbacks, logs, SSH access, backups, secret rotation, costs) and returns every check result. Run it after the deploy pull request is merged. For an app in the user's Portainer behind their own reverse proxy, pass url: the address the proxy serves the app on (refused for every other deployment).",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         ...environmentInput,
         url: z
           .string()
@@ -975,10 +989,10 @@ export function registerDeployTools(
       },
       annotations: IDEMPOTENT_WRITE,
     },
-    ({ projectDir, environment, url }) =>
+    ({ projectDir, app, environment, url }) =>
       runTool(deps, "opscrew_verify", projectDir, async (call) => {
-        const { name } = await toolEnvironment(call.projectDir, environment);
-        const phase = await call.phaseDeps({ environment: name });
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
+        const phase = await call.phaseDeps({ app: appKey, environment: name });
         const route = url?.trim();
         const result = await runVerify(phase, {
           ...options.verify,

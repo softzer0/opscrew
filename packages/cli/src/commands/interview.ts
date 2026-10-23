@@ -12,6 +12,7 @@ import type { Command } from "commander";
 import { parse } from "yaml";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf } from "../deps";
+import { addAppOption, chooseApp } from "../ui/app";
 import { printNextSteps } from "../ui/output";
 import {
   checkPortainerCert,
@@ -21,6 +22,8 @@ import {
 import { askQuestions } from "../ui/questions";
 
 interface InterviewFlags {
+  /** `--app <key>`: the repository's app. */
+  app?: string;
   answers?: string;
   /** `--portainer-cert SHA256:…`: Portainer's certificate fingerprint, trusted without a prompt. */
   portainerCert?: string;
@@ -79,15 +82,16 @@ function describe(requirements: Requirements): string[] {
   ];
 }
 
-/** The next step after the interview, by where the app runs. */
-function nextStep(requirements: Requirements): string {
+/** The next step after the interview, by where the app runs; `flag` is the app's `--app`. */
+function nextStep(requirements: Requirements, flag: string): string {
+  const design = `\`opscrew design${flag}\``;
   switch (requirements.provider) {
     case "own":
-      return "run `opscrew design` to check that your server fits the app (it connects to the server and asks you to confirm its host key the first time).";
+      return `run ${design} to check that your server fits the app (it connects to the server and asks you to confirm its host key the first time).`;
     case "portainer":
-      return "run `opscrew design` to plan the app's stacks in your Portainer (there is no server price: you already run it).";
+      return `run ${design} to plan the app's stacks in your Portainer (there is no server price: you already run it).`;
     default:
-      return "run `opscrew design` to compare server options and their monthly cost.";
+      return `run ${design} to compare server options and their monthly cost.`;
   }
 }
 
@@ -99,47 +103,47 @@ function nextStep(requirements: Requirements): string {
  * asks the user to trust it (`--portainer-cert SHA256:…` in scripts; a changed certificate is
  * confirmed the same way), then lists its environments with `PORTAINER_API_KEY`. The signing
  * question says what signing makes public for the repository, as GitHub reports its visibility.
+ * `--app` picks the repository's app; a further app's folder comes from its record.
  */
 export function register(program: Command, ctx: CliContext): void {
-  program
+  const command = program
     .command("interview")
     .description("Ask a few questions about traffic, budget and your domain")
     .option("--answers <file>", "Read the answers from a YAML or JSON file instead of asking")
-    .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION)
-    .action(async (flags: InterviewFlags) => {
-      const certFingerprint = checkPortainerCert(flags.portainerCert);
-      const deps = createPhaseDeps(ctx, { ai: false });
-      let answers: InterviewAnswers | undefined;
-      if (flags.answers !== undefined) {
-        answers = await readAnswersFile(path.resolve(ctx.cwd, flags.answers));
-      }
-      const prompts = promptsOf(ctx);
-      const ask =
-        answers === undefined && ctx.isInteractive
-          ? (questions: Parameters<typeof askQuestions>[0]) => askQuestions(questions, { prompts })
-          : undefined;
-      if (answers === undefined && ask === undefined) {
-        ctx.reporter.info(
-          "This terminal cannot ask questions, so OpsCrew uses your previous answers, if there are any. Pass --answers <file> to give new ones.",
-        );
-      }
-      // The follow-ups for a server the user already has (address, SSH port, user, key, reachable)
-      // or an existing Portainer (address, environment, redeploy and web modes) are asked in the
-      // terminal too; they are saved on this computer only, never in the repo.
-      const isPrivate = await repositoryPrivate(deps);
-      const { requirements } = await runInterview(deps, {
-        ...(answers === undefined ? {} : { answers }),
-        ...(isPrivate === undefined ? {} : { repositoryPrivate: isPrivate }),
-        ...(ask === undefined
-          ? {}
-          : { ask, askServer: ask, askPortainer: ask, askComponents: ask }),
-        portainer: portainerInterviewOptions(ctx, prompts, certFingerprint),
-      });
-      ctx.stdout(
-        `\n${describe(requirements)
-          .map((line) => `  ${line}`)
-          .join("\n")}\n`,
+    .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION);
+  addAppOption(command).action(async (flags: InterviewFlags) => {
+    const certFingerprint = checkPortainerCert(flags.portainerCert);
+    const app = await chooseApp(ctx, flags.app, "interview");
+    const deps = createPhaseDeps(ctx, { ai: false, app: app.key });
+    let answers: InterviewAnswers | undefined;
+    if (flags.answers !== undefined) {
+      answers = await readAnswersFile(path.resolve(ctx.cwd, flags.answers));
+    }
+    const prompts = promptsOf(ctx);
+    const ask =
+      answers === undefined && ctx.isInteractive
+        ? (questions: Parameters<typeof askQuestions>[0]) => askQuestions(questions, { prompts })
+        : undefined;
+    if (answers === undefined && ask === undefined) {
+      ctx.reporter.info(
+        "This terminal cannot ask questions, so OpsCrew uses your previous answers, if there are any. Pass --answers <file> to give new ones.",
       );
-      printNextSteps(ctx, [nextStep(requirements)]);
+    }
+    // The follow-ups for a server the user already has (address, SSH port, user, key, reachable)
+    // or an existing Portainer (address, environment, redeploy and web modes) are asked in the
+    // terminal too; they are saved on this computer only, never in the repo.
+    const isPrivate = await repositoryPrivate(deps);
+    const { requirements } = await runInterview(deps, {
+      ...(answers === undefined ? {} : { answers }),
+      ...(isPrivate === undefined ? {} : { repositoryPrivate: isPrivate }),
+      ...(ask === undefined ? {} : { ask, askServer: ask, askPortainer: ask, askComponents: ask }),
+      portainer: portainerInterviewOptions(ctx, prompts, certFingerprint),
     });
+    ctx.stdout(
+      `\n${describe(requirements)
+        .map((line) => `  ${line}`)
+        .join("\n")}\n`,
+    );
+    printNextSteps(ctx, [nextStep(requirements, app.flag)]);
+  });
 }

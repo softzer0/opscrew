@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   addEnvironment,
+  appFlag,
   deployJobPlace,
   listEnvironments,
   type PromoteServices,
@@ -13,7 +14,7 @@ import { formatMoney, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
-import { projectDirInput, runTool, withHint } from "./shared";
+import { andApp, appInput, projectDirInput, runTool, toolApp, withHint } from "./shared";
 
 /** Test-only collaborators for the environment tools. */
 export interface EnvironmentToolOptions {
@@ -45,12 +46,13 @@ export function registerEnvironmentTools(
       title: "List the app's environments",
       description:
         "List the app's environments (prod, then each one added beside it): where each runs, how it gets new versions (each push to the branch it follows, or promoted from another environment), where its deploy job runs (GitHub's machines, a runner on the server, on the user's computer or on a runner machine of the user's) and whether it is deployed. Writes nothing.",
-      inputSchema: { ...projectDirInput },
+      inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ projectDir }) =>
+    ({ projectDir, app }) =>
       runTool(deps, "opscrew_env_list", projectDir, async (call) => {
-        const environments = await listEnvironments((await call.phaseDeps()).paths);
+        const appKey = await toolApp(call.projectDir, app);
+        const environments = await listEnvironments((await call.phaseDeps({ app: appKey })).paths);
         const lines = environments.map(
           (env) =>
             `- ${env.name}: runs on ${env.target}, ${env.from === "main" ? `deployed on each push to ${env.branch}` : `promoted from ${env.from}`}, deploy job on ${deployJobPlace(env.runner, env.runnerHost)}, ${env.deployed ? "deployed" : "not deployed"}`,
@@ -73,6 +75,7 @@ export function registerEnvironmentTools(
         "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. Its build, components and port follow the image: its own design's when it is built from a branch, or the plan's of the environment it is promoted from. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from), branch (with from main: the branch whose pushes build and deploy it, one the repository has and no other environment follows; default: the repository's default branch. When the repository has a branch named like the environment, such as develop for dev, OpsCrew's note names it: offer the user promotion first, where only the first environment follows a branch and one image moves dev → staging → prod, or each environment on its own branch), runner (github, server, local, or host: a runner machine of the user's, opscrew_runner_host_list), runnerHost (with host: the machine's name; the only one by default) and build (github, the default, or runner: built on its own runner, a runner machine with the server's CPU or the user's computer, never the server). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         name: NAME_INPUT,
         answers: z
           .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
@@ -92,9 +95,10 @@ export function registerEnvironmentTools(
         openWorldHint: true,
       },
     },
-    ({ projectDir, name, answers, optionId }) =>
+    ({ projectDir, app, name, answers, optionId }) =>
       runTool(deps, "opscrew_env_add", projectDir, async (call) => {
-        const phase = await call.phaseDeps({ environment: name });
+        const appKey = await toolApp(call.projectDir, app);
+        const phase = await call.phaseDeps({ app: appKey, environment: name });
         const { design } = await addEnvironment(phase, {
           answers: answers ?? {},
           design: {
@@ -107,7 +111,7 @@ export function registerEnvironmentTools(
           text: [
             `Added the ${name} environment: ${chosen.title} (${chosen.id}), about ${formatMoney(chosen.cost.monthly)} a month.`,
             ...design.warnings.map((warning) => `Warning: ${warning}`),
-            `Next: the user provisions it with \`npx opscrew provision --env ${name}\` in a terminal, or call opscrew_plan with environment ${name}.`,
+            `Next: the user provisions it with \`npx opscrew provision${await appFlag(call.projectDir, appKey)} --env ${name}\` in a terminal, or call opscrew_plan with environment ${name}${andApp(appKey)}.`,
           ].join("\n"),
           data: {
             environment: plan.environment,
@@ -128,6 +132,7 @@ export function registerEnvironmentTools(
         "Change an environment's plan: its deploy source (from: main, built and deployed on each push, or another existing environment it is promoted from, never itself and never in a cycle), the branch whose pushes build and deploy it from main (branch: one the repository has and no other environment follows), and where its deploy job runs (runner: github, server, local or host, a runner machine of the user's, with runnerHost its name) and where its image is built (build: github, or runner on a runner machine with the server's CPU or the local runner; never the server's runner). The change reaches GitHub and the runners with its next provision, which shows each change first.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         name: NAME_INPUT,
         from: z
           .string()
@@ -157,7 +162,7 @@ export function registerEnvironmentTools(
         openWorldHint: false,
       },
     },
-    ({ projectDir, name, from, branch, runner, runnerHost, build }) =>
+    ({ projectDir, app, name, from, branch, runner, runnerHost, build }) =>
       runTool(deps, "opscrew_env_set", projectDir, async (call) => {
         if (runner === undefined && (runnerHost !== undefined || build !== undefined)) {
           throw new OpsCrewError("INVALID_INPUT", "runnerHost and build go with runner.", {
@@ -170,7 +175,8 @@ export function registerEnvironmentTools(
           });
         }
         const lines: string[] = [];
-        const phase = await call.phaseDeps({ environment: name });
+        const appKey = await toolApp(call.projectDir, app);
+        const phase = await call.phaseDeps({ app: appKey, environment: name });
         const plan = await setEnvironment(phase, {
           ...(from === undefined ? {} : { from }),
           ...(branch === undefined ? {} : { branch }),
@@ -204,7 +210,7 @@ export function registerEnvironmentTools(
           );
         }
         lines.push(
-          `Next: apply the change with \`npx opscrew provision --env ${name}\`, or opscrew_plan with environment ${name}.`,
+          `Next: apply the change with \`npx opscrew provision${await appFlag(call.projectDir, appKey)} --env ${name}\`, or opscrew_plan with environment ${name}${andApp(appKey)}.`,
         );
         return {
           text: lines.join(" "),
@@ -227,7 +233,7 @@ export function registerEnvironmentTools(
       title: "Remove an environment",
       description:
         "Remove an environment's files: its plan and answers, its infrastructure code and deploy workflow, and what OpsCrew keeps for it on this computer. Refused while it is deployed (the user destroys it first with `npx opscrew destroy --env <name>`) or while another environment is promoted from it. Never prod. Only when the user asks for it: the user confirms by typing the environment's name in a dialog. Refuses when the client cannot show dialogs.",
-      inputSchema: { ...projectDirInput, name: NAME_INPUT },
+      inputSchema: { ...projectDirInput, ...appInput, name: NAME_INPUT },
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -236,11 +242,16 @@ export function registerEnvironmentTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, name }, extra: CallExtra) =>
+    ({ projectDir, app, name }, extra: CallExtra) =>
       runTool(deps, "opscrew_env_remove", projectDir, async (call) => {
-        requireDialogs(server, `npx opscrew env remove ${name}`);
+        const appKey = await toolApp(call.projectDir, app);
+        requireDialogs(
+          server,
+          `npx opscrew env remove ${name}${await appFlag(call.projectDir, appKey)}`,
+        );
         const phase = await call.phaseDeps({
           approvalHandler: dialogHandler(server, deps, extra),
+          app: appKey,
           environment: name,
         });
         // It deletes the environment's deploy key, passphrase and secrets: the user types its name.
@@ -277,6 +288,7 @@ export function registerEnvironmentTools(
         "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, or with digest its previous image to roll back, without rebuilding. OpsCrew checks the image's build provenance (a push of this repository to the branch the environment that built the image follows), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
+        ...appInput,
         to: NAME_INPUT.describe("The environment to deploy to, for example prod."),
         digest: z
           .string()
@@ -293,11 +305,13 @@ export function registerEnvironmentTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, to, digest }, extra: CallExtra) =>
+    ({ projectDir, app, to, digest }, extra: CallExtra) =>
       runTool(deps, "opscrew_promote", projectDir, async (call) => {
+        const appKey = await toolApp(call.projectDir, app);
+        const flag = await appFlag(call.projectDir, appKey);
         requireDialogs(
           server,
-          `npx opscrew promote --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}`,
+          `npx opscrew promote${flag} --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}`,
         );
         const dialogs = dialogHandler(server, deps, extra);
         // The hash the user's dialog shows, for the result.
@@ -308,7 +322,11 @@ export function registerEnvironmentTools(
             return dialogs.request(request);
           },
         };
-        const phase = await call.phaseDeps({ approvalHandler: approvals, environment: to });
+        const phase = await call.phaseDeps({
+          approvalHandler: approvals,
+          app: appKey,
+          environment: to,
+        });
         let result: Awaited<ReturnType<typeof promote>>;
         try {
           result = await promote(phase, {
@@ -321,7 +339,7 @@ export function registerEnvironmentTools(
           if (isUserFacingError(error) && error.code === "APPROVAL_REFUSED") {
             withHint(
               error,
-              `The user declined; nothing was deployed. Call opscrew_promote again only when the user asks, or ask them to run \`npx opscrew promote --to ${to}\` in their terminal.`,
+              `The user declined; nothing was deployed. Call opscrew_promote again only when the user asks, or ask them to run \`npx opscrew promote${flag} --to ${to}\` in their terminal.`,
             );
           }
           throw error;
@@ -329,12 +347,12 @@ export function registerEnvironmentTools(
         if (result.status === "waiting") {
           // Not a failure or a timeout: GitHub holds the run for the environment's reviewer.
           return {
-            text: `The deploy run for ${result.digest} to ${to} (promotion ${hash}) waits in GitHub for a required reviewer: ${result.runUrl}\nThe deploy goes on once the reviewer approves it in GitHub. Once the run succeeded, call opscrew_promote with to ${to} again: it records the image without a new deploy.`,
+            text: `The deploy run for ${result.digest} to ${to} (promotion ${hash}) waits in GitHub for a required reviewer: ${result.runUrl}\nThe deploy goes on once the reviewer approves it in GitHub. Once the run succeeded, call opscrew_promote with to ${to}${andApp(appKey)} again: it records the image without a new deploy.`,
             data: { ...result, promotionHash: hash, approvals: dialogs.decisions },
           };
         }
         return {
-          text: `Deployed ${result.digest} to ${to} (promotion ${hash}): ${result.runUrl}\nNext: call opscrew_verify with environment ${to}.`,
+          text: `Deployed ${result.digest} to ${to} (promotion ${hash}): ${result.runUrl}\nNext: call opscrew_verify with environment ${to}${andApp(appKey)}.`,
           data: { ...result, promotionHash: hash, approvals: dialogs.decisions },
         };
       }),

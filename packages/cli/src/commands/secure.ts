@@ -4,7 +4,7 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { addEnvOption, chooseEnvironment } from "../ui/environment";
+import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 
 /**
@@ -23,9 +23,9 @@ export function register(program: Command, ctx: CliContext): void {
       "--deep",
       "Also audit the whole server (Lynis), its SSH service (ssh-audit) and the TLS visitors see (testssl.sh); changes nothing",
     );
-  addEnvOption(command).action(async (flags: { deep?: boolean; env?: string }) => {
-    const { name, flag } = await chooseEnvironment(ctx, flags.env, "secure");
-    const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+  addEnvOption(command).action(async (flags: AppEnvFlags & { deep?: boolean }) => {
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "secure");
+    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const result = await runSecure(deps, {
       ...servicesOf(ctx).secure,
       ...(flags.deep === true ? { deep: true } : {}),

@@ -11,17 +11,23 @@ import {
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployProviderSchema } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
-import { askTypedName, checkConfirmName } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
+import { addAppOption, chooseApp, resolveCliApp } from "../ui/app";
 import { chooseOption } from "../ui/options";
 import { printNextSteps, textTable } from "../ui/output";
 import { portainerInterviewOptions } from "../ui/portainer";
 import { askQuestions } from "../ui/questions";
+import { confirmRemoval } from "../ui/removal";
 import { addHostKeyOption } from "./provision";
 
+/** `--app <key>`, on every subcommand: the repository's app whose environments these are. */
+interface AppFlags {
+  app?: string;
+}
+
 /** `--runner`, `--runner-host` and `--build` of `env add` and `env set`. */
-interface RunnerFlags {
+interface RunnerFlags extends AppFlags {
   runner?: string;
   runnerHost?: string;
   build?: string;
@@ -70,7 +76,8 @@ function ownServerOptions(
  * (contracts/environments.md "Commands").
  */
 async function add(ctx: CliContext, name: string, flags: AddFlags): Promise<void> {
-  const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+  const app = await resolveCliApp(ctx, flags.app, "env add");
+  const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
   const given = flagAnswers(flags);
   const answered = new Set([
     ...Object.keys(given),
@@ -126,6 +133,7 @@ function settingLine(
   name: string,
   plan: DeployPlan,
   changed: "from" | "branch" | "runner",
+  flag: string,
 ): string {
   const environment = plan.environment;
   if (changed === "runner") {
@@ -139,8 +147,8 @@ function settingLine(
   const source = environment?.deploySource;
   if (source?.from === "promote") {
     return changed === "branch"
-      ? `The ${name} environment follows ${plan.cicd.branch} once it is built from main again (\`opscrew env set ${name} --from main\`); until then only \`opscrew promote --to ${name}\` deploys it.`
-      : `The ${name} environment is deployed only by \`opscrew promote --to ${name}\`, with the image ${source.source} runs.`;
+      ? `The ${name} environment follows ${plan.cicd.branch} once it is built from main again (\`opscrew env set ${name}${flag} --from main\`); until then only \`opscrew promote${flag} --to ${name}\` deploys it.`
+      : `The ${name} environment is deployed only by \`opscrew promote${flag} --to ${name}\`, with the image ${source.source} runs.`;
   }
   return `The ${name} environment is built and deployed on each push to ${plan.cicd.branch}.`;
 }
@@ -157,9 +165,10 @@ interface SetFlags extends RunnerFlags {
  * and `--build`), each written to its plan; its next provision shows and applies the change.
  */
 async function set(ctx: CliContext, name: string, flags: SetFlags) {
+  const given = flags.app === undefined ? "" : ` --app ${flags.app.trim()}`;
   if (flags.runner === undefined && (flags.runnerHost !== undefined || flags.build !== undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "--runner-host and --build go with --runner.", {
-      hint: `For example \`opscrew env set ${name} --runner host --runner-host <machine> --build runner\`.`,
+      hint: `For example \`opscrew env set ${name}${given} --runner host --runner-host <machine> --build runner\`.`,
     });
   }
   if (flags.from === undefined && flags.branch === undefined && flags.runner === undefined) {
@@ -167,11 +176,12 @@ async function set(ctx: CliContext, name: string, flags: SetFlags) {
       "INVALID_INPUT",
       "Say what to change with --from, --branch or --runner.",
       {
-        hint: `For example \`opscrew env set ${name} --from main\`, \`opscrew env set ${name} --branch develop\` or \`opscrew env set ${name} --runner github\`.`,
+        hint: `For example \`opscrew env set ${name}${given} --from main\`, \`opscrew env set ${name}${given} --branch develop\` or \`opscrew env set ${name}${given} --runner github\`.`,
       },
     );
   }
-  const deps = createPhaseDeps(ctx, { ai: false, environment: name });
+  const app = await chooseApp(ctx, flags.app, "env set");
+  const deps = createPhaseDeps(ctx, { ai: false, app: app.key, environment: name });
   const plan = await setEnvironment(deps, {
     ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
     ...(flags.branch === undefined ? {} : { branch: flags.branch }),
@@ -186,16 +196,16 @@ async function set(ctx: CliContext, name: string, flags: SetFlags) {
         }),
   });
   const lines = [
-    ...(flags.runner === undefined ? [] : [settingLine(name, plan, "runner")]),
+    ...(flags.runner === undefined ? [] : [settingLine(name, plan, "runner", app.flag)]),
     // With --from the source's line names the branch too.
     ...(flags.branch === undefined || flags.from !== undefined
       ? []
-      : [settingLine(name, plan, "branch")]),
-    ...(flags.from === undefined ? [] : [settingLine(name, plan, "from")]),
+      : [settingLine(name, plan, "branch", app.flag)]),
+    ...(flags.from === undefined ? [] : [settingLine(name, plan, "from", app.flag)]),
   ];
   ctx.stdout(`${lines.join("\n")}\n`);
   printNextSteps(ctx, [
-    `run \`opscrew provision --env ${name}\` to apply the change to its deploy workflow (it shows the change first).`,
+    `run \`opscrew provision${app.flag} --env ${name}\` to apply the change to its deploy workflow (it shows the change first).`,
   ]);
 }
 
@@ -224,7 +234,8 @@ function addRunnerOptions(command: Command): Command {
  * `opscrew env add|set|list|remove`: the app's environments beside prod (staging, dev, a copy on
  * this computer). Each has its own plan, state, secrets and approvals; the build and the
  * components follow the image (its own design's when it builds, its source's when it is
- * promoted). Every deployment command acts on one of them with `--env <name>`.
+ * promoted). Every deployment command acts on one of them with `--env <name>`, and every
+ * subcommand on the app `--app <key>` names.
  */
 export function register(program: Command, ctx: CliContext): void {
   const env = program
@@ -250,7 +261,7 @@ export function register(program: Command, ctx: CliContext): void {
       "--branch <name>",
       "With --from main: the branch whose pushes build and deploy it (default: the repository's default branch); one the repository has and no other environment follows",
     );
-  addHostKeyOption(addRunnerOptions(adding))
+  addHostKeyOption(addRunnerOptions(addAppOption(adding)))
     .option(
       "--option <id>",
       "Choose this design option without asking (ids are listed by the command)",
@@ -270,30 +281,40 @@ export function register(program: Command, ctx: CliContext): void {
       "--branch <name>",
       "The branch whose pushes build and deploy it from main; one the repository has and no other environment follows",
     );
-  addRunnerOptions(setting).action((name: string, flags: SetFlags) => set(ctx, name, flags));
-  env
+  addRunnerOptions(addAppOption(setting)).action((name: string, flags: SetFlags) =>
+    set(ctx, name, flags),
+  );
+  const listing = env
     .command("list")
     .description(
       "List the app's environments: where each runs, how it gets new versions, where its deploy job runs and whether it is deployed",
-    )
-    .action(async () => {
-      const environments = await listEnvironments(createPhaseDeps(ctx, { ai: false }).paths);
-      if (environments.length === 0) {
-        ctx.stdout(
-          "The app has no environment yet. Start with `opscrew design`, which plans prod.\n",
-        );
-        return;
-      }
-      ctx.stdout(`${environmentTable(environments)}\n`);
-    });
-  env
+    );
+  addAppOption(listing).action(async (flags: AppFlags) => {
+    const app = await chooseApp(ctx, flags.app, "env list");
+    const environments = await listEnvironments(
+      createPhaseDeps(ctx, { ai: false, app: app.key }).paths,
+    );
+    if (environments.length === 0) {
+      ctx.stdout(
+        `The app has no environment yet. Start with \`opscrew design${app.flag}\`, which plans prod.\n`,
+      );
+      return;
+    }
+    ctx.stdout(`${environmentTable(environments)}\n`);
+  });
+  const removing = env
     .command("remove")
     .description(
       "Remove an environment's files (its plan, answers, workflow, infrastructure code and local state); refused while it is deployed",
     )
     .argument("<name>", "The environment")
-    .option("--confirm <name>", "The environment's name, to remove it without a prompt (scripts)")
-    .action((name: string, flags: { confirm?: string }) => remove(ctx, name, flags));
+    .option("--confirm <name>", "The environment's name, to remove it without a prompt (scripts)");
+  addAppOption(removing).action((name: string, flags: RemoveFlags) => remove(ctx, name, flags));
+}
+
+/** The flags of `env remove`. */
+interface RemoveFlags extends AppFlags {
+  confirm?: string;
 }
 
 /**
@@ -301,38 +322,18 @@ export function register(program: Command, ctx: CliContext): void {
  * generated secrets with its files, so a terminal has its name typed back and a script needs
  * `--confirm <name>`. prod is refused by `removeEnvironment` before anything is asked.
  */
-async function remove(ctx: CliContext, name: string, flags: { confirm?: string }): Promise<void> {
-  const deps = createPhaseDeps(ctx, { ai: false, environment: name });
-  const again = `opscrew env remove ${name}`;
-  checkConfirmName(
-    flags.confirm,
-    name,
-    "the environment's name",
-    `Run \`${again} --confirm ${name}\`.`,
-  );
-  if (flags.confirm === undefined && name !== "prod") {
-    if (!ctx.isInteractive) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `Removing the ${name} environment deletes its deploy key, state passphrase and generated secrets on this computer, so it needs its name typed by a person, and this run is not interactive. Nothing was removed.`,
-        { hint: `Run \`${again}\` in a terminal, or \`${again} --confirm ${name}\` in a script.` },
-      );
-    }
-    ctx.stdout(
-      `\nThis removes the ${name} environment's files: its plan and answers, its infrastructure code and deploy workflow, and what OpsCrew keeps for it on this computer (its deploy key, state passphrase and generated secrets).\n`,
-    );
-    const typed = await askTypedName(
-      promptsOf(ctx),
-      `Type ${name} to remove it (anything else cancels)`,
+async function remove(ctx: CliContext, name: string, flags: RemoveFlags): Promise<void> {
+  const app = await chooseApp(ctx, flags.app, "env remove");
+  const deps = createPhaseDeps(ctx, { ai: false, app: app.key, environment: name });
+  if (name !== "prod") {
+    await confirmRemoval(ctx, {
       name,
-    );
-    if (typed !== name) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The name typed was not ${name}, so nothing was removed.`,
-        { hint: `Run \`${again}\` again when you are ready.` },
-      );
-    }
+      confirm: flags.confirm,
+      what: "the environment's name",
+      subject: `the ${name} environment`,
+      details: `This removes the ${name} environment's files: its plan and answers, its infrastructure code and deploy workflow, and what OpsCrew keeps for it on this computer (its deploy key, state passphrase and generated secrets).`,
+      again: `opscrew env remove ${name}${app.flag}`,
+    });
   }
   await removeEnvironment(deps);
 }
