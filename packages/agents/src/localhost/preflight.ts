@@ -10,7 +10,7 @@ import { EDGE_PROJECT, serviceSpec } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { composeVersion, dockerInfo, projectObjects } from "./docker";
-import { imageSource, localBuild, planBuildsLocally } from "./image";
+import { emulationNote, imageSource, localBuild, planBuildsLocally } from "./image";
 import {
   computer,
   type LocalhostServices,
@@ -184,7 +184,7 @@ export async function localPreflight(
     notes.add(
       target.image === "local-build"
         ? `This computer runs ${target.arch} and ${source.environment}'s image is built for ${source.arch}, so OpsCrew builds the app's image on this computer: it differs from the image ${source.environment} runs.`
-        : `This computer runs ${target.arch} and ${source.environment}'s image is built for ${source.arch}, so Docker runs it under emulation, which is slower.`,
+        : emulationNote(target.arch, `${source.environment}'s`, source.arch),
     );
   }
   return { problems, notes: [...notes] };

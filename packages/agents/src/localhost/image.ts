@@ -173,6 +173,18 @@ export async function githubRegistry(
 }
 
 /**
+ * Said when this computer (`arch`) runs `whose` image (`prod's`, `the staging environment's`),
+ * built for another CPU (`built`), under emulation.
+ */
+export function emulationNote(
+  arch: string | undefined,
+  whose: string,
+  built: "amd64" | "arm64",
+): string {
+  return `This computer runs ${arch} and ${whose} image is built for ${built}, so Docker runs it under emulation, which is slower.`;
+}
+
+/**
  * The image an environment that builds its own image ({@link buildsOwnImage}) starts from before
  * its first labelled image, said with what replaces it: the GHCR image it already runs (a deploy
  * whose labelling failed), else a local build when this computer builds the app's image as GitHub
@@ -228,11 +240,7 @@ async function firstImage(
   deps.reporter.info(
     `${none}, so OpsCrew starts it from the image prod runs (opscrew-prod). ${replaced}`,
   );
-  if (emulated) {
-    deps.reporter.info(
-      `This computer runs ${arch} and prod's image is built for ${prod.arch}, so Docker runs it under emulation, which is slower.`,
-    );
-  }
+  if (emulated) deps.reporter.info(emulationNote(arch, "prod's", prod.arch));
   return { source: "registry", ref: `${ghcr.image}@${digest}`, environment: "prod", emulated };
 }
 

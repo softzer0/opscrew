@@ -17,7 +17,7 @@ import type { PhaseDeps } from "../context";
 import { noServerCost } from "../design/own";
 import { containersText, sizeFor } from "../design/sizing";
 import { providerProfile } from "../providers";
-import { buildsLocally, imageSource } from "./image";
+import { buildsLocally, emulationNote, imageSource } from "./image";
 import { computer, computerArch, type LocalhostServices } from "./services";
 import { edgePorts } from "./stack";
 
@@ -160,9 +160,7 @@ export function localhostImageWarnings(
     ? [
         `This computer runs ${choice.arch} and ${theirs} image is built for ${source.arch}, so OpsCrew builds the app's image on this computer: it differs from ${theirs} image. To run ${theirs} image under emulation instead, set target.image to registry in the plan.`,
       ]
-    : [
-        `This computer runs ${choice.arch} and ${theirs} image is built for ${source.arch}, so Docker runs it under emulation, which is slower.`,
-      ];
+    : [emulationNote(choice.arch, theirs, source.arch)];
 }
 
 /**

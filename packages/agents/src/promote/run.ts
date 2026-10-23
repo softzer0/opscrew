@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { githubConnector, type RegistryCredential } from "@opscrew/connector-github";
+import { githubConnector } from "@opscrew/connector-github";
 import {
   canonicalJson,
   listText,
@@ -21,7 +21,7 @@ import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
 import { environmentPaths, sharedPartsDiffer } from "../environments";
 import { builderBranch } from "../environments/branches";
-import { REGISTRY_TOKEN_VAR } from "../provision";
+import { ghcrReadCredential } from "../localhost/image";
 import { missing } from "../provision/credentials";
 import { secretsEnvironment } from "../provision/secrets";
 import {
@@ -68,18 +68,6 @@ async function githubRepository(deps: PhaseDeps, services: PromoteServices) {
   }
   const { defaultBranch } = await api.getRepo(owner, repo);
   return { api, owner, repo, defaultBranch };
-}
-
-/**
- * GHCR's credential: `OPSCREW_GHCR_READ_TOKEN` (a classic `read:packages` token, which GHCR
- * accepts where it may refuse a fine-grained one), registered with the redactor; else none, and
- * the GitHub client's own token is used.
- */
-function registryCredential(deps: PhaseDeps, owner: string): RegistryCredential | undefined {
-  const token = deps.env[REGISTRY_TOKEN_VAR]?.trim();
-  if (!token) return undefined;
-  deps.redactor.addLiteral(token, REGISTRY_TOKEN_VAR);
-  return { username: owner, token };
 }
 
 /**
@@ -350,7 +338,8 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   const github = await githubRepository(deps, services);
   const { owner, repo, defaultBranch } = github;
   const actions = `https://github.com/${owner}/${repo}/actions`;
-  const credential = registryCredential(deps, owner);
+  // OPSCREW_GHCR_READ_TOKEN when set (GHCR may refuse a fine-grained token), else the client's own.
+  const credential = ghcrReadCredential(deps, owner);
   const image: AppImage = {
     github: github.api,
     owner,
