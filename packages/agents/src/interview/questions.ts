@@ -2,6 +2,7 @@ import type { VpsProviderId } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
 import {
   type DeployProvider,
+  isServerlessProvider,
   type ProjectFacts,
   type Question,
   type QuestionId,
@@ -11,7 +12,6 @@ import {
 } from "@opscrew/plan-schema";
 import { frameworkName } from "../analyze/summary";
 import { hostedKinds } from "../design/components";
-import { isServerless } from "../shared/vps-target";
 import { withDefault } from "./follow-ups";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
@@ -63,7 +63,7 @@ export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): DeployProvider {
-  const answered = isServerless(previous?.provider) ? undefined : previous?.provider;
+  const answered = isServerlessProvider(previous?.provider) ? undefined : previous?.provider;
   return answered ?? context.inferredProvider ?? "hetzner";
 }
 

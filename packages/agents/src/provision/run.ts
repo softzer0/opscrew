@@ -4,7 +4,7 @@ import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { EDGE_PROXIES, edgeProxy, renderStorage, usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { builderBranch, workflowBranch } from "../environments/branches";
 import { requireOwnHostnames } from "../environments/hostnames";
@@ -32,7 +32,6 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
-  isServerless,
   localhostNotSupported,
   type PlanApproval,
   readyNewServer,
@@ -286,7 +285,7 @@ async function provisionFlow(
     if (phase !== "provision") throw localhostNotSupported(`\`${command}\``);
     return provisionLocalhost(deps, plan, options);
   }
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported(`\`${command}\``, plan.target.provider);
   }
   const requirements = await readRequirements(deps);

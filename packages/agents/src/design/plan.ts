@@ -10,6 +10,8 @@ import {
   type DeployPlan,
   DeployPlanSchema,
   type DesignOption,
+  isServerlessProvider,
+  onOneServer,
   type PlanService,
   type ProjectFacts,
   type Requirements,
@@ -21,8 +23,6 @@ import {
   deepDomainProblem,
   FRAMEWORK_ENV,
   hostListKind,
-  isServerless,
-  onOneServer,
   STORAGE_VARIABLES,
   serverlessNotSupported,
   serviceAppVariables,
@@ -126,7 +126,7 @@ function targetFor(
     } as const;
   }
   // Design offers no option for the server-less targets yet.
-  if (isServerless(target.provider)) {
+  if (isServerlessProvider(target.provider)) {
     throw serverlessNotSupported("Designing an app", target.provider);
   }
   return {

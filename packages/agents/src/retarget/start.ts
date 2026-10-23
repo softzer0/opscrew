@@ -6,6 +6,7 @@ import {
   type CloudDeployTarget,
   type DeployPlan,
   type DesignOption,
+  isServerlessProvider,
   type ProjectFacts,
   type Retarget,
   readArtifact,
@@ -19,7 +20,6 @@ import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { providerBucket, readRequirements, requireStorageKey } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
 import {
-  isServerless,
   localhostTargetNoMove,
   ownServerNoMove,
   portainerTargetNoMove,
@@ -102,13 +102,16 @@ async function pickOption(
   return chosen;
 }
 
-/** The new target from the chosen option, with the provider's default image and the old proxy. */
-function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudDeployTarget {
+/**
+ * The new target from the chosen option, with the provider's default image and the old proxy;
+ * throws the plain refusal for an option of a target that does not move.
+ */
+export function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudDeployTarget {
   const { provider } = option.target;
   if (provider === "own") throw ownServerNoMove();
   if (provider === "portainer") throw portainerTargetNoMove();
   if (provider === "localhost") throw localhostTargetNoMove();
-  if (isServerless(provider)) throw serverlessTargetNoMove(provider);
+  if (isServerlessProvider(provider)) throw serverlessTargetNoMove(provider);
   return {
     provider,
     mode: "vps-compose",
@@ -281,7 +284,8 @@ export async function startMove(
   if (plan.target.provider === "portainer") throw portainerTargetNoMove();
   // Nor does an app on this computer (feature 015), or a server-less one (feature 016).
   if (plan.target.provider === "localhost") throw localhostTargetNoMove();
-  if (isServerless(plan.target.provider)) throw serverlessTargetNoMove(plan.target.provider);
+  if (isServerlessProvider(plan.target.provider))
+    throw serverlessTargetNoMove(plan.target.provider);
   const address =
     plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
       ? await serverAddress(deps, plan, {
@@ -314,7 +318,7 @@ export async function startMove(
   if (options.to === undefined && requirements.provider === "localhost") {
     throw localhostTargetNoMove();
   }
-  if (options.to === undefined && isServerless(requirements.provider)) {
+  if (options.to === undefined && isServerlessProvider(requirements.provider)) {
     throw serverlessTargetNoMove(requirements.provider);
   }
   const to = options.to ?? requestedProvider(requirements);

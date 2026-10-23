@@ -1,6 +1,7 @@
 import { isRecord, OpsCrewError } from "@opscrew/core";
 import { normalizeAppDir } from "@opscrew/detect";
 import {
+  isServerlessProvider,
   type Money,
   type ProjectFacts,
   type QuestionId,
@@ -9,7 +10,7 @@ import {
   RequirementsSchema,
 } from "@opscrew/plan-schema";
 import { hostedKinds } from "../design/components";
-import { deepDomainProblem, isServerless, serverlessNotSupported } from "../shared";
+import { deepDomainProblem, serverlessNotSupported } from "../shared";
 import { isBlank } from "./follow-ups";
 import {
   defaultProvider,
@@ -212,7 +213,7 @@ export function answersToRequirements(
   const provider = given("provider") ? answers.provider : (previous?.provider ?? inferred.provider);
   const chosenProvider = typeof provider === "string" ? provider.trim().toLowerCase() : undefined;
   // The schema knows the server-less targets, but the interview does not offer them yet.
-  if (isServerless(chosenProvider)) {
+  if (isServerlessProvider(chosenProvider)) {
     throw serverlessNotSupported("`opscrew interview`", chosenProvider);
   }
   // This computer has no region, domain or DNS either: the app is served at its .localhost address.

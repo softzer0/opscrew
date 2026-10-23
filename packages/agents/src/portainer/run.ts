@@ -16,7 +16,7 @@ import {
   renderTunnelConnectorCompose,
   usesTunnel,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import { type CloudflareSetup, setupCloudflare } from "../provision/credentials";
@@ -53,7 +53,6 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
-  isServerless,
   localhostNotSupported,
   PlanRefusedError,
   projectEngine,
@@ -1013,7 +1012,7 @@ async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise
   if (before.target.provider === "localhost") {
     throw localhostNotSupported("`opscrew portainer enable`");
   }
-  if (isServerless(before.target.provider)) {
+  if (isServerlessProvider(before.target.provider)) {
     throw serverlessNotSupported("`opscrew portainer enable`", before.target.provider);
   }
   requireNoMoveInProgress(before);
@@ -1046,7 +1045,7 @@ async function disable(
   if (before.target.provider === "localhost") {
     throw localhostNotSupported("`opscrew portainer disable`");
   }
-  if (isServerless(before.target.provider)) {
+  if (isServerlessProvider(before.target.provider)) {
     throw serverlessNotSupported("`opscrew portainer disable`", before.target.provider);
   }
   requireNoMoveInProgress(before);

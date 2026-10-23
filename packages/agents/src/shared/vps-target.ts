@@ -1,9 +1,10 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
-  type DeployProvider,
   type DeployTarget,
+  isServerlessProvider,
   PORTAINER_TARGET_NO_MOVE,
+  type ServerlessProvider,
 } from "@opscrew/plan-schema";
 
 /** The plain error of `opscrew retarget` for a Portainer target, which never moves. */
@@ -49,24 +50,11 @@ export function localhostNotSupported(what: string): OpsCrewError {
   );
 }
 
-/** True for a target on one server: Hetzner Cloud, DigitalOcean or a server the user owns. */
-export function onOneServer(provider: DeployProvider): provider is VpsProviderId {
-  return provider === "hetzner" || provider === "digitalocean" || provider === "own";
-}
-
-/** The server-less targets (feature 016), by their name in a sentence. */
-const SERVERLESS_NAMES = {
+/** How the messages name the server-less targets. */
+const SERVERLESS_NAMES: Readonly<Record<ServerlessProvider, string>> = {
   "cloudflare-workers": "Cloudflare hosting",
   "github-pages": "GitHub Pages",
-} as const;
-
-/** A target with no server of the user's: Cloudflare's hosting or GitHub Pages. */
-export type ServerlessProvider = keyof typeof SERVERLESS_NAMES;
-
-/** True for Cloudflare's hosting and GitHub Pages, which have no server. */
-export function isServerless(provider: string | undefined): provider is ServerlessProvider {
-  return provider !== undefined && Object.hasOwn(SERVERLESS_NAMES, provider);
-}
+};
 
 /** A server-less target's name in a sentence: "Cloudflare hosting", "GitHub Pages". */
 export function serverlessName(provider: ServerlessProvider): string {
@@ -107,6 +95,6 @@ export function moveProvider(target: Pick<DeployTarget, "provider">): VpsProvide
   const { provider } = target;
   if (provider === "portainer") throw portainerTargetNoMove();
   if (provider === "localhost") throw localhostTargetNoMove();
-  if (isServerless(provider)) throw serverlessTargetNoMove(provider);
+  if (isServerlessProvider(provider)) throw serverlessTargetNoMove(provider);
   return provider;
 }

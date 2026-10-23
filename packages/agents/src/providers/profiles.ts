@@ -1,12 +1,13 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { wrongTarget } from "@opscrew/iac-templates";
-import type {
-  CloudProvider,
-  DeployPlan,
-  DeployProvider,
-  Region,
-  Requirements,
+import {
+  type CloudProvider,
+  type DeployPlan,
+  type DeployProvider,
+  onOneServer,
+  type Region,
+  type Requirements,
 } from "@opscrew/plan-schema";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
@@ -268,7 +269,7 @@ export function providerProfile(
  * a server-less target) is a bug in OpsCrew.
  */
 function serverProvider(provider: DeployProvider): VpsProviderId {
-  if (provider === "hetzner" || provider === "digitalocean" || provider === "own") return provider;
+  if (onOneServer(provider)) return provider;
   throw wrongTarget(
     `This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to ${NOT_ON_SERVER[provider]}.`,
   );

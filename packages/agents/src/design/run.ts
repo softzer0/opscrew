@@ -17,6 +17,7 @@ import {
   type DeployProvider,
   type DesignOption,
   EnvironmentSchema,
+  isServerlessProvider,
   type PlanService,
   type ProjectFacts,
   type Region,
@@ -62,7 +63,6 @@ import {
   designOptionLine,
   hasDeployment,
   hasState,
-  isServerless,
   memoryHeadroom,
   readOwnServer,
   readPortainerConnection,
@@ -470,7 +470,7 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
   const resolvedFacts =
     facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const answered = await readEnvironmentRequirements(paths);
-  if (isServerless(answered.provider)) {
+  if (isServerlessProvider(answered.provider)) {
     throw serverlessNotSupported("`opscrew design`", answered.provider);
   }
   // This computer has no region, domain or DNS, whatever prod's answers say.
@@ -592,7 +592,7 @@ async function priceOptions(
   // The server's proxy carries over from the earlier plan (`keepPlanSettings`); a server-less
   // plan had none.
   const edge =
-    previous === undefined || isServerless(previous.target.provider)
+    previous === undefined || isServerlessProvider(previous.target.provider)
       ? "caddy"
       : edgeProxy(previous);
   if (ownCatalog !== undefined) {
@@ -1123,7 +1123,7 @@ function providerName(id: DeployProvider): string {
   if (id === "own") return "your own server";
   if (id === "portainer") return "your Portainer";
   if (id === "localhost") return "this computer";
-  if (isServerless(id)) return serverlessName(id);
+  if (isServerlessProvider(id)) return serverlessName(id);
   return providerProfile(id).displayName;
 }
 
@@ -1149,7 +1149,7 @@ function providerSwitchBlock(
   const from = providerName(current);
   const to = providerName(requested);
   const deployed = hasServer || hasDeployment(previous);
-  const serverless = isServerless(current) ? current : undefined;
+  const serverless = isServerlessProvider(current) ? current : undefined;
   const owned =
     current === "own" ||
     current === "portainer" ||

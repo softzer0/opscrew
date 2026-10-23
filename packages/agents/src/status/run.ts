@@ -1,13 +1,12 @@
 import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { portainerStackName, portainerTarget } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { localComponentStatus } from "../localhost/status";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { runnerStatusLines } from "../runners";
 import {
-  isServerless,
   localhostNotSupported,
   portainerClientFor,
   SshRemoteExec,
@@ -63,7 +62,7 @@ export async function readServerContainers(
   if (plan.target.provider === "localhost") {
     throw localhostNotSupported("Reading the app's containers");
   }
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported("Reading the app's containers", plan.target.provider);
   }
   if (plan.target.provider === "own") {

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
 import { planProvider, providerProfile } from "../providers";
@@ -17,7 +17,6 @@ import {
 import {
   describeChanges,
   hasDeployment,
-  isServerless,
   planStop,
   refusalReason,
   serverAddress,
@@ -490,7 +489,7 @@ export async function runDestroy(
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
   if (plan.target.provider === "localhost") return destroyLocalhost(deps, plan, options);
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported("`opscrew destroy`", plan.target.provider);
   }
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);

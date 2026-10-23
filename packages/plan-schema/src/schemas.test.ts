@@ -1494,13 +1494,20 @@ describe("DeployPlan environment", () => {
   });
 
   it('runs the deploy job on this computer only with the localhost target ("local")', async () => {
-    const message =
-      'can be "local" only with the localhost target (the runner deploys to this computer\'s Docker); use "github" or "server" here';
+    const message = (instead: string) =>
+      `can be "local" only with the localhost target (the runner deploys to this computer's Docker); use ${instead} here`;
     const plan = await staging({ runner: "local" });
     expect(DeployPlanSchema.safeParse({ ...plan, target: local, dns: noDns }).success).toBe(true);
-    for (const target of [plan.target, own, portainer]) {
+    // The server's runner is suggested only where it works: on a server.
+    for (const [target, instead] of [
+      [plan.target, '"github" or "server"'],
+      [own, '"github" or "server"'],
+      [portainer, '"github"'],
+    ] as const) {
       const result = DeployPlanSchema.safeParse({ ...plan, target, dns: noDns });
-      expect(issue(result), target.provider).toEqual([{ path: "environment.runner", message }]);
+      expect(issue(result), target.provider).toEqual([
+        { path: "environment.runner", message: message(instead) },
+      ]);
     }
     const github = await staging({ runner: "github" });
     for (const target of [github.target, own, portainer, local]) {

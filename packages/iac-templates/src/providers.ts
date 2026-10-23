@@ -1,5 +1,10 @@
 import { OpsCrewError } from "@opscrew/core";
-import type { CloudProvider, DeployTarget, PortainerDeployTarget } from "@opscrew/plan-schema";
+import type {
+  CloudProvider,
+  DeployTarget,
+  PortainerDeployTarget,
+  ServerlessProvider,
+} from "@opscrew/plan-schema";
 import type { ProviderRequirement } from "./infra/hcl";
 
 /**
@@ -38,25 +43,14 @@ const NOT_CLOUD = {
   "github-pages": "a site on GitHub Pages",
 } as const satisfies Record<Exclude<DeployTarget["provider"], CloudProvider>, string>;
 
-/** A target that runs the app on a server, in a Portainer or on this computer; not server-less. */
-export type ServerDeployTarget = Exclude<
-  DeployTarget,
-  { provider: "cloudflare-workers" | "github-pages" }
->;
-
 /**
- * Throws {@link wrongTarget} for a server-less target (Cloudflare's hosting, GitHub Pages), which
- * has no `what` (for example `Compose file`): code for servers reached with one is a bug.
+ * The {@link wrongTarget} error for code for servers reached with a server-less target
+ * (Cloudflare's hosting, GitHub Pages), which has no `what` (for example `Compose file`).
  */
-export function assertServerTarget(
-  target: DeployTarget,
-  what: string,
-): asserts target is ServerDeployTarget {
-  if (target.provider === "cloudflare-workers" || target.provider === "github-pages") {
-    throw wrongTarget(
-      `This step only applies to an app on a server, not to ${NOT_CLOUD[target.provider]}, which has no ${what}.`,
-    );
-  }
+export function notOnServer(provider: ServerlessProvider, what: string): OpsCrewError {
+  return wrongTarget(
+    `This step only applies to an app on a server, not to ${NOT_CLOUD[provider]}, which has no ${what}.`,
+  );
 }
 
 /** `target` when the app runs in the user's existing Portainer; throws {@link wrongTarget} otherwise. */

@@ -3,7 +3,6 @@ import {
   type DestroyPreview,
   type DestroyResult,
   destroyConfirmPrompt,
-  isServerless,
   type PhaseDeps,
   providerBucket,
   runDestroy,
@@ -13,7 +12,7 @@ import {
 } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest, Clock } from "@opscrew/contracts";
 import { approvalDecision, OpsCrewError, systemClock } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import { askTypedName, checkConfirmName, hashListed } from "../approval";
 import type { CliContext } from "../context";
@@ -212,7 +211,7 @@ export async function runDestroyCommand(
     const plan = await readArtifact("plan", deps0.paths.files.plan);
     const name = plan.app.name;
     provider = plan.target.provider;
-    if (isServerless(provider)) throw serverlessNotSupported("`opscrew destroy`", provider);
+    if (isServerlessProvider(provider)) throw serverlessNotSupported("`opscrew destroy`", provider);
     const own = provider === "own";
     const portainer = provider === "portainer";
     const local = provider === "localhost";

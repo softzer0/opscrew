@@ -7,6 +7,9 @@ import {
   DeployProviderSchema,
   DesignOptionSchema,
   type GithubPagesDeployTarget,
+  isServerlessProvider,
+  isServerlessTarget,
+  onOneServer,
   parseArtifact,
   RequirementsSchema,
   type Site,
@@ -658,7 +661,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
         {
           path: "environment.runner",
           message:
-            'can be "local" only with the localhost target (the runner deploys to this computer\'s Docker); use "github" or "server" here',
+            'can be "local" only with the localhost target (the runner deploys to this computer\'s Docker); use "github" here',
         },
       ]);
       const github = DeployPlanSchema.parse(await staging(provider, { runner: "github" }));
@@ -668,6 +671,21 @@ describe("onServer: the runners that deploy on or to a server", () => {
 });
 
 describe("the unions", () => {
+  it("have one predicate each: a server, and server-less", async () => {
+    const servers = ["hetzner", "digitalocean", "own"];
+    const serverless = ["cloudflare-workers", "github-pages"];
+    for (const provider of DeployProviderSchema.options) {
+      expect(onOneServer(provider), provider).toBe(servers.includes(provider));
+      expect(isServerlessProvider(provider), provider).toBe(serverless.includes(provider));
+      expect(isServerlessTarget({ provider }), provider).toBe(serverless.includes(provider));
+    }
+    expect(isServerlessProvider(undefined)).toBe(false);
+    expect(isServerlessProvider("aws")).toBe(false);
+    expect(onOneServer("aws")).toBe(false);
+    const target = DeployPlanSchema.parse(await serverlessPlan(pages())).target;
+    expect(isServerlessTarget(target) && target.site).toEqual(pages().site);
+  });
+
   it("are deploy providers, never server providers, and need no region", async () => {
     const requirements = parseArtifact("requirements", await fixture("requirements.yaml"), "r");
     const { region: _region, ...noRegion } = requirements;

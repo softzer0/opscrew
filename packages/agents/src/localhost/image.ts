@@ -10,13 +10,14 @@ import { exists, OpsCrewError, type ProjectPaths, toPosixRelative } from "@opscr
 import {
   type DeployPlan,
   type ImageBuilder,
+  isServerlessProvider,
   readOptionalArtifact,
   targetArch,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { environmentPaths } from "../environments/paths";
 import { REGISTRY_TOKEN_VAR } from "../provision/portainer";
-import { githubClientFromToken, githubCoordinates, isServerless, requireGitRepo } from "../shared";
+import { githubClientFromToken, githubCoordinates, requireGitRepo } from "../shared";
 import { runningImage } from "./plan";
 import { appFolder } from "./services";
 
@@ -75,7 +76,7 @@ async function builtElsewhere(
 ): Promise<ImageSource | undefined> {
   const plan = await readOptionalArtifact("plan", environmentPaths(paths, environment).files.plan);
   if (plan === undefined || plan.target.provider === "localhost") return undefined;
-  if (isServerless(plan.target.provider)) return undefined;
+  if (isServerlessProvider(plan.target.provider)) return undefined;
   return { environment, arch: targetArch(plan.target), plan };
 }
 

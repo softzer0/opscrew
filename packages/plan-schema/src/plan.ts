@@ -12,15 +12,17 @@ import {
   FqdnSchema,
   ImageBuilderSchema,
   IsoDateTimeSchema,
+  isServerlessProvider,
   MemoryMbSchema,
+  onOneServer,
   PlanHashSchema,
   PortSchema,
   RegistrarSchema,
   RepoPathSchema,
   RuntimeLanguageSchema,
+  type ServerlessProvider,
   ServiceKindSchema,
   UrlPathSchema,
-  VpsProviderSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
 
@@ -287,6 +289,13 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
   GithubPagesTargetSchema,
 ]);
 
+/** True for a server-less target (Cloudflare's hosting, GitHub Pages), narrowing it to them. */
+export function isServerlessTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: ServerlessProvider }> {
+  return isServerlessProvider(target.provider);
+}
+
 /**
  * The CPU architecture the app runs on, and its image is built for: the target's `arch`, or
  * `amd64` on a server OpsCrew creates (design offers x86 server types only).
@@ -518,7 +527,7 @@ function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx):
   const { dns, target, portainer } = plan;
   const zone = dns.zone;
   if (dns.provider !== "cloudflare" || zone === undefined) return;
-  if (target.provider === "cloudflare-workers" || target.provider === "github-pages") return;
+  if (isServerlessTarget(target)) return;
   const ownTunnel = target.provider === "own" && target.access === "tunnel";
   const portainerTunnel = target.provider === "portainer" && target.web?.mode === "tunnel";
   const served = dns.proxied || ownTunnel || portainerTunnel;
@@ -759,7 +768,7 @@ function checkEnvironment(
   }
   const { provider } = plan.target;
   // A positive list, so a new target is never taken for a server.
-  const onServer = VpsProviderSchema.safeParse(provider).success;
+  const onServer = onOneServer(provider);
   if (runner === "server" && !onServer) {
     ctx.addIssue({
       code: "custom",
@@ -796,8 +805,7 @@ function checkEnvironment(
     ctx.addIssue({
       code: "custom",
       path: ["environment", "runner"],
-      message:
-        'can be "local" only with the localhost target (the runner deploys to this computer\'s Docker); use "github" or "server" here',
+      message: `can be "local" only with the localhost target (the runner deploys to this computer's Docker); use ${onServer ? '"github" or "server"' : '"github"'} here`,
     });
   }
   if (environment.name !== undefined && !plan.app.name.endsWith(`-${environment.name}`)) {
@@ -1186,9 +1194,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   }
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
-  if (plan.target.provider === "cloudflare-workers" || plan.target.provider === "github-pages") {
-    checkServerlessTarget(plan.target, plan, ctx);
-  }
+  if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
   if (plan.environment !== undefined) checkEnvironment(plan.environment, plan, ctx);
   checkPortainerSubdomain(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
@@ -1269,7 +1275,7 @@ function withImage(target: z.output<typeof CloudTargetSchema>) {
 function isCloudTarget(
   target: z.output<typeof DeployTargetSchema>,
 ): target is z.output<typeof CloudTargetSchema> {
-  return target.provider === "hetzner" || target.provider === "digitalocean";
+  return CloudProviderSchema.safeParse(target.provider).success;
 }
 
 /** The target with a cloud target's image filled in; any other target as it is. */

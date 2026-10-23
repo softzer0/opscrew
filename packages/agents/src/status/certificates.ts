@@ -16,7 +16,7 @@ import {
   siteHosts,
   tunnelMode,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import {
   CERTIFICATE_WARN_DAYS,
   certbotFailureCommand,
@@ -31,7 +31,7 @@ import { clientCertificateWarning, deployLogin } from "../provision/origin-tls";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
 import { recoveryStatus } from "../secrets";
-import { checkResult, isServerless, SshRemoteExec } from "../shared";
+import { checkResult, SshRemoteExec } from "../shared";
 import { defaultTlsConnect, type TlsConnect } from "../verify/net";
 
 /**
@@ -41,7 +41,7 @@ import { defaultTlsConnect, type TlsConnect } from "../verify/net";
  * target (its host gets them).
  */
 export function proxyCertificateHosts(plan: DeployPlan): string[] {
-  if (isServerless(plan.target.provider)) return [];
+  if (isServerlessProvider(plan.target.provider)) return [];
   if (plan.dns.proxied || tunnelMode(plan)) return [];
   if (plan.target.provider === "portainer" && plan.target.web.mode !== "caddy") return [];
   return siteHosts(plan);

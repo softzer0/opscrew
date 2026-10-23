@@ -6,7 +6,6 @@ import {
   describePlan,
   findSavedPlan,
   OWN_SERVER_BACKUPS_NOTE,
-  onOneServer,
   PORTAINER_NOTES,
   type ProvisionResult,
   type ProvisionServices,
@@ -42,7 +41,7 @@ import {
   OpsCrewError,
   resolveProjectPaths,
 } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, onOneServer, readArtifact } from "@opscrew/plan-schema";
 import { DEEP_TOOL_NAME, type DeepToolResult } from "@opscrew/secops";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";

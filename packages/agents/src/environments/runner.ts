@@ -3,11 +3,11 @@ import {
   type DeployPlan,
   type DeployProvider,
   EnvironmentSchema,
+  onOneServer,
   targetArch,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { listRunnerHosts, requireOtherMachine, requireRunnerHost } from "../runners/machine";
-import { onOneServer } from "../shared/vps-target";
 
 type Environment = NonNullable<DeployPlan["environment"]>;
 type Runner = Environment["runner"];

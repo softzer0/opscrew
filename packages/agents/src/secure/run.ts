@@ -8,7 +8,7 @@ import type {
 } from "@opscrew/contracts";
 import { exists, plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
 import { IMAGES, TOOLS } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import {
   certificateHostChecks,
   type DeepPins,
@@ -44,7 +44,6 @@ import type { PortainerServices } from "../provision/types";
 import { type RunnerGitHubApi, runnerChecks } from "../runners";
 import {
   hidesServerAddress,
-  isServerless,
   SshRemoteExec,
   serverAddress,
   serverlessNotSupported,
@@ -392,7 +391,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported("`opscrew secure`", plan.target.provider);
   }
   // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the

@@ -8,6 +8,7 @@ import { formatMoney, isRecord, listText, OpsCrewError } from "@opscrew/core";
 import { STORAGE_NAMES, serviceSpec } from "@opscrew/iac-templates";
 import {
   type DesignOption,
+  isServerlessProvider,
   type ProjectFacts,
   type Question,
   type Requirements,
@@ -33,7 +34,6 @@ import {
   storagePrice,
 } from "../design/storage";
 import { vpsConnector } from "../providers";
-import { isServerless } from "../shared";
 import {
   booleanAnswer,
   FIX_ANSWERS_HINT,
@@ -253,7 +253,7 @@ export async function hostedAdditions(
     return additions;
   }
   // A server-less target has no server to run a service on, so there is no price to name.
-  if (isServerless(provider)) return additions;
+  if (isServerlessProvider(provider)) return additions;
   const catalog = vpsConnector(provider, {
     env: {},
     fetch: deps.fetch,

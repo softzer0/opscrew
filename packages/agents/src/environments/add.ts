@@ -3,6 +3,7 @@ import {
   cloudflareEdgeCoverage,
   type DeployPlan,
   environmentsOf,
+  isServerlessProvider,
   likelyCloudflareZone,
   type ProjectFacts,
   type Question,
@@ -36,7 +37,6 @@ import type { OwnServerServices } from "../provision/types";
 import { listRunnerHosts } from "../runners/machine";
 import {
   gitClient,
-  isServerless,
   readOwnServer,
   readPortainerConnection,
   serverlessNotSupported,
@@ -434,7 +434,7 @@ export async function addEnvironment(
     ...rest
   } = portainerSplit.rest;
   const target = typeof rest.provider === "string" ? rest.provider.trim().toLowerCase() : undefined;
-  if (isServerless(target)) throw serverlessNotSupported("`opscrew env add`", target);
+  if (isServerlessProvider(target)) throw serverlessNotSupported("`opscrew env add`", target);
   const requirements = answersToRequirements(rest, {
     now: deps.clock.now(),
     facts,

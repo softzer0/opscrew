@@ -12,7 +12,12 @@ import {
   tunnelMode,
   usesTunnel,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isServerlessProvider,
+  type Requirements,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
@@ -23,7 +28,6 @@ import {
   ensureDeployKey,
   githubCoordinates,
   hidesServerAddress,
-  isServerless,
   readDeployPublicKey,
   readServerAddresses,
   readValidJson,
@@ -268,7 +272,7 @@ export async function previewDeploymentFiles(
 ): Promise<DeploymentPreview> {
   let plan = await readArtifact("plan", deps.paths.files.plan);
   if (plan.target.provider === "localhost") return previewLocalStack(deps, plan);
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported("Previewing the deployment files", plan.target.provider);
   }
   const requirements = await readRequirements(deps);

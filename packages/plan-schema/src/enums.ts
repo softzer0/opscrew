@@ -147,20 +147,36 @@ export const CloudProviderSchema = VpsProviderSchema.exclude(["own"]);
 export type CloudProvider = z.infer<typeof CloudProviderSchema>;
 
 /**
+ * The server-less targets, which have no server at all: Cloudflare's hosting (`cloudflare-workers`,
+ * Workers with static assets) and GitHub Pages (`github-pages`).
+ */
+export const ServerlessProviderSchema = z.enum(["cloudflare-workers", "github-pages"]);
+export type ServerlessProvider = z.infer<typeof ServerlessProviderSchema>;
+
+/**
  * Every place OpsCrew can deploy to, as `opscrew/requirements.yaml` and design options name it: a
  * single server ({@link VpsProviderSchema}), a Portainer the user already runs (`portainer`), the
- * user's own computer (`localhost`, its Docker), Cloudflare's hosting (`cloudflare-workers`,
- * Workers with static assets) or GitHub Pages (`github-pages`). None but the first has a server
- * for OpsCrew to create, size or price.
+ * user's own computer (`localhost`, its Docker) or a server-less target
+ * ({@link ServerlessProviderSchema}). Only the single servers have a server for OpsCrew to
+ * create, size or price.
  */
 export const DeployProviderSchema = z.enum([
   ...VpsProviderSchema.options,
   "portainer",
   "localhost",
-  "cloudflare-workers",
-  "github-pages",
+  ...ServerlessProviderSchema.options,
 ]);
 export type DeployProvider = z.infer<typeof DeployProviderSchema>;
+
+/** True for a target on one server: one OpsCrew creates (Hetzner, DigitalOcean) or the user's. */
+export function onOneServer(provider: string): provider is VpsProvider {
+  return VpsProviderSchema.safeParse(provider).success;
+}
+
+/** True for a server-less target's provider: Cloudflare's hosting or GitHub Pages. */
+export function isServerlessProvider(provider: string | undefined): provider is ServerlessProvider {
+  return ServerlessProviderSchema.safeParse(provider).success;
+}
 
 /** Registrars OpsCrew can buy domains with. */
 export const RegistrarSchema = z.enum(["cloudflare", "namecheap", "porkbun", "godaddy"]);

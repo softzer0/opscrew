@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
 
 import type { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import {
   appDir,
@@ -14,7 +14,7 @@ import {
 } from "../edge";
 import { localhostSite } from "../edge/localhost";
 import { type NginxSite, nginxAdditionsFile, nginxSite } from "../edge/nginx";
-import { assertServerTarget, wrongTarget } from "../providers";
+import { notOnServer, wrongTarget } from "../providers";
 import { runtimeDir } from "../runtime-dir";
 import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -116,7 +116,7 @@ export function siteHosts(plan: DeployPlan): string[] {
  */
 export function renderCompose(plan: DeployPlan): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
-  assertServerTarget(plan.target, "Compose file");
+  if (isServerlessTarget(plan.target)) throw notOnServer(plan.target.provider, "Compose file");
   const local = plan.target.provider === "localhost";
   const pull = local ? { pull_policy: "missing" } : {};
   const header = [

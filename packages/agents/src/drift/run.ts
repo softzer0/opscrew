@@ -1,7 +1,7 @@
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { OpsCrewError, tfstateFile } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { localDrift } from "../localhost/drift";
 import { planProvider, providerProfile } from "../providers";
@@ -10,7 +10,7 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
-import { hasDeployment, isServerless, serverlessNotSupported, stringOutput } from "../shared";
+import { hasDeployment, serverlessNotSupported, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { cloudRunnerDrift, type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
@@ -60,7 +60,7 @@ const NO_CLOUD_RESOURCES_NOTE =
 export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Promise<DriftReport> {
   const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported("`opscrew drift`", plan.target.provider);
   }
   const ownServer = plan.target.provider === "own";

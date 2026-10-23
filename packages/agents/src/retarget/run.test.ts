@@ -1101,6 +1101,28 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
   });
 
+  it.each([
+    ["cloudflare-workers", "Cloudflare hosting"],
+    ["github-pages", "GitHub Pages"],
+  ] as const)(
+    "refuses a move onto %s, which the answers name, before any plan",
+    async (provider, name) => {
+      const h = await moveHarness();
+      const { region: _region, ...answers } = await readArtifact(
+        "requirements",
+        h.paths.files.requirements,
+      );
+      await writeArtifact("requirements", h.paths.files.requirements, { ...answers, provider });
+      const error = await caught(run(h));
+      expect(error).toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
+      });
+      expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
+      expect(await move(h)).toBeUndefined();
+    },
+  );
+
   it("refuses before any change when the app keeps data a move cannot copy yet (FR-1332)", async () => {
     const h = await moveHarness();
     const plan = await readArtifact("plan", h.paths.files.plan);

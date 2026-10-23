@@ -10,7 +10,12 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
-import { type DeployPlan, environmentsOf, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  environmentsOf,
+  isServerlessProvider,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { builderBranch, followsBranch } from "../environments/branches";
@@ -28,7 +33,6 @@ import {
   githubClientFromToken,
   hasDeployment,
   hidesServerAddress,
-  isServerless,
   lookupPublicAddresses,
   type ServerAddress,
   serverAddress,
@@ -141,7 +145,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   const plan = await readArtifact("plan", paths.files.plan);
   if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
-  if (isServerless(plan.target.provider)) {
+  if (isServerlessProvider(plan.target.provider)) {
     throw serverlessNotSupported("`opscrew verify`", plan.target.provider);
   }
   const portainer = plan.target.provider === "portainer";

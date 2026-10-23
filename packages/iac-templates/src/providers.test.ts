@@ -1,5 +1,6 @@
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "./__fixtures__/plans";
+import { testContext, testPlan } from "./__fixtures__/plans";
 import * as templates from "./index";
 import { portainerTestPlan } from "./portainer-target/__fixtures__/plans";
 
@@ -39,6 +40,51 @@ describe("target guards and move layouts (package root)", () => {
         hint: BUG,
       }),
     );
+  });
+
+  it.each([
+    ["an app on Cloudflare's hosting", "cloudflare-workers"],
+    ["a site on GitHub Pages", "github-pages"],
+  ] as const)("refuse %s in the code for servers, as a bug", (words, provider) => {
+    const site = { tool: "none", outputDir: "." } as const;
+    const plan = DeployPlanSchema.parse({
+      ...testPlan(),
+      target:
+        provider === "github-pages"
+          ? { provider, mode: "pages-workflow", site }
+          : {
+              provider,
+              mode: "workers-assets",
+              worker: "shop",
+              render: "static",
+              notFound: "none",
+              site,
+            },
+      services: [],
+      externalServices: [],
+      dns: {
+        provider: "cloudflare",
+        domain: "docs.example.com",
+        zone: "example.com",
+        proxied: provider === "cloudflare-workers",
+      },
+      security: { wafCustomRules: provider === "cloudflare-workers" },
+    });
+    const refused = (what: string) =>
+      expect.objectContaining({
+        code: "PHASE_PRECONDITION",
+        message: `This step only applies to an app on a server, not to ${words}, which has no ${what}.`,
+        hint: BUG,
+      });
+    expect(() => templates.cloudTarget(plan.target)).toThrow(
+      expect.objectContaining({ message: expect.stringContaining(`not to ${words}`), hint: BUG }),
+    );
+    expect(() => templates.edgeProxy(plan)).toThrow(refused("reverse proxy of OpsCrew's"));
+    expect(() => templates.renderDeployment(plan, testContext())).toThrow(
+      refused("server files to render"),
+    );
+    expect(() => templates.renderCompose(plan)).toThrow(refused("Compose file"));
+    expect(() => templates.deploySecretNamesFor(plan)).toThrow(refused("server deploy secrets"));
   });
 
   it("give every move layout both providers, in the order a move uses them", () => {
