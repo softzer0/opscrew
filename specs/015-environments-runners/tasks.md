@@ -524,6 +524,19 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high
 
+- [ ] T1522 [US3] Promote checks the image's CPU (FR-1540, T1521's review)
+  - Owns: agents' `promote/**` (the check and its tests); `docs/guide/environments.md` (one sentence in the promotion section)
+  - Reads: spec FR-1540; contracts/environments.md "Promotion"; plan-schema's `targetArch`
+  - Depends: T1521
+  - Accept:
+    - **The check:** before the approval (with the other checks, before drift), promote reads the platforms of the image it would deploy (its manifest, or each manifest of an index) from GHCR, as it already reads the image, and refuses (`PHASE_PRECONDITION`, nothing changed) when none matches the target's CPU (`targetArch(plan.target)`). The message names both CPUs and the fix: build for the target's CPU (a source environment on a server of that CPU, or the GitHub-hosted build).
+    - **No guess:** when the platforms cannot be read, promote stops the same way it does for an unreadable image today; it never deploys an image of unknown CPU.
+    - **Rollbacks** get the same check.
+    - **The guide:** one sentence: promote refuses an image built for another CPU than the target's, for example a dev on Apple silicon promoted to an x86 server.
+    - **Tests:** an arm64-only image to an amd64 target is refused; a matching single image passes; an index with both passes; an unreadable manifest stops.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: high
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
@@ -658,7 +671,6 @@ Effort`.
     - `promote/run.ts`'s `registryCredential` duplicates `ghcrReadCredential` (T1520's review).
     - The emulation note's sentence is in `localhost/image.ts`, `localhost/preflight.ts:187` and `localhost/design.ts:162`: one shared `emulationNote` (T1521's review).
     - A promoted localhost environment with `target.image: local-build` builds the code here but copies its source's shared parts: refuse local-build for a promoted environment, or say why it is allowed (T1521).
-    - `promote` has no CPU check: an arm64-only image (a dev on Apple silicon builds for its CPU, FR-1540) could be promoted to an amd64 server. Compare the image's platforms with the target's CPU before the approval (T1521's review).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
