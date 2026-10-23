@@ -56,7 +56,7 @@ export function appDir(plan: DeployPlan): string {
  * A deploy replaces the server's edge only with a larger one, or with the other proxy. Change it
  * with every change of the edge's Compose file; a test fails until it is changed.
  */
-export const EDGE_VERSION = 2026102103;
+export const EDGE_VERSION = 2026102301;
 
 /** The key of {@link EDGE_VERSION} in the edge's Compose file (a Compose extension field). */
 export const EDGE_VERSION_KEY = "x-opscrew-edge-version";

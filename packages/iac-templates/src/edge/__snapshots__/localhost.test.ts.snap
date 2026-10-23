@@ -67,7 +67,7 @@ volumes:
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: Caddy and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102103
+x-opscrew-edge-version: 2026102301
 x-opscrew-edge-proxy: caddy
 services:
   kamal-proxy:
@@ -254,7 +254,7 @@ volumes:
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: nginx and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102103
+x-opscrew-edge-version: 2026102301
 x-opscrew-edge-proxy: nginx
 services:
   kamal-proxy:
@@ -445,7 +445,7 @@ exports[`snapshots > two localhost environments of the app on one caddy edge 1`]
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: Caddy and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102103
+x-opscrew-edge-version: 2026102301
 x-opscrew-edge-proxy: caddy
 services:
   kamal-proxy:
@@ -600,7 +600,7 @@ exports[`snapshots > two localhost environments of the app on one nginx edge 1`]
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: nginx and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102103
+x-opscrew-edge-version: 2026102301
 x-opscrew-edge-proxy: nginx
 services:
   kamal-proxy:

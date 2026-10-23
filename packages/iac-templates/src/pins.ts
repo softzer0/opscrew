@@ -40,17 +40,17 @@ export interface ArchiveToolPin {
 export const IMAGES = {
   /** Base of the generated Node Dockerfiles. */
   nodeAlpine: {
-    ref: "node:24-alpine@sha256:6a1c190e17215d844926b0677f4bf87273ff7d5e54db06d3b5b5863ab0b09a3d",
+    ref: "node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53",
   },
   /** Base of the generated Python Dockerfiles. */
   python: {
-    ref: "python:3.14-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a",
+    ref: "python:3.14-slim@sha256:0514bc76712d64f8bb48adcb95b1ab0d88c69fee95d62fe4c18ee948bee9b1e1",
   },
   caddy: {
-    ref: "caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f",
+    ref: "caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f",
   },
   postgres: {
-    ref: "postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+    ref: "postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb",
   },
   valkey: {
     ref: "valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507",
@@ -101,7 +101,7 @@ export const IMAGES = {
   // `latest` (research.md R2, R3, R4 and R8).
   /** MySQL 8.4 LTS (Docker's `latest` is an Innovation release). */
   mysql: {
-    ref: "mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364",
+    ref: "mysql:8.4@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69",
   },
   /** MariaDB's current LTS line, the one its `lts` tag points to. */
   mariadb: {
@@ -112,11 +112,11 @@ export const IMAGES = {
   },
   /** Without the management plugin. */
   rabbitmq: {
-    ref: "rabbitmq:4.3@sha256:3e5cc23235b0eb850f604e8ace10d9a9b6d05be3e36730e53522ee9ead707a9e",
+    ref: "rabbitmq:4.3@sha256:e0de43dbe7267e01284ea7d1b6fd8d1f92471dd9db7536c40ad7e9afb5284f6f",
   },
   /** The alpine variant has the shell and `wget` a healthcheck needs; the default is scratch. */
   nats: {
-    ref: "nats:2.15-alpine@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
+    ref: "nats:2.15-alpine@sha256:7ae34c25dfd6fe2e01c6483eabef20d796690fdcac6c4d94ca780a6cf9877fde",
   },
   /** Kafka publishes only version tags and `latest`, so this is an exact release. */
   kafka: {
@@ -132,7 +132,7 @@ export const IMAGES = {
   // and Bloom (the engines check runs MODULE LIST); Dragonfly's releases are on its own
   // registry only (Docker Hub has no v2 tags).
   redis: {
-    ref: "redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0",
+    ref: "redis:8.10.2-alpine@sha256:0bf6577d7774e592b29d093e3ac9390eb91e13d72c21e506afce736de5e0eeb0",
   },
   dragonfly: {
     ref: "docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2@sha256:061f00b201b58e12f974e4e96c761a881ee1c05e9d8ee967466a604b7299753b",
@@ -495,7 +495,7 @@ export const PYPI_PACKAGES = {
   gunicorn: "26.2.0",
   pipenv: "2026.10.2",
   poetry: "2.5.1",
-  uv: "0.13.4",
+  uv: "0.13.5",
   uvicorn: "0.54.0",
 } as const satisfies Record<string, string>;
 
@@ -505,7 +505,7 @@ export const PYPI_PACKAGES = {
  * projects have.
  */
 export const PACKAGE_MANAGERS = {
-  pnpm: "12.14.0",
+  pnpm: "12.15.0",
   yarn: "1.22.22",
 } as const satisfies Record<string, string>;
 

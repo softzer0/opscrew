@@ -171,8 +171,8 @@ describe("the edge's Compose project", () => {
         renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
     );
     expect({ version: EDGE_VERSION, sha256: sha256Hex(files.join("\n")) }).toEqual({
-      version: 2026102103,
-      sha256: "425321a8f2f13b205d300a851b09b29f87f25325db43bdbddd423aa958ba0449",
+      version: 2026102301,
+      sha256: "7bb65b387d739bc13879f7412a4e7204c73952c943ca9480f4fe2ad5830ebb4c",
     });
   });
 });
