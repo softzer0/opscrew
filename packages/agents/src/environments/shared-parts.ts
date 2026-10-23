@@ -5,12 +5,7 @@ import {
   type ProjectPaths,
   toPosixRelative,
 } from "@opscrew/core";
-import {
-  type DeployPlan,
-  type PlanService,
-  readArtifact,
-  readOptionalArtifact,
-} from "@opscrew/plan-schema";
+import { type DeployPlan, type PlanService, readOptionalArtifact } from "@opscrew/plan-schema";
 import { imageSource } from "../localhost/image";
 import { environmentPaths } from "./paths";
 
@@ -103,15 +98,13 @@ export interface SharedPartsSource {
  */
 export async function sharedPartsSource(
   paths: ProjectPaths,
-  plan: Pick<DeployPlan, "environment"> & Partial<Pick<DeployPlan, "target">>,
+  plan: Pick<DeployPlan, "environment"> & { target?: { provider: string; image?: string } },
 ): Promise<SharedPartsSource | undefined> {
   const from = plan.environment?.deploySource;
   if (from?.from !== "promote") {
     if (plan.target?.provider !== "localhost" || plan.target.image !== "registry") return undefined;
     const image = await imageSource(paths, plan);
-    if (image === undefined) return undefined;
-    const file = environmentPaths(paths, image.environment).files.plan;
-    return { name: image.environment, plan: await readArtifact("plan", file) };
+    return image === undefined ? undefined : { name: image.environment, plan: image.plan };
   }
   const { source } = from;
   const file = environmentPaths(paths, source).files.plan;

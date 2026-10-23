@@ -58,29 +58,36 @@ function buildsOwnImage(plan: Pick<DeployPlan, "environment">): boolean {
   return environment?.runner === "local" && environment.deploySource.from === "main";
 }
 
+/** The environment another one takes its image from: its name, its CPU and its plan. */
+export interface ImageSource {
+  environment: string;
+  arch: "amd64" | "arm64";
+  plan: DeployPlan;
+}
+
 /**
- * `environment` and the CPU its images are built for, by its plan; `undefined` when it has no
- * plan yet or runs on this computer too.
+ * `environment`, the CPU its images are built for and its plan; `undefined` when it has no plan
+ * yet or runs on this computer too.
  */
 async function builtElsewhere(
   paths: ProjectPaths,
   environment: string,
-): Promise<{ environment: string; arch: "amd64" | "arm64" } | undefined> {
+): Promise<ImageSource | undefined> {
   const plan = await readOptionalArtifact("plan", environmentPaths(paths, environment).files.plan);
   if (plan === undefined || plan.target.provider === "localhost") return undefined;
-  return { environment, arch: targetArch(plan.target) };
+  return { environment, arch: targetArch(plan.target), plan };
 }
 
 /**
- * The environment whose image this one runs (the source it is promoted from, else prod) and the
- * CPU its images are built for; `undefined` when that is this environment itself (prod, or one
- * on the local runner that follows a branch: its own workflow builds its image), or one that runs
- * on this computer too: then no build elsewhere gives this computer an image.
+ * The environment whose image this one runs (the source it is promoted from, else prod), the CPU
+ * its images are built for and its plan; `undefined` when that is this environment itself (prod,
+ * or one on the local runner that follows a branch: its own workflow builds its image), or one
+ * that runs on this computer too: then no build elsewhere gives this computer an image.
  */
 export async function imageSource(
   paths: ProjectPaths,
   plan: Pick<DeployPlan, "environment">,
-): Promise<{ environment: string; arch: "amd64" | "arm64" } | undefined> {
+): Promise<ImageSource | undefined> {
   if (buildsOwnImage(plan)) return undefined;
   const from = plan.environment?.deploySource;
   const environment = from?.from === "promote" ? from.source : "prod";

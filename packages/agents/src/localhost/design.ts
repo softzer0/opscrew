@@ -93,7 +93,9 @@ export async function localhostDesignChoice(
   return {
     arch,
     ports: await edgePortsFor(deps, input.previous, local.portFree),
-    ...(source !== undefined ? { source } : {}),
+    ...(source !== undefined
+      ? { source: { environment: source.environment, arch: source.arch } }
+      : {}),
     ...(input.environment.environment?.runner === "local" ? { localRunner: true as const } : {}),
     ...(before?.provider === "localhost" && before.arch === arch ? { image: before.image } : {}),
   };

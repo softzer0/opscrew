@@ -182,7 +182,10 @@ describe("a localhost environment without the local runner (unchanged)", () => {
     const plan = devPlan();
     const { computer, resolve, deps } = await dev(plan);
     computer.digests.set("opscrew-dev", DEV_DIGEST);
-    expect(await imageSource(deps.paths, plan)).toEqual({ environment: "prod", arch: "amd64" });
+    expect(await imageSource(deps.paths, plan)).toMatchObject({
+      environment: "prod",
+      arch: "amd64",
+    });
     expect(await sharedPartsSource(deps.paths, plan)).toMatchObject({ name: "prod" });
     expect(await resolve()).toEqual({
       source: "registry",
@@ -211,7 +214,10 @@ describe("a localhost environment without the local runner (unchanged)", () => {
       }),
     );
     computer.digests.set("opscrew-staging", STAGING_DIGEST);
-    expect(await imageSource(deps.paths, plan)).toEqual({ environment: "staging", arch: "amd64" });
+    expect(await imageSource(deps.paths, plan)).toMatchObject({
+      environment: "staging",
+      arch: "amd64",
+    });
     expect(await resolve()).toMatchObject({
       ref: `ghcr.io/acme/shop@${STAGING_DIGEST}`,
       environment: "staging",
