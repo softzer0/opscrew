@@ -35,6 +35,8 @@ export interface LocalhostDesignChoice {
   source?: { environment: string; arch: "amd64" | "arm64" };
   /** True when the environment's deploy job runs on the local runner, which deploys GitHub's image. */
   localRunner?: true;
+  /** True for a promoted environment, which runs its source's exact image. */
+  promoted?: true;
   /** The previous plan's image source on the same CPU, kept (the user may have chosen it). */
   image?: LocalhostDeployTarget["image"];
 }
@@ -97,6 +99,9 @@ export async function localhostDesignChoice(
       ? { source: { environment: source.environment, arch: source.arch } }
       : {}),
     ...(input.environment.environment?.runner === "local" ? { localRunner: true as const } : {}),
+    ...(input.environment.environment?.deploySource.from === "promote"
+      ? { promoted: true as const }
+      : {}),
     ...(before?.provider === "localhost" && before.arch === arch ? { image: before.image } : {}),
   };
 }
@@ -107,7 +112,8 @@ export async function localhostDesignChoice(
  * the image as GitHub Actions does, and `registry` under emulation otherwise. With no image built
  * elsewhere, `local-build` whenever this computer can build it. The previous plan's choice on the
  * same CPU stays, unless this computer can no longer build the image. Always `registry` on the
- * local runner, which deploys the image GitHub Actions built.
+ * local runner, which deploys the image GitHub Actions built, and for a promoted environment,
+ * which runs its source's exact image.
  */
 export function localhostTarget(
   choice: LocalhostDesignChoice,
@@ -116,7 +122,7 @@ export function localhostTarget(
   const matches = choice.source !== undefined && choice.source.arch === choice.arch;
   const builds = buildsLocally(app);
   const image =
-    choice.localRunner === true
+    choice.localRunner === true || choice.promoted === true
       ? "registry"
       : choice.image === "registry" || (choice.image === "local-build" && builds)
         ? choice.image

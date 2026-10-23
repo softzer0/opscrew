@@ -200,7 +200,8 @@ describe("a localhost environment beside prod", () => {
       answers: { provider: "localhost", from: "staging" },
       design: { localhost: computer("arm64") },
     });
-    expect(promoted.design.plan.target).toMatchObject({ image: "local-build" });
+    // A promoted environment runs its source's exact image, under emulation on another CPU.
+    expect(promoted.design.plan.target).toMatchObject({ image: "registry" });
     expect(dev.reporter.text()).toContain(
       "This computer runs arm64 and the staging environment's image is built for amd64",
     );

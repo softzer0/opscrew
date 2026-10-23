@@ -167,7 +167,12 @@ export async function localPreflight(
     problems.push(`${error.message} ${error.hint ?? ""}`.trim()),
   );
 
-  if (target.image === "local-build") {
+  const from = plan.environment?.deploySource;
+  if (target.image === "local-build" && from?.from === "promote") {
+    problems.push(
+      `The ${deps.paths.environment} environment is promoted from ${from.source}, so it runs ${from.source}'s exact image, which a build on this computer would not be. Set target.image to registry in ${file}, then run the command again.`,
+    );
+  } else if (target.image === "local-build") {
     const { dockerfile } = localBuild(plan);
     if (!planBuildsLocally(plan)) {
       problems.push(

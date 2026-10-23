@@ -157,7 +157,9 @@ instead of `/srv/apps` and `/srv/edge`. OpsCrew never runs it as root.
 
 - **Without the local runner**, an environment on this computer runs production's image (or, when
   it is promoted, the image of the environment it is promoted from), by the rules above. When it
-  pulls that image, its build, components and port come from that environment's plan.
+  pulls that image, its build, components and port come from that environment's plan. A promoted
+  environment always pulls it, under emulation on another CPU: promotion runs its source's exact
+  image, so `provision` refuses `target.image: local-build` for it.
 - **With the [local runner](runners.md#the-local-runner)**, an environment that follows a branch
   runs its own image: its workflow builds it on GitHub on each push, labels it `opscrew-<env>`, and
   the runner deploys it here. Its build, components and port come from its own design. Until its
@@ -169,7 +171,8 @@ instead of `/srv/apps` and `/srv/edge`. OpsCrew never runs it as root.
   Actions does, or whose Dockerfile is not in the repository yet, and production not deployed
   yet), `provision` stops before changing anything and says to deploy production first, or for a
   missing Dockerfile to run `opscrew adapt` and merge its pull request.
-- `target.image: local-build` always builds the image on this computer.
+- `target.image: local-build` always builds the image on this computer (not for a promoted
+  environment).
 
 ## When OpsCrew stops without changing anything
 

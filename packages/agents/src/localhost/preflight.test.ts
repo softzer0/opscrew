@@ -203,6 +203,30 @@ describe("localPreflight", () => {
     ]);
   });
 
+  it("refuses a local build for a promoted environment, which runs its source's exact image", async () => {
+    const dev = localPlan({ environment: "dev" });
+    const plan = DeployPlanSchema.parse({
+      ...dev,
+      environment: { name: "dev", deploySource: { from: "promote", source: "prod" } },
+    });
+    const computer = new FakeComputer();
+    const { deps, root } = await localProject(plan, computer, {
+      environment: "dev",
+      prod: testPlan({ userSecret: false }),
+    });
+    await writeFile(join(root, "Dockerfile"), "FROM node:22-alpine\n");
+    const { problems } = await localPreflight(deps, plan, computer.services());
+    expect(problems).toEqual([
+      "The dev environment is promoted from prod, so it runs prod's exact image, which a build on this computer would not be. Set target.image to registry in opscrew/environments/dev/plan.yaml, then run the command again.",
+    ]);
+    // Pulled from GitHub Container Registry, it passes.
+    const pulled = DeployPlanSchema.parse({
+      ...plan,
+      target: { ...plan.target, image: "registry" },
+    });
+    expect((await localPreflight(deps, pulled, computer.services())).problems).toEqual([]);
+  });
+
   it("says once that the image differs from production's on another CPU", async () => {
     const computer = new FakeComputer();
     computer.info = {
