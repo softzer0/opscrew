@@ -42,6 +42,7 @@ of the pass passed; otherwise the status says how many of its steps did.
 | The environment rules on a public repository: the GitHub environment with its branch rule, its removal, a runner refused and its fork policy change only planned | + `OPSCREW_E2E_GITHUB_REPO_C` | Passed, 5 of 5 steps (run 2; run 1 found destroy's `--yes`) | 2026-10-22 | — |
 | The server's runner (`runners.test.ts`): the deploy job on the server while its firewall refuses SSH from GitHub's Actions ranges | `OPSCREW_E2E_RUNNER=1`, a Cloudflare domain | Passed, 6 of 6 steps (run 2; run 1 found the runner's `docker` group) | 2026-10-22 | — |
 | A runner machine (`runners.test.ts`): the image built on a throwaway runner machine with its SSH firewall (kept across a reboot) and deployed over SSH to a server that refuses GitHub's ranges | `OPSCREW_E2E_RUNNER_HOST=1`, a Cloudflare domain | Passed, 6 of 6 steps, the SSH firewall included (run 3) | 2026-10-23 | — |
+| The local runner (`local-runner.test.ts`, quickstart "5.", SC-1507): dev on this computer, the deploy jobs of its first deploy and of a change on the local runner, the new version answering locally within 10 minutes, `stop()` leaving no runner at GitHub, destroy leaving nothing in Docker ([its steps](e2e.md#the-local-runner)) | `OPSCREW_E2E_LOCAL_RUNNER=1`, Docker here, an `opscrew-prod` image in the repository's registry | **Not run yet** | — | T1515: a run on Windows |
 | The localhost Docker pass (`test/e2e/localhost.test.ts`, feature 015, quickstart "1."): the site at `https://<app>.localhost` through the local CA, a second environment beside it, the stack's differences from a server's, destroy leaving nothing | `OPSCREW_DOCKER_TESTS=1`, Docker here | Passed, 7 of 7 tests: Windows by hand; Linux CI (`ubuntu-latest`); Intel macOS CI (`macos-15-intel` with Colima, run 39805990349, where the first provision takes about 9 minutes) | 2026-10-22 | — |
 | The off-Linux Buildpacks build (`test/e2e/off-linux-build.test.ts`): the pinned Linux `pack` in a container builds `examples/go-api` on a computer that is not Linux | `OPSCREW_DOCKER_TESTS=1`, Docker here, not Linux | Passed on Windows by hand (442 s). Intel macOS CI: **not tested live**: a plain `docker pull` of the 1.5 GB Paketo builder kills Colima's VM there, even one layer at a time, with no OpsCrew code involved, so the job no longer runs it | 2026-10-22 (Windows) | A macOS computer with more room for Docker |
 | Docker on Apple silicon | — | **Not tested live**: GitHub's arm64 macOS runners cannot run Docker | — | An Apple silicon Mac by hand |
@@ -137,8 +138,6 @@ Run in development, not tracked by date:
   the own-server pass runs live; the runner machine's SSH firewall runs live.
 - **A self-hosted runner on a public repository**, applied: never, by design. Only the refusal and
   the planned fork policy change run live.
-- **The local runner** (`opscrew runner start`, quickstart "5."): run by hand on Windows in T1515
-  (spike item 9); no gated test.
 - **A tampered digest or a foreign provenance refused by `promote`**, and image retention keeping
   both environments' running and previous images: unit tests only.
 - **Environments on DigitalOcean, on your own server or in a Portainer**: every live environment

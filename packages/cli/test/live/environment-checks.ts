@@ -441,19 +441,27 @@ export class AppEnvironments {
    */
   async rememberRunnerCredentials(shell: RootShell, dir: string): Promise<void> {
     const read = await shell.run(`cat ${dir}/.credentials_rsaparams`);
-    let values: string[] = [];
-    try {
-      // From its first brace: the runner may write a byte order mark first.
-      values = runnerCredentialSecrets(JSON.parse(read.stdout.slice(read.stdout.indexOf("{"))));
-    } catch {
-      // Never rethrown: JSON's error quotes the text, which holds the key.
-    }
-    for (const value of values) this.run.scrubber.add(value, "runner-credentials");
-    if (values.length === 0) {
+    if (this.rememberRunnerKey(read.stdout) === 0) {
       this.run.findings.push(
         `the runner in ${dir} has no readable credentials, so the leak search misses them`,
       );
     }
+  }
+
+  /**
+   * Adds the private parts of a runner's RSA key in `text`, the content of its
+   * `.credentials_rsaparams`, to the scrubber; returns how many it found.
+   */
+  rememberRunnerKey(text: string): number {
+    let values: string[] = [];
+    try {
+      // From its first brace: the runner may write a byte order mark first.
+      values = runnerCredentialSecrets(JSON.parse(text.slice(text.indexOf("{"))));
+    } catch {
+      // Never rethrown: JSON's error quotes the text, which holds the key.
+    }
+    for (const value of values) this.run.scrubber.add(value, "runner-credentials");
+    return values.length;
   }
 
   /**

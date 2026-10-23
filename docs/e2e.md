@@ -1231,6 +1231,83 @@ OPSCREW_E2E_RUNNER_HOST=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=y
 Not measured yet: about 50 to 70 minutes. Two of the smallest x86 servers run for about an hour
 each (a few cents). The build runs on the machine, so it uses almost no GitHub Actions minutes.
 
+## The local runner
+
+`packages/cli/test/live/local-runner.test.ts`, with `OPSCREW_E2E_LOCAL_RUNNER=1`, runs
+quickstart.md "5." of feature 015 (SC-1507): dev on this computer, its deploy job on the local
+runner, in the private throwaway repository `OPSCREW_E2E_GITHUB_REPO`. The test starts the runner
+in-process, with the CLI's deps, and stops it with `stop()`, since on Windows no Ctrl+C can be
+sent to another process. No domain is used, so this test never touches the zone, and no server
+is created.
+
+1. **Prod designed:** Docker must be running here. The example goes to `main`, and the test stops
+   unless the repository is private: a self-hosted runner must never serve a public repository.
+   Prod's design follows (Hetzner, no domain); prod is never provisioned.
+2. **Dev on this computer:** `env add dev --target localhost --runner local`. The test stops if
+   Docker here already has a container or volume of the Compose project `opscrew-<app>-dev` or
+   of OpsCrew's edge `opscrew-edge`, which its cleanup would remove. As a user edits the plan, it
+   sets dev's `target.image` to `registry` (the runner deploys the image GitHub Actions built), and
+   notes Docker's images. Then `adapt` (pull request merged) and `provision --env dev` until done,
+   which starts the local stack and opens dev's deploy-setup pull request, left unmerged for now.
+   `opscrew localhost trust` then only prints the trust command (a script), and the local CA's key
+   joins the leak search.
+3. **The runner and the first deploy:** `startLocalRunner` for dev. GitHub must list an online
+   runner labelled `opscrew-<app>-dev`. The test reads the private parts of the runner's key in its
+   `.credentials_rsaparams` for the leak search, after each registration (each one has a new key;
+   on Windows the runner keeps it encrypted for the user, so there is nothing to read). Then dev's
+   deploy-setup pull request is merged, and its run must succeed: every job that asked for the
+   label ran on that runner, at least one did, and the build job did not (it runs on GitHub's
+   machines). The site answers 200 on its health route at `https://<app>.localhost` through
+   127.0.0.1, with the hostname as Host header and SNI, trusted only with OpsCrew's local CA;
+   without it the certificate is refused. This computer's trust store never changes.
+4. **A merged change** (the change file of the other tests) is deployed the same way, on the
+   runner. The image in the app's `.env` on this computer must change, and the new version must
+   answer within 10 minutes of the change's push (SC-1507).
+5. **Stop:** `stop()`, after which the runner's `finished` resolves and GitHub lists no runner
+   with the label. The runner's folder in the run's own OpsCrew home stays, with the pinned
+   version.
+6. **Destroy:** `destroy --env dev --confirm <app>-dev --delete-data`. Docker then lists no
+   container, network or volume with the label of either Compose project.
+7. **Nothing leaked,** as for environments, without the Cloudflare parts: no token, generated
+   value, local CA key or runner key in any output (the runner's own included), commit, pull
+   request, audit entry or state file, and no string shaped like a runner token.
+
+The cleanup always stops the runner first. Then, when the test got that far, `opscrew destroy
+--env dev --delete-data` if dev was not destroyed yet, and whatever Docker still lists with the
+two Compose project labels (never anything else, and never a prune), and the images the run
+pulled that Docker did not have before (the app's image from GitHub's registry and the stack's).
+Then the cleanup of environments: GitHub's runners with the label, removed through the API, and
+`main` put back to the example's commit.
+
+If a run was interrupted, delete by hand: the runner labelled `opscrew-<app>-dev` under the
+repository's Settings → Actions → Runners; in Docker, what has the label
+`com.docker.compose.project=opscrew-<app>-dev` or `=opscrew-edge`, and the network `opscrew-edge`
+if nothing uses it; and any runner process still running from the run's folder.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_LOCAL_RUNNER` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | As for environments. The repository must stay private: OpsCrew refuses a runner for a public one. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | Optional but recommended, as for environments: dev's provision reads the image's digest from GitHub's registry with it. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP` | Optional, as above (examples only). |
+
+Requirements: Docker running here with Linux containers, and on Windows Git for Windows' `bash`.
+GitHub's registry must already have an image of the repository labelled `opscrew-prod`: dev runs
+prod's image until its own first deploy, and prod is never deployed here. A pass that deploys prod
+in the same repository (the server's runner) leaves one; without it, `provision --env dev` stops
+and says so. Keep `OPSCREW_TEST_TMP` short on Windows: the runner's work folder is inside it.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_LOCAL_RUNNER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GHCR_READ_TOKEN=… \
+  npx vitest run test/live/local-runner.test.ts
+```
+
+Not measured yet: about 30 to 45 minutes, with no server. The two builds run on GitHub's machines
+(about 10 Actions minutes); the deploy jobs run on this computer.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
