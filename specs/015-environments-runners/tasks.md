@@ -457,7 +457,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
   - Effort: high
 
-- [ ] T1517g [US6] Opt-in hardening for runner machines in agents, the CLI, MCP and the guide (FR-1536)
+- [X] T1517g [US6] Opt-in hardening for runner machines in agents, the CLI, MCP and the guide (FR-1536)
   - Owns: agents' `runners/**` (the machine record and its host plan); `packages/cli/src/**` and `packages/mcp-server/src/**` for the flags; `docs/guide/runners.md` (+ tests)
   - Reads: spec FR-1536; data-model.md "Runner machine"; plan.md "16."
   - Depends: T1517f
