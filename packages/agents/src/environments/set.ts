@@ -8,18 +8,21 @@ import { withDeploySource } from "./source";
 
 /** What `opscrew env set <name>` changes: any of these. */
 export interface EnvironmentSettings {
-  /** `main`, or the environment it is promoted from ({@link setDeploySource}). */
+  /** `main`, or the environment it is promoted from ({@link withDeploySource}). */
   from?: string;
-  /** The branch it follows ({@link setEnvironmentBranch}). */
+  /**
+   * The branch whose pushes build and deploy it (its `cicd.branch`, {@link requireBranch}); a
+   * promoted environment keeps it for when it is deployed from main again.
+   */
   branch?: string;
-  /** Where its deploy job runs, and its build ({@link setEnvironmentRunner}). */
+  /** Where its deploy job runs, and its build ({@link withRunner}). */
   runner?: RunnerAnswer;
 }
 
 /**
  * `opscrew env set <name>`: the settings given for the environment `deps.paths` belong to, each
- * checked as its own setter checks it (the branch, then the source with that branch, then the
- * runner for that source) before the plan is written, once and only when it changes, so a refused
+ * checked (the branch with the project's git, then the source with that branch, then the runner
+ * for that source) before the plan is written, once and only when it changes, so a refused
  * setting saves nothing. Its next provision shows and applies the change. Returns the plan.
  */
 export async function setEnvironment(

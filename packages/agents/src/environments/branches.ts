@@ -6,10 +6,7 @@ import {
   type ProjectFacts,
   readArtifact,
   readOptionalArtifact,
-  writeArtifact,
 } from "@opscrew/plan-schema";
-import type { PhaseDeps } from "../context";
-import { gitClient } from "../shared/github";
 import { environmentPaths } from "./paths";
 
 /**
@@ -149,26 +146,6 @@ export async function requireBranch(
     );
   }
   return branch;
-}
-
-/**
- * `opscrew env set <name> --branch <branch>`: the branch whose pushes build and deploy the
- * environment `deps.paths` belong to (its `cicd.branch`), checked by {@link requireBranch} with
- * the project's git. Writes the environment's plan only when it changes; its next provision shows
- * and applies the workflow change. A promoted environment keeps the branch for when it is
- * deployed from main again. Returns the plan.
- */
-export async function setEnvironmentBranch(
-  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
-  requested: string,
-): Promise<DeployPlan> {
-  const { paths } = deps;
-  const plan = await readArtifact("plan", paths.files.plan);
-  const branch = await requireBranch(paths, gitClient(deps), requested);
-  if (plan.cicd.branch === branch) return plan;
-  const changed: DeployPlan = { ...plan, cicd: { ...plan.cicd, branch } };
-  await writeArtifact("plan", paths.files.plan, changed);
-  return changed;
 }
 
 /**

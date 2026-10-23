@@ -467,6 +467,13 @@ jobs:
                 }
                 if (batch.workflows.length < 100) break;
               }
+              // None found means the workflows were renamed: no environment's labels could be kept.
+              if (environments.length === 0) {
+                fail(
+                  'OpsCrew found no workflow named "OpsCrew deploy" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
+                );
+                return;
+              }
               const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
               const base =
                 (user.type === "Organization" ? "/orgs/" : "/users/") +

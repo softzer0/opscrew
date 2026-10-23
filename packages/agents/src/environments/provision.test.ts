@@ -21,9 +21,8 @@ import {
   type TestPhaseDeps,
   testPlan,
 } from "../testing";
-import { setEnvironmentBranch } from "./branches";
 import { environmentPaths } from "./paths";
-import { setDeploySource } from "./source";
+import { setEnvironment } from "./set";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
 
@@ -175,9 +174,9 @@ describe.skipIf(!findExecutable("git"))("provision for an environment", () => {
     );
     const staging = await app.deps("staging");
     await writeArtifact("plan", staging.paths.files.plan, namedOf(app.prod, "staging"));
-    expect((await setEnvironmentBranch(staging, "staging")).cicd.branch).toBe("staging");
+    expect((await setEnvironment(staging, { branch: "staging" })).cicd.branch).toBe("staging");
     // ...and is then promoted from dev (`env set staging --from dev`).
-    const promoted = await setDeploySource(root, "staging", "dev");
+    const promoted = await setEnvironment(staging, { from: "dev" });
     expect(promoted.cicd.branch).toBe("staging");
 
     const services = app.services(new FakeEngine());

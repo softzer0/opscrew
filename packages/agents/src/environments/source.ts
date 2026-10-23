@@ -4,7 +4,6 @@ import {
   EnvironmentSchema,
   readArtifact,
   resolveEnvironmentPaths,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { requireBranchFree } from "./branches";
 
@@ -12,28 +11,14 @@ import { requireBranchFree } from "./branches";
 export type DeploySource = NonNullable<DeployPlan["environment"]>["deploySource"];
 
 /**
- * Sets how the environment is deployed (`opscrew env set <name> --from main|<source>`): `main`
- * (built and deployed on each push), or promoted from `from`, another existing environment whose
- * own sources never lead back to this one. Built from main again, it follows the branch its plan
- * kept, which no other environment may follow (`requireBranchFree`). Writes the plan only when it
- * changes; its next provision shows and applies the workflow change. Returns the plan.
+ * `plan` of the environment `environment` with how it is deployed (`opscrew env set <name> --from
+ * main|<source>`): `main` (built and deployed on each push), or promoted from `from`, another
+ * existing environment whose own sources never lead back to this one. Built from main again, it
+ * follows the branch its plan kept, which no other environment may follow (`requireBranchFree`).
+ * `plan` itself when it is unchanged.
  * @throws OpsCrewError `INVALID_INPUT` for an unknown environment or source, the environment
  * itself, a source that would promote in a cycle, or a kept branch another environment follows.
  */
-export async function setDeploySource(
-  root: string,
-  environment: string,
-  from: string,
-): Promise<DeployPlan> {
-  // Only the repository's files are read and written, so no OpsCrew home is read for the paths.
-  const { files } = await resolveEnvironmentPaths(root, environment, { env: {} });
-  const plan = await readArtifact("plan", files.plan);
-  const changed = await withDeploySource(root, environment, plan, from);
-  if (changed !== plan) await writeArtifact("plan", files.plan, changed);
-  return changed;
-}
-
-/** `plan` with the source `from` ({@link setDeploySource}); `plan` itself when it is unchanged. */
 export async function withDeploySource(
   root: string,
   environment: string,

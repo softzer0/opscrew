@@ -10,16 +10,10 @@ import { describe, expect, it } from "vitest";
 import { gitClient } from "../shared";
 import { createTestPhaseDeps, makeFacts, type TestPhaseDeps, testPlan } from "../testing";
 import { remoteWith } from "./__fixtures__/remote";
-import {
-  builderBranch,
-  matchBranches,
-  remoteEnvironmentBranches,
-  requireBranch,
-  setEnvironmentBranch,
-} from "./branches";
+import { builderBranch, matchBranches, remoteEnvironmentBranches, requireBranch } from "./branches";
 import { environmentPaths } from "./paths";
+import { setEnvironment } from "./set";
 import { setupNote } from "./setup";
-import { setDeploySource } from "./source";
 
 type Environment = NonNullable<DeployPlan["environment"]>;
 
@@ -142,7 +136,7 @@ describe("--branch", () => {
         branches: ["main", "develop"],
       },
     );
-    const plan = await setEnvironmentBranch(deps, " develop ");
+    const plan = await setEnvironment(deps, { branch: " develop " });
     expect(plan.cicd.branch).toBe("develop");
     expect(await readFile(deps.paths.files.plan, "utf8")).toContain("branch: develop");
     expect(deps.runner.asked).toEqual(["refs/heads/develop"]);
@@ -151,7 +145,7 @@ describe("--branch", () => {
   it("refuses a branch the repository does not have, and changes nothing", async () => {
     const deps = await project({ dev: inEnvironment("dev") }, { environment: "dev" });
     const before = await readFile(deps.paths.files.plan, "utf8");
-    const error = await failure(setEnvironmentBranch(deps, "develop"));
+    const error = await failure(setEnvironment(deps, { branch: "develop" }));
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toBe(
       "The repository on GitHub has no branch develop, so no push to it could deploy the dev environment.",
@@ -167,7 +161,7 @@ describe("--branch", () => {
       { dev: inEnvironment("dev", {}, "develop"), staging: inEnvironment("staging") },
       { environment: "staging", branches: ["main", "develop"] },
     );
-    const error = await failure(setEnvironmentBranch(deps, "develop"));
+    const error = await failure(setEnvironment(deps, { branch: "develop" }));
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toBe(
       "The dev environment already follows develop, so the staging environment cannot follow it too: each push to develop would then build and deploy both.",
@@ -193,7 +187,7 @@ describe("--branch", () => {
       environmentPaths(deps.paths, "prod").files.plan,
       DeployPlanSchema.parse({ ...testPlan(), cicd: { ...testPlan().cicd, branch: "trunk" } }),
     );
-    expect((await setEnvironmentBranch(deps, "trunk")).cicd.branch).toBe("trunk");
+    expect((await setEnvironment(deps, { branch: "trunk" })).cicd.branch).toBe("trunk");
   });
 
   it("does not count a promoted environment's branch, which no push builds", async () => {
@@ -211,7 +205,7 @@ describe("--branch", () => {
         cicd: { ...testPlan().cicd, branch: "release" },
       }),
     );
-    expect((await setEnvironmentBranch(deps, "release")).cicd.branch).toBe("release");
+    expect((await setEnvironment(deps, { branch: "release" })).cicd.branch).toBe("release");
   });
 
   it("refuses --from main bringing back a branch another environment follows now", async () => {
@@ -225,7 +219,9 @@ describe("--branch", () => {
       ),
     });
     const before = await readFile(environmentPaths(deps.paths, "staging").files.plan, "utf8");
-    const error = await failure(setDeploySource(deps.paths.root, "staging", "main"));
+    const error = await failure(
+      setEnvironment({ ...deps, paths: environmentPaths(deps.paths, "staging") }, { from: "main" }),
+    );
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toBe(
       "The dev environment already follows develop, so the staging environment cannot follow it too: each push to develop would then build and deploy both.",
@@ -238,7 +234,10 @@ describe("--branch", () => {
       environmentPaths(deps.paths, "staging").files.plan,
       inEnvironment("staging", { deploySource: { from: "promote", source: "dev" } }, "main"),
     );
-    const plan = await setDeploySource(deps.paths.root, "staging", "main");
+    const plan = await setEnvironment(
+      { ...deps, paths: environmentPaths(deps.paths, "staging") },
+      { from: "main" },
+    );
     expect(plan.environment?.deploySource).toEqual({ from: "main" });
   });
 

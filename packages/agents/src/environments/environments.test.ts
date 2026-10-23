@@ -47,7 +47,6 @@ import {
   removeEnvironment,
   requireSharedParts,
   resolveEnvironment,
-  setDeploySource,
   setEnvironment,
   sharedPartsDiffer,
   withSharedParts,
@@ -80,6 +79,12 @@ async function project(plans: Record<string, DeployPlan>): Promise<TestPhaseDeps
   }
   return deps;
 }
+
+/** `deps` for the environment `name`. */
+const at = (deps: TestPhaseDeps, name: string) => ({
+  ...deps,
+  paths: environmentPaths(deps.paths, name),
+});
 
 const prodPlan = () => testPlan({ domain: "shop.example.com" });
 
@@ -296,15 +301,14 @@ describe("an environment's own answers", () => {
   });
 });
 
-describe("setDeploySource", () => {
+describe("setEnvironment --from", () => {
   it("promotes an environment from another, and back to main, writing only that plan", async () => {
     const prod = prodPlan();
     const deps = await project({ prod, staging: inEnvironment(prod, "staging") });
-    const root = deps.paths.root;
     const stagingFile = environmentPaths(deps.paths, "staging").files.plan;
     const before = await readFile(stagingFile, "utf8");
 
-    const promoted = await setDeploySource(root, "prod", "staging");
+    const promoted = await setEnvironment(at(deps, "prod"), { from: "staging" });
     expect(promoted.environment).toEqual({
       deploySource: { from: "promote", source: "staging" },
       runner: "github",
@@ -319,14 +323,14 @@ describe("setDeploySource", () => {
       { name: "prod", from: "staging" },
     ]);
 
-    const back = await setDeploySource(root, "prod", "main");
+    const back = await setEnvironment(at(deps, "prod"), { from: "main" });
     expect(back.environment?.deploySource).toEqual({ from: "main" });
   });
 
   it("leaves a plan that already deploys from there as it is", async () => {
     const deps = await project({ prod: prodPlan() });
     const before = await readFile(deps.paths.files.plan, "utf8");
-    await setDeploySource(deps.paths.root, "prod", "main");
+    await setEnvironment(at(deps, "prod"), { from: "main" });
     expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
   });
 
@@ -337,12 +341,11 @@ describe("setDeploySource", () => {
       staging: inEnvironment(prod, "staging"),
       qa: inEnvironment(prod, "qa", { deploySource: { from: "promote", source: "staging" } }),
     });
-    const root = deps.paths.root;
-    const itself = await failure(setDeploySource(root, "staging", "staging"));
+    const itself = await failure(setEnvironment(at(deps, "staging"), { from: "staging" }));
     expect(itself.message).toBe("The staging environment cannot be promoted from itself.");
-    const unknown = await failure(setDeploySource(root, "staging", "dev"));
+    const unknown = await failure(setEnvironment(at(deps, "staging"), { from: "dev" }));
     expect(unknown.message).toContain('The app has no environment "dev"');
-    const cycle = await failure(setDeploySource(root, "staging", "qa"));
+    const cycle = await failure(setEnvironment(at(deps, "staging"), { from: "qa" }));
     expect(cycle.code).toBe("INVALID_INPUT");
     expect(cycle.message).toBe(
       "The staging environment cannot be promoted from qa, since qa takes its releases from staging itself.",
@@ -382,6 +385,28 @@ describe("setEnvironment (env set with several settings)", () => {
       setEnvironment(own, { from: "prod", runner: { runner: "github", build: "runner" } }),
     );
     expect(runner.code).toBe("INVALID_INPUT");
+    expect(await readFile(own.paths.files.plan, "utf8")).toBe(before);
+  });
+
+  it("refuses a source to promote from while the kept build: runner would build, saving nothing", async () => {
+    const prod = prodPlan();
+    const deps = await project({
+      prod,
+      staging: inEnvironment(prod, "staging", {
+        runner: "host",
+        runnerHost: { name: "home", arch: "amd64" },
+        build: "runner",
+      }),
+    });
+    const own = await createTestPhaseDeps({ root: deps.paths.root, environment: "staging" });
+    const before = await readFile(own.paths.files.plan, "utf8");
+    const error = await failure(
+      setEnvironment(own, { from: "prod", runner: { runner: "host", runnerHost: "home" } }),
+    );
+    expect(error.message).toBe(
+      "The staging environment is promoted from prod, so it deploys the image prod built and builds none.",
+    );
+    expect(error.hint).toBe("Leave build at github, or deploy the environment from main.");
     expect(await readFile(own.paths.files.plan, "utf8")).toBe(before);
   });
 });
@@ -548,7 +573,7 @@ describe("listEnvironments and removeEnvironment", () => {
     expect(await exists(emptied.paths.files.plan)).toBe(false);
 
     const source = await withStaging();
-    await setDeploySource(source.deps.paths.root, "prod", "staging");
+    await setEnvironment(at(source.deps, "prod"), { from: "staging" });
     const promoted = await failure(removeEnvironment(source.staging));
     expect(promoted.message).toBe(
       "prod is promoted from staging, so OpsCrew removed none of its files.",

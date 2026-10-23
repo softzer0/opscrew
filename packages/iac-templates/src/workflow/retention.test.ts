@@ -607,6 +607,24 @@ describe("the retention step's program", () => {
     expect(result.log.join("\n")).toContain("The GitHub workflows API answered HTTP 403");
   });
 
+  it("deletes nothing when no workflow names an OpsCrew environment", async () => {
+    // Every deploy workflow's name was edited: no environment's labels could be kept.
+    const api = github({
+      pushes,
+      workflows: [
+        { name: "Deploy", state: "active" },
+        { name: "CI", state: "active" },
+      ],
+    });
+    const result = await runMain(api);
+    expect(result.exitCode).toBe(1);
+    expect(api.deleted()).toEqual([]);
+    expect(api.calls.some((call) => call.includes("/packages/"))).toBe(false);
+    expect(result.log).toEqual([
+      '::error::OpsCrew found no workflow named "OpsCrew deploy" in this repository, so it cannot tell which images the environments run, and it deleted none. The deploy itself succeeded; run "opscrew provision" to write the deploy workflow again.',
+    ]);
+  });
+
   it("uses the organization's packages API for an organization", async () => {
     const api = github({ type: "Organization", pushes });
     expect((await runMain(api)).exitCode).toBeUndefined();

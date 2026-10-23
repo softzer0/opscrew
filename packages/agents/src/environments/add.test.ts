@@ -41,8 +41,7 @@ import {
   type EnvironmentQuestion,
   environmentQuestions,
   listEnvironments,
-  setDeploySource,
-  setEnvironmentRunner,
+  setEnvironment,
   sharedPartsDiffer,
 } from "./index";
 
@@ -689,7 +688,7 @@ describe("design per environment", () => {
   it("keeps prod's environment block on its next design", async () => {
     const { prod, staging } = await prodApp();
     await addEnvironment(staging, { design: { catalog: euCatalog() } });
-    const promoted = await setDeploySource(prod.paths.root, "prod", "staging");
+    const promoted = await setEnvironment(prod, { from: "staging" });
     const before = await readFile(prod.paths.files.plan, "utf8");
     await runDesign(prod, { catalog: euCatalog() });
     expect(await readFile(prod.paths.files.plan, "utf8")).toBe(before);
@@ -932,17 +931,15 @@ describe("an environment on a runner machine", () => {
   });
 });
 
-describe("setEnvironmentRunner (env set --runner)", () => {
+describe("setEnvironment (env set --runner)", () => {
   it("moves an environment's jobs to a runner machine and back, keeping its build only where it fits", async () => {
     const { staging } = await prodApp();
     await addEnvironment(staging, { design: { catalog: euCatalog() } });
     await recordMachine(staging, "home");
     const before = await readFile(staging.paths.files.plan, "utf8");
 
-    const onMachine = await setEnvironmentRunner(staging.paths, {
-      runner: "host",
-      runnerHost: "home",
-      build: "runner",
+    const onMachine = await setEnvironment(staging, {
+      runner: { runner: "host", runnerHost: "home", build: "runner" },
     });
     expect(onMachine.environment).toMatchObject({
       name: "staging",
@@ -953,10 +950,10 @@ describe("setEnvironmentRunner (env set --runner)", () => {
     expect(await readArtifact("plan", staging.paths.files.plan)).toEqual(onMachine);
     // The same machine again, without --build, keeps the build there and changes nothing.
     const written = await readFile(staging.paths.files.plan, "utf8");
-    await setEnvironmentRunner(staging.paths, { runner: "host", runnerHost: "home" });
+    await setEnvironment(staging, { runner: { runner: "host", runnerHost: "home" } });
     expect(await readFile(staging.paths.files.plan, "utf8")).toBe(written);
 
-    const back = await setEnvironmentRunner(staging.paths, { runner: "github" });
+    const back = await setEnvironment(staging, { runner: { runner: "github" } });
     expect(back.environment).toEqual({
       name: "staging",
       deploySource: { from: "main" },
@@ -964,7 +961,7 @@ describe("setEnvironmentRunner (env set --runner)", () => {
     });
     expect(await readFile(staging.paths.files.plan, "utf8")).toBe(before);
     const server = await failure(
-      setEnvironmentRunner(staging.paths, { runner: "server", build: "runner" }),
+      setEnvironment(staging, { runner: { runner: "server", build: "runner" } }),
     );
     expect(server.message).toBe(
       "The server's runner never builds: the app's build scripts would then run on the server the app serves from.",

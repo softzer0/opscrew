@@ -12,9 +12,10 @@ import {
 import { listRunnerHosts, type RunnerHostServices } from "@opscrew/agents";
 import {
   createProject,
-  FakeHostServer,
+  FakeRunnerMachine,
   forbiddenFetch,
   freshFacts,
+  MACHINE_IPV4,
   projectRunner,
   readyRemote,
 } from "@opscrew/agents/testing";
@@ -23,9 +24,6 @@ import { findExecutable, resolveProjectPaths } from "@opscrew/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
 import { registerRunnerHostTools } from "./runners";
-
-/** The machine's address on the user's network. */
-const MACHINE = "192.168.1.30";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -51,7 +49,7 @@ const approveAll: Answer = (params) => {
 function setUpFacts() {
   const fresh = freshFacts({
     user: "ana",
-    addresses: [{ interface: "eth0", family: "ipv4", address: MACHINE, public: false }],
+    addresses: [{ interface: "eth0", family: "ipv4", address: MACHINE_IPV4, public: false }],
   });
   return {
     ...fresh,
@@ -97,19 +95,11 @@ async function connect(options: { elicit?: Answer } = {}) {
     clock: { now: () => new Date("2026-10-22T12:00:00.000Z") },
     cwd: project.root,
   });
-  const host = new FakeHostServer(
-    freshFacts({
-      user: "ana",
-      addresses: [{ interface: "eth0", family: "ipv4", address: MACHINE, public: false }],
-    }),
-  );
-  // The flows pass `inspect` and `apply` on as plain functions.
+  const host = new FakeRunnerMachine();
   const machine: RunnerHostServices = {
-    host: {
-      inspect: (remote) => host.inspect(remote),
-      apply: (remote, plan, o) => host.apply(remote, plan, o),
-    },
+    host,
     remote: (login) => readyRemote(login.host),
+    verifyLogin: async () => true,
   };
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerRunnerHostTools(server, deps, { machine });
@@ -145,7 +135,7 @@ async function connect(options: { elicit?: Answer } = {}) {
   };
 }
 
-const HOME = { name: "home", user: "ana", host: MACHINE };
+const HOME = { name: "home", user: "ana", host: MACHINE_IPV4 };
 
 /** The runner machines this computer records for the project, by name. */
 async function known(h: { paths: Parameters<typeof listRunnerHosts>[0]["paths"] }) {
@@ -197,7 +187,7 @@ describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
     expect(textOf(listed)).toContain(
       "- home: amd64, Docker installed, no hardening chosen, no environment's deploy job",
     );
-    expect(JSON.stringify(listed)).not.toContain(MACHINE);
+    expect(JSON.stringify(listed)).not.toContain(MACHINE_IPV4);
   });
 
   it("never shows a recorded machine's address in a reply", async () => {
@@ -210,7 +200,7 @@ describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
     expect(unreachable.isError).toBe(true);
     expect(textOf(unreachable)).toContain("OpsCrew could not reach SSH on the runner machine home");
     expect(textOf(unreachable)).toContain("your runner machine");
-    expect(JSON.stringify(unreachable)).not.toContain(MACHINE);
+    expect(JSON.stringify(unreachable)).not.toContain(MACHINE_IPV4);
   });
 
   it("changes nothing when the user declines the host plan, and offers no --approve", async () => {
@@ -236,7 +226,7 @@ describe.skipIf(!findExecutable("git"))("the runner machine tools", () => {
     expect(textOf(refused)).toContain(
       "`npx opscrew runner host add home --ssh <user@host[:port]>`",
     );
-    expect(textOf(refused)).not.toContain(MACHINE);
+    expect(textOf(refused)).not.toContain(MACHINE_IPV4);
     expect(await known(h)).toEqual([]);
   });
 

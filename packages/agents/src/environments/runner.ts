@@ -3,9 +3,7 @@ import {
   type DeployPlan,
   type DeployProvider,
   EnvironmentSchema,
-  readArtifact,
   targetArch,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { listRunnerHosts, requireOtherMachine, requireRunnerHost } from "../runners/machine";
@@ -170,22 +168,10 @@ async function onlyMachine(paths: ProjectPaths): Promise<string> {
 }
 
 /**
- * `opscrew env set <name> --runner …`: sets where the environment `paths` belong to runs its
- * deploy job (and with `build` its build), checked for its target ({@link runnerChoice}; without
- * `build`, the plan's own where it still fits). Writes the environment's plan only when it
- * changes; its next provision shows and applies the change. Returns the plan.
+ * `plan` of the environment `paths` belong to with where it runs its deploy job (`opscrew env set
+ * <name> --runner …`, and with `build` its build), checked for its target ({@link runnerChoice};
+ * without `build`, the plan's own where it still fits). `plan` itself when it is unchanged.
  */
-export async function setEnvironmentRunner(
-  paths: ProjectPaths,
-  answer: RunnerAnswer,
-): Promise<DeployPlan> {
-  const plan = await readArtifact("plan", paths.files.plan);
-  const changed = await withRunner(paths, plan, answer);
-  if (changed !== plan) await writeArtifact("plan", paths.files.plan, changed);
-  return changed;
-}
-
-/** `plan` with the runner `answer` sets ({@link setEnvironmentRunner}); `plan` itself when it is unchanged. */
 export async function withRunner(
   paths: ProjectPaths,
   plan: DeployPlan,

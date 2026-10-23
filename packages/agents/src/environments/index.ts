@@ -12,7 +12,6 @@ export {
   type EnvironmentQuestionId,
   environmentQuestions,
 } from "./add";
-export { setEnvironmentBranch } from "./branches";
 export { type EnvironmentChoiceDeps, environmentFlag, resolveEnvironment } from "./choice";
 export { type EnvironmentSummary, environmentDeployed, listEnvironments } from "./list";
 export { environmentPaths } from "./paths";
@@ -23,8 +22,7 @@ export {
   type RunnerChoice,
   requireMachineFits,
   runnerChoice,
-  setEnvironmentRunner,
 } from "./runner";
 export { type EnvironmentSettings, setEnvironment } from "./set";
 export { requireSharedParts, sharedPartsDiffer, withSharedParts } from "./shared-parts";
-export { type DeploySource, setDeploySource } from "./source";
+export type { DeploySource } from "./source";
