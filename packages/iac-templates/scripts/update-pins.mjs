@@ -9,7 +9,8 @@
 // body (the `BEGIN SHA <platform>` markers; a release without one is refused) and Lynis's from CISOfy's
 // downloads page (checked against the downloaded tarball; a newer release there is only
 // reported). Tags and versions stay as written in pins.ts: change one there first, then run
-// this. The Python packages (PYPI_PACKAGES), package managers (PACKAGE_MANAGERS) and Wrangler
+// this. The Python packages (PYPI_PACKAGES), package managers (PACKAGE_MANAGERS: pnpm, Yarn and
+// Bun, npm's `bun` package) and Wrangler
 // (TOOLS.wrangler) move to their newest releases on PyPI and npm; check the Dockerfiles' Docker pass after a major moves.
 //
 // With --offers it refreshes only BUILDPACKS_OFFERS: it reads the pinned Paketo builder's metadata

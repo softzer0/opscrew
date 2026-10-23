@@ -1,0 +1,1036 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, Hugo 1`] = `
+"  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha256: \${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - name: Install Hugo <pin:TOOLS.hugo.version>
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/hugo.tar.gz" <pin:TOOLS.hugo.url>
+          echo "<pin:TOOLS.hugo.sha256>  $RUNNER_TEMP/hugo.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/hugo"
+          tar -xzf "$RUNNER_TEMP/hugo.tar.gz" -C "$RUNNER_TEMP/hugo"
+          sudo install -m 0755 "$RUNNER_TEMP/hugo/hugo" /usr/local/bin/hugo
+          hugo version
+      - name: Build the site
+        working-directory: "."
+        env:
+          WORKERS_CI: "1"
+        run: |
+          set -euo pipefail
+          hugo --minify
+      - name: Check the site against Cloudflare's limits
+        run: |
+          set -euo pipefail
+          if [[ ! -d 'public' ]]; then
+            echo "::error::The build left no folder public, where opscrew/plan.yaml expects the site's files (target.site.outputDir): change target.site in opscrew/plan.yaml to what the build writes, then run \\\`opscrew provision\\\` again."
+            exit 1
+          fi
+          files="$(find 'public' -type f -printf . | wc -c)"
+          if [[ "$files" -gt 20000 ]]; then
+            echo "::error::The site has $files files in public, over the 20,000 files a version may have on Cloudflare's free plan. Leave out the files the site does not need, then push again."
+            exit 1
+          fi
+      - id: manifest
+        name: Record the build's SHA-256
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-site/assets"
+          # Links are copied as the files they name, as the artifact's upload sends them.
+          cp -RL 'public'/. "$RUNNER_TEMP/opscrew-site/assets/"
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Built the site with the SHA-256 \\\`$sha256\\\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the built site for the deploy
+        uses: <pin:ACTIONS.uploadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+          include-hidden-files: true
+          if-no-files-found: error"
+`;
+
+exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, pnpm 1`] = `
+"  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha256: \${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - uses: <pin:ACTIONS.setupNode>
+        with:
+          node-version: "24"
+      - name: Install pnpm
+        working-directory: "."
+        run: |
+          set -euo pipefail
+          spec="$(node -e 'const p=require("./package.json").packageManager||"";const m=/^pnpm@(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\+.*)?$/.exec(p);if(!m&&p.startsWith("pnpm@")){console.error("package.json\\x27s packageManager must name an exact version, such as pnpm@<pin:PACKAGE_MANAGERS.pnpm>");process.exit(1)}const v=m?m[1]:"<pin:PACKAGE_MANAGERS.pnpm>";console.log("pnpm@"+v)')"
+          npm install -g --no-audit --no-fund "$spec"
+      - name: Install the site's dependencies
+        working-directory: "."
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+      - name: Build the site
+        working-directory: "."
+        env:
+          WORKERS_CI: "1"
+        run: |
+          set -euo pipefail
+          pnpm run build
+      - name: Check the site against Cloudflare's limits
+        run: |
+          set -euo pipefail
+          if [[ ! -d 'dist' ]]; then
+            echo "::error::The build left no folder dist, where opscrew/plan.yaml expects the site's files (target.site.outputDir): change target.site in opscrew/plan.yaml to what the build writes, then run \\\`opscrew provision\\\` again."
+            exit 1
+          fi
+          files="$(find 'dist' -type f -printf . | wc -c)"
+          if [[ "$files" -gt 20000 ]]; then
+            echo "::error::The site has $files files in dist, over the 20,000 files a version may have on Cloudflare's free plan. Leave out the files the site does not need, then push again."
+            exit 1
+          fi
+      - id: manifest
+        name: Record the build's SHA-256
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-site/assets"
+          # Links are copied as the files they name, as the artifact's upload sends them.
+          cp -RL 'dist'/. "$RUNNER_TEMP/opscrew-site/assets/"
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Built the site with the SHA-256 \\\`$sha256\\\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the built site for the deploy
+        uses: <pin:ACTIONS.uploadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+          include-hidden-files: true
+          if-no-files-found: error"
+`;
+
+exports[`renderCloudflareWorkersWorkflow > matches the snapshots > promoted, ssr 1`] = `
+"# Generated by OpsCrew from opscrew/plan.yaml; \`opscrew provision\` regenerates it.
+# \`opscrew promote --to prod\` starts this workflow with the run and SHA-256 of the build the
+# staging environment runs, and it deploys exactly that build to the Worker example-app, without
+# building. Secrets are set by \`opscrew provision\`; their values never appear in this file.
+name: OpsCrew deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: The workflow run that built the site to deploy, by its id; \`opscrew promote\` fills it in.
+        required: true
+        type: string
+      sha256:
+        description: The SHA-256 of that build; \`opscrew promote\` fills it in.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opscrew-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - name: Check the run that built the site
+        env:
+          RUN: \${{ inputs.run }}
+          SHA256: \${{ inputs.sha256 }}
+          BUILD_BRANCH: "main"
+          BUILD_WORKFLOW: ".github/workflows/opscrew-deploy-staging.yml"
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RUN" =~ ^[0-9]+$ || ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The run input must be a workflow run's id, and sha256 a SHA-256 (64 hexadecimal digits). Start this workflow with \\\`opscrew promote --to prod\\\`, which fills them in."
+            exit 1
+          fi
+          if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '"\\(.event) \\(.conclusion) \\(.head_repository.full_name) \\(.head_branch) \\(.path)"')"; then
+            echo "::error::GitHub shows no run $RUN in this repository. Promote with \\\`opscrew promote --to prod\\\`, which reads the build the source environment runs."
+            exit 1
+          fi
+          read -r event conclusion head_repo branch workflow <<< "$record"
+          # The run's path can end with @<ref>.
+          workflow="\${workflow%%@*}"
+          if [[ "$event" != "push" ]]; then
+            echo "::error::Run $RUN was started by a $event, not by a push. OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            exit 1
+          fi
+          if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
+            echo "::error::Run $RUN built the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            exit 1
+          fi
+          if [[ "$branch" != "$BUILD_BRANCH" ]]; then
+            echo "::error::Run $RUN built the branch $branch. OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            exit 1
+          fi
+          if [[ "$workflow" != "$BUILD_WORKFLOW" ]]; then
+            echo "::error::Run $RUN is of the workflow $workflow. OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            exit 1
+          fi
+          if [[ "$conclusion" != "success" ]]; then
+            echo "::error::Run $RUN did not succeed (its conclusion is $conclusion). Promote the build the source environment runs with \\\`opscrew promote --to prod\\\`."
+            exit 1
+          fi
+      - name: Download the built site
+        uses: <pin:ACTIONS.downloadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+          run-id: \${{ inputs.run }}
+          github-token: \${{ github.token }}
+      - name: Check the build's SHA-256 and put the site in place
+        env:
+          RUN: \${{ inputs.run }}
+          SHA256: \${{ inputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          if [[ "$sha256" != "$SHA256" ]]; then
+            echo "::error::The site run $RUN built has the SHA-256 $sha256, not $SHA256, the one \\\`opscrew promote\\\` asked for. Promote again with \\\`opscrew promote --to prod\\\`, which reads the build the source environment runs."
+            exit 1
+          fi
+          cd "$GITHUB_WORKSPACE"
+          rm -rf -- 'dist/client'
+          mkdir -p -- 'dist/client'
+          cp -a "$RUNNER_TEMP/opscrew-site/assets/." 'dist/client'/
+      - name: Add OpsCrew's security headers to _headers
+        shell: node {0}
+        env:
+          SITE: "dist/client"
+        run: |
+          // OpsCrew's security headers for the site's static files (opscrew/plan.yaml), added to its _headers.
+
+          const HEADERS = [
+            ["Strict-Transport-Security","max-age=31536000; includeSubDomains"],
+            ["X-Content-Type-Options","nosniff"],
+            ["X-Frame-Options","SAMEORIGIN"],
+            ["Referrer-Policy","strict-origin-when-cross-origin"],
+          ];
+
+          /** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+          function withHeaders(text) {
+            const lines = text ? text.split("\\n") : [];
+            // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
+            const isPath = (line) => /^(\\/|[^\\s]+:\\/\\/)/.test(line.trim());
+            const start = lines.map((line) => line.trim()).lastIndexOf("/*");
+            if (start < 0) {
+              const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
+              return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\\n");
+            }
+            let end = start + 1;
+            while (end < lines.length && !isPath(lines[end])) end++;
+            const own = new Set();
+            for (const line of lines.slice(start + 1, end)) {
+              const header = line.trim();
+              if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
+              else if (!header.startsWith("#") && header.includes(":")) {
+                own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+              }
+            }
+            const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
+              ([name, value]) => "  " + name + ": " + value,
+            );
+            return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\\n");
+          }
+
+          function main() {
+            const fs = require("node:fs");
+            const file = require("node:path").join(process.env.SITE, "_headers");
+            const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+            fs.writeFileSync(file, withHeaders(own));
+            console.log(
+              own === undefined
+                ? "Wrote " + file + " with OpsCrew's security headers."
+                : "Added OpsCrew's security headers to " + file + ", the site's own.",
+            );
+          }
+          main();
+      - name: Prepare Wrangler
+        env:
+          OPSCREW_ENV_API_KEY: \${{ secrets.OPSCREW_ENV_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Wrangler is installed in a folder of its own, apart from the site's packages.
+          mkdir -p "$RUNNER_TEMP/wrangler"
+          printf '{"private": true}\\n' > "$RUNNER_TEMP/wrangler/package.json"
+          # The app's variables, for the new version only; the file is removed after the upload.
+          (umask 077 && jq -n '{"API_KEY": env.OPSCREW_ENV_API_KEY}' > "$RUNNER_TEMP/opscrew-secrets.json")
+      - id: previous
+        name: Find the version running now
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api() {
+            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
+            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
+            rm -f "$headers"
+            return "$code"
+          }
+          if ! answer="$(api deployments)"; then
+            echo "::error::Cloudflare did not list the deployments of the Worker example-app. Check that the deploy token in OPSCREW_CLOUDFLARE_API_TOKEN holds Account → Workers Scripts → Edit and that the Worker exists (\\\`opscrew provision\\\` creates it), then run the workflow again."
+            exit 1
+          fi
+          previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          echo "id=$previous" >> "$GITHUB_OUTPUT"
+      - id: upload
+        name: Upload the new version
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions upload \${{ runner.temp }}/opscrew-site/worker/headers-entry.js --no-bundle --message "opscrew \${{ inputs.run }} \${{ inputs.sha256 }}" --secrets-file \${{ runner.temp }}/opscrew-secrets.json --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - name: Remove the secrets file
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/opscrew-secrets.json"
+      - id: version
+        name: Read the new version's id
+        env:
+          OUTPUT: \${{ steps.upload.outputs.command-output }}
+        run: |
+          set -euo pipefail
+          id="$(grep -oE 'Version ID: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<< "$OUTPUT" | head -n 1 | cut -d ' ' -f 3 || true)"
+          if [[ -z "$id" ]]; then
+            echo "::error::Wrangler did not report the new version's id; its output above says why. Run the workflow again."
+            exit 1
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Wait until Cloudflare lists the new version
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: \${{ steps.version.outputs.id }}
+        run: |
+          set -uo pipefail
+          api() {
+            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
+            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
+            rm -f "$headers"
+            return "$code"
+          }
+          for attempt in $(seq 1 30); do
+            if api "versions/$VERSION" > /dev/null 2>&1; then
+              echo "Cloudflare lists the new version after $attempt attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Cloudflare did not list the new version $VERSION within a minute, so OpsCrew did not activate it. Run the workflow again."
+          exit 1
+      - id: activate
+        name: Activate the new version
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions deploy \${{ steps.version.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - id: check
+        name: Check that the new version answers
+        env:
+          URL: https://docs.example.com/
+        run: |
+          set -uo pipefail
+          tls_only=1
+          for attempt in $(seq 1 30); do
+            code=0
+            curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?
+            if [[ "$code" -eq 0 ]]; then
+              echo "The site answers after $attempt attempt(s)."
+              exit 0
+            fi
+            case "$code" in 35 | 51 | 60) ;; *) tls_only=0 ;; esac
+            sleep 6
+          done
+          if [[ "$tls_only" -eq 1 ]]; then
+            echo "::warning::Cloudflare has not issued the certificate for docs.example.com yet, so this run could not check the new version over HTTPS. It usually comes within a few minutes of the custom domain; \\\`opscrew verify\\\` checks the site once it is there."
+            exit 0
+          fi
+          echo "::error::The site did not answer at $URL."
+          exit 1
+      - id: rollback
+        name: Activate the version that ran before again
+        if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - name: Report the failed deploy
+        if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
+        env:
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+          ROLLBACK: \${{ steps.rollback.outcome }}
+        run: |
+          set -uo pipefail
+          case "$ROLLBACK" in
+            success)
+              echo "::error::The deploy failed; OpsCrew activated the version that ran before ($PREVIOUS) again." ;;
+            skipped)
+              echo "::error::The deploy failed, and the Worker had no earlier version to activate. Fix the problem and deploy again." ;;
+            *)
+              echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`opscrew promote --to prod --version $PREVIOUS\\\`." ;;
+          esac
+          exit 1
+"
+`;
+
+exports[`renderCloudflareWorkersWorkflow > matches the snapshots > ssr, pnpm, with secrets 1`] = `
+"# Generated by OpsCrew from opscrew/plan.yaml; \`opscrew provision\` regenerates it.
+# Builds the site and deploys it to Cloudflare as a new version of the Worker example-app, with
+# Wrangler. Secrets are set by \`opscrew provision\`; their values never appear in this file.
+name: OpsCrew deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opscrew-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha256: \${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - uses: <pin:ACTIONS.setupNode>
+        with:
+          node-version: "24"
+      - name: Install pnpm
+        working-directory: "."
+        run: |
+          set -euo pipefail
+          spec="$(node -e 'const p=require("./package.json").packageManager||"";const m=/^pnpm@(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\+.*)?$/.exec(p);if(!m&&p.startsWith("pnpm@")){console.error("package.json\\x27s packageManager must name an exact version, such as pnpm@<pin:PACKAGE_MANAGERS.pnpm>");process.exit(1)}const v=m?m[1]:"<pin:PACKAGE_MANAGERS.pnpm>";console.log("pnpm@"+v)')"
+          npm install -g --no-audit --no-fund "$spec"
+      - name: Install the site's dependencies
+        working-directory: "."
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+      - name: Build the site
+        working-directory: "."
+        env:
+          WORKERS_CI: "1"
+          API_KEY: \${{ secrets.OPSCREW_ENV_API_KEY }}
+          PUBLIC_SITE_URL: \${{ secrets.OPSCREW_ENV_PUBLIC_SITE_URL }}
+        run: |
+          set -euo pipefail
+          pnpm run build
+      - name: Check the site against Cloudflare's limits
+        run: |
+          set -euo pipefail
+          if [[ ! -d '.output/public' ]]; then
+            echo "::error::The build left no folder .output/public, where opscrew/plan.yaml expects the site's files (target.site.outputDir): change target.site in opscrew/plan.yaml to what the build writes, then run \\\`opscrew provision\\\` again."
+            exit 1
+          fi
+          if [[ ! -f '.output/server/index.mjs' ]]; then
+            echo "::error::The build left no .output/server/index.mjs, the Worker module opscrew/plan.yaml names (target.site.entry): change target.site in opscrew/plan.yaml to what the build writes, then run \\\`opscrew provision\\\` again."
+            exit 1
+          fi
+          files="$(find '.output/public' -type f -printf . | wc -c)"
+          if [[ "$files" -gt 20000 ]]; then
+            echo "::error::The site has $files files in .output/public, over the 20,000 files a version may have on Cloudflare's free plan. Leave out the files the site does not need, then push again."
+            exit 1
+          fi
+      - name: Prepare Wrangler
+        run: |
+          set -euo pipefail
+          # Wrangler is installed in a folder of its own, apart from the site's packages.
+          mkdir -p "$RUNNER_TEMP/wrangler"
+          printf '{"private": true}\\n' > "$RUNNER_TEMP/wrangler/package.json"
+      - id: bundle
+        name: Bundle the Worker with its packages
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: deploy --dry-run --outdir \${{ runner.temp }}/opscrew-site/worker --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - id: manifest
+        name: Record the build's SHA-256
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-site/assets"
+          # Links are copied as the files they name, as the artifact's upload sends them.
+          cp -RL '.output/public'/. "$RUNNER_TEMP/opscrew-site/assets/"
+          if [[ ! -f "$RUNNER_TEMP/opscrew-site/worker/headers-entry.js" ]]; then
+            echo "::error::Wrangler wrote no worker/headers-entry.js, the bundled Worker; its output above says why."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Built the site with the SHA-256 \\\`$sha256\\\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the built site for the deploy
+        uses: <pin:ACTIONS.uploadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+          include-hidden-files: true
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - name: Download the built site
+        uses: <pin:ACTIONS.downloadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+      - name: Check the build's SHA-256 and put the site in place
+        env:
+          SHA256: \${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          if [[ "$sha256" != "$SHA256" ]]; then
+            echo "::error::The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again."
+            exit 1
+          fi
+          cd "$GITHUB_WORKSPACE"
+          rm -rf -- '.output/public'
+          mkdir -p -- '.output/public'
+          cp -a "$RUNNER_TEMP/opscrew-site/assets/." '.output/public'/
+      - name: Add OpsCrew's security headers to _headers
+        shell: node {0}
+        env:
+          SITE: ".output/public"
+        run: |
+          // OpsCrew's security headers for the site's static files (opscrew/plan.yaml), added to its _headers.
+
+          const HEADERS = [
+            ["Strict-Transport-Security","max-age=31536000; includeSubDomains"],
+            ["X-Content-Type-Options","nosniff"],
+            ["X-Frame-Options","SAMEORIGIN"],
+            ["Referrer-Policy","strict-origin-when-cross-origin"],
+          ];
+
+          /** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+          function withHeaders(text) {
+            const lines = text ? text.split("\\n") : [];
+            // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
+            const isPath = (line) => /^(\\/|[^\\s]+:\\/\\/)/.test(line.trim());
+            const start = lines.map((line) => line.trim()).lastIndexOf("/*");
+            if (start < 0) {
+              const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
+              return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\\n");
+            }
+            let end = start + 1;
+            while (end < lines.length && !isPath(lines[end])) end++;
+            const own = new Set();
+            for (const line of lines.slice(start + 1, end)) {
+              const header = line.trim();
+              if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
+              else if (!header.startsWith("#") && header.includes(":")) {
+                own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+              }
+            }
+            const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
+              ([name, value]) => "  " + name + ": " + value,
+            );
+            return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\\n");
+          }
+
+          function main() {
+            const fs = require("node:fs");
+            const file = require("node:path").join(process.env.SITE, "_headers");
+            const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+            fs.writeFileSync(file, withHeaders(own));
+            console.log(
+              own === undefined
+                ? "Wrote " + file + " with OpsCrew's security headers."
+                : "Added OpsCrew's security headers to " + file + ", the site's own.",
+            );
+          }
+          main();
+      - name: Prepare Wrangler
+        env:
+          OPSCREW_ENV_API_KEY: \${{ secrets.OPSCREW_ENV_API_KEY }}
+          OPSCREW_ENV_PUBLIC_SITE_URL: \${{ secrets.OPSCREW_ENV_PUBLIC_SITE_URL }}
+        run: |
+          set -euo pipefail
+          # Wrangler is installed in a folder of its own, apart from the site's packages.
+          mkdir -p "$RUNNER_TEMP/wrangler"
+          printf '{"private": true}\\n' > "$RUNNER_TEMP/wrangler/package.json"
+          # The app's variables, for the new version only; the file is removed after the upload.
+          (umask 077 && jq -n '{"API_KEY": env.OPSCREW_ENV_API_KEY, "PUBLIC_SITE_URL": env.OPSCREW_ENV_PUBLIC_SITE_URL}' > "$RUNNER_TEMP/opscrew-secrets.json")
+      - id: previous
+        name: Find the version running now
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api() {
+            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
+            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
+            rm -f "$headers"
+            return "$code"
+          }
+          if ! answer="$(api deployments)"; then
+            echo "::error::Cloudflare did not list the deployments of the Worker example-app. Check that the deploy token in OPSCREW_CLOUDFLARE_API_TOKEN holds Account → Workers Scripts → Edit and that the Worker exists (\\\`opscrew provision\\\` creates it), then run the workflow again."
+            exit 1
+          fi
+          previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          echo "id=$previous" >> "$GITHUB_OUTPUT"
+      - id: upload
+        name: Upload the new version
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions upload \${{ runner.temp }}/opscrew-site/worker/headers-entry.js --no-bundle --message "opscrew \${{ github.run_id }} \${{ needs.build.outputs.sha256 }}" --secrets-file \${{ runner.temp }}/opscrew-secrets.json --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - name: Remove the secrets file
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/opscrew-secrets.json"
+      - id: version
+        name: Read the new version's id
+        env:
+          OUTPUT: \${{ steps.upload.outputs.command-output }}
+        run: |
+          set -euo pipefail
+          id="$(grep -oE 'Version ID: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<< "$OUTPUT" | head -n 1 | cut -d ' ' -f 3 || true)"
+          if [[ -z "$id" ]]; then
+            echo "::error::Wrangler did not report the new version's id; its output above says why. Run the workflow again."
+            exit 1
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Wait until Cloudflare lists the new version
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: \${{ steps.version.outputs.id }}
+        run: |
+          set -uo pipefail
+          api() {
+            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
+            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
+            rm -f "$headers"
+            return "$code"
+          }
+          for attempt in $(seq 1 30); do
+            if api "versions/$VERSION" > /dev/null 2>&1; then
+              echo "Cloudflare lists the new version after $attempt attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Cloudflare did not list the new version $VERSION within a minute, so OpsCrew did not activate it. Run the workflow again."
+          exit 1
+      - id: activate
+        name: Activate the new version
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions deploy \${{ steps.version.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - id: check
+        name: Check that the new version answers
+        env:
+          URL: https://docs.example.com/
+        run: |
+          set -uo pipefail
+          tls_only=1
+          for attempt in $(seq 1 30); do
+            code=0
+            curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?
+            if [[ "$code" -eq 0 ]]; then
+              echo "The site answers after $attempt attempt(s)."
+              exit 0
+            fi
+            case "$code" in 35 | 51 | 60) ;; *) tls_only=0 ;; esac
+            sleep 6
+          done
+          if [[ "$tls_only" -eq 1 ]]; then
+            echo "::warning::Cloudflare has not issued the certificate for docs.example.com yet, so this run could not check the new version over HTTPS. It usually comes within a few minutes of the custom domain; \\\`opscrew verify\\\` checks the site once it is there."
+            exit 0
+          fi
+          echo "::error::The site did not answer at $URL."
+          exit 1
+      - id: rollback
+        name: Activate the version that ran before again
+        if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - name: Report the failed deploy
+        if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
+        env:
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+          ROLLBACK: \${{ steps.rollback.outcome }}
+        run: |
+          set -uo pipefail
+          case "$ROLLBACK" in
+            success)
+              echo "::error::The deploy failed; OpsCrew activated the version that ran before ($PREVIOUS) again." ;;
+            skipped)
+              echo "::error::The deploy failed, and the Worker had no earlier version to activate. Fix the problem and deploy again." ;;
+            *)
+              echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`opscrew promote --to prod --version $PREVIOUS\\\`." ;;
+          esac
+          exit 1
+"
+`;
+
+exports[`renderCloudflareWorkersWorkflow > matches the snapshots > static, npm 1`] = `
+"# Generated by OpsCrew from opscrew/plan.yaml; \`opscrew provision\` regenerates it.
+# Builds the site and deploys it to Cloudflare as a new version of the Worker example-app, with
+# Wrangler. Secrets are set by \`opscrew provision\`; their values never appear in this file.
+name: OpsCrew deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opscrew-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha256: \${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - uses: <pin:ACTIONS.setupNode>
+        with:
+          node-version: "24"
+      - name: Install the site's dependencies
+        working-directory: "."
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Build the site
+        working-directory: "."
+        env:
+          WORKERS_CI: "1"
+        run: |
+          set -euo pipefail
+          npm run build
+      - name: Check the site against Cloudflare's limits
+        run: |
+          set -euo pipefail
+          if [[ ! -d 'dist' ]]; then
+            echo "::error::The build left no folder dist, where opscrew/plan.yaml expects the site's files (target.site.outputDir): change target.site in opscrew/plan.yaml to what the build writes, then run \\\`opscrew provision\\\` again."
+            exit 1
+          fi
+          files="$(find 'dist' -type f -printf . | wc -c)"
+          if [[ "$files" -gt 20000 ]]; then
+            echo "::error::The site has $files files in dist, over the 20,000 files a version may have on Cloudflare's free plan. Leave out the files the site does not need, then push again."
+            exit 1
+          fi
+      - id: manifest
+        name: Record the build's SHA-256
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/opscrew-site/assets"
+          # Links are copied as the files they name, as the artifact's upload sends them.
+          cp -RL 'dist'/. "$RUNNER_TEMP/opscrew-site/assets/"
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Built the site with the SHA-256 \\\`$sha256\\\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the built site for the deploy
+        uses: <pin:ACTIONS.uploadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+          include-hidden-files: true
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: <pin:ACTIONS.checkout>
+        with:
+          persist-credentials: false
+      - name: Download the built site
+        uses: <pin:ACTIONS.downloadArtifact>
+        with:
+          name: opscrew-site
+          path: \${{ runner.temp }}/opscrew-site
+      - name: Check the build's SHA-256 and put the site in place
+        env:
+          SHA256: \${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/opscrew-site"
+          sha256="$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"
+          if [[ "$sha256" != "$SHA256" ]]; then
+            echo "::error::The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again."
+            exit 1
+          fi
+          cd "$GITHUB_WORKSPACE"
+          rm -rf -- 'dist'
+          mkdir -p -- 'dist'
+          cp -a "$RUNNER_TEMP/opscrew-site/assets/." 'dist'/
+      - name: Add OpsCrew's security headers to _headers
+        shell: node {0}
+        env:
+          SITE: "dist"
+        run: |
+          // OpsCrew's security headers for the site's static files (opscrew/plan.yaml), added to its _headers.
+
+          const HEADERS = [
+            ["Strict-Transport-Security","max-age=31536000; includeSubDomains"],
+            ["X-Content-Type-Options","nosniff"],
+            ["X-Frame-Options","SAMEORIGIN"],
+            ["Referrer-Policy","strict-origin-when-cross-origin"],
+          ];
+
+          /** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+          function withHeaders(text) {
+            const lines = text ? text.split("\\n") : [];
+            // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
+            const isPath = (line) => /^(\\/|[^\\s]+:\\/\\/)/.test(line.trim());
+            const start = lines.map((line) => line.trim()).lastIndexOf("/*");
+            if (start < 0) {
+              const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
+              return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\\n");
+            }
+            let end = start + 1;
+            while (end < lines.length && !isPath(lines[end])) end++;
+            const own = new Set();
+            for (const line of lines.slice(start + 1, end)) {
+              const header = line.trim();
+              if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
+              else if (!header.startsWith("#") && header.includes(":")) {
+                own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+              }
+            }
+            const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
+              ([name, value]) => "  " + name + ": " + value,
+            );
+            return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\\n");
+          }
+
+          function main() {
+            const fs = require("node:fs");
+            const file = require("node:path").join(process.env.SITE, "_headers");
+            const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+            fs.writeFileSync(file, withHeaders(own));
+            console.log(
+              own === undefined
+                ? "Wrote " + file + " with OpsCrew's security headers."
+                : "Added OpsCrew's security headers to " + file + ", the site's own.",
+            );
+          }
+          main();
+      - name: Prepare Wrangler
+        run: |
+          set -euo pipefail
+          # Wrangler is installed in a folder of its own, apart from the site's packages.
+          mkdir -p "$RUNNER_TEMP/wrangler"
+          printf '{"private": true}\\n' > "$RUNNER_TEMP/wrangler/package.json"
+      - id: previous
+        name: Find the version running now
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api() {
+            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
+            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
+            rm -f "$headers"
+            return "$code"
+          }
+          if ! answer="$(api deployments)"; then
+            echo "::error::Cloudflare did not list the deployments of the Worker example-app. Check that the deploy token in OPSCREW_CLOUDFLARE_API_TOKEN holds Account → Workers Scripts → Edit and that the Worker exists (\\\`opscrew provision\\\` creates it), then run the workflow again."
+            exit 1
+          fi
+          previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          echo "id=$previous" >> "$GITHUB_OUTPUT"
+      - id: upload
+        name: Upload the new version
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions upload --message "opscrew \${{ github.run_id }} \${{ needs.build.outputs.sha256 }}" --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - id: version
+        name: Read the new version's id
+        env:
+          OUTPUT: \${{ steps.upload.outputs.command-output }}
+        run: |
+          set -euo pipefail
+          id="$(grep -oE 'Version ID: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<< "$OUTPUT" | head -n 1 | cut -d ' ' -f 3 || true)"
+          if [[ -z "$id" ]]; then
+            echo "::error::Wrangler did not report the new version's id; its output above says why. Run the workflow again."
+            exit 1
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Wait until Cloudflare lists the new version
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: \${{ steps.version.outputs.id }}
+        run: |
+          set -uo pipefail
+          api() {
+            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
+            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
+            rm -f "$headers"
+            return "$code"
+          }
+          for attempt in $(seq 1 30); do
+            if api "versions/$VERSION" > /dev/null 2>&1; then
+              echo "Cloudflare lists the new version after $attempt attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Cloudflare did not list the new version $VERSION within a minute, so OpsCrew did not activate it. Run the workflow again."
+          exit 1
+      - id: activate
+        name: Activate the new version
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions deploy \${{ steps.version.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - id: check
+        name: Check that the new version answers
+        env:
+          URL: https://docs.example.com/
+        run: |
+          set -uo pipefail
+          tls_only=1
+          for attempt in $(seq 1 30); do
+            code=0
+            curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?
+            if [[ "$code" -eq 0 ]]; then
+              echo "The site answers after $attempt attempt(s)."
+              exit 0
+            fi
+            case "$code" in 35 | 51 | 60) ;; *) tls_only=0 ;; esac
+            sleep 6
+          done
+          if [[ "$tls_only" -eq 1 ]]; then
+            echo "::warning::Cloudflare has not issued the certificate for docs.example.com yet, so this run could not check the new version over HTTPS. It usually comes within a few minutes of the custom domain; \\\`opscrew verify\\\` checks the site once it is there."
+            exit 0
+          fi
+          echo "::error::The site did not answer at $URL."
+          exit 1
+      - id: rollback
+        name: Activate the version that ran before again
+        if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
+        uses: <pin:ACTIONS.wranglerAction>
+        with:
+          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "<pin:TOOLS.wrangler.version>"
+          workingDirectory: \${{ runner.temp }}/wrangler
+          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+      - name: Report the failed deploy
+        if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
+        env:
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+          ROLLBACK: \${{ steps.rollback.outcome }}
+        run: |
+          set -uo pipefail
+          case "$ROLLBACK" in
+            success)
+              echo "::error::The deploy failed; OpsCrew activated the version that ran before ($PREVIOUS) again." ;;
+            skipped)
+              echo "::error::The deploy failed, and the Worker had no earlier version to activate. Fix the problem and deploy again." ;;
+            *)
+              echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`opscrew promote --to prod --version $PREVIOUS\\\`." ;;
+          esac
+          exit 1
+"
+`;

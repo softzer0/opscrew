@@ -5,12 +5,14 @@ import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
 import { appDir, EDGE_DIR, EDGE_PROXIES, edgeProxy, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
-import { notOnServer } from "../providers";
 import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
+import { siteEnvSecret } from "../serverless/site";
 import { sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
+import { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
+import { renderGithubPagesWorkflow } from "./github-pages";
 import { afterDeployJobs, imageSourceJob } from "./jobs";
 import { PORTAINER_DEPLOY_SECRETS, renderPortainerWorkflow } from "./portainer";
 import {
@@ -37,6 +39,8 @@ import {
 } from "./shared";
 import { dockerConfig, type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
 
+export { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
+export { renderGithubPagesWorkflow } from "./github-pages";
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export {
   buildRunner,
@@ -602,10 +606,18 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
  * a runner machine), the connection: the host, the SSH key, the known hosts and in tunnel mode the
  * Access service token. The server's and the local runner deploy on their own machine, so they
  * need no connection secret.
+ *
+ * For a server-less target, the app's variables one by one ({@link siteEnvSecret}), which the
+ * build reads (also for GitHub Pages) and, with `render: ssr` on Cloudflare, the deploy job gives
+ * to the new version (also in a promoted environment, which builds nothing); on Cloudflare also
+ * the deploy token and the account id ({@link CLOUDFLARE_DEPLOY_SECRETS}).
  */
 export function deploySecretNamesFor(plan: DeployPlan): string[] {
   if (isServerlessTarget(plan.target)) {
-    throw notOnServer(plan.target.provider, "server deploy secrets");
+    const values = plan.app.env.map((variable) => siteEnvSecret(variable.name));
+    if (plan.target.provider === "github-pages") return values;
+    const read = !promoted(plan) || plan.target.render === "ssr";
+    return [...Object.values(CLOUDFLARE_DEPLOY_SECRETS), ...(read ? values : [])];
   }
   const build: string[] = promoted(plan)
     ? []
@@ -654,8 +666,15 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  * Portainer redeploy (the updater stack, or a webhook call through Cloudflare Access with
  * {@link PORTAINER_DEPLOY_SECRETS}), waits for the new version on the site and, when it does not
  * come up, writes the previous version back.
+ *
+ * The server-less targets have workflows of their own: {@link renderCloudflareWorkersWorkflow}
+ * and {@link renderGithubPagesWorkflow}.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
+  if (plan.target.provider === "cloudflare-workers") {
+    return renderCloudflareWorkersWorkflow(plan, ctx);
+  }
+  if (plan.target.provider === "github-pages") return renderGithubPagesWorkflow(plan);
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
   checkSshPort(ctx.sshPort);
   // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).

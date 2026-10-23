@@ -117,19 +117,27 @@ const header = (stack: DockerStack, base: BaseImage) =>
   ].join("\n");
 
 /**
- * Installs pnpm or Yarn with the image's npm, as root (Node 25 and later ship no corepack): the
- * exact version package.json's `packageManager` names, without corepack's `+sha…` hash, else
- * OpsCrew's pin; a range, tag or URL there stops the build. Yarn 2 and later are published as
- * `@yarnpkg/cli-dist`. The Node image's own Yarn 1 (Node 24 and earlier) is unlinked first,
- * because npm will not overwrite it.
+ * Sets the shell variable `spec` to the npm package of pnpm, Yarn or Bun to install, read in the
+ * folder of the app's package.json: the exact version its `packageManager` names, without
+ * corepack's `+sha…` hash, else OpsCrew's pin; a range, tag or URL there stops the command. Yarn 2
+ * and later are published as `@yarnpkg/cli-dist`.
  */
-function packageManagerInstall(pm: "pnpm" | "yarn"): string {
+export function packageManagerSpec(pm: "pnpm" | "yarn" | "bun"): string {
   const pin = PACKAGE_MANAGERS[pm];
   const exact = `/^${pm}@(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\+.*)?$/`;
   // `\x27` is an apostrophe: the script sits in single quotes.
   const version = `const p=require("./package.json").packageManager||"";const m=${exact}.exec(p);if(!m&&p.startsWith("${pm}@")){console.error("package.json\\x27s packageManager must name an exact version, such as ${pm}@${pin}");process.exit(1)}const v=m?m[1]:"${pin}";`;
-  const name = pm === "pnpm" ? '"pnpm@"' : '(/^1\\./.test(v)?"yarn@":"@yarnpkg/cli-dist@")';
-  const install = `spec="$(node -e '${version}console.log(${name}+v)')" && npm install -g --no-audit --no-fund "$spec"`;
+  const name = pm === "yarn" ? '(/^1\\./.test(v)?"yarn@":"@yarnpkg/cli-dist@")' : `"${pm}@"`;
+  return `spec="$(node -e '${version}console.log(${name}+v)')"`;
+}
+
+/**
+ * Installs pnpm or Yarn ({@link packageManagerSpec}) with the image's npm, as root (Node 25 and
+ * later ship no corepack). The Node image's own Yarn 1 (Node 24 and earlier) is unlinked first,
+ * because npm will not overwrite it.
+ */
+function packageManagerInstall(pm: "pnpm" | "yarn"): string {
+  const install = `${packageManagerSpec(pm)} && npm install -g --no-audit --no-fund "$spec"`;
   return pm === "yarn" ? `rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg && ${install}` : install;
 }
 

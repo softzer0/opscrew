@@ -38,6 +38,7 @@ export * from "./render";
 export * from "./runbook";
 export * from "./runtime";
 export { runtimeDir } from "./runtime-dir";
+export * from "./serverless";
 export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";

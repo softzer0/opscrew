@@ -72,6 +72,13 @@ export interface RenderContext {
    */
   builderBranch?: string | undefined;
   /**
+   * For a promoted environment on Cloudflare's hosting: the `cicd.workflowPath` of the environment
+   * that builds the sites it is promoted with (the first of its sources that follows a branch, as
+   * for {@link builderBranch}). Its deploy job requires the build's run to be of that workflow.
+   * Absent for a plan that follows a branch.
+   */
+  builderWorkflowPath?: string | undefined;
+  /**
    * Which server modules the root module contains during a move to another provider
    * (`opscrew retarget`), from `moveLayout`. Without it the root module deploys `plan.target` as
    * `module "server"`.

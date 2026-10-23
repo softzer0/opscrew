@@ -1,6 +1,6 @@
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testContext, testPlan } from "./__fixtures__/plans";
+import { testPlan } from "./__fixtures__/plans";
 import * as templates from "./index";
 import { portainerTestPlan } from "./portainer-target/__fixtures__/plans";
 
@@ -80,11 +80,7 @@ describe("target guards and move layouts (package root)", () => {
       expect.objectContaining({ message: expect.stringContaining(`not to ${words}`), hint: BUG }),
     );
     expect(() => templates.edgeProxy(plan)).toThrow(refused("reverse proxy of OpsCrew's"));
-    expect(() => templates.renderDeployment(plan, testContext())).toThrow(
-      refused("server files to render"),
-    );
     expect(() => templates.renderCompose(plan)).toThrow(refused("Compose file"));
-    expect(() => templates.deploySecretNamesFor(plan)).toThrow(refused("server deploy secrets"));
   });
 
   it("give every move layout both providers, in the order a move uses them", () => {

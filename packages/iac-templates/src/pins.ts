@@ -500,11 +500,13 @@ export const PYPI_PACKAGES = {
 } as const satisfies Record<string, string>;
 
 /**
- * The pnpm and Yarn releases on npm the generated Dockerfiles install with npm when package.json
- * names no `packageManager`. Yarn's is the last Yarn 1 release, the one whose lockfiles such
- * projects have.
+ * The package managers' releases on npm OpsCrew installs when package.json names no
+ * `packageManager`: pnpm and Yarn in the generated Dockerfiles and the server-less build job, Bun
+ * (npm's `bun` package, the same releases as Bun's own) in the server-less build job. Yarn's is the
+ * last Yarn 1 release, the one whose lockfiles such projects have.
  */
 export const PACKAGE_MANAGERS = {
+  bun: "1.4.4",
   pnpm: "12.15.0",
   yarn: "1.22.22",
 } as const satisfies Record<string, string>;

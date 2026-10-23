@@ -299,7 +299,7 @@ describe("pins.ts", () => {
       "uv",
       "uvicorn",
     ]);
-    expect(Object.keys(PACKAGE_MANAGERS).sort()).toEqual(["pnpm", "yarn"]);
+    expect(Object.keys(PACKAGE_MANAGERS).sort()).toEqual(["bun", "pnpm", "yarn"]);
     for (const [name, version] of Object.entries({ ...PYPI_PACKAGES, ...PACKAGE_MANAGERS })) {
       expect(version, name).toMatch(/^\d+\.\d+\.\d+$/);
     }
