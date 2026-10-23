@@ -191,7 +191,8 @@ describe.skipIf(MISSING.length > 0)(
         const text = await readFile(file, "utf8").catch(() => undefined);
         if (text === undefined) return undefined;
         if (envs.rememberRunnerKey(text) > 0) return true;
-        return process.platform === "win32" && !text.includes("{") ? true : undefined;
+        // Encrypted bytes, not JSON: they may hold a "{" by chance, so any content counts.
+        return process.platform === "win32" ? true : undefined;
       }).catch(() => {
         run.findings.push(
           "the local runner's key file was not readable, so the leak search misses it",
