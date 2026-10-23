@@ -537,7 +537,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1523 [US5] Destroying a localhost environment removes its GitHub secrets (found by T1515's local runner pass)
+- [X] T1523 [US5] Destroying a localhost environment removes its GitHub secrets (found by T1515's local runner pass)
   - Owns: agents' `localhost/destroy.ts` with its tests; `packages/cli/test/live/local-runner.test.ts` (step 6's check)
   - Reads: `destroy/common.ts` (`removeDeploySecrets`, as `destroy/own.ts` and `destroy/portainer.ts` call it); `provision/secrets.ts` (the secrets record)
   - Depends: T1521
@@ -685,6 +685,7 @@ Effort`.
     - A promoted localhost environment with `target.image: local-build` builds the code here but copies its source's shared parts: refuse local-build for a promoted environment, or say why it is allowed (T1521).
     - The connector's `imagePlatforms` has no Docker manifest list case in its tests, and its config blob's digest check is untested (T1522's review).
     - Promote reads GHCR's index twice (`imageProvenance`, then `imagePlatforms`): two extra requests per promote. Its single-manifest branch never runs from promote, since provenance needs an index (T1522's review).
+    - `destroy/common.ts`'s hint when the `github-secrets` approval is refused mentions "the pinned host key", which a localhost destroy has none of (T1523).
     - Check live which answer GitHub's dispatch gives (a 204, as the spike saw, or the documented 200 with `workflow_run_id`), and drop the path that never happens (T1504).
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
