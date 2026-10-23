@@ -21,14 +21,6 @@ import type { PhaseDeps } from "../context";
 import { ensureStatePassphrase, readSecretFile, statePassphraseFile } from "./secret-files";
 
 /**
- * The environment's infrastructure state file (core's `tfstateFile`: `.opscrew/tfstate/prod.tfstate`
- * for prod), which provision, destroy, drift and retarget use.
- */
-export function stateFile(paths: ProjectPaths): string {
-  return tfstateFile(paths);
-}
-
-/**
  * The stop (`PHASE_PRECONDITION`, nothing changed) when the infrastructure state of `plan` is not
  * on this computer, so OpsCrew `cannot` do what the command is for (`tell what to delete`). The
  * message names the state file of the plan's environment.
@@ -42,7 +34,7 @@ export function stateNotHere(
   const paths = resolveProjectPaths(".", { env: {}, environment: plan.environment?.name });
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The infrastructure state of ${plan.app.name} is not on this computer (${toPosixRelative(paths.root, stateFile(paths))}), so OpsCrew cannot ${cannot}. Nothing was changed.`,
+    `The infrastructure state of ${plan.app.name} is not on this computer (${toPosixRelative(paths.root, tfstateFile(paths))}), so OpsCrew cannot ${cannot}. Nothing was changed.`,
     { hint },
   );
 }
@@ -67,7 +59,7 @@ export function stateCopyPaths(plan: Pick<DeployPlan, "environment">): {
 /** True when the environment's state file exists and is not empty. */
 export async function hasState(paths: ProjectPaths): Promise<boolean> {
   try {
-    return (await stat(stateFile(paths))).size > 0;
+    return (await stat(tfstateFile(paths))).size > 0;
   } catch {
     return false;
   }
@@ -322,7 +314,7 @@ export async function readOutputsAfterInit(
 
 /**
  * The root-module outputs from the infrastructure state on this computer
- * ({@link stateFile}, decrypted with the state passphrase when there is one), read
+ * ({@link tfstateFile}, decrypted with the state passphrase when there is one), read
  * with the project's engine; `undefined` without a state file or when the engine cannot read them.
  * Needs no provider credentials.
  */
@@ -348,7 +340,7 @@ export async function infrastructureOutputs(
     return await readOutputsAfterInit(
       engine,
       join(deps.paths.root, plan.infra.dir),
-      stateFile(deps.paths),
+      tfstateFile(deps.paths),
       env,
     );
   } catch {

@@ -1,14 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
-import { exists, findExecutable, OpsCrewError } from "@opscrew/core";
+import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { blobOf } from "../promote/__fixtures__/world";
 import { previewDeploymentFiles } from "../provision/render";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { stateFile } from "../shared";
+
 import {
   createProject,
   createTestPhaseDeps,
@@ -110,8 +110,8 @@ describe.skipIf(!findExecutable("git"))("provision for an environment", () => {
     expect(result.applied).toBe(true);
 
     // staging's own state, infrastructure root, runtime folder, workflow and deploy key.
-    expect(engine.initOptions?.backendConfig?.path).toBe(stateFile(paths));
-    expect(stateFile(paths)).toBe(
+    expect(engine.initOptions?.backendConfig?.path).toBe(tfstateFile(paths));
+    expect(tfstateFile(paths)).toBe(
       join(root, ".opscrew", "environments", "staging", "tfstate", "staging.tfstate"),
     );
     for (const file of [

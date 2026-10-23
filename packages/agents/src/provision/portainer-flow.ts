@@ -13,7 +13,7 @@ import {
   valueFingerprint,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, plural, tfstateFile, writeFileAtomic } from "@opscrew/core";
 import {
   PORTAINER_STACK_VARIABLES,
   portainerSecretVariables,
@@ -44,7 +44,6 @@ import {
   pinnedPublicKey,
   portainerClientFor,
   stateContents,
-  stateFile,
   stringOutput,
   writePlanIfChanged,
 } from "../shared";
@@ -367,7 +366,7 @@ export async function provisionPortainer(
   if (!hasRoot) {
     const contents = await stateContents(
       deps,
-      stateFile(deps.paths),
+      tfstateFile(deps.paths),
       async () => (await engineSetup()).engine,
     );
     if (contents === "unknown") {

@@ -11,7 +11,7 @@ import {
   valueFingerprints,
 } from "@opscrew/connector-portainer";
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { exists, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import { exists, OpsCrewError, readTextIfExists, tfstateFile } from "@opscrew/core";
 import {
   fillPortainerStack,
   PORTAINER_STACK_VARIABLES,
@@ -71,7 +71,6 @@ import {
   recordedStack,
   type StorageLogin,
   stateContents,
-  stateFile,
   stringOutput,
 } from "../shared";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
@@ -506,7 +505,7 @@ export async function portainerDrift(
   const hasRoot = root.appTunnel || root.webhook;
   const bucket = providerBucket(plan);
   const usesCloudflare = hasRoot || bucket?.provider === "r2";
-  const statePath = stateFile(deps.paths);
+  const statePath = tfstateFile(deps.paths);
   const stateKind = hasRoot ? await inspectState(deps, statePath) : undefined;
 
   // 1. Credentials: Portainer's token and connection, GitHub, Cloudflare when the plan has a

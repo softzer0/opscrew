@@ -17,6 +17,7 @@ import {
   plural,
   type Redactor,
   taxLabel,
+  tfstateFile,
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
@@ -28,7 +29,7 @@ import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
-import { describeChanges, PlanRefusedError, stateFile } from "../shared";
+import { describeChanges, PlanRefusedError } from "../shared";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
 import { maskSensitivePlanJson } from "./plan-json";
@@ -453,7 +454,7 @@ function lastLines(text: string, count = 8): string {
 
 async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise<SavedPlan> {
   const { engine, dir, env } = options;
-  const statePath = options.statePath ?? stateFile(deps.paths);
+  const statePath = options.statePath ?? tfstateFile(deps.paths);
   await mkdir(deps.paths.files.tfstateDir, { recursive: true });
   await mkdir(deps.paths.files.plansDir, { recursive: true });
 

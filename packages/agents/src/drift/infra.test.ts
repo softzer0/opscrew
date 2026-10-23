@@ -1,12 +1,12 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine } from "@opscrew/contracts";
-import { NodeCommandRunner } from "@opscrew/core";
+import { NodeCommandRunner, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { detectEngines, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision";
-import { ensureStatePassphrase, stateContents, stateFile } from "../shared";
+import { ensureStatePassphrase, stateContents } from "../shared";
 import {
   deployImage,
   portainerPlan,
@@ -75,7 +75,7 @@ describe.skipIf(!runIt)("a removed earlier setup with the real engines (integrat
           name === "tofu"
             ? { TF_ENCRYPTION: tofuEncryptionEnv(await ensureStatePassphrase(s.deps.paths)) }
             : {};
-        const statePath = stateFile(s.deps.paths);
+        const statePath = tfstateFile(s.deps.paths);
         await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
         await engine.init(dir, { env, backendConfig: { path: statePath } });
         const planFile = join(s.root, "earlier.tfplan");

@@ -1,5 +1,5 @@
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, tfstateFile } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -10,7 +10,7 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
-import { hasDeployment, stateFile, stringOutput } from "../shared";
+import { hasDeployment, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { cloudRunnerDrift, type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
@@ -73,7 +73,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   }
   if (plan.target.provider === "portainer") return portainerDrift(deps, plan, options);
   if (plan.target.provider === "localhost") return localDrift(deps, plan);
-  const statePath = stateFile(deps.paths);
+  const statePath = tfstateFile(deps.paths);
   const cloudResources = !(await ownWithoutCloudResources(plan, statePath));
   const stateKind = cloudResources ? await inspectState(deps, statePath) : undefined;
 

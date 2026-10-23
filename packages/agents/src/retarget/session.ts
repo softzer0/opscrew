@@ -8,7 +8,7 @@ import type {
   RemoteExec,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { OpsCrewError, tfstateFile, toPosixRelative } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import {
   type InfraLayout,
@@ -58,7 +58,6 @@ import {
   type ServerAddress,
   SshRemoteExec,
   stateCopyPaths,
-  stateFile,
   stateNotHere,
   writeRenderedFiles,
 } from "../shared";
@@ -264,7 +263,7 @@ export async function openSession(
       deps,
       plan,
       command,
-      () => readOutputsAfterInit(engine, dir, stateFile(deps.paths), env),
+      () => readOutputsAfterInit(engine, dir, tfstateFile(deps.paths), env),
       { oldServerOptional: input.oldServerOptional === true },
     ));
   return {
@@ -356,7 +355,7 @@ export async function useLayout(
   }
   await session.engine.init(session.dir, {
     env: session.env,
-    backendConfig: { path: stateFile(deps.paths) },
+    backendConfig: { path: tfstateFile(deps.paths) },
   });
   return files;
 }

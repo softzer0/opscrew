@@ -3,7 +3,14 @@ import { join } from "node:path";
 import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import { githubConnector } from "@opscrew/connector-github";
 import type { ApprovalRecord, PlanSummary, ResourceChange } from "@opscrew/contracts";
-import { errorMessage, isUserFacingError, OpsCrewError, plural, upperFirst } from "@opscrew/core";
+import {
+  errorMessage,
+  isUserFacingError,
+  OpsCrewError,
+  plural,
+  tfstateFile,
+  upperFirst,
+} from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -26,7 +33,6 @@ import {
   recordServerAddress,
   refusalReason,
   stateCopyPaths,
-  stateFile,
   stateNotHere,
 } from "../shared";
 import {
@@ -226,7 +232,7 @@ export async function setupEngine(
   deps.reporter.step(`Initialising ${engineLabel(setup.engine.info.name)} in ${plan.infra.dir}`);
   await setup.engine.init(join(deps.paths.root, plan.infra.dir), {
     env: setup.env,
-    backendConfig: { path: stateFile(deps.paths) },
+    backendConfig: { path: tfstateFile(deps.paths) },
   });
   return setup;
 }

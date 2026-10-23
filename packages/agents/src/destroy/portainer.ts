@@ -8,7 +8,14 @@ import {
   stackPlanHash,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
-import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import {
+  isUserFacingError,
+  listText,
+  OpsCrewError,
+  plural,
+  tfstateFile,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { portainerTarget, portainerVersionVolume } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -38,7 +45,6 @@ import {
   readPortainerConnection,
   refusalReason,
   stateContents,
-  stateFile,
 } from "../shared";
 import { serverData } from "./checks";
 import {
@@ -370,7 +376,7 @@ export async function destroyPortainer(
   // Cloudflare) holds nothing to delete, encrypted or not; one the engine cannot list still counts.
   const stateHere =
     (await hasState(deps.paths)) &&
-    (await stateContents(deps, stateFile(deps.paths), () =>
+    (await stateContents(deps, tfstateFile(deps.paths), () =>
       chooseEngine(deps, options.engine ?? plan.infra.engine, services.engine),
     )) !== "nothing";
   const scope = teardownScope(deps, plan, "portainer");

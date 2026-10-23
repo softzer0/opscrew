@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { exists, OpsCrewError, Redactor, resolveProjectPaths } from "@opscrew/core";
+import { exists, OpsCrewError, Redactor, resolveProjectPaths, tfstateFile } from "@opscrew/core";
 import { renderDependabot } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -26,7 +26,7 @@ import {
   writeLocal,
   writeRepositoryFiles,
 } from "../secrets/__fixtures__/world";
-import { recordPortainerConnection, stateFile, stateNotHere } from "../shared";
+import { recordPortainerConnection, stateNotHere } from "../shared";
 import { buildPhaseDeps } from "../shared/phase-deps";
 import {
   createTestPhaseDeps,
@@ -501,7 +501,7 @@ describe("listEnvironments and removeEnvironment", () => {
     // A half-way first apply leaves a state, and what OpsCrew made in a Portainer counts too.
     const halfway = await withStaging();
     await mkdir(halfway.paths.files.tfstateDir, { recursive: true });
-    await writeFile(stateFile(halfway.paths), '{"version":4}\n');
+    await writeFile(tfstateFile(halfway.paths), '{"version":4}\n');
     expect((await failure(removeEnvironment(halfway.staging))).code).toBe("PHASE_PRECONDITION");
     const portainer = await withStaging();
     await recordPortainerConnection(portainer.paths, {
@@ -585,13 +585,13 @@ describe("the phases' paths per environment", () => {
     const prod = buildPhaseDeps(input(root));
     expect(prod.paths).toEqual(resolveProjectPaths(root, { env }));
     expect(buildPhaseDeps(input(root, "prod")).paths).toEqual(prod.paths);
-    expect(stateFile(prod.paths)).toBe(join(root, ".opscrew", "tfstate", "prod.tfstate"));
+    expect(tfstateFile(prod.paths)).toBe(join(root, ".opscrew", "tfstate", "prod.tfstate"));
 
     const staging = buildPhaseDeps(input(root, "staging"));
     expect(staging.paths.environment).toBe("staging");
     expect(staging.paths.files.plan).toBe(join(root, "opscrew/environments/staging/plan.yaml"));
     expect(staging.paths.files.state).toBe(join(root, ".opscrew/environments/staging/state.json"));
-    expect(stateFile(staging.paths)).toBe(
+    expect(tfstateFile(staging.paths)).toBe(
       join(root, ".opscrew/environments/staging/tfstate/staging.tfstate"),
     );
     expect(staging.paths.files.deployKey).toBe(

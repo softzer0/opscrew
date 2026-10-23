@@ -1,13 +1,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ApprovalRequest } from "@opscrew/contracts";
-import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
 import { deploySecretNames } from "../provision/secrets";
-import { ensureStatePassphrase, stateFile } from "../shared";
+import { ensureStatePassphrase } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -114,8 +114,8 @@ async function twoEnvironments(
     })}\n`,
   );
   await ensureStatePassphrase(deps.paths);
-  await mkdir(dirname(stateFile(deps.paths)), { recursive: true });
-  await writeFile(stateFile(deps.paths), '{"version":4,"resources":[]}\n');
+  await mkdir(dirname(tfstateFile(deps.paths)), { recursive: true });
+  await writeFile(tfstateFile(deps.paths), '{"version":4,"resources":[]}\n');
   await mkdir(join(project.root, plan.infra.dir), { recursive: true });
   await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
   await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);

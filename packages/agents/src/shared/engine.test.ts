@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { IacEngine, IacEngineName, ResourceAction } from "@opscrew/contracts";
+import { tfstateFile } from "@opscrew/core";
 import { tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { describe, expect, it } from "vitest";
 import {
@@ -21,7 +22,6 @@ import {
   hasState,
   projectEngine,
   stateContents,
-  stateFile,
 } from "./engine";
 import { pollUntil } from "./wait";
 
@@ -99,10 +99,10 @@ describe("projectEngine", () => {
   it("tells whether the state file has content", async () => {
     const deps = await createTestPhaseDeps();
     expect(await hasState(deps.paths)).toBe(false);
-    await mkdir(dirname(stateFile(deps.paths)), { recursive: true });
-    await writeFile(stateFile(deps.paths), "");
+    await mkdir(dirname(tfstateFile(deps.paths)), { recursive: true });
+    await writeFile(tfstateFile(deps.paths), "");
     expect(await hasState(deps.paths)).toBe(false);
-    await writeFile(stateFile(deps.paths), "{}");
+    await writeFile(tfstateFile(deps.paths), "{}");
     expect(await hasState(deps.paths)).toBe(true);
   });
 });

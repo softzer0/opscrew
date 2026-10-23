@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
-import { findExecutable, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { findExecutable, OpsCrewError, sha256Hex, tfstateFile } from "@opscrew/core";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -16,7 +16,7 @@ import type { DestroyServices } from "../destroy/types";
 import { environmentPaths } from "../environments/paths";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { ensureStatePassphrase, hostKeyFingerprint, hostPlanFile, stateFile } from "../shared";
+import { ensureStatePassphrase, hostKeyFingerprint, hostPlanFile } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -613,8 +613,8 @@ async function bothOnMachine(destroy: "prod" | "staging") {
   }
   const deps = destroy === "prod" ? s.prod : staging;
   await ensureStatePassphrase(deps.paths);
-  await mkdir(dirname(stateFile(deps.paths)), { recursive: true });
-  await writeFile(stateFile(deps.paths), '{"version":4,"resources":[]}\n');
+  await mkdir(dirname(tfstateFile(deps.paths)), { recursive: true });
+  await writeFile(tfstateFile(deps.paths), '{"version":4,"resources":[]}\n');
   await mkdir(join(s.root, destroy === "prod" ? prodPlan.infra.dir : stagingPlan.infra.dir), {
     recursive: true,
   });

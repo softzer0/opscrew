@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
-import { exists, lowerFirst, OpsCrewError, plural } from "@opscrew/core";
+import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -14,14 +14,7 @@ import {
   runnerRepository,
   serverRunnerName,
 } from "../runners";
-import {
-  describeChanges,
-  hasDeployment,
-  planStop,
-  refusalReason,
-  serverAddress,
-  stateFile,
-} from "../shared";
+import { describeChanges, hasDeployment, planStop, refusalReason, serverAddress } from "../shared";
 import {
   deletedTunnels,
   requireTunnelClosed,
@@ -131,7 +124,7 @@ function moveInProgress(plan: DeployPlan): OpsCrewError {
 
 /** 1. A deployment and its state must be on this computer, with its infrastructure code. */
 async function requirePreconditions(deps: PhaseDeps, plan: DeployPlan) {
-  if (!(await exists(stateFile(deps.paths)))) {
+  if (!(await exists(tfstateFile(deps.paths)))) {
     if (!hasDeployment(plan)) throw nothingDeployed(plan);
     throw await teardownStateNotHere(deps.paths.root, plan);
   }
