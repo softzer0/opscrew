@@ -20,6 +20,7 @@ type Prunable = (
   keep: number | undefined,
   protect: string[],
   recent: number,
+  environments: string[],
 ) => number[];
 type FakeProcess = { env: Record<string, string>; exitCode?: number };
 type Fetch = (
@@ -68,7 +69,20 @@ function load(
   };
 }
 
-/** `prunable` of `environment`'s program, with no version recent unless `recent` says so. */
+/** The app's environments the `prunable` tests have, unless a test names others. */
+const ENVIRONMENTS = ["prod", "staging", "qa", "eu-staging"];
+
+/** The repository's workflows, as GitHub lists them: prod's and staging's OpsCrew deploy ones. */
+const WORKFLOWS = [
+  { name: "OpsCrew deploy", state: "active" },
+  { name: "OpsCrew deploy (staging)", state: "active" },
+  { name: "CI", state: "active" },
+];
+
+/**
+ * `prunable` of `environment`'s program, with no version recent unless `recent` says so, for
+ * {@link ENVIRONMENTS} unless `environments` says otherwise.
+ */
 function selection(environment: string) {
   const loaded = load(retentionScript(environment)).prunable;
   return (
@@ -77,7 +91,8 @@ function selection(environment: string) {
     keep: number | undefined,
     protect: string[],
     recent = LATER,
-  ) => loaded(versions, children, keep, protect, recent);
+    environments = ENVIRONMENTS,
+  ) => loaded(versions, children, keep, protect, recent, environments);
 }
 
 const prunable = selection("prod");
@@ -193,6 +208,23 @@ describe("prunable", () => {
       prunable(all, listed, 2, [e.index.digest, d.index.digest]).sort((x, y) => x - y),
     ).toEqual(ids([...a.versions, ...b.versions, ...c.versions]));
     expect(prunable(all, listed, undefined, [e.index.digest])).toEqual([]);
+  });
+
+  it("keeps nothing for the labels of an environment removed since, nor a stray opscrew-* tag", () => {
+    // qa was removed: its labels pin nothing. opscrew-spike labels no environment at all.
+    const qaRan = push("9", 0, [commit(90), "opscrew-qa"]);
+    const spike = push("8", 0, ["opscrew-spike"]);
+    const prodRuns = push("7", 0, [commit(70), "opscrew-prod"]);
+    const yours = push("6", 0, ["v1.0"]);
+    const extra = [qaRan, spike, prodRuns, yours];
+    const all = [...versions, ...extra.flatMap((p) => p.versions)];
+    const listed = Object.assign({}, children, ...extra.map((p) => p.children));
+    const deleted = prunable(all, listed, 2, [e.index.digest, d.index.digest], LATER, ["prod"]);
+    expect(deleted.sort((x, y) => x - y)).toEqual(
+      ids([...a.versions, ...b.versions, ...c.versions, ...qaRan.versions, ...spike.versions]),
+    );
+    // With retention off, only the intermediate images go, as before.
+    expect(prunable(all, listed, undefined, [e.index.digest], LATER, ["prod"])).toEqual([]);
   });
 
   it("deletes untagged versions nothing kept lists, such as an old buildcache", () => {
@@ -377,6 +409,8 @@ describe("the retention step's program", () => {
     goneManifests?: number;
     failDelete?: number[];
     goneDelete?: number[];
+    /** The repository's workflows (default: prod's and staging's OpsCrew deploy workflows). */
+    workflows?: { name: string; state: string }[];
   }) {
     const calls: string[] = [];
     const listed = o.pushes.flatMap((p) => p.versions);
@@ -390,6 +424,10 @@ describe("the retention step's program", () => {
       calls.push(`${method} ${url}`);
       const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
       const notFound = { ok: false, status: 404, json: async () => ({}) };
+      if (url === "https://api.github.com/repos/acme/shop/actions/workflows?per_page=100&page=1") {
+        expect(init.headers?.Authorization).toBe("Bearer token-placeholder");
+        return ok({ workflows: o.workflows ?? WORKFLOWS });
+      }
       if (url === "https://api.github.com/users/acme") return ok({ type: o.type ?? "User" });
       const base = `https://api.github.com/${owner}/acme/packages/container/shop/versions`;
       const page = new RegExp(`^${base}\\?per_page=100&page=(\\d+)$`).exec(url);
@@ -539,6 +577,36 @@ describe("the retention step's program", () => {
     expect(result.log[0]).toBe("The package has 15 image versions; deleting 3.");
   });
 
+  it("keeps the labels of the environments the repository's workflows name, and no others", async () => {
+    // staging's workflow file was deleted: its labels keep nothing any more.
+    const stagingRan = push("a", 1, [commit(1), "opscrew-staging"]);
+    const prodBefore = push("b", 2, [commit(2), "opscrew-prod-previous"]);
+    const api = github({
+      pushes: [stagingRan, prodBefore, c, push("d", 4), push("e", 5)],
+      workflows: [
+        { name: "OpsCrew deploy", state: "active" },
+        { name: "OpsCrew deploy (staging)", state: "deleted" },
+      ],
+    });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(api.deleted()).toEqual(
+      [...stagingRan.versions, ...c.versions].map((v) => `DELETE ${base}/${v.id}`),
+    );
+  });
+
+  it("deletes nothing when the workflows cannot be listed", async () => {
+    const api = github({ pushes });
+    const failing: Fetch = async (url, init) =>
+      url.includes("/actions/workflows")
+        ? { ok: false, status: 403, json: async () => ({}) }
+        : api.fetch(url, init);
+    const result = await runMain({ ...api, fetch: failing });
+    expect(result.exitCode).toBe(1);
+    expect(api.deleted()).toEqual([]);
+    expect(result.log.join("\n")).toContain("The GitHub workflows API answered HTTP 403");
+  });
+
   it("uses the organization's packages API for an organization", async () => {
     const api = github({ type: "Organization", pushes });
     expect((await runMain(api)).exitCode).toBeUndefined();
@@ -552,7 +620,7 @@ describe("the retention step's program", () => {
     const api = github({ pushes: many });
     const last = many.at(-1)?.index.digest;
     await runMain(api, { IMAGE: `ghcr.io/acme/shop@${last}`, PREVIOUS: "" });
-    expect(api.calls.filter((c) => c.includes("per_page=100"))).toHaveLength(2);
+    expect(api.calls.filter((c) => c.includes("/versions?per_page=100"))).toHaveLength(2);
     expect(api.deleted()).toHaveLength(38 * 3);
   });
 
@@ -630,10 +698,10 @@ describe("the retention step's program", () => {
 describe("the retention job", () => {
   const jobs = (plan: DeployPlan) => parse(renderWorkflow(plan, testContext()).content).jobs;
 
-  it("runs after a healthy deploy, with only packages: write", () => {
+  it("runs after a healthy deploy, with only packages: write and actions: read", () => {
     const prune = jobs(serverPlan()).prune;
     expect(prune.needs).toEqual(["build", "deploy"]);
-    expect(prune.permissions).toEqual({ packages: "write" });
+    expect(prune.permissions).toEqual({ actions: "read", packages: "write" });
     expect(prune.steps).toHaveLength(1);
     expect(prune.steps[0].shell).toBe("node {0}");
     expect(prune.steps[0].env).toEqual({

@@ -188,7 +188,8 @@ export function imageSourceJob(
  * After a healthy deploy, holding only `packages: write`: tags the running image
  * `opscrew-<env>` and the one that ran before it `opscrew-<env>-previous`, with a tag-only
  * `imagetools create` that keeps the digest (and so its provenance and signature). `opscrew
- * promote` reads these labels, and image retention keeps every version that carries one.
+ * promote` reads these labels, and image retention keeps every version one of the app's existing
+ * environments' labels mark.
  */
 function labelJob(plan: DeployPlan): string[] {
   const label = `opscrew-${environmentName(plan)}`;
@@ -254,10 +255,11 @@ function deployTagsJob(plan: DeployPlan): string[] {
 }
 
 /**
- * Image retention (FR-1229), after a healthy deploy, holding only `packages: write`: deletes the
- * environment's intermediate `build-<commit tag>` versions a seal build leaves ({@link sealsImage})
- * and, with `cicd.imageRetention.enabled`, every version with its commit tag but the newest `keep`,
- * never the running or the previous image, one an environment's label tags, nor another
+ * Image retention (FR-1229), after a healthy deploy, holding `packages: write` and `actions: read`
+ * (to list the app's environments by their workflows): deletes the environment's intermediate
+ * `build-<commit tag>` versions a seal build leaves ({@link sealsImage}) and, with
+ * `cicd.imageRetention.enabled`, every version with its commit tag but the newest `keep`, never
+ * the running or the previous image, one an existing environment's label tags, nor another
  * environment's builds (see {@link retentionScript}).
  */
 function retentionJob(plan: DeployPlan): string[] {
@@ -266,7 +268,7 @@ function retentionJob(plan: DeployPlan): string[] {
     id: "prune",
     name: "Delete old images",
     needs: ["build", "deploy"],
-    permissions: ["packages: write"],
+    permissions: ["actions: read", "packages: write"],
     steps: [
       `- name: ${enabled ? `Keep the newest ${keep} images and delete older ones` : "Delete the intermediate build images"}`,
       "  shell: node {0}",

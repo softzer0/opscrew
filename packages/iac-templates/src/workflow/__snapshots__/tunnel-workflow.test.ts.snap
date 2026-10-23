@@ -335,6 +335,7 @@ jobs:
     needs: [build, deploy]
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       packages: write
     steps:
       - name: Keep the newest 10 images and delete older ones
@@ -357,23 +358,28 @@ jobs:
            * protect: digests never deleted: the running and the previous image.
            * recent: a time (milliseconds since 1970): an untagged version created since then stays unless
            * a version deleted here lists it, since another environment's build may be pushing it right now.
+           * environments: the names of the app's environments (prod and each one beside it).
            *
-           * Kept: the protected digests, every version an environment's label tags (opscrew-<env>, the image
-           * it runs, and opscrew-<env>-previous, the one before), the newest keep <commit> versions, versions
-           * with a tag this environment's builds did not push (yours, Buildpacks' caches, another
-           * environment's images), signatures of kept images, and whatever a kept index lists, tagged or
-           * not. Deleted: build-<commit> intermediates, older <commit> versions with their signatures,
-           * and untagged versions nothing kept lists, once they are older than recent.
+           * Kept: the protected digests, every version the label tags of one of the environments mark
+           * (opscrew-<env>, the image it runs, and opscrew-<env>-previous, the one before), the newest keep
+           * <commit> versions, versions with a tag this environment's builds did not push and that is no
+           * other opscrew-* tag (yours, Buildpacks' caches, another environment's images), signatures of
+           * kept images, and whatever a kept index lists, tagged or not. Deleted: build-<commit>
+           * intermediates, older <commit> versions with their signatures, and untagged versions
+           * nothing kept lists, once they are older than recent.
            */
-          function prunable(versions, children, keep, protect, recent) {
+          function prunable(versions, children, keep, protect, recent, environments) {
             const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
             const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
-            const label = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag);
+            const labels = new Set(environments.flatMap((env) => ["opscrew-" + env, "opscrew-" + env + "-previous"]));
+            const label = (tag) => labels.has(tag);
+            // An opscrew-* tag that labels none of the environments (one removed since, a stray one).
+            const strayLabel = (tag) => /^opscrew-[a-z][a-z0-9-]*$/.test(tag) && !label(tag);
             const subject = (tag) => {
               const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
               return match ? "sha256:" + match[1] : undefined;
             };
-            const ours = (tag) => commit(tag) || build(tag) || subject(tag) !== undefined;
+            const ours = (tag) => commit(tag) || build(tag) || subject(tag) !== undefined || strayLabel(tag);
             const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
 
             const kept = new Set(protect);
@@ -447,6 +453,20 @@ jobs:
 
             let deleting = false;
             try {
+              // The app's environments: each has its OpsCrew deploy workflow, named "OpsCrew deploy" (prod)
+              // or "OpsCrew deploy (<env>)".
+              const environments = [];
+              for (let page = 1; ; page++) {
+                const batch = await read(
+                  await github("GET", "/repos/" + owner + "/" + name + "/actions/workflows?per_page=100&page=" + page),
+                  "The GitHub workflows API",
+                );
+                for (const w of batch.workflows) {
+                  const match = /^OpsCrew deploy(?: \\(([a-z][a-z0-9-]*)\\))?$/.exec(w.name);
+                  if (match && w.state !== "deleted") environments.push(match[1] || "prod");
+                }
+                if (batch.workflows.length < 100) break;
+              }
               const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
               const base =
                 (user.type === "Organization" ? "/orgs/" : "/users/") +
@@ -499,7 +519,7 @@ jobs:
                 }
               }
 
-              const ids = new Set(prunable(versions, children, keep, protect, recent));
+              const ids = new Set(prunable(versions, children, keep, protect, recent, environments));
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
               deleting = true;
               let failed = 0;

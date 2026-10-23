@@ -125,7 +125,9 @@ Each healthy deploy also labels the image its [environment](environments.md) now
 `opscrew-<env>` (`opscrew-prod` for prod) and the one before it `opscrew-<env>-previous`.
 These tags only label the images; deploys always name the digest. Cleanup never deletes an image
 with such a label, so every environment keeps what it runs and what it ran before, which
-[promotion and rollback](environments.md#promotion) use.
+[promotion and rollback](environments.md#promotion) use. Cleanup finds the app's environments by
+their deploy workflows in the repository: once an environment is removed and its workflow is gone,
+its labels keep nothing, and neither does any other `opscrew-` tag that names no environment.
 
 To keep more or fewer, set `cicd.imageRetention.keep` (2 to 100) in `opscrew/plan.yaml`. To keep
 every deployed image, set `cicd.imageRetention.enabled: false`. Then run `npx opscrew provision`.
