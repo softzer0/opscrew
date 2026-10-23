@@ -690,11 +690,18 @@ Effort`.
   - Verify: `pnpm lint`, `node plugin/validate.mjs`, `pnpm turbo run typecheck test --concurrency=2`
   - Effort: high
 
-## Open after 015
+## After the live runs
 
-- A derived service URL in `app.env` (`DATABASE_URL`, `REDIS_URL`, …) can stay after a promoted environment's copied shared parts drop its service, when the code still uses the service: derive the URLs only for the services the written plan has, or take the source's entries (T1516, item 19; the lead decides when it is picked up).
-- Promote reads GHCR's index twice (`imageProvenance`, then `imagePlatforms`): one connector method returning both would save a token request and an index read per promote (T1516, item 25).
-- GitHub's answer to a workflow dispatch (a 204, as the spike saw, or the documented 200 with `workflow_run_id`) was not recorded live; both paths stay until a live run logs it (T1516, item 27).
+- [ ] T1524 The three items left after T1516 (the lead, 2026-10-23)
+  - Owns: agents' `design/**` (the derived service URLs) and `promote/**`; `packages/connectors/github/src/{ghcr,github,index}.ts` with their tests; the CLI's and MCP's fakes of the changed connector methods (+ tests)
+  - Reads: spec FR-1539 and FR-1540; contracts/environments.md "Promotion"
+  - Depends: T1516
+  - Accept:
+    - **Derived service URLs:** design derives an `app.env` entry for a service (`DATABASE_URL`, `REDIS_URL`, …) only when the written plan has that service, also when a promoted environment's copied shared parts leave out a service the code still uses; the app's own value for such a name, if the user gave one, stays theirs. Test: dev drops Redis, staging is promoted to dev's image, staging's design writes no `REDIS_URL`.
+    - **One registry read:** the connector gets one method that reads an image's index once and returns its provenance and its platforms (with one pull token); promote uses it, and the separate `imageProvenance` and `imagePlatforms` go if nothing else uses them. The tests of both move to it.
+    - **The dispatch answer:** GitHub answers `POST …/dispatches` with HTTP 200 and `workflow_run_id`, `run_url` and `html_url` when the body has `return_run_details: true`, and with 204 and no body otherwise (checked live on the throwaway repository, 2026-10-23). `dispatchWorkflow` always sends `return_run_details: true` and uses the 200 answer; the 204 path (the poll for the run since the dispatch) goes, and a 204 is a plain `PROVIDER_ERROR` that names the workflow and the repository's Actions page. Tests updated.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
+  - Effort: high
 
 ## Dependencies
 
