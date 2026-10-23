@@ -10,7 +10,13 @@ import { describe, expect, it } from "vitest";
 import { gitClient } from "../shared";
 import { createTestPhaseDeps, makeFacts, type TestPhaseDeps, testPlan } from "../testing";
 import { remoteWith } from "./__fixtures__/remote";
-import { builderBranch, matchBranches, remoteEnvironmentBranches, requireBranch } from "./branches";
+import {
+  builderBranch,
+  defaultBranchOf,
+  matchBranches,
+  remoteEnvironmentBranches,
+  requireBranch,
+} from "./branches";
 import { environmentPaths } from "./paths";
 import { setEnvironment } from "./set";
 import { setupNote } from "./setup";
@@ -124,6 +130,22 @@ describe("branches named like environments (FR-1537)", () => {
     );
     expect(setupNote({ prod: "main" }, "main")).toBeUndefined();
     expect(setupNote({}, "main")).toBeUndefined();
+  });
+});
+
+describe("defaultBranchOf", () => {
+  it("prefers origin's HEAD, then the checked-out branch, then main", () => {
+    expect(
+      defaultBranchOf(makeFacts({ git: { defaultBranch: "trunk", currentBranch: "feature/x" } })),
+    ).toBe("trunk");
+    expect(defaultBranchOf(makeFacts({ git: { currentBranch: "feature/x" } }))).toBe("feature/x");
+    expect(defaultBranchOf(makeFacts({ git: {} }))).toBe("main");
+  });
+
+  it("never takes one of OpsCrew's own branches for the default branch", () => {
+    for (const currentBranch of ["opscrew/deploy-setup", "opscrew/deploy-setup-docs"]) {
+      expect(defaultBranchOf(makeFacts({ git: { currentBranch } }))).toBe("main");
+    }
   });
 });
 

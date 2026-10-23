@@ -81,12 +81,21 @@ export function workflowBranch(
   return followsBranch(plan) ? plan.cicd.branch : defaultBranch;
 }
 
+/** The prefix of the branches OpsCrew itself pushes (`AppBranchBase` in `@opscrew/plan-schema`). */
+const OPSCREW_BRANCH_PREFIX = "opscrew/";
+
 /**
  * The repository's default branch as analysis read it, the branch design gives prod and every new
- * environment: `origin`'s HEAD, else the checked-out branch, else `main`.
+ * environment: `origin`'s default branch, else the checked-out branch unless it is one of
+ * OpsCrew's own (`opscrew/…`), else `main`.
  */
 export function defaultBranchOf(facts: Pick<ProjectFacts, "git">): string {
-  return facts.git.defaultBranch ?? facts.git.currentBranch ?? "main";
+  const { defaultBranch, currentBranch } = facts.git;
+  if (defaultBranch !== undefined) return defaultBranch;
+  if (currentBranch !== undefined && !currentBranch.startsWith(OPSCREW_BRANCH_PREFIX)) {
+    return currentBranch;
+  }
+  return "main";
 }
 
 /**

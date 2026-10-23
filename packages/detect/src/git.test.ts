@@ -177,6 +177,71 @@ describe("readGitInfo", () => {
     });
   });
 
+  describe("without origin/HEAD (a repository pushed rather than cloned)", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const base = {
+      ".git/config": '[remote "origin"]\n\turl = https://github.com/acme/shop.git\n',
+      ".git/HEAD": "ref: refs/heads/opscrew/deploy-setup\n",
+    };
+    const defaultBranch = async (files: Record<string, string>) =>
+      (await readGitInfo(await tree({ ...base, ...files }))).defaultBranch;
+
+    it("takes main from a loose remote-tracking ref", async () => {
+      expect(
+        await defaultBranch({
+          ".git/refs/remotes/origin/main": `${sha}\n`,
+          ".git/refs/remotes/origin/master": `${sha}\n`,
+        }),
+      ).toBe("main");
+    });
+
+    it("takes main from packed-refs, skipping the header and peeled lines", async () => {
+      expect(
+        await defaultBranch({
+          ".git/packed-refs": [
+            "# pack-refs with: peeled fully-peeled sorted ",
+            `${sha} refs/remotes/origin/feature/x`,
+            `${sha} refs/remotes/origin/main`,
+            `^${sha}`,
+            `${sha} refs/remotes/upstream/master`,
+            "",
+          ].join("\n"),
+        }),
+      ).toBe("main");
+    });
+
+    it("takes master when origin has master but no main", async () => {
+      expect(await defaultBranch({ ".git/refs/remotes/origin/master": `${sha}\n` })).toBe("master");
+      expect(
+        await defaultBranch({ ".git/packed-refs": `${sha} refs/remotes/origin/master\r\n` }),
+      ).toBe("master");
+    });
+
+    it("leaves it unset when origin has neither main nor master", async () => {
+      expect(
+        await defaultBranch({
+          ".git/refs/remotes/origin/develop": `${sha}\n`,
+          ".git/packed-refs": `${sha} refs/remotes/upstream/main\n${sha} refs/heads/main\n`,
+        }),
+      ).toBeUndefined();
+    });
+
+    it("still prefers origin/HEAD when it is a symbolic ref", async () => {
+      expect(
+        await defaultBranch({
+          ".git/refs/remotes/origin/HEAD": "ref: refs/remotes/origin/trunk\n",
+          ".git/refs/remotes/origin/main": `${sha}\n`,
+        }),
+      ).toBe("trunk");
+      expect(
+        await defaultBranch({
+          ".git/refs/remotes/origin/HEAD": `${sha}\n`,
+          ".git/refs/remotes/origin/master": `${sha}\n`,
+        }),
+      ).toBe("master");
+    });
+  });
+
   it("follows a relative gitdir without commondir (submodule layout)", async () => {
     const root = await tree({
       ".git/modules/lib/config": '[remote "origin"]\n\turl = https://github.com/acme/lib\n',

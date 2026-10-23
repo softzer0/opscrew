@@ -151,10 +151,18 @@ function symbolicRef(text: string | undefined, prefix: string): string | undefin
     : undefined;
 }
 
+/** True when the remote-tracking ref `ref` exists, as a loose file or a line of `packed-refs`. */
+async function hasRef(commonDir: string, ref: string, packedRefs: string): Promise<boolean> {
+  if ((await readText(join(commonDir, ...ref.split("/")))) !== undefined) return true;
+  return packedRefs.split(/\r?\n/).some((line) => line.split(" ")[1] === ref);
+}
+
 /**
  * Reads git facts straight from the `.git` directory (no git binary): the `origin` remote (or the
- * first remote) with credentials stripped, its owner/repo, the default branch from
- * `refs/remotes/<remote>/HEAD` and the current branch from `HEAD`. Supports `.git` files that point
+ * first remote) with credentials stripped, its owner/repo, the default branch and the current
+ * branch from `HEAD`. The default branch is the one `refs/remotes/<remote>/HEAD` points at; a
+ * repository pushed rather than cloned has none, and then it is `main` or else `master` when the
+ * remote has that branch (a loose ref or one in `packed-refs`). Supports `.git` files that point
  * at a linked worktree or submodule git directory. Returns `{}` when `root` is not a git checkout.
  */
 export async function readGitInfo(root: string): Promise<ProjectFacts["git"]> {
@@ -176,7 +184,17 @@ export async function readGitInfo(root: string): Promise<ProjectFacts["git"]> {
     if (remote.repo) git.repo = remote.repo;
     const remoteHead = await readText(join(dirs.commonDir, "refs", "remotes", remoteName, "HEAD"));
     const defaultBranch = symbolicRef(remoteHead, `refs/remotes/${remoteName}/`);
-    if (defaultBranch) git.defaultBranch = defaultBranch;
+    if (defaultBranch) {
+      git.defaultBranch = defaultBranch;
+    } else {
+      const packedRefs = (await readText(join(dirs.commonDir, "packed-refs"))) ?? "";
+      for (const name of ["main", "master"]) {
+        if (await hasRef(dirs.commonDir, `refs/remotes/${remoteName}/${name}`, packedRefs)) {
+          git.defaultBranch = name;
+          break;
+        }
+      }
+    }
   }
 
   const currentBranch = symbolicRef(await readText(join(dirs.gitDir, "HEAD")), "refs/heads/");
