@@ -428,7 +428,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1611 [P] [US2] Adapt playbooks for the SSR adapters, in `packages/agents/src/adapt/**`
+- [X] T1611 [P] [US2] Adapt playbooks for the SSR adapters, in `packages/agents/src/adapt/**`
   - Owns: that path (+ tests)
   - Reads: spec US2 scenario 2; research.md R1 "Frameworks" and "Spike results" 6; plan.md "11."
   - Depends: T1607
@@ -539,6 +539,8 @@ Effort`.
   - `serverless.test.ts`'s env-stub leak test can't fail; keep the rendered-file check and the engine run's scan (T1605's review).
   - The `RenderContext.cloudflare.accountId` doc in iac-templates' `src/types.ts` names the Worker too (T1605's report).
   - `frameworkName` in analyze's summary lacks a "react-router" entry (T1607's report).
+  - adapt's `npm-range.ts` and design's `runtime-version.ts` (`comparator`, `parseRange`/`holds`) are two range parsers: export one npm-semantics checker and use it in both (T1611's review).
+  - Cloudflare hosting doesn't plan the zone's minimum TLS (014 sets 1.2 where OpsCrew owns the zone), nor the shared rules' "leave" plan for a record naming another zone (T1608's report). Add both where provision plans the shared rules.
   - Core's `NodeCommandRunner` (`shell: false`) likely can't start npm's and pnpm's `.cmd` shims on Windows, so adapt's lockfile update falls back to a warning there: resolve `.cmd` shims on win32 in core (T1611's report).
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
