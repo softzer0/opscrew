@@ -510,6 +510,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
+- [ ] T1521 [US5] A localhost environment with the local runner runs its own image (FR-1540)
+  - Owns: agents' `localhost/image.ts` (`imageSource`, `resolveLocalImage`) and `localhost/provision.ts` with their tests; `docs/guide/runners.md` "The local runner" and `docs/guide/localhost.md` where they say which image runs (+ tests)
+  - Reads: spec FR-1539 and FR-1540; data-model.md "Localhost target"
+  - Depends: T1520 (its `sharedPartsSource` uses `imageSource`'s rule)
+  - Accept:
+    - **The source:** `imageSource` returns `undefined` (the environment itself) for a localhost environment that follows a branch (`deploySource.from: main`) with `environment.runner: local`. Its shared parts then come from its own design, through T1520's use of the same rule.
+    - **The first provision:** without its own `opscrew-<env>` image yet, `resolveLocalImage` starts the stack from a local build when `planBuildsLocally`, else from prod's `opscrew-prod` image when prod has one (with the emulation note when the CPU differs), else stops (`PHASE_PRECONDITION`, nothing changed) saying to set `target.image: local-build` or deploy prod first. Each case says which image it starts and that the first push replaces it with the environment's own.
+    - **Later provisions** run the environment's own labelled image.
+    - **Unchanged:** a localhost environment without the local runner runs prod's image, or its source's when promoted, as today; `target.image: local-build` always builds.
+    - **The guide:** which image a localhost environment runs, in both cases, in plain words.
+    - **Tests:** the first provision with each fallback (local build, prod's image, the refusal), a later provision with the environment's own image, and the unchanged cases.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: high
+
 ## Phase 5: Surfaces, the Docker pass and live tests
 
 - [X] T1512a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, and agents' message text
@@ -612,7 +626,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1515 Live runs (lead), after T1520: the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e-coverage.md` (its Live results and the status at a glance). Windows localhost runs by hand on the founder's computer.
+- [ ] T1515 Live runs (lead), after T1520 and T1521: the passes in `docs/e2e.md`. They include spike items 4 (the server's runner end to end) and 9 (the local runner on Windows), with the real code. The results go in `docs/e2e-coverage.md` (its Live results and the status at a glance). Windows localhost runs by hand on the founder's computer.
   - The founder accepted Cloudflare's brief 520s for a zone's other hostnames while a new hostname's Authenticated Origin Pulls setting deploys (seen in 1 of 3 runs; documented in `docs/guide/origin-protection.md`, 2026-10-23). The environments test's load check accepts only HTTP 520–527 answers sent within 3 s of a `deployed` `hostname_association` entry in the account's audit log (the entries name no zone), and logs each with its distance from the rollout; any other failure still fails the step.
 
 ## End-of-feature simplify pass (after T1515)
