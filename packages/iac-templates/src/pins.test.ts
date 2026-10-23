@@ -258,12 +258,12 @@ describe("pins.ts", () => {
     ]);
   });
 
-  it("pins the server-less workflows' actions at the majors their research names", () => {
+  it("pins the server-less workflows' actions at the majors chosen for them", () => {
     const major = (value: string) => parseActionPin(value).tag.split(".")[0];
     expect(major(ACTIONS.wranglerAction)).toBe("v4");
-    expect(major(ACTIONS.configurePages)).toBe("v5");
-    expect(major(ACTIONS.uploadPagesArtifact)).toBe("v4");
-    expect(major(ACTIONS.deployPages)).toBe("v4");
+    expect(major(ACTIONS.configurePages)).toBe("v6");
+    expect(major(ACTIONS.uploadPagesArtifact)).toBe("v5");
+    expect(major(ACTIONS.deployPages)).toBe("v5");
     for (const key of [
       "wranglerAction",
       "setupNode",

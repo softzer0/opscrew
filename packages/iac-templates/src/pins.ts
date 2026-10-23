@@ -480,10 +480,10 @@ export const ACTIONS = {
   setupBun: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
   uploadArtifact: "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2",
   downloadArtifact: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
-  configurePages: "actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0",
+  configurePages: "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0",
   uploadPagesArtifact:
-    "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0",
-  deployPages: "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5",
+    "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0",
+  deployPages: "actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1",
 } as const satisfies Record<string, string>;
 
 /**
