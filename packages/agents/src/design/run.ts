@@ -752,17 +752,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       build,
       components: planned,
     });
-  let fresh = planFor(components);
+  let planned = components;
+  let fresh = planFor(planned);
   // New cron jobs on routes the image cannot call are planned turned off, with what to do.
   const off = uncallableRouteJobs(fresh, previous);
   if (off.length > 0) {
     const cron = components.processes.cron.map((job) =>
       off.includes(job.name) ? { ...job, enabled: false } : job,
     );
-    fresh = planFor({ ...components, processes: { ...components.processes, cron } });
+    planned = { ...components, processes: { ...components.processes, cron } };
+    fresh = planFor(planned);
   }
-  const named = prodPlan === undefined ? fresh : environmentNames(fresh, prodPlan, name, options);
-  const own = previous ? keepPlanSettings(named, previous, requirements) : named;
+  /** `designed` named for the environment, with the previous plan's settings kept. */
+  const ownPlan = (designed: DeployPlan) => {
+    const named =
+      prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, options);
+    return previous ? keepPlanSettings(named, previous, requirements) : named;
+  };
+  const own = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
   // image comes from) is chosen.
   const source = await sharedPartsSource(paths, own);
@@ -772,10 +779,15 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     own.environment?.deploySource.from !== "promote"
       ? []
       : await servicesToKeep(deps, previous, source, options.registry, warn);
+  // The variables what runs fills (DATABASE_URL, REDIS_URL, CRON_SECRET, the moved SQLite
+  // database's) follow the processes, services and SQLite the plan takes from its source, with
+  // the kept services, not those designed from the code here.
+  const shared =
+    source === undefined ? own : ownPlan(planFor(sourceComponents(planned, source.plan, keep)));
   const kept =
     prodPlan === undefined && source === undefined
       ? own
-      : environmentPlan(own, source, keep, paths);
+      : environmentPlan(shared, source, keep, paths);
   // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
   // a newer interview it is written anyway: its date then says the answers are in it, so the next
   // design keeps what the user edits in plan.yaml instead of taking the answers again.
@@ -940,6 +952,27 @@ function newPlanBasis(
     ...(requirements.provider === "localhost"
       ? { target: { provider: "localhost", image: "registry" } }
       : {}),
+  };
+}
+
+/**
+ * `planned` with what `withSharedParts` copies from `source`: its processes, its services and the
+ * `kept` ones, and its SQLite (the rest of `storage` stays the planned one).
+ */
+function sourceComponents(
+  planned: Components,
+  source: DeployPlan,
+  kept: readonly PlanService[],
+): Components {
+  const { storage: _storage, ...rest } = planned;
+  const { sqlite: _sqlite, ...ownStorage } = planned.storage ?? {};
+  const sqlite = source.storage?.sqlite;
+  const storage = { ...ownStorage, ...(sqlite === undefined ? {} : { sqlite }) };
+  return {
+    ...rest,
+    processes: source.processes,
+    services: [...source.services, ...kept],
+    ...(Object.keys(storage).length === 0 ? {} : { storage }),
   };
 }
 
