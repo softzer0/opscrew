@@ -350,7 +350,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1609 [P] [US3] Provision for GitHub Pages, in `packages/agents/src/serverless/pages/**` (new)
+- [X] T1609 [P] [US3] Provision for GitHub Pages, in `packages/agents/src/serverless/pages/**` (new)
   - Owns: that path (+ tests, fakes in `packages/agents/src/testing/pages.ts` (new)); `provisionGithubPages` in `serverless/index.ts`
   - Reads: spec US3, FR-1603, FR-1606; data-model.md "The Pages plan", "DNS records for GitHub Pages"; research.md R2 and "Spike results" 7, 13; plan.md "9."
   - Depends: T1604, T1605, T1606, T1607
