@@ -656,7 +656,7 @@ Effort`.
 
 ## End-of-feature simplify pass (after T1515)
 
-- [ ] T1516 The end-of-feature simplify pass: duplication across 015's changes, and the items collected during the waves
+- [X] T1516 The end-of-feature simplify pass: duplication across 015's changes, and the items collected during the waves
   - Owns: any 015 file the sweep simplifies (outside `packages/cli/test/live/**` and `docs/e2e*.md`)
   - Accept: the items collected below during the waves; a duplication sweep over 015's change (merged, and what was left and why); no behaviour change
   - Items collected during the waves:
