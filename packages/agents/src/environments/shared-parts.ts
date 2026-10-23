@@ -96,7 +96,8 @@ export interface SharedPartsSource {
  * whose image it runs. That is the one it is promoted from (by its plan's `environment` block), or
  * for a plan on this computer that pulls its image (`target.image: registry`) the one
  * `imageSource` names, prod's for one built from main. `undefined` when it builds its own image
- * (prod included, or before its target is known), since it then takes them from its own design.
+ * (prod included, a localhost environment on the local runner that follows a branch, or before its
+ * target is known), since it then takes them from its own design.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming the source when it is promoted from an
  * environment that has no plan yet.
  */

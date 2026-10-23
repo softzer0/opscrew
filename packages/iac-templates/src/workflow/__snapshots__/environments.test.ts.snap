@@ -149,6 +149,7 @@ jobs:
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop-staging && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop-staging/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
@@ -687,6 +688,7 @@ jobs:
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
@@ -939,6 +941,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop-eu-staging && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop-eu-staging/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
@@ -1151,6 +1154,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           dir=/srv/apps/shop-staging
           previous="$(cd "$dir" && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi)"
+          if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$dir"/.docker docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
@@ -1394,6 +1398,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           trap 'rm -f "$OPSCREW_LOCAL_LOCK"' EXIT
           dir="$OPSCREW_APPS_DIR/shop-dev"
           previous="$(cd "$dir" && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi)"
+          if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           if [[ ! -f "$dir"/.docker/config.json ]]; then

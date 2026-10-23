@@ -110,9 +110,22 @@ without it.
 
 - The deploy job's steps run with your computer's shell (Git for Windows' `bash` on Windows), and
   get none of your provider or model tokens and no SSH agent.
-- It deploys an image from GitHub's container registry, so the environment's stack must not build
-  its own image during provision (`target.image: registry`). The image can still be built on this
-  computer by the runner itself: see [Builds on your own hardware](#builds-on-your-own-hardware).
+- It deploys an image from GitHub's container registry, so the environment's plan keeps
+  `target.image: registry`. Only the environment's first `provision` may start the stack from an
+  image built on this computer (below). The image can still be built on this computer by the
+  runner itself: see [Builds on your own hardware](#builds-on-your-own-hardware).
+- An environment that follows a branch on the local runner runs its own image, the one its
+  workflow builds on each push and labels `opscrew-<env>`, and takes the build, the components and
+  the port from its own design, not from production's. Its first `provision` comes before any such
+  image, so OpsCrew starts the stack from an image built on this computer when it can build the
+  app's image as GitHub Actions does, else from the image production runs, and says which. The
+  first deploy after a push replaces it with the environment's own image. When neither is there
+  (an app this computer cannot build as GitHub Actions does, or whose Dockerfile is not in the
+  repository yet, and production not deployed yet), `provision` stops before changing anything and
+  says to deploy production first, or for a missing Dockerfile to run `opscrew adapt` and merge
+  its pull request.
+- An environment promoted from another one runs that environment's image, as it does with any
+  runner.
 
 ## Runner machines
 

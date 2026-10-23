@@ -33,6 +33,8 @@ export interface LocalhostDesignChoice {
    * runs elsewhere (`imageSource`); `undefined` when every image comes from this computer.
    */
   source?: { environment: string; arch: "amd64" | "arm64" };
+  /** True when the environment's deploy job runs on the local runner, which deploys GitHub's image. */
+  localRunner?: true;
   /** The previous plan's image source on the same CPU, kept (the user may have chosen it). */
   image?: LocalhostDeployTarget["image"];
 }
@@ -92,6 +94,7 @@ export async function localhostDesignChoice(
     arch,
     ports: await edgePortsFor(deps, input.previous, local.portFree),
     ...(source !== undefined ? { source } : {}),
+    ...(input.environment.environment?.runner === "local" ? { localRunner: true as const } : {}),
     ...(before?.provider === "localhost" && before.arch === arch ? { image: before.image } : {}),
   };
 }
@@ -101,7 +104,8 @@ export async function localhostDesignChoice(
  * environment runs is built for this computer's CPU; else `local-build` when this computer builds
  * the image as GitHub Actions does, and `registry` under emulation otherwise. With no image built
  * elsewhere, `local-build` whenever this computer can build it. The previous plan's choice on the
- * same CPU stays, unless this computer can no longer build the image.
+ * same CPU stays, unless this computer can no longer build the image. Always `registry` on the
+ * local runner, which deploys the image GitHub Actions built.
  */
 export function localhostTarget(
   choice: LocalhostDesignChoice,
@@ -110,11 +114,13 @@ export function localhostTarget(
   const matches = choice.source !== undefined && choice.source.arch === choice.arch;
   const builds = buildsLocally(app);
   const image =
-    choice.image === "registry" || (choice.image === "local-build" && builds)
-      ? choice.image
-      : matches || !builds
-        ? "registry"
-        : "local-build";
+    choice.localRunner === true
+      ? "registry"
+      : choice.image === "registry" || (choice.image === "local-build" && builds)
+        ? choice.image
+        : matches || !builds
+          ? "registry"
+          : "local-build";
   return {
     provider: "localhost",
     mode: "local-compose",
@@ -131,7 +137,7 @@ export const LOCALHOST_PRICE_NOTE = "No server price: it runs in this computer's
 /**
  * The design warnings of the localhost target's image, said once: that it differs from the
  * source environment's (production's, or the environment it is promoted from) on another CPU, or
- * that nothing builds one.
+ * that nothing builds one (on the local runner, its own workflow does).
  */
 export function localhostImageWarnings(
   target: LocalhostDeployTarget,
@@ -139,7 +145,7 @@ export function localhostImageWarnings(
 ): string[] {
   const { source } = choice;
   if (source === undefined) {
-    return target.image === "local-build"
+    return target.image === "local-build" || choice.localRunner === true
       ? []
       : [
           "No other environment builds the app's image, and this computer cannot build it as GitHub Actions does: `opscrew provision` needs an image of the app on GitHub Container Registry, labelled by the environment that runs it.",

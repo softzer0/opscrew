@@ -346,6 +346,9 @@ function startStep(plan: DeployPlan, edgeFiles: EdgeFiles, reach: Reach): string
     '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
     ...reach.prelude,
     `    previous="$(${reach.savePrevious})"`,
+    // An image built on this computer (provision's first start of an environment on the local
+    // runner) is no previous GHCR image: the prune job keeps none for it.
+    '    if [[ "$previous" == opscrew-local/* ]]; then previous=; fi',
     `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
     '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
     ...reach.login,

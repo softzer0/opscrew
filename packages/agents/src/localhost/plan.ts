@@ -184,7 +184,7 @@ async function fileAction(file: string, content: string): Promise<LocalItem["act
 }
 
 /** The image the app's folder's `.env` names, as the last deploy wrote it. */
-async function runningImage(folder: string): Promise<string | undefined> {
+export async function runningImage(folder: string): Promise<string | undefined> {
   const env = await readTextIfExists(join(folder, ".env"));
   return env === undefined ? undefined : /^APP_IMAGE=(.+)$/m.exec(env)?.[1]?.trim();
 }

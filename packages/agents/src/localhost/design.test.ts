@@ -13,12 +13,14 @@ import { environmentPaths } from "../environments/paths";
 import { answersToRequirements } from "../interview/answers";
 import { buildQuestions, defaultProvider } from "../interview/questions";
 import { providerProfile } from "../providers";
+import { requireLocalRunnerImage } from "../runners";
 import {
   createTestPhaseDeps,
   makeRequirements,
   nextPostgresFacts,
   type TestPhaseDeps,
 } from "../testing";
+import { resolveLocalImage } from "./image";
 import { localhostHostSettingProblem } from "./preflight";
 import { localRoots } from "./services";
 import { localSite } from "./site";
@@ -118,17 +120,52 @@ describe("design for this computer", () => {
 
 describe("a localhost environment beside prod", () => {
   /** Prod designed on Hetzner, then `opscrew env add <name>` for this computer. */
-  async function beside(name: string, arch: string) {
+  async function beside(name: string, arch: string, runner?: "local") {
     const deps = await setup({ provider: "hetzner", region: "eu-central" });
     const { euCatalog } = await import("../testing");
     await runDesign(deps, { catalog: euCatalog() });
     const env = { ...deps, paths: environmentPaths(deps.paths, name) };
     const result = await addEnvironment(env, {
-      answers: { provider: "localhost" },
+      answers: { provider: "localhost", ...(runner !== undefined ? { runner } : {}) },
       design: { localhost: computer(arch) },
     });
     return { deps, env, result };
   }
+
+  it("pulls GitHub's image on the local runner, so its first provision starts from a local build", async () => {
+    for (const arch of ["x64", "arm64"]) {
+      const { env, result } = await beside("dev", arch, "local");
+      const { plan } = result.design;
+      expect(plan.target).toMatchObject({ provider: "localhost", image: "registry" });
+      expect(env.reporter.text()).not.toContain("No other environment builds the app's image");
+      expect(env.reporter.text()).not.toContain("is built for");
+      // Provision accepts it on the local runner, and GHCR has no image of dev's yet.
+      await requireLocalRunnerImage(env.paths.root, plan);
+      await writeFile(join(env.paths.root, "Dockerfile"), "FROM node:22-alpine\n");
+      const registry = {
+        image: "ghcr.io/acme/shop",
+        taggedDigest: async () => undefined,
+        login: async () => ({ username: "acme", token: "" }),
+      };
+      expect(await resolveLocalImage(env, plan, async () => registry)).toMatchObject({
+        source: "local-build",
+      });
+      expect(env.reporter.text()).toContain("dev has no image of its own");
+    }
+  });
+
+  it("pulls GitHub's image for prod on this computer on the local runner", async () => {
+    const deps = await setup();
+    const first = await runDesign(deps, { localhost: computer("x64") });
+    expect(first.plan.target).toMatchObject({ image: "local-build" });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      environment: { deploySource: { from: "main" }, runner: "local" },
+    });
+    const { plan } = await runDesign(deps, { localhost: computer("x64") });
+    expect(plan.target).toMatchObject({ image: "registry" });
+    expect(deps.reporter.text()).not.toContain("No other environment builds the app's image");
+  });
 
   it("runs the image prod runs when this computer has prod's CPU, at <app>.localhost", async () => {
     const { env, result } = await beside("dev", "x64");

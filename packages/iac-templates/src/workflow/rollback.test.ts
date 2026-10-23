@@ -761,6 +761,23 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
     expect(file("output")).toBe("previous=unknown");
   });
 
+  it("reports an image built on this computer as no previous GHCR image, and still rolls back to it", () => {
+    const local = "opscrew-local/shop:0123456789ab";
+    server({ ".env": local }, [local]);
+    const start = run(rolling.start);
+    expect(start.status, start.output).toBe(0);
+    expect(file("output")).toBe("previous=");
+    expect(read(".env.previous")).toBe(`APP_IMAGE=${local}`);
+
+    // The local image stays in this computer's Docker, so the rollback restores it.
+    resetCalls();
+    const rollback = run(rolling.rollback);
+    expect(rollback.status).toBe(1);
+    expect(rollback.output).toContain("restored the previous version");
+    expect(read(".env")).toBe(`APP_IMAGE=${local}`);
+    expect(containers()).toEqual([local]);
+  });
+
   it("reports when the server cannot be reached for the rollback", () => {
     server({ ".env": NEW, ".env.previous": OLD }, [NEW]);
     const rollback = run(rolling.rollback, { SSH_FAIL_AT: "1" });

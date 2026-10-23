@@ -153,6 +153,24 @@ instead of `/srv/apps` and `/srv/edge`. OpsCrew never runs it as root.
   builds it on this computer, in the same cases. Otherwise `provision` needs an image of the app on
   GitHub Container Registry, labelled by an environment that runs it.
 
+### Which image an environment here runs
+
+- **Without the local runner**, an environment on this computer runs production's image (or, when
+  it is promoted, the image of the environment it is promoted from), by the rules above. When it
+  pulls that image, its build, components and port come from that environment's plan.
+- **With the [local runner](runners.md#the-local-runner)**, an environment that follows a branch
+  runs its own image: its workflow builds it on GitHub on each push, labels it `opscrew-<env>`, and
+  the runner deploys it here. Its build, components and port come from its own design. Until its
+  first labelled image, `provision` keeps an image from GitHub Container Registry that an earlier
+  deploy left running here; otherwise it starts the stack from an image built on this computer when
+  it can build the app's image as GitHub Actions does, else from production's image (under
+  emulation when production's CPU differs), and says which. The first deploy after a push replaces
+  it with the environment's own. When none is there (an app this computer cannot build as GitHub
+  Actions does, or whose Dockerfile is not in the repository yet, and production not deployed
+  yet), `provision` stops before changing anything and says to deploy production first, or for a
+  missing Dockerfile to run `opscrew adapt` and merge its pull request.
+- `target.image: local-build` always builds the image on this computer.
+
 ## When OpsCrew stops without changing anything
 
 `provision` checks this computer first, and names the fix when:

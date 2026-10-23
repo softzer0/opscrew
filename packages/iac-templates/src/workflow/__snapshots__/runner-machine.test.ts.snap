@@ -153,6 +153,7 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i "$RUNNER_TEMP/opscrew-ssh/opscrew" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-ssh/known_hosts" -F "$RUNNER_TEMP/opscrew-ssh/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop-staging && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop-staging/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"

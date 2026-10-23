@@ -117,7 +117,9 @@ the image, because the image is what needs it:
   copies the definition from that environment's plan. `npx opscrew provision --env <env>` refuses a
   promoted environment whose copy differs from its source's, and says to run `design` for it first.
 - An environment on [this computer](localhost.md) that runs prod's image, rather than building
-  its own, copies the definition from prod's plan in the same way.
+  its own, copies the definition from prod's plan in the same way. One that follows a branch on
+  the [local runner](runners.md#the-local-runner) builds its own image, so it takes the definition
+  from its own design.
 
 So a new service starts where the new code first runs. Say you add Redis to the app, with
 promotion first (dev → staging → prod):
