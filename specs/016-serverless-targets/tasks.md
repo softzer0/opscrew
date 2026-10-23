@@ -33,7 +33,7 @@ Effort`.
 
 ## Phase 1: Foundation
 
-- [ ] T1601a Contracts: the two targets, the site block, their checks, `onServer` and `withTargetDefaults`, and the `pages-apply` approval kind, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/approvals.ts`, and every reader and writer of the changed types
+- [X] T1601a Contracts: the two targets, the site block, their checks, `onServer` and `withTargetDefaults`, and the `pages-apply` approval kind, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/approvals.ts`, and every reader and writer of the changed types
   - Owns: those paths (+ the generated JSON schema, tests and fixtures); the `switch`/`if` sites on `target.provider` across packages, for a branch where the meaning is clear or a plain refusal only
   - Reads: data-model.md "Plan targets", "The site block", "The Pages plan"; contracts/targets.md "plan-schema"; plan.md "1."; ADR 0019
   - Depends: —
