@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { detectProject, detectSite } from "./index";
+import { detectProject, detectProjectDetails, detectSite } from "./index";
 import { makeTree, removeTree } from "./test-helpers";
 
 const roots: string[] = [];
@@ -320,6 +320,63 @@ describe("detectSite: Hugo and sites with no build", () => {
     });
     expect(site).toMatchObject({ dir: ".", tool: "none", render: "static" });
     expect(site?.outputDir).toBeUndefined();
+  });
+});
+
+describe("a site without a manifest is an app folder", () => {
+  /** The two-apps live pass: examples/static-vite in sites/landing, examples/hugo-site in sites/docs. */
+  const TWO_SITES = {
+    "README.md": "# Two sites\n",
+    ...Object.fromEntries(
+      Object.entries(VITE_SPA).map(([path, text]) => [`sites/landing/${path}`, text]),
+    ),
+    "sites/docs/hugo.toml": 'baseURL = "https://example.com/"\ntitle = "Docs"\n',
+    "sites/docs/content/_index.md": "# Docs\n",
+    "sites/docs/layouts/404.html": "<h1>Not found</h1>",
+    "sites/docs/layouts/home.html": "<h1>{{ .Title }}</h1>",
+  };
+
+  it("offers a Hugo folder beside a Node.js app as a candidate, and --dir gives Hugo's facts", async () => {
+    const root = await tree(TWO_SITES);
+    expect((await detectProjectDetails(root)).appCandidates).toEqual([
+      "sites/docs",
+      "sites/landing",
+    ]);
+    const docs = await detectProjectDetails(root, { appDir: "sites/docs" });
+    expect(docs.appDir).toBe("sites/docs");
+    expect(await detectSite(root, docs.facts)).toEqual({
+      dir: "sites/docs",
+      tool: "hugo",
+      command: "hugo --minify",
+      render: "static",
+      framework: "hugo",
+      outputDir: "public",
+      spa: false,
+      notFoundPage: "sites/docs/layouts/404.html",
+      serverNeeds: [],
+    });
+    const landing = await detectProjectDetails(root, { appDir: "sites/landing" });
+    expect(await detectSite(root, landing.facts)).toMatchObject({
+      dir: "sites/landing",
+      tool: "node",
+      framework: "vite",
+    });
+  });
+
+  it("keeps a Hugo folder, Markdown or index.html inside a Node.js app part of that app", async () => {
+    const root = await tree({
+      ...Object.fromEntries(Object.entries(VITE_SPA).map(([path, text]) => [`web/${path}`, text])),
+      "web/docs/hugo.toml": 'title = "Docs"\n',
+      "web/docs/content/_index.md": "# Docs\n",
+      "web/notes/index.html": "<h1>Notes</h1>",
+      "guide/intro.md": "# Intro\n",
+    });
+    const details = await detectProjectDetails(root);
+    expect(details.appCandidates).toEqual([]);
+    expect(details.appDir).toBe("web");
+    await expect(detectProjectDetails(root, { appDir: "web/docs" })).rejects.toThrow(
+      /not an app directory/,
+    );
   });
 });
 

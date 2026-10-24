@@ -77,6 +77,7 @@ import {
   ServiceCollector,
   withUrlVariables,
 } from "./services";
+import { manifestlessSiteDirs } from "./site";
 import {
   type AppSources,
   BUILT_IN_HEALTH_FILES,
@@ -347,12 +348,28 @@ export async function detectProjectDetails(
   );
   if (monorepo && patterns.length === 0) patterns = ["apps/*", "packages/*"];
   const nested = infos.filter((info) => info.unit.dir !== ".");
-  const members = monorepo
-    ? nested.filter((info) => matchesWorkspace(info.unit.dir, patterns))
-    : nested;
+  // A site with no manifest (a Hugo site) is an app folder too, unless it lies in an app's folder.
+  const appDirs = (monorepo ? nested : infos).map((info) => info.unit.dir);
+  const sites: UnitInfo[] = (await manifestlessSiteDirs(files))
+    .filter((dir) => !appDirs.some((app) => isWithin(app, dir)))
+    .map((dir) => ({
+      unit: { dir, manifests: [], dependencies: [] },
+      frameworks: [],
+      hints: { nextStaticExport: false, astroServer: false, djangoTemplates: false },
+      roles: new Set(),
+      appKind: "unknown",
+      nextConfig: undefined,
+      astroConfig: undefined,
+    }));
+  const members = [
+    ...(monorepo ? nested.filter((info) => matchesWorkspace(info.unit.dir, patterns)) : nested),
+    ...sites,
+  ];
   let deployable = members.filter((info) => isServerUnit(info.unit, info.roles));
-  if (deployable.length === 0) deployable = members.filter((info) => info.appKind !== "unknown");
-  const deployableDirs = deployable.map((info) => info.unit.dir);
+  if (deployable.length === 0) {
+    deployable = members.filter((info) => info.appKind !== "unknown" || sites.includes(info));
+  }
+  const deployableDirs = sortStrings(deployable.map((info) => info.unit.dir));
 
   let primary: UnitInfo | undefined;
   let appCandidates: string[] = [];

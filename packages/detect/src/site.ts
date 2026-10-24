@@ -12,7 +12,7 @@ import type { ProjectFacts } from "@opscrew/plan-schema";
 import { normalizeAppDir } from "./app-dir";
 import { type JsPackageManager, jsExec, jsRun } from "./detect";
 import { findDependency, readUnits, type Unit } from "./manifests";
-import { joinRel, relativeTo, toFsPath } from "./paths";
+import { basenameRel, dirnameRel, joinRel, relativeTo, toFsPath } from "./paths";
 
 /** The frameworks whose Cloudflare adapter OpsCrew sets up for server rendering. */
 export type CloudflareFramework = "astro" | "next" | "nuxt" | "sveltekit";
@@ -305,18 +305,44 @@ async function nodeSite(
   };
 }
 
+/** The Hugo config of a site in `dir` (repo-relative), when `dir` holds one; `has` tells what exists. */
+async function hugoConfig(
+  has: (path: string) => Promise<boolean>,
+  dir: string,
+): Promise<string | undefined> {
+  const first = async (names: readonly string[]) => {
+    for (const name of names) if (await has(joinRel(dir, name))) return joinRel(dir, name);
+    return undefined;
+  };
+  return (
+    (await first(HUGO_CONFIGS)) ??
+    ((await has(joinRel(dir, "content"))) ? await first(LEGACY_HUGO_CONFIGS) : undefined)
+  );
+}
+
+/**
+ * The folders below the repository root that hold a site of their own without a manifest (a Hugo
+ * site), among the repository's `files` (repo-relative). They are app folders like a manifest's.
+ */
+export async function manifestlessSiteDirs(files: readonly string[]): Promise<string[]> {
+  const fileSet = new Set(files);
+  const has = async (path: string) =>
+    fileSet.has(path) || files.some((file) => file.startsWith(`${path}/`));
+  const configNames = new Set<string>([...HUGO_CONFIGS, ...LEGACY_HUGO_CONFIGS]);
+  const dirs = new Set(files.filter((file) => configNames.has(basenameRel(file))).map(dirnameRel));
+  dirs.delete(".");
+  const sites: string[] = [];
+  for (const dir of dirs) if ((await hugoConfig(has, dir)) !== undefined) sites.push(dir);
+  return sites;
+}
+
 /** A Hugo site in `dir`: its config, `hugo --minify`, and its publishDir (default `public`). */
 async function hugoSite(
   repo: Repository,
   dir: string,
   serverNeeds: string[],
 ): Promise<SiteDetection | undefined> {
-  const at = (names: readonly string[]) => names.map((name) => joinRel(dir, name));
-  const config =
-    (await repo.first(at(HUGO_CONFIGS))) ??
-    ((await repo.has(joinRel(dir, "content")))
-      ? await repo.first(at(LEGACY_HUGO_CONFIGS))
-      : undefined);
+  const config = await hugoConfig(repo.has, dir);
   if (config === undefined) return undefined;
   const publishDir = PUBLISH_DIR.exec((await repo.read(config)) ?? "")?.[1] ?? "public";
   return {
