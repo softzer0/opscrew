@@ -229,8 +229,9 @@ Required reviewers on a private repository need GitHub Enterprise.
 
 ## Two setups: promotion first, or a branch per environment
 
-An environment that is not promoted follows one branch: each push to it builds the image and
-deploys it to that environment. dev, staging and prod can be set up in two ways.
+An environment that is not promoted follows one branch: each push to it that changes the app
+builds the image and deploys it to that environment ([When a push deploys your
+app](when-deploys-run.md)). dev, staging and prod can be set up in two ways.
 
 - **Promotion first (recommended).** Only the first environment follows a branch, usually your
   default branch. Each push builds one image and deploys it to dev. When it works there, you promote

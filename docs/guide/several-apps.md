@@ -103,8 +103,10 @@ already uses.
 - **Dependabot.** One `.github/dependabot.yml` covers every app's folders.
 - **GitHub Pages.** A repository has one GitHub Pages site, so only one app (or environment) of a
   repository can deploy there. Design says which one has it.
-- **Pushes.** Each app's workflow runs on every push to the branch it follows, also when only the
-  other app changed.
+- **Pushes.** Each app's workflow runs on a push to the branch it follows only when the push
+  changes a path that app's deploy reads: its own folder, its `app.sharedPaths`, and its own files
+  ([When a push deploys your app](when-deploys-run.md)). A push that changes only another app
+  deploys only that app.
 
 ## Removing an app
 

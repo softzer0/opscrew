@@ -19,6 +19,7 @@ an app yet.
 ## How your app is built and shipped
 
 - [How OpsCrew builds your app's image](builders.md)
+- [When a push deploys your app](when-deploys-run.md)
 - [Deploys without downtime](zero-downtime.md)
 - [Self-hosted runners and runner machines: where the deploy job and the build run](runners.md)
 - [The image supply chain](supply-chain.md)

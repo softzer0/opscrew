@@ -130,7 +130,8 @@ and GitHub redirects `http://` to `https://`. `verify` never changes anything it
 
 ## How a deploy works
 
-1. You push to the deploy branch, or run the workflow by hand.
+1. You push to the deploy branch (a push deploys when it changes a path the site's build reads:
+   [When a push deploys your app](when-deploys-run.md)), or run the workflow by hand.
 2. GitHub Actions builds the site, checks it against the 1 GB, and hands it to GitHub Pages with
    GitHub's own Pages actions, pinned by their commits.
 3. The deploy job publishes it in the `github-pages` environment, then checks that the site answers.

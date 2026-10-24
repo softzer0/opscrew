@@ -124,7 +124,8 @@ request.
 
 ## How a deploy works
 
-1. You push to the deploy branch, or run the workflow by hand.
+1. You push to the deploy branch (a push deploys when it changes a path the site's build reads:
+   [When a push deploys your app](when-deploys-run.md)), or run the workflow by hand.
 2. GitHub Actions builds the site and checks it against the files per version. For server
    rendering, Wrangler then bundles the Worker with its packages. The build is kept as the
    artifact `opscrew-site`, and its SHA-256 is recorded.
