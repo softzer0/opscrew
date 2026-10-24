@@ -379,7 +379,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1610a [P] [US4] `verify`, `status`, `drift` and `secure` for both targets, in `packages/agents/src/{verify,status,drift,secure}/**`
+- [X] T1610a [P] [US4] `verify`, `status`, `drift` and `secure` for both targets, in `packages/agents/src/{verify,status,drift,secure}/**`
   - Owns: those paths (+ tests); the new branches only
   - Reads: spec US4 scenarios 1–3, 5, FR-1608; data-model.md "The running version"; plan.md "10."
   - Depends: T1608, T1609
