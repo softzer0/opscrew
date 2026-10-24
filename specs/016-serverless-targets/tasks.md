@@ -592,6 +592,7 @@ Effort`.
   - Core's `NodeCommandRunner` (`shell: false`) likely can't start npm's and pnpm's `.cmd` shims on Windows, so adapt's lockfile update falls back to a warning there: resolve `.cmd` shims on win32 in core (T1611's report).
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
+  - The guide says how deploy workflows filter pushes by path (T1619): `app.sharedPaths`, root files except Markdown, and GitHub's limit of evaluating only the first 300 changed files of a push (a bigger push may skip a deploy; run the workflow by hand then).
   - Drift compares no generated files for the server-less targets, because `previewDeploymentFiles` (`provision/render.ts`) refuses them (T1610a's report). Decide whether drift should compare the workflow and Wrangler config too.
 
 ## Dependencies
