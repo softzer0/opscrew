@@ -1,8 +1,12 @@
-import type { PlanSummary, ResourceChange } from "@opscrew/contracts";
+import type { PlanSummary, ResourceChange, VpsProviderId } from "@opscrew/contracts";
 import { isRecord, listText } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { cloudTarget, type ServerModule, serviceSpec } from "@opscrew/iac-templates";
-import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
+import {
+  type CloudDeployTarget,
+  type DeployPlan,
+  isServerlessProvider,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import { providerProfile } from "../providers";
 import { destroyTexts } from "./texts";
@@ -25,12 +29,18 @@ export function planHeading(
   return `${engineLabel(summary.engine.name)} ${summary.engine.version} ${kind}:`;
 }
 
+/** True when a deletion happens on a server (one OpsCrew created, or the user's own). */
+export function onServer(provider: DeletionProvider): provider is VpsProviderId {
+  return provider !== "portainer" && !isServerlessProvider(provider);
+}
+
 /**
  * The Terraform type of the provider's server (`hcloud_server`, `digitalocean_droplet`); none on a
- * server the user owns or in their Portainer, whose infrastructure code holds no server.
+ * server the user owns, in their Portainer or on a server-less target, whose infrastructure code
+ * holds no server.
  */
 function serverType(provider: DeletionProvider): string | undefined {
-  if (provider === "portainer") return undefined;
+  if (!onServer(provider)) return undefined;
   return providerProfile(provider).serverResourceType || undefined;
 }
 

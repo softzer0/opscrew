@@ -2,11 +2,12 @@
  * The destroy's part in OpsCrew's shared Cloudflare rules (ADR 0014): this app's hostnames leave
  * OpsCrew's rules in the zone of its record (`.opscrew/cloudflare.json`), OpsCrew's rule goes when
  * no hostname is left, and so does a ruleset that then holds no rule, or that this app created and
- * an interrupted destroy left empty. Planned before the typed confirmation, applied after the
- * infrastructure's destroy as a Cloudflare plan approved by its hash (`cloudflare-apply`, with
- * `allowDestroy` and the typed app name).
+ * an interrupted destroy left empty. Planned before the typed confirmation, applied as a Cloudflare
+ * plan approved by its hash (`cloudflare-apply`, with `allowDestroy` and the typed app name): after
+ * the infrastructure's destroy on a server, before it on Cloudflare's hosting (the `www` redirect
+ * goes first).
  */
-import type { CloudflareClient } from "@opscrew/connector-cloudflare";
+import { type CloudflareClient, SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { ApprovalRecord } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -20,6 +21,7 @@ import {
   type ZonePlan,
   zonePlan,
 } from "../provision/shared-cloudflare";
+import { listsRedirect } from "../serverless/cloudflare/rules";
 import { COMMAND } from "./common";
 import type { DestroyServices } from "./types";
 
@@ -31,11 +33,13 @@ export interface SharedRemoval {
 
 /**
  * Plans the removal of everything this app's record lists in OpsCrew's shared Cloudflare rules
- * and its origin TLS (read-only): `undefined` without a record or when it lists nothing. The plan
- * is applied only after the app's site is gone, so it is made for an origin that serves nothing:
- * the client certificate is turned off and deleted, and the origin certificate and every one it
- * replaced are revoked. The zone's minimum TLS stays. A damaged record, and a finding of the plan
- * (OpsCrew's rule changed by someone, a refused read), stop before anything changes.
+ * and its origin TLS (read-only): `undefined` without a record or when it lists nothing. On a
+ * server the plan is applied only after the app's site is gone, so it is made for an origin that
+ * serves nothing: the client certificate is turned off and deleted, and the origin certificate
+ * and every one it replaced are revoked. The zone's minimum TLS stays. The `www` redirect rule's
+ * phase is read only when the record has (or created) it, as for a site on Cloudflare's hosting.
+ * A damaged record, and a finding of the plan (OpsCrew's rule changed by someone, a refused read),
+ * stop before anything changes.
  */
 export async function planSharedRemoval(
   deps: PhaseDeps,
@@ -46,6 +50,9 @@ export async function planSharedRemoval(
   if (record === undefined) return undefined;
   const tls = record.tls?.origin !== undefined || record.tls?.client !== undefined;
   if (!listsHostnames(record) && record.createdEntrypoints.length === 0 && !tls) return undefined;
+  // The redirect's phase, also when an interrupted destroy left its ruleset empty.
+  const { phase } = SHARED_RULES["opscrew-www-redirect"];
+  const redirect = listsRedirect(record) || record.createdEntrypoints.includes(phase);
   const client = sharedCloudflareClient(deps, services);
   const zone = await zonePlan(deps, {
     client,
@@ -59,6 +66,7 @@ export async function planSharedRemoval(
     },
     record,
     command: COMMAND,
+    ...(redirect ? { redirect: true } : {}),
   });
   return { client, zone };
 }
@@ -74,7 +82,7 @@ export function removalDetails(removal: SharedRemoval | undefined): string | und
 }
 
 /**
- * Applies the planned removal after the infrastructure's destroy: approved by its hash with
+ * Applies the planned removal (see the module's note for when): approved by its hash with
  * `allowDestroy` and the typed app name, then applied, and the record written (it then lists no
  * hostnames). Without changes only the record is written. Returns the approval, when one was asked.
  */

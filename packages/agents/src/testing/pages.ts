@@ -1,17 +1,19 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type {
   FetchLike,
   IacApplyResult,
   IacApproval,
   IacInitOptions,
+  IacRunOptions,
   PlanSummary,
   ResourceChange,
 } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { FakeEngine, FakeGitHub } from "./deploy";
+import { plainState } from "./state";
 
 /** The repository of the GitHub Pages tests: its owner and name. */
 export const PAGES_REPO = { owner: "example-org", repo: "example-app" } as const;
@@ -119,6 +121,11 @@ export interface FakePagesOptions {
   /** The owner's plan as `GET /user` shows it (`free`, `pro`); none: the token cannot read it. */
   plan?: string;
   health?: FakePagesHealth;
+  /**
+   * The repository has the GitHub environment `github-pages`, which GitHub creates with the site and
+   * keeps when the site is deleted (default: while the site is on).
+   */
+  environment?: boolean;
   /** Shared call log: each request as `pages <METHOD> <path after the repository> [<body>]`. */
   log?: string[];
 }
@@ -126,7 +133,7 @@ export interface FakePagesOptions {
 /** {@link fakeGithubPages}: the `fetch` the GitHub client uses, and the site as it is now. */
 export interface FakePages {
   fetch: FetchLike;
-  state: { site?: FakePagesSite; health: FakePagesHealth };
+  state: { site?: FakePagesSite; health: FakePagesHealth; environment: boolean };
   log: string[];
 }
 
@@ -159,13 +166,15 @@ function healthAnswer(domain: string, health: FakePagesHealth): Response {
  * `GitHubClient`, behaving like GitHub: Pages on (`POST`, refused with 422 on a private
  * repository whose owner has the free plan), the source, the custom domain and HTTPS (`PUT`; HTTPS
  * answers 404 until the certificate is issued), the health check (400 without a custom domain),
- * and the repository and plan `pagesAllowed` reads.
+ * turning Pages off (`DELETE`, which leaves the `github-pages` environment GitHub created with
+ * the site), that environment (read and deleted), and the repository and plan `pagesAllowed` reads.
  */
 export function fakeGithubPages(options: FakePagesOptions = {}): FakePages {
   const log = options.log ?? [];
   const state: FakePages["state"] = {
     ...(options.site !== undefined ? { site: { ...options.site } } : {}),
     health: options.health ?? "checking",
+    environment: options.environment ?? options.site !== undefined,
   };
   const { owner, repo } = PAGES_REPO;
   const base = `/repos/${owner}/${repo}`;
@@ -208,6 +217,7 @@ export function fakeGithubPages(options: FakePagesOptions = {}): FakePages {
       }
       if (site !== undefined) return json(409, { message: "GitHub Pages is already enabled." });
       state.site = { buildType: "workflow", httpsEnforced: false };
+      state.environment = true;
       return json(201, { status: null, cname: null, build_type: "workflow" });
     }
     if (path === "/pages" && method === "PUT") {
@@ -220,6 +230,19 @@ export function fakeGithubPages(options: FakePagesOptions = {}): FakePages {
       else if (typeof body.cname === "string") site.cname = body.cname;
       if (typeof body.https_enforced === "boolean") site.httpsEnforced = body.https_enforced;
       return json(204);
+    }
+    if (path === "/pages" && method === "DELETE") {
+      if (site === undefined) return json(404, { message: "Not Found" });
+      delete state.site;
+      return json(204);
+    }
+    if (path === "/environments/github-pages") {
+      if (!state.environment) return json(404, { message: "Not Found" });
+      if (method === "GET") return json(200, { name: "github-pages", protection_rules: [] });
+      if (method === "DELETE") {
+        state.environment = false;
+        return json(204);
+      }
     }
     if (path === "/pages/health" && method === "GET") {
       if (site === undefined) return json(404, { message: "Not Found" });
@@ -263,16 +286,20 @@ function firstChanges(verification: boolean): ResourceChange[] {
 /**
  * IaC engine fake for the two GitHub Pages roots (the site's DNS records and GitHub's
  * verification record): each root's first plan creates its record, later plans of an applied root
- * change nothing, every plan and apply goes into the shared `log` as `engine <plan|apply> <root>`,
- * and each `init` records its state file.
+ * change nothing, a destroy plan (`destroy: true`) of an applied root deletes its record, and
+ * applying it empties the root's state file, as the engines do. Every plan and apply goes into the
+ * shared `log` as `engine <plan|apply> [-destroy] <root>`, and each `init` records its state file.
+ * `applied` lists the roots an earlier run applied.
  */
 export class PagesEngine extends FakeEngine {
   readonly inits: { root: string; statePath: string | undefined }[] = [];
   readonly #applied = new Set<string>();
+  readonly #destroyPlans = new Set<string>();
 
   constructor(
     readonly log: string[],
     readonly projectRoot: string,
+    applied: readonly string[] = [],
   ) {
     super({
       outputs: { url: "https://docs.example.com" },
@@ -298,6 +325,7 @@ export class PagesEngine extends FakeEngine {
         resource_changes: [],
       },
     });
+    for (const root of applied) this.#applied.add(root);
   }
 
   /** `dir` from the project root, with `/`. */
@@ -310,12 +338,25 @@ export class PagesEngine extends FakeEngine {
     return super.init(dir, options);
   }
 
-  override async plan(dir: string, planFile: string): Promise<PlanSummary> {
+  override async plan(
+    dir: string,
+    planFile: string,
+    options: IacRunOptions & { destroy?: boolean } = {},
+  ): Promise<PlanSummary> {
     const root = this.rootOf(dir);
-    this.log.push(`engine plan ${root}`);
-    this.scenario.changes = this.#applied.has(root)
-      ? []
-      : firstChanges(root.endsWith("github-pages-verification"));
+    const destroy = options.destroy === true;
+    this.log.push(`engine plan${destroy ? " -destroy" : ""} ${root}`);
+    const applied = this.#applied.has(root);
+    const first = firstChanges(root.endsWith("github-pages-verification"));
+    this.scenario.changes = destroy
+      ? applied
+        ? first.map((change) => ({ ...change, action: "delete" as const }))
+        : []
+      : applied
+        ? []
+        : first;
+    if (destroy) this.#destroyPlans.add(planFile);
+    else this.#destroyPlans.delete(planFile);
     return super.plan(dir, planFile);
   }
 
@@ -325,9 +366,19 @@ export class PagesEngine extends FakeEngine {
     approval: IacApproval,
   ): Promise<IacApplyResult> {
     const root = this.rootOf(dir);
-    this.log.push(`engine apply ${root}`);
+    const destroy = this.#destroyPlans.has(planFile);
+    this.log.push(`engine apply${destroy ? " -destroy" : ""} ${root}`);
     const result = await super.apply(dir, planFile, approval);
-    this.#applied.add(root);
+    if (!destroy) {
+      this.#applied.add(root);
+      return result;
+    }
+    this.#applied.delete(root);
+    const state = this.inits.findLast((init) => init.root === root)?.statePath;
+    if (state !== undefined) {
+      await mkdir(dirname(state), { recursive: true });
+      await writeFile(state, plainState([]));
+    }
     return result;
   }
 }

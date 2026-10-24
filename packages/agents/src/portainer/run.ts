@@ -59,7 +59,7 @@ import {
   readServerAddresses,
   requireGitRepo,
   SshRemoteExec,
-  serverlessNotSupported,
+  serverlessNoPortainer,
   stringOutput,
   writePlanIfChanged,
 } from "../shared";
@@ -1013,7 +1013,7 @@ async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise
     throw localhostNotSupported("`opscrew portainer enable`");
   }
   if (isServerlessProvider(before.target.provider)) {
-    throw serverlessNotSupported("`opscrew portainer enable`", before.target.provider);
+    throw serverlessNoPortainer("`opscrew portainer enable`", before.target.provider);
   }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("enable");
@@ -1046,7 +1046,7 @@ async function disable(
     throw localhostNotSupported("`opscrew portainer disable`");
   }
   if (isServerlessProvider(before.target.provider)) {
-    throw serverlessNotSupported("`opscrew portainer disable`", before.target.provider);
+    throw serverlessNoPortainer("`opscrew portainer disable`", before.target.provider);
   }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("disable");

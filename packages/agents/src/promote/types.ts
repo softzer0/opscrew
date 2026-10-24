@@ -1,3 +1,4 @@
+import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
 import type { PhaseDeps } from "../context";
 import type { DriftReport } from "../drift";
@@ -14,6 +15,9 @@ export type PromoteGitHubApi = Pick<
   | "getWorkflowRun"
   | "dispatchWorkflow"
   | "waitForWorkflowRun"
+  | "pagesRuns"
+  | "rerunWorkflowRun"
+  | "runArtifacts"
 >;
 
 /**
@@ -28,16 +32,29 @@ export interface PromoteServices {
    * it finds `opscrew provision` would change stops the promotion.
    */
   drift?: (deps: PhaseDeps) => Promise<DriftReport>;
+  /** Cloudflare's API for a site on Cloudflare's hosting (default: `CLOUDFLARE_API_TOKEN`'s). */
+  sharedCloudflare?: CloudflareClient;
+  /** The delay between reads of a re-run GitHub Pages run until GitHub shows it (tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface PromoteOptions {
-  /** The environment to deploy to (`--to`); its plan is promoted from another environment. */
+  /**
+   * The environment to deploy to (`--to`): one promoted from another environment, or with
+   * `version` any environment of a site on Cloudflare's hosting or GitHub Pages.
+   */
   target: string;
   /**
    * `--digest sha256:…`: the image the source runs, or the target's previous image for a rollback
-   * (default: the image the source runs, its `opscrew-<source>` label).
+   * (default: the image the source runs, its `opscrew-<source>` label). Servers only.
    */
   digest?: string;
+  /**
+   * `--version <id>`, a rollback on a server-less target: on Cloudflare's hosting a version of the
+   * environment's own Worker, activated again; on GitHub Pages an earlier successful run of its
+   * workflow, re-run.
+   */
+  version?: string;
   /**
    * `--approve <hash>`: the promotion hash the user reviewed. The promotion stops before asking
    * when its hash is now another one (the image, an environment or the target's plan changed).
@@ -48,12 +65,20 @@ export interface PromoteOptions {
 
 export interface PromoteResult {
   /**
-   * `deployed`: the run succeeded and the image is recorded. `waiting`: the run still waits in
-   * GitHub for a required reviewer, and nothing is recorded (a run that failed stops with an error).
+   * `deployed`: the run succeeded (and on a server the image is recorded), or the version is
+   * active. `waiting`: the run still waits in GitHub for a required reviewer, and nothing is
+   * recorded (a run that failed stops with an error).
    */
   status: "deployed" | "waiting";
-  /** The image deployed, or to be deployed once the reviewer approves, by digest. */
-  digest: string;
-  /** The deploy workflow's run. */
-  runUrl: string;
+  /** Servers: the image deployed, or to be deployed once the reviewer approves, by digest. */
+  digest?: string;
+  /** Cloudflare's hosting: the build a promotion deployed, by its run and SHA-256. */
+  build?: { runId: number; sha256: string };
+  /**
+   * A rollback on a server-less target: the Worker version activated, or the GitHub Pages run
+   * re-run (by its id).
+   */
+  version?: string;
+  /** The deploy workflow's run (none for a rollback on Cloudflare, which runs no workflow). */
+  runUrl?: string;
 }

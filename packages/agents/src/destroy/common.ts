@@ -13,7 +13,12 @@ import {
   upperFirst,
 } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import { type DeployPlan, ghcrImageFor, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  ghcrImageFor,
+  isServerlessTarget,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
@@ -157,14 +162,18 @@ export async function checkCloudflare(
   const api = services.cloudflare === undefined ? (connector.client ?? null) : services.cloudflare;
   const help = `It needs: ${requirement.scopes.join(", ")}. Create one at ${requirement.createUrl}`;
   if (api === null) {
+    const { target } = plan;
+    const domain = plan.dns.domain ?? "the app";
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
       `No Cloudflare token found: set ${requirement.envVars.join(" or ")}. Nothing was changed.`,
       {
         hint:
-          plan.target.provider === "own"
-            ? `The app's DNS records${plan.target.access === "tunnel" ? ", its Cloudflare Tunnel and Access" : ""} for ${plan.dns.domain ?? "the app"} are on Cloudflare, and OpsCrew removes them as part of the teardown. ${help}`
-            : `The deployment's DNS records for ${plan.dns.domain ?? "the app"} are on Cloudflare; deleting the server without them would leave them pointing at a dead address. ${help}`,
+          target.provider === "own"
+            ? `The app's DNS records${target.access === "tunnel" ? ", its Cloudflare Tunnel and Access" : ""} for ${domain} are on Cloudflare, and OpsCrew removes them as part of the teardown. ${help}`
+            : isServerlessTarget(target)
+              ? `The site's ${target.provider === "github-pages" ? "DNS records" : "Worker and its custom domains"} for ${domain} are on Cloudflare, and OpsCrew removes them as part of the teardown. ${help}`
+              : `The deployment's DNS records for ${domain} are on Cloudflare; deleting the server without them would leave them pointing at a dead address. ${help}`,
       },
     );
   }

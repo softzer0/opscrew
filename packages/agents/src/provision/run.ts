@@ -17,6 +17,7 @@ import {
   applyCloudRunner,
   checkCloudRunner,
   checkMachineRunner,
+  planFile,
   provisionRunnerMachines,
   type RunnerRepository,
 } from "../runners";
@@ -41,7 +42,7 @@ import {
   requireGitRepo,
   type ServerAddress,
   serverAddress,
-  serverlessNotSupported,
+  serverlessDnsByProvision,
   stringOutput,
   trackedFiles,
   writePlanIfChanged,
@@ -288,7 +289,7 @@ async function provisionFlow(
   }
   // `opscrew dns` stays refused for the server-less targets: provision manages their DNS.
   if (isServerlessProvider(plan.target.provider) && phase !== "provision") {
-    throw serverlessNotSupported(`\`${command}\``, plan.target.provider);
+    throw serverlessDnsByProvision(plan.target.provider, planFile(plan));
   }
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";

@@ -1,6 +1,8 @@
 import { HETZNER_TOKEN_HINT } from "@opscrew/connector-hetzner";
 import type { VpsProviderId } from "@opscrew/contracts";
+import { isServerlessProvider } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import type { DeletionProvider } from "./types";
 
 /**
  * The providers' price pages. Snapshot texts link to them instead of quoting a rate, so they never
@@ -103,11 +105,15 @@ function ownTexts(): DestroyTexts {
 
 /**
  * The question before a teardown, asking for the name to type. OpsCrew's servers are named after
- * the app; on a server the user owns the app's name is typed, and the server itself stays.
+ * the app; on a server the user owns the app's name is typed, and the server itself stays; on a
+ * server-less target the app's name is typed too.
  */
-export function destroyConfirmPrompt(name: string, provider: VpsProviderId | "portainer"): string {
+export function destroyConfirmPrompt(name: string, provider: DeletionProvider): string {
   if (provider === "portainer") {
     return `Type ${name} (the app's name) to remove the app as listed above; your Portainer and its other stacks stay (anything else cancels)`;
+  }
+  if (isServerlessProvider(provider)) {
+    return `Type ${name} (the app's name) to remove the app as listed above (anything else cancels)`;
   }
   return provider === "own"
     ? `Type ${name} (the app's name) to remove the app as listed above; your server itself stays (anything else cancels)`

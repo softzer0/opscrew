@@ -1,7 +1,3 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join, posix } from "node:path";
-import { githubConnector } from "@opscrew/connector-github";
 import {
   canonicalJson,
   listText,
@@ -19,20 +15,11 @@ import {
   targetArch,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { type DriftReport, runDrift } from "../drift";
 import { environmentPaths, sharedPartsDiffer } from "../environments";
 import { builderBranch } from "../environments/branches";
 import { ghcrReadCredential } from "../localhost/image";
-import { missing } from "../provision/credentials";
 import { secretsEnvironment } from "../provision/secrets";
-import {
-  gitClient,
-  githubClientFromToken,
-  githubCoordinates,
-  hasDeployment,
-  PlanRefusedError,
-  serverlessNotSupported,
-} from "../shared";
+import { hasDeployment, PlanRefusedError } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import {
   type AppImage,
@@ -53,46 +40,12 @@ import {
   writePendingPromotion,
   writePromotion,
 } from "./record";
-import type { PromoteGitHubApi, PromoteOptions, PromoteResult, PromoteServices } from "./types";
+import { githubRepository, NOTHING, requireApplied } from "./shared";
+import { promoteSite } from "./site";
+import type { PromoteGitHubApi, PromoteOptions, PromoteResult } from "./types";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
-const NOTHING = "Nothing was deployed.";
 const NOT_RECORDED = "OpsCrew did not record the image as running.";
-
-/** How many pending changes a refusal names before it says how many more there are. */
-const LISTED = 5;
-
-/** The GitHub repository the promotion deploys from, with the API and its default branch. */
-async function githubRepository(deps: PhaseDeps, services: PromoteServices) {
-  const { owner, repo } = await githubCoordinates(gitClient(deps));
-  const api = services.github === undefined ? await githubClientFromToken(deps) : services.github;
-  if (!api) {
-    throw missing("GitHub", githubConnector({ token: undefined, fetch: deps.fetch }).credentials);
-  }
-  const { defaultBranch } = await api.getRepo(owner, repo);
-  return { api, owner, repo, defaultBranch };
-}
-
-/**
- * Every difference the target's check found that `opscrew provision` would apply: the
- * infrastructure plan's changes, the generated files that differ from the plan or are missing, the
- * server's differences provision puts back, OpsCrew's Cloudflare rules and the Portainer stack plan.
- * Not the Portainer deploy branch: the deploy workflow itself writes it again.
- */
-function pendingChanges(report: DriftReport): string[] {
-  return [
-    ...report.pending.map((change) => `${change.address} (${change.action})`),
-    ...report.files.changed.map((file) => `${file} (generated file changed)`),
-    ...report.files.created.map((file) => `${file} (generated file missing)`),
-    ...(report.host?.differences ?? [])
-      .filter((difference) => difference.restoredByProvision)
-      .map((difference) => `${difference.title} (on the server)`),
-    ...(report.cloudflareRules ?? []).map((difference) => difference.title),
-    ...(report.portainer?.differences ?? [])
-      .filter((difference) => difference.area !== "deploy-branch")
-      .map((difference) => difference.title),
-  ];
-}
 
 /**
  * The target is ready for the image its source runs (FR-1539): it has every service of the
@@ -149,18 +102,6 @@ function requireRollbackServices(
       hint: `Promote forward instead: once ${source} runs a fixed image, run \`opscrew promote --to ${target}\`.`,
     },
   );
-}
-
-/** At most {@link LISTED} items, then how many more. */
-function shortList(items: readonly string[]): string {
-  const more = items.length - LISTED;
-  return more > 0 ? `${items.slice(0, LISTED).join(", ")} and ${more} more` : listText(items);
-}
-
-/** The git blob SHA-1 of a file's text, as GitHub's contents API names it. */
-function gitBlobSha(text: string): string {
-  const bytes = Buffer.from(text, "utf8");
-  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
 /** A deploy run still waiting for its reviewer, with the command that records it afterwards. */
@@ -294,6 +235,8 @@ function promotionDetails(input: {
  *    a required reviewer of the target's GitHub environment is reported as waiting, with its link;
  *    one still waiting when the wait ends is the result `waiting`, recorded as the target's pending
  *    promotion, which the next `opscrew promote --to <target>` checks first ({@link checkPending}).
+ * A site on a server-less target goes to `promoteSite` (a build's promotion on Cloudflare's
+ * hosting, a rollback with `version` on either); `version` on a server is refused.
  * `deps` may be any environment's: the target's paths are resolved here.
  * @throws OpsCrewError `PHASE_PRECONDITION` for each refusal, `PLAN_NOT_APPROVED` when
  * `approveHash` names another promotion, `APPROVAL_REFUSED` when the user does not approve, and
@@ -305,19 +248,28 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   const command = `opscrew promote --to ${target}`;
   const provisionFirst = `Run \`opscrew provision --env ${target}\` first, then \`${command}\` again.`;
 
-  // 0. The environments' plans (no network yet).
-  if (requested !== undefined && !DIGEST.test(requested)) {
-    throw new OpsCrewError("INVALID_INPUT", `"${requested}" is not an image digest.`, {
-      hint: "Pass the digest as sha256: followed by 64 lower-case hexadecimal digits.",
-    });
-  }
+  // 0. The environments' plans (no network yet). A site on a server-less target has its own flow.
   const targetPaths = await resolveEnvironmentPaths(deps.paths.root, target, {
     env: { OPSCREW_HOME: deps.paths.homeDir },
     app: deps.paths.app,
   });
   const plan = await readArtifact("plan", targetPaths.files.plan);
   if (isServerlessProvider(plan.target.provider)) {
-    throw serverlessNotSupported("`opscrew promote`", plan.target.provider);
+    return promoteSite(deps, { options, plan, paths: targetPaths });
+  }
+  if (options.version !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `--version names a version of a site on Cloudflare's hosting or GitHub Pages, and the ${target} environment runs on a server, which deploys images. ${NOTHING}`,
+      {
+        hint: `To roll ${target} back to its previous image, run \`${command} --digest <digest>\` with that image's digest (labelled opscrew-${target}-previous).`,
+      },
+    );
+  }
+  if (requested !== undefined && !DIGEST.test(requested)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${requested}" is not an image digest.`, {
+      hint: "Pass the digest as sha256: followed by 64 lower-case hexadecimal digits.",
+    });
   }
   const deploySource = plan.environment?.deploySource;
   if (deploySource?.from !== "promote") {
@@ -386,36 +338,14 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   } else {
     requireReady(target, source, sourcePlan, plan);
   }
-  deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
-  const report = await (services.drift ?? runDrift)({ ...deps, paths: targetPaths });
-  const pending = pendingChanges(report);
-  if (pending.length > 0) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The ${target} environment has changes that are not applied yet: ${shortList(pending)}. OpsCrew promotes only to an environment whose plan is applied, so the approval names what will run. ${NOTHING}`,
-      { hint: provisionFirst },
-    );
-  }
-  const { workflowPath } = plan.cicd;
-  const workflowFile = posix.basename(workflowPath);
-  // Drift found the repository's copy equal to the rendered one, so its blob (with LF line endings,
-  // as provision writes and commits it) is the rendered workflow's.
-  const rendered = (await readFile(join(deps.paths.root, workflowPath), "utf8")).replace(
-    /\r\n/g,
-    "\n",
-  );
-  const onDefault = await github.api.fileSha(owner, repo, workflowPath, defaultBranch);
-  if (onDefault !== gitBlobSha(rendered)) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      onDefault === undefined
-        ? `The default branch ${defaultBranch} has no ${workflowPath}, the deploy workflow ${target}'s plan generates, so GitHub cannot start it. ${NOTHING}`
-        : `The deploy workflow on the default branch ${defaultBranch} (${workflowPath}) is not the one ${target}'s plan generates, so its run would not do what this promotion shows. ${NOTHING}`,
-      {
-        hint: `Merge the deploy-setup pull request \`opscrew provision --env ${target}\` opened (or run it, if none is open), then run \`${command}\` again.`,
-      },
-    );
-  }
+  const workflowFile = await requireApplied(deps, {
+    target,
+    plan,
+    paths: targetPaths,
+    github,
+    services,
+    command,
+  });
 
   // 4. The approval, bound to the promotion's hash. It says whether GitHub also asks a reviewer.
   const environment = secretsEnvironment(plan);

@@ -55,6 +55,7 @@ describe("targetOf: the new target of a move", () => {
       expect.objectContaining({
         code: "PHASE_PRECONDITION",
         message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
+        hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
       }),
     );
   });

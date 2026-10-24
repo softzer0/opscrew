@@ -18,7 +18,12 @@ import {
   serviceSpec,
   TUNNEL_DEPLOY_SECRETS,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, EnvironmentSchema, environmentsOf } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  EnvironmentSchema,
+  environmentsOf,
+  isServerlessProvider,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
@@ -209,11 +214,13 @@ export function serviceEnvSecrets(
  * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
  * service with secrets (enabled or not, an earlier run may have set it) and, on a server the user
  * owns, the tunnel's service token. In the user's Portainer: the build values and the webhook's.
- * Destroy deletes them all.
+ * On a server-less target: those its workflow reads (`deploySecretNamesFor`: on Cloudflare the
+ * deploy token and the account id, and the app's values). Destroy deletes them all.
  */
 export function deploySecretNames(plan: DeployPlan): string[] {
-  const names =
-    plan.target.provider === "portainer"
+  const names = isServerlessProvider(plan.target.provider)
+    ? deploySecretNamesFor(plan)
+    : plan.target.provider === "portainer"
       ? [
           DEPLOY_SECRETS.buildEnv,
           DEPLOY_SECRETS.buildSecrets,

@@ -157,6 +157,15 @@ export interface PagesRun {
   headSha: string;
 }
 
+/** An artifact of a workflow run, as GitHub lists it. */
+export interface RunArtifact {
+  name: string;
+  /** True once GitHub no longer keeps its files (after the repository's artifact retention). */
+  expired: boolean;
+  /** When GitHub deletes, or deleted, its files (ISO 8601), when GitHub says. */
+  expiresAt?: string;
+}
+
 /**
  * Whether a repository's plan allows GitHub Pages: `unknown` when GitHub does not show the
  * plan to this token.
@@ -184,6 +193,8 @@ export interface WorkflowRun {
   htmlUrl: string;
   headSha: string;
   createdAt: string;
+  /** 1 for the first attempt, then one more for each re-run (when GitHub says, as it does). */
+  attempt?: number;
 }
 
 /** A file's entry in the contents API: just its git blob SHA. */
@@ -202,6 +213,7 @@ const RunSchema = z.looseObject({
   html_url: z.string(),
   head_sha: z.string(),
   created_at: z.string(),
+  run_attempt: z.number().int().positive().optional(),
 });
 const RunSourceSchema = z.looseObject({
   event: z.string(),
@@ -270,6 +282,15 @@ const PagesHealthSchema = z.looseObject({
     is_https_eligible: z.boolean().nullable().optional(),
     responds_to_https: z.boolean().optional(),
   }),
+});
+const ArtifactsSchema = z.looseObject({
+  artifacts: z.array(
+    z.looseObject({
+      name: z.string(),
+      expired: z.boolean(),
+      expires_at: z.string().nullable().optional(),
+    }),
+  ),
 });
 const PagesRunSchema = z.looseObject({
   id: z.number(),
@@ -479,6 +500,7 @@ function toWorkflowRun(run: z.infer<typeof RunSchema>): WorkflowRun {
     htmlUrl: run.html_url,
     headSha: run.head_sha,
     createdAt: run.created_at,
+    ...(run.run_attempt !== undefined ? { attempt: run.run_attempt } : {}),
   };
 }
 
@@ -1296,6 +1318,33 @@ export class GitHubClient {
       headSha: run.head_sha,
       path: run.path,
     };
+  }
+
+  /**
+   * The artifacts of the workflow run `runId` (up to 100), only those named `name` when given,
+   * each with whether GitHub still keeps its files; `undefined` when GitHub has no such run (404).
+   * Read-only; needs Actions: Read.
+   */
+  async runArtifacts(
+    owner: string,
+    repo: string,
+    runId: number,
+    name?: string,
+  ): Promise<RunArtifact[] | undefined> {
+    const what = `list the artifacts of workflow run ${runId}`;
+    const query = new URLSearchParams({ per_page: "100", ...(name !== undefined ? { name } : {}) });
+    const { status, json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/artifacts?${query}`,
+      what,
+      { ok: [404] },
+    );
+    if (status === 404) return undefined;
+    return this.#parse(ArtifactsSchema, json, what).artifacts.map((artifact) => ({
+      name: artifact.name,
+      expired: artifact.expired,
+      ...(artifact.expires_at ? { expiresAt: artifact.expires_at } : {}),
+    }));
   }
 
   /**

@@ -9,11 +9,9 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { runDestroy } from "../destroy/run";
 import { runDns } from "../dns/run";
 import { buyDomain, connectDomain } from "../domain";
 import { recordDomain } from "../domain/project";
-import { addEnvironment } from "../environments/add";
 import { runInitChecks } from "../init";
 import { answersToRequirements } from "../interview/answers";
 import { defaultProvider } from "../interview/questions";
@@ -27,7 +25,6 @@ import {
   createTestPhaseDeps,
   FakeCloudflare,
   makeRequirements,
-  nextPostgresFacts,
   ScriptedRunner,
   TOKEN,
   testPlan,
@@ -271,11 +268,7 @@ describe.each([
     const deps = await serverlessProject(runner);
     const provider = serverlessPlan().target.provider;
     const commands: [string, () => Promise<unknown>][] = [
-      ["`opscrew dns`", () => runDns(deps, { domain: "docs.example.com" })],
       ["Previewing the deployment files", () => previewDeploymentFiles(deps)],
-      ["`opscrew destroy`", () => runDestroy(deps)],
-      ["`opscrew portainer enable`", () => portainerEnable(deps)],
-      ["`opscrew portainer disable`", () => portainerDisable(deps)],
       ["Reading the app's containers", () => readServerContainers(deps, serverlessPlan())],
     ];
     for (const [what, run] of commands) {
@@ -285,6 +278,35 @@ describe.each([
     expect(runner.calls).toEqual([]);
     expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
     expect(provider).toBe(github ? "github-pages" : "cloudflare-workers");
+  });
+
+  it("has its DNS records managed by opscrew provision, so opscrew dns refuses", async () => {
+    const runner = new ScriptedRunner();
+    const deps = await serverlessProject(runner);
+    await expect(runDns(deps, { domain: "docs.example.com" })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `\`opscrew dns\` does not change the DNS records of a site on ${name}: \`opscrew provision\` manages them with the site.`,
+      hint: "To move the site to another domain, change dns.domain in opscrew/plan.yaml (or answer `opscrew interview` again, then run `opscrew design`), then run `opscrew provision`.",
+    });
+    expect(runner.calls).toEqual([]);
+    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
+  });
+
+  it("has no server to run Portainer on, so portainer enable and disable refuse", async () => {
+    const runner = new ScriptedRunner();
+    const deps = await serverlessProject(runner);
+    for (const [what, run] of [
+      ["`opscrew portainer enable`", () => portainerEnable(deps)],
+      ["`opscrew portainer disable`", () => portainerDisable(deps)],
+    ] as const) {
+      await expect(run(), what).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: `${what} does not apply to a site on ${name}: there is no server to run Portainer on.`,
+        hint: "Nothing changes for the site. To run the app under Portainer, deploy it to a server instead: run `opscrew interview`, then `opscrew design`.",
+      });
+    }
+    expect(runner.calls).toEqual([]);
+    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());
   });
 
   // Both targets have their provision since T1608 and T1609 (`serverless/*/provision.test.ts`).
@@ -309,7 +331,7 @@ describe.each([
     },
   );
 
-  it("is an interview answer with no region, and a new environment refuses it yet", async () => {
+  it("is an interview answer with no region", async () => {
     const provider = serverlessPlan().target.provider;
     const now = new Date("2026-10-23T10:00:00.000Z");
     const answered = answersToRequirements(
@@ -322,24 +344,6 @@ describe.each([
     expect(defaultProvider({ provider })).toBe("hetzner");
     const offered = github ? "github-pages" : "cloudflare-workers";
     expect(defaultProvider({ provider }, { serverless: [offered] })).toBe(provider);
-
-    const deps = await createTestPhaseDeps();
-    await writeArtifact("architecture", deps.paths.files.architecture, {
-      schemaVersion: 1,
-      generatedAt: "2026-10-23T10:00:00.000Z",
-      generator: { tool: "opscrew", version: "0.0.0-test" },
-      facts: nextPostgresFacts({ name: "example-app" }),
-      summary: "A site.",
-      risks: [],
-      aiEnriched: false,
-    });
-    const { region: _region, ...requirements } = makeRequirements({ provider });
-    await writeArtifact("requirements", deps.paths.files.requirements, requirements);
-    await writeArtifact("plan", deps.paths.files.plan, testPlan());
-    const staging = await createTestPhaseDeps({ root: deps.paths.root, environment: "staging" });
-    await expect(addEnvironment(staging, { answers: { provider } })).rejects.toMatchObject(
-      notYet("`opscrew env add`"),
-    );
   });
 
   it("shows no proxy of OpsCrew's in opscrew status", async () => {

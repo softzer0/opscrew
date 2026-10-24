@@ -260,6 +260,9 @@ describe("opscrew promote", () => {
       }),
       dispatchWorkflow: async () => ({ runId: 777, url: runUrl }),
       waitForWorkflowRun: async () => waiting,
+      pagesRuns: async () => [],
+      rerunWorkflowRun: async () => {},
+      runArtifacts: async () => [],
     };
     const drift = async (): Promise<DriftReport> => ({
       drift: [],

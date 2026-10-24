@@ -27,6 +27,7 @@ import {
   STRIPE,
   TOKENS,
 } from "../testing";
+import { sitePlan } from "../testing/serverless";
 import {
   caught,
   crashAfter,
@@ -1117,6 +1118,30 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       expect(error).toMatchObject({
         code: "PHASE_PRECONDITION",
         message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
+        hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
+      });
+      expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
+      expect(await move(h)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["cloudflare-workers", "Cloudflare hosting"],
+    ["github-pages", "GitHub Pages"],
+  ] as const)(
+    "refuses a move off %s, whose destroy the hint names, before any plan",
+    async (provider, name) => {
+      const h = await moveHarness();
+      await writeArtifact(
+        "plan",
+        h.paths.files.plan,
+        sitePlan({ provider, name: "shop", deployed: true }),
+      );
+      const error = await caught(run(h, { to: "digitalocean" }));
+      expect(error).toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
+        hint: expect.stringContaining("Run `opscrew destroy`"),
       });
       expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
       expect(await move(h)).toBeUndefined();

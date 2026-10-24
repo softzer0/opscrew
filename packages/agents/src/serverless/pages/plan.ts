@@ -1,7 +1,8 @@
 /**
  * The Pages plan (`pages-apply`, data-model.md "The Pages plan"): the change from the GitHub
- * Pages site GitHub reports to the site OpsCrew wants, in steps, bound by its hash. Applying
- * re-reads the site and changes nothing when it no longer matches the plan.
+ * Pages site GitHub reports to the site OpsCrew wants (`opscrew provision`), or to no site at all
+ * (`opscrew destroy`), in steps, bound by its hash. Applying re-reads the site and changes nothing
+ * when it no longer matches the plan.
  */
 import { join } from "node:path";
 import type { GitHubClient, PagesHealth, PagesSite } from "@opscrew/connector-github";
@@ -18,8 +19,17 @@ import { type AdapterPlanItem, describeAdapterPlan } from "../../shared";
 /** The GitHub Pages calls OpsCrew makes: a `GitHubClient`, or a fake in tests. */
 export type PagesApi = Pick<
   GitHubClient,
-  "getPages" | "createPages" | "updatePages" | "pagesHealth" | "pagesAllowed"
+  | "getPages"
+  | "createPages"
+  | "updatePages"
+  | "deletePages"
+  | "deleteEnvironment"
+  | "pagesHealth"
+  | "pagesAllowed"
 >;
+
+/** The GitHub environment GitHub creates with a Pages site, and keeps when the site is deleted. */
+export const PAGES_ENVIRONMENT = "github-pages";
 
 const PagesStateSchema = z.discriminatedUnion("enabled", [
   z.strictObject({ enabled: z.literal(false) }),
@@ -45,6 +55,12 @@ const PagesStepSchema = z.discriminatedUnion("kind", [
   // Removes the custom domain and sets it straight back, so GitHub requests the certificate.
   z.strictObject({ kind: z.literal("save-domain-again"), cname: z.string().min(1) }),
   z.strictObject({ kind: z.literal("enforce-https") }),
+  // Destroy: takes the custom domain away from the site, once its DNS records are deleted.
+  z.strictObject({ kind: z.literal("remove-domain"), cname: z.string().min(1) }),
+  // Destroy: turns GitHub Pages off.
+  z.strictObject({ kind: z.literal("delete-site") }),
+  // Destroy: deletes the `github-pages` environment, which GitHub keeps when the site goes.
+  z.strictObject({ kind: z.literal("delete-environment") }),
 ]);
 
 /** A Pages plan as saved in `.opscrew/plans/pages-<hash>.json`. */
@@ -119,17 +135,83 @@ export function planPages(input: {
   return { owner: input.owner, repo: input.repo, site, steps };
 }
 
+/**
+ * The steps from `site` to no GitHub Pages site (`opscrew destroy`), once the site's DNS records are
+ * deleted: its custom domain removed, then the site, then the `github-pages` environment when the
+ * repository has it (`environment`). None when nothing is left.
+ */
+export function planPagesTeardown(input: {
+  owner: string;
+  repo: string;
+  site: PagesSite | undefined;
+  environment: boolean;
+}): PagesPlan {
+  const site = pagesState(input.site);
+  const steps: PagesStep[] = [];
+  if (site.enabled && site.cname !== undefined) {
+    steps.push({ kind: "remove-domain", cname: site.cname });
+  }
+  if (site.enabled) steps.push({ kind: "delete-site" });
+  if (input.environment) steps.push({ kind: "delete-environment" });
+  return { owner: input.owner, repo: input.repo, site, steps };
+}
+
+/** The steps of a teardown ({@link planPagesTeardown}). */
+const TEARDOWN: ReadonlySet<PagesStep["kind"]> = new Set([
+  "remove-domain",
+  "delete-site",
+  "delete-environment",
+]);
+
 /** SHA-256 (lower-case hex) of the plan's canonical JSON: the hash `pages-apply` binds. */
 export function pagesPlanHash(plan: PagesPlan): string {
   return sha256Hex(canonicalJson(plan));
 }
 
 /**
- * True when the plan takes a custom domain away from the site (it replaces another one), so its
- * approval needs `allowDestroy` and the typed app name.
+ * True when the plan takes a custom domain away from the site (it replaces another one, or a
+ * teardown removes it) or deletes the site, so its approval needs `allowDestroy` and the typed app
+ * name.
  */
 export function pagesPlanDeletes(plan: PagesPlan): boolean {
-  return plan.steps.some((step) => step.kind === "set-domain" && step.replaces !== undefined);
+  return plan.steps.some(
+    (step) =>
+      (step.kind === "set-domain" && step.replaces !== undefined) || TEARDOWN.has(step.kind),
+  );
+}
+
+/** A teardown in plain English: what goes, in order. */
+function teardownItems(plan: PagesPlan, repository: string): AdapterPlanItem[] {
+  return plan.steps.flatMap((step): AdapterPlanItem[] => {
+    switch (step.kind) {
+      case "remove-domain":
+        return [
+          {
+            title: `Remove the custom domain ${step.cname} from the site`,
+            state: "change",
+            reason:
+              "Its DNS records are deleted first, so no record points at GitHub while no site claims the domain.",
+          },
+        ];
+      case "delete-site":
+        return [{ title: `Turn GitHub Pages off for ${repository}`, state: "change" }];
+      case "delete-environment":
+        return [
+          {
+            title: `Delete the GitHub environment ${PAGES_ENVIRONMENT}`,
+            state: "change",
+            reason: "GitHub created it with the site and keeps it when the site is turned off.",
+          },
+        ];
+      default:
+        return [];
+    }
+  });
+}
+
+/** What a teardown ({@link planPagesTeardown}) changes, in order, one title per step. */
+export function pagesTeardownSteps(plan: PagesPlan): string[] {
+  return teardownItems(plan, `${plan.owner}/${plan.repo}`).map((item) => item.title);
 }
 
 /** The Pages plan in plain English, as shown before its approval, ending with its hash. */
@@ -138,6 +220,16 @@ export function describePagesPlan(plan: PagesPlan, hash: string): string {
   const repository = `${plan.owner}/${plan.repo}`;
   const step = <K extends PagesStep["kind"]>(kind: K) =>
     plan.steps.find((s): s is Extract<PagesStep, { kind: K }> => s.kind === kind);
+  if (plan.steps.some((s) => TEARDOWN.has(s.kind))) {
+    return describeAdapterPlan({
+      heading: `Pages plan for the GitHub Pages site of ${repository}`,
+      items: teardownItems(plan, repository),
+      findings: [],
+      note: "OpsCrew changes only this repository's GitHub Pages settings, and it reads the site again before it does: if the site changed since this plan, nothing changes. The site's DNS records went with the infrastructure plan before this one.",
+      hashLabel: "Pages plan hash",
+      hash,
+    });
+  }
   const items: AdapterPlanItem[] = [];
   if (step("create")) {
     items.push({
@@ -232,6 +324,9 @@ export const PAGES_STEP_TEXT = {
   "set-domain": "set the custom domain",
   "save-domain-again": "saved the custom domain again",
   "enforce-https": "enforced HTTPS",
+  "remove-domain": "removed the custom domain",
+  "delete-site": "turned GitHub Pages off",
+  "delete-environment": `deleted the GitHub environment ${PAGES_ENVIRONMENT}`,
 } as const satisfies Record<PagesStep["kind"], string>;
 
 /** What the steps done so far are, in a sentence. */
@@ -314,6 +409,12 @@ async function applyStep(
       return;
     case "enforce-https":
       return api.updatePages(owner, repo, { httpsEnforced: true });
+    case "remove-domain":
+      return api.updatePages(owner, repo, { cname: null });
+    case "delete-site":
+      return api.deletePages(owner, repo);
+    case "delete-environment":
+      return api.deleteEnvironment(owner, repo, PAGES_ENVIRONMENT);
     default:
       return step satisfies never;
   }

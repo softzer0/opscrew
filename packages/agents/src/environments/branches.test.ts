@@ -12,6 +12,7 @@ import { createTestPhaseDeps, makeFacts, type TestPhaseDeps, testPlan } from "..
 import { remoteWith } from "./__fixtures__/remote";
 import {
   builderBranch,
+  builderCicd,
   defaultBranchOf,
   matchBranches,
   remoteEnvironmentBranches,
@@ -295,6 +296,10 @@ describe("builderBranch", () => {
     await writeArtifact("plan", deps.paths.files.plan, prod);
     expect(await builderBranch(deps.paths, prod)).toBe("develop");
     expect(await builderBranch(environmentPaths(deps.paths, "staging"), staging)).toBe("develop");
+    // The workflow a promoted site's run is checked against comes from the same environment.
+    const dev = { branch: "develop", workflowPath: ".github/workflows/opscrew-deploy-dev.yml" };
+    expect(await builderCicd(deps.paths, prod)).toEqual(dev);
+    expect(await builderCicd(environmentPaths(deps.paths, "staging"), staging)).toEqual(dev);
   });
 
   it("is an error naming the sources when one of them has no plan, never main", async () => {

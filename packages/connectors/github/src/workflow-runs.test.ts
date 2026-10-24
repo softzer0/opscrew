@@ -170,6 +170,69 @@ describe("getWorkflowRun", () => {
     });
     expect(calls[0]?.url).toBe("https://api.github.com/repos/acme/shop/actions/runs/7");
   });
+
+  it("says which attempt of the run it is, as a re-run counts them", async () => {
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/7": [
+        { body: { ...run(7, "queued", null, "2026-10-13T10:00:00Z"), run_attempt: 2 } },
+      ],
+    });
+    expect(await client(fetch).getWorkflowRun("acme", "shop", 7)).toMatchObject({
+      id: 7,
+      status: "queued",
+      attempt: 2,
+    });
+  });
+});
+
+describe("runArtifacts", () => {
+  const ROUTE = "GET /repos/acme/shop/actions/runs/501/artifacts";
+
+  it("lists the run's artifacts with whether GitHub still keeps them", async () => {
+    const { fetch, calls } = fakeFetch({
+      [ROUTE]: [
+        {
+          body: {
+            total_count: 2,
+            artifacts: [
+              {
+                id: 1,
+                name: "opscrew-site",
+                expired: false,
+                expires_at: "2027-01-21T10:00:00Z",
+                size_in_bytes: 2048,
+              },
+              { id: 2, name: "old-logs", expired: true, expires_at: null },
+            ],
+          },
+        },
+      ],
+    });
+    expect(await client(fetch).runArtifacts("acme", "shop", 501)).toEqual([
+      { name: "opscrew-site", expired: false, expiresAt: "2027-01-21T10:00:00Z" },
+      { name: "old-logs", expired: true },
+    ]);
+    expect(calls[0]?.url).toBe(
+      "https://api.github.com/repos/acme/shop/actions/runs/501/artifacts?per_page=100",
+    );
+  });
+
+  it("asks GitHub for the artifacts of one name only, when given", async () => {
+    const { fetch, calls } = fakeFetch({ [ROUTE]: [{ body: { total_count: 0, artifacts: [] } }] });
+    expect(await client(fetch).runArtifacts("acme", "shop", 501, "opscrew-site")).toEqual([]);
+    expect(calls[0]?.url).toBe(
+      "https://api.github.com/repos/acme/shop/actions/runs/501/artifacts?per_page=100&name=opscrew-site",
+    );
+  });
+
+  it("is undefined when GitHub has no such run, and refuses an answer it cannot read", async () => {
+    const missing = fakeFetch({ [ROUTE]: [{ status: 404, body: { message: "Not Found" } }] });
+    expect(await client(missing.fetch).runArtifacts("acme", "shop", 501)).toBeUndefined();
+    const odd = fakeFetch({ [ROUTE]: [{ body: { artifacts: [{ name: "opscrew-site" }] } }] });
+    await expect(client(odd.fetch).runArtifacts("acme", "shop", 501)).rejects.toBeInstanceOf(
+      OpsCrewError,
+    );
+  });
 });
 
 describe("waitForWorkflowRun", () => {

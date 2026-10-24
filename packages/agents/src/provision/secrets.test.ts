@@ -24,8 +24,10 @@ import {
   type TestPhaseDeps,
   testPlan,
 } from "../testing";
+import { pagesTestPlan } from "../testing/pages";
+import { sitePlan } from "../testing/serverless";
 import { runProvision } from "./run";
-import { buildAppEnvironment } from "./secrets";
+import { buildAppEnvironment, deploySecretNames } from "./secrets";
 import type { ProvisionServices } from "./types";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
@@ -765,5 +767,22 @@ describe("each environment's own app values (FR-1538)", () => {
     const environment = await buildAppEnvironment(deps, testPlan(), {});
     expect(environment.values.app.STRIPE_SECRET_KEY).toBe(STAGING_KEY);
     expect(deps.reporter.text()).not.toContain("There is no");
+  });
+});
+
+describe("deploySecretNames on the server-less targets", () => {
+  it("names what each site's workflow reads, with its environment's prefix", () => {
+    expect(deploySecretNames(sitePlan({ env: ["API_KEY"] })).sort()).toEqual([
+      "OPSCREW_CLOUDFLARE_ACCOUNT_ID",
+      "OPSCREW_CLOUDFLARE_API_TOKEN",
+      "OPSCREW_ENV_API_KEY",
+    ]);
+    expect(deploySecretNames(sitePlan({ environment: "staging" })).sort()).toEqual([
+      "OPSCREW_STAGING_CLOUDFLARE_ACCOUNT_ID",
+      "OPSCREW_STAGING_CLOUDFLARE_API_TOKEN",
+    ]);
+    // GitHub Pages publishes with the workflow's own token: only the app's values are secrets.
+    expect(deploySecretNames(pagesTestPlan({ env: ["API_KEY"] }))).toEqual(["OPSCREW_ENV_API_KEY"]);
+    expect(deploySecretNames(pagesTestPlan())).toEqual([]);
   });
 });

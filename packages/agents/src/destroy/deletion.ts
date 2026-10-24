@@ -36,6 +36,7 @@ import {
   deletesUnconfirmedServer,
   deletionPlanProblems,
   type ModulePrefix,
+  onServer,
   planHeading,
   removeHostKeys,
   serverIdsInPlan,
@@ -255,8 +256,8 @@ export function assertDeletionPlan(
     );
   }
   const ids = bounds.serverIds ?? [];
-  // A Portainer root holds no server to compare.
-  if (scope.provider !== "portainer" && deletesUnconfirmedServer(summary, scope.provider, ids)) {
+  // A Portainer or server-less root holds no server to compare.
+  if (onServer(scope.provider) && deletesUnconfirmedServer(summary, scope.provider, ids)) {
     const noun = destroyTexts(scope.provider).noun;
     throw fail(
       "server",
@@ -268,9 +269,10 @@ export function assertDeletionPlan(
 /**
  * The typed confirmation: asks `confirm` once with the preview (skipped without a hook or when
  * nothing would be deleted or changed), audits the answer and stops with `APPROVAL_REFUSED`
- * (nothing changed) when it is not given. On a server the user owns and in their Portainer the
- * app's name is typed, and the changes there (`hostSteps`, `stackChanges`) count as well, as does
- * the Cloudflare plan for OpsCrew's shared rules (`cloudflarePlan`).
+ * (nothing changed) when it is not given. On a server the user owns, in their Portainer and on a
+ * server-less target the app's name is typed, and the changes there (`hostSteps`, `stackChanges`,
+ * `pagesChanges`) count as well, as does the Cloudflare plan for OpsCrew's shared rules
+ * (`cloudflarePlan`).
  */
 export async function confirmDeletion(
   scope: DeletionScope,
@@ -282,7 +284,9 @@ export async function confirmDeletion(
       ? { changes: preview.hostSteps, where: "on your server" }
       : preview.stackChanges !== undefined
         ? { changes: preview.stackChanges, where: "in your Portainer" }
-        : undefined;
+        : preview.pagesChanges !== undefined
+          ? { changes: preview.pagesChanges, where: "in GitHub Pages" }
+          : undefined;
   const changes = elsewhere?.changes.length ?? 0;
   const shared = preview.cloudflarePlan !== undefined;
   if (confirm === undefined || (preview.resources.length === 0 && changes === 0 && !shared)) return;
@@ -303,9 +307,9 @@ export async function confirmDeletion(
   });
   if (!confirmed) {
     const noun =
-      preview.provider === "own" || preview.provider === "portainer"
-        ? "app"
-        : destroyTexts(preview.provider).noun;
+      onServer(preview.provider) && preview.provider !== "own"
+        ? destroyTexts(preview.provider).noun
+        : "app";
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       `The ${noun} name was not confirmed, so nothing was deleted and nothing was changed.`,

@@ -12,6 +12,7 @@ import {
   pagesPlanDeletes,
   pagesPlanHash,
   planPages,
+  planPagesTeardown,
 } from "./plan";
 
 const DOMAIN = "docs.example.com";
@@ -265,5 +266,58 @@ describe("applyPagesPlan", () => {
     expect(error.message).toContain(`GitHub removed the custom domain ${DOMAIN}`);
     expect(error.message).toContain("another GitHub Pages site could take the domain over");
     expect(error.hint).toContain(`Run \`${COMMAND}\` again right away`);
+  });
+});
+
+describe("the teardown (opscrew destroy)", () => {
+  it("removes the domain, then the site, then the github-pages environment, each only while there", () => {
+    const teardown = (site: Parameters<typeof planPagesTeardown>[0]["site"], environment = true) =>
+      planPagesTeardown({ owner, repo, site, environment }).steps;
+    expect(teardown(WITH_DOMAIN)).toEqual([
+      { kind: "remove-domain", cname: DOMAIN },
+      { kind: "delete-site" },
+      { kind: "delete-environment" },
+    ]);
+    expect(teardown({ buildType: "workflow", httpsEnforced: false })).toEqual([
+      { kind: "delete-site" },
+      { kind: "delete-environment" },
+    ]);
+    expect(teardown(undefined)).toEqual([{ kind: "delete-environment" }]);
+    expect(teardown(undefined, false)).toEqual([]);
+  });
+
+  it("needs allowDestroy and says the DNS records went first", () => {
+    const plan = planPagesTeardown({ owner, repo, site: WITH_DOMAIN, environment: true });
+    expect(pagesPlanDeletes(plan)).toBe(true);
+    const text = describePagesPlan(plan, pagesPlanHash(plan));
+    expect(text).toContain(`Pages plan for the GitHub Pages site of ${owner}/${repo}: 3 to change`);
+    expect(text).toContain(`Remove the custom domain ${DOMAIN} from the site`);
+    expect(text).toContain("no record points at GitHub while no site claims the domain");
+    expect(text).toContain(`Turn GitHub Pages off for ${owner}/${repo}`);
+    expect(text).toContain("Delete the GitHub environment github-pages");
+    expect(text).toContain("DNS records went with the infrastructure plan before this one");
+    expect(text.endsWith(`Pages plan hash: ${pagesPlanHash(plan)}`)).toBe(true);
+  });
+
+  it("is applied in order, after the site is read again", async () => {
+    const { pages, api } = client({ site: { ...WITH_DOMAIN } });
+    const plan = planPagesTeardown({
+      owner,
+      repo,
+      site: await api.getPages(owner, repo),
+      environment: true,
+    });
+    const applied = await applyPagesPlan(api, plan, {
+      approvedHash: pagesPlanHash(plan),
+      command: "opscrew destroy",
+    });
+    expect(applied).toEqual(["remove-domain", "delete-site", "delete-environment"]);
+    expect(changes(pages.log)).toEqual([
+      `pages PUT /pages {"cname":null}`,
+      "pages DELETE /pages",
+      "pages DELETE /environments/github-pages",
+    ]);
+    expect(pages.state).toMatchObject({ environment: false });
+    expect(pages.state.site).toBeUndefined();
   });
 });

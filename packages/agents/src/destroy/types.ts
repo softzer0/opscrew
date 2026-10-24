@@ -2,6 +2,7 @@ import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
 import type { ResourceChange, ServerSnapshotApi, VpsProviderId } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
+import type { ServerlessProvider } from "@opscrew/plan-schema";
 import type { OwnServerServices, ProvisionServices } from "../provision";
 import type { PortainerServices } from "../provision/types";
 
@@ -85,10 +86,18 @@ export interface DestroyOptions {
    * connection from this computer when nobody can answer a prompt.
    */
   hostKey?: string;
+  /**
+   * GitHub Pages: also delete GitHub's domain verification record (`--delete-verification`), last
+   * and through its own destroy plan. Without it the record stays, so the domain stays verified.
+   */
+  deleteVerification?: boolean;
 }
 
-/** Where a deletion happens: a provider's server, a server the user owns, or the user's Portainer. */
-export type DeletionProvider = VpsProviderId | "portainer";
+/**
+ * Where a deletion happens: a provider's server, a server the user owns, the user's Portainer, or
+ * a server-less target (Cloudflare's hosting, GitHub Pages).
+ */
+export type DeletionProvider = VpsProviderId | "portainer" | ServerlessProvider;
 
 /** What the teardown would delete, shown before the user confirms. */
 export interface DestroyPreview {
@@ -121,6 +130,8 @@ export interface DestroyPreview {
    * itself and everything OpsCrew did not create always stay.
    */
   stackChanges?: string[];
+  /** GitHub Pages: what the Pages plan changes after the DNS records are deleted (step titles). */
+  pagesChanges?: string[];
   /**
    * The Cloudflare plan that removes this app's hostnames from OpsCrew's shared rules in the zone,
    * in words, when it changes something (approved with `allowDestroy` and the same typed name).

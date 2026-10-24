@@ -4,6 +4,7 @@ import {
   type DeployPlan,
   environmentsOf,
   isServerlessProvider,
+  isServerlessTarget,
   likelyCloudflareZone,
   type ProjectFacts,
   type Question,
@@ -11,6 +12,7 @@ import {
   type Requirements,
   readArtifact,
   readOptionalArtifact,
+  type Site,
 } from "@opscrew/plan-schema";
 import { appFlag } from "../apps/choice";
 import { requireUniqueNames } from "../apps/names";
@@ -37,12 +39,7 @@ import { buildQuestions, type InterviewAnswers } from "../interview/questions";
 import { portainerAnswers } from "../interview/run";
 import type { OwnServerServices } from "../provision/types";
 import { listRunnerHosts } from "../runners/machine";
-import {
-  gitClient,
-  readOwnServer,
-  readPortainerConnection,
-  serverlessNotSupported,
-} from "../shared";
+import { gitClient, readOwnServer, readPortainerConnection, serverlessName } from "../shared";
 import { inspectOwnServerForDesign } from "../shared/own-server-design";
 import {
   type BranchMatches,
@@ -159,7 +156,11 @@ export function environmentQuestions(
       ...provider,
       id: "provider",
       prompt: `Where should the ${name} environment run?`,
-      default: name === "dev" ? "localhost" : prodPlan.target.provider,
+      // A site's environments run where prod does.
+      default:
+        name === "dev" && !isServerlessProvider(prodPlan.target.provider)
+          ? "localhost"
+          : prodPlan.target.provider,
     },
     { ...asked("region"), id: "region" },
     {
@@ -256,6 +257,72 @@ export function environmentQuestions(
 function text(answers: InterviewAnswers, id: string): string | undefined {
   const value = answers[id];
   return typeof value === "string" ? value.trim() : undefined;
+}
+
+/** How a site is served on this computer: the framework's own dev server, or the folder as it is. */
+function devServer(site: Site): string {
+  if (site.tool === "hugo") return "the framework's own dev server (`hugo server`)";
+  if (site.tool === "node") {
+    return `the framework's own dev server (\`${site.packageManager ?? "npm"} run dev\`)`;
+  }
+  return `any static file server for ${site.outputDir}`;
+}
+
+/**
+ * The environments of a site (FR-1609, FR-1611): each runs on prod's server-less target, and none
+ * on one while prod runs elsewhere. On Cloudflare's hosting each gets its own Worker and hostname;
+ * GitHub Pages publishes one site per repository, so a site there has prod only; and the local copy
+ * of a site is its framework's own dev server, never a localhost environment.
+ * @throws OpsCrewError `PHASE_PRECONDITION` or `INVALID_INPUT` saying why and what to do instead;
+ * nothing is written.
+ */
+function requireSiteTarget(
+  name: string,
+  prodPlan: DeployPlan,
+  target: string | undefined,
+  app: string,
+): void {
+  const prod = prodPlan.target;
+  const add = `opscrew env add ${name}${app}`;
+  if (!isServerlessTarget(prod)) {
+    if (!isServerlessProvider(target)) return;
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The ${name} environment cannot be a site on ${serverlessName(target)} while prod is not one: an app's environments are all sites on prod's target, or none is. Nothing was written.`,
+      {
+        hint: `Give ${name} a server, your Portainer or this computer, or move prod to ${serverlessName(target)} first (\`opscrew interview${app}\`, then \`opscrew design${app}\`).`,
+      },
+    );
+  }
+  const site = serverlessName(prod.provider);
+  if (target === "localhost") {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `A copy of a site on ${site} on this computer is ${devServer(prod.site)}, so OpsCrew sets up no localhost environment for it. Nothing was written.`,
+      {
+        hint:
+          prod.provider === "github-pages"
+            ? `Run it in ${prodPlan.app.buildContext} for a local copy.`
+            : `Run it in ${prodPlan.app.buildContext} for a local copy, or add the environment on Cloudflare's hosting: \`${add} --target cloudflare-workers\`.`,
+      },
+    );
+  }
+  if (prod.provider === "github-pages") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `GitHub Pages publishes one site per repository, and prod is that site, so the ${name} environment cannot have one of its own. Nothing was written.`,
+      {
+        hint: `Keep the site in prod only, or move it to Cloudflare's hosting, where each environment has its own Worker and hostname: \`opscrew interview${app}\` (Cloudflare, no server), then \`opscrew design${app}\` and \`${add}\`.`,
+      },
+    );
+  }
+  if (target !== undefined && target !== prod.provider) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Every environment of a site on ${site} runs there too, each with its own Worker and hostname, so the ${name} environment cannot run on ${target}. Nothing was written.`,
+      { hint: `Run \`${add} --target ${prod.provider}\`, or leave --target out: it is prod's.` },
+    );
+  }
 }
 
 /** The deploy source answered, checked against the app's environments. */
@@ -447,7 +514,7 @@ export async function addEnvironment(
     ...rest
   } = portainerSplit.rest;
   const target = typeof rest.provider === "string" ? rest.provider.trim().toLowerCase() : undefined;
-  if (isServerlessProvider(target)) throw serverlessNotSupported("`opscrew env add`", target);
+  requireSiteTarget(name, prodPlan, target, app);
   const requirements = answersToRequirements(rest, {
     now: deps.clock.now(),
     facts,

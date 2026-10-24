@@ -185,6 +185,14 @@ const ROWS: Row[] = [
     notFound: "undefined",
   },
   {
+    method: "runArtifacts",
+    route: `GET ${API}/actions/runs/1/artifacts`,
+    call: (c) => c.runArtifacts("acme", "shop", 1),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: "generic",
+    notFound: "undefined",
+  },
+  {
     method: "getPages",
     route: `GET ${API}/pages`,
     call: (c) => c.getPages("acme", "shop"),

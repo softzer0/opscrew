@@ -75,6 +75,34 @@ export function serverlessNotSupported(what: string, provider: ServerlessProvide
   );
 }
 
+/**
+ * The plain error of `opscrew dns` for a site on a server-less target: `opscrew provision` manages
+ * its DNS records. `plan` is the plan's file, as the user sees it.
+ */
+export function serverlessDnsByProvision(provider: ServerlessProvider, plan: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `\`opscrew dns\` does not change the DNS records of a site on ${SERVERLESS_NAMES[provider]}: \`opscrew provision\` manages them with the site.`,
+    {
+      hint: `To move the site to another domain, change dns.domain in ${plan} (or answer \`opscrew interview\` again, then run \`opscrew design\`), then run \`opscrew provision\`.`,
+    },
+  );
+}
+
+/**
+ * The plain error of `opscrew portainer enable` or `disable` (`what`) for a site on a server-less
+ * target, which has no server to run Portainer on.
+ */
+export function serverlessNoPortainer(what: string, provider: ServerlessProvider): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${what} does not apply to a site on ${SERVERLESS_NAMES[provider]}: there is no server to run Portainer on.`,
+    {
+      hint: "Nothing changes for the site. To run the app under Portainer, deploy it to a server instead: run `opscrew interview`, then `opscrew design`.",
+    },
+  );
+}
+
 /** The plain error of `opscrew retarget` for a server-less target, which does not move yet. */
 export function serverlessTargetNoMove(provider: ServerlessProvider): OpsCrewError {
   return new OpsCrewError(

@@ -5,7 +5,9 @@ import type {
   EnvironmentView,
   ImagePlatform,
   ImageProvenance,
+  PagesRun,
   RegistryCredential,
+  RunArtifact,
   WorkflowRunSource,
 } from "@opscrew/connector-github";
 import type { ProjectPaths } from "@opscrew/core";
@@ -147,6 +149,7 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     _repo: string,
     options: { runId: number; onWaiting?: (htmlUrl: string) => Promise<void> | void },
   ) {
+    this.waits.push(this.reads.length);
     if (this.waitError !== undefined) throw this.waitError;
     if (this.reviewer !== "none") await options.onWaiting?.(DEPLOY_RUN_URL);
     const waiting = this.reviewer === "pending";
@@ -158,19 +161,56 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     };
   }
 
+  /** The successful runs of each GitHub Pages workflow, the latest started first. */
+  readonly pages = new Map<string, PagesRun[]>();
+  async pagesRuns(_owner: string, _repo: string, workflowFile: string) {
+    return this.pages.get(workflowFile) ?? [];
+  }
+
+  /** The artifacts of each workflow run, by its id (none listed: GitHub has no such run). */
+  readonly artifacts = new Map<number, RunArtifact[]>();
+  async runArtifacts(_owner: string, _repo: string, runId: number) {
+    return this.artifacts.get(runId);
+  }
+
+  /** The runs re-run, by id. */
+  readonly reruns: number[] = [];
+  async rerunWorkflowRun(_owner: string, _repo: string, runId: number) {
+    this.reruns.push(runId);
+    this.attempt++;
+  }
+
+  /** The attempt GitHub shows of a run: one more after each re-run. */
+  attempt = 1;
+  /**
+   * How many reads after a re-run still show the attempt before it, completed and successful, as
+   * GitHub's API can lag behind (`Infinity`: GitHub never shows the re-run).
+   */
+  staleReads = 0;
+  /** How many runs had been read (`getWorkflowRun`) when each wait for a run began. */
+  readonly waits: number[] = [];
+
   /** Workflow runs read with `getWorkflowRun`, by id. */
   readonly reads: number[] = [];
   async getWorkflowRun(_owner: string, _repo: string, runId: number) {
     this.reads.push(runId);
-    const waiting = this.reviewer === "pending";
-    return {
+    const common = {
       id: runId,
-      status: waiting ? "waiting" : "completed",
-      conclusion: waiting ? null : this.conclusion,
-      ...this.reread,
       htmlUrl: DEPLOY_RUN_URL,
       headSha: STAGING_COMMIT,
       createdAt: "2026-10-11T12:00:00Z",
+    };
+    if (this.reruns.length > 0 && this.staleReads > 0) {
+      this.staleReads--;
+      return { ...common, status: "completed", conclusion: "success", attempt: this.attempt - 1 };
+    }
+    const waiting = this.reviewer === "pending";
+    return {
+      ...common,
+      status: waiting ? "waiting" : "completed",
+      conclusion: waiting ? null : this.conclusion,
+      ...this.reread,
+      attempt: this.attempt,
     };
   }
 

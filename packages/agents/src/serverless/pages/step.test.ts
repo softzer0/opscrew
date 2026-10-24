@@ -14,6 +14,8 @@ describe("pagesPlanStep", () => {
       updatePages: async () => {
         throw new OpsCrewError("PROVIDER_ERROR", "GitHub did not answer.");
       },
+      deletePages: async () => undefined,
+      deleteEnvironment: async () => undefined,
       pagesHealth: async () => undefined,
       pagesAllowed: async () => "yes",
     };

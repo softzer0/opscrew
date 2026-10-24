@@ -23,6 +23,42 @@ export function promotionHash(parts: PromotionParts): string {
   return sha256Hex(canonicalJson({ target, source, digest, targetPlanHash }));
 }
 
+/** What the `promote` approval of a site's promotion on Cloudflare's hosting binds. */
+export interface BuildPromotionParts {
+  target: string;
+  source: string;
+  /** The workflow run that built the site the source runs. */
+  runId: number;
+  /** That build's SHA-256 (64 lower-case hex digits). */
+  sha256: string;
+  /** SHA-256 of the target plan's canonical JSON. */
+  targetPlanHash: string;
+}
+
+/**
+ * The `promote` approval's hash of a site's promotion: SHA-256 of the canonical `{ target, source,
+ * runId, sha256, targetPlanHash }`, so a change of any of them needs a new approval.
+ */
+export function buildPromotionHash(parts: BuildPromotionParts): string {
+  const { target, source, runId, sha256, targetPlanHash } = parts;
+  return sha256Hex(canonicalJson({ target, source, runId, sha256, targetPlanHash }));
+}
+
+/** What the `promote` approval of a rollback on a server-less target binds. */
+export interface RollbackParts {
+  target: string;
+  /** The Worker version, or the GitHub Pages run, to go back to. */
+  version: string;
+  /** SHA-256 of the target plan's canonical JSON. */
+  targetPlanHash: string;
+}
+
+/** The `promote` approval's hash of a rollback: SHA-256 of the canonical `{ target, version, targetPlanHash }`. */
+export function rollbackHash(parts: RollbackParts): string {
+  const { target, version, targetPlanHash } = parts;
+  return sha256Hex(canonicalJson({ target, version, targetPlanHash }));
+}
+
 /** The image an environment got by `opscrew promote`, once the deploy run succeeded. */
 const PromotionSchema = z.object({
   digest: z.string(),

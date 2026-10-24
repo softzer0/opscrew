@@ -15,6 +15,7 @@ export {
   type PagesRun,
   type PagesSite,
   type PullRequest,
+  type RunArtifact,
   type RunnerInfo,
   type WorkflowRunSource,
 } from "./github";

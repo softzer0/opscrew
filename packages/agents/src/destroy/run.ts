@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
 import { planProvider, providerProfile } from "../providers";
@@ -14,14 +14,7 @@ import {
   runnerRepository,
   serverRunnerName,
 } from "../runners";
-import {
-  describeChanges,
-  hasDeployment,
-  planStop,
-  refusalReason,
-  serverAddress,
-  serverlessNotSupported,
-} from "../shared";
+import { describeChanges, hasDeployment, planStop, refusalReason, serverAddress } from "../shared";
 import {
   deletedTunnels,
   requireTunnelClosed,
@@ -76,6 +69,7 @@ import {
 } from "./deletion";
 import { destroyOwnServer } from "./own";
 import { destroyPortainer } from "./portainer";
+import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
 import {
   applySharedRemoval,
   planSharedRemoval,
@@ -481,7 +475,8 @@ function remainingAfterDestroy(input: {
  * it stopped.
  *
  * A server the user owns is never deleted, rebuilt or snapshotted: see `destroyOwnServer` (the
- * Cloudflare resources, then a teardown host plan, then optionally the undo host plan).
+ * Cloudflare resources, then a teardown host plan, then optionally the undo host plan). The
+ * server-less targets have their own flows: `destroyCloudflareWorkers` and `destroyGithubPages`.
  */
 export async function runDestroy(
   deps: PhaseDeps,
@@ -492,9 +487,10 @@ export async function runDestroy(
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
   if (plan.target.provider === "localhost") return destroyLocalhost(deps, plan, options);
-  if (isServerlessProvider(plan.target.provider)) {
-    throw serverlessNotSupported("`opscrew destroy`", plan.target.provider);
+  if (plan.target.provider === "cloudflare-workers") {
+    return destroyCloudflareWorkers(deps, plan, options);
   }
+  if (plan.target.provider === "github-pages") return destroyGithubPages(deps, plan, options);
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
   if (plan.target.provider === "portainer") return destroyPortainer(deps, plan, options);
   const name = plan.app.name;

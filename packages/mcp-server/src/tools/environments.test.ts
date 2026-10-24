@@ -111,6 +111,13 @@ class FakePromoteGitHub implements PromoteGitHubApi {
   async getEnvironment() {
     return undefined;
   }
+  async pagesRuns() {
+    return [];
+  }
+  async rerunWorkflowRun() {}
+  async runArtifacts() {
+    return [];
+  }
 }
 
 /** Nothing changed outside OpsCrew and nothing waits for provision. */
