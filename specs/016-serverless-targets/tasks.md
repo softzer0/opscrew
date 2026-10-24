@@ -395,7 +395,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
 
-- [ ] T1610b [P] [US4] [US5] `destroy`, `promote` (promotion and rollback), retarget's refusal, and environments for both targets, in `packages/agents/src/{destroy,promote,environments,retarget}/**`
+- [X] T1610b [P] [US4] [US5] `destroy`, `promote` (promotion and rollback), retarget's refusal, and environments for both targets, in `packages/agents/src/{destroy,promote,environments,retarget}/**`
   - Owns: those paths (+ tests); the new branches only
   - Reads: spec US4 scenarios 4, 6, US5, FR-1608, FR-1609, FR-1611, SC-1604, SC-1605; contracts/targets.md "CLI and MCP"; plan.md "10."
   - Depends: T1608, T1609
