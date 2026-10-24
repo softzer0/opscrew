@@ -36,7 +36,6 @@ import {
   lookupPublicAddresses,
   type ServerAddress,
   serverAddress,
-  serverlessNotSupported,
   summarizeChecks,
   writePlanIfChanged,
   writeRenderedFiles,
@@ -70,6 +69,7 @@ import {
   renderPortainerRunbook,
   withoutRoute,
 } from "./portainer";
+import { verifySite } from "./serverless";
 
 /** Network functions for `opscrew verify`; each defaults to a Node built-in adapter. */
 export interface RunVerifyOptions {
@@ -117,8 +117,8 @@ export interface VerifyResult {
   passed: boolean;
   /** The site address that was checked. */
   url: string;
-  /** Repo-relative path of the runbook that was written. */
-  runbookPath: string;
+  /** Repo-relative path of the runbook that was written; none for a server-less target. */
+  runbookPath?: string;
   /** The plan after verification (with `deployment.url`/`firstDeployAt` when passed). */
   plan: DeployPlan;
 }
@@ -130,7 +130,8 @@ export interface VerifyResult {
  * state (`serverAddress`). Writes `opscrew/RUNBOOK.md` (without the address behind Cloudflare's
  * proxy); when nothing fails, records `deployment.firstDeployAt` (once) and, with a domain,
  * `deployment.url` in `opscrew/plan.yaml`, which stays as it is when neither changes. Marks
- * `verify`.
+ * `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by `verifySite`, which
+ * changes nothing and writes no file.
  */
 export async function runVerify(
   deps: PhaseDeps,
@@ -145,21 +146,32 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   const plan = await readArtifact("plan", paths.files.plan);
   if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
-  if (isServerlessProvider(plan.target.provider)) {
-    throw serverlessNotSupported("`opscrew verify`", plan.target.provider);
-  }
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
   // ` --env <name>` for the commands verify names; `--env prod` beside other environments.
   const flag = await commandFlags(paths.root, paths.environment, paths.app);
+  const serverless = isServerlessProvider(plan.target.provider);
   if (!ownProxy && options.url !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       portainer
         ? "An address to check is only for an app in your Portainer behind your own reverse proxy; this app is served through its domain, which OpsCrew checks. Nothing was checked."
-        : "An address to check is only for an app in your Portainer behind your own reverse proxy; OpsCrew checks this deployment through its domain or its server. Nothing was checked.",
+        : `An address to check is only for an app in your Portainer behind your own reverse proxy; OpsCrew checks this deployment through its domain${serverless ? "" : " or its server"}. Nothing was checked.`,
       { hint: `Run \`opscrew verify${flag}\` without it.` },
     );
+  }
+  if (serverless) {
+    const fetch = options.fetch ?? deps.fetch;
+    return verifySite(deps, plan, {
+      resolver: options.resolver ?? defaultDnsResolver,
+      fetch,
+      tlsConnect: options.tlsConnect ?? defaultTlsConnect,
+      ...(await cloudflareRanges(deps, plan, fetch, options)),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      // Only GitHub Pages reads GitHub.
+      github: plan.target.provider === "github-pages" ? await githubContext(deps, fetch) : {},
+      flag,
+    });
   }
   // The user's Portainer: no server address (OpsCrew never knows the host's), and its own address
   // is never printed, not even inside the route the user gave.
@@ -419,13 +431,17 @@ async function cloudflareRanges(
   options: RunVerifyOptions,
 ): Promise<{ cloudflareRanges?: CloudflareRanges }> {
   if (options.cloudflareRanges) return { cloudflareRanges: options.cloudflareRanges };
-  if (plan.dns.provider !== "cloudflare" || !plan.dns.proxied) return {};
+  // A site on GitHub Pages is checked against them too: its records must not be proxied.
+  const serverless = isServerlessProvider(plan.target.provider);
+  if (plan.dns.provider !== "cloudflare" || (!plan.dns.proxied && !serverless)) return {};
   try {
     const ranges = await new CloudflareClient({ fetch, version: deps.version }).getIpRanges();
     return { cloudflareRanges: ranges };
   } catch {
     deps.reporter.info(
-      "Could not read Cloudflare's IP ranges; the DNS check only makes sure the server's IP is not published.",
+      serverless
+        ? "Could not read Cloudflare's IP ranges, so the DNS check does not compare the addresses with them."
+        : "Could not read Cloudflare's IP ranges; the DNS check only makes sure the server's IP is not published.",
     );
     return {};
   }

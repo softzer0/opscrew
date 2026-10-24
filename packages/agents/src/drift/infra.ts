@@ -225,6 +225,7 @@ export async function finishDriftReport(
   const hostDifferences = found.host?.differences.length ?? 0;
   const portainerDifferences = found.portainer?.differences.length ?? 0;
   const ruleDifferences = found.cloudflareRules?.length ?? 0;
+  const siteDifferences = found.site?.length ?? 0;
   const clean =
     drift.length === 0 &&
     pending.length === 0 &&
@@ -233,7 +234,8 @@ export async function finishDriftReport(
     foreignDnsRecords.length === 0 &&
     hostDifferences === 0 &&
     portainerDifferences === 0 &&
-    ruleDifferences === 0;
+    ruleDifferences === 0 &&
+    siteDifferences === 0;
   const { notes, ...rest } = found;
   const report: DriftReport = {
     ...rest,
@@ -252,7 +254,7 @@ export async function finishDriftReport(
     target: plan.infra.dir,
     detail: clean
       ? "no drift"
-      : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${files.changed.length + files.created.length} files differ${found.host !== undefined ? `, ${hostDifferences} differences on the server` : ""}${found.portainer !== undefined ? `, ${portainerDifferences} differences in Portainer` : ""}${found.cloudflareRules !== undefined ? `, ${ruleDifferences} differences in OpsCrew's shared Cloudflare rules` : ""}`,
+      : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${files.changed.length + files.created.length} files differ${found.host !== undefined ? `, ${hostDifferences} differences on the server` : ""}${found.portainer !== undefined ? `, ${portainerDifferences} differences in Portainer` : ""}${found.cloudflareRules !== undefined ? `, ${ruleDifferences} differences in OpsCrew's shared Cloudflare rules` : ""}${found.site !== undefined ? `, ${siteDifferences} differences of the site` : ""}`,
   });
   return report;
 }

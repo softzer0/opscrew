@@ -24,13 +24,20 @@ import {
   type ServiceContainer,
   serviceContainers,
 } from "./components";
+import { siteStatusReport } from "./site";
 
 /** Options of {@link readServerContainers} and {@link readComponentStatus}. */
 export interface ComponentStatusOptions {
   /** A server the user owns: `--host-key SHA256:…` for the first connection from this computer. */
   hostKey?: string;
-  /** The deploy user's shell on a server OpsCrew created, and own-server and Portainer fakes (tests). */
-  services?: Pick<ProvisionServices, "remote" | "own" | "portainer" | "runnerGitHub">;
+  /**
+   * The deploy user's shell on a server OpsCrew created, own-server and Portainer fakes, and
+   * Cloudflare's clients for a site on its hosting (tests).
+   */
+  services?: Pick<
+    ProvisionServices,
+    "remote" | "own" | "portainer" | "runnerGitHub" | "cloudflare" | "sharedCloudflare"
+  >;
 }
 
 /**
@@ -145,12 +152,17 @@ async function readStackContainers(
  * list; then each one and whether it runs ({@link readComponentStatus}), with the list and a note
  * (redacted) instead when the deployment cannot be read. `check` runs first and may stop the read
  * the same way (the MCP server's host-key check). A self-hosted runner's state follows (FR-1530).
+ * A site on Cloudflare's hosting or GitHub Pages has no components: its running version, custom
+ * domains or Pages site instead (`siteStatusReport`).
  */
 export async function componentStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
 ): Promise<{ lines: string[]; status?: ComponentStatus }> {
+  if (isServerlessProvider(plan.target.provider)) {
+    return siteStatusReport(deps, plan, options.services ? { services: options.services } : {});
+  }
   const report = await componentsReport(deps, plan, options);
   const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
   return runner.length === 0 ? report : { ...report, lines: [...report.lines, "", ...runner] };

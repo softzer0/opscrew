@@ -103,8 +103,11 @@ export const UNKNOWN_ADDRESS_REMEDIATION = `${upperFirst(provisionedElsewhereHin
 /** Certificates that expire sooner than this fail the TLS check (Caddy renews 30 days ahead). */
 export const MIN_CERT_DAYS = 14;
 
-/** Headers Caddy sets on every response (see the rendered Caddyfile). */
-const SECURITY_HEADERS: readonly { name: string; httpsOnly?: boolean; expect?: RegExp }[] = [
+/**
+ * Headers Caddy sets on every response (see the rendered Caddyfile), and OpsCrew's deploys on
+ * Cloudflare's hosting.
+ */
+export const SECURITY_HEADERS: readonly { name: string; httpsOnly?: boolean; expect?: RegExp }[] = [
   { name: "strict-transport-security", httpsOnly: true, expect: /max-age=\d+/i },
   { name: "x-content-type-options", expect: /nosniff/i },
   { name: "x-frame-options" },
@@ -146,7 +149,8 @@ function serverRunningHint(plan: DeployPlan): string {
     : "that your server is running";
 }
 
-function errorText(error: unknown): string {
+/** An error's message, with its cause's when it has one (a failed connection's reason). */
+export function errorText(error: unknown): string {
   if (error instanceof Error) {
     const cause = (error as { cause?: unknown }).cause;
     const detail = cause instanceof Error && cause.message ? ` (${cause.message})` : "";
@@ -256,7 +260,8 @@ export function siteUrl(plan: DeployPlan, server?: ServerAddress): string | unde
   return server ? `http://${server.ipv4}` : undefined;
 }
 
-function rangeList(ranges: CloudflareRanges): BlockList {
+/** The address ranges (CIDRs) of `ranges`, to check addresses against. */
+export function rangeList(ranges: CloudflareRanges): BlockList {
   const list = new BlockList();
   for (const [cidrs, type] of [
     [ranges.ipv4, "ipv4"],

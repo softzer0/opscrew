@@ -5,6 +5,7 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
+import type { ServerlessProvider } from "@opscrew/plan-schema";
 import type { ProvisionServices } from "../provision/types";
 import type { HostDrift } from "./host";
 
@@ -25,6 +26,16 @@ export interface PortainerDifference {
 export interface CloudflareRuleDifference {
   title: string;
   /** What it means and how to put it back. */
+  detail: string;
+}
+
+/**
+ * One way a site on Cloudflare's hosting or GitHub Pages differs from its plan: a custom domain of
+ * the Worker, or a setting of the Pages site. Names hostnames and settings only.
+ */
+export interface SiteDifference {
+  title: string;
+  /** What it means and what `opscrew provision` does about it. */
   detail: string;
 }
 
@@ -82,7 +93,13 @@ export interface DriftReport {
    * when the app has none there.
    */
   cloudflareRules?: CloudflareRuleDifference[];
-  /** True when nothing drifted, nothing is pending and every file (and the server) matches. */
+  /**
+   * A site on Cloudflare's hosting: how the Worker's custom domains differ from the plan's
+   * hostnames. On GitHub Pages: how the site (on, published by the workflow, its custom domain,
+   * HTTPS once GitHub has the certificate) differs from the plan.
+   */
+  site?: SiteDifference[];
+  /** True when nothing drifted, nothing is pending and every file (and the server or site) matches. */
   clean: boolean;
   /** The IaC engine of the check; absent on this computer (the localhost target has none). */
   engine?: IacEngineInfo;
@@ -90,9 +107,9 @@ export interface DriftReport {
   checkedAt: string;
   /**
    * Provider of the deployment, named in the report: `portainer` for the user's Portainer,
-   * `localhost` for this computer.
+   * `localhost` for this computer, or the server-less target.
    */
-  provider: VpsProviderId | "portainer" | "localhost";
+  provider: VpsProviderId | "portainer" | "localhost" | ServerlessProvider;
   /**
    * Plain-English remarks about the check itself, for example that the provider schemas could
    * not be read, so values the cloud maintains itself may show as drift. Absent when there are none.

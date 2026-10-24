@@ -10,7 +10,7 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { requireStorageKey } from "../provision/storage";
-import { hasDeployment, serverlessNotSupported, stringOutput } from "../shared";
+import { hasDeployment, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { cloudRunnerDrift, type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
@@ -23,6 +23,7 @@ import {
   storageDrift,
 } from "./infra";
 import { portainerDrift } from "./portainer";
+import { siteDrift } from "./site";
 import type { DriftOptions, DriftReport } from "./types";
 
 /**
@@ -56,13 +57,13 @@ const NO_CLOUD_RESOURCES_NOTE =
  *
  * In the user's Portainer (FR-1013) it compares the stacks, the registry entry and the deploy
  * branch with what OpsCrew sets up now (`report.portainer`, see `portainerDrift`).
+ *
+ * On Cloudflare's hosting and GitHub Pages it compares the site with its plan and its IaC state
+ * (`report.site`, see `siteDrift`).
  */
 export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Promise<DriftReport> {
   const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
-  if (isServerlessProvider(plan.target.provider)) {
-    throw serverlessNotSupported("`opscrew drift`", plan.target.provider);
-  }
   const ownServer = plan.target.provider === "own";
 
   // 1. Preconditions: no move in progress, a deployment and its state (no network yet)
@@ -76,6 +77,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   }
   if (plan.target.provider === "portainer") return portainerDrift(deps, plan, options);
   if (plan.target.provider === "localhost") return localDrift(deps, plan);
+  if (isServerlessProvider(plan.target.provider)) return siteDrift(deps, plan, options);
   const statePath = tfstateFile(deps.paths);
   const cloudResources = !(await ownWithoutCloudResources(plan, statePath));
   const stateKind = cloudResources ? await inspectState(deps, statePath) : undefined;

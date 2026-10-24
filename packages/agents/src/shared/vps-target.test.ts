@@ -13,7 +13,6 @@ import { runDestroy } from "../destroy/run";
 import { runDns } from "../dns/run";
 import { buyDomain, connectDomain } from "../domain";
 import { recordDomain } from "../domain/project";
-import { runDrift } from "../drift/run";
 import { addEnvironment } from "../environments/add";
 import { runInitChecks } from "../init";
 import { answersToRequirements } from "../interview/answers";
@@ -22,7 +21,6 @@ import { portainerDisable, portainerEnable } from "../portainer/run";
 import { planProvider, requestedProvider } from "../providers";
 import { previewDeploymentFiles, runProvision } from "../provision";
 import { runRetarget } from "../retarget/run";
-import { runSecure } from "../secure/run";
 import { tlsStatusReport } from "../status";
 import { readServerContainers } from "../status/run";
 import {
@@ -34,7 +32,6 @@ import {
   TOKEN,
   testPlan,
 } from "../testing";
-import { runVerify } from "../verify/run";
 import { moveProvider, ownServerNoMove } from "./vps-target";
 
 const BUG = {
@@ -276,9 +273,6 @@ describe.each([
     const commands: [string, () => Promise<unknown>][] = [
       ["`opscrew dns`", () => runDns(deps, { domain: "docs.example.com" })],
       ["Previewing the deployment files", () => previewDeploymentFiles(deps)],
-      ["`opscrew verify`", () => runVerify(deps)],
-      ["`opscrew drift`", () => runDrift(deps)],
-      ["`opscrew secure`", () => runSecure(deps, { scanners: [], offline: true })],
       ["`opscrew destroy`", () => runDestroy(deps)],
       ["`opscrew portainer enable`", () => portainerEnable(deps)],
       ["`opscrew portainer disable`", () => portainerDisable(deps)],

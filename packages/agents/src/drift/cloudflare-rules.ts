@@ -17,6 +17,7 @@ import {
   sharedCloudflareClient,
 } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
+import { listsRedirect } from "../serverless/cloudflare/rules";
 import type { CloudflareRuleDifference } from "./types";
 
 /** The rule a change of one phase is about. */
@@ -98,6 +99,8 @@ export async function cloudflareRulesDrift(
     zoneId: record.zoneId,
     accountId: "",
     access: false,
+    // The `www` redirect of a site on Cloudflare's hosting; a server never has hostnames there.
+    redirect: listsRedirect(record),
     ...(tls ? { tls: { proxied: [], record } } : {}),
     clock: deps.clock,
   });

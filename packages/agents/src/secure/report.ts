@@ -54,6 +54,12 @@ export interface SecurityReportInput {
    * server's checks do not apply.
    */
   localhost?: { notes: readonly string[]; probesSkipped: string };
+  /**
+   * A site with no server of its own (Cloudflare's hosting, GitHub Pages; `host` names it):
+   * `hostChecks` are the checks of the site itself over HTTPS, there are no outside probes, and
+   * `notes` say which of a server's checks do not apply.
+   */
+  site?: { host: string; notes: readonly string[]; probesSkipped: string };
   /** The deeper checks (`--deep`), one per tool; absent without it. */
   deep?: readonly DeepToolResult[];
   /**
@@ -73,6 +79,7 @@ export interface SecurityProblem {
     | "Server"
     | "Portainer stacks"
     | "The stack on this computer"
+    | "The site"
     | "Outside probe"
     | "Deeper checks"
     | "TLS and the secrets copy";
@@ -157,7 +164,9 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
         ? "Portainer stacks"
         : input.localhost !== undefined
           ? "The stack on this computer"
-          : "Server",
+          : input.site !== undefined
+            ? "The site"
+            : "Server",
     ),
     ...checkProblems(input.probes, "Outside probe"),
     ...checkProblems(input.settings ?? [], "TLS and the secrets copy"),
@@ -294,7 +303,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
         ? "not evaluated (no infrastructure plan available)"
         : `${input.policies.filter((p) => p.passed).length} passed, ${input.policies.filter((p) => !p.passed).length} failed`
     } |`,
-    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : input.localhost !== undefined ? "The stack on this computer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
+    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : input.localhost !== undefined ? "The stack on this computer" : input.site !== undefined ? `The site on ${input.site.host}` : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
     `| Outside probes | ${input.probes.length === 0 ? "skipped" : summarizeChecks(input.probes)} |`,
     ...(input.settings !== undefined
       ? [`| TLS and the secrets copy | ${summarizeChecks(input.settings)} |`]
@@ -367,12 +376,14 @@ export function renderSecurityReport(input: SecurityReportInput): string {
   }
 
   // OpsCrew checks the app's stacks in the user's Portainer and on this computer, never the host.
-  const unmanaged = input.portainer ?? input.localhost;
+  const unmanaged = input.portainer ?? input.localhost ?? input.site;
   if (unmanaged !== undefined) {
     out.push(
       input.portainer !== undefined
         ? "## The app's stacks in your Portainer"
-        : "## The stack on this computer",
+        : input.site !== undefined
+          ? `## The site on ${input.site.host}`
+          : "## The stack on this computer",
       "",
     );
     if (input.hostChecksSkipped !== undefined) {
@@ -381,7 +392,9 @@ export function renderSecurityReport(input: SecurityReportInput): string {
       out.push(
         input.portainer !== undefined
           ? "Checked read-only through Portainer's API, with the certificate you confirmed."
-          : "Checked read-only with this computer's Docker and files.",
+          : input.site !== undefined
+            ? "Checked read-only over HTTPS from this computer."
+            : "Checked read-only with this computer's Docker and files.",
         "",
         ...checkTable(input.hostChecks),
         "",
@@ -405,7 +418,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
   }
 
   if (unmanaged !== undefined) {
-    // The user's Portainer host and this computer are never probed (said above).
+    // The user's Portainer host, this computer and a site's host are never probed (said above).
   } else if (input.probes.length === 0) {
     out.push(`Skipped: ${UNKNOWN_SERVER_ADDRESS}`, "");
   } else {

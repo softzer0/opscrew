@@ -3,13 +3,21 @@
  * hostnames in OpsCrew's probe block and its `www` hostname in the redirect to the domain, through
  * a Cloudflare plan approved by its hash (`cloudflare-apply`).
  */
-import type { CloudflareClient, SharedDesired } from "@opscrew/connector-cloudflare";
+import type { CloudflareClient, SharedDesired, SharedRecord } from "@opscrew/connector-cloudflare";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../../context";
 import type { CloudflareSetup } from "../../provision/credentials";
 import { readCloudflareRecord, type ZonePlan, zonePlan } from "../../provision/shared-cloudflare";
 
 const REDIRECT = "opscrew-www-redirect";
+
+/**
+ * True when the app's record lists hostnames in the `www` redirect (a site on Cloudflare's
+ * hosting with `www`): reading or planning the shared rules then needs the redirect's phase.
+ */
+export function listsRedirect(record: Pick<SharedRecord, "hostnames"> | undefined): boolean {
+  return (record?.hostnames[REDIRECT] ?? []).length > 0;
+}
 
 /**
  * What an app on Cloudflare's hosting needs from the zone's shared rules: its hostnames in the
@@ -58,8 +66,6 @@ export async function planSiteRules(
     desired,
     record,
     command: input.command,
-    redirect:
-      (desired.hostnames[REDIRECT] ?? []).length > 0 ||
-      (record?.hostnames[REDIRECT] ?? []).length > 0,
+    redirect: listsRedirect(desired) || listsRedirect(record),
   });
 }

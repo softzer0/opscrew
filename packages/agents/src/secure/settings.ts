@@ -21,6 +21,7 @@ import type { PhaseDeps } from "../context";
 import { readCloudflareRecord, sharedCloudflareClient } from "../provision/shared-cloudflare";
 import { copyPath } from "../secrets";
 import { readRecord } from "../secrets/store";
+import { listsRedirect } from "../serverless/cloudflare/rules";
 import { checkResult, repositoryPrivate } from "../shared";
 import { proxyCertificateHosts, recordCertificateCheck } from "../status/certificates";
 
@@ -100,7 +101,8 @@ async function caaChecks(
 
 /**
  * The zone's minimum TLS version for an app behind Cloudflare's proxy (FR-1432): the shared
- * plan's advice to raise it, or that the token may not read it.
+ * plan's advice to raise it, or that the token may not read it. The `www` redirect's phase is read
+ * too when the record lists hostnames there (a site on Cloudflare's hosting), as the plan needs.
  */
 async function minTlsChecks(
   client: CloudflareClient,
@@ -111,6 +113,7 @@ async function minTlsChecks(
     zoneId: record.zoneId,
     accountId: "",
     access: false,
+    redirect: listsRedirect(record),
     minTls: true,
     clock: deps.clock,
   });

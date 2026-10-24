@@ -1,6 +1,6 @@
 import { engineLabel } from "@opscrew/iac-engine";
 import { PORTAINER_DEPLOY_BRANCH, portainerDeployBranch } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { namedEnvironmentFlag, planFile } from "../runners/words";
 import { CHANGE_SYMBOL } from "../shared";
@@ -62,6 +62,18 @@ export function driftNextSteps(
       : [
           `to put back what OpsCrew set up on this computer, run ${provision} (it shows the local plan first and changes nothing without your approval).`,
           `to keep a change, make it in ${file} before you provision again.`,
+        ];
+  }
+  if (isServerlessProvider(report.provider)) {
+    const where =
+      report.provider === "github-pages"
+        ? "in the Cloudflare dashboard or the repository's Pages settings"
+        : "in the Cloudflare dashboard";
+    return report.clean
+      ? [`nothing to do; ${again} after changes ${where}.`]
+      : [
+          `to put back what OpsCrew set up and apply pending code, run ${provision} (it shows the plans first and changes nothing without your approval).`,
+          `to keep a change made ${where}, update ${file} to match before you provision again.`,
         ];
   }
   if (report.provider === "own") {
@@ -149,15 +161,20 @@ export function renderDriftReport(
   const { drift, pending, foreignDnsRecords: foreign } = report;
   const portainer = report.provider === "portainer";
   const local = report.provider === "localhost";
-  // The user's Portainer, like their own server, has only Cloudflare's dashboard as a console.
+  // The user's Portainer, like their own server and a site without one, has only Cloudflare's
+  // dashboard as a console.
   const cloud =
-    report.provider === "own" || report.provider === "portainer" || report.provider === "localhost"
+    report.provider === "own" ||
+    report.provider === "portainer" ||
+    report.provider === "localhost" ||
+    isServerlessProvider(report.provider)
       ? undefined
       : providerProfile(report.provider).displayName;
   const ownServer = cloud === undefined;
   const host = report.host?.differences ?? [];
   const stacks = report.portainer?.differences ?? [];
   const rules = report.cloudflareRules ?? [];
+  const site = report.site ?? [];
   const files = [
     ...report.files.changed.map((path) => ({ path, label: "changed" })),
     ...report.files.created.map((path) => ({ path, label: "missing" })),
@@ -170,16 +187,21 @@ export function renderDriftReport(
     foreign.length === 0 &&
     host.length === 0 &&
     stacks.length === 0 &&
-    rules.length === 0
+    rules.length === 0 &&
+    site.length === 0
   ) {
     lines.push(
-      local
-        ? "The deployment matches the plan: the stack on this computer is as OpsCrew set it up, and the generated files agree."
-        : portainer
-          ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-          : ownServer
-            ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-            : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
+      report.provider === "cloudflare-workers"
+        ? `The deployment matches the plan: the Worker, its custom domains, ${report.cloudflareRules !== undefined ? "OpsCrew's rules in the zone, " : ""}the state and the infrastructure code all agree.`
+        : report.provider === "github-pages"
+          ? "The deployment matches the plan: the GitHub Pages site, its DNS records, the state and the infrastructure code all agree."
+          : local
+            ? "The deployment matches the plan: the stack on this computer is as OpsCrew set it up, and the generated files agree."
+            : portainer
+              ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+              : ownServer
+                ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+                : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
       ...notes,
     );
     return lines.join("\n");
@@ -206,6 +228,16 @@ export function renderDriftReport(
       `${provision} shows a stack plan for what it puts back in Portainer, and nothing changes until you approve it; what it does not put back says what to do with it. Values are compared only as keyed fingerprints and never shown.`,
       "",
     );
+  }
+
+  if (site.length > 0) {
+    lines.push(
+      report.provider === "github-pages"
+        ? `The GitHub Pages site differs from the plan (${site.length}):`
+        : `The Worker's custom domains differ from the plan (${site.length}):`,
+    );
+    for (const item of site) lines.push(`  ~ ${item.title}`, `      ${item.detail}`);
+    lines.push("");
   }
 
   if (rules.length > 0) {
