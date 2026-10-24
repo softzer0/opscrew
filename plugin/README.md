@@ -15,9 +15,15 @@ claude plugin install opscrew@opscrew
 Or inside a Claude Code session: `/plugin marketplace add softzer0/opscrew`, then
 `/plugin install opscrew@opscrew`.
 
-The plugin starts the OpsCrew MCP server with `npx -y opscrew@0.1.0 mcp`, so Node.js 22+ must be
-installed. On native Windows, if the server fails to start, change `plugin/.mcp.json` to use
-`"command": "cmd", "args": ["/c", "npx", "-y", "opscrew@0.1.0", "mcp"]`.
+When Claude Code installs the plugin, it also installs the OpsCrew CLI at the plugin's version
+(`opscrew` 0.1.0 from npm) and its dependencies, exactly as `package-lock.json` pins them, with npm
+and without running any install script. The plugin's MCP server then runs that copy:
+`node ${CLAUDE_PLUGIN_ROOT}/node_modules/opscrew/dist/opscrew.js mcp`. You need Node.js 22+ and npm
+on your PATH. The download is about 350 MB, most of it the Claude Code binary that the Claude Agent
+SDK brings for the CLI's own AI steps; the MCP server itself never calls a model.
+
+Working on the plugin in a clone (`claude --plugin-dir plugin`)? Claude Code doesn't install
+dependencies for a folder it loads in place, so run `npm ci --ignore-scripts` in `plugin/` first.
 
 ## Skills
 

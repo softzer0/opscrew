@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "opscrew": {
-      "command": "npx",
-      "args": ["-y", "opscrew@0.1.0", "mcp"]
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/node_modules/opscrew/dist/opscrew.js", "mcp"]
     }
   }
 }

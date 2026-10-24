@@ -40,14 +40,39 @@ for (const [name, server] of Object.entries(servers ?? {})) {
   }
 }
 
-// The MCP server runs `opscrew@<version>`, the plugin's version (FR-111: no floating `@latest`).
-const pinned = JSON.stringify(mcp ?? {}).match(/opscrew@([^"\s]+)/);
-if (mcp && pinned === null) {
-  errors.push(".mcp.json: must run opscrew@<version>, pinned to the plugin's version");
-} else if (manifest && pinned && pinned[1] !== manifest.version) {
-  errors.push(
-    `.mcp.json: runs opscrew@${pinned[1]}, but the plugin version is ${manifest.version}; pin the same version`,
-  );
+// The MCP server runs the OpsCrew CLI that Claude Code installs from the plugin's lockfile when it
+// installs the plugin, at the plugin's version (FR-111: no floating `@latest`). Claude Code installs
+// only exact registry versions, and only when package.json and the lockfile list the same packages.
+// biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's variable, not a template.
+const launcher = "${CLAUDE_PLUGIN_ROOT}/node_modules/opscrew/dist/opscrew.js";
+if (mcp && !JSON.stringify(mcp).includes(launcher)) {
+  errors.push(`.mcp.json: must run ${launcher}, the CLI installed from the plugin's lockfile`);
+}
+const pkg = readJson(join(pluginDir, "package.json"));
+const lock = readJson(join(pluginDir, "package-lock.json"));
+const version = manifest?.version;
+if (pkg && JSON.stringify(pkg.dependencies) !== JSON.stringify({ opscrew: version })) {
+  errors.push(`package.json: must depend on exactly opscrew ${version}, the plugin's version`);
+}
+if (lock) {
+  const fix = "run `npm install --package-lock-only --ignore-scripts` in plugin/";
+  if (lock.lockfileVersion !== 2 && lock.lockfileVersion !== 3) {
+    errors.push(`package-lock.json: lockfileVersion must be 2 or 3; ${fix}`);
+  }
+  if (JSON.stringify(lock.packages?.[""]?.dependencies) !== JSON.stringify(pkg?.dependencies)) {
+    errors.push(`package-lock.json: lists other dependencies than package.json; ${fix}`);
+  }
+  if (lock.packages?.["node_modules/opscrew"]?.version !== version) {
+    errors.push(`package-lock.json: must lock opscrew ${version}; ${fix}`);
+  }
+  for (const [path, entry] of Object.entries(lock.packages ?? {})) {
+    if (path === "") continue;
+    if (!entry.resolved?.startsWith("https://registry.npmjs.org/") || !entry.integrity) {
+      errors.push(
+        `package-lock.json: ${path} must come from registry.npmjs.org with its integrity`,
+      );
+    }
+  }
 }
 
 // skills/<name>/SKILL.md, among them the three FR-111 names

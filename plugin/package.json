@@ -1,0 +1,7 @@
+{
+  "name": "opscrew-claude-plugin",
+  "private": true,
+  "dependencies": {
+    "opscrew": "0.1.0"
+  }
+}

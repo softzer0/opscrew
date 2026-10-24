@@ -19,7 +19,8 @@
       "!**/fixtures",
       "!**/__fixtures__",
       "!**/*.md",
-      "!**/generated"
+      "!**/generated",
+      "!plugin/package-lock.json"
     ]
   },
   "formatter": {
