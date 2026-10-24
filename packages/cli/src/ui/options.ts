@@ -1,6 +1,6 @@
 import { convertMoney, EXCHANGE_RATE_NOTE, isUnpriced, priceLabel } from "@opscrew/agents";
 import { formatMoney } from "@opscrew/core";
-import type { DesignOption, Money } from "@opscrew/plan-schema";
+import { type DesignOption, isServerlessProvider, type Money } from "@opscrew/plan-schema";
 import { cancelled, clackPrompts, type UiPrompts } from "./prompts";
 
 /** Marker shown next to the recommended option. */
@@ -34,13 +34,17 @@ function pad(cells: string[][]): string[] {
  */
 export function renderOptionsTable(options: readonly DesignOption[], budget?: Money): string {
   const priced = options.filter((option) => !isUnpriced(option));
+  // A site's option runs on no server: the column names its hosting instead.
+  const sites = options.every((option) => isServerlessProvider(option.target.provider));
   const rows = [
-    ["", "Option", "Server", "Size", "Location", "Per month", "Budget", ""],
+    ["", "Option", sites ? "Hosting" : "Server", "Size", "Location", "Per month", "Budget", ""],
     ...options.map((option, index) => {
       const { target } = option;
       const unpriced = isUnpriced(option);
-      // The user's Portainer: OpsCrew does not size the host, so its sizes are placeholders.
-      const portainer = option.target.provider === "portainer";
+      // The user's Portainer (OpsCrew does not size the host) and a site with no server (on
+      // Cloudflare's hosting or GitHub Pages): their sizes are placeholders.
+      const unsized =
+        option.target.provider === "portainer" || isServerlessProvider(option.target.provider);
       let monthly = unpriced ? "no server price" : formatMoney(option.cost.monthly);
       if (!unpriced && budget !== undefined && budget.currency !== option.cost.monthly.currency) {
         monthly += ` (≈ ${formatMoney(convertMoney(option.cost.monthly, budget.currency))})`;
@@ -48,8 +52,8 @@ export function renderOptionsTable(options: readonly DesignOption[], budget?: Mo
       return [
         `${index + 1}.`,
         option.id,
-        portainer ? target.serverType : `${target.serverType} (${target.cpuType})`,
-        portainer
+        unsized ? target.serverType : `${target.serverType} (${target.cpuType})`,
+        unsized
           ? "-"
           : `${target.vcpus} vCPU, ${gb(target.memoryGb)} RAM, ${gb(target.diskGb)} ${unpriced ? "free disk" : "disk"}`,
         target.location,

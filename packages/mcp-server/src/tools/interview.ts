@@ -22,12 +22,14 @@ import {
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
+  serverlessTargetsFor,
   withPlanSettings,
 } from "@opscrew/agents";
 import { isUserFacingError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
   appsOf,
+  isServerlessProvider,
   type ProjectFacts,
   type Question,
   QuestionIdSchema,
@@ -37,7 +39,7 @@ import {
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, clientSupportsElicitation, elicitOptions } from "./elicitation";
-import { appInput, projectDirInput, runTool, toolApp, withHint } from "./shared";
+import { andApp, appInput, projectDirInput, runTool, toolApp, withHint } from "./shared";
 
 /**
  * Facts from the app's `architecture.json` when it is valid, otherwise fresh detection (of the
@@ -111,7 +113,7 @@ const AnswerValueSchema = z.union([
 
 const ANSWER_HELP: Record<string, string> = {
   provider:
-    'Where the app runs: "hetzner" (Hetzner Cloud), "digitalocean" (DigitalOcean), "own" (a server the user already has; then also answer the server.* questions) or "portainer" (a Portainer the user already runs; then also answer the portainer.* questions).',
+    'Where the app runs: "hetzner" (Hetzner Cloud), "digitalocean" (DigitalOcean), "own" (a server the user already has; then also answer the server.* questions), "portainer" (a Portainer the user already runs; then also answer the portainer.* questions), "localhost" (the user\'s computer, for an environment beside prod such as dev, through opscrew_env_add), and for a site that needs no server, only where the question offers them: "cloudflare-workers" (Cloudflare\'s hosting, static or server-rendered) or "github-pages" (GitHub Pages, static only). Both need the domain\'s DNS on Cloudflare.',
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
     'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
@@ -270,7 +272,7 @@ export function registerInterviewTools(
     {
       title: "Interview questions",
       description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions; for a site that needs no server also Cloudflare's hosting or GitHub Pages, where they fit), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -294,9 +296,16 @@ export function registerInterviewTools(
         const inferredProvider = providerFromTokens(deps.env);
         // The signing question says what signing makes public for this repository.
         const isPrivate = await repositoryPrivate(phase);
+        // The server-less targets are offered where they fit the app, as design checks them.
+        const serverless = await serverlessTargetsFor(
+          paths.root,
+          facts,
+          previous?.keepExternalServices ?? {},
+        );
         const context = {
           ...(inferredProvider !== undefined ? { inferredProvider } : {}),
           ...(isPrivate !== undefined ? { repositoryPrivate: isPrivate } : {}),
+          ...(serverless.length > 0 ? { serverless } : {}),
         };
         const questions = buildQuestions(facts, previous, appCandidates, context);
         const inferred = inferredAnswers(facts, context);
@@ -446,17 +455,22 @@ export function registerInterviewTools(
         }
         const { requirements } = result;
         const file = toPosixRelative(phase.paths.root, phase.paths.files.requirements);
-        const design = `opscrew_design_options${appKey === undefined ? "" : ` with app ${appKey}`}`;
+        const design = `opscrew_design_options${andApp(appKey, "with")}`;
         const budget = requirements.budgetMonthly;
-        const own = requirements.provider === "own";
-        const inPortainer = requirements.provider === "portainer";
+        const { provider } = requirements;
+        const own = provider === "own";
+        const inPortainer = provider === "portainer";
         const text = [
           `Saved ${file}.`,
           own
             ? "- Where it runs: a server the user already has (how to reach it is saved in .opscrew/server.json on this computer only, never in the repository)"
             : inPortainer
               ? `- Where it runs: the user's existing Portainer, environment "${result.portainer?.environmentName ?? "?"}" (its address is saved in .opscrew/server.json on this computer only; the token stays in PORTAINER_API_KEY and is never saved)`
-              : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
+              : provider === "localhost"
+                ? `- Where it runs: ${providerProfile(provider).displayName}`
+                : isServerlessProvider(provider)
+                  ? `- Where it runs: ${providerProfile(provider).displayName}`
+                  : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
           `- Expected monthly users: ${requirements.expectedMonthlyUsers}`,
           `- Budget: ${budget.amount} ${budget.currency} per month`,
           ...(requirements.region === undefined ? [] : [`- Region: ${requirements.region}`]),
@@ -471,7 +485,11 @@ export function registerInterviewTools(
             ? `Next: call ${design}; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key.`
             : inPortainer
               ? `Next: call ${design} to see the deployment in the user's Portainer (no server price: they already run it).`
-              : `Next: call ${design} to see deployment options with monthly costs.`,
+              : provider === "cloudflare-workers"
+                ? `Next: call ${design} to see Cloudflare's hosting with its price and limits. Before provisioning, the user creates a second Cloudflare token holding only Account → Workers Scripts → Edit and sets it as ${providerProfile("cloudflare-workers").deployTokenVar} in their shell (never in the chat): the deploy workflow uploads each version with it.`
+                : provider === "github-pages"
+                  ? `Next: call ${design} to see GitHub Pages with its limits. It needs no deploy token (the workflow publishes with GitHub's own), but the user's GitHub token needs Pages and Administration, both Read and write, on the repository.`
+                  : `Next: call ${design} to see deployment options with monthly costs.`,
         ].join("\n");
         return { text, data: { requirements, file } };
       }),

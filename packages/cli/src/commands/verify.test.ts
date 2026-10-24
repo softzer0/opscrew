@@ -13,6 +13,7 @@ import { withServices } from "../deps";
 import { DeployRunner, fakeSite, writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { inEnvironment, planFile } from "../ui/__fixtures__/environments";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
+import { writeSitePlan } from "../ui/__fixtures__/site";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -108,6 +109,46 @@ describe("opscrew verify", () => {
     const url = projectContext(project as TempProject);
     expect(await run(url, "verify", "--env", "prod", "--url", "https://shop.example.com")).toBe(2);
     expect(url.errors).toContain("Run `opscrew verify --env prod` without it.");
+  });
+
+  it("names a site's runbook topics and its header check, never a server's", async () => {
+    project = await tempProject();
+    await writeSitePlan(project, "cloudflare-workers");
+    const headers = {
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "SAMEORIGIN",
+      "referrer-policy": "strict-origin-when-cross-origin",
+    };
+    const ctx = projectContext(project, {
+      services: {
+        runner: new DeployRunner(),
+        fetch: async () => new Response("<!doctype html><p>docs</p>", { headers }),
+      },
+    });
+    withServices(ctx, {
+      verify: {
+        resolver: {
+          resolve4: async () => [CLOUDFLARE_IPV4],
+          resolve6: async () => [CLOUDFLARE_IPV6],
+        },
+        tlsConnect: async () => ({
+          subjectCommonName: "docs.example.com",
+          subjectAltNames: ["docs.example.com"],
+          validFrom: "2026-09-20T00:00:00.000Z",
+          validTo: "2026-12-19T00:00:00.000Z",
+          issuer: "Google Trust Services",
+        }),
+        tcpConnect: async () => false,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+        timeoutMs: 1000,
+      },
+    });
+    expect(await run(ctx, "verify"), ctx.errors).toBe(0);
+    expect(ctx.output).toContain("it explains deploys, status, rollbacks and destroy.");
+    expect(ctx.output).toContain("run `opscrew secure` to check the site's security headers");
+    expect(ctx.output).not.toContain("SSH access");
+    expect(ctx.output).not.toContain("hardening");
   });
 
   it("exits 1 with the next step when nothing is provisioned yet", async () => {

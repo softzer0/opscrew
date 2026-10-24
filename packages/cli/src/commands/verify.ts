@@ -1,12 +1,13 @@
 import { runVerify } from "@opscrew/agents";
 import { toPosixRelative } from "@opscrew/core";
+import { isServerlessProvider } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
-import { secureServerStep } from "./provision";
+import { secureServerStep, secureSiteStep } from "./provision";
 
 interface VerifyFlags {
   /** `--url <route>`: the user's Portainer behind their own reverse proxy only. */
@@ -45,7 +46,15 @@ export function register(program: Command, ctx: CliContext): void {
       ...(url === undefined || url === "" ? {} : { url }),
     });
     if (result.passed) {
-      const portainer = result.plan.target.provider === "portainer";
+      const { provider } = result.plan.target;
+      if (isServerlessProvider(provider)) {
+        printNextSteps(ctx, [
+          `read ${result.runbookPath}: it explains deploys, status, rollbacks and destroy.`,
+          secureSiteStep(flag, report),
+        ]);
+        return;
+      }
+      const portainer = provider === "portainer";
       printNextSteps(ctx, [
         portainer
           ? `read ${result.runbookPath}: it explains deploys, rollbacks, logs, backups and secret rotation in your Portainer.`

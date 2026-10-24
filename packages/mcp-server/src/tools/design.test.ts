@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
+import { materializeFixture } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
@@ -129,5 +131,47 @@ describe("opscrew_design_options tax wording", () => {
     const heading = await optionsText({ ...ANSWERS, budgetMonthly: "10 EUR", provider: "hetzner" });
     expect(heading).toContain("Hetzner Cloud");
     expect(heading).toContain("excl. VAT");
+  });
+});
+
+describe("opscrew_design_options on the user's computer", () => {
+  it("offers this computer without a server price or sizes", async () => {
+    const call = await connect();
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, budgetMonthly: "10 EUR", provider: "localhost" },
+    });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+    expect(textOf(saved)).toContain("- Where it runs: This computer");
+    const result = await call("opscrew_design_options");
+    expect(result.isError, textOf(result)).toBeFalsy();
+    expect(textOf(result)).toContain("Deployment on This computer (no server price");
+    expect(textOf(result)).not.toContain("Server:");
+  });
+});
+
+describe("opscrew_design_options for a site with no server", () => {
+  it("offers Cloudflare's hosting with its price and no server sizes", async () => {
+    const call = await connect();
+    await materializeFixture(
+      fileURLToPath(new URL("../../../../examples/static-vite/", import.meta.url)),
+      lastRoot,
+    );
+    const saved = await call("opscrew_save_requirements", {
+      answers: {
+        ...ANSWERS,
+        budgetMonthly: "5 USD",
+        provider: "cloudflare-workers",
+        domain: "docs.example.com",
+        dnsProvider: "cloudflare",
+      },
+    });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+    const result = await call("opscrew_design_options");
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const text = textOf(result);
+    expect(text).toContain("Deployment on Cloudflare (no server) (budget $5.00/month");
+    expect(text).toContain("(id: cloudflare-workers)");
+    expect(text).toContain("call opscrew_select_design with the option id (cloudflare-workers)");
+    expect(text).not.toContain("Server:");
   });
 });

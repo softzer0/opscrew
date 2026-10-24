@@ -1,6 +1,15 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { addApp, listApps, removeApp } from "@opscrew/agents";
+import {
+  addApp,
+  chooseEngine,
+  listApps,
+  type PhaseDeps,
+  pagesVerificationStateFile,
+  removeApp,
+  stateContents,
+} from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
+import { readOptionalArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
@@ -10,6 +19,20 @@ const KEY_INPUT = z
   .string()
   .min(1)
   .describe("The app's key, for example docs (lower-case letters, digits, -).");
+
+/**
+ * False when `removeApp` refuses the further app `deps.paths` belong to before removing anything:
+ * it is deployed, or the state of its GitHub Pages verification root may still hold the record.
+ */
+async function appRemovable(deps: PhaseDeps): Promise<boolean> {
+  const { paths } = deps;
+  if ((await listApps(paths)).some((one) => one.key === paths.app && one.deployed)) return false;
+  const prod = await readOptionalArtifact("plan", paths.files.plan);
+  const held = await stateContents(deps, pagesVerificationStateFile(paths), () =>
+    chooseEngine(deps, prod?.infra.engine ?? "auto"),
+  );
+  return held === "nothing";
+}
 
 /**
  * The tools for several apps in one repository (contracts/apps.md "CLI and MCP"):
@@ -91,9 +114,9 @@ export function registerAppTools(server: McpServer, deps: ResolvedMcpDeps): void
           approvalHandler: dialogHandler(server, deps, extra),
           app: appKey,
         });
-        // removeApp refuses the first app and a deployed one: nothing is asked for those.
-        const apps = await listApps(phase.paths);
-        if (appKey !== undefined && !apps.some((app) => app.key === appKey && app.deployed)) {
+        // removeApp refuses the first app, a deployed one and one whose GitHub Pages verification
+        // record may still be in DNS: nothing is asked for those.
+        if (appKey !== undefined && (await appRemovable(phase))) {
           // It deletes the app's deploy keys, passphrases and secrets: the user types its key.
           const approval = await phase.approvals.request({
             kind: "repo-write",

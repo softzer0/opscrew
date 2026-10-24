@@ -3,12 +3,17 @@ import path from "node:path";
 import {
   componentAnswerLines,
   type InterviewAnswers,
+  providerProfile,
   repositoryPrivate,
   runInterview,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
-import type { Requirements } from "@opscrew/plan-schema";
-import type { Command } from "commander";
+import {
+  DeployProviderSchema,
+  isServerlessProvider,
+  type Requirements,
+} from "@opscrew/plan-schema";
+import { type Command, Option } from "commander";
 import { parse } from "yaml";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf } from "../deps";
@@ -27,6 +32,8 @@ interface InterviewFlags {
   answers?: string;
   /** `--portainer-cert SHA256:…`: Portainer's certificate fingerprint, trusted without a prompt. */
   portainerCert?: string;
+  /** `--target <provider>`: where the app runs, the answer to the provider question. */
+  target?: string;
 }
 
 /**
@@ -72,6 +79,9 @@ function describe(requirements: Requirements): string[] {
           "Runs in: your existing Portainer (its address and environment are saved on this computer only; the token stays in PORTAINER_API_KEY)",
         ]
       : []),
+    ...(isServerlessProvider(requirements.provider)
+      ? [`Runs on: ${providerProfile(requirements.provider).displayName}`]
+      : []),
     `Monthly users: ${requirements.expectedMonthlyUsers}`,
     `Budget: ${budget.amount} ${budget.currency} per month`,
     ...(requirements.region === undefined ? [] : [`Region: ${requirements.region}`]),
@@ -90,6 +100,10 @@ function nextStep(requirements: Requirements, flag: string): string {
       return `run ${design} to check that your server fits the app (it connects to the server and asks you to confirm its host key the first time).`;
     case "portainer":
       return `run ${design} to plan the app's stacks in your Portainer (there is no server price: you already run it).`;
+    case "cloudflare-workers":
+      return `run ${design} to see Cloudflare's hosting with its price and limits. Before \`opscrew provision${flag}\`, create a second Cloudflare token holding only Account → Workers Scripts → Edit and set it as ${providerProfile("cloudflare-workers").deployTokenVar}: the deploy workflow uploads each version with it.`;
+    case "github-pages":
+      return `run ${design} to see GitHub Pages with its limits. It needs no deploy token (the workflow publishes with GitHub's own), but your GitHub token needs Pages and Administration, both Read and write, on the repository.`;
     default:
       return `run ${design} to compare server options and their monthly cost.`;
   }
@@ -110,20 +124,37 @@ export function register(program: Command, ctx: CliContext): void {
     .command("interview")
     .description("Ask a few questions about traffic, budget and your domain")
     .option("--answers <file>", "Read the answers from a YAML or JSON file instead of asking")
-    .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION);
+    .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION)
+    .addOption(
+      new Option(
+        "--target <provider>",
+        "Where the app runs, answering that question up front: a cloud provider, your own server or Portainer, or a site with no server (cloudflare-workers, github-pages)",
+      ).choices(DeployProviderSchema.options),
+    );
   addAppOption(command).action(async (flags: InterviewFlags) => {
     const certFingerprint = checkPortainerCert(flags.portainerCert);
     const app = await chooseApp(ctx, flags.app, "interview");
     const deps = createPhaseDeps(ctx, { ai: false, app: app.key });
+    // `--target` answers the provider question, over an answers file's.
+    const given: InterviewAnswers = flags.target === undefined ? {} : { provider: flags.target };
     let answers: InterviewAnswers | undefined;
     if (flags.answers !== undefined) {
-      answers = await readAnswersFile(path.resolve(ctx.cwd, flags.answers));
+      answers = { ...(await readAnswersFile(path.resolve(ctx.cwd, flags.answers))), ...given };
     }
     const prompts = promptsOf(ctx);
-    const ask =
+    const askFollowUps =
       answers === undefined && ctx.isInteractive
         ? (questions: Parameters<typeof askQuestions>[0]) => askQuestions(questions, { prompts })
         : undefined;
+    // The interview's own questions leave out what `--target` answered; the follow-ups do not.
+    const ask =
+      askFollowUps === undefined
+        ? undefined
+        : async (questions: Parameters<typeof askQuestions>[0]) => ({
+            ...(await askFollowUps(questions.filter((question) => !(question.id in given)))),
+            ...given,
+          });
+    if (answers === undefined && ask === undefined && flags.target !== undefined) answers = given;
     if (answers === undefined && ask === undefined) {
       ctx.reporter.info(
         "This terminal cannot ask questions, so OpsCrew uses your previous answers, if there are any. Pass --answers <file> to give new ones.",
@@ -136,7 +167,14 @@ export function register(program: Command, ctx: CliContext): void {
     const { requirements } = await runInterview(deps, {
       ...(answers === undefined ? {} : { answers }),
       ...(isPrivate === undefined ? {} : { repositoryPrivate: isPrivate }),
-      ...(ask === undefined ? {} : { ask, askServer: ask, askPortainer: ask, askComponents: ask }),
+      ...(ask === undefined || askFollowUps === undefined
+        ? {}
+        : {
+            ask,
+            askServer: askFollowUps,
+            askPortainer: askFollowUps,
+            askComponents: askFollowUps,
+          }),
       portainer: portainerInterviewOptions(ctx, prompts, certFingerprint),
     });
     ctx.stdout(

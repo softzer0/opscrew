@@ -250,7 +250,7 @@ export function register(program: Command, ctx: CliContext): void {
     .addOption(
       new Option(
         "--target <provider>",
-        "Where it runs (default: prod's; dev: this computer)",
+        "Where it runs (default: prod's; dev: this computer). A site on cloudflare-workers or github-pages keeps prod's target: each environment gets its own Worker, and GitHub Pages has prod only",
       ).choices(DeployProviderSchema.options),
     )
     .option(

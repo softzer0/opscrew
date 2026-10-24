@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -69,9 +69,12 @@ export async function toolApp(
   }
 }
 
-/** ` and app <key>` after the other inputs a result names for a tool call on the further app `appKey`, else "". */
-export function andApp(appKey: string | undefined): string {
-  return appKey === undefined ? "" : ` and app ${appKey}`;
+/**
+ * ` and app <key>` after the other inputs a result names for a tool call on the further app
+ * `appKey` (` with app <key>` when it is the only one, `joiner` "with"), else "".
+ */
+export function andApp(appKey: string | undefined, joiner: "and" | "with" = "and"): string {
+  return appKey === undefined ? "" : ` ${joiner} app ${appKey}`;
 }
 
 /** The app and environment a tool call acts on, and their flags for the commands it suggests. */
@@ -245,11 +248,29 @@ interface HiddenNames {
 }
 
 /**
+ * The apps of `projectDir` by key (`undefined` for the first app): `appsOf`'s, or when an app's
+ * record cannot be read, the first app and every folder under `opscrew/apps/`, so a damaged
+ * record never hides fewer addresses.
+ */
+async function appKeys(projectDir: string): Promise<(string | undefined)[]> {
+  try {
+    return (await appsOf(projectDir)).map((app) => app.key);
+  } catch {
+    const dir = path.join(resolveProjectPaths(projectDir).artefactsDir, "apps");
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    return [
+      undefined,
+      ...entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+    ];
+  }
+}
+
+/**
  * {@link HiddenNames} from the `server.json` of every app's environments (local state only); an
  * environment whose record is unreadable adds none.
  */
 async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<HiddenNames> {
-  const apps = await appsOf(projectDir).catch(() => [{ key: undefined }]);
+  const apps = (await appKeys(projectDir)).map((key) => ({ key }));
   const places: { app?: string; environment: string }[] = [];
   for (const { key } of apps) {
     const environments = await environmentsOf(projectDir, key).catch(() => ["prod"]);

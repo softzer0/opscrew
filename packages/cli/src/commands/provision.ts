@@ -21,7 +21,7 @@ import {
   stringOutput,
 } from "@opscrew/agents";
 import { exists, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import { type Command, InvalidArgumentError, Option } from "commander";
 import { APPROVE_BY_HASH_KINDS, checkConfirmName, FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
@@ -36,6 +36,7 @@ import {
 import { createEnvPrompt } from "../ui/env-prompt";
 import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
+import { cancelled, type UiPrompts } from "../ui/prompts";
 import { recoveryOptions, userPath } from "../ui/recovery";
 import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
 
@@ -62,10 +63,29 @@ export interface InfraFlags {
   replaceToken?: ReplaceableToken[];
   /** `--key-out <path>` (`provision` only): the file the recovery copy's first age key goes to. */
   keyOut?: string;
+  /** `--pages-verification <value>` (`provision` only): GitHub's domain verification value. */
+  pagesVerification?: string;
   /** `--app <key>`: the repository's app. */
   app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
+}
+
+/**
+ * GitHub Pages: the question for the value of GitHub's domain verification record, which GitHub
+ * shows only on its settings `page` once the domain is added there. It is public in DNS, so the
+ * answer is shown as typed.
+ */
+function pagesVerificationPrompt(
+  prompts: UiPrompts,
+): NonNullable<ProvisionOptions["services"]>["askPagesVerification"] {
+  return async ({ domain, page }) => {
+    const answer = await prompts.text({
+      message: `GitHub's verification value for ${domain}: on ${page}, click "Add a domain", enter ${domain} and paste the value of the TXT record GitHub shows (leave Verify for later)`,
+    });
+    if (prompts.isCancel(answer)) throw cancelled("provisioning", "opscrew provision");
+    return answer;
+  };
 }
 
 /** Commander parser of the repeatable `--replace-token repository|registry`. */
@@ -100,7 +120,7 @@ export const YES_DESCRIPTION =
 
 /** Help text of `--approve <hash>`, which may be given once per plan. */
 export const APPROVE_DESCRIPTION =
-  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan; with a runner machine also its host plan)";
+  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan; on GitHub Pages also the Pages plan and the plan of GitHub's verification record; with a runner machine also its host plan)";
 
 /** Adds `--plan-only` and the repeatable `--approve <hash>` to `command`. */
 export function addPlanApproveOptions(command: Command): Command {
@@ -134,6 +154,11 @@ function verifyStep(flag: string, runbook: string, deploys: boolean): string {
 /** The next step for a server: check its hardening (`report` is the environment's report). */
 export function secureServerStep(flag: string, report: string): string {
   return `run \`opscrew secure${flag}\` to check the server's hardening and write ${report}.`;
+}
+
+/** The next step for a site on Cloudflare's hosting or GitHub Pages: check its headers. */
+export function secureSiteStep(flag: string, report: string): string {
+  return `run \`opscrew secure${flag}\` to check the site's security headers and write ${report}.`;
 }
 
 /** Adds `--host-key <fingerprint>` (a server the user owns) to `command`. */
@@ -296,11 +321,15 @@ export async function runInfraCommand(
         ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
         ...portainerImageOptions(publicImage, flags.replaceToken),
         ...(command === "provision" ? recoveryOptions(ctx, flags.keyOut) : {}),
+        ...(flags.pagesVerification === undefined
+          ? {}
+          : { pagesVerification: flags.pagesVerification }),
         services: {
           ...(ctx.isInteractive
             ? {
                 askEnv: createEnvPrompt(promptsOf(ctx), flag),
                 askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout),
+                askPagesVerification: pagesVerificationPrompt(promptsOf(ctx)),
               }
             : {}),
           ...servicesOf(ctx).provision,
@@ -309,6 +338,8 @@ export async function runInfraCommand(
       const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
       const own = plan?.target.provider === "own";
       const portainer = plan?.target.provider === "portainer";
+      // Cloudflare's hosting or GitHub Pages: no server.
+      const site = plan !== undefined && isServerlessProvider(plan.target.provider);
       const planned: PlannedHash[] = [];
       let removes = false;
       // Why the stack plan comes in a later run, when it does.
@@ -331,7 +362,7 @@ export async function runInfraCommand(
         if (result.planHash !== undefined && saved !== undefined) {
           removes ||= saved.hasDestroy;
           planned.push({
-            label: own || portainer ? "infrastructure (Cloudflare)" : "infrastructure",
+            label: own || portainer || site ? "infrastructure (Cloudflare)" : "infrastructure",
             hash: result.planHash,
           });
         }
@@ -346,6 +377,16 @@ export async function runInfraCommand(
           (await planChanges(deps, "stack", result.stackPlanHash))
         ) {
           planned.push({ label: "stack plan for your Portainer", hash: result.stackPlanHash });
+        }
+        // GitHub Pages: the site's settings, and GitHub's verification record in a root of its own.
+        if (result.pagesPlanHash !== undefined) {
+          planned.push({ label: "Pages plan for GitHub Pages", hash: result.pagesPlanHash });
+        }
+        if (result.pagesVerificationPlanHash !== undefined) {
+          planned.push({
+            label: "GitHub's domain verification record",
+            hash: result.pagesVerificationPlanHash,
+          });
         }
         // The runner machines: the environment's runner off each machine it left, then on its own.
         for (const hash of result.runnerHostPlanHashes ?? []) {
@@ -371,6 +412,7 @@ export async function runInfraCommand(
         planned,
         own,
         portainer,
+        site,
         plan,
         runbook: toPosixRelative(deps.paths.root, deps.paths.files.runbook),
         securityReport: toPosixRelative(deps.paths.root, deps.paths.files.securityReport),
@@ -447,9 +489,14 @@ export async function runInfraCommand(
       : result.portainer
         ? "Cloudflare and your Portainer already match the plans"
         : "the infrastructure already matches the plan";
+    const remaining = result.portainer
+      ? "the deploy branch, GitHub secrets and the pull request"
+      : result.site
+        ? "GitHub secrets and the pull request"
+        : "server readiness, GitHub secrets and the pull request";
     ctx.stdout(`\nNothing to apply: ${matched}.\n`);
     printNextSteps(ctx, [
-      `run \`opscrew ${command}${flag}${flags.yes === true ? " --yes" : ""}\` to finish the remaining steps (${result.portainer ? "the deploy branch, GitHub secrets and the pull request" : "server readiness, GitHub secrets and the pull request"}).`,
+      `run \`opscrew ${command}${flag}${flags.yes === true ? " --yes" : ""}\` to finish the remaining steps (${remaining}).`,
     ]);
     return;
   }
@@ -486,7 +533,9 @@ export async function runInfraCommand(
   printNextSteps(ctx, [
     ...push,
     verifyStep(flag, result.runbook, deploys),
-    secureServerStep(flag, result.securityReport),
+    result.site
+      ? secureSiteStep(flag, result.securityReport)
+      : secureServerStep(flag, result.securityReport),
     ...(result.own
       ? [
           "back up your server and the app's data yourself: OpsCrew cannot turn on backups or snapshots on your own server.",
@@ -587,6 +636,10 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--key-out <path>",
       "The first time OpsCrew makes the encrypted recovery copy of this app's secrets: write your new age key to this file, outside the repository (a terminal asks for it); the key is never printed",
+    )
+    .option(
+      "--pages-verification <value>",
+      "GitHub Pages: the value of GitHub's domain verification record, which GitHub shows in your account's Pages settings once you add the domain there (a terminal asks for it; it replaces a recorded one)",
     )
     .action((flags: InfraFlags) => runInfraCommand(ctx, "provision", flags, runProvision));
 }

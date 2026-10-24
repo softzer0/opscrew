@@ -6,4 +6,5 @@
  */
 export { type PromotionParts, promotionHash } from "./record";
 export { promote } from "./run";
+export { promotedText } from "./text";
 export type { PromoteGitHubApi, PromoteOptions, PromoteResult, PromoteServices } from "./types";

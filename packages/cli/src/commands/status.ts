@@ -11,7 +11,7 @@ import {
   tlsStatusReport,
 } from "@opscrew/agents";
 import { errorText, isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
@@ -120,6 +120,13 @@ export function register(program: Command, ctx: CliContext): void {
     // A missing or unreadable plan simply means nothing is deployed and no move is recorded.
     const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);
     if (flags.ip === true) {
+      if (plan !== undefined && isServerlessProvider(plan.target.provider)) {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          `A site on ${plan.target.provider === "github-pages" ? "GitHub Pages" : "Cloudflare's hosting"} has no server, so it has no server address.`,
+          { hint: `Run \`opscrew status${flag}\` to see the version it runs and its domains.` },
+        );
+      }
       const address = await addressOf(deps, plan);
       if (address === undefined) {
         const record = toPosixRelative(paths.root, serverAddressesFile(paths));
@@ -138,13 +145,17 @@ export function register(program: Command, ctx: CliContext): void {
     const move = plan === undefined ? undefined : retargetStatusLine(plan);
     const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
     const serverLines = await addressLines(deps, plan);
+    // A site on Cloudflare's hosting or GitHub Pages has no image: its running version instead.
+    const imageLines =
+      plan === undefined || isServerlessProvider(plan.target.provider)
+        ? []
+        : [...buildStatusLines(plan), ...supplyChainLines(plan)];
     const buildLines =
       plan === undefined
         ? []
         : [
             "",
-            ...buildStatusLines(plan),
-            ...supplyChainLines(plan),
+            ...imageLines,
             ...(await componentLines(ctx, deps, plan, flags.hostKey?.trim())),
             ...(await tlsLines(ctx, deps, plan)),
           ];

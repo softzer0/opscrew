@@ -6,6 +6,7 @@ import {
   listEnvironments,
   type PromoteServices,
   promote,
+  promotedText,
   removeEnvironment,
   setEnvironment,
 } from "@opscrew/agents";
@@ -72,7 +73,7 @@ export function registerEnvironmentTools(
     {
       title: "Add an environment",
       description:
-        "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. Its build, components and port follow the image: its own design's when it is built from a branch, or the plan's of the environment it is promoted from. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from), branch (with from main: the branch whose pushes build and deploy it, one the repository has and no other environment follows; default: the repository's default branch. When the repository has a branch named like the environment, such as develop for dev, OpsCrew's note names it: offer the user promotion first, where only the first environment follows a branch and one image moves dev → staging → prod, or each environment on its own branch), runner (github, server, local, or host: a runner machine of the user's, opscrew_runner_host_list), runnerHost (with host: the machine's name; the only one by default) and build (github, the default, or runner: built on its own runner, a runner machine with the server's CPU or the user's computer, never the server). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
+        "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. Its build, components and port follow the image: its own design's when it is built from a branch, or the plan's of the environment it is promoted from. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev; a site whose prod is on cloudflare-workers or github-pages keeps prod's target, each environment on Cloudflare with its own Worker, and GitHub Pages allows prod only), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from), branch (with from main: the branch whose pushes build and deploy it, one the repository has and no other environment follows; default: the repository's default branch. When the repository has a branch named like the environment, such as develop for dev, OpsCrew's note names it: offer the user promotion first, where only the first environment follows a branch and one image moves dev → staging → prod, or each environment on its own branch), runner (github, server, local, or host: a runner machine of the user's, opscrew_runner_host_list), runnerHost (with host: the machine's name; the only one by default) and build (github, the default, or runner: built on its own runner, a runner machine with the server's CPU or the user's computer, never the server). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -285,7 +286,7 @@ export function registerEnvironmentTools(
     {
       title: "Promote an image to an environment",
       description:
-        "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, or with digest its previous image to roll back, without rebuilding. OpsCrew checks the image's build provenance (a push of this repository to the branch the environment that built the image follows), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
+        "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, or with digest its previous image to roll back, without rebuilding. For a site on Cloudflare's hosting it deploys the exact build its source runs (by run id and SHA-256); with version it rolls a site on Cloudflare's hosting or GitHub Pages back to an earlier Worker version or Pages run (GitHub Pages refuses promotion: each environment builds its own site). OpsCrew checks the image's build provenance (a push of this repository to the branch the environment that built the image follows), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -296,6 +297,12 @@ export function registerEnvironmentTools(
           .describe(
             "Only for a rollback the user asked for: the image digest (sha256:…) of the target's previous image, or the one its source runs.",
           ),
+        version: z
+          .string()
+          .optional()
+          .describe(
+            "Only for a rollback of a site on Cloudflare's hosting or GitHub Pages the user asked for: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -305,13 +312,13 @@ export function registerEnvironmentTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, app, to, digest }, extra: CallExtra) =>
+    ({ projectDir, app, to, digest, version }, extra: CallExtra) =>
       runTool(deps, "opscrew_promote", projectDir, async (call) => {
         const appKey = await toolApp(call.projectDir, app);
         const flag = await appFlag(call.projectDir, appKey);
         requireDialogs(
           server,
-          `npx opscrew promote${flag} --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}`,
+          `npx opscrew promote${flag} --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}${version === undefined ? "" : ` --version ${version}`}`,
         );
         const dialogs = dialogHandler(server, deps, extra);
         // The hash the user's dialog shows, for the result.
@@ -332,6 +339,7 @@ export function registerEnvironmentTools(
           result = await promote(phase, {
             target: to,
             ...(digest === undefined ? {} : { digest }),
+            ...(version === undefined ? {} : { version }),
             ...(options.promote === undefined ? {} : { services: options.promote }),
           });
         } catch (error) {
@@ -344,15 +352,16 @@ export function registerEnvironmentTools(
           }
           throw error;
         }
+        const what = promotedText(result);
         if (result.status === "waiting") {
           // Not a failure or a timeout: GitHub holds the run for the environment's reviewer.
           return {
-            text: `The deploy run for ${result.digest} to ${to} (promotion ${hash}) waits in GitHub for a required reviewer: ${result.runUrl}\nThe deploy goes on once the reviewer approves it in GitHub. Once the run succeeded, call opscrew_promote with to ${to}${andApp(appKey)} again: it records the image without a new deploy.`,
+            text: `The deploy run for ${what} to ${to} (promotion ${hash}) waits in GitHub for a required reviewer: ${result.runUrl}\nThe deploy goes on once the reviewer approves it in GitHub. ${result.digest === undefined ? `Once the run succeeded, call opscrew_verify with environment ${to}${andApp(appKey)}.` : `Once the run succeeded, call opscrew_promote with to ${to}${andApp(appKey)} again: it records the image without a new deploy.`}`,
             data: { ...result, promotionHash: hash, approvals: dialogs.decisions },
           };
         }
         return {
-          text: `Deployed ${result.digest} to ${to} (promotion ${hash}): ${result.runUrl}\nNext: call opscrew_verify with environment ${to}${andApp(appKey)}.`,
+          text: `Deployed ${what} to ${to} (promotion ${hash})${result.runUrl === undefined ? "." : `: ${result.runUrl}`}\nNext: call opscrew_verify with environment ${to}${andApp(appKey)}.`,
           data: { ...result, promotionHash: hash, approvals: dialogs.decisions },
         };
       }),

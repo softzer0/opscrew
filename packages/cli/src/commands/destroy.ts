@@ -8,7 +8,6 @@ import {
   runDestroy,
   savedHostPlanPurpose,
   savedLocalPlanPurpose,
-  serverlessNotSupported,
 } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest, Clock } from "@opscrew/contracts";
 import { approvalDecision, OpsCrewError, systemClock } from "@opscrew/core";
@@ -38,6 +37,8 @@ export interface DestroyFlags {
   app?: string;
   /** `--env <name>`: the app's environment. */
   env?: string;
+  /** GitHub Pages: also delete GitHub's domain verification record. */
+  deleteVerification?: boolean;
 }
 
 /** Where the undo host plan's own approval comes from (`--undo-host`). */
@@ -55,9 +56,11 @@ export interface UndoApproval {
  * infrastructure plans (lifting delete protection where the provider has it, then deleting) and,
  * on a server the user owns, the teardown host plan that asks for exactly that name; in the user's
  * Portainer, the stack teardown plan (a `stack-apply` with `allowDestroy` that asks for exactly
- * that name; a `stack-apply` without them is never covered); on every target, the Cloudflare plan
- * that removes the app's hostnames from OpsCrew's shared rules (a `cloudflare-apply` with
- * `allowDestroy` that asks for exactly that name, likewise). A `--confirm` run also approves
+ * that name; a `stack-apply` without them is never covered); on GitHub Pages, the Pages plan that
+ * removes the site (a `pages-apply` with `allowDestroy` that asks for exactly that name,
+ * likewise); on every target, the Cloudflare plan that removes the app's hostnames from OpsCrew's
+ * shared rules (a `cloudflare-apply` with `allowDestroy` that asks for exactly that name,
+ * likewise). A `--confirm` run also approves
  * removing the GitHub deploy secrets (no prompts at all). `--yes` does not exist here.
  *
  * The undo host plan of `--undo-host` deletes the deploy user OpsCrew created (and its home), so
@@ -91,9 +94,14 @@ export class TypedConfirmationHandler implements ApprovalHandler {
     if (request.kind === "host-apply") {
       return purpose === "teardown" && request.confirmPhrase === this.name;
     }
-    if (request.kind === "stack-apply" || request.kind === "cloudflare-apply") {
-      // The user's Portainer's teardown, and this app's hostnames leaving OpsCrew's shared
-      // Cloudflare rules: only a plan that deletes (allowDestroy) and asks for the name.
+    if (
+      request.kind === "stack-apply" ||
+      request.kind === "cloudflare-apply" ||
+      request.kind === "pages-apply"
+    ) {
+      // The user's Portainer's teardown, this app's hostnames leaving OpsCrew's shared Cloudflare
+      // rules, and the GitHub Pages site's removal: only a plan that deletes (allowDestroy) and
+      // asks for the name.
       return request.allowDestroy === true && request.confirmPhrase === this.name;
     }
     return this.approveSecrets && request.kind === "github-secrets";
@@ -147,20 +155,26 @@ export class TypedConfirmationHandler implements ApprovalHandler {
  * the stack teardown plan is approved with that name, the app's data volumes only with
  * `--delete-data`. On this computer (the localhost target) it removes the app's containers,
  * networks and folders after the app's name is typed (the local teardown plan, approved by its
- * hash), its data volumes only with `--delete-data`. `--env` picks the environment. Exit codes:
- * 0 torn down, 1 refused or not confirmed, 2 error.
+ * hash), its data volumes only with `--delete-data`. A site on Cloudflare's hosting or GitHub
+ * Pages (FR-1608) is removed after the app's name is typed, each plan approved with that name;
+ * GitHub's domain verification record goes only with `--delete-verification`. `--env` picks the
+ * environment. Exit codes: 0 torn down, 1 refused or not confirmed, 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("destroy")
     .description(
-      "Delete the deployment's infrastructure, or remove the app from your own server, your Portainer or this computer (asks for the name)",
+      "Delete the deployment's infrastructure, or remove the app from your own server, your Portainer, this computer, Cloudflare's hosting or GitHub Pages (asks for the name)",
     )
     .option("--snapshot", "Take a snapshot of the server first")
     .option("--no-snapshot", "Do not take a snapshot of the server first")
     .option(
       "--confirm <name>",
-      "The server name (on your own server, in your Portainer or on this computer, the app's name), to run without prompts (for scripts and CI)",
+      "The server name (on your own server, in your Portainer, on this computer, Cloudflare's hosting or GitHub Pages, the app's name), to run without prompts (for scripts and CI)",
+    )
+    .option(
+      "--delete-verification",
+      "GitHub Pages: also delete GitHub's domain verification record (kept by default, so the domain stays verified for your account)",
     )
     .addOption(engineOption())
     .option(
@@ -217,11 +231,11 @@ export async function runDestroyCommand(
     const plan = await readArtifact("plan", deps0.paths.files.plan);
     const name = plan.app.name;
     provider = plan.target.provider;
-    if (isServerlessProvider(provider)) throw serverlessNotSupported("`opscrew destroy`", provider);
     const own = provider === "own";
     const portainer = provider === "portainer";
     const local = provider === "localhost";
-    const app = own || portainer || local;
+    const site = isServerlessProvider(provider);
+    const app = own || portainer || local || site;
     const what = app ? "the app's name" : "the server name";
     const scripted = flags.confirm !== undefined;
     const again = `opscrew destroy${flag}`;
@@ -229,8 +243,27 @@ export async function runDestroyCommand(
       flags.confirm,
       name,
       what,
-      `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : "delete the deployment"}, run \`${again} --confirm ${name}\`.`,
+      `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : site ? "remove the site" : "delete the deployment"}, run \`${again} --confirm ${name}\`.`,
     );
+    if (flags.deleteVerification === true && provider !== "github-pages") {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "--delete-verification applies only to a site on GitHub Pages, whose domain GitHub verifies with a DNS record.",
+        { hint: `Run \`${again}\` without it.` },
+      );
+    }
+    if (
+      site &&
+      (flags.undoHost === true || flags.deleteData === true || flags.snapshot !== undefined)
+    ) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `--undo-host, --delete-data and --snapshot do not apply to a site on ${provider === "github-pages" ? "GitHub Pages" : "Cloudflare's hosting"}: OpsCrew changed nothing on a machine of yours to undo, and keeps no data of the app's there to delete or snapshot.`,
+        {
+          hint: `Run \`${again}\` without them${provider === "github-pages" ? " (add --delete-verification to delete GitHub's domain verification record too)" : ""}.`,
+        },
+      );
+    }
     if ((portainer || local) && flags.undoHost === true) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -291,6 +324,7 @@ export async function runDestroyCommand(
       ...(services === undefined ? {} : { services }),
       ...(flags.undoHost === true ? { undoHost: true } : {}),
       ...(flags.deleteData === true ? { deleteData: true } : {}),
+      ...(flags.deleteVerification === true ? { deleteVerification: true } : {}),
       ...(hostKey === undefined ? {} : { hostKey }),
       confirm: async (preview) => {
         if (scripted) return true;

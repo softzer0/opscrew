@@ -14,10 +14,16 @@ import {
   tlsStatusReport,
 } from "@opscrew/agents";
 import { exists, toPosixRelative } from "@opscrew/core";
-import { type DeployPlan, type Retarget, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isServerlessProvider,
+  type Retarget,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { hostKeyNeedsTerminal } from "./elicitation";
 import {
+  andApp,
   appInput,
   environmentInput,
   projectDirInput,
@@ -27,16 +33,21 @@ import {
 } from "./shared";
 
 /**
- * The next planning step for the plugin flow, given which artefacts exist; `flag` is the app's
- * and environment's flags for the terminal command (`ToolEnvironment.flag`).
+ * The next planning step for the plugin flow, given which artefacts exist; `call` is how the
+ * tools are called (`andApp`), `planFile` the app's plan and `flag` the app's and environment's
+ * flags for the terminal command (`ToolEnvironment.flag`).
  */
-function nextStep(have: Record<string, boolean>, flag: string): string {
+function nextStep(
+  have: Record<string, boolean>,
+  input: { appKey: string | undefined; planFile: string; flag: string },
+): string {
+  const app = andApp(input.appKey, "with");
   if (!have.scanReport) return "Call opscrew_scan to check the repository for security problems.";
   if (!have.requirements) {
-    return "Call opscrew_detect, then opscrew_interview_questions and opscrew_save_requirements.";
+    return `Call opscrew_detect, then opscrew_interview_questions and opscrew_save_requirements${app}.`;
   }
-  if (!have.plan) return "Call opscrew_design_options and then opscrew_select_design.";
-  return `Apply the pending code changes from opscrew/plan.yaml (opscrew-adapt skill), then provision with \`npx opscrew provision${flag}\` in a terminal.`;
+  if (!have.plan) return `Call opscrew_design_options and then opscrew_select_design${app}.`;
+  return `Apply the pending code changes from ${input.planFile} (opscrew-adapt skill), then provision with \`npx opscrew provision${input.flag}\` in a terminal.`;
 }
 
 /**
@@ -113,7 +124,7 @@ export function registerStatusTool(
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) and, once the app was deployed, whether each runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew promote --to <env> --version <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -171,7 +182,11 @@ export function registerStatusTool(
               ];
         const step =
           move === undefined
-            ? nextStep(have, flag)
+            ? nextStep(have, {
+                appKey,
+                planFile: toPosixRelative(paths.root, paths.files.plan),
+                flag,
+              })
             : `${move.message} ${move.hint} Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.`;
         const components =
           plan === undefined ? undefined : await componentsOf(phase, plan, options);
@@ -184,7 +199,10 @@ export function registerStatusTool(
           ...Object.values(artifacts).map(
             (a) => `  ${a.path}: ${a.exists ? "present" : "missing"}`,
           ),
-          ...(plan === undefined ? [] : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)]),
+          // A site on Cloudflare's hosting or GitHub Pages has no image: its version instead.
+          ...(plan === undefined || isServerlessProvider(plan.target.provider)
+            ? []
+            : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)]),
           ...(components === undefined ? [] : ["", ...components.lines]),
           ...(tls === undefined ? [] : ["", ...tls.lines]),
           ...moveLines,

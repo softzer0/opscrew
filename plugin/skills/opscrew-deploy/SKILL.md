@@ -1,6 +1,6 @@
 ---
 name: opscrew-deploy
-description: Take the user's app from this repository to a hardened production deployment on their own cloud, a server they already have or a Portainer they already run (on a NAS or any Docker host) with OpsCrew (scan, analyze, interview, design, prepare the code, then provision), and turn Portainer on or off. Use when the user wants to deploy, host, launch or "put online" their app, deploy to their own server, home server, NAS or Portainer, or move it off Lovable, Bolt, Replit or v0 hosting.
+description: Take the user's app from this repository to a hardened production deployment on their own cloud, a server they already have, a Portainer they already run (on a NAS or any Docker host), or for a site with no server Cloudflare's hosting or GitHub Pages, with OpsCrew (scan, analyze, interview, design, prepare the code, then provision), and turn Portainer on or off. Use when the user wants to deploy, host, launch or "put online" their app, deploy to their own server, home server, NAS or Portainer, or move it off Lovable, Bolt, Replit or v0 hosting.
 ---
 
 # Deploy this app with OpsCrew
@@ -32,7 +32,11 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    One question is where to run the app: Hetzner Cloud, DigitalOcean (Droplets) or a server the
    user already has (`own`: a rented server elsewhere, a company machine or a home server). Its
    default is the provider whose API token is already set (`HCLOUD_TOKEN` or
-   `DIGITALOCEAN_TOKEN`), otherwise Hetzner Cloud; let the user choose. For `own`, also ask the
+   `DIGITALOCEAN_TOKEN`), otherwise Hetzner Cloud; let the user choose. For a site that needs no
+   server, the question also offers `cloudflare-workers` (Cloudflare's hosting: static files free,
+   and server-side rendering for Astro, Next.js, Nuxt and SvelteKit) and `github-pages` (GitHub
+   Pages: static only, public sites, no custom headers, no commercial use), only where they fit
+   the app (see **Sites with no server** below). For `own`, also ask the
    returned server questions and pass them with the `server.` answer ids they return (address,
    SSH port, user, key, whether the internet reaches the server and how the site is served):
    - the key is a path to the private key file, or `agent` for the SSH agent (which also covers a
@@ -394,6 +398,36 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   it, and know that it replaces the earlier sources. Each change goes through the host plan's
   dialog, and OpsCrew refuses a firewall that leaves out the address it connects from. `noHarden`
   removes only that part, and `opscrew_runner_host_remove` takes both off.
+- **Sites with no server.** A static site, or a server-rendered app with a Cloudflare adapter,
+  can run on Cloudflare's hosting (`cloudflare-workers`, Workers with static assets) or, static
+  only, on GitHub Pages (`github-pages`). Both need the domain's DNS on Cloudflare, and neither
+  takes databases, workers, cron jobs or other server parts: design says why when a target does
+  not fit. `opscrew_design_options` offers one option with the provider's published price and
+  limits; pass the limits on (and for GitHub Pages GitHub's terms: no commercial use, the site is
+  public, no security headers).
+  - **Cloudflare's hosting** needs a second Cloudflare token of the user's holding only
+    **Account → Workers Scripts → Edit**, set as `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` in their shell
+    (never in the chat): `opscrew provision` stores it as a GitHub secret for the deploy
+    workflow. `opscrew_plan` returns the Worker and its custom domains as `planHash`, and the
+    `www` redirect in the Cloudflare plan. `adapt` adds the framework's Cloudflare adapter when
+    the app needs one.
+  - **GitHub Pages** needs the user's GitHub token with Pages and Administration, both Read and
+    write. `opscrew_plan` returns the Pages plan (`pagesPlanHash`: Pages published by the
+    workflow and the custom domain, set before any DNS record points at GitHub), the site's
+    DNS-only records (`planHash`) and GitHub's domain verification record
+    (`pagesVerificationPlanHash`); pass each to `opscrew_apply`, which shows each in its own
+    dialog (a Pages plan with another hash is refused). When OpsCrew stops for the verification
+    value, the user adds the domain in their GitHub account's Pages settings, copies the TXT
+    record's value and you pass it as `pagesVerification` (in a terminal
+    `--pages-verification <value>`); it is public in DNS. Afterwards pass on the one manual step
+    OpsCrew prints: clicking Verify on that page. HTTPS is enforced by a later
+    `npx opscrew provision` once GitHub has issued the certificate (`opscrew_status` says when).
+  - **Day 2.** `opscrew_status` shows the version running, the one before and the rollback
+    command. A rollback is `opscrew_promote` with `to` and `version` (the Worker version or the
+    GitHub Pages run `opscrew_status` names), approved by the user in a dialog. On Cloudflare a
+    promoted environment gets its source's exact build; GitHub Pages refuses promotion (each
+    environment builds its own, and it has prod only). `opscrew_secure` says that GitHub Pages
+    cannot set security headers and that Cloudflare can.
 - **Monorepos.** When the repository has several deployable folders, `opscrew_interview_questions`
   asks which one the first app is (`appDir`); ask the user, never guess.
 - **Several apps in one repository.** A repository can hold more than one app, for example a
@@ -422,7 +456,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   There are no snapshots there: backups are their responsibility. In their existing Portainer it
   removes only what OpsCrew created (the app's stacks, its registry entry, the deploy secrets and
   the Cloudflare resources) after they type the app's name, never Portainer itself or another
-  stack, and keeps the app's data volumes unless they add `--delete-data`. On every target it
+  stack, and keeps the app's data volumes unless they add `--delete-data`. A site on Cloudflare's
+  hosting or GitHub Pages is removed after they type the app's name (on GitHub Pages its DNS
+  records first, then the site, so nobody can take the domain over); GitHub's domain
+  verification record stays unless they add `--delete-verification`. On every target it
   also removes the app's hostnames from OpsCrew's shared Cloudflare rules (deleting a rule only
   when no other OpsCrew app is in it), and the account's Zero Trust organization and one-time PIN
   login stay for the other apps.

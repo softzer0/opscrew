@@ -19,8 +19,15 @@ import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environ
 import { cancelled } from "../ui/prompts";
 import { askKeyOut, userPath } from "../ui/recovery";
 
-/** The age key for a restore: the key file's text, or (in a terminal only) a hidden prompt. */
-async function readIdentity(ctx: CliContext, keyFile: string | undefined): Promise<string> {
+/**
+ * The age key for a restore: the key file's text, or (in a terminal only) a hidden prompt; `flag`
+ * is the app's and environment's for the command it suggests.
+ */
+async function readIdentity(
+  ctx: CliContext,
+  keyFile: string | undefined,
+  flag: string,
+): Promise<string> {
   if (keyFile !== undefined) {
     const file = userPath(ctx, keyFile);
     try {
@@ -36,7 +43,7 @@ async function readIdentity(ctx: CliContext, keyFile: string | undefined): Promi
       "INVALID_INPUT",
       "Restoring the recovery copy needs your age key, and this run cannot ask for it.",
       {
-        hint: "Run `opscrew secrets restore` in a terminal, which asks for the key without showing it, or pass the key file with `--key-file <path>`.",
+        hint: `Run \`opscrew secrets restore${flag}\` in a terminal, which asks for the key without showing it, or pass the key file with \`--key-file <path>\`.`,
       },
     );
   }
@@ -45,7 +52,7 @@ async function readIdentity(ctx: CliContext, keyFile: string | undefined): Promi
     message:
       "Paste your age key (AGE-SECRET-KEY-1…). It is not shown, and OpsCrew does not keep it.",
   });
-  if (prompts.isCancel(answer)) throw cancelled("the restore", "opscrew secrets restore");
+  if (prompts.isCancel(answer)) throw cancelled("the restore", `opscrew secrets restore${flag}`);
   return answer;
 }
 
@@ -72,7 +79,7 @@ async function restore(ctx: CliContext, flags: RestoreFlags): Promise<void> {
     });
   }
   const { deps, flag } = await environmentDeps(ctx, flags);
-  const identity = await readIdentity(ctx, flags.keyFile);
+  const identity = await readIdentity(ctx, flags.keyFile, flag);
   const result = await restoreRecoveryCopy(deps, {
     identity,
     ...(flags.from !== undefined ? { from: userPath(ctx, flags.from) } : {}),
@@ -103,6 +110,7 @@ interface RotateFlags extends AppEnvFlags {
  * push is not approved, so the commit stays local and the run says how to finish.
  */
 async function rotate(ctx: CliContext, flags: RotateFlags): Promise<void> {
+  const { deps, flag } = await environmentDeps(ctx, flags);
   const keyOut =
     flags.keyOut !== undefined
       ? userPath(ctx, flags.keyOut)
@@ -110,18 +118,17 @@ async function rotate(ctx: CliContext, flags: RotateFlags): Promise<void> {
         ? await askKeyOut(ctx)
         : undefined;
   if (keyOut === undefined && ctx.isInteractive) {
-    throw cancelled("the key rotation", "opscrew secrets rotate");
+    throw cancelled("the key rotation", `opscrew secrets rotate${flag}`);
   }
   if (keyOut === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       "A new age key needs a file to be written to, and OpsCrew never prints a key.",
       {
-        hint: "Name a file outside the repository with `--key-out <path>`, or run `opscrew secrets rotate` in a terminal, which asks for it.",
+        hint: `Name a file outside the repository with \`--key-out <path>\`, or run \`opscrew secrets rotate${flag}\` in a terminal, which asks for it.`,
       },
     );
   }
-  const { deps } = await environmentDeps(ctx, flags);
   const plan = await readArtifact("plan", deps.paths.files.plan);
   const git = await requireGitRepo(deps);
   const github = await setupGitHub(deps, git, servicesOf(ctx).provision ?? {});
@@ -191,12 +198,12 @@ export function register(program: Command, ctx: CliContext): void {
   addEnvOption(folderCommand)
     .option("--none", "Stop writing the folder copy")
     .action(async (folder: string | undefined, flags: AppEnvFlags & { none?: boolean }) => {
+      const { deps, flag } = await environmentDeps(ctx, flags);
       if ((folder === undefined) === (flags.none !== true)) {
         throw new OpsCrewError("INVALID_INPUT", "Give either a folder or --none.", {
-          hint: "Run `opscrew secrets folder <path>` to set the folder, or `opscrew secrets folder --none` to stop writing the folder copy.",
+          hint: `Run \`opscrew secrets folder${flag} <path>\` to set the folder, or \`opscrew secrets folder${flag} --none\` to stop writing the folder copy.`,
         });
       }
-      const { deps } = await environmentDeps(ctx, flags);
       const full = folder === undefined ? undefined : userPath(ctx, folder);
       await setRecoveryFolder(deps, full);
       ctx.stdout(

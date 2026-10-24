@@ -1,13 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { forbiddenFetch, ScriptedRunner, testPlan } from "@opscrew/agents/testing";
 import type { CommandRunner, FetchLike } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
@@ -17,18 +18,25 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
+/** The repository's `examples/static-vite`, a static site. */
+const STATIC_SITE = fileURLToPath(new URL("../../../../examples/static-vite/", import.meta.url));
+
 async function connect(
   env: Record<string, string>,
-  io: { fetch?: FetchLike; runner?: CommandRunner } = {},
+  io: { fetch?: FetchLike; runner?: CommandRunner; example?: string } = {},
 ) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-interview-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "repo");
   await mkdir(root, { recursive: true });
-  await writeFile(
-    path.join(root, "package.json"),
-    JSON.stringify({ name: "shop", dependencies: { express: "^5.0.0" } }),
-  );
+  if (io.example === undefined) {
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "shop", dependencies: { express: "^5.0.0" } }),
+    );
+  } else {
+    await materializeFixture(io.example, root);
+  }
   const server = createOpscrewMcpServer({
     version: "0.0.0-test",
     env: { OPSCREW_HOME: path.join(dir, "home"), ...env },
@@ -45,7 +53,7 @@ async function connect(
   });
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     (await client.callTool({ name, arguments: args })) as CallToolResult;
-  return { call, root };
+  return { call, root, client };
 }
 
 async function questions(env: Record<string, string>) {
@@ -204,6 +212,48 @@ describe("opscrew_save_requirements provider summary", () => {
     });
     expect(saved.isError).toBeFalsy();
     expect(textOf(saved)).toContain("- Cloud provider: Hetzner Cloud");
+  });
+
+  it("reports this computer when the provider answer is localhost", async () => {
+    const { call } = await connect({});
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, provider: "localhost" },
+    });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+    expect(textOf(saved)).toContain("- Where it runs: This computer");
+    expect(textOf(saved)).not.toContain("Cloud provider");
+  });
+});
+
+describe("the interview tools and the server-less targets", () => {
+  it("offer Cloudflare's hosting and GitHub Pages for a static site, and list every target", async () => {
+    const { call } = await connect({}, { example: STATIC_SITE });
+    const result = await call("opscrew_interview_questions");
+    const data = result.structuredContent as {
+      questions: { id: string; options?: { value: string }[] }[];
+    };
+    const offered = data.questions.find((q) => q.id === "provider")?.options?.map((o) => o.value);
+    expect(offered).toEqual(expect.arrayContaining(["cloudflare-workers", "github-pages"]));
+
+    const { tools } = await (await connect({})).client.listTools();
+    const save = tools.find((tool) => tool.name === "opscrew_save_requirements");
+    const help = JSON.stringify(save?.inputSchema);
+    for (const target of ["localhost", "cloudflare-workers", "github-pages", "portainer", "own"]) {
+      expect(help).toContain(`\\"${target}\\"`);
+    }
+  });
+
+  it.each([
+    ["cloudflare-workers", "Cloudflare (no server)", "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN"],
+    ["github-pages", "GitHub Pages (no server)", "needs no deploy token"],
+  ])("save %s and name its token in the next step", async (provider, name, token) => {
+    const { call } = await connect({}, { example: STATIC_SITE });
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, provider, domain: "docs.example.com", dnsProvider: "cloudflare" },
+    });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+    expect(textOf(saved)).toContain(`- Where it runs: ${name}`);
+    expect(textOf(saved)).toContain(token);
   });
 });
 

@@ -19,7 +19,7 @@ import {
 import type { ApprovalHandler } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError, taxLabel, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
-import { type DesignOption, readArtifact } from "@opscrew/plan-schema";
+import { type DesignOption, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
 import {
@@ -29,6 +29,7 @@ import {
   hostKeyNeedsTerminal,
 } from "./elicitation";
 import {
+  andApp,
   appInput,
   environmentInput,
   IDEMPOTENT_WRITE,
@@ -39,12 +40,10 @@ import {
   withHint,
 } from "./shared";
 
-const REQUIREMENTS_HINT =
-  "Call opscrew_interview_questions, ask the user the questions, then call opscrew_save_requirements.";
-
 /** Fails with a tool-oriented hint unless `opscrew/requirements.yaml` exists and is valid. */
 async function requireRequirements(phase: PhaseDeps): Promise<void> {
   const file = toPosixRelative(phase.paths.root, phase.paths.files.requirements);
+  const app = andApp(phase.paths.app, "with");
   try {
     await readEnvironmentRequirements(phase.paths);
   } catch (error) {
@@ -52,10 +51,12 @@ async function requireRequirements(phase: PhaseDeps): Promise<void> {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `The deployment requirements are not saved yet (${file} does not exist).`,
-        { hint: REQUIREMENTS_HINT },
+        {
+          hint: `Call opscrew_interview_questions${app}, ask the user the questions, then call opscrew_save_requirements${app}.`,
+        },
       );
     }
-    withHint(error, `Fix ${file}, or save the answers again with opscrew_save_requirements.`);
+    withHint(error, `Fix ${file}, or save the answers again with opscrew_save_requirements${app}.`);
   }
 }
 
@@ -167,8 +168,9 @@ function renderOption(option: DesignOption): string {
   return [
     `${option.title} (id: ${option.id}) — ${costText(option)}${marks.length > 0 ? `; ${marks.join(", ")}` : ""}`,
     `  ${option.summary}`,
-    // The user's Portainer: OpsCrew does not size the host, so it shows no sizes at all.
-    ...(t.provider === "portainer"
+    // The user's Portainer (OpsCrew does not size the host) and a site with no server show no
+    // sizes at all.
+    ...(t.provider === "portainer" || t.provider === "localhost" || isServerlessProvider(t.provider)
       ? []
       : [
           `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${t.provider === "own" ? "free disk" : "disk"}`,
@@ -251,7 +253,7 @@ export function registerDesignTools(
     {
       title: "Deployment options",
       description:
-        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
+        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). For a site on Cloudflare's hosting or GitHub Pages it offers that one option, with the price and limits of the provider's published plans, or says why the target does not fit the app. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -295,6 +297,33 @@ export function registerDesignTools(
           };
         }
         const fitting = result.options.some((o) => o.fitsBudget);
+        // A site with no server, or an environment on the user's computer: one option, no server.
+        const target = requirements.provider;
+        if (target === "localhost" || isServerlessProvider(target)) {
+          const where =
+            target === "localhost"
+              ? `${providerProfile(target).displayName} (no server price: it runs in the user's own Docker)`
+              : `${providerProfile(target).displayName} (budget ${formatMoney(requirements.budgetMonthly)}/month; the price and limits come from the provider's published plans, named in the option)`;
+          const text = [
+            `Deployment on ${where}:`,
+            "",
+            ...result.options.map(renderOption),
+            "",
+            ...(fitting ? [] : ["The option does not fit the budget."]),
+            `After the user agrees, call opscrew_select_design with the option id (${recommended?.id ?? result.options[0]?.id}).`,
+          ].join("\n");
+          return {
+            text,
+            data: {
+              options: result.options,
+              recommendedId: recommended?.id,
+              priceSource: result.priceSource,
+              budget: requirements.budgetMonthly,
+              fitsBudget: fitting,
+              warnings: result.warnings,
+            },
+          };
+        }
         const provider = requestedProvider(requirements);
         const providerName = providerProfile(provider).displayName;
         const first = result.options[0]?.cost;

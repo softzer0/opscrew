@@ -13,6 +13,8 @@ export function createProgram(ctx: CliContext): Command {
     .version(ctx.version, "-V, --version", "Print the OpsCrew version")
     .helpOption("-h, --help", "Show help for a command")
     .option("--cwd <dir>", "Project directory to work in (defaults to the current directory)")
+    // Global options go before the command, so `promote --version <id>` is promote's own.
+    .enablePositionalOptions()
     .exitOverride()
     .configureOutput({
       writeOut: (text) => ctx.stdout(text),

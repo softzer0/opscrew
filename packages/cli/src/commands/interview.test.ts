@@ -313,3 +313,40 @@ describe("opscrew interview", () => {
     await expect(readFile(paths.files.requirements, "utf8")).rejects.toThrow();
   });
 });
+
+describe("opscrew interview --target", () => {
+  const SITE_ANSWERS = [
+    "expectedMonthlyUsers: <1k",
+    "budgetMonthly: 5 USD",
+    "uptime: standard",
+    "domain: docs.example.com",
+    "dnsProvider: cloudflare",
+    "",
+  ].join("\n");
+
+  it.each([
+    ["cloudflare-workers", "Cloudflare (no server)", "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN"],
+    ["github-pages", "GitHub Pages (no server)", "needs no deploy token"],
+  ])(
+    "answers where a static site runs with %s, and names its token",
+    async (target, name, token) => {
+      project = await tempProject("static-vite");
+      await writeFile(path.join(project.dir, "answers.yaml"), SITE_ANSWERS);
+      const ctx = projectContext(project);
+      const args = ["interview", "--answers", "../answers.yaml", "--target", target];
+      expect(await run(ctx, ...args), ctx.errors).toBe(0);
+      expect((await requirementsOf(project.root, project.env)).provider).toBe(target);
+      expect(ctx.output).toContain(`Runs on: ${name}`);
+      expect(ctx.output).toContain(token);
+    },
+  );
+
+  it("asks a terminal every question but where the app runs", async () => {
+    project = await tempProject("static-vite");
+    const prompts = new ScriptedPrompts([CANCEL]);
+    const ctx = projectContext(project, { interactive: true, services: { prompts } });
+    expect(await run(ctx, "interview", "--target", "github-pages")).toBe(1);
+    expect(prompts.calls.length).toBe(1);
+    expect(prompts.calls[0]?.message).not.toContain("Where should OpsCrew run your app?");
+  });
+});

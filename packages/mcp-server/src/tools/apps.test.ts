@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,10 +10,11 @@ import {
   ElicitRequestSchema,
   type ElicitResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { recordOwnServer } from "@opscrew/agents";
-import { forbiddenFetch, projectRunner } from "@opscrew/agents/testing";
+import { pagesVerificationStateFile, recordOwnServer } from "@opscrew/agents";
+import { forbiddenFetch, projectRunner, testPlan } from "@opscrew/agents/testing";
 import { exists, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
+import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
 import { createOpscrewMcpServer } from "../server";
@@ -200,6 +201,34 @@ describe("app on the other tools", () => {
     expect(questions.isError, textOf(questions)).toBeFalsy();
     // A further app's folder is its record's: no question asks which app to deploy.
     expect(textOf(questions)).not.toContain("answer id: appDir");
+    // Its next step names the app.
+    const report = resolveProjectPaths(h.root, { env: { OPSCREW_HOME: h.home }, app: "web" }).files
+      .scanReportMd;
+    await mkdir(path.dirname(report), { recursive: true });
+    await writeFile(report, "# Scan\n");
+    const next = await h.call("opscrew_status", { app: "web" });
+    expect(textOf(next)).toContain("opscrew_save_requirements with app web.");
+    // Once it has a plan, the next step names the app's own plan file.
+    const paths = resolveProjectPaths(h.root, { env: { OPSCREW_HOME: h.home }, app: "web" });
+    await writeFile(paths.files.requirements, "provider: hetzner\n");
+    const plan = testPlan();
+    const { dir: _dir, ...infra } = plan.infra;
+    const { workflowPath: _workflow, ...cicd } = plan.cicd;
+    await writeArtifact(
+      "plan",
+      paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        app: { ...plan.app, key: "web", name: "web" },
+        infra,
+        cicd,
+      }),
+    );
+    const planned = await h.call("opscrew_status", { app: "web" });
+    expect(textOf(planned)).toContain(
+      "Apply the pending code changes from opscrew/apps/web/plan.yaml",
+    );
+    expect(textOf(planned)).toContain("`npx opscrew provision --app web`");
     const unknown = await h.call("opscrew_status", { app: "docs" });
     expect(unknown.isError).toBe(true);
     expect(textOf(unknown)).toContain('no app "docs"');
@@ -224,6 +253,12 @@ describe("app on the other tools", () => {
     expect(result.isError, textOf(result)).toBeFalsy();
     expect(textOf(result)).toContain("your server");
     expect(JSON.stringify(result)).not.toContain(host);
+
+    // A damaged app record still hides the address of every app with a folder.
+    await writeFile(path.join(webDir(h.root), "app.yaml"), "dir: [\n");
+    const damaged = await h.call("opscrew_status", { app: "." });
+    expect(JSON.stringify(damaged)).toContain("your server");
+    expect(JSON.stringify(damaged)).not.toContain(host);
   });
 });
 
@@ -248,6 +283,42 @@ describe("opscrew_app_remove", () => {
     expect(removed.isError, textOf(removed)).toBeFalsy();
     expect(textOf(removed)).toContain("opscrew/apps/web");
     expect(await exists(webDir(typed.root))).toBe(false);
+  });
+
+  it("refuses a deployed further app without opening its dialog", async () => {
+    const h = await withWeb({ dialogs: true, typed: "web" });
+    const paths = resolveProjectPaths(h.root, { env: { OPSCREW_HOME: h.home }, app: "web" });
+    const plan = testPlan({ deployed: true });
+    const { dir: _dir, ...infra } = plan.infra;
+    const { workflowPath: _workflow, ...cicd } = plan.cicd;
+    await writeArtifact(
+      "plan",
+      paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        app: { ...plan.app, key: "web", name: "web" },
+        infra,
+        cicd,
+      }),
+    );
+    const result = await h.call("opscrew_app_remove", { key: "web" });
+    expect(result.isError).toBe(true);
+    expect(h.elicited).toEqual([]);
+    expect(textOf(result)).toContain("`opscrew destroy --app web`");
+    expect(await exists(webDir(h.root))).toBe(true);
+  });
+
+  it("refuses without a dialog while GitHub Pages' verification record may be in DNS", async () => {
+    const h = await withWeb({ dialogs: true, typed: "web" });
+    const paths = resolveProjectPaths(h.root, { env: { OPSCREW_HOME: h.home }, app: "web" });
+    const state = pagesVerificationStateFile(paths);
+    await mkdir(path.dirname(state), { recursive: true });
+    await writeFile(state, "a state OpsCrew cannot read");
+    const result = await h.call("opscrew_app_remove", { key: "web" });
+    expect(result.isError).toBe(true);
+    expect(h.elicited).toEqual([]);
+    expect(textOf(result)).toContain("--delete-verification");
+    expect(await exists(webDir(h.root))).toBe(true);
   });
 
   it("refuses the first app without asking", async () => {

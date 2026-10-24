@@ -221,7 +221,7 @@ describe("the environment tools", () => {
     const promote = byName.get("opscrew_promote");
     expect(promote?.inputSchema.required).toContain("to");
     expect(Object.keys(promote?.inputSchema.properties ?? {}).sort()).toEqual(
-      ["app", "digest", "projectDir", "to"].sort(),
+      ["app", "digest", "projectDir", "to", "version"].sort(),
     );
     expect(promote?._meta).toMatchObject({ "anthropic/requiresUserInteraction": true });
     expect(byName.get("opscrew_env_list")?.annotations?.readOnlyHint).toBe(true);
@@ -388,6 +388,19 @@ describe("opscrew_promote", () => {
     expect(textOf(result)).toContain(`(promotion ${dataOf(result).promotionHash})`);
     expect(h.elicited[0]).toContain(dataOf(result).promotionHash);
     expect(h.github.dispatches).toEqual(["opscrew-deploy.yml"]);
+  });
+
+  it("passes version on, which a server refuses, and names it in the terminal command", async () => {
+    const terminal = await connect();
+    const without = await terminal.call("opscrew_promote", { to: "prod", version: "v-old" });
+    expect(textOf(without)).toContain("`npx opscrew promote --to prod --version v-old`");
+
+    const h = await connect({ dialogs: true });
+    const result = await h.call("opscrew_promote", { to: "prod", version: "v-old" });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("--version names a version of a site");
+    expect(h.elicited).toEqual([]);
+    expect(h.github.dispatches).toEqual([]);
   });
 
   it("reports a run that waits for a required reviewer as waiting, never as a failure", async () => {

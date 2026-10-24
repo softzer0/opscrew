@@ -193,6 +193,35 @@ describe("renderOptionsTable for the user's Portainer", () => {
   });
 });
 
+describe("renderOptionsTable for a site with no server", () => {
+  it.each([
+    ["cloudflare-workers", "Workers with static assets", "Cloudflare's edge"],
+    ["github-pages", "GitHub Pages", "GitHub"],
+  ] as const)("shows %s's price but never the placeholder sizes", (provider, type, where) => {
+    const site = option(provider, 0, {
+      recommended: true,
+      target: {
+        provider,
+        location: where,
+        serverType: type,
+        vcpus: 1,
+        memoryGb: 0.01,
+        diskGb: 0.01,
+        cpuType: "shared",
+        architecture: "x86",
+      },
+    });
+    const table = renderOptionsTable([site], { amount: 10, currency: "USD" });
+    const row = table.split("\n").find((line) => line.includes(type)) ?? "";
+    expect(row).toContain(where);
+    expect(row).toContain("fits");
+    for (const text of ["0.01", "1 vCPU", "shared"]) expect(row).not.toContain(text);
+    const header = table.split("\n").find((line) => line.includes("Option")) ?? "";
+    expect(header).toContain("Hosting");
+    expect(header).not.toContain("Server");
+  });
+});
+
 describe("chooseOption", () => {
   it("prints the table and starts on the recommended option", async () => {
     const out: string[] = [];

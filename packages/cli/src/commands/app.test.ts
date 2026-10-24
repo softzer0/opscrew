@@ -1,5 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pagesVerificationStateFile } from "@opscrew/agents";
 import { testPlan } from "@opscrew/agents/testing";
 import { exists, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
@@ -222,6 +224,19 @@ describe("opscrew app remove", () => {
     expect(await run(ctx, "app", "remove", "web")).not.toBe(0);
     expect(prompts.calls).toHaveLength(0);
     expect(ctx.errors).toContain("`opscrew destroy --app web`");
+    expect(await exists(appPaths(project, "web").artefactsDir)).toBe(true);
+  });
+
+  it("refuses before asking while GitHub Pages' verification record may still be in DNS", async () => {
+    project = await twoApps();
+    const state = pagesVerificationStateFile(appPaths(project, "web"));
+    await mkdir(path.dirname(state), { recursive: true });
+    await writeFile(state, "a state OpsCrew cannot read");
+    const prompts = new ScriptedPrompts([]);
+    const ctx = projectContext(project, { interactive: true, services: { prompts } });
+    expect(await run(ctx, "app", "remove", "web")).not.toBe(0);
+    expect(prompts.calls).toHaveLength(0);
+    expect(ctx.errors).toContain("`opscrew destroy --app web --delete-verification`");
     expect(await exists(appPaths(project, "web").artefactsDir)).toBe(true);
   });
 });

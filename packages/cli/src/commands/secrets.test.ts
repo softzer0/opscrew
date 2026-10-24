@@ -7,6 +7,7 @@ import {
   FakeGitHub,
   FakeSops,
   ScriptedRunner,
+  testPlan,
 } from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { generateAgeIdentity, resolveProjectPaths } from "@opscrew/core";
@@ -14,6 +15,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import { type DeployProject, DeployRunner, deployProject } from "../ui/__fixtures__/deploy";
+import { inEnvironment, withEnvironments } from "../ui/__fixtures__/environments";
 import {
   auditText,
   CANCEL,
@@ -270,5 +272,22 @@ describe.skipIf(GIT === undefined)("opscrew secrets", () => {
     expect(await run(asked, "secrets", "rotate", "--no-backup"), asked.errors).toBe(0);
     expect(prompts.calls[0]?.message).toContain("Where should OpsCrew write your new age key");
     expect(`${asked.output}${asked.errors}`).not.toContain(await identityIn(keyOut));
+  });
+
+  it("names the environment in the commands its hints suggest", async () => {
+    const staged = await withEnvironments({ staging: inEnvironment(testPlan(), "staging") });
+    try {
+      const restore = projectContext(staged);
+      expect(await run(restore, "secrets", "restore", "--env", "staging")).toBe(2);
+      expect(restore.errors).toContain("`opscrew secrets restore --env staging` in a terminal");
+      const rotate = projectContext(staged);
+      expect(await run(rotate, "secrets", "rotate", "--env", "staging")).toBe(2);
+      expect(rotate.errors).toContain("`opscrew secrets rotate --env staging` in a terminal");
+      const folder = projectContext(staged);
+      expect(await run(folder, "secrets", "folder", "--env", "staging")).toBe(2);
+      expect(folder.errors).toContain("`opscrew secrets folder --env staging --none`");
+    } finally {
+      await staged.cleanup();
+    }
   });
 });

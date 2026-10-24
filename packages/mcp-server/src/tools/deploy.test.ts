@@ -852,6 +852,130 @@ describe.skipIf(!findExecutable("git"))("the server runner's host plan on a clou
   });
 });
 
+/** A static site of `shop` on GitHub Pages at docs.example.com. */
+function pagesPlan() {
+  const base = testPlan({ userSecret: false });
+  return DeployPlanSchema.parse({
+    ...base,
+    target: {
+      provider: "github-pages",
+      mode: "pages-workflow",
+      site: { tool: "none", outputDir: "site" },
+    },
+    services: [],
+    dns: { provider: "cloudflare", domain: "docs.example.com", proxied: false },
+    security: { wafCustomRules: false },
+    cost: { ...base.cost, monthly: { amount: 0, currency: "USD" }, breakdown: [] },
+  });
+}
+
+const PAGES_HASH = "9a".repeat(32);
+
+/**
+ * Provision on GitHub Pages as the tools see it: `--plan-only` shows the Pages plan; an apply asks
+ * for it as `pages-apply` by its hash. Records the options each run got.
+ */
+function pagesProvision(seen: Parameters<typeof runProvision>[1][]): typeof runProvision {
+  return async (phase, options) => {
+    seen.push(options);
+    const details = `Pages plan for the GitHub Pages site of acme/shop\n  + Turn GitHub Pages on\nPages plan hash: ${PAGES_HASH}`;
+    if (options?.planOnly === true) {
+      phase.reporter.info(details);
+      return { applied: false, pagesPlanHash: PAGES_HASH, outputs: {} };
+    }
+    const approval = await phase.approvals.request({
+      kind: "pages-apply",
+      title: "Apply the Pages plan to the GitHub Pages site of acme/shop (1 change)",
+      details,
+      planHash: PAGES_HASH,
+    });
+    if (!approval.approved) {
+      throw new PlanRefusedError({
+        plan: "Pages plan",
+        ...(approval.reason ? { reason: approval.reason } : {}),
+        unchanged: "Nothing was changed.",
+        hint: `To apply it later without prompts, run: opscrew provision --approve ${PAGES_HASH}`,
+      });
+    }
+    return { applied: false, pagesPlanHash: PAGES_HASH, outputs: {} };
+  };
+}
+
+describe.skipIf(!findExecutable("git"))("a site on GitHub Pages", () => {
+  it("opscrew_plan returns the Pages plan's hash, and opscrew_apply applies it after the dialog", async () => {
+    const seen: Parameters<typeof runProvision>[1][] = [];
+    const h = await connect({
+      elicit: approveAll,
+      plan: pagesPlan(),
+      tools: { runProvision: pagesProvision(seen) },
+    });
+    const planned = await h.call("opscrew_plan", { pagesVerification: "abc123" });
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(dataOf(planned).pagesPlanHash).toBe(PAGES_HASH);
+    expect(textOf(planned)).toContain("Pages plan for the GitHub Pages site of acme/shop");
+    expect(textOf(planned)).toContain(`call opscrew_apply with pagesPlanHash ${PAGES_HASH}`);
+    expect(dataOf(planned).applyCommand).toBe(`opscrew provision --approve ${PAGES_HASH}`);
+    expect(seen[0]).toMatchObject({ planOnly: true, pagesVerification: "abc123" });
+
+    const applied = await h.call("opscrew_apply", {
+      pagesPlanHash: PAGES_HASH,
+      pagesVerification: "abc123",
+    });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(h.elicited.some((e) => e.message.includes(`Pages plan hash: ${PAGES_HASH}`))).toBe(true);
+    expect(textOf(applied)).toContain(
+      `Applied the Pages plan ${PAGES_HASH} to the GitHub Pages site.`,
+    );
+    expect(seen[1]).toMatchObject({ pagesVerification: "abc123" });
+    expect(seen[1]?.approveHashes).toContain(PAGES_HASH);
+  });
+
+  it("after an applied Pages plan, a declined DNS plan never says nothing was applied", async () => {
+    const dns = "8c".repeat(32);
+    const provision: typeof runProvision = async (phase, options) => {
+      await pagesProvision([])(phase, options);
+      const approval = await phase.approvals.request({
+        kind: "iac-apply",
+        title: "Apply the infrastructure plan on Cloudflare: the DNS records of docs.example.com",
+        details: `Plan hash: ${dns}`,
+        planHash: dns,
+      });
+      if (!approval.approved) {
+        throw new PlanRefusedError({
+          plan: "plan",
+          unchanged: "No DNS record was created.",
+          hint: `To apply it later without prompts, run: opscrew provision --approve ${dns}`,
+        });
+      }
+      return { applied: true, outputs: {} };
+    };
+    const h = await connect({
+      // The Pages plan is approved, the DNS records' plan declined.
+      elicit: (params) =>
+        params.message.includes("Pages plan hash") ? approveAll(params) : { action: "decline" },
+      plan: pagesPlan(),
+      tools: { runProvision: provision },
+    });
+    const refused = await h.call("opscrew_apply", { pagesPlanHash: PAGES_HASH });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).not.toContain("Nothing was applied");
+    expect(textOf(refused)).toContain("it continues where this stopped");
+  });
+
+  it("refuses a Pages plan opscrew_plan did not return, before any dialog", async () => {
+    const h = await connect({
+      elicit: approveAll,
+      plan: pagesPlan(),
+      tools: { runProvision: pagesProvision([]) },
+    });
+    const refused = await h.call("opscrew_apply", { pagesPlanHash: "7b".repeat(32) });
+    expect(refused.isError).toBe(true);
+    expect(h.elicited).toEqual([]);
+    expect(textOf(refused)).toContain("opscrew_plan did not return this Pages plan to the user");
+    expect(JSON.stringify(refused)).not.toContain("--approve");
+  });
+});
+
 describe("the approval dialog's text", () => {
   const request = {
     kind: "iac-apply",
