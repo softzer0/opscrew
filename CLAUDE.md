@@ -97,6 +97,7 @@ engine tests, never at a folder inside a Git checkout.
 - Deciding implementation questions that agents report (extra scope, design choices, deviations):
   the lead is the architect and decides them, preferring the smaller solution. Bring to the founder
   only product-direction decisions (features, roadmap, pricing, anything outward-facing).
+- Releases: follow `docs/releasing.md` every time; each release adds its section to `CHANGELOG.md`.
 - Spec Kit v1.1.3 is pinned. Never re-run `specify init --here --force` (it can overwrite the
   constitution and templates). Spec Kit skills live in `.claude/skills/speckit-*`.
 - Model routing: research with Sonnet subagents (official sources only, few fetches); coding with
