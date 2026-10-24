@@ -470,6 +470,7 @@ Effort`.
     - **From T1617d's review:** a test that `opscrew_app_remove` refuses a deployed further app without opening its dialog; MCP's tool suggestions (`tools/status.ts` `nextStep`, `tools/design.ts` ~43) append `andApp(appKey)` like the others, and `tools/interview.ts` ~449 uses `andApp`; `hiddenNames` (`tools/shared.ts` ~252) falls back to the folder names under `opscrew/apps/` when a record can't be read, so it never hides fewer addresses; `app remove` checks the GitHub Pages verification state before asking for the key.
     - **From T1617d's report:** the secrets command's hints (for example "Run `opscrew secrets restore` in a terminal") name `--app`/`--env` where needed, and MCP's status next step names the app's real plan path. `portainer enable|disable|status` and `domain` per app are a follow-up, out of 016 unless a live run needs them.
     - **From T1607's report:** the CLI interview's `nextStep` default and the options table (`cli/src/commands/interview.ts`, `cli/src/ui/options.ts`) handle the server-less targets; the MCP interview tool passes the server-less context through `serverlessTargetsFor` (from `@opscrew/agents`), so MCP offers them.
+    - **From T1610b's report:** `destroy` in the CLI and MCP stops refusing both targets and takes `--delete-verification`; `TypedConfirmationHandler` covers `pages-apply` with `allowDestroy` like `stack-apply` and `cloudflare-apply` (else a script's `--confirm` gets the Pages plan refused); for these targets the destroy prompt asks for the app's name, and the `--delete-data`/`--undo-host` texts don't talk about servers; `promote` takes `--version` and prints the `build` or the `version` instead of a digest.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
@@ -572,6 +573,7 @@ Effort`.
     - **Two apps in one repository** (`OPSCREW_E2E_SEVERAL_APPS=1`, US6): a static site as the first app and a second static site added with `opscrew app add`, both on Cloudflare in the e2e zone with `e2e-` hostnames. Each answers on its own hostname with its own workflow and secrets, and destroying the second leaves the first answering (SC-1607).
     - **Leftover checks:** the helper scripts learn Workers, custom domains and Pages sites.
     - **The docs:** `docs/e2e.md` sections, and the coverage page's rows as "Not run yet".
+  - **Note from T1610b:** a Cloudflare rollback to a version older than a secret change may need `force=true`; `connector-cloudflare`'s `deployWorkerVersion` has none, and `rollBackWorker` (`agents/src/promote/site.ts`) calls it. The live run checks what Cloudflare answers; add `force` to the connector and the approved rollback only if it is needed.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
