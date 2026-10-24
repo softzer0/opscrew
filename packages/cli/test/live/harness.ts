@@ -869,9 +869,10 @@ export class LiveRun {
 
   /**
    * Before the first provision (the first app only): one rule of the user's own in each of
-   * OpsCrew's two phases, added as a user would (`seedRule`), that matches only
+   * OpsCrew's three phases, added as a user would (`seedRule`), that matches only
    * `opscrew-e2e-seeded.<the run's hostname>`, a name that does not exist: a block in the WAF
-   * custom rules, a harmless setting in the configuration rules (both on the Free plan). The
+   * custom rules, a harmless setting in the configuration rules and a redirect in the single
+   * redirect rules (all on the Free plan). The
    * zone's rules OpsCrew did not create, these among them, are then compared after every provision
    * and destroy ({@link expectSharedCloudflare}); the cleanup removes the seeded ones.
    */
@@ -892,6 +893,19 @@ export class LiveRun {
       action_parameters: { automatic_https_rewrites: true },
       enabled: true,
     });
+    await this.cloudflare.seedRule(zone, "http_request_dynamic_redirect", {
+      description,
+      expression,
+      action: "redirect",
+      action_parameters: {
+        from_value: {
+          status_code: 302,
+          target_url: { value: `https://${this.appHost}/` },
+          preserve_query_string: false,
+        },
+      },
+      enabled: true,
+    });
     const now = await this.cloudflare.sharedEntrypoints(zone);
     for (const [phase, entrypoint] of Object.entries(now)) {
       expect(
@@ -901,7 +915,7 @@ export class LiveRun {
     }
     this.userRulesSeeded = userRules(now);
     this.log(
-      "seeded a rule of the user's own in the zone's WAF custom rules and configuration rules",
+      "seeded a rule of the user's own in the zone's WAF custom, configuration and redirect rules",
     );
   }
 
