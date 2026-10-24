@@ -635,7 +635,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents --filter=opscrew` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1625 A site without a manifest is an app folder too, in `packages/detect/src/**`
+- [X] T1625 A site without a manifest is an app folder too, in `packages/detect/src/**`
   - Owns: that path (+ tests, fixtures)
   - Reads: `detect/src/site.ts` (how a Hugo site is recognised), `detect/src/detect.ts` (units, members, deployable folders)
   - Depends: T1607, T1617b
