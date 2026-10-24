@@ -1,6 +1,8 @@
-# Publishes the `opscrew` CLI to npm when a `v<version>` tag is pushed, through npm's trusted
-# publishing (OIDC): no token is stored, and npm adds provenance on its own. The tag must equal
-# packages/cli's version. The full gate runs before a tag is pushed; this job checks the build.
+# Stages the `opscrew` CLI on npm when a `v<version>` tag is pushed, through npm's trusted
+# publishing (OIDC): no token is stored. The trusted publisher allows staging only, so the version
+# goes public when a maintainer approves it with 2FA on npmjs.com (Staged Packages) or with
+# `npm stage approve <id>`. The tag must equal packages/cli's version. The full gate runs before a
+# tag is pushed; this job checks the build.
 name: Release
 
 on:
@@ -29,7 +31,7 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or later.
+      # Staged publishing needs npm 11.15.0 or later.
       - run: npm install -g npm@11.21.1
       - run: pnpm install --frozen-lockfile
       - name: The tag matches the package's version
@@ -43,5 +45,5 @@ jobs:
       - run: pnpm --filter opscrew build
       - name: The bundle runs
         run: node packages/cli/dist/opscrew.js --version
-      - run: npm publish --access public
+      - run: npm stage publish
         working-directory: packages/cli
