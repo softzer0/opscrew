@@ -11,9 +11,11 @@ import {
 import type { IacEngine } from "@opscrew/contracts";
 import { errorText, exists, listText, OpsCrewError, tfstateFile } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../../context";
 import { providerProfile } from "../../providers";
 import type { CloudflareSetup } from "../../provision/credentials";
+import { findSavedPlan } from "../../provision/plan-apply";
 import { committedTfvars } from "../../provision/render";
 import { planFile } from "../../runners/words";
 
@@ -139,26 +141,72 @@ export async function requireOwnWorker(
   );
 }
 
+/** The Worker's shell in an engine plan's `planned_values` (the root's `module.worker`). */
+const PlannedWorkerSchema = z.object({
+  planned_values: z.object({
+    root_module: z.object({
+      child_modules: z.array(
+        z.object({
+          resources: z.array(
+            z.object({
+              address: z.string(),
+              values: z.object({ script_name: z.string().optional() }).optional(),
+            }),
+          ),
+        }),
+      ),
+    }),
+  }),
+});
+
+/**
+ * The name of the Worker the app's infrastructure state holds: the one in its last applied plan
+ * (`deployment.lastPlanHash`, its record in the local plans folder). `undefined` before the first
+ * apply, or when this computer has no record of that plan. Read-only.
+ */
+async function appliedWorker(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+): Promise<string | undefined> {
+  const hash = plan.deployment.lastPlanHash;
+  if (hash === undefined) return undefined;
+  const saved = await findSavedPlan(deps.paths.files.plansDir, hash);
+  const parsed = PlannedWorkerSchema.safeParse(saved?.planJson);
+  if (!parsed.success) return undefined;
+  return parsed.data.planned_values.root_module.child_modules
+    .flatMap((module) => module.resources)
+    .find((resource) => resource.address.endsWith(WORKER_SCRIPT))?.values?.script_name;
+}
+
 /**
  * Refuses A, AAAA and CNAME records at the app's hostnames that OpsCrew did not create (`foreign`,
  * from `setupCloudflare` with `foreignRecords: "report"`), as for servers: a custom domain cannot be
- * added next to them. The records the Worker's own custom domains created (listed by
- * `listWorkerCustomDomains`, they carry no OpsCrew comment) are not foreign. Read-only.
+ * added next to them. The records the custom domains of the app's own Workers created (they carry
+ * no OpsCrew comment) are not foreign: the plan's Worker's, and after a rename those of the Worker
+ * the app's state holds ({@link appliedWorker}), which the infrastructure plan moves to the new
+ * Worker. A custom domain of any other Worker stays refused. Read-only.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming each record; nothing was changed.
  */
-export async function requireFreeHostnames(input: {
-  client: CloudflareClient;
-  accountId: string;
-  worker: string;
-  foreign: CloudflareSetup["foreignRecords"];
-  command: string;
-}): Promise<void> {
+export async function requireFreeHostnames(
+  deps: Pick<PhaseDeps, "paths">,
+  input: {
+    client: CloudflareClient;
+    accountId: string;
+    plan: DeployPlan;
+    worker: string;
+    foreign: CloudflareSetup["foreignRecords"];
+    command: string;
+  },
+): Promise<void> {
   if ((input.foreign ?? []).length === 0) return;
-  const domains = new Set(
-    (await input.client.listWorkerCustomDomains(input.accountId, input.worker)).map(
-      (domain) => domain.hostname,
-    ),
-  );
+  const applied = await appliedWorker(deps, input.plan);
+  const workers = [...new Set([input.worker, ...(applied !== undefined ? [applied] : [])])];
+  const domains = new Set<string>();
+  for (const worker of workers) {
+    for (const domain of await input.client.listWorkerCustomDomains(input.accountId, worker)) {
+      domains.add(domain.hostname);
+    }
+  }
   const clashing = (input.foreign ?? []).filter((record) => !domains.has(record.name));
   if (clashing.length === 0) return;
   const names = [...new Set(clashing.map((record) => record.name))];

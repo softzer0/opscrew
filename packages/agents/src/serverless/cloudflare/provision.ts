@@ -13,7 +13,13 @@ import { setupCloudflare, setupGitHub } from "../../provision/credentials";
 import { deploySetupDependabot } from "../../provision/dependabot";
 import { planAndApply } from "../../provision/plan-apply";
 import { deploymentFiles, deploymentRenderContext } from "../../provision/render";
-import { applyZonePlan, sharedCloudflareClient } from "../../provision/shared-cloudflare";
+import {
+  applySharedCloudflare,
+  cloudflarePlanHashes,
+  type PlannedCloudflare,
+  planSharedCloudflare,
+  sharedCloudflareClient,
+} from "../../provision/shared-cloudflare";
 import {
   deployBranchFor,
   deploymentRecord,
@@ -34,7 +40,6 @@ import {
 import type { ServerlessProvisionInput } from "../index";
 import { storeSiteSecrets } from "../shared";
 import { requireFreeHostnames, requireOwnWorker, requireWorkersTokens } from "./checks";
-import { planSiteRules } from "./rules";
 
 /** What is set up at Cloudflare once the infrastructure plan is applied. */
 const SET_UP = "The app's Worker and its custom domains are set up at Cloudflare.";
@@ -60,12 +65,16 @@ async function builder(
  *    app's hostnames are collected), GitHub, both tokens' Workers permission
  *    ({@link requireWorkersTokens}; the deploy token from `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`), the
  *    Worker's name ({@link requireOwnWorker}), the DNS records ({@link requireFreeHostnames}), the
- *    zone's shared rules planned read-only ({@link planSiteRules}) and the deploy branch;
+ *    Cloudflare plan read-only ({@link planSharedCloudflare}, as for servers: the zone's shared
+ *    rules, the zone's minimum TLS where every proxied hostname there is OpsCrew's, and the
+ *    removal of this app's hostnames from a zone its record names and it no longer uses) and the
+ *    deploy branch;
  * 2. the generated files (`repo-write`): the root and its module, the Wrangler config (and for
  *    `render: ssr` the headers wrapper) and the workflow, whose promoted form gets the builder's
  *    branch and workflow;
  * 3. the IaC plan of the Worker's shell and custom domains (`iac-apply`), then the plan recorded;
- * 4. the zone's shared rules (`cloudflare-apply`): the `www` redirect and the probe block;
+ * 4. the Cloudflare plans (`cloudflare-apply`, {@link applySharedCloudflare}): the removal from
+ *    the zone the app leaves first, then the `www` redirect, the probe block and the minimum TLS;
  * 5. the deploy secrets (`github-secrets`, {@link storeSiteSecrets}): the deploy token, the account
  *    id and the app's values, all repository secrets;
  * 6. the deploy-setup pull request (`git-push`, `pull-request`) with the plan's record.
@@ -105,17 +114,28 @@ export async function provisionCloudflareWorkers(
   const { engine, env } = await provisionEngine(deps, plan, options);
   const { accountId } = cloudflare;
   await requireOwnWorker(deps, { client, accountId, plan, target, engine, env, command });
-  await requireFreeHostnames({
+  await requireFreeHostnames(deps, {
     client,
     accountId,
+    plan,
     worker: target.worker,
     foreign: cloudflare.foreignRecords,
     command,
   });
-  const rules = await planSiteRules(deps, { client, cloudflare, plan, command });
-  // A hash given with `--approve` that names this Cloudflare plan is never the IaC plan's.
-  const approvePlanHash =
-    input.saved.apply?.toLowerCase() === rules.plan.hash ? undefined : input.saved.apply;
+  // With the plan's zone there is always a Cloudflare plan.
+  const shared = (await planSharedCloudflare(deps, {
+    services: { sharedCloudflare: client },
+    plan,
+    cloudflare,
+    command,
+    tls: { minTls: true },
+  })) as PlannedCloudflare;
+  // A hash given with `--approve` that names a Cloudflare plan is never the IaC plan's.
+  const approvePlanHash = cloudflarePlanHashes(shared).includes(
+    input.saved.apply?.toLowerCase() ?? "",
+  )
+    ? undefined
+    : input.saved.apply;
   const commits = !(options.planOnly && approvePlanHash === undefined);
   const push = options.push !== false;
   const branch = await deployBranchFor(deps, {
@@ -164,22 +184,14 @@ export async function provisionCloudflareWorkers(
     ...(approvePlanHash !== undefined ? { approvePlanHash } : {}),
     ...(options.planOnly ? { planOnly: true } : {}),
   });
-  const ruleInput = { app: plan.app.name, command, phase: "provision" as const };
-  /** The Cloudflare plan's fields of the result, when it has changes. */
-  const cloudflarePlan = (deletes: boolean): Partial<ProvisionResult> =>
-    rules.plan.changes.length === 0
-      ? {}
-      : {
-          cloudflarePlanHash: rules.plan.hash,
-          ...(deletes ? { cloudflarePlanDeletes: true as const } : {}),
-        };
+  const sharedInput = { app: plan.app.name, command, phase: "provision" as const };
   if (!commits) {
     // The Cloudflare plan is shown with its hash too; it is approved next to the IaC plan's.
-    const shown = await applyZonePlan(deps, client, rules, { ...ruleInput, planOnly: true });
+    const shown = await applySharedCloudflare(deps, shared, { ...sharedInput, planOnly: true });
     await writePlanIfChanged(deps, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
-      ...cloudflarePlan(shown.deletes),
+      ...shown.fields,
       applied: false,
       outputs: {},
     };
@@ -194,11 +206,11 @@ export async function provisionCloudflareWorkers(
   plan = record(false);
   await writePlanIfChanged(deps, plan);
 
-  // 4. The zone's shared rules: the www redirect and the probe block (cloudflare-apply).
-  const shared = await applyZonePlan(deps, client, rules, { ...ruleInput, planOnly: false });
-  if (shared.approval !== undefined) {
-    approvals.push(approvalEntry(shared.approval));
-    plan = record(shared.applied !== undefined);
+  // 4. The Cloudflare plans: the zone the app leaves, then the shared rules and the minimum TLS.
+  const applied = await applySharedCloudflare(deps, shared, { ...sharedInput, planOnly: false });
+  if (applied.approvals.length > 0) {
+    approvals.push(...applied.approvals.map(approvalEntry));
+    plan = record(applied.applied);
     await writePlanIfChanged(deps, plan);
   }
 
@@ -236,7 +248,7 @@ export async function provisionCloudflareWorkers(
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),
-    ...cloudflarePlan(shared.deletes),
+    ...applied.fields,
     applied: iac.applied,
     outputs: publicOutputs(iac.outputs),
     branch: published.published.branch,

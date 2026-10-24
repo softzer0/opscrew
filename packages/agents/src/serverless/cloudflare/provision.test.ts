@@ -1,13 +1,15 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { CloudflareDnsRecord } from "@opscrew/connector-cloudflare";
-import { FAKE_ACCOUNT_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
+import { CloudflareClient, type CloudflareDnsRecord } from "@opscrew/connector-cloudflare";
+import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { FetchLike } from "@opscrew/contracts";
 import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../../provision/run";
 import type { ProvisionServices } from "../../provision/types";
+import { runSecure } from "../../secure/run";
 import {
   createTestPhaseDeps,
   FakeEngine,
@@ -377,6 +379,94 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     expect(s.handler.requests).toEqual([]);
   });
 
+  it("a Worker rename moves the custom domains of the app's previous Worker, through --plan-only and --approve", async () => {
+    const s = await setup();
+    await runProvision(s.deps, { services: s.services });
+    workerCreated(s, ["docs.example.com"]);
+    await writeWorkerState(s);
+    s.github.openPull = OPEN_PULL;
+    const deployed = await readArtifact("plan", s.deps.paths.files.plan);
+    const renamed = {
+      ...deployed,
+      target: { ...deployed.target, worker: "docs-site" },
+    } as DeployPlan;
+    await writeArtifact("plan", s.deps.paths.files.plan, renamed);
+    // The same engine plans again, so the new plan's hash differs from the applied one's.
+    const move = s.engine;
+    Object.assign(move.scenario, {
+      changes: [
+        {
+          address: "module.worker.cloudflare_workers_script.this",
+          type: "cloudflare_workers_script",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "replace",
+        },
+        {
+          address: "module.worker.cloudflare_workers_custom_domain.domain",
+          type: "cloudflare_workers_custom_domain",
+          name: "domain",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "update",
+        },
+      ],
+      planJson: workerPlanJson(renamed),
+    });
+    move.applied.length = 0;
+    const { services } = s;
+    // A day later: the new plan's record sits beside the applied one's.
+    s.deps.clock.now = () => new Date("2026-10-12T12:00:00.000Z");
+
+    // --plan-only passes the check and shows the move; it writes the new name into the files.
+    const shown = await runProvision(s.deps, { services, planOnly: true });
+    expect(shown.planHash).toMatch(/^[0-9a-f]{64}$/);
+    const tfvars = JSON.parse(
+      await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    );
+    expect(tfvars.worker).toBe("docs-site");
+
+    // --approve still finds the previous Worker's custom domain this app's own, and applies the plan.
+    s.handler.requests.length = 0;
+    const result = await runProvision(s.deps, {
+      services,
+      approveHashes: [shown.planHash as string],
+    });
+    expect(hashesOf(s, "iac-apply")).toEqual([shown.planHash]);
+    expect(move.applied.map((a) => a.approval.approvedPlanHash)).toEqual([shown.planHash]);
+    expect(result.applied).toBe(true);
+  });
+
+  it("refuses a hostname that is a custom domain of another Worker, or a record no custom domain claims", async () => {
+    const custom: CloudflareDnsRecord = {
+      id: "worker-docs",
+      type: "AAAA",
+      name: "docs.example.com",
+      content: "100::",
+      ttl: 1,
+      proxied: true,
+    };
+    const foreign = await setup({ records: [custom] });
+    foreign.zone.workerDomains.push({
+      id: "domain-docs",
+      hostname: "docs.example.com",
+      service: "someone-elses-worker",
+      zone_id: FAKE_ZONE_ID,
+      zone_name: "example.com",
+    });
+    const unclaimed = await setup({ records: [custom] });
+    for (const s of [foreign, unclaimed]) {
+      const error = (await runProvision(s.deps, { services: s.services }).catch(
+        (e: unknown) => e,
+      )) as OpsCrewError;
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(
+        "Cloudflare already has DNS records for docs.example.com that OpsCrew did not create:\n  AAAA docs.example.com 100::",
+      );
+      expect(s.handler.requests).toEqual([]);
+      expect(s.engine.calls).toEqual([]);
+    }
+  });
+
   it("names a token without the Workers permission, and a missing or shared deploy token", async () => {
     const main = await setup();
     main.zone.denied.add("workers");
@@ -524,6 +614,114 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     ).toEqual(approved);
     expect(handler.requests.some((r) => r.kind === "iac-apply")).toBe(false);
     expect(String(s.zone.opscrewRule(WAF)?.expression)).toContain('"docs.example.com"');
+  });
+
+  it("raises the zone's minimum TLS to 1.2 where every proxied hostname is OpsCrew's; a second run plans nothing; secure finds it", async () => {
+    const s = await setup();
+    const first = await runProvision(s.deps, { services: s.services });
+    const shared = s.handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(shared?.planHash).toBe(first.cloudflarePlanHash);
+    expect(shared?.details).toContain("Raise the zone's minimum TLS version from 1.0 to 1.2");
+    expect(s.zone.minTls.value).toBe("1.2");
+    const record = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+    expect(record.zoneSettings).toMatchObject({ minTlsVersion: { previous: "1.0" } });
+
+    // The Worker's custom domain has its own proxied record now, without an OpsCrew comment.
+    workerCreated(s, ["docs.example.com"]);
+    s.zone.addDnsRecord({ type: "AAAA", name: "docs.example.com", proxied: true });
+    await writeWorkerState(s);
+    s.github.openPull = OPEN_PULL;
+    s.handler.requests.length = 0;
+    const again = new FakeEngine({ changes: [], outputs: { url: "https://docs.example.com" } });
+    const second = await runProvision(s.deps, {
+      services: { ...s.services, engine: async () => again },
+    });
+    expect(second.cloudflarePlanHash).toBeUndefined();
+    expect(s.handler.requests.some((r) => r.kind === "cloudflare-apply")).toBe(false);
+    expect(s.deps.reporter.text()).not.toContain("Advice: The zone's minimum TLS version");
+
+    const secured = await runSecure(s.deps, {
+      scanners: [],
+      offline: true,
+      cloudflare: fakeSharedCloudflare(s.zone),
+    });
+    expect(secured.settings.find((c) => c.id === "min-tls")).toMatchObject({
+      status: "pass",
+      message: "The zone's minimum TLS version is 1.2.",
+    });
+  });
+
+  it("leaves the zone's minimum TLS in a zone with proxied hostnames that are not OpsCrew's, and says why", async () => {
+    const s = await setup();
+    s.zone.addDnsRecord({ type: "A", name: "blog.example.com", proxied: true });
+    await runProvision(s.deps, { services: s.services });
+    expect(s.zone.minTls.value).toBe("1.0");
+    const shared = s.handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(shared?.details).not.toContain("Raise the zone's minimum TLS version");
+    expect(shared?.details).toContain(
+      "the zone has proxied hostnames that are not OpsCrew's: blog.example.com",
+    );
+    expect(s.zone.writes().some((c) => c.path.includes("min_tls_version"))).toBe(false);
+  });
+
+  it("an app moved to another zone first removes its hostnames, www redirect included, from the zone it leaves", async () => {
+    const OLD_ZONE = "a".repeat(32);
+    const s = await setup({ plan: sitePlan({ domain: "example.com", www: true }) });
+    // The earlier provision left the app's hostnames in its old zone's rules (`s.zone`).
+    await runProvision(s.deps, { services: s.services });
+    expect(s.zone.opscrewRule(REDIRECT)).toBeDefined();
+    const earlier = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+    await writeFile(
+      s.deps.paths.files.cloudflareRecord,
+      JSON.stringify({ ...earlier, zoneId: OLD_ZONE }),
+    );
+    const old = s.zone;
+    const current = new FakeZone();
+    const fetch: FetchLike = (input, init) => {
+      const url = String(input);
+      return url.includes(`/zones/${OLD_ZONE}`)
+        ? old.fetch(url.replace(`/zones/${OLD_ZONE}`, `/zones/${FAKE_ZONE_ID}`), init)
+        : current.fetch(input, init);
+    };
+    const client = new CloudflareClient({
+      token: fakeSecret("cloudflare-token", "two-zones"),
+      fetch,
+      sleep: async () => undefined,
+    });
+    s.github.openPull = OPEN_PULL;
+    s.handler.requests.length = 0;
+    const again = new FakeEngine({ changes: [], outputs: { url: "https://example.com" } });
+    const services = { ...s.services, sharedCloudflare: client, engine: async () => again };
+
+    // --plan-only shows only the removal from the zone the app leaves.
+    const planned = await runProvision(s.deps, { services, planOnly: true });
+    const leaveHash = planned.cloudflarePlanHash as string;
+    expect(planned.cloudflarePlanDeletes).toBe(true);
+    expect(s.deps.reporter.text()).toContain("Cloudflare plan for the zone this app leaves");
+    expect(current.writes()).toEqual([]);
+
+    s.handler.requests.length = 0;
+    const result = await runProvision(s.deps, { services });
+    const requests = s.handler.requests.filter((r) => r.kind === "cloudflare-apply");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({
+      planHash: leaveHash,
+      allowDestroy: true,
+      confirmPhrase: "example-app",
+    });
+    expect(requests[0]?.details).toContain("Redirect www to the domain: remove www.example.com");
+    expect(requests[1]?.planHash).toBe(result.cloudflarePlanHash);
+    // Nothing of the app is left in the old zone; the new zone has its rules and minimum TLS.
+    expect(old.opscrewRule(REDIRECT)).toBeUndefined();
+    expect(old.opscrewRule(WAF)).toBeUndefined();
+    expect(current.opscrewRule(REDIRECT)?.expression).toBe('(http.host in {"www.example.com"})');
+    expect(current.minTls.value).toBe("1.2");
+    const record = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+    expect(record).toMatchObject({
+      zoneId: FAKE_ZONE_ID,
+      hostnames: { "opscrew-www-redirect": ["www.example.com"] },
+    });
+    expectNoSecrets(await everything(s));
   });
 
   it("a promoted environment's workflow checks the build's run against its builder's workflow", async () => {

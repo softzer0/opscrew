@@ -32,6 +32,7 @@ import {
 import { portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { listsRedirect, siteRulesDesired } from "../serverless/cloudflare/rules";
 import {
   type AdapterPlanItem,
   adapterBlocked,
@@ -119,9 +120,11 @@ export async function writeCloudflareRecord(
  * Portainer unless it serves the app through its tunnel) and in the strict-TLS rule wherever the
  * origin has its own certificate (not through a tunnel, not on the user's Portainer); the Zero
  * Trust organization whenever the plan has Cloudflare Access (a tunnel's SSH or Portainer
- * hostname, Portainer's webhook), and the one-time PIN login with Portainer on a subdomain.
+ * hostname, Portainer's webhook), and the one-time PIN login with Portainer on a subdomain. A site
+ * on Cloudflare's hosting has rules of its own ({@link siteRulesDesired}).
  */
 export function sharedDesired(plan: DeployPlan, zone: string): SharedDesired {
+  if (plan.target.provider === "cloudflare-workers") return siteRulesDesired(plan);
   const domain = plan.dns.domain;
   const hosts = domain === undefined ? [] : plan.dns.www ? [domain, `www.${domain}`] : [domain];
   const portainer = portainerCloudflare(plan);
@@ -421,8 +424,9 @@ export async function zonePlan(
  * Trust pieces ({@link sharedDesired}) against its record, in the plan's zone (`cloudflare`, from
  * `setupCloudflare`). When the record names another zone that still lists this app's hostnames
  * (the app moved, or the plan uses no Cloudflare zone any more), their removal from that zone is
- * planned too. `undefined` when there is nothing to plan. Stops on the plans' findings before
- * anything changes.
+ * planned too. The `www` redirect rule's phase is read in a zone where the plan or the record
+ * lists hostnames there (a site on Cloudflare's hosting). `undefined` when there is nothing to
+ * plan. Stops on the plans' findings before anything changes.
  */
 export async function planSharedCloudflare(
   deps: Pick<PhaseDeps, "reporter" | "paths" | "env" | "fetch" | "redactor" | "version" | "clock">,
@@ -457,20 +461,24 @@ export async function planSharedCloudflare(
           desired: { hostnames: {} },
           record: left,
           command,
+          redirect: listsRedirect(left),
         });
-  const main =
-    cloudflare === undefined
-      ? undefined
-      : await zonePlan(deps, {
-          client,
-          zoneId: cloudflare.zoneId,
-          accountId: cloudflare.accountId,
-          zone: cloudflare.zoneName,
-          desired: { ...sharedDesired(input.plan, cloudflare.zoneName), ...input.tls },
-          record: record?.zoneId === cloudflare.zoneId ? record : undefined,
-          command,
-          ...(input.notes !== undefined ? { notes: input.notes } : {}),
-        });
+  let main: ZonePlan | undefined;
+  if (cloudflare !== undefined) {
+    const desired = { ...sharedDesired(input.plan, cloudflare.zoneName), ...input.tls };
+    const mine = record?.zoneId === cloudflare.zoneId ? record : undefined;
+    main = await zonePlan(deps, {
+      client,
+      zoneId: cloudflare.zoneId,
+      accountId: cloudflare.accountId,
+      zone: cloudflare.zoneName,
+      desired,
+      record: mine,
+      command,
+      redirect: listsRedirect(desired) || listsRedirect(mine),
+      ...(input.notes !== undefined ? { notes: input.notes } : {}),
+    });
+  }
   return {
     client,
     ...(leave !== undefined ? { leave } : {}),
