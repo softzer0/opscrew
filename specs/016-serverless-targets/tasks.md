@@ -651,7 +651,7 @@ Effort`.
 
 ## End-of-feature simplify pass (after T1615)
 
-- [ ] T1616 The end-of-feature simplify pass (lead): duplication across 016's changes, and the items collected during the waves.
+- [X] T1616 The end-of-feature simplify pass (lead): duplication across 016's changes, and the items collected during the waves.
   - `pagesVerificationRootDir` and `renderInfra`'s modules folder share the "folder beside `infra.dir`" logic: one helper (T1605's review).
   - `serverless.test.ts`'s env-stub leak test can't fail; keep the rendered-file check and the engine run's scan (T1605's review).
   - The `RenderContext.cloudflare.accountId` doc in iac-templates' `src/types.ts` names the Worker too (T1605's report).
