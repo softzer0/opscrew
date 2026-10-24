@@ -522,6 +522,38 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: medium
 
+- [ ] T1619 Deploy workflows run only when what they deploy changes, in `packages/iac-templates/src/workflow/**`, `packages/detect/src/**`, `packages/plan-schema/src/**`, `packages/agents/src/design/**`
+  - Owns: those paths (+ tests, snapshots)
+  - Reads: plan.md "5."; data-model.md (the plan's `app`); contracts/targets.md
+  - Depends: T1606, T1617b
+  - Accept:
+    - **Found live (2026-10-24):** in a repository with two apps (a landing site in `sites/landing`, a docs site in `sites/docs`), every push to main ran both deploy workflows: a change to one site rebuilt the other, and a commit of only `opscrew/infra/*/.terraform.lock.hcl` rebuilt both. The generated `on.push` has `branches` and no path filter. This is a bug for every target, server targets included.
+    - **Every generated deploy workflow that runs on push** filters the push by path, so it runs only when a path its run reads changes:
+      - the app's folder (`app.buildContext`), and the Dockerfile when it lies outside it;
+      - the local workspace packages the app's build uses: a new plan field `app.sharedPaths` (repository folders, default empty), set by design from detection and editable by the user, named in the plan's doc as "the folders outside the app's folder that its build uses; its deploy runs when they change";
+      - the repository root's files the build reads (the package manager's manifest, lockfile and workspace file, `.npmrc`, the Node version files), only those the workflow's steps actually read;
+      - the OpsCrew files the run reads (for example the committed Wrangler config, or the runtime files copied to a server), and the workflow file itself.
+    - **An app whose folder is the repository root** (`.`) runs on any push except one that touches only OpsCrew's own files it doesn't read (`opscrew/infra/**`, reports, other apps' `opscrew/apps/<key>/**`), other apps' folders that are not in its `sharedPaths`, and other apps' workflow files. Use GitHub's `paths` with `!` patterns or `paths-ignore`, whichever expresses it with one list.
+    - **Detection** records, per app, the repository folders of the local workspace packages its build uses, transitively (npm, pnpm and Yarn workspaces; `workspace:` and same-name dependencies). Other ecosystems record none, and the root files above still apply.
+    - Promoted environments (dispatch only) are unchanged. `workflow_dispatch` stays on every workflow.
+    - **Tests:**
+      - every repository path the rendered workflow reads (each target, one app and two apps, an app at `.` and in a folder) matches its filter;
+      - a push touching only `opscrew/infra/**`, only another app's folder, or only another app's workflow matches neither filter, and one touching a shared workspace package matches both apps using it. Check the filters with GitHub's matching rules (`*`, `**`, `!`, last match wins);
+      - detection on a pnpm workspace fixture with a shared package, and design copying it into the plan.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/detect --filter=@opscrew/plan-schema --filter=@opscrew/agents` and `pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1620 The provider lock files go into the deploy-setup pull request, in `packages/agents/src/provision/**`
+  - Owns: that path (+ tests); `packages/iac-engine/src/**` only if init must change
+  - Reads: plan.md "5."; the provision flow (`provision/publish.ts`)
+  - Depends: T1605
+  - Accept:
+    - **Found live (2026-10-24):** after `opscrew provision`, each `opscrew/infra/<env>/.terraform.lock.hcl` that `tofu init` wrote stayed uncommitted in the user's checkout. OpenTofu and Terraform want the lock file committed: it pins the providers' checksums, so every later init and the user's own runs use the same provider build.
+    - **Each IaC folder OpsCrew initialises** has its lock file in the deploy-setup commit and pull request, beside the IaC it locks. When a later provision changes a lock file, the change goes into that run's deploy-setup commit like the other generated files. OpsCrew never ignores the lock file in a `.gitignore` it writes.
+    - **Tests:** with fakes, the published file list includes each initialised folder's lock file, and a changed lock file is committed again.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint` (and `--filter=@opscrew/iac-engine` if it changed)
+  - Effort: medium
+
 - [ ] T1614 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md; plan.md "14."
@@ -560,7 +592,7 @@ Effort`.
 
 ## Dependencies
 
-{T1601a, T1601b} with T1602 (lead) alongside → {T1603, T1604, T1605, T1606} → T1617a → {T1607, T1617b} → T1617c → {T1608, T1609, T1611, T1617d} → {T1610a, T1610b} → {T1612a, T1612b, T1613} → T1614 → T1615 → T1616.
+{T1601a, T1601b} with T1602 (lead) alongside → {T1603, T1604, T1605, T1606} → T1617a → {T1607, T1617b} → T1617c → {T1608, T1609, T1611, T1617d} → {T1610a, T1610b} → {T1612a, T1612b, T1613, T1618, T1619, T1620} → T1614 → T1615 → T1616.
 
 **User stories:**
 - **US1** (static on Cloudflare): T1601a, T1601b, T1603, T1605, T1606, T1607, T1608, T1613.
@@ -579,7 +611,7 @@ Effort`.
 5. T1617c (apps in agents).
 6. T1608, T1609, T1611, T1617d: `serverless/cloudflare/`, `serverless/pages/`, `adapt/`, the CLI and MCP's app parts. Each fills only its own export in `serverless/index.ts`.
 7. T1610a, T1610b: the read-only day-2 commands; destroy, promote, environments and retarget.
-8. T1612a, T1612b, T1613.
+8. T1612a, T1612b, T1613, and the fixes found live: T1618, T1619, T1620.
 9. T1614, then T1615, then T1616.
 
 ## Implementation strategy
