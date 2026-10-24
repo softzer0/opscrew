@@ -570,6 +570,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/runtime-claude --filter=opscrew` and `pnpm lint`
   - Effort: high
 
+- [ ] T1622 Re-design keeps the plan's own settings, and analysis keeps a folder app's variables to its own files, in `packages/agents/src/design/**`, `packages/detect/src/**`
+  - Owns: those paths (+ tests, fixtures)
+  - Reads: plan.md; data-model.md (the plan's `app` and `dns`); `packages/plan-schema/src/plan.ts`
+  - Depends: T1619
+  - Accept:
+    - **Found live (2026-10-24, the OpsCrew website: two apps, in `sites/landing` and `sites/docs`, deployed to Cloudflare):** re-running `analyze` and `design` for the deployed landing app:
+      - set `dns.www` from `true` to `false`, so the next `provision` would remove the live `www` hostname and its redirect;
+      - added `BROWSER_CHANNEL`, `BROWSER_PATH` (required) and `OPSCREW_GUIDE_DIR` to `app.env`, with a pending `.env.example` code change. Only the repository's own scripts in `scripts/` (screenshots, the docs sync) read them, never the site, and provision would then ask for `BROWSER_PATH`.
+    - **Re-design keeps the plan's own settings:** `dns.www`, and every other plan field a user may set in `opscrew/plan.yaml` that design doesn't derive from the requirements or the facts. Audit which fields design rebuilds and which it must keep; list them in the report.
+    - **For an app in a folder,** detection reads environment variables only from the app's folder and the workspace packages it uses (`facts.workspacePackages`), never from other folders of the repository (its scripts, other apps).
+    - **Tests:** re-design of a plan with `dns.www: true` keeps it, with each other kept field; a monorepo fixture with a root `scripts/` folder that reads variables leaves them out of a folder app's `app.env`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/detect` and `pnpm lint`
+  - Effort: high
+
 - [ ] T1614 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md; plan.md "14."
