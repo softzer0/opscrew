@@ -543,7 +543,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/detect --filter=@opscrew/plan-schema --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1620 The provider lock files go into the deploy-setup pull request, in `packages/agents/src/provision/**`
+- [X] T1620 The provider lock files go into the deploy-setup pull request, in `packages/agents/src/provision/**`
   - Owns: that path (+ tests); `packages/iac-engine/src/**` only if init must change
   - Reads: plan.md "5."; the provision flow (`provision/publish.ts`)
   - Depends: T1605
