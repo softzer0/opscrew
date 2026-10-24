@@ -470,7 +470,6 @@ Effort`.
     - **From T1617d's review:** a test that `opscrew_app_remove` refuses a deployed further app without opening its dialog; MCP's tool suggestions (`tools/status.ts` `nextStep`, `tools/design.ts` ~43) append `andApp(appKey)` like the others, and `tools/interview.ts` ~449 uses `andApp`; `hiddenNames` (`tools/shared.ts` ~252) falls back to the folder names under `opscrew/apps/` when a record can't be read, so it never hides fewer addresses; `app remove` checks the GitHub Pages verification state before asking for the key.
     - **From T1617d's report:** the secrets command's hints (for example "Run `opscrew secrets restore` in a terminal") name `--app`/`--env` where needed, and MCP's status next step names the app's real plan path. `portainer enable|disable|status` and `domain` per app are a follow-up, out of 016 unless a live run needs them.
     - **From T1607's report:** the CLI interview's `nextStep` default and the options table (`cli/src/commands/interview.ts`, `cli/src/ui/options.ts`) handle the server-less targets; the MCP interview tool passes the server-less context through `serverlessTargetsFor` (from `@opscrew/agents`), so MCP offers them.
-    - **From T1610a's report:** `VerifyResult.runbookPath` is optional now (these targets get no runbook). The CLI's verify next steps (`cli/src/commands/verify.ts` ~51) and MCP's deploy tool (`mcp-server/src/tools/deploy.ts` ~1011) must not print it when it is absent.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
@@ -492,7 +491,7 @@ Effort`.
       - the takeover-safe order;
       - the manual Verify step with its page, HTTPS once the certificate is issued;
       - rollbacks by re-run, and destroy with the verification record kept.
-    - **The index and the README's target list** name both. The runbook for these targets covers status, rollback and destroy.
+    - **The index and the README's target list** name both. The runbook for these targets covers status, rollback and destroy. **`opscrew verify` writes it** for these targets, as it does for servers: T1612b's Owns widen to `packages/agents/src/verify/serverless.ts` and `verify/run.ts` for that call, and `VerifyResult.runbookPath` becomes required again (T1610a left it optional), so the CLI's verify next steps and MCP's deploy tool, which print it, need no change.
     - **`docs/guide/security.md`'s token list** gains what T1603 and T1604 added to the permission lists: Account → Workers Scripts → Edit (and the deploy token), Pages and Administration for GitHub Pages, Plan: Read as optional, and whatever the Pages rollback settles (T1604's report).
     - No "before X" framing.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
