@@ -621,6 +621,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server` and `pnpm lint`
   - Effort: high
 
+- [ ] T1624 Cloudflare's answers to a forced rollback, in `packages/connectors/cloudflare/src/**`, `packages/agents/src/promote/**`, `packages/cli/test/live/cloudflare-hosting.test.ts`, `packages/cli/test/live/site-checks.ts`
+  - Owns: those paths (+ tests)
+  - Reads: T1623's block
+  - Depends: T1623
+  - Accept:
+    - **Found live (2026-10-24, run 2 of the Cloudflare hosting pass, and a probe on a throwaway Worker):**
+      - the refusal is `HTTP 400`, error **code 10220**, message "A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: PROBE_SECRET" (no period at the end; several names presumably comma-separated);
+      - the forced `POST …/deployments?force=true` answers `200` with only `{"result": {"id": "<deployment id>"}, "success": true}`: no `created_on`, no `versions`. OpsCrew's schema refused it ("created_on … expected string, received undefined; versions … expected array"), though the version was active.
+    - **The connector** detects the refusal by code 10220 (the wording only as the source of the names, still failing closed as T1623 made it), accepts the short forced answer, and confirms the activation by reading the Worker's latest deployment (the version at 100 %); a mismatch is a plain error.
+    - **The live test's step 2** waits for `www.<host>` to answer over HTTPS (Cloudflare issues the Workers custom domain's own certificate minutes after provision when the hostname is below the zone's first level), logged, up to 15 minutes, before `verify`; the SC-1601 timing stays on the main hostname.
+    - **Tests:** the refusal by code with the probe's exact body; the short forced answer followed by the deployment read; a mismatch.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents --filter=opscrew` and `pnpm lint`
+  - Effort: medium
+
 - [ ] T1615 Live runs (lead), after T1614: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1615)
