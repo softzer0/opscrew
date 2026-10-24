@@ -474,7 +474,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
-- [ ] T1612b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
+- [X] T1612b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ tests)
   - Reads: spec FR-1612; contracts/targets.md; research.md R1, R2 and "Spike results"; quickstart.md
   - Depends: T1610a, T1610b
@@ -619,6 +619,7 @@ Effort`.
   - Cloudflare hosting doesn't plan the zone's minimum TLS (014 sets 1.2 where OpsCrew owns the zone), nor the shared rules' "leave" plan for a record naming another zone (T1608's report). Add both where provision plans the shared rules.
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
+  - The Workers plan (free or paid) is inferred from the plan's monthly cost (`workersPlan` in iac-templates' `serverless/site.ts`, T1612b): consider an explicit plan field set by design.
   - `app remove`'s pre-check repeats `removeApp`'s condition in the CLI and in MCP (T1612a's report): export one check from agents, or let `removeApp` take a `confirm` callback.
   - The guide says how deploy workflows filter pushes by path (T1619): `app.sharedPaths`, root files except Markdown, and GitHub's limit of evaluating only the first 300 changed files of a push (a bigger push may skip a deploy; run the workflow by hand then).
   - Drift compares no generated files for the server-less targets, because `previewDeploymentFiles` (`provision/render.ts`) refuses them (T1610a's report), and `opscrew_render` on a site still says "not available … yet" (T1612a's review). Decide: preview and compare the workflow and Wrangler config for sites, or refuse plainly without "yet".
