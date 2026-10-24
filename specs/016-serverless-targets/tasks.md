@@ -509,7 +509,7 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new file>` and `pnpm lint`
   - Effort: high
 
-- [ ] T1618 Retry the activation of a just-uploaded Worker version, in `packages/iac-templates/src/workflow/cloudflare-workers.ts`
+- [X] T1618 Retry the activation of a just-uploaded Worker version, in `packages/iac-templates/src/workflow/cloudflare-workers.ts`
   - Owns: that path (+ tests, snapshots)
   - Reads: plan.md "5."; research.md R1 "Deploy"
   - Depends: T1606
