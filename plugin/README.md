@@ -22,9 +22,6 @@ and without running any install script. The plugin's MCP server then runs that c
 on your PATH. The download is about 350 MB, most of it the Claude Code binary that the Claude Agent
 SDK brings for the CLI's own AI steps; the MCP server itself never calls a model.
 
-Working on the plugin in a clone (`claude --plugin-dir plugin`)? Claude Code doesn't install
-dependencies for a folder it loads in place, so run `npm ci --ignore-scripts` in `plugin/` first.
-
 ## Skills
 
 | Skill | What it does |
@@ -56,9 +53,38 @@ shell, and the tools show "your Portainer" instead of its address. Removing the 
 data stay in your terminal (`npx opscrew destroy`). See
 [An existing Portainer as a deploy target](../docs/guide/portainer-target.md).
 
+## Data and the services it talks to
+
+The MCP server runs on your computer. It never calls a model and sends nothing to OpsCrew: there is
+no OpsCrew service and no telemetry. What it writes stays in your repository (`opscrew/`) and in
+the local state folder `.opscrew/`, which `opscrew init` offers to add to `.gitignore`.
+
+**Personal data:** the interview can ask for a contact email for certificates and alerts. It is
+stored in `opscrew/requirements.yaml` in your repository and given to your server's certificate
+setup. Domain registrars use your account's own contact; OpsCrew never collects registrant details.
+
+It talks to these services, with the tokens you set in your own environment, and only for the
+steps you run:
+
+- **GitHub** (api.github.com): your repository, pull requests, Actions secrets and workflows.
+- **Hetzner Cloud and DigitalOcean:** servers, firewalls, volumes, object storage, and live prices
+  for the cost estimates.
+- **Cloudflare:** DNS records, TLS settings, rules and Workers; DNS-over-HTTPS lookups
+  (cloudflare-dns.com) when it checks a site.
+- **Porkbun, Namecheap and GoDaddy**, only in the `domain` steps: availability, prices, purchases
+  and nameservers.
+- **Your own servers** over SSH, and **your Portainer** through its API, when you deploy there.
+- **OSV** (api.osv.dev): the scan sends your dependencies' names and versions to look up known
+  vulnerabilities.
+- **npm and container registries** (Docker Hub, ghcr.io and others), read anonymously for the
+  package and image versions OpsCrew pins.
+- **Your live site:** `verify` and `secure` send it HTTP requests and connect to its ports.
+
 ## Local development
 
-Build the CLI (`pnpm --filter opscrew build`) and point the MCP config at it:
+With `claude --plugin-dir ./plugin`, Claude Code loads the folder in place and doesn't install its
+dependencies: run `npm ci --ignore-scripts` in `plugin/` first. Or build the CLI
+(`pnpm --filter opscrew build`) and point the MCP config at it:
 
 ```json
 { "mcpServers": { "opscrew": { "command": "node", "args": ["/path/to/opscrew/packages/cli/dist/opscrew.js", "mcp"] } } }
