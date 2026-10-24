@@ -470,6 +470,7 @@ Effort`.
     - **From T1617d's review:** a test that `opscrew_app_remove` refuses a deployed further app without opening its dialog; MCP's tool suggestions (`tools/status.ts` `nextStep`, `tools/design.ts` ~43) append `andApp(appKey)` like the others, and `tools/interview.ts` ~449 uses `andApp`; `hiddenNames` (`tools/shared.ts` ~252) falls back to the folder names under `opscrew/apps/` when a record can't be read, so it never hides fewer addresses; `app remove` checks the GitHub Pages verification state before asking for the key.
     - **From T1617d's report:** the secrets command's hints (for example "Run `opscrew secrets restore` in a terminal") name `--app`/`--env` where needed, and MCP's status next step names the app's real plan path. `portainer enable|disable|status` and `domain` per app are a follow-up, out of 016 unless a live run needs them.
     - **From T1607's report:** the CLI interview's `nextStep` default and the options table (`cli/src/commands/interview.ts`, `cli/src/ui/options.ts`) handle the server-less targets; the MCP interview tool passes the server-less context through `serverlessTargetsFor` (from `@opscrew/agents`), so MCP offers them.
+    - **From T1610a's report:** `VerifyResult.runbookPath` is optional now (these targets get no runbook). The CLI's verify next steps (`cli/src/commands/verify.ts` ~51) and MCP's deploy tool (`mcp-server/src/tools/deploy.ts` ~1011) must not print it when it is absent.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
@@ -589,6 +590,8 @@ Effort`.
   - Core's `NodeCommandRunner` (`shell: false`) likely can't start npm's and pnpm's `.cmd` shims on Windows, so adapt's lockfile update falls back to a warning there: resolve `.cmd` shims on win32 in core (T1611's report).
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
+  - `versionBuild` and `runningVersions` (T1610a's `status/site.ts`) read a version's build and the running version and the one before; T1610b's promotion and rollback should use them rather than a second parser.
+  - Drift compares no generated files for the server-less targets, because `previewDeploymentFiles` (`provision/render.ts`) refuses them (T1610a's report). Decide whether drift should compare the workflow and Wrangler config too.
 
 ## Dependencies
 
