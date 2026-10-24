@@ -2,9 +2,9 @@
   "name": "opscrew",
   "version": "0.1.0",
   "description": "OpsCrew: the ops crew you didn't hire. Scan your app for security problems, plan a deployment that fits your budget, prepare the code and deploy to your own cloud with Terraform or OpenTofu, with your approval at every step.",
-  "author": { "name": "The OpsCrew Authors" },
+  "author": { "name": "Mihailo Popović" },
   "homepage": "https://opscrew.dev",
-  "repository": "https://github.com/opscrew/opscrew",
+  "repository": "https://github.com/softzer0/opscrew",
   "license": "Apache-2.0",
   "keywords": [
     "devops",

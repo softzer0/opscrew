@@ -1,7 +1,7 @@
 {
   "name": "opscrew",
   "owner": {
-    "name": "The OpsCrew Authors"
+    "name": "Mihailo Popović"
   },
   "metadata": {
     "description": "OpsCrew plugins for Claude Code: security scans, deployment planning and deploys to your own cloud."
