@@ -607,6 +607,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
+- [ ] T1623 A rollback across a secret change, in `packages/connectors/cloudflare/src/**`, `packages/agents/src/promote/**`, `packages/cli/src/commands/promote.ts`, `packages/mcp-server/src/tools/environments.ts`, `docs/guide/cloudflare-hosting.md`, `packages/cli/test/live/cloudflare-hosting.test.ts`
+  - Owns: those paths (+ tests); the Cloudflare error mapping wherever it lives (connector or agents)
+  - Reads: spec US4 scenario 4, SC-1604; T1610b's note on `force`
+  - Depends: T1610b, T1614
+  - Accept:
+    - **Found live (2026-10-24, run 1 of the Cloudflare hosting pass, step S3):** activating an older version of a Worker after a secret changed fails with Cloudflare's "A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: STRIPE_SECRET_KEY." The older version runs with the secret values it was uploaded with, so forcing it can bring back a value the user rotated on purpose (a leaked key).
+    - **By default OpsCrew refuses such a rollback** with a plain message: the version predates a change to the named secrets, it would run with their old values, and how to go ahead if those old values are still safe. Nothing is changed.
+    - **`opscrew promote --version <id> --allow-old-secrets`** (and the MCP tool's matching input) goes ahead: the approval text names the secrets Cloudflare listed and says the version runs with their old values, the approval's hash covers that choice, and `deployWorkerVersion` sends `force=true` only then. Without the flag the request never sends `force`.
+    - **Error hints:** OpsCrew's "the token may be mistyped, expired or revoked, or lack a permission" hint is added only to Cloudflare's authentication and permission errors, never to other refusals such as this one.
+    - **The guide's rollback section** says this; the live test's S3 checks the refusal (naming the secret) and then the rollback with `--allow-old-secrets`, serving the old version.
+    - **Tests:** the refusal, the flag's approval text and hash, `force=true` only with the flag, and the hint only on auth errors.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server` and `pnpm lint`
+  - Effort: high
+
 - [ ] T1615 Live runs (lead), after T1614: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1615)
