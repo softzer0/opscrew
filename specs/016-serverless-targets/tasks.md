@@ -607,7 +607,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
-- [ ] T1623 A rollback across a secret change, in `packages/connectors/cloudflare/src/**`, `packages/agents/src/promote/**`, `packages/cli/src/commands/promote.ts`, `packages/mcp-server/src/tools/environments.ts`, `docs/guide/cloudflare-hosting.md`, `packages/cli/test/live/cloudflare-hosting.test.ts`
+- [X] T1623 A rollback across a secret change, in `packages/connectors/cloudflare/src/**`, `packages/agents/src/promote/**`, `packages/cli/src/commands/promote.ts`, `packages/mcp-server/src/tools/environments.ts`, `docs/guide/cloudflare-hosting.md`, `packages/cli/test/live/cloudflare-hosting.test.ts`
   - Owns: those paths (+ tests); the Cloudflare error mapping wherever it lives (connector or agents)
   - Reads: spec US4 scenario 4, SC-1604; T1610b's note on `force`
   - Depends: T1610b, T1614
