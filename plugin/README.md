@@ -8,11 +8,11 @@ needed for the plugin.
 ## Install
 
 ```bash
-claude plugin marketplace add opscrew/opscrew
+claude plugin marketplace add softzer0/opscrew
 claude plugin install opscrew@opscrew
 ```
 
-Or inside a Claude Code session: `/plugin marketplace add opscrew/opscrew`, then
+Or inside a Claude Code session: `/plugin marketplace add softzer0/opscrew`, then
 `/plugin install opscrew@opscrew`.
 
 The plugin starts the OpsCrew MCP server with `npx -y opscrew@0.1.0 mcp`, so Node.js 22+ must be
