@@ -619,6 +619,7 @@ Effort`.
   - Cloudflare hosting doesn't plan the zone's minimum TLS (014 sets 1.2 where OpsCrew owns the zone), nor the shared rules' "leave" plan for a record naming another zone (T1608's report). Add both where provision plans the shared rules.
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
+  - **Found live (2026-10-24):** `opscrew provision` leaves the user's checkout on its `opscrew/deploy-setup` branch after committing there, so the user's next commit lands on that branch instead of `main` (it happened on the website). Provision should switch back to the branch the user was on (keeping their uncommitted changes), or say plainly which branch the checkout is on now.
   - The Workers plan (free or paid) is inferred from the plan's monthly cost (`workersPlan` in iac-templates' `serverless/site.ts`, T1612b): consider an explicit plan field set by design.
   - `app remove`'s pre-check repeats `removeApp`'s condition in the CLI and in MCP (T1612a's report): export one check from agents, or let `removeApp` take a `confirm` callback.
   - The guide says how deploy workflows filter pushes by path (T1619): `app.sharedPaths`, root files except Markdown, and GitHub's limit of evaluating only the first 300 changed files of a push (a bigger push may skip a deploy; run the workflow by hand then).
