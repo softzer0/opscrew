@@ -65,7 +65,7 @@ Run these in your app's repository, in order:
 
 To install it once instead of fetching it with `npx` each time, run `npm install -g opscrew`, then `opscrew init`, `opscrew analyze` and so on.
 
-In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every plan still waits for your approval: `/plugin marketplace add softzer0/opscrew`, then `/plugin install opscrew@opscrew`. See [the plugin's README](plugin/README.md).
+In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every plan still waits for your approval: `/plugin marketplace add softzer0/opscrew`, then `/plugin install opscrew@opscrew`. See [the plugin's README](https://github.com/softzer0/opscrew/tree/main/plugin).
 
 ## After the first deploy
 
