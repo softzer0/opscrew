@@ -43,7 +43,7 @@ describe.skipIf(MISSING.length > 0)(
     : "live several apps: two static sites of one repository on Cloudflare's hosting",
   () => {
     const run: LiveRun = new LiveRun({ label: "several apps", name: "apps", settings: SETTINGS });
-    const first = new AppEnvironments(run, "");
+    const first = new AppEnvironments(run, "", { firstOfSeveral: true });
     const docs = new AppEnvironments(run, "", { app: KEY });
     const { log } = run;
     let firstPlan: DeployPlan | undefined;
@@ -98,7 +98,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.deploy("the second app's first deploy", [workflowOf(docsPlan as DeployPlan)]);
         await expectHeaders(run, `https://${run.appHost}/`, { timeoutMs: minutes(10) });
         await expectHeaders(run, `https://${docsHost()}/`, { timeoutMs: minutes(10) });
-        await run.opscrewOk("verify");
+        await run.opscrewOk("verify", "--app", ".");
         await run.opscrewOk("verify", "--app", KEY);
         const firstSecrets = await first.expectSecretsPlaced("prod");
         const docsSecrets = await docs.expectSecretsPlaced("prod");
@@ -130,7 +130,7 @@ describe.skipIf(MISSING.length > 0)(
         if (record !== undefined) await docs.expectSecretsGone("prod", record);
         await expectHeaders(run, `https://${run.appHost}/`);
         await first.expectSecretsPlaced("prod");
-        await run.opscrewOk("verify");
+        await run.opscrewOk("verify", "--app", ".");
         await run.expectSharedCloudflare("the second app's destroy");
       },
     );

@@ -337,6 +337,8 @@ export class AppEnvironments {
       restoreMain?: boolean;
       /** A further app of the repository (`opscrew app add <key>`): its key. */
       app?: string;
+      /** The first app of a repository with several: its commands name it with `--app .`. */
+      firstOfSeveral?: boolean;
     } = {},
   ) {}
 
@@ -350,9 +352,13 @@ export class AppEnvironments {
     return this.run.readPlan(environment, this.options.app);
   }
 
-  /** `--app <key>` for a further app's commands; nothing for the repository's first app. */
+  /**
+   * `--app <key>` for a further app's commands, `--app .` for the first app of a repository with
+   * several, and nothing for a repository's only app.
+   */
   get appArgs(): string[] {
-    return this.options.app === undefined ? [] : ["--app", this.options.app];
+    if (this.options.app !== undefined) return ["--app", this.options.app];
+    return this.options.firstOfSeveral === true ? ["--app", "."] : [];
   }
 
   /**
