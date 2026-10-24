@@ -30,7 +30,8 @@ export interface RenderContext {
     zoneId: string;
     /**
      * Cloudflare account id. Required when the plan uses a Cloudflare Tunnel (an own server in
-     * tunnel mode, or a Portainer subdomain): tunnels and Access belong to the account.
+     * tunnel mode, or a Portainer subdomain) or Cloudflare's hosting (a Worker): tunnels, Access
+     * and Workers belong to the account.
      */
     accountId?: string;
     /**

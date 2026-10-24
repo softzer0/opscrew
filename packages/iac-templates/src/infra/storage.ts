@@ -5,6 +5,7 @@ import type { RenderContext, RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
 import { accountId } from "./cloudflare";
 import {
+  besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   type ProviderRequirement,
@@ -184,11 +185,10 @@ function s3Main(
  * never an infrastructure root of its own.
  */
 export function storageRootDir(plan: Pick<DeployPlan, "app" | "infra" | "environment">): string {
-  const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
   const name = ["storage", plan.app.key, plan.environment?.name]
     .filter((part) => part !== undefined)
     .join("-");
-  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}${name}`;
+  return besideInfraDir(plan, name);
 }
 
 /**

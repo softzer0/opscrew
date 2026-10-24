@@ -1,4 +1,4 @@
-import type { ProjectFacts } from "@opscrew/plan-schema";
+import { cleanRepoPath, type ProjectFacts } from "@opscrew/plan-schema";
 import {
   IMAGES,
   PACKAGE_MANAGERS,
@@ -427,18 +427,9 @@ function buildValues(facts: ProjectFacts): { lines: string[]; mounts: string } {
   };
 }
 
-/** Normalised repo-relative directory (`.` for the repository root). */
-function normaliseDir(path: string): string {
-  const dir = path
-    .replace(/^(?:\.\/)+/, "")
-    .replace(/\/+$/, "")
-    .replace(/\/\.$/, "");
-  return dir === "" ? "." : dir;
-}
-
 /** Repo-relative directory of the app (`facts.appDir`, normalised; `.` for the repository root). */
 export function appDirectory(facts: ProjectFacts): string {
-  return normaliseDir(facts.appDir);
+  return cleanRepoPath(facts.appDir);
 }
 
 const PLAIN_PATH = /^[A-Za-z0-9._/@+-]+$/;

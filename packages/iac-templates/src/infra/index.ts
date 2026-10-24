@@ -7,6 +7,7 @@ import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   alignedArguments,
+  besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   output,
@@ -393,7 +394,7 @@ export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[
   const root = rootModule(plan, ctx);
   if (root === undefined) return [];
   const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const modulesDir = `${dir.slice(0, dir.lastIndexOf("/") + 1)}modules`;
+  const modulesDir = besideInfraDir(plan, "modules");
   const files: RenderedFile[] = [
     { path: `${dir}/versions.tf`, content: root.versions, kind: "infra" },
     { path: `${dir}/main.tf`, content: root.main, kind: "infra" },

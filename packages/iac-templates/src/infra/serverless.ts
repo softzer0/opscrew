@@ -5,6 +5,7 @@ import type { RenderContext, RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
 import { accountId, WWW_VARIABLE, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
+  besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   moduleBlock,
@@ -179,9 +180,8 @@ export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
  * GitHub Pages has one site per repository, so an app has one such root for its environments.
  */
 export function pagesVerificationRootDir(plan: Pick<DeployPlan, "app" | "infra">): string {
-  const infraDir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
   const key = plan.app.key;
-  return `${infraDir.slice(0, infraDir.lastIndexOf("/") + 1)}github-pages-verification${key === undefined ? "" : `-${key}`}`;
+  return besideInfraDir(plan, `github-pages-verification${key === undefined ? "" : `-${key}`}`);
 }
 
 /**

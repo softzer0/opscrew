@@ -1,5 +1,12 @@
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { AppEnvironment } from "../runtime-dir";
 import { planFilePath } from "../workflow/shared";
+
+/** The folder `name` beside `plan.infra.dir` (in its parent folder), with forward slashes. */
+export function besideInfraDir(plan: Pick<DeployPlan, "infra">, name: string): string {
+  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return `${dir.slice(0, dir.lastIndexOf("/") + 1)}${name}`;
+}
 
 /** First lines of every root-module file, naming the plan's file ({@link planFilePath}). */
 export function rootHeader(plan: AppEnvironment): string {

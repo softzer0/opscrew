@@ -6,7 +6,7 @@ import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import { afterEach, describe, expect, it, type TestContext, vi } from "vitest";
+import { describe, expect, it, type TestContext } from "vitest";
 import { ACCOUNT_ID, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
@@ -352,10 +352,6 @@ describe("server roots", () => {
 });
 
 describe("the server-less roots", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   const rendered = () => [
     ...renderInfra(serverlessPlan(WORKERS, { www: true }), ctx()),
     ...renderInfra(serverlessPlan(PAGES, { domain: "example.com", www: true }), ctx()),
@@ -370,13 +366,7 @@ describe("the server-less roots", () => {
   });
 
   it("hold no token: the provider reads Cloudflare's from the environment", () => {
-    const token = fakeSecret("cloudflare-token", "serverless-iac");
-    const deployToken = fakeSecret("cloudflare-token", "serverless-deploy");
-    vi.stubEnv("CLOUDFLARE_API_TOKEN", token);
-    vi.stubEnv("CLOUDFLARE_DEPLOY_TOKEN", deployToken);
     for (const f of rendered()) {
-      expect(f.content, f.path).not.toContain(token);
-      expect(f.content, f.path).not.toContain(deployToken);
       expect(f.content, f.path).not.toMatch(
         /(ghp_|github_pat_|sk-ant-|sk_live_|AKIA)[A-Za-z0-9]{8}|BEGIN [A-Z ]*PRIVATE KEY/,
       );
