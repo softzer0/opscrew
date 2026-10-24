@@ -37,6 +37,8 @@ Add a section for the new version at the top of [CHANGELOG.md](../CHANGELOG.md),
 - link the guide page where a feature has one;
 - include the Claude Code plugin's changes.
 
+The GitHub release's notes are made from this section (step 5).
+
 ## 3. Bump the version and tag it
 
 1. Set `version` in `packages/cli/package.json`.
@@ -71,7 +73,20 @@ npx -y opscrew@latest --version
 To run the workflow again for the same version, first remove the staged one with
 `npm stage reject <stage-id>`: npm refuses a version that is already staged.
 
-## 5. Update the Claude Code plugin
+## 5. Publish the GitHub release
+
+Once npm has the version, publish its release on GitHub from the existing tag, with the
+changelog's section as its notes:
+
+```bash
+node scripts/release-notes.mjs <version> > release-notes.md
+gh release create v<version> --verify-tag --title "OpsCrew <version>" --notes-file release-notes.md
+rm release-notes.md
+```
+
+The script makes the section's links absolute, at the tag, and adds the compare link.
+
+## 6. Update the Claude Code plugin
 
 Do this after npm has the version: the plugin's lockfile records its integrity from the registry.
 
