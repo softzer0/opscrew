@@ -2,7 +2,7 @@
 import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostKeyFingerprint, parseDotenv, providerProfile } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
@@ -323,6 +323,8 @@ export class LiveRun {
   appName: string | undefined;
   zone: CloudflareZone | undefined;
   hostnames: string[] = [];
+  /** The app's Workers on Cloudflare's hosting (every name it had in the run), for the leftover checks. */
+  workers: string[] = [];
   cloudflareBefore: CloudflareAppResources | undefined;
   destroyed = false;
   /** The zone's two entrypoint rulesets before the run (and its seeded rules); the first app only. */
@@ -447,6 +449,26 @@ export class LiveRun {
     });
   }
 
+  /**
+   * Adds the Worker `name` to the run's ({@link workers}), whose leftovers the cleanup deletes.
+   * Before the zone's snapshot the snapshot itself notes a Worker of that name the account had
+   * already (the cleanup keeps it); after it, the account must not have one: the run stops, so
+   * the cleanup only ever deletes Workers this run created.
+   */
+  async addWorker(name: string): Promise<void> {
+    if (this.workers.includes(name)) return;
+    const { zone } = this;
+    if (
+      zone !== undefined &&
+      (await this.cloudflare.workerDeployments(zone.accountId, name)) !== undefined
+    ) {
+      throw new Error(
+        `A Worker named ${name} is already in the Cloudflare account; this test would take it over. Delete or rename it, then run the test again.`,
+      );
+    }
+    this.workers.push(name);
+  }
+
   ipv4(): string {
     return (this.server as ThrowawayServer).ipv4;
   }
@@ -459,17 +481,18 @@ export class LiveRun {
     return this.appName as string;
   }
 
-  /** The project's paths: prod's, or `environment`'s. */
-  paths(environment?: string) {
+  /** The project's paths: prod's, or `environment`'s; of the further app `app` when given. */
+  paths(environment?: string, app?: string) {
     return resolveProjectPaths(this.repo, {
       env: this.env,
       ...(environment === undefined ? {} : { environment }),
+      ...(app === undefined ? {} : { app }),
     });
   }
 
-  /** `opscrew/plan.yaml`, or `environment`'s plan. */
-  readPlan(environment?: string): Promise<DeployPlan> {
-    return readArtifact("plan", this.paths(environment).files.plan);
+  /** `opscrew/plan.yaml`, or `environment`'s plan; of the further app `app` when given. */
+  readPlan(environment?: string, app?: string): Promise<DeployPlan> {
+    return readArtifact("plan", this.paths(environment, app).files.plan);
   }
 
   async git(...args: string[]): Promise<string> {
@@ -589,13 +612,13 @@ export class LiveRun {
 
   /**
    * Adds the values OpsCrew generated for the app's services and secrets (database passwords,
-   * Garage's key) to the scrubber, prod's or `environment`'s; none kept is a finding when the plan
-   * has a service.
+   * Garage's key) to the scrubber, prod's or `environment`'s (of the further app `app` when
+   * given); none kept is a finding when the plan has a service.
    */
-  async rememberGeneratedValues(environment?: string): Promise<void> {
-    const values = await readGeneratedValues(this.paths(environment));
+  async rememberGeneratedValues(environment?: string, app?: string): Promise<void> {
+    const values = await readGeneratedValues(this.paths(environment, app));
     if (values === undefined) {
-      if (generatesValues(await this.readPlan(environment))) {
+      if (generatesValues(await this.readPlan(environment, app))) {
         this.findings.push(
           `OpsCrew kept no generated values for ${this.app()}${environment === undefined ? "" : ` (${environment})`}, so the leak search misses its services' passwords`,
         );
@@ -615,19 +638,25 @@ export class LiveRun {
    * the repository, never printed), and the throwaway repository's `main` with a fresh copy of the
    * example (`commit` as its message) and without earlier pull requests or branches. The second
    * app must be another example than the first, so none of its names (stacks, tunnel, Access)
-   * starts with the first app's.
+   * starts with the first app's. With `folders` (a repository of several apps), each example goes
+   * into its folder instead; `overlay` is a folder copied over the example afterwards.
    */
   async prepareRepo(options: {
     commit: string;
     env?: Record<string, string | undefined>;
     drop?: readonly string[];
+    folders?: Readonly<Record<string, string>>;
+    overlay?: string;
   }): Promise<void> {
     const { settings } = this.options;
     expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
-    if (!isExample(settings.app)) {
-      throw new Error(
-        `OPSCREW_E2E_APP="${settings.app}" is not an example under examples/ (this test deploys examples only).`,
-      );
+    const folders = options.folders ?? { ".": settings.app };
+    for (const example of Object.values(folders)) {
+      if (!isExample(example)) {
+        throw new Error(
+          `"${example}" is not an example under examples/ (this test deploys examples only; check OPSCREW_E2E_APP).`,
+        );
+      }
     }
     if (this.parent !== undefined && settings.app === this.parent.options.settings.app) {
       throw new Error(
@@ -667,8 +696,11 @@ export class LiveRun {
     this.scrubber.add(await readFile(this.keyFile, "utf8"), "test-private-key");
     this.publicKey = (await readFile(`${this.keyFile}.pub`, "utf8")).trim();
 
-    this.log(`pushing examples/${settings.app} to the throwaway repository`);
-    await materializeFixture(join(EXAMPLES, settings.app), this.repo);
+    for (const [folder, example] of Object.entries(folders)) {
+      this.log(`pushing examples/${example} to the throwaway repository (${folder})`);
+      await materializeFixture(join(EXAMPLES, example), join(this.repo, folder));
+    }
+    if (options.overlay !== undefined) await materializeFixture(options.overlay, this.repo);
     const appEnv = settings.appEnvFile ? await readFile(settings.appEnvFile, "utf8") : "";
     await writeFile(join(this.work, "production.env"), appEnv);
     // Stand-in values, but still never to be shown or committed (8+ characters: shorter ones
@@ -821,7 +853,12 @@ export class LiveRun {
     this.log(`this run serves the app on its own hostname ${this.appHost}`);
     this.zone = zone;
     this.hostnames = hostnames(zone);
-    this.cloudflareBefore = await this.cloudflare.appResources(zone, this.app(), this.hostnames);
+    this.cloudflareBefore = await this.cloudflare.appResources(
+      zone,
+      this.app(),
+      this.hostnames,
+      this.workers,
+    );
     this.tlsBefore = await this.cloudflare.zoneTls(zone, this.hostnames);
     if (this.parent === undefined) {
       this.sharedBefore = await this.cloudflare.sharedEntrypoints(zone);
@@ -868,15 +905,18 @@ export class LiveRun {
     );
   }
 
-  /** The checks after every provision and destroy of docs/e2e.md ("Your own server", step 2). */
-  async expectSharedCloudflare(what: string): Promise<void> {
+  /**
+   * The checks after every provision and destroy of docs/e2e.md ("Your own server", step 2).
+   * `further` are the plans of the repository's further apps that are live (`opscrew app add`).
+   */
+  async expectSharedCloudflare(what: string, further: readonly DeployPlan[] = []): Promise<void> {
     const zone = this.zone as CloudflareZone;
     const now = await this.cloudflare.sharedEntrypoints(zone);
     expect(
       userRules(now),
       `the zone's own rules (the seeded ones among them) are unchanged after ${what}`,
     ).toEqual(this.userRulesSeeded);
-    const apps: AppRules[] = [];
+    const apps: AppRules[] = further.map(appRules);
     for (const app of [this, ...this.children]) {
       if (app.appName !== undefined && !app.destroyed) apps.push(appRules(await app.readPlan()));
     }
@@ -1056,6 +1096,16 @@ export class LiveRun {
     what: string,
     workflows: readonly string[] = [DEPLOY_WORKFLOW],
   ): Promise<number | undefined> {
+    const sha = await this.mergeDeploySetup(what);
+    return sha === undefined ? undefined : this.expectRuns(sha, workflows, what);
+  }
+
+  /**
+   * Merges the deploy-setup pull request the last provision opened, with `main` checked out
+   * again, and returns the merge commit; `undefined` when provision committed nothing (it stayed
+   * on `main`). A deploy branch without an open pull request stops the run.
+   */
+  async mergeDeploySetup(what: string): Promise<string | undefined> {
     const head = await this.git("rev-parse", "--abbrev-ref", "HEAD");
     const pull = head.startsWith("opscrew/deploy-setup")
       ? await this.github.openPullRequest(head)
@@ -1072,12 +1122,10 @@ export class LiveRun {
       this.log(`provision committed nothing (${what})`);
       return undefined;
     }
-    this.log(
-      `merging pull request #${pull} (${what}) and waiting for its deploy run (up to 30 minutes)`,
-    );
+    this.log(`merging pull request #${pull} (${what})`);
     const sha = await this.github.merge(pull);
     await this.checkoutMain();
-    return this.expectRuns(sha, workflows, what);
+    return sha;
   }
 
   /** Waits for the run of each of `workflows` of commit `sha` to succeed; the first one's id. */
@@ -1087,6 +1135,7 @@ export class LiveRun {
     what: string,
   ): Promise<number> {
     const ids: number[] = [];
+    this.log(`waiting for the run of ${workflows.join(", ")} (up to 30 minutes each)`);
     for (const workflow of workflows) {
       const run = await this.github.waitForDeploy({ headSha: sha, workflow });
       ids.push(this.expectDeployed(run, `${what}, ${workflow}`));
@@ -1116,25 +1165,28 @@ export class LiveRun {
   }
 
   /**
-   * A change as a user merges one: {@link CHANGE_FILE} written on a branch of its own, a pull
-   * request `title`, its merge, and the merge commit's run of each of `workflows` (prod's by
-   * default), which must succeed. Returns the first run's id.
+   * A change as a user merges one: `file` ({@link CHANGE_FILE} by default, a path in the
+   * repository) written on a branch of its own, a pull request `title`, its merge, and the merge
+   * commit's run of each of `workflows` (prod's by default), which must succeed. Returns the
+   * first run's id.
    */
   async mergeChange(
     title: string,
     workflows: readonly string[] = [DEPLOY_WORKFLOW],
+    file = CHANGE_FILE,
   ): Promise<number> {
     const branch = `e2e/change-${this.runId}-${Date.now().toString(36)}`;
     await this.git("checkout", "-q", "-b", branch);
+    await mkdir(dirname(join(this.repo, file)), { recursive: true });
     await writeFile(
-      join(this.repo, CHANGE_FILE),
+      join(this.repo, file),
       `${title} (run ${this.runId}, ${new Date().toISOString()}).\n`,
     );
-    await this.git("add", CHANGE_FILE);
+    await this.git("add", file);
     await this.git("commit", "-q", "-m", title);
     await this.git("push", "-q", "-u", "origin", branch);
     const number = await this.github.createPullRequest(title, branch);
-    this.log(`merging the change #${number} and waiting for its deploy run (up to 30 minutes)`);
+    this.log(`merging the change #${number}`);
     const sha = await this.github.merge(number);
     await this.checkoutMain();
     return this.expectRuns(sha, workflows, title);
@@ -1160,11 +1212,20 @@ export class LiveRun {
       this.zone as CloudflareZone,
       this.app(),
       this.hostnames,
+      this.workers,
     );
     expect(
       cloudflareLeft(now, this.cloudflareBefore as CloudflareAppResources),
       "nothing of the app is left in Cloudflare",
-    ).toEqual({ records: [], tunnels: [], apps: [], policies: [], serviceTokens: [] });
+    ).toEqual({
+      records: [],
+      tunnels: [],
+      apps: [],
+      policies: [],
+      serviceTokens: [],
+      workers: [],
+      customDomains: [],
+    });
   }
 
   /**
@@ -1249,7 +1310,7 @@ export class LiveRun {
           await attempt(`remove the Cloudflare resources of ${appName}`, async () =>
             app.cloudflare.removeCreated(
               zone,
-              await app.cloudflare.appResources(zone, appName, app.hostnames),
+              await app.cloudflare.appResources(zone, appName, app.hostnames, app.workers),
               cloudflareBefore,
             ),
           );

@@ -342,6 +342,19 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     ).toEqual({});
   });
 
+  it("puts a site's hostnames into the probe block and its www into the redirect, never strict TLS", () => {
+    const dns = { provider: "cloudflare", domain: "e2e-abc.example.com", www: true };
+    const site = { target: { provider: "cloudflare-workers" }, dns };
+    expect(appRules({ ...site, security: { wafCustomRules: true } })).toEqual({
+      "opscrew-block-probes": ["e2e-abc.example.com", "www.e2e-abc.example.com"],
+      "opscrew-www-redirect": ["www.e2e-abc.example.com"],
+    });
+    expect(
+      appRules({ ...site, dns: { ...dns, www: false }, security: { wafCustomRules: false } }),
+    ).toEqual({});
+    expect(appRules({ target: { provider: "github-pages" }, dns })).toEqual({});
+  });
+
   it("cleans up only what the run left: its seeded rules and OpsCrew's rules holding only its hostnames", () => {
     const run = {
       hostnames: ["e2e-abc.example.com", "e2e-abc-b.example.com"],

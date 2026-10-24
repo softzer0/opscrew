@@ -1307,6 +1307,239 @@ OPSCREW_E2E_LOCAL_RUNNER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=
 Not measured yet: about 30 to 45 minutes, with no server. The two builds run on GitHub's machines
 (about 10 Actions minutes); the deploy jobs run on this computer.
 
+## Cloudflare's hosting
+
+`packages/cli/test/live/cloudflare-hosting.test.ts`, with `OPSCREW_E2E_CLOUDFLARE_HOSTING=1`, runs
+quickstart.md "1.", "2.", "4." and "5." of feature 016 on Cloudflare's hosting (Workers with static
+assets), on the run's own hostnames in the e2e zone. No server is created. It deploys two apps,
+each in a throwaway repository of its own: `examples/static-vite` in `OPSCREW_E2E_GITHUB_REPO` on
+`e2e-<run id>.<zone>`, and `examples/astro-ssr` in `OPSCREW_E2E_GITHUB_REPO_B` on
+`e2e-<run id>-b.<zone>`. OpsCrew gets its own Cloudflare token (`CLOUDFLARE_API_TOKEN`) and the
+deploy token (`OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`), as a user's run does.
+
+The static site:
+
+1. **Designed:** the example goes to `main` as above, and the test notes the repository's GitHub
+   environments. Then `init --fix`, `analyze --no-ai`, `interview --answers`
+   (`provider: cloudflare-workers` on the run's hostname) and `design`, which must plan a static
+   site with preview URLs and `workers.dev` off. As a user edits the plan, the test turns `dns.www`
+   on, so that `www.` is a custom domain too and OpsCrew's redirect rule is covered. The zone's
+   rules and records are noted, and a rule of the user's own is seeded in two phases, as for
+   [your own server](#your-own-server).
+2. **Provisioned and deployed:** `provision` until done, the merge of the deploy-setup pull request
+   and its workflow run, then the site's health route through Cloudflare. The time from the start
+   of `provision` to that answer is logged; over 10 minutes is a finding that fails the run at the
+   end (SC-1601). Then `verify`, and the zone's rules: the user's own unchanged, OpsCrew's listing
+   the site's hostnames in the probe block and `www.` in the redirect.
+3. **Headers and `www`:** OpsCrew's four headers on `/` and on a path that is no file (the
+   single-page app's fallback). `https://www.<host>/opscrew/e2e?q=1` must answer 301 to the same
+   path and query on the domain. A second `provision --plan-only --yes` right after the first must
+   have nothing to approve, the redirect rule included (Cloudflare may echo defaults in a rule's
+   parameters).
+4. **A change:** a merged change adds `public/opscrew-e2e-change.txt`, which the site must serve
+   within 5 minutes. `status` must then name a new running version and offer the one before as its
+   rollback. Cloudflare's deployments must serve the version `status` names, and its message must
+   name the run and the build's SHA-256.
+5. **A rollback:** `promote --to prod --version <the one before>` stops at its approval (exit 1);
+   with `--approve <hash>` it activates that version, and the site must serve the version before
+   the change again (the change's file answers 404, or the single-page app). The time from the approved run's start is logged; over a minute is a finding
+   (SC-1604).
+6. **A Worker rename:** as a user renames the app's Worker, the test sets `target.worker` in
+   `opscrew/plan.yaml` to `<worker>-r`. `provision` replaces the Worker (its plan deletes the old
+   one, so it also needs the app's name, `--confirm`), and the merge of its pull request deploys the
+   new Worker. The account must have no Worker of the new name before (the run stops otherwise,
+   as for staging's Worker, so the cleanup only ever deletes Workers the run created). The old
+   Worker must be gone, and every custom domain on the site's hostnames must
+   belong to the new one.
+7. **Promotion:** `env add staging --target cloudflare-workers --from main`, then staging's
+   provision and deploy, on its own hostname and Worker. Then `env set prod --from staging` and
+   prod's provision, whose pull request (prod's promoted workflow) is merged without a run. A merged
+   change deploys staging; `promote --to prod`, approved by its hash, starts prod's workflow with
+   staging's run and SHA-256. Prod's running version must name the same SHA-256 as staging's, and
+   prod must serve what staging serves.
+8. **Destroy:** `destroy --env staging --confirm <app>-staging`, then prod's. Staging's Worker must
+   be gone; then nothing of the site may be left in Cloudflare (no Worker of the run, no custom
+   domain or record on its hostnames), no deploy secret at GitHub, and the zone's rules must be as
+   before the run.
+
+The server-rendered app:
+
+- **S1. Designed:** the example goes to repository B with the Docker pass's page
+  `src/pages/secret.astro` (`packages/cli/test/e2e/__fixtures__/astro-secret`), which shows the
+  SHA-256 of `STRIPE_SECRET_KEY`, never its value. The production values hold a stand-in for it.
+  Then as above, with `adapt --no-ai --yes` (its pull request merged), which adds
+  `@astrojs/cloudflare`. The plan must render on the server and list the variable.
+- **S2. Provisioned and deployed,** with `verify`. Two requests to `/` 1.5 seconds apart must show
+  two render times. OpsCrew's headers must be on `/` (the Worker's answer) and on `/favicon.svg` (a
+  static file), and `/secret` must show the SHA-256 of the value.
+- **S3. A new value:** the test writes another stand-in, and `provision` must set GitHub's
+  `OPSCREW_ENV_STRIPE_SECRET_KEY` again. After a merged change, `/secret` shows the new value's
+  SHA-256. Then the rollback of step 5, to the version that ran before the new value (noted
+  first), with `promote --version <it>`. Cloudflare may refuse a
+  version older than a secret change unless the deployment is forced (T1610b's note): when the
+  approved rollback fails, the step fails with OpsCrew's output and says that `deployWorkerVersion`
+  then needs Cloudflare's `force`. When it passes, the rolled-back version must serve its own
+  (old) secret; anything else is a finding.
+- **S4. Destroyed:** nothing of it may be left at Cloudflare or GitHub.
+
+9. **Nothing leaked,** as for environments, over both apps: no token (the deploy token included)
+   and no value of the SSR app's secret in any CLI output, commit (every branch of both
+   repositories), pull request of the run, audit entry, saved plan, state file, report or
+   Cloudflare record (SC-1602).
+
+The steps of each app stop at its first failure; the cleanup always runs. It runs `opscrew
+destroy` for each environment not destroyed yet (the SSR app first), within the budget of
+[environments](#environments-and-promotion). Then, through the APIs: the GitHub environments that
+appeared during the run and the deploy secrets OpsCrew's records name; in Cloudflare, the run's
+Workers (under every name they had), the custom domains and records on the run's hostnames,
+OpsCrew's shared rules that list only them, and the seeded rules; then both repositories are reset.
+
+If a run was interrupted, delete by hand: in Cloudflare's **Workers & Pages**, the Workers each
+plan's `target.worker` names (the example's app name, with `-r` after the rename and `-staging`
+for staging), which takes their custom domains with them; the records on the run's hostnames
+`e2e-<run id>…` and those hostnames in OpsCrew's shared rules; and in both repositories the Actions
+secrets `OPSCREW_CLOUDFLARE_API_TOKEN`, `OPSCREW_CLOUDFLARE_ACCOUNT_ID` and `OPSCREW_ENV_…` (with
+staging's prefix too).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_CLOUDFLARE_HOSTING` | `1` runs this test. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_GITHUB_TOKEN` | Two throwaway repositories and a token for both, as for environments (staging gets a GitHub environment). |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for your own server, plus Account → Workers Scripts → Edit for the zone's account: OpsCrew's own token creates the Workers and their custom domains, and the test lists them (and deletes what a failed destroy left). |
+| `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN` | A second token with only Account → Workers Scripts → Edit for the same account: the deploy token OpsCrew stores in GitHub ([the guide](guide/cloudflare-hosting.md#the-tokens)). |
+| `OPSCREW_E2E_DOMAIN` | As above. |
+
+Requirements: `git`, OpenTofu or Terraform, Node.js 22.9+ and npm (`adapt` updates the SSR app's
+lockfile on this computer).
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_CLOUDFLARE_HOSTING=1 OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN=… \
+  OPSCREW_E2E_DOMAIN=e2e.example.com npx vitest run test/live/cloudflare-hosting.test.ts
+```
+
+Not measured yet: about 90 to 120 minutes, with no server and no cost on Workers Free. It makes
+about ten deploy runs, each a few Actions minutes.
+
+## GitHub Pages
+
+`packages/cli/test/live/github-pages.test.ts`, with `OPSCREW_E2E_GITHUB_PAGES=1`, runs quickstart.md
+"3." and "4." of feature 016: `examples/hugo-site` on GitHub Pages in the public throwaway
+repository `OPSCREW_E2E_GITHUB_REPO_C`, on the run's own hostname `e2e-<run id>.<zone>`. OpsCrew
+gets the Cloudflare token for the DNS records.
+
+1. **Designed:** the example goes to `main` as above. The test stops unless the repository is
+   public and has no GitHub Pages site yet (turn one off in its Settings → Pages). Then `init
+   --fix`, `analyze --no-ai`, `interview --answers` (`provider: github-pages`) and `design`, whose
+   hostnames must be DNS-only. The zone's records and rules are noted, and a rule of the user's own
+   is seeded, as above.
+2. **Provisioned** until done, with `--pages-verification <stand-in>`. GitHub must show the Pages
+   site published by the workflow with the custom domain; a DNS-only record of the hostname must
+   point at GitHub Pages; the TXT record `_github-pages-challenge-<owner>.<host>` must hold the
+   value; and provision must print the Verify step with the settings page. The zone's rules stay as
+   before.
+3. **Published:** the merge of the deploy-setup pull request and its workflow run; then
+   `http://<host>/` must serve the site within 10 minutes.
+4. **The certificate:** every 10 minutes (2 after OpsCrew saved the domain again), the test logs
+   the certificate's state, whether HTTPS is enforced and GitHub's DNS check, and runs `provision`
+   again until done. That saves the domain again once GitHub found the records valid, and enforces
+   HTTPS once the certificate is issued. The wait gives up after 3 hours (GitHub documents up to 24;
+   OpsCrew's spike saw about 65 minutes before the DNS check passed). Then `https://<host>/` must
+   serve the site, `http://<host>/` must answer 301 to it, `verify` must pass and `status` must say
+   that HTTPS is enforced.
+5. **Destroy in the takeover-safe order:** while `destroy --confirm <app>` runs, the test reads the
+   Pages site and then the hostname's records every 2 seconds. No sample may show a record pointing
+   at GitHub while the site does not claim the hostname (SC-1605). Afterwards the Pages site and its
+   `github-pages` environment must be gone, with no record on the hostname and no deploy secret,
+   and the verification record must still hold the value.
+6. **`destroy --delete-verification`** removes the verification record too, and nothing of the
+   site may be left in the zone.
+7. **Nothing leaked:** no token in any CLI output, commit, pull request of the run, audit entry,
+   saved plan or state file.
+
+**The Verify click is skipped.** GitHub has no API for it, and the record's value exists only on
+the GitHub account's settings page, for a domain added there by hand (research.md "Spike results",
+13). The run's hostname is new each run, and GitHub publishes the site and issues its certificate
+without the verification, so the test gives provision a stand-in value of letters and digits, and
+checks the record and the printed step. The click itself is tried by hand, with a domain added at
+<https://github.com/settings/pages> and its real value.
+
+The cleanup: `opscrew destroy` if the site was not destroyed yet; then the GitHub environments that
+appeared during the run and the deploy secrets OpsCrew's record names; in Cloudflare the records
+on the run's hostname and the verification record's name, and the seeded rules. Only then the
+GitHub Pages site the run made (its custom domain first; step 1 refuses a repository that has one
+already), after a fresh read of the zone: while a record on the run's hostnames still points at
+GitHub, the cleanup keeps the site and names the record, so that no record ever points at GitHub
+with no site claiming the hostname. Then the repository is reset.
+
+If a run was interrupted, delete by hand in this order: the records on `e2e-<run id>.<zone>` and
+`_github-pages-challenge-<owner>.e2e-<run id>.<zone>`; then in the repository's Settings → Pages the
+custom domain, then GitHub Pages itself; then its `github-pages` environment.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_GITHUB_PAGES` | `1` runs this test. |
+| `OPSCREW_E2E_GITHUB_REPO_C` | The **public** throwaway repository (the same as [the environment rules](#the-environment-rules-on-a-public-repository)). |
+| `OPSCREW_E2E_GITHUB_TOKEN` | As above, with access to repository C, plus **Pages** and **Administration** (Read and write), which GitHub needs to change a Pages site and its health check. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for your own server. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_GITHUB_PAGES=1 OPSCREW_E2E_GITHUB_REPO_C=you/opscrew-e2e-public \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/github-pages.test.ts
+```
+
+Not measured yet: mostly GitHub's certificate, about 70 to 100 minutes going by the spike, and
+up to 3 hours before the test gives up. No cost: the repository is public.
+
+## Two apps in one repository
+
+`packages/cli/test/live/several-apps.test.ts`, with `OPSCREW_E2E_SEVERAL_APPS=1`, runs US6 of
+feature 016 (SC-1607) in `OPSCREW_E2E_GITHUB_REPO`: `examples/static-vite` in `sites/landing` is the
+repository's first app, and `examples/hugo-site` in `sites/docs` the second, added as `e2e-docs`.
+Both go to Cloudflare's hosting in the e2e zone, on `e2e-<run id>.<zone>` and
+`e2e-<run id>-docs.<zone>`.
+
+1. **Designed:** both examples go to `main` in their folders. `init --fix`, `analyze --no-ai --dir
+   sites/landing`, `interview --answers` and `design` for the first app; then `app add e2e-docs
+   --dir sites/docs`, and the same with `--app e2e-docs`. The plans must name different workflows
+   and Workers, and `app list` must show both; the account must have no Worker `e2e-docs` yet.
+   A rule of the user's own is seeded, as for [your own server](#your-own-server).
+2. **Provisioned and deployed:** each app's `provision` until done and the merge of its pull
+   request, with its own workflow's run. Each site must answer on its own hostname with OpsCrew's
+   headers, `verify` and `verify --app e2e-docs` must pass, and each app's deploy secrets must be
+   where its record says, with no name in common. OpsCrew's shared rules must list both apps'
+   hostnames, and the user's own rules stay unchanged, here and after steps 3 and 4.
+3. **The second app destroyed:** `destroy --app e2e-docs --env prod --confirm <its name>`. Its
+   Worker and the custom domains on its hostname must be gone, and its secrets too; the first app
+   must still answer, with its secrets, and pass `verify` (SC-1607).
+4. **The first app destroyed:** nothing of either app may be left in Cloudflare, and none of the
+   first app's secrets at GitHub.
+5. **Nothing leaked,** as above, over both apps' files.
+
+The cleanup is that of [Cloudflare's hosting](#cloudflares-hosting), for both apps (the second
+first); delete by hand in the same way.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_SEVERAL_APPS` | `1` runs this test. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [Cloudflare's hosting](#cloudflares-hosting). |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_SEVERAL_APPS=1 OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN=… \
+  OPSCREW_E2E_DOMAIN=e2e.example.com npx vitest run test/live/several-apps.test.ts
+```
+
+Not measured yet: about 30 to 45 minutes, with no server and no cost on Workers Free.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still

@@ -1,9 +1,10 @@
 /**
  * Network helpers of the live tests: the throwaway Hetzner server they create outside OpsCrew
  * (with its own SSH key and, for the Portainer test, a firewall), the Cloudflare resources OpsCrew
- * creates for an app (listed, and removed only when this run created them), the zone's two
- * entrypoint rulesets with OpsCrew's shared rules and the rules the test seeds as the user's, the
- * account's Zero Trust pieces, the throwaway GitHub repository, the deployed image's blobs in GHCR,
+ * creates for an app (listed, and removed only when this run created them; a site's Workers and
+ * custom domains too), the zone's entrypoint rulesets with OpsCrew's shared rules and the rules
+ * the test seeds as the user's, the account's Zero Trust pieces, a Worker's deployments, the
+ * throwaway GitHub repository and its GitHub Pages site, the deployed image's blobs in GHCR,
  * TCP and HTTP probes, and root SSH to the server with the test's own key. Nothing here prints; the
  * tests mask everything they log.
  */
@@ -397,6 +398,16 @@ export interface CloudflareAppResources {
   apps: Named[];
   policies: Named[];
   serviceTokens: Named[];
+  /** The app's Workers on Cloudflare's hosting (feature 016), by script name. */
+  workers: Named[];
+  /** The Workers' custom domains on the app's hostnames (`name` is the hostname). */
+  customDomains: Named[];
+}
+
+/** One deployment of a Worker: when it was made and the versions it serves, with their share. */
+export interface WorkerDeployment {
+  createdOn: string;
+  versions: { id: string; percentage: number }[];
 }
 
 /** The account's Zero Trust pieces several OpsCrew apps share: never deleted by an app's destroy. */
@@ -419,9 +430,10 @@ export interface SeededRule {
 const SHARED_PHASES = Object.values(SHARED_RULES).map((rule) => rule.phase);
 
 /**
- * What of the app is still in Cloudflare after a destroy: every DNS record on its hostnames, and
- * the tunnels, Access applications, policies and service tokens that were not there before the
- * run (by name). All lists are empty when the destroy removed everything.
+ * What of the app is still in Cloudflare after a destroy: every DNS record and Worker custom
+ * domain on its hostnames, and the tunnels, Access applications, policies, service tokens and
+ * Workers that were not there before the run (by name). All lists are empty when the destroy
+ * removed everything.
  */
 export function cloudflareLeft(
   now: CloudflareAppResources,
@@ -435,6 +447,8 @@ export function cloudflareLeft(
     apps: fresh(now.apps, before.apps),
     policies: fresh(now.policies, before.policies),
     serviceTokens: fresh(now.serviceTokens, before.serviceTokens),
+    workers: fresh(now.workers, before.workers),
+    customDomains: now.customDomains.map((domain) => domain.name),
   };
 }
 
@@ -514,12 +528,16 @@ export class Cloudflare {
    * and -access): DNS records on `hostnames`, the tunnels `opscrew-<app>` and
    * `opscrew-<app>-portainer`, the Access applications `OpsCrew SSH|Portainer|Portainer webhook
    * (<app>)`, the policies `OpsCrew deploy|Portainer (<app>)` and the service token `OpsCrew deploy
-   * (<app>)`. Never the shared rules or the Zero Trust organization.
+   * (<app>)`; on Cloudflare's hosting (`workers`, the run's Worker names), those of the account's
+   * Workers and every Worker custom domain on `hostnames`. Never the shared rules or the Zero
+   * Trust organization. Workers are read only when `workers` names some, so the server tests'
+   * token needs no Workers permission.
    */
   async appResources(
     zone: CloudflareZone,
     app: string,
     hostnames: readonly string[],
+    workers: readonly string[] = [],
   ): Promise<CloudflareAppResources> {
     const records = (
       await this.list<Named & { type: string }>(`/zones/${zone.id}/dns_records`)
@@ -547,13 +565,99 @@ export class Cloudflare {
     const serviceTokens = (await this.list<Named>(`${account}/access/service_tokens`)).filter(
       (t) => t.name === `OpsCrew deploy (${app})`,
     );
-    return { records, tunnels, apps, policies, serviceTokens };
+    if (workers.length === 0) {
+      return { records, tunnels, apps, policies, serviceTokens, workers: [], customDomains: [] };
+    }
+    const scripts = (await this.unpaged<{ id: string }>(`${account}/workers/scripts`))
+      .filter((script) => workers.includes(script.id))
+      .map((script) => ({ id: script.id, name: script.id }));
+    const customDomains = (
+      await this.unpaged<{ id: string; hostname: string }>(`${account}/workers/domains`)
+    )
+      .filter((domain) => hostnames.includes(domain.hostname))
+      .map((domain) => ({ id: domain.id, name: domain.hostname }));
+    return { records, tunnels, apps, policies, serviceTokens, workers: scripts, customDomains };
+  }
+
+  /** The whole result of an unpaginated list (the account's Workers and their custom domains). */
+  private async unpaged<T>(path: string): Promise<T[]> {
+    const got = await this.call("GET", path);
+    const body = got.json as { success?: boolean; result?: T[] | null } | undefined;
+    if (got.status !== 200 || body?.success !== true) {
+      throw new Error(
+        `Cloudflare refused to list ${path} (HTTP ${got.status}); the token needs Account → Workers Scripts → Edit (docs/e2e.md, "Cloudflare's hosting").`,
+      );
+    }
+    return body.result ?? [];
+  }
+
+  /**
+   * The Worker's deployments, latest (the one serving) first; `undefined` when the account has no
+   * Worker `worker` (HTTP 404).
+   */
+  async workerDeployments(
+    accountId: string,
+    worker: string,
+  ): Promise<WorkerDeployment[] | undefined> {
+    const got = await this.call(
+      "GET",
+      `/accounts/${accountId}/workers/scripts/${encodeURIComponent(worker)}/deployments`,
+    );
+    if (got.status === 404) return undefined;
+    const deployments = (
+      got.json as
+        | {
+            result?: {
+              deployments?: {
+                created_on: string;
+                versions: { version_id: string; percentage: number }[];
+              }[];
+            };
+          }
+        | undefined
+    )?.result?.deployments;
+    if (got.status !== 200 || deployments === undefined) {
+      throw new Error(`Cloudflare did not list the deployments of ${worker} (HTTP ${got.status}).`);
+    }
+    return deployments.map((deployment) => ({
+      createdOn: deployment.created_on,
+      versions: deployment.versions.map((v) => ({ id: v.version_id, percentage: v.percentage })),
+    }));
+  }
+
+  /** The message (`workers/message`) of the version `versionId` of `worker`, "" when it has none. */
+  async workerVersionMessage(
+    accountId: string,
+    worker: string,
+    versionId: string,
+  ): Promise<string> {
+    const got = await this.call(
+      "GET",
+      `/accounts/${accountId}/workers/scripts/${encodeURIComponent(worker)}/versions/${encodeURIComponent(versionId)}`,
+    );
+    const result = (
+      got.json as { result?: { annotations?: Record<string, string | undefined> } } | undefined
+    )?.result;
+    if (got.status !== 200 || result === undefined) {
+      throw new Error(
+        `Cloudflare did not show the version ${versionId} of ${worker} (HTTP ${got.status}).`,
+      );
+    }
+    return result.annotations?.["workers/message"] ?? "";
+  }
+
+  /** The services (Worker names) of the account's custom domains on `hostname`. */
+  async customDomainServices(accountId: string, hostname: string): Promise<string[]> {
+    const domains = await this.unpaged<{ hostname: string; service: string }>(
+      `/accounts/${accountId}/workers/domains?${new URLSearchParams({ hostname })}`,
+    );
+    return domains.filter((domain) => domain.hostname === hostname).map((d) => d.service);
   }
 
   /**
    * Deletes the resources in `now` whose ids are not in `before` (so only what this run created):
-   * Access applications, then policies and service tokens, then DNS records, then tunnels (their
-   * connections first). Returns what could not be deleted.
+   * Worker custom domains, then Workers, then Access applications, policies and service tokens,
+   * then DNS records, then tunnels (their connections first). Returns what could not be deleted.
    */
   async removeCreated(
     zone: CloudflareZone,
@@ -567,6 +671,19 @@ export class Cloudflare {
     const remove = async (what: string, path: string) => {
       if (!(await retryDelete(() => this.call("DELETE", path)))) problems.push(what);
     };
+    // A custom domain goes with its DNS record, before its Worker.
+    for (const domain of fresh(now.customDomains, before.customDomains)) {
+      await remove(
+        `the Worker custom domain ${domain.name}`,
+        `${account}/workers/domains/${domain.id}`,
+      );
+    }
+    for (const worker of fresh(now.workers, before.workers)) {
+      await remove(
+        `the Worker ${worker.name}`,
+        `${account}/workers/scripts/${encodeURIComponent(worker.name)}?force=true`,
+      );
+    }
     for (const app of fresh(now.apps, before.apps)) {
       await remove(`Access application "${app.name}"`, `${account}/access/apps/${app.id}`);
     }
@@ -837,6 +954,16 @@ export interface RepoRunner {
   labels: string[];
 }
 
+/** A repository's GitHub Pages site, as GitHub shows it. */
+export interface PagesSite {
+  cname: string | null;
+  httpsEnforced: boolean;
+  /** `workflow` when the repository's workflow publishes it. */
+  buildType: string | null;
+  /** The certificate's state (`approved` once issued), `null` when GitHub shows none. */
+  certificate: string | null;
+}
+
 /** A GitHub API client for the throwaway repository. */
 export class GitHubRepo {
   constructor(
@@ -1059,6 +1186,77 @@ export class GitHubRepo {
       await sleep(20_000);
     }
     throw new Error(`The ${workflow} run did not finish within ${timeoutMs / 60_000} minutes.`);
+  }
+
+  /**
+   * The repository's GitHub Pages site (`GET /pages`): its custom domain, whether HTTPS is
+   * enforced and the certificate's state; `undefined` when Pages is off (HTTP 404).
+   */
+  async pagesSite(): Promise<PagesSite | undefined> {
+    const got = await this.call("GET", `/repos/${this.name}/pages`);
+    if (got.status === 404) return undefined;
+    const site = got.json as
+      | {
+          cname?: string | null;
+          https_enforced?: boolean;
+          build_type?: string | null;
+          https_certificate?: { state?: string } | null;
+        }
+      | undefined;
+    if (got.status !== 200 || site === undefined) {
+      throw new Error(
+        `Could not read the repository's GitHub Pages site (HTTP ${got.status}); the token needs Pages (Read and write).`,
+      );
+    }
+    return {
+      cname: site.cname ?? null,
+      httpsEnforced: site.https_enforced === true,
+      buildType: site.build_type ?? null,
+      certificate: site.https_certificate?.state ?? null,
+    };
+  }
+
+  /**
+   * GitHub's DNS check of the Pages site (`GET /pages/health`): `checking` while it answers 202,
+   * else whether the custom domain may get a certificate (`is_https_eligible`).
+   */
+  async pagesHealth(): Promise<"checking" | { httpsEligible: boolean }> {
+    const got = await this.call("GET", `/repos/${this.name}/pages/health`);
+    if (got.status === 202) return "checking";
+    const domain = (got.json as { domain?: { is_https_eligible?: boolean | null } } | undefined)
+      ?.domain;
+    if (got.status !== 200 || domain === undefined) {
+      throw new Error(`Could not read GitHub's DNS check of the Pages site (HTTP ${got.status}).`);
+    }
+    return { httpsEligible: domain.is_https_eligible === true };
+  }
+
+  /**
+   * Turns GitHub Pages off: the custom domain removed first, then the site deleted. Call it only
+   * once no DNS record points at GitHub for the domain (the takeover-safe order).
+   */
+  async deletePagesSite(): Promise<string[]> {
+    const problems: string[] = [];
+    const cleared = await this.call("PUT", `/repos/${this.name}/pages`, { cname: null });
+    if (cleared.status !== 204 && cleared.status !== 404) {
+      problems.push(`GitHub kept the Pages site's custom domain (HTTP ${cleared.status})`);
+    }
+    const deleted = await this.call("DELETE", `/repos/${this.name}/pages`);
+    if (deleted.status !== 204 && deleted.status !== 404) {
+      problems.push(`GitHub kept the Pages site (HTTP ${deleted.status})`);
+    }
+    return problems;
+  }
+
+  /** When the repository's Actions secret `name` was last set; `undefined` when it does not exist. */
+  async secretUpdatedAt(name: string): Promise<string | undefined> {
+    const got = await this.call("GET", `/repos/${this.name}/actions/secrets/${name}`);
+    if (got.status === 404) return undefined;
+    const updated = (got.json as { updated_at?: string } | undefined)?.updated_at;
+    if (got.status !== 200 || updated === undefined) {
+      throw new Error(`Could not read the Actions secret ${name} (HTTP ${got.status}).`);
+    }
+    return updated;
   }
 
   /** Title, body and opening time of every pull request of the repository (any state). */

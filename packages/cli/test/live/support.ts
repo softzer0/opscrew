@@ -171,14 +171,25 @@ export function expectedSharedHosts(before: SharedHosts, apps: readonly AppRules
  * The shared rules an app's hostnames (its domain, and `www.` when it serves that too) belong in,
  * as the user guide says: the probe block for every app except one in a Portainer without the
  * Cloudflare Tunnel; strict TLS for every app except one served through a tunnel or in a Portainer.
+ * A site on Cloudflare's hosting has its hostnames in the probe block (with
+ * `security.wafCustomRules`) and `www.` in the redirect to the domain, and none in strict TLS (a
+ * Worker has no origin); one on GitHub Pages has none (DNS only).
  */
 export function appRules(plan: {
   target: { provider: string; access?: string; web?: { mode: string } };
   dns: { provider: string; domain?: string | undefined; www: boolean };
+  security?: { wafCustomRules: boolean };
 }): AppRules {
   const { target, dns } = plan;
   if (dns.provider !== "cloudflare" || dns.domain === undefined) return {};
   const hosts = dns.www ? [dns.domain, `www.${dns.domain}`] : [dns.domain];
+  if (target.provider === "github-pages") return {};
+  if (target.provider === "cloudflare-workers") {
+    return {
+      ...(plan.security?.wafCustomRules === true ? { "opscrew-block-probes": hosts } : {}),
+      ...(dns.www ? { "opscrew-www-redirect": [`www.${dns.domain}`] } : {}),
+    };
+  }
   if (target.provider === "portainer") {
     return target.web?.mode === "tunnel" ? { "opscrew-block-probes": hosts } : {};
   }

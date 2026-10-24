@@ -46,6 +46,7 @@ import {
 } from "./harness";
 import { secretNames } from "./portainer-cloud";
 import { deployedImage } from "./portainer-support";
+import { pagesRemovalBlocker } from "./serverless-support";
 import { approveHashes, type LoadFailure, leakedLabels, printedHash } from "./support";
 
 /**
@@ -267,11 +268,6 @@ export async function expectSshClosedToActions(
 // The app's environments on servers OpsCrew creates.
 
 /**
- * An app's environments in one live run, on servers OpsCrew creates at Hetzner (`hcloudToken`):
- * which were designed, provisioned and destroyed, their paths, plans, secrets and servers, the
- * leak search over all of them, and the cleanup of what OpsCrew created for them.
- */
-/**
  * The `accepted` check of `underLoad` while an environment's hostnames are added or removed:
  * Cloudflare's brief 52x answers for the zone's other hostnames while the change's origin pull
  * setting rolls out (`originPullBlip`), found in the account's audit log. The log may show an
@@ -304,6 +300,12 @@ export function acceptOriginPullBlips(
   };
 }
 
+/**
+ * An app's environments in one live run, on servers OpsCrew creates at Hetzner (`hcloudToken`)
+ * or on the server-less targets (no token): which were designed, provisioned and destroyed, their
+ * paths, plans, secrets and servers, the leak search over all of them, and the cleanup of what
+ * OpsCrew created for them. With `app`, a further app of the repository (`opscrew app add`).
+ */
 export class AppEnvironments {
   /** Each designed environment's app name, in the order they were designed (prod first). */
   readonly apps = new Map<string, string>();
@@ -316,36 +318,63 @@ export class AppEnvironments {
   /** The repository's GitHub environments before the run: the cleanup never deletes those. */
   private githubBefore: string[] | undefined;
   /**
+   * The GitHub Pages pass found no Pages site before its provision ({@link expectNoPagesSite}), so
+   * a site there is the run's, and the cleanup turns it off. Never set for any other pass.
+   */
+  private pagesOfRun = false;
+  /**
    * What Cloudflare had of each environment's app but prod's before the run (prod's is the
-   * harness's): the cleanup removes only what the run created.
+   * harness's; a further app's prod is here too): the cleanup removes only what the run created.
    */
   private readonly cloudflareBefore = new Map<string, CloudflareAppResources>();
 
   constructor(
     private readonly run: LiveRun,
+    /** `""` for an app with no server at Hetzner (the server-less targets). */
     private readonly hcloudToken: string,
-    /** The runner tests: the cleanup puts `main` back to the example (no address stays on it). */
-    private readonly options: { restoreMain?: boolean } = {},
+    private readonly options: {
+      /** The runner tests: the cleanup puts `main` back to the example (no address stays on it). */
+      restoreMain?: boolean;
+      /** A further app of the repository (`opscrew app add <key>`): its key. */
+      app?: string;
+    } = {},
   ) {}
 
+  /** The environment's paths, of this app. */
+  paths(environment = "prod") {
+    return this.run.paths(environment, this.options.app);
+  }
+
+  /** The environment's plan, of this app. */
+  readPlan(environment = "prod"): Promise<DeployPlan> {
+    return this.run.readPlan(environment, this.options.app);
+  }
+
+  /** `--app <key>` for a further app's commands; nothing for the repository's first app. */
+  get appArgs(): string[] {
+    return this.options.app === undefined ? [] : ["--app", this.options.app];
+  }
+
   /**
-   * The environment's plan after its design: its app name and runner label are kept, and another
-   * environment's hostnames (and `www.`) join the run's, with a snapshot of what Cloudflare has of
-   * its app.
+   * The environment's plan after its design: its app name and runner label are kept, its Worker
+   * on Cloudflare's hosting joins the run's, and the hostnames (and `www.`) of another environment
+   * or of a further app join the run's, with a snapshot of what Cloudflare has of its app.
    */
   async designed(environment = "prod"): Promise<DeployPlan> {
     const { run } = this;
-    const plan = await run.readPlan(environment);
+    const plan = await this.readPlan(environment);
     const app = plan.app.name;
     this.apps.set(environment, app);
     this.labels.add(runnerLabel(plan));
-    if (environment === "prod") run.appName = app;
+    const further = this.options.app !== undefined;
+    if (environment === "prod" && !further) run.appName = app;
+    if (plan.target.provider === "cloudflare-workers") await run.addWorker(plan.target.worker);
     const host = plan.dns.domain;
-    if (environment !== "prod" && run.zone !== undefined && host !== undefined) {
+    if ((environment !== "prod" || further) && run.zone !== undefined && host !== undefined) {
       run.hostnames.push(...[host, `www.${host}`].filter((name) => !run.hostnames.includes(name)));
       this.cloudflareBefore.set(
         app,
-        await run.cloudflare.appResources(run.zone, app, run.hostnames),
+        await run.cloudflare.appResources(run.zone, app, run.hostnames, run.workers),
       );
     }
     return plan;
@@ -364,13 +393,27 @@ export class AppEnvironments {
   }
 
   /**
+   * The GitHub Pages pass, before its provision: stops the run when the repository has a Pages
+   * site already (which the run would change), else marks the site the run makes as the run's,
+   * for the cleanup.
+   */
+  async expectNoPagesSite(): Promise<void> {
+    if ((await this.run.github.pagesSite()) !== undefined) {
+      throw new Error(
+        "The repository has GitHub Pages turned on already, which this test would change. Turn it off in its Settings → Pages (and remove its custom domain), then run the test again.",
+      );
+    }
+    this.pagesOfRun = true;
+  }
+
+  /**
    * Adds each environment's server addresses to the scrubber as soon as OpsCrew recorded them
    * (the harness's `afterCli`), so no later message shows them.
    */
   async rememberServers(): Promise<void> {
     if (this.run.repo === "") return;
     for (const environment of new Set(["prod", ...this.apps.keys()])) {
-      const { deployment } = await readServerAddresses(this.run.paths(environment)).catch(() => ({
+      const { deployment } = await readServerAddresses(this.paths(environment)).catch(() => ({
         deployment: undefined,
       }));
       this.run.scrubber.add(deployment?.ipv4, "server-ipv4");
@@ -382,19 +425,25 @@ export class AppEnvironments {
    * `provision --env <environment>` until it is done (each printed plan approved by its hash),
    * then the secrets it made remembered for the leak search. Returns every run's output.
    */
-  async provision(environment: string, label: string): Promise<string> {
+  async provision(
+    environment: string,
+    label: string,
+    args: readonly string[] = [],
+  ): Promise<string> {
     this.provisioned.add(environment);
-    const output = await this.run.provisionUntilDone(label, { args: ["--env", environment] });
+    const output = await this.run.provisionUntilDone(label, {
+      args: [...this.appArgs, "--env", environment, ...args],
+    });
     await this.remember(environment);
     return output;
   }
 
   /** Adds the environment's deploy key, state passphrase and generated values to the scrubber. */
   async remember(environment: string): Promise<void> {
-    const paths = this.run.paths(environment);
+    const paths = this.paths(environment);
     await this.run.rememberSecretFile(paths.files.deployKey, "deploy-private-key");
     await this.run.rememberSecretFile(paths.files.statePassphrase, "state-passphrase");
-    await this.run.rememberGeneratedValues(environment);
+    await this.run.rememberGeneratedValues(environment, this.options.app);
   }
 
   /**
@@ -413,7 +462,7 @@ export class AppEnvironments {
 
   /** `deploy`'s SSH login to the environment's server, with OpsCrew's deploy key and known hosts. */
   async shell(environment = "prod"): Promise<RootShell> {
-    const paths = this.run.paths(environment);
+    const paths = this.paths(environment);
     const host = (await readServerAddresses(paths)).deployment?.ipv4;
     if (host === undefined) throw new Error(`OpsCrew recorded no server for ${environment}.`);
     return new RootShell(this.run.runner, {
@@ -427,7 +476,7 @@ export class AppEnvironments {
 
   /** The image digest (`sha256:…`) the environment's server runs, from its app's `.env`. */
   async runningDigest(environment = "prod"): Promise<string> {
-    const dir = appDir(await this.run.readPlan(environment));
+    const dir = appDir(await this.readPlan(environment));
     const image = deployedImage(await (await this.shell(environment)).ok(`cat ${dir}/.env`));
     if (image === undefined) {
       throw new Error(`The ${environment} server's ${dir}/.env names no GHCR image digest.`);
@@ -465,12 +514,20 @@ export class AppEnvironments {
   }
 
   /**
-   * `opscrew destroy --env <environment> --confirm <app> --no-snapshot`, each plan it stops at
-   * approved by its hash (a runner machine's host plan). With `timeLeft` (the cleanup's budget),
-   * each run stops after {@link CLEANUP_DESTROY_RUN_MS} or the time left, whichever is shorter.
+   * `opscrew destroy --env <environment> --confirm <app> --no-snapshot` (`--no-snapshot` only on
+   * a server; `--app <key>` for a further app; `args` added), each plan it stops at approved by
+   * its hash (a runner machine's host plan, a site's plans). With `timeLeft` (the cleanup's
+   * budget), each run stops after {@link CLEANUP_DESTROY_RUN_MS} or the time left, whichever is
+   * shorter.
    */
-  async destroy(environment: string, timeLeft?: () => number): Promise<void> {
+  async destroy(
+    environment: string,
+    timeLeft?: () => number,
+    args: readonly string[] = [],
+  ): Promise<void> {
     const { run } = this;
+    const { provider } = (await this.readPlan(environment)).target;
+    const site = provider === "cloudflare-workers" || provider === "github-pages";
     const cli =
       timeLeft === undefined
         ? undefined
@@ -481,7 +538,16 @@ export class AppEnvironments {
           };
     await opscrewUntilApproved(
       run,
-      ["destroy", "--env", environment, "--confirm", this.app(environment), "--no-snapshot"],
+      [
+        "destroy",
+        ...this.appArgs,
+        "--env",
+        environment,
+        "--confirm",
+        this.app(environment),
+        ...(site ? [] : ["--no-snapshot"]),
+        ...args,
+      ],
       cli,
     );
     this.destroyed.add(environment);
@@ -502,8 +568,8 @@ export class AppEnvironments {
    */
   async expectSecretsPlaced(environment: string): Promise<SecretsRecord> {
     const { github } = this.run;
-    const plan = await this.run.readPlan(environment);
-    const record = await secretsRecord(this.run.paths(environment));
+    const plan = await this.readPlan(environment);
+    const record = await secretsRecord(this.paths(environment));
     if (record === undefined)
       throw new Error(`OpsCrew kept no record of ${environment}'s secrets.`);
     const inRepository = await secretNames(github);
@@ -562,9 +628,14 @@ export class AppEnvironments {
    * saved plans, state files, reports and Cloudflare record of each environment; no server address
    * in a commit or pull request either. `userCidrs`, the SSH sources the test planned itself (in
    * `plan.yaml`), are cut out of the texts first. With `cloudflare`, also the Cloudflare plans and
-   * records ({@link LiveRun.sharedPlanLeaks}). Returns the problems, by label and place only.
+   * records ({@link LiveRun.sharedPlanLeaks}). `others` are the repository's further apps, whose
+   * local files are searched too. Returns the problems, by label and place only.
    */
-  async leaks(options: { cloudflare: boolean; userCidrs?: readonly string[] }): Promise<string[]> {
+  async leaks(options: {
+    cloudflare: boolean;
+    userCidrs?: readonly string[];
+    others?: readonly AppEnvironments[];
+  }): Promise<string[]> {
     const { run } = this;
     if (!run.repoReady) return [];
     const known = run.scrubber.entries().filter(({ label }) => label !== TESTER_LABEL);
@@ -585,9 +656,12 @@ export class AppEnvironments {
     for (const source of await run.leakSources()) {
       search(source.where, source.text, source.kind === "audit log" ? secrets : known);
     }
-    for (const environment of new Set(["prod", ...this.apps.keys()])) {
-      for (const source of await localLeakSources(run.paths(environment))) {
-        search(`${source.where} (${environment})`, source.text, secrets);
+    for (const envs of [this, ...(options.others ?? [])]) {
+      const app = envs.options.app === undefined ? "" : `, app ${envs.options.app}`;
+      for (const environment of new Set(["prod", ...envs.apps.keys()])) {
+        for (const source of await localLeakSources(envs.paths(environment))) {
+          search(`${source.where} (${environment}${app})`, source.text, secrets);
+        }
       }
     }
     for (const [label, output] of run.outputs) search(`the output of ${label}`, output, secrets);
@@ -596,23 +670,34 @@ export class AppEnvironments {
   }
 
   /**
-   * The harness's cleanup, with {@link teardown} for what OpsCrew created, and the Cloudflare
-   * resources of each environment's app beside prod's (the harness removes prod's).
+   * The harness's cleanup, with {@link teardown} for what OpsCrew created, the Cloudflare
+   * resources of each environment's app beside prod's (the harness removes prod's), and then the
+   * GitHub Pages site the Pages pass made, once no record of the run points at GitHub. `others` are the
+   * run's other apps (a further app of the repository, or the run's second app), cleaned up the
+   * same way, before this one.
    */
-  registerCleanup(options: { first?: () => void } = {}): void {
+  registerCleanup(options: { first?: () => void; others?: readonly AppEnvironments[] } = {}): void {
+    const all = [...(options.others ?? []), this];
     this.run.registerCleanup({
-      ...options,
-      teardown: (attempt) => this.teardown(attempt),
-      cloudflare: (attempt) => this.removeCloudflare(attempt),
+      ...(options.first === undefined ? {} : { first: options.first }),
+      teardown: async (attempt) => {
+        for (const envs of all) await envs.teardown(attempt);
+      },
+      cloudflare: async (attempt) => {
+        for (const envs of all) {
+          await envs.removeCloudflare(attempt);
+          await attempt("turn off the GitHub Pages site the run made", () => envs.removePages());
+        }
+      },
     });
   }
 
   /**
    * What OpsCrew created, always removed: `opscrew destroy` for each provisioned environment not
    * destroyed yet (newest first), within {@link CLEANUP_DESTROY_BUDGET_MS} in all; then, whatever
-   * those did, through Hetzner's API whatever is left of each app, GitHub's runners with this run's
-   * labels, the GitHub environments that appeared during the run, the deploy secrets OpsCrew's
-   * records name, and for the runner tests `main` put back to the example.
+   * those did, through Hetzner's API whatever is left of each app (with a Hetzner token), GitHub's
+   * runners with this run's labels, the GitHub environments that appeared during the run, the
+   * deploy secrets OpsCrew's records name, and for the runner tests `main` put back to the example.
    */
   private async teardown(attempt: CleanupAttempt): Promise<void> {
     const { run } = this;
@@ -627,7 +712,7 @@ export class AppEnvironments {
         log: run.log,
       },
       async () => {
-        for (const app of this.apps.values()) {
+        for (const app of this.hcloudToken === "" ? [] : this.apps.values()) {
           await attempt(`delete what OpsCrew created for ${app} at Hetzner`, async () => {
             await deleteHetznerApp(this.hcloudToken, app);
             const left = await hetznerAppLeft(this.hcloudToken, app);
@@ -656,11 +741,31 @@ export class AppEnvironments {
       await attempt(`remove the Cloudflare resources of ${app}`, async () =>
         run.cloudflare.removeCreated(
           zone,
-          await run.cloudflare.appResources(zone, app, run.hostnames),
+          await run.cloudflare.appResources(zone, app, run.hostnames, run.workers),
           before,
         ),
       );
     }
+  }
+
+  /**
+   * Turns off the GitHub Pages site the Pages pass made (its custom domain, then the site), after
+   * the Cloudflare cleanup removed the DNS records on the run's hostnames. It reads the zone's
+   * records first and changes nothing while one of the run's still points at GitHub
+   * (`pagesRemovalBlocker`): no record may point at GitHub while no site claims the domain.
+   */
+  private async removePages(): Promise<string[]> {
+    const { run } = this;
+    if (!this.pagesOfRun || (await run.github.pagesSite()) === undefined) return [];
+    if (run.zone !== undefined) {
+      const blocker = pagesRemovalBlocker(
+        run.hostnames,
+        await run.cloudflare.zoneRecords(run.zone),
+      );
+      if (blocker !== undefined) return [blocker];
+    }
+    run.log("turning off the GitHub Pages site the run made");
+    return run.github.deletePagesSite();
   }
 
   private async removeRunners(): Promise<string[]> {
@@ -692,7 +797,7 @@ export class AppEnvironments {
       return deleted.status === 204;
     };
     for (const environment of this.apps.keys()) {
-      const record = await secretsRecord(this.run.paths(environment));
+      const record = await secretsRecord(this.paths(environment));
       if (record === undefined || record.repo.toLowerCase() !== github.name.toLowerCase()) continue;
       for (const name of record.names) {
         await remove(`/repos/${github.name}/actions/secrets/${name}`, `the secret ${name}`);

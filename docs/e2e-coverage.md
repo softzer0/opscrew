@@ -43,6 +43,9 @@ of the pass passed; otherwise the status says how many of its steps did.
 | The server's runner (`runners.test.ts`): the deploy job on the server while its firewall refuses SSH from GitHub's Actions ranges | `OPSCREW_E2E_RUNNER=1`, a Cloudflare domain | Passed, 6 of 6 steps (run 2; run 1 found the runner's `docker` group) | 2026-10-22 | — |
 | A runner machine (`runners.test.ts`): the image built on a throwaway runner machine with its SSH firewall (kept across a reboot) and deployed over SSH to a server that refuses GitHub's ranges | `OPSCREW_E2E_RUNNER_HOST=1`, a Cloudflare domain | Passed, 6 of 6 steps, the SSH firewall included (run 3) | 2026-10-23 | — |
 | The local runner (`local-runner.test.ts`, quickstart "5.", SC-1507): dev on this computer, the deploy jobs of its first deploy and of a change on the local runner, the new version answering locally within 10 minutes, `stop()` leaving no runner at GitHub, destroy leaving nothing in Docker ([its steps](e2e.md#the-local-runner)) | `OPSCREW_E2E_LOCAL_RUNNER=1`, Docker here, a private repository | Passed, 7 of 7 steps on Windows (run 6; runs 1–5 found six fixes, see Live results) | 2026-10-23 | — |
+| Cloudflare's hosting (`cloudflare-hosting.test.ts`, feature 016, quickstart "1.", "2.", "4.", "5."): a static site live within 10 minutes of provision (SC-1601), its headers and `www` redirect, a second provision with nothing to change, a change, a rollback within a minute (SC-1604), a Worker rename, staging promoted to prod with the same build SHA-256, destroy leaving nothing; an SSR app rendered per request with its secret, a rollback across a secret change (Cloudflare's `force`), and the leak search (SC-1602) ([its steps](e2e.md#cloudflares-hosting)) | `OPSCREW_E2E_CLOUDFLARE_HOSTING=1`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`, a Cloudflare domain | **Not run yet** (13 steps) | — | A run |
+| GitHub Pages (`github-pages.test.ts`, feature 016, quickstart "3."): Pages on with its custom domain and DNS-only records, the verification record and the printed Verify step, the certificate and HTTPS enforced (SC-1603), destroy in the takeover-safe order with the verification record kept, then removed (SC-1605) ([its steps](e2e.md#github-pages)) | `OPSCREW_E2E_GITHUB_PAGES=1`, the public `OPSCREW_E2E_GITHUB_REPO_C`, a Cloudflare domain | **Not run yet** (7 steps) | — | A run (up to 3 hours, for GitHub's certificate) |
+| Two apps in one repository (`several-apps.test.ts`, feature 016, US6): two static sites on Cloudflare's hosting, each with its own hostname, workflow and secrets, the second destroyed while the first answers (SC-1607) ([its steps](e2e.md#two-apps-in-one-repository)) | `OPSCREW_E2E_SEVERAL_APPS=1`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`, a Cloudflare domain | **Not run yet** (5 steps) | — | A run |
 | The localhost Docker pass (`test/e2e/localhost.test.ts`, feature 015, quickstart "1."): the site at `https://<app>.localhost` through the local CA, a second environment beside it, the stack's differences from a server's, destroy leaving nothing | `OPSCREW_DOCKER_TESTS=1`, Docker here | Passed, 7 of 7 tests: Windows by hand; Linux CI (`ubuntu-latest`); Intel macOS CI (`macos-15-intel` with Colima, run 39805990349, where the first provision takes about 9 minutes) | 2026-10-22 | — |
 | The off-Linux Buildpacks build (`test/e2e/off-linux-build.test.ts`): the pinned Linux `pack` in a container builds `examples/go-api` on a computer that is not Linux | `OPSCREW_DOCKER_TESTS=1`, Docker here, not Linux | Passed on Windows by hand (442 s). Intel macOS CI: **not tested live**: a plain `docker pull` of the 1.5 GB Paketo builder kills Colima's VM there, even one layer at a time, with no OpsCrew code involved, so the job no longer runs it | 2026-10-22 (Windows) | A macOS computer with more room for Docker |
 | Docker on Apple silicon | — | **Not tested live**: GitHub's arm64 macOS runners cannot run Docker | — | An Apple silicon Mac by hand |
@@ -142,6 +145,19 @@ Run in development, not tracked by date:
   both environments' running and previous images: unit tests only.
 - **Environments on DigitalOcean, on your own server or in a Portainer**: every live environment
   pass uses Hetzner.
+
+### Server-less targets (feature 016)
+
+- **The Verify click on GitHub's settings page**: GitHub has no API for it, and the verification
+  value exists only on that page, so the GitHub Pages pass gives provision a stand-in value and
+  checks the record and the printed step; the click is tried by hand.
+- **An apex hostname** on either target: every live pass uses a hostname below the e2e zone, whose
+  apex is a real domain.
+- **Server rendering with Next.js, Nuxt or SvelteKit** on Cloudflare: the live pass and the Docker
+  pass deploy Astro; the other adapters have unit tests only (adapt's playbooks, and the spike's
+  builds).
+- **A rollback on GitHub Pages** (a re-run of an earlier run) and a private repository's refusal:
+  unit tests and the spike only.
 
 ## Confirmed live behaviour
 
