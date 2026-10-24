@@ -7,6 +7,7 @@ import {
   CLOUDFLARE_HOSTING_PERMISSIONS,
   CloudflareClient,
   CloudflareError,
+  WorkerSecretsChangedError,
 } from "./client";
 import { cloudflareConnector } from "./connector";
 import { FAKE_ACCOUNT_ID as ACCOUNT_ID, FakeZone, FAKE_ZONE_ID as ZONE_ID } from "./testing";
@@ -145,6 +146,87 @@ describe("CloudflareClient Workers calls", () => {
     ]);
     const [serving] = (await client.listWorkerDeployments(ACCOUNT_ID, WORKER)) ?? [];
     expect(serving?.versions).toEqual([{ id: OLD, percentage: 100 }]);
+  });
+
+  it("refuses a version older than a secret change without force, naming the secrets, and never blames the token", async () => {
+    const { zone, client } = setup();
+    const old = zone.workers.get(WORKER)?.versions[1];
+    if (old) old.secretsChanged = ["STRIPE_SECRET_KEY", "SESSION_KEY"];
+    const error = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
+    expect(error).toBeInstanceOf(WorkerSecretsChangedError);
+    expect((error as WorkerSecretsChangedError).secrets).toEqual([
+      "STRIPE_SECRET_KEY",
+      "SESSION_KEY",
+    ]);
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `Cloudflare refused to activate version ${OLD} of the Worker ${WORKER}: the secrets STRIPE_SECRET_KEY and SESSION_KEY changed since that version was active, and it would run with their old values.`,
+    );
+    // No token hint: the caller says what to do about the secrets.
+    expect(error.hint).toBeUndefined();
+    // Sent once, without force; nothing was activated.
+    expect(zone.writes().map((write) => write.path)).toEqual([`${SCRIPT}/deployments`]);
+    const [serving] = (await client.listWorkerDeployments(ACCOUNT_ID, WORKER)) ?? [];
+    expect(serving?.versions).toEqual([{ id: NEW, percentage: 100 }]);
+  });
+
+  it("never trusts a secret list it may misread: a plain error, sent once without force", async () => {
+    const intro =
+      "A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback.";
+    for (const message of [
+      `${intro} The following secrets have changed: STRIPE_SECRET_KEY; SESSION_KEY.`,
+      `${intro} The following secrets have changed: MY-KEY.`,
+      `${intro} The following secrets have changed: STRIPE_SECRET_KEY and SESSION_KEY.`,
+      `${intro} The following secrets have changed: STRIPE_SECRET_KEY,\nSESSION_KEY EXTRA.`,
+      `${intro} The following secrets have changed: .`,
+      intro,
+      "A binding has changed since this version was active: STRIPE_SECRET_KEY.",
+    ]) {
+      const { zone, client } = setup();
+      zone.faults.push({
+        match: `POST ${SCRIPT}/deployments`,
+        reply: { status: 400, body: { success: false, errors: [{ code: 10021, message }] } },
+      });
+      const error = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
+      expect(error, message).not.toBeInstanceOf(WorkerSecretsChangedError);
+      expect(error.code, message).toBe("PROVIDER_ERROR");
+      expect(zone.writes().map((write) => write.path)).toEqual([`${SCRIPT}/deployments`]);
+    }
+  });
+
+  it("sends force=true only when asked, and Cloudflare then activates the version", async () => {
+    const { zone, client } = setup();
+    const old = zone.workers.get(WORKER)?.versions[1];
+    if (old) old.secretsChanged = ["STRIPE_SECRET_KEY"];
+    await client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m", { force: true });
+    expect(zone.writes().map((write) => write.path)).toEqual([`${SCRIPT}/deployments?force=true`]);
+    const [serving] = (await client.listWorkerDeployments(ACCOUNT_ID, WORKER)) ?? [];
+    expect(serving?.versions).toEqual([{ id: OLD, percentage: 100 }]);
+  });
+
+  it("adds the token hint only to Cloudflare's authentication errors", async () => {
+    const { zone, client } = setup();
+    zone.faults.push(
+      {
+        match: `POST ${SCRIPT}/deployments`,
+        reply: {
+          status: 400,
+          body: { success: false, errors: [{ code: 10021, message: "invalid deployment" }] },
+        },
+      },
+      {
+        match: `GET ${SCRIPT}/versions`,
+        reply: {
+          status: 400,
+          body: { success: false, errors: [{ code: 6003, message: "Invalid request headers" }] },
+        },
+      },
+    );
+    const refused = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
+    expect(refused.message).toContain("invalid deployment");
+    expect(refused.hint).toBe("Fix what Cloudflare names above, then run the command again.");
+    const auth = await rejection(client.listWorkerVersions(ACCOUNT_ID, WORKER));
+    expect(auth.hint).toContain("may be mistyped, expired or revoked");
   });
 
   it("never sends a rollback again after an unclear answer", async () => {

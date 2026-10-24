@@ -282,6 +282,180 @@ describe("promote on Cloudflare's hosting", () => {
     expect(world.deps.audit.entries.map((e) => e.action)).toContain("activate worker version");
   });
 
+  /** A world whose version before predates a change of `secrets`, as Cloudflare refuses it. */
+  async function secretsChangedWorld(secrets: string[]) {
+    const world = await siteWorld();
+    const before = world.zone.workers
+      .get("example-app")
+      ?.versions.find((version) => version.id === PROD_BEFORE);
+    if (before) before.secretsChanged = secrets;
+    return world;
+  }
+  const DEPLOYMENTS = `/accounts/${FAKE_ACCOUNT_ID}/workers/scripts/example-app/deployments`;
+  const serving = (world: Awaited<ReturnType<typeof siteWorld>>) =>
+    world.zone.workers.get("example-app")?.deployments[0]?.versions;
+
+  it("refuses by default a rollback to a version older than a secret change, naming the secrets, with nothing changed", async () => {
+    const world = await secretsChangedWorld(["STRIPE_SECRET_KEY"]);
+    const error = await failure(
+      promote(world.deps, { target: "prod", version: PROD_BEFORE, services: world.services }),
+    );
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `The version ${PROD_BEFORE} of the Worker example-app predates a change to the secret STRIPE_SECRET_KEY: activated again, it would run with its old value, the one it was uploaded with, not the current one. Nothing was deployed.`,
+    );
+    expect(error.hint).toBe(
+      `Only if it was not changed because it leaked and its old value is still safe, run \`opscrew promote --to prod --version ${PROD_BEFORE} --allow-old-secrets STRIPE_SECRET_KEY\`. Otherwise deploy a new version instead: it runs with the current value.`,
+    );
+    expect(error.hint).not.toMatch(/mistyped|CLOUDFLARE_API_TOKEN/);
+    // Asked once, for the plain rollback; never sent with force, and prod still runs its version.
+    expect(promotions(world.handler).map((r) => r.planHash)).toEqual([
+      rollbackHash({ target: "prod", version: PROD_BEFORE, targetPlanHash: planHash(world.prod) }),
+    ]);
+    expect(world.zone.writes().map((w) => w.path)).toEqual([DEPLOYMENTS]);
+    expect(serving(world)).toEqual([{ version_id: PROD_NOW, percentage: 100 }]);
+  });
+
+  it("with --allow-old-secrets names the secrets in the approval, binds them to its hash, and only then forces the rollback", async () => {
+    const world = await secretsChangedWorld(["STRIPE_SECRET_KEY", "SESSION_KEY"]);
+    const result = await promote(world.deps, {
+      target: "prod",
+      version: PROD_BEFORE,
+      allowOldSecrets: ["STRIPE_SECRET_KEY", " SESSION_KEY", "STRIPE_SECRET_KEY"],
+      services: world.services,
+    });
+    expect(result).toEqual({ status: "deployed", version: PROD_BEFORE });
+    const request = promotions(world.handler)[0] as ApprovalRequest;
+    const plain = rollbackHash({
+      target: "prod",
+      version: PROD_BEFORE,
+      targetPlanHash: planHash(world.prod),
+    });
+    const expected = rollbackHash({
+      target: "prod",
+      version: PROD_BEFORE,
+      targetPlanHash: planHash(world.prod),
+      oldSecrets: ["SESSION_KEY", "STRIPE_SECRET_KEY"],
+    });
+    expect(expected).not.toBe(plain);
+    expect(request.planHash).toBe(expected);
+    expect(request.details).toContain(
+      "Old secrets (--allow-old-secrets): SESSION_KEY and STRIPE_SECRET_KEY. If Cloudflare reports them changed since this version was active, OpsCrew activates it anyway and it runs with their old values, not the current ones; don't do this for a value rotated because it leaked",
+    );
+    // First without force (Cloudflare refuses it, naming the secrets), then with it.
+    expect(world.zone.writes().map((w) => w.path)).toEqual([
+      DEPLOYMENTS,
+      `${DEPLOYMENTS}?force=true`,
+    ]);
+    expect(serving(world)).toEqual([{ version_id: PROD_BEFORE, percentage: 100 }]);
+    const activated = world.deps.audit.entries.find((e) => e.action === "activate worker version");
+    expect(activated?.detail).toContain(
+      "forced, with the old values of STRIPE_SECRET_KEY and SESSION_KEY",
+    );
+  });
+
+  it("never forces a rollback past a secret --allow-old-secrets does not name", async () => {
+    const world = await secretsChangedWorld(["STRIPE_SECRET_KEY", "SESSION_KEY"]);
+    const error = await failure(
+      promote(world.deps, {
+        target: "prod",
+        version: PROD_BEFORE,
+        allowOldSecrets: ["STRIPE_SECRET_KEY"],
+        services: world.services,
+      }),
+    );
+    expect(error.message).toContain(
+      "predates a change to the secrets STRIPE_SECRET_KEY and SESSION_KEY",
+    );
+    expect(error.hint).toBe(
+      `Only if none of them was changed because it leaked and their old values are still safe, run \`opscrew promote --to prod --version ${PROD_BEFORE} --allow-old-secrets STRIPE_SECRET_KEY,SESSION_KEY\`. Otherwise deploy a new version instead: it runs with the current values.`,
+    );
+    expect(world.zone.writes().map((w) => w.path)).toEqual([DEPLOYMENTS]);
+    expect(serving(world)).toEqual([{ version_id: PROD_NOW, percentage: 100 }]);
+  });
+
+  it("activates without force a version no secret change blocks, even with --allow-old-secrets", async () => {
+    const world = await siteWorld();
+    await promote(world.deps, {
+      target: "prod",
+      version: PROD_BEFORE,
+      allowOldSecrets: ["STRIPE_SECRET_KEY"],
+      services: world.services,
+    });
+    expect(world.zone.writes().map((w) => w.path)).toEqual([DEPLOYMENTS]);
+    expect(serving(world)).toEqual([{ version_id: PROD_BEFORE, percentage: 100 }]);
+  });
+
+  it("refuses --allow-old-secrets without --version, or on GitHub Pages, before any approval", async () => {
+    for (const [pages, version] of [
+      [false, undefined],
+      [true, "800"],
+    ] as const) {
+      const world = await siteWorld({ pages });
+      const error = await failure(
+        promote(world.deps, {
+          target: "prod",
+          ...(version === undefined ? {} : { version }),
+          allowOldSecrets: ["STRIPE_SECRET_KEY"],
+          services: world.services,
+        }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toBe(
+        "--allow-old-secrets goes only with --version on a site on Cloudflare's hosting: it lets that rollback activate a Worker version older than a change to the secrets it names. Nothing was deployed.",
+      );
+      expect(world.handler.requests).toEqual([]);
+    }
+  });
+
+  it("never takes the --approve hash of another choice of old secrets", async () => {
+    const parts = { target: "prod", version: PROD_BEFORE };
+    for (const [given, approved] of [
+      [["STRIPE_SECRET_KEY"], undefined],
+      [["STRIPE_SECRET_KEY"], ["SESSION_KEY"]],
+      [undefined, ["STRIPE_SECRET_KEY"]],
+    ] as const) {
+      const world = await secretsChangedWorld(["STRIPE_SECRET_KEY"]);
+      const approveHash = rollbackHash({
+        ...parts,
+        targetPlanHash: planHash(world.prod),
+        ...(approved === undefined ? {} : { oldSecrets: [...approved] }),
+      });
+      const error = await failure(
+        promote(world.deps, {
+          ...parts,
+          ...(given === undefined ? {} : { allowOldSecrets: [...given] }),
+          approveHash,
+          services: world.services,
+        }),
+      );
+      expect(error.code, JSON.stringify({ given, approved })).toBe("PLAN_NOT_APPROVED");
+      expect(world.zone.writes()).toEqual([]);
+    }
+  });
+
+  it("refuses an --allow-old-secrets with no name or a name that is not a secret's, before any approval", async () => {
+    for (const [names, message] of [
+      [[], "--allow-old-secrets names no secret. Nothing was deployed."],
+      [["STRIPE_SECRET_KEY", "MY-KEY"], '"MY-KEY" is not a secret\'s name. Nothing was deployed.'],
+      [["A and B"], '"A and B" is not a secret\'s name. Nothing was deployed.'],
+    ] as const) {
+      const world = await siteWorld();
+      const error = await failure(
+        promote(world.deps, {
+          target: "prod",
+          version: PROD_BEFORE,
+          allowOldSecrets: [...names],
+          services: world.services,
+        }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toBe(message);
+      expect(world.handler.requests).toEqual([]);
+      expect(world.zone.writes()).toEqual([]);
+    }
+  });
+
   it("refuses a rollback to the running version or to a version of another Worker", async () => {
     const world = await siteWorld();
     const running = await failure(
@@ -420,6 +594,25 @@ describe("promote on a server", () => {
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toContain("runs on a server, which deploys images");
     expect(error.hint).toContain("--digest <digest>");
+    expect(world.handler.requests).toEqual([]);
+  });
+
+  it("refuses --allow-old-secrets, which only a rollback on Cloudflare's hosting takes", async () => {
+    const world = await promoteWorld();
+    for (const version of [undefined, PROD_BEFORE]) {
+      const error = await failure(
+        promote(world.deps, {
+          target: "prod",
+          ...(version === undefined ? {} : { version }),
+          allowOldSecrets: ["STRIPE_SECRET_KEY"],
+          services: world.services,
+        }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toContain(
+        "--allow-old-secrets goes only with --version on a site on Cloudflare's hosting",
+      );
+    }
     expect(world.handler.requests).toEqual([]);
   });
 });

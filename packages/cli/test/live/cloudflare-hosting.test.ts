@@ -10,7 +10,7 @@
  * - `examples/astro-ssr` in `OPSCREW_E2E_GITHUB_REPO_B`, with a page showing the SHA-256 of its
  *   secret (`test/e2e/__fixtures__/astro-secret`): adapt, provision, a page rendered per request,
  *   the headers, the secret reaching the app, a new secret value, and a rollback to the version
- *   before it, which tells whether Cloudflare wants its `force` (T1610b's note).
+ *   before it: refused, naming the secret, then forced with `--allow-old-secrets` (T1623).
  * - the leak search over every output, commit, pull request, audit entry and local file (SC-1602).
  */
 import { createHash } from "node:crypto";
@@ -22,7 +22,7 @@ import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { httpRequest, minutes, sleep, waitFor } from "./cloud";
 import { AppEnvironments, opscrewUntilApproved, secretsRecord } from "./environment-checks";
-import { LiveRun, REPO_ROOT, serverSettings } from "./harness";
+import { type CliRun, LiveRun, REPO_ROOT, serverSettings } from "./harness";
 import {
   CLOUDFLARE_HOSTING_VARIABLES,
   redirectProblem,
@@ -433,8 +433,26 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
+    /**
+     * `opscrew promote --to prod --version <version>` with `extra`, approved by the hash its first
+     * run printed: the approved run.
+     */
+    async function approvedRollback(version: string, ...extra: string[]): Promise<CliRun> {
+      const args = ["promote", "--to", "prod", "--version", version, ...extra];
+      const shown = await ssr.opscrew(...args);
+      expect(
+        shown.exitCode,
+        `promote --version without --approve stops at the approval:\n${ssr.tail(shown.output)}`,
+      ).toBe(1);
+      const hash = approveHashes(shown.output).at(-1);
+      if (hash === undefined) {
+        throw new Error(`promote printed no command to approve:\n${ssr.tail(shown.output)}`);
+      }
+      return ssr.opscrew(...args, "--approve", hash);
+    }
+
     ssr.step(
-      "S3. a new secret value goes with the next version; a rollback to the version before it says whether Cloudflare wants force",
+      "S3. a new secret value goes with the next version; a rollback to the version before it is refused, naming the secret, and goes ahead with --allow-old-secrets",
       minutes(45),
       async () => {
         const name = siteEnvSecret(SECRET_NAME);
@@ -456,10 +474,36 @@ describe.skipIf(MISSING.length > 0)(
           SITE_CHANGE,
         );
         await waitForSecret();
-        // rollBack names T1610b's note on force when Cloudflare refuses the activation.
-        const { version } = await rollBack(ssr, oldVersion);
+        const newVersion = (await workerRunning(ssr, workerOf(ssrPlan as DeployPlan))).version;
+        // By default the version before the secret change is refused, naming the secret (T1623).
+        const refused = await approvedRollback(oldVersion);
+        expect(
+          refused.exitCode,
+          `the rollback across the secret change is refused:\n${ssr.tail(refused.output)}`,
+        ).toBe(1);
+        // Booleans: a failed toContain would print the raw output, which only `tail` scrubs.
+        const said = (text: string) => refused.output.includes(text);
+        expect(
+          said(`predates a change to the secret ${SECRET_NAME}`) &&
+            said(`--allow-old-secrets ${SECRET_NAME}`) &&
+            !said("mistyped"),
+          `the refusal names the secret and the flag, with no token hint:\n${ssr.tail(refused.output)}`,
+        ).toBe(true);
+        expect(
+          (await workerRunning(ssr, workerOf(ssrPlan as DeployPlan))).version,
+          "the version Cloudflare serves after the refusal",
+        ).toBe(newVersion);
+        ssr.log(`observed: the rollback to ${oldVersion} was refused, naming ${SECRET_NAME}`);
+        // With the flag it goes ahead.
+        const forced = await approvedRollback(oldVersion, "--allow-old-secrets", SECRET_NAME);
+        expect(
+          forced.exitCode,
+          `the rollback with --allow-old-secrets:\n${ssr.tail(forced.output)}`,
+        ).toBe(0);
         const running = await workerRunning(ssr, workerOf(ssrPlan as DeployPlan));
-        expect(running.version, "the version Cloudflare serves after the rollback").toBe(version);
+        expect(running.version, "the version Cloudflare serves after the rollback").toBe(
+          oldVersion,
+        );
         // What the secret page shows once it no longer shows the new secret; still the new one
         // after two minutes means the version before had it too.
         const shown = await waitFor(
@@ -473,11 +517,11 @@ describe.skipIf(MISSING.length > 0)(
         ).catch(() => sha256(secret));
         if (shown === old) {
           ssr.log(
-            `observed: Cloudflare activated ${version}, a version older than the secret change, without force; it serves its own (old) secret`,
+            `observed: with --allow-old-secrets, Cloudflare activated ${oldVersion}, a version older than the secret change; it serves its own (old) secret`,
           );
         } else {
           run.findings.push(
-            `after the rollback to ${version}, which ran with the old secret, the app shows ${shown === sha256(secret) ? "the new secret" : "neither secret"}: check which secrets Cloudflare gives a version activated again`,
+            `after the rollback to ${oldVersion}, which ran with the old secret, the app shows ${shown === sha256(secret) ? "the new secret" : "neither secret"}: check which secrets Cloudflare gives a version activated again`,
           );
         }
       },

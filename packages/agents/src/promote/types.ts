@@ -56,6 +56,12 @@ export interface PromoteOptions {
    */
   version?: string;
   /**
+   * `--allow-old-secrets <names>`, with `version` on Cloudflare's hosting: the secrets Cloudflare
+   * listed as changed since that Worker version was active, whose old values the user accepts.
+   * Only then is the version activated anyway (Cloudflare's `force`); it runs with those values.
+   */
+  allowOldSecrets?: string[];
+  /**
    * `--approve <hash>`: the promotion hash the user reviewed. The promotion stops before asking
    * when its hash is now another one (the image, an environment or the target's plan changed).
    */

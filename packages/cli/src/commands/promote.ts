@@ -13,6 +13,8 @@ interface PromoteFlags {
   digest?: string;
   /** `--version <id>`: a rollback on Cloudflare's hosting or GitHub Pages. */
   version?: string;
+  /** `--allow-old-secrets <names>`: with `--version` on Cloudflare's hosting, comma-separated. */
+  allowOldSecrets?: string;
   approve?: string;
 }
 
@@ -20,7 +22,8 @@ interface PromoteFlags {
  * `opscrew promote --to <env>`: deploys to `env` exactly the image its source environment runs
  * (or, with `--digest`, its previous image for a rollback; on Cloudflare's hosting the build its
  * source runs, and with `--version` a rollback of a site to an earlier Worker version or GitHub
- * Pages run), after the provenance and pending-change checks, through a `promote` approval bound
+ * Pages run; `--allow-old-secrets` lets a Worker version older than a change of the secrets it
+ * names run with their old values), after the provenance and pending-change checks, through a `promote` approval bound
  * to the promotion's hash (contracts/environments.md "Promotion"). A terminal asks; a script needs
  * `--approve <hash>` from an earlier run. No flag grants it otherwise: there is no `--yes` here.
  * `--app` picks the app. Exit codes: 0 deployed, 1 refused, 2 error.
@@ -41,6 +44,10 @@ export function register(program: Command, ctx: CliContext): void {
       "Cloudflare's hosting or GitHub Pages: roll back to this earlier Worker version or GitHub Pages run (`opscrew status` names the one before)",
     )
     .option(
+      "--allow-old-secrets <names>",
+      "Cloudflare's hosting, with --version: activate that version even though these secrets (comma-separated, as OpsCrew's refusal names them) changed since it was active; it runs with their old values",
+    )
+    .option(
       "--approve <hash>",
       "In a script: deploy exactly the promotion with this hash, which an earlier run showed",
     );
@@ -57,6 +64,8 @@ export function register(program: Command, ctx: CliContext): void {
         },
       );
     }
+    // promote checks the names.
+    const oldSecrets = flags.allowOldSecrets?.split(",");
     const app = await chooseApp(ctx, flags.app, "promote");
     const deps = createPhaseDeps(ctx, {
       ai: false,
@@ -69,6 +78,7 @@ export function register(program: Command, ctx: CliContext): void {
       target,
       ...(flags.digest === undefined ? {} : { digest: flags.digest.trim() }),
       ...(flags.version === undefined ? {} : { version: flags.version.trim() }),
+      ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
       ...(approve === undefined ? {} : { approveHash: approve }),
       ...(services === undefined ? {} : { services }),
     });

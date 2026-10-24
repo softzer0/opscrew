@@ -196,7 +196,7 @@ export async function rollBack(
   const approved = await run.opscrew(...promote, "--version", rollback, "--approve", hash);
   if (approved.exitCode !== 0) {
     throw new Error(
-      `The approved rollback to ${rollback} exited with ${approved.exitCode}. If Cloudflare refused a version older than a secret change, deployWorkerVersion needs Cloudflare's force (T1610b's note):\n${run.tail(approved.output)}`,
+      `The approved rollback to ${rollback} exited with ${approved.exitCode}. A version older than a secret change is refused, naming the secrets, unless --allow-old-secrets names them (T1623):\n${run.tail(approved.output)}`,
     );
   }
   return { version: rollback, startedAt };

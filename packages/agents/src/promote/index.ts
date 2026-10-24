@@ -4,6 +4,8 @@
  * bound to the promotion's hash. For a site (feature 016): the build another environment runs on
  * Cloudflare's hosting, or a rollback to an earlier version on Cloudflare or GitHub Pages.
  */
+/** A secret name `allowOldSecrets` accepts (for the MCP tool's input schema). */
+export { WORKER_SECRET_NAME } from "@opscrew/connector-cloudflare";
 export { type PromotionParts, promotionHash } from "./record";
 export { promote } from "./run";
 export { promotedText } from "./text";

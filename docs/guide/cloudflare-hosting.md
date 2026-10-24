@@ -150,6 +150,23 @@ before, when each was deployed, the run that built each, and the custom domains'
 approval. Cloudflare then serves it for all traffic within a minute, with no build. In scripts, add
 `--approve <hash>`; `--yes` never approves a rollback.
 
+### After a secret changed
+
+A version keeps the secret values it was uploaded with. When one of your app's secrets changed
+since the version you roll back to was active, Cloudflare refuses to activate it, and so does
+OpsCrew: it names the secrets, and nothing changes. If you changed a secret because it leaked,
+don't go back to that version: deploy a new one, which gets the current values.
+
+If the old values are still safe, roll back with the secrets the refusal named:
+
+```bash
+npx opscrew promote --to prod --version <id> --allow-old-secrets STRIPE_SECRET_KEY
+```
+
+The approval then names those secrets and says the version runs with their old values, and its
+hash covers them. Only then does OpsCrew ask Cloudflare to activate the version anyway. It still
+refuses when Cloudflare names a secret you didn't list.
+
 You can also revert the bad commit and push it: the workflow deploys the reverted code.
 
 ## Environments and promotion

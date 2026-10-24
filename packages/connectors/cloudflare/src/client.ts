@@ -522,9 +522,55 @@ function permissionHint(): string {
   return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with: ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}; then set CLOUDFLARE_API_TOKEN.`;
 }
 
-/** Hint for a 4xx answer to a call that is not a registrar call: the token is the likely cause. */
+/** Hint for an authentication error that is not a 401 or 403 (a malformed token answers 400). */
 function tokenHint(): string {
   return `The token in CLOUDFLARE_API_TOKEN may be mistyped, expired or revoked, or lack a permission. ${permissionHint()}`;
+}
+
+/**
+ * Cloudflare's authentication error codes: 6003 and 6111 (malformed `Authorization` header, with
+ * HTTP 400), 9106 and 9109 (missing or invalid token), 10000 and 10001 (authentication error).
+ */
+const AUTH_CODES = new Set([6003, 6111, 9106, 9109, 10000, 10001]);
+
+/** Hint for any other refusal: Cloudflare's reason, in the message, says what to fix. */
+const REFUSAL_HINT = "Fix what Cloudflare names above, then run the command again.";
+
+/** Cloudflare's refusal of a Worker version older than a secret change (seen live, T1623). */
+const SECRETS_CHANGED = /a secret has changed since this version was active/i;
+/** The list that ends Cloudflare's refusal: everything after the colon, up to its last period. */
+const CHANGED_SECRETS = /the following secrets have changed:([^.]*)\.?$/i;
+/**
+ * A Worker secret's name as OpsCrew accepts it, in Cloudflare's list of changed secrets and in
+ * `--allow-old-secrets`; a list with anything else is never trusted.
+ */
+export const WORKER_SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The secrets Cloudflare's refusal lists (comma-separated, each a plain name), or undefined when
+ * the answer is not that refusal or its list is not exactly such names: nothing is ever forced
+ * on a list OpsCrew may have misread.
+ */
+function changedSecrets(body: EnvelopeBody): string[] | undefined {
+  const refused = body.errors.find((e) => SECRETS_CHANGED.test(e.message));
+  const list = CHANGED_SECRETS.exec(refused?.message.trim() ?? "")?.[1];
+  if (list === undefined) return undefined;
+  const names = list.split(",").map((name) => name.trim());
+  return names.every((name) => WORKER_SECRET_NAME.test(name)) ? names : undefined;
+}
+
+/**
+ * Cloudflare refused to activate a Worker version older than a change of the Worker's secrets
+ * (`secrets`, as Cloudflare listed them). Activated anyway (`force`), the version runs with the
+ * values those secrets had when it was uploaded.
+ */
+export class WorkerSecretsChangedError extends OpsCrewError {
+  readonly secrets: string[];
+
+  constructor(secrets: string[], message: string) {
+    super("PHASE_PRECONDITION", message);
+    this.secrets = secrets;
+  }
 }
 
 interface FailHints {
@@ -892,9 +938,10 @@ export class CloudflareClient {
       );
     }
     const clientError = status >= 400 && status < 500 && status !== 429;
+    const auth = body.errors.some((e) => AUTH_CODES.has(Number(e.code)));
     throw new OpsCrewError("PROVIDER_ERROR", `Cloudflare could not ${what}: ${detail}.`, {
       hint: clientError
-        ? (hints.other ?? tokenHint())
+        ? (hints.other ?? (auth ? tokenHint() : REFUSAL_HINT))
         : statusPageHint("https://www.cloudflarestatus.com"),
     });
   }
@@ -945,12 +992,18 @@ export class CloudflareClient {
    * Sends a write once and returns the answer of a success (`204` included). It is never sent
    * again after a 5xx, a timeout or a lost connection: those, and an answer without a clear
    * result, throw PROVIDER_ERROR saying the change may have reached Cloudflare. A clear refusal
-   * (a 4xx with Cloudflare's errors, or 429) throws as every other call does.
+   * (a 4xx with Cloudflare's errors, or 429) throws `refusal`'s error when it gives one, else as
+   * every other call does.
    */
   async #send(
     path: string,
     what: string,
-    options: { method: "POST" | "PATCH" | "PUT" | "DELETE"; body?: unknown; hints?: FailHints },
+    options: {
+      method: "POST" | "PATCH" | "PUT" | "DELETE";
+      body?: unknown;
+      hints?: FailHints;
+      refusal?: (body: EnvelopeBody) => OpsCrewError | undefined;
+    },
   ): Promise<RawAnswer> {
     let answer: RawAnswer;
     try {
@@ -964,6 +1017,8 @@ export class CloudflareClient {
     const { status, body, envelope } = answer;
     if (status === 204) return answer;
     if (status === 429 || (status >= 400 && status < 500 && envelope)) {
+      const refused = options.refusal?.(body);
+      if (refused !== undefined) throw refused;
       this.#fail(status, body, what, options.hints);
     }
     if (status >= 300 || !envelope || !body.success) {
@@ -1513,16 +1568,21 @@ export class CloudflareClient {
   /**
    * Activates one version of the Worker for all its traffic (`POST …/deployments`, strategy
    * `percentage`, the version at 100), with `message` as its `workers/message` annotation: a
-   * promotion or a rollback. Sent once.
+   * promotion or a rollback. Sent once. Cloudflare refuses a version older than a change of the
+   * Worker's secrets unless `force` is set (`?force=true`), which only an approval naming those
+   * secrets may set.
+   * @throws WorkerSecretsChangedError naming the secrets, for that refusal.
    */
   async deployWorkerVersion(
     accountId: string,
     worker: string,
     versionId: string,
     message: string,
+    options: { force?: boolean } = {},
   ): Promise<void> {
     const what = `activate version ${versionId} of the Worker ${worker}`;
-    const answer = await this.#send(`${workerPath(accountId, worker)}/deployments`, what, {
+    const path = `${workerPath(accountId, worker)}/deployments${options.force ? "?force=true" : ""}`;
+    const answer = await this.#send(path, what, {
       method: "POST",
       body: {
         strategy: "percentage",
@@ -1530,6 +1590,14 @@ export class CloudflareClient {
         annotations: { "workers/message": message },
       },
       hints: WORKERS_HINTS,
+      refusal: (body) => {
+        const secrets = changedSecrets(body);
+        if (secrets === undefined) return undefined;
+        return new WorkerSecretsChangedError(
+          secrets,
+          `Cloudflare refused to ${what}: the ${secrets.length === 1 ? "secret" : "secrets"} ${listText(secrets)} changed since that version was active, and it would run with their old values.`,
+        );
+      },
     });
     this.#parseWrite(WorkerDeploymentSchema, answer.body.result, what);
   }

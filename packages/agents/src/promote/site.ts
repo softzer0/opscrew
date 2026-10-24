@@ -4,9 +4,15 @@
  * a rollback on either target (`--version`). Each after a `promote` approval bound to its hash.
  */
 import { posix } from "node:path";
-import type { CloudflareClient, WorkerVersion } from "@opscrew/connector-cloudflare";
+import {
+  type CloudflareClient,
+  WORKER_SECRET_NAME,
+  WorkerSecretsChangedError,
+  type WorkerVersion,
+} from "@opscrew/connector-cloudflare";
 import {
   canonicalJson,
+  listText,
   OpsCrewError,
   type ProjectPaths,
   realSleep,
@@ -50,6 +56,8 @@ interface SiteRun {
   services: PromoteServices;
   command: string;
   approveHash: string | undefined;
+  /** `--allow-old-secrets`, checked, trimmed, without repeats and sorted. */
+  allowOldSecrets?: string[];
 }
 
 /** Stops (nothing deployed) unless the environment is provisioned. */
@@ -393,10 +401,49 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
 }
 
 /**
+ * `--allow-old-secrets`, trimmed, without empty names or repeats, and sorted.
+ * @throws OpsCrewError `INVALID_INPUT` for an empty list or a name that is not a secret's.
+ */
+function oldSecretNames(names: readonly string[]): string[] {
+  const trimmed = names.map((name) => name.trim()).filter(Boolean);
+  const wrong = trimmed.find((name) => !WORKER_SECRET_NAME.test(name));
+  if (trimmed.length === 0 || wrong !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${wrong === undefined ? "--allow-old-secrets names no secret" : `"${wrong}" is not a secret's name`}. ${NOTHING}`,
+      {
+        hint: "Pass the names OpsCrew's refusal of the rollback listed, comma-separated: letters, digits and underscores, not starting with a digit.",
+      },
+    );
+  }
+  return [...new Set(trimmed)].sort();
+}
+
+/**
+ * The refusal of a rollback to `version`, which predates a change to `secrets` (as Cloudflare
+ * listed them): it would run with their old values, which may be a value rotated because it leaked.
+ */
+function oldSecretsRefusal(
+  run: SiteRun,
+  input: { worker: string; version: string; secrets: string[] },
+): OpsCrewError {
+  const one = input.secrets.length === 1;
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The version ${input.version} of the Worker ${input.worker} predates a change to the ${one ? "secret" : "secrets"} ${listText(input.secrets)}: activated again, it would run with ${one ? "its old value, the one" : "their old values, the ones"} it was uploaded with, not the current ${one ? "one" : "ones"}. ${NOTHING}`,
+    {
+      hint: `Only if ${one ? "it was not changed because it leaked and its old value is" : "none of them was changed because it leaked and their old values are"} still safe, run \`${run.command} --version ${input.version} --allow-old-secrets ${input.secrets.join(",")}\`. Otherwise deploy a new version instead: it runs with the current ${one ? "value" : "values"}.`,
+    },
+  );
+}
+
+/**
  * A rollback on Cloudflare's hosting (`--version <id>`): a version of the environment's own Worker
  * other than the one running, activated again for all its traffic through Cloudflare's API after
- * the `promote` approval, bound to {@link rollbackHash} of the target, the version and its plan's
- * hash. No build and no workflow run.
+ * the `promote` approval, bound to {@link rollbackHash} of the target, the version, its plan's
+ * hash and the secrets `--allow-old-secrets` names. No build and no workflow run. When Cloudflare
+ * refuses the version because secrets changed since it was active, the rollback is forced only
+ * when the approval named each of them; otherwise it is refused, with nothing changed.
  */
 async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteResult> {
   const { deps, target, plan, command } = run;
@@ -422,31 +469,54 @@ async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteRes
     );
   }
   const targetPlanHash = sha256Hex(canonicalJson(plan));
-  const hash = rollbackHash({ target, version: chosen.id, targetPlanHash });
+  const allowed = run.allowOldSecrets;
+  const hash = rollbackHash({
+    target,
+    version: chosen.id,
+    targetPlanHash,
+    ...(allowed !== undefined ? { oldSecrets: allowed } : {}),
+  });
   const build = versionBuild(chosen);
   const url = plan.deployment.url;
+  const allowFlag = allowed !== undefined ? ` --allow-old-secrets ${allowed.join(",")}` : "";
   await approve(run, {
     title: `Roll ${target} back to the version ${chosen.id} of its Worker`,
     details: [
       `Version: ${chosen.id} of the Worker ${worker}, uploaded ${chosen.createdOn}${build !== undefined ? ` from the build of run ${build.runId} (SHA-256 ${build.sha256})` : ""}`,
       `Target: ${target}${url !== undefined ? ` (${url})` : ""}, ${toPosixRelative(deps.paths.root, run.paths.files.plan)} with plan hash ${targetPlanHash}`,
       `Deploy: Cloudflare serves that version for all of ${target}'s traffic again, within a minute; nothing is rebuilt`,
+      ...(allowed !== undefined
+        ? [
+            `Old secrets (--allow-old-secrets): ${listText(allowed)}. If Cloudflare reports them changed since this version was active, OpsCrew activates it anyway and it runs with their old values, not the current ones; don't do this for a value rotated because it leaked`,
+          ]
+        : []),
       `Promotion hash: ${hash}`,
     ].join("\n"),
     hash,
-    later: `${command} --version ${chosen.id} --approve ${hash}`,
+    later: `${command} --version ${chosen.id}${allowFlag} --approve ${hash}`,
   });
   deps.reporter.step(`Activating the version ${chosen.id} of the Worker ${worker}`);
-  // Cloudflare may refuse a version older than the Worker's last secret change unless the
-  // deployment is forced (to be checked live, T1614).
-  await client.deployWorkerVersion(accountId, worker, chosen.id, `opscrew rollback ${hash}`);
+  const message = `opscrew rollback ${hash}`;
+  let forced: string[] | undefined;
+  try {
+    await client.deployWorkerVersion(accountId, worker, chosen.id, message);
+  } catch (error) {
+    if (!(error instanceof WorkerSecretsChangedError)) throw error;
+    const { secrets } = error;
+    if (allowed === undefined || !secrets.every((name) => allowed.includes(name))) {
+      throw oldSecretsRefusal(run, { worker, version: chosen.id, secrets });
+    }
+    deps.reporter.step(`Activating it anyway, with the old values of ${listText(secrets)}`);
+    await client.deployWorkerVersion(accountId, worker, chosen.id, message, { force: true });
+    forced = secrets;
+  }
   await deps.audit.append({
     kind: "provider-call",
     actor: "opscrew",
     action: "activate worker version",
     target: worker,
     decision: "approved",
-    detail: `version ${chosen.id} at 100% (promotion ${hash})`,
+    detail: `version ${chosen.id} at 100%${forced !== undefined ? `, forced, with the old values of ${listText(forced)}` : ""} (promotion ${hash})`,
   });
   deps.reporter.success(`${target} runs the version ${chosen.id} of its Worker again.`);
   return { status: "deployed", version: chosen.id };
@@ -578,6 +648,9 @@ export async function promoteSite(
     services: options.services ?? {},
     command,
     approveHash: options.approveHash,
+    ...(options.allowOldSecrets !== undefined
+      ? { allowOldSecrets: oldSecretNames(options.allowOldSecrets) }
+      : {}),
   };
   if (options.digest !== undefined) {
     throw new OpsCrewError(

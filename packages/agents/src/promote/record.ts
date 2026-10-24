@@ -51,12 +51,22 @@ export interface RollbackParts {
   version: string;
   /** SHA-256 of the target plan's canonical JSON. */
   targetPlanHash: string;
+  /**
+   * `--allow-old-secrets`: the secrets (sorted) whose old values a Worker version may run with,
+   * when Cloudflare reports them changed since it was active.
+   */
+  oldSecrets?: string[];
 }
 
-/** The `promote` approval's hash of a rollback: SHA-256 of the canonical `{ target, version, targetPlanHash }`. */
+/**
+ * The `promote` approval's hash of a rollback: SHA-256 of the canonical
+ * `{ target, version, targetPlanHash }`, with `oldSecrets` when given.
+ */
 export function rollbackHash(parts: RollbackParts): string {
-  const { target, version, targetPlanHash } = parts;
-  return sha256Hex(canonicalJson({ target, version, targetPlanHash }));
+  const { target, version, targetPlanHash, oldSecrets } = parts;
+  return sha256Hex(
+    canonicalJson({ target, version, targetPlanHash, ...(oldSecrets ? { oldSecrets } : {}) }),
+  );
 }
 
 /** The image an environment got by `opscrew promote`, once the deploy run succeeded. */

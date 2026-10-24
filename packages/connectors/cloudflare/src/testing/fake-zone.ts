@@ -22,7 +22,8 @@ import { CLOUDFLARE_API } from "../client";
  *
  * Workers as feature 016's spike saw them: the account's Workers, each with its versions (latest
  * first, the message as the `workers/message` annotation) and deployments (latest first; a `POST`
- * puts one version at 100% in front), 404 with code 10007 for a Worker the account does not have
+ * puts one version at 100% in front, unless the version predates a secret change and `force` is
+ * not sent), 404 with code 10007 for a Worker the account does not have
  * (and 7003 for another account), and the account's Workers custom domains, filtered by `service`. Single redirect rules have the
  * configuration rules' limits. State is plain data for assertions.
  */
@@ -83,6 +84,11 @@ export interface FakeWorkerVersion {
   /** Listed as the `workers/message` annotation. */
   message?: string;
   source?: string;
+  /**
+   * Secrets of the Worker changed since this version was active: activating it again without
+   * `?force=true` is refused as Cloudflare refused it live (T1623).
+   */
+  secretsChanged?: string[];
 }
 
 /** A deployment of a Worker, as Cloudflare lists it. */
@@ -525,6 +531,25 @@ export class FakeZone {
       sent.versions.some((v) => !worker.versions.some((known) => known.id === v.version_id))
     ) {
       return refuse(400, 10021, "invalid deployment");
+    }
+    const changed = sent.versions.flatMap(
+      (v) => worker.versions.find((known) => known.id === v.version_id)?.secretsChanged ?? [],
+    );
+    if (changed.length > 0 && url.searchParams.get("force") !== "true") {
+      // Cloudflare's words, as the live run saw them (its error code was not recorded).
+      return {
+        status: 400,
+        body: {
+          success: false,
+          errors: [
+            {
+              message: `A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: ${changed.join(", ")}.`,
+            },
+          ],
+          messages: [],
+          result: null,
+        },
+      };
     }
     const deployment: FakeWorkerDeployment = {
       id: this.#id(),

@@ -236,7 +236,8 @@ function promotionDetails(input: {
  *    one still waiting when the wait ends is the result `waiting`, recorded as the target's pending
  *    promotion, which the next `opscrew promote --to <target>` checks first ({@link checkPending}).
  * A site on a server-less target goes to `promoteSite` (a build's promotion on Cloudflare's
- * hosting, a rollback with `version` on either); `version` on a server is refused.
+ * hosting, a rollback with `version` on either); `version` on a server, and `allowOldSecrets`
+ * anywhere but a rollback on Cloudflare's hosting, are refused.
  * `deps` may be any environment's: the target's paths are resolved here.
  * @throws OpsCrewError `PHASE_PRECONDITION` for each refusal, `PLAN_NOT_APPROVED` when
  * `approveHash` names another promotion, `APPROVAL_REFUSED` when the user does not approve, and
@@ -254,6 +255,16 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     app: deps.paths.app,
   });
   const plan = await readArtifact("plan", targetPaths.files.plan);
+  if (
+    options.allowOldSecrets !== undefined &&
+    (options.version === undefined || plan.target.provider !== "cloudflare-workers")
+  ) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `--allow-old-secrets goes only with --version on a site on Cloudflare's hosting: it lets that rollback activate a Worker version older than a change to the secrets it names. ${NOTHING}`,
+      { hint: `Leave --allow-old-secrets out, then run \`${command}\` again.` },
+    );
+  }
   if (isServerlessProvider(plan.target.provider)) {
     return promoteSite(deps, { options, plan, paths: targetPaths });
   }

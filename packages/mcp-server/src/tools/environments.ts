@@ -9,6 +9,7 @@ import {
   promotedText,
   removeEnvironment,
   setEnvironment,
+  WORKER_SECRET_NAME,
 } from "@opscrew/agents";
 import type { ApprovalHandler, ComputeCatalog } from "@opscrew/contracts";
 import { formatMoney, isUserFacingError, OpsCrewError } from "@opscrew/core";
@@ -303,6 +304,13 @@ export function registerEnvironmentTools(
           .describe(
             "Only for a rollback of a site on Cloudflare's hosting or GitHub Pages the user asked for: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before.",
           ),
+        allowOldSecrets: z
+          .array(z.string().regex(WORKER_SECRET_NAME))
+          .min(1)
+          .optional()
+          .describe(
+            "Only with version on Cloudflare's hosting, after OpsCrew refused that rollback because these secrets changed since the version was active, and only when the user confirmed their old values are still safe: the secret names the refusal listed. The version then runs with their old values.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -312,13 +320,13 @@ export function registerEnvironmentTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, app, to, digest, version }, extra: CallExtra) =>
+    ({ projectDir, app, to, digest, version, allowOldSecrets }, extra: CallExtra) =>
       runTool(deps, "opscrew_promote", projectDir, async (call) => {
         const appKey = await toolApp(call.projectDir, app);
         const flag = await appFlag(call.projectDir, appKey);
         requireDialogs(
           server,
-          `npx opscrew promote${flag} --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}${version === undefined ? "" : ` --version ${version}`}`,
+          `npx opscrew promote${flag} --to ${to}${digest === undefined ? "" : ` --digest ${digest}`}${version === undefined ? "" : ` --version ${version}`}${allowOldSecrets === undefined ? "" : ` --allow-old-secrets ${allowOldSecrets.join(",")}`}`,
         );
         const dialogs = dialogHandler(server, deps, extra);
         // The hash the user's dialog shows, for the result.
@@ -340,6 +348,7 @@ export function registerEnvironmentTools(
             target: to,
             ...(digest === undefined ? {} : { digest }),
             ...(version === undefined ? {} : { version }),
+            ...(allowOldSecrets === undefined ? {} : { allowOldSecrets }),
             ...(options.promote === undefined ? {} : { services: options.promote }),
           });
         } catch (error) {

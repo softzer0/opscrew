@@ -118,6 +118,78 @@ describe("opscrew promote --version on a site", () => {
   });
 });
 
+describe("opscrew promote --version --allow-old-secrets on Cloudflare's hosting", () => {
+  /** Prod's Worker runs v-2; v-1 predates a change of STRIPE_SECRET_KEY. */
+  async function rollbackProject() {
+    project = await tempProject();
+    const plan = sitePlan("cloudflare-workers");
+    await writeSitePlan(project, "cloudflare-workers");
+    const tfvars = path.join(project.root, plan.infra.dir, "terraform.tfvars.json");
+    await mkdir(path.dirname(tfvars), { recursive: true });
+    await writeFile(tfvars, JSON.stringify({ cloudflare_account_id: FAKE_ACCOUNT_ID }));
+    const zone = new FakeZone();
+    zone.workers.set("example-app", {
+      versions: [
+        { id: "v-2", created_on: "2026-10-24T10:00:00Z" },
+        { id: "v-1", created_on: "2026-10-23T10:00:00Z", secretsChanged: ["STRIPE_SECRET_KEY"] },
+      ],
+      deployments: [
+        {
+          id: "d-2",
+          created_on: "2026-10-24T10:01:00Z",
+          source: "wrangler",
+          strategy: "percentage" as const,
+          versions: [{ version_id: "v-2", percentage: 100 }],
+        },
+      ],
+    });
+    const details: string[] = [];
+    const ctx = projectContext(project, {
+      interactive: true,
+      services: {
+        runner: new RemoteOnlyRunner(),
+        promote: { sharedCloudflare: fakeSharedCloudflare(zone) },
+        approvalHandler: {
+          request: async (request) => {
+            details.push(request.details ?? "");
+            return { approved: true, approver: "test", decidedAt: "2026-10-24T12:00:00.000Z" };
+          },
+        },
+      },
+    });
+    return { zone, ctx, details };
+  }
+
+  it("refuses the rollback by default, naming the secret, and goes ahead with --allow-old-secrets", async () => {
+    const refused = await rollbackProject();
+    expect(await run(refused.ctx, "promote", "--to", "prod", "--version", "v-1")).toBe(1);
+    expect(refused.ctx.errors).toContain(
+      "predates a change to the secret STRIPE_SECRET_KEY: activated again, it would run with its old value",
+    );
+    expect(refused.ctx.errors).toContain(
+      "opscrew promote --to prod --version v-1 --allow-old-secrets STRIPE_SECRET_KEY",
+    );
+    expect(refused.ctx.errors).not.toContain("mistyped");
+
+    const allowed = await rollbackProject();
+    const args = ["--to", "prod", "--version", "v-1", "--allow-old-secrets", "STRIPE_SECRET_KEY"];
+    expect(await run(allowed.ctx, "promote", ...args), allowed.ctx.errors).toBe(0);
+    expect(allowed.details.join("\n")).toContain(
+      "Old secrets (--allow-old-secrets): STRIPE_SECRET_KEY. If Cloudflare reports them changed",
+    );
+    expect(allowed.zone.writes().at(-1)?.path).toContain("/deployments?force=true");
+    expect(allowed.ctx.output).toContain("Deployed version v-1 to prod");
+  });
+
+  it("refuses an --allow-old-secrets that names no secret", async () => {
+    const { ctx, zone } = await rollbackProject();
+    const args = ["--to", "prod", "--version", "v-1", "--allow-old-secrets", " , "];
+    expect(await run(ctx, "promote", ...args)).toBe(2);
+    expect(ctx.errors).toContain("--allow-old-secrets names no secret.");
+    expect(zone.writes()).toEqual([]);
+  });
+});
+
 describe("opscrew promote on Cloudflare's hosting", () => {
   it("deploys the build staging runs to prod and prints it by its run and SHA-256", async () => {
     project = await tempProject();

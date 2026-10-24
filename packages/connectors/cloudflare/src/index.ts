@@ -16,8 +16,10 @@ export {
   type OriginCertificate,
   type RulesetRule,
   type TunnelConnectionState,
+  WORKER_SECRET_NAME,
   type WorkerCustomDomain,
   type WorkerDeployment,
+  WorkerSecretsChangedError,
   type WorkerVersion,
   zoneCandidates,
 } from "./client";
