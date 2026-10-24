@@ -551,6 +551,14 @@ export class AppEnvironments {
       cli,
     );
     this.destroyed.add(environment);
+    // The run's own app (not a further app sharing the run) is destroyed once every environment
+    // it provisioned is: the shared rules' checks and the cleanup read that.
+    if (
+      this.options.app === undefined &&
+      [...this.provisioned].every((provisioned) => this.destroyed.has(provisioned))
+    ) {
+      run.destroyed = true;
+    }
   }
 
   /** Nothing OpsCrew created for the environment is left at Hetzner (SC-301). */

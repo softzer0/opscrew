@@ -173,9 +173,9 @@ describe.skipIf(MISSING.length > 0)(
             );
           }
           const output = await envs.provision("prod", `provision round ${round}`);
-          await run.deploy(`the files of provision round ${round}`, [
-            workflowOf(plan as DeployPlan),
-          ]);
+          // A round changes only OpsCrew's own files, which the deploy workflow's path filter
+          // leaves out (T1619): merge them; no deploy run starts, and none is needed.
+          await run.mergeDeploySetup(`the files of provision round ${round}`);
           // Once provision saved the domain again, GitHub issues the certificate within minutes.
           // Never past the deadline: the last look then gives the plain message above.
           const pause = output.includes("is issuing the certificate") ? minutes(2) : minutes(10);
