@@ -114,6 +114,42 @@ describe.skipIf(!findExecutable("git"))("publishDeploySetup and the recovery cop
   });
 });
 
+describe.skipIf(!findExecutable("git"))("publishDeploySetup and the user's checkout", () => {
+  it("commits only OpsCrew's paths, keeps the user's changes, and says how to get back", async () => {
+    const p = await provisioned();
+    await writeFile(join(p.root, "notes.txt"), "staged draft\n");
+    await p.git(p.root, "add", "notes.txt");
+    await writeFile(join(p.root, "Dockerfile"), "FROM node:24-alpine\nUSER node\n");
+
+    await p.publish();
+    expect(await p.committed()).toEqual(["opscrew/plan.yaml"]);
+    const pushed = await p.git(p.bare, "show", "--name-only", "--format=", DEPLOY_SETUP_BRANCH);
+    expect(pushed).toBe("opscrew/plan.yaml");
+    // The user's staged file stays staged and their edit stays in the working tree.
+    expect(await p.git(p.root, "diff", "--cached", "--name-only")).toBe("notes.txt");
+    expect(await p.git(p.root, "diff", "--name-only")).toBe("Dockerfile");
+    expect(await p.git(p.root, "rev-parse", "--abbrev-ref", "HEAD")).toBe(DEPLOY_SETUP_BRANCH);
+    expect(p.deps.reporter.text()).toContain(
+      `Your checkout is on ${DEPLOY_SETUP_BRANCH}, where these files are. After the pull request is merged, run \`git switch main && git pull\` before you commit anything else.`,
+    );
+  });
+
+  it("commits nothing when only the user's own changes are staged", async () => {
+    const p = await provisioned();
+    await p.publish();
+    await p.git(p.root, "checkout", "-q", "main");
+    await p.git(p.root, "merge", "-q", DEPLOY_SETUP_BRANCH);
+    const before = await p.git(p.root, "rev-parse", "HEAD");
+    await writeFile(join(p.root, "notes.txt"), "staged draft\n");
+    await p.git(p.root, "add", "notes.txt");
+    p.github.pulls.length = 0;
+    const published = await p.publish();
+    expect(published.published).toBe(false);
+    expect(await p.git(p.root, "rev-parse", "HEAD")).toBe(before);
+    expect(await p.git(p.root, "diff", "--cached", "--name-only")).toBe("notes.txt");
+  });
+});
+
 describe.skipIf(!findExecutable("git"))("publishDeploySetup and the provider lock files", () => {
   const roots = ["opscrew/infra/prod", "opscrew/infra/prod-storage"];
   const lock = (root: string) => `${root}/.terraform.lock.hcl`;

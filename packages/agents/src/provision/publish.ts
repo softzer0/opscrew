@@ -770,13 +770,16 @@ async function hasUnpublishedFiles(
 
 /**
  * The commit, push and pull request every OpsCrew pull request shares: writes `files` and stages
- * `paths`; when nothing is staged, and GitHub has `paths` as the deploy branch this clone is on
+ * `paths`; when none of `paths` is staged, and GitHub has `paths` as the deploy branch this clone is on
  * has them, it stops there (no branch, push or pull request; the current branch's open pull
  * request is named, or else, on a deploy branch whose files are already on the base branch, how
- * to switch back). Otherwise it switches to `chosen.branch`, commits what is staged, then (when
+ * to switch back). Otherwise it switches to `chosen.branch` and commits `paths` alone (changes the
+ * user staged themselves stay staged, uncommitted), then (when
  * `push`) pushes and opens the pull request `title` with `body`, or adds to the open one, each
  * after its own approval. A refused push or pull request is not an error: the commit stays local
- * and the user is told how to continue. `what` names the files in the messages.
+ * and the user is told how to continue. The checkout stays on the deploy branch; after opening the
+ * pull request it says how to get back to the user's branch. `what` names the files in the
+ * messages.
  */
 export async function commitAndPropose(
   deps: PhaseDeps,
@@ -806,7 +809,7 @@ export async function commitAndPropose(
     });
   }
   await git.add(paths);
-  const staged = (await git.status()).some((e) => e.code[0] !== " " && e.code[0] !== "?");
+  const staged = await git.hasStagedChanges(paths);
   const unpushed =
     !staged &&
     input.push &&
@@ -835,7 +838,7 @@ export async function commitAndPropose(
   }
   let commit: string | undefined;
   if (staged) {
-    commit = await git.commit(input.commitMessage);
+    commit = await git.commit(input.commitMessage, paths);
     await deps.audit.append({
       kind: "git",
       actor: "opscrew",
@@ -918,6 +921,11 @@ export async function commitAndPropose(
     decision: "approved",
   });
   deps.reporter.success(`Opened ${opened.url}`);
+  if (current !== branch) {
+    deps.reporter.info(
+      `Your checkout is on ${branch}, where these files are. After the pull request is merged, run \`git switch ${current} && git pull\` before you commit anything else.`,
+    );
+  }
   result.prUrl = opened.url;
   return result;
 }

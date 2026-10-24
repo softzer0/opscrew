@@ -140,10 +140,18 @@ export class GitClient {
     await this.#run(["add", "--", ...paths]);
   }
 
-  /** Commits the staged changes and returns the new commit sha. */
-  async commit(message: string): Promise<string> {
-    await this.#run(["commit", "-m", message]);
+  /**
+   * Commits the staged changes and returns the new commit sha. With `only`, the commit holds just
+   * those paths (`git commit --only`); every other staged change stays staged, uncommitted.
+   */
+  async commit(message: string, only?: readonly string[]): Promise<string> {
+    await this.#run(["commit", "-m", message, ...(only ? ["--only", "--", ...only] : [])]);
     return this.headSha();
+  }
+
+  /** True when the index differs from HEAD in any of `paths`. */
+  async hasStagedChanges(paths: readonly string[]): Promise<boolean> {
+    return (await this.#run(["diff", "--cached", "--quiet", "--", ...paths], true)).exitCode !== 0;
   }
 
   async push(
