@@ -1,6 +1,6 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { summarizeFacts } from "./summary";
+import { frameworkName, summarizeFacts } from "./summary";
 
 /** What detection reports for a monorepo with an Express API and a Next.js web app. */
 function ambiguousMonorepo(): ProjectFacts {
@@ -79,5 +79,11 @@ describe("summarizeFacts for a monorepo with several apps", () => {
     const { summary, risks } = summarizeFacts(facts);
     expect(summary).toContain("mono is an app of unknown type written in TypeScript.");
     expect(risks.join("\n")).toMatch(/could not tell what kind of app/);
+  });
+});
+
+describe("frameworkName", () => {
+  it("names React Router", () => {
+    expect(frameworkName("react-router")).toBe("React Router");
   });
 });

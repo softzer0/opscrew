@@ -1,5 +1,6 @@
 import { RUNTIME_DEFAULTS } from "@opscrew/iac-templates";
 import type { AppBuild, ProjectFacts, RuntimeLanguage } from "@opscrew/plan-schema";
+import { npmBounds } from "../adapt/npm-range";
 
 /** A language that has a version (every one except `other`). */
 export type VersionedLanguage = Exclude<RuntimeLanguage, "other">;
@@ -113,18 +114,16 @@ function comparator(token: string): Comparator | undefined {
     case ">":
     case "<":
       return { op, v };
-    case "<=":
-      return { op: "<", v: bump(v, v.length - 1) };
     case "~=":
     case "~>":
       // PEP 440 and RubyGems: `~=3.11` is `>=3.11, <4`; `~> 3.3.1` is `>=3.3.1, <3.4`.
       return { op: "range", low: v, high: v.length > 1 ? bump(v, v.length - 2) : bump(v, 0) };
-    case "~":
-      return { op: "range", low: v, high: bump(v, v.length > 1 ? 1 : 0) };
+    case "<=":
+      return { op: "<", v: npmBounds(op, v).high as Parts };
     default: {
-      // `^`: up to the next change of the first non-zero part.
-      const first = v.findIndex((part) => part !== 0);
-      return { op: "range", low: v, high: bump(v, first === -1 ? v.length - 1 : first) };
+      // `~` and `^` as npm reads them.
+      const { low, high } = npmBounds(op as "~" | "^", v);
+      return { op: "range", low, high: high as Parts };
     }
   }
 }

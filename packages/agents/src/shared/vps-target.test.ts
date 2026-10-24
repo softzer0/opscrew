@@ -267,13 +267,17 @@ describe.each([
     const runner = new ScriptedRunner();
     const deps = await serverlessProject(runner);
     const provider = serverlessPlan().target.provider;
-    const commands: [string, () => Promise<unknown>][] = [
-      ["Previewing the deployment files", () => previewDeploymentFiles(deps)],
-      ["Reading the app's containers", () => readServerContainers(deps, serverlessPlan())],
-    ];
-    for (const [what, run] of commands) {
-      await expect(run(), what).rejects.toMatchObject(notYet(what));
-    }
+    const what = "Reading the app's containers";
+    await expect(readServerContainers(deps, serverlessPlan())).rejects.toMatchObject(notYet(what));
+    // A site has no server files to preview: it is told what to read instead.
+    const files = github
+      ? ".github/workflows/opscrew-deploy.yml"
+      : ".github/workflows/opscrew-deploy.yml and opscrew/cloudflare/wrangler.jsonc";
+    await expect(previewDeploymentFiles(deps)).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `OpsCrew previews the deployment files of an app on a server; a site on ${name} has none to preview.`,
+      hint: `To see how the site deploys, read ${files} in the repository.`,
+    });
     // Nothing ran a command (no engine, no SSH, no git), and the plan is as it was.
     expect(runner.calls).toEqual([]);
     expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(serverlessPlan());

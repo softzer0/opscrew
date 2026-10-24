@@ -26,16 +26,48 @@ export function compareVersions(a: Version, b: Version): number {
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
-/** `parts` with part `index` raised by one and the parts after it zero. */
-function bump(parts: readonly number[], index: number): Version {
-  const out = [0, 0, 0];
-  for (let i = 0; i < index; i++) out[i] = parts[i] ?? 0;
-  out[index] = (parts[index] ?? 0) + 1;
-  return out as unknown as Version;
+/** `parts` with part `index` raised by one and the parts after it dropped. */
+function bump(parts: readonly number[], index: number): number[] {
+  return [...parts.slice(0, index), (parts[index] ?? 0) + 1];
 }
 
 function filled(parts: readonly number[]): Version {
   return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+}
+
+/** An npm comparator operator. */
+export type NpmOperator = "" | "=" | "^" | "~" | ">=" | ">" | "<" | "<=";
+
+/**
+ * The releases an npm comparator allows, from `low` up to (not including) `high`; no `high` is
+ * no upper bound. `parts` are the parts given (`16.x` gives `[16]`, at least one); the bounds
+ * keep that precision, a missing part reading as zero (`^7.4` is 7.4 up to 8, `<=1.2` is 0 up
+ * to 1.3).
+ */
+export function npmBounds(
+  op: NpmOperator,
+  parts: readonly number[],
+): { low: number[]; high?: number[] } {
+  const n = parts.length;
+  switch (op) {
+    case "":
+    case "=":
+      return { low: [...parts], high: bump(parts, n - 1) };
+    case "^": {
+      const first = parts.findIndex((part) => part !== 0);
+      return { low: [...parts], high: bump(parts, first === -1 ? n - 1 : first) };
+    }
+    case "~":
+      return { low: [...parts], high: bump(parts, n >= 2 ? 1 : 0) };
+    case ">=":
+      return { low: [...parts] };
+    case ">":
+      return { low: bump(parts, n - 1) };
+    case "<":
+      return { low: [0], high: [...parts] };
+    case "<=":
+      return { low: [0], high: bump(parts, n - 1) };
+  }
 }
 
 type Test = (version: Version) => boolean;
@@ -47,40 +79,18 @@ const COMPARATOR =
 function comparator(token: string): Test | undefined {
   const match = COMPARATOR.exec(token);
   if (match === null) return undefined;
-  const op = match[1] ?? "";
+  const op = (match[1] ?? "") as NpmOperator;
   // The parts given, up to the first wildcard: `16.x` gives [16].
   const parts: number[] = [];
   for (const part of match.slice(2, 5)) {
     if (part === undefined || !/^\d+$/.test(part)) break;
     parts.push(Number(part));
   }
-  const n = parts.length;
-  const at = (low: Version, high?: Version): Test => {
-    return (v) =>
-      compareVersions(v, low) >= 0 && (high === undefined || compareVersions(v, high) < 0);
-  };
-  const zero: Version = [0, 0, 0];
-  if (n === 0) return op === "<" || op === ">" ? () => false : () => true;
-  switch (op) {
-    case "":
-    case "=":
-      return at(filled(parts), bump(parts, n - 1));
-    case "^": {
-      const first = parts.findIndex((part) => part !== 0);
-      return at(filled(parts), bump(parts, first === -1 ? n - 1 : first));
-    }
-    case "~":
-      return at(filled(parts), bump(parts, n >= 2 ? 1 : 0));
-    case ">=":
-      return at(filled(parts));
-    case ">":
-      return at(bump(parts, n - 1));
-    case "<":
-      return at(zero, filled(parts));
-    default:
-      // `<=`: up to the end of what is given (`<=1.2` is `<1.3.0`).
-      return at(zero, bump(parts, n - 1));
-  }
+  if (parts.length === 0) return op === "<" || op === ">" ? () => false : () => true;
+  const { low, high } = npmBounds(op, parts);
+  return (v) =>
+    compareVersions(v, filled(low)) >= 0 &&
+    (high === undefined || compareVersions(v, filled(high)) < 0);
 }
 
 /**

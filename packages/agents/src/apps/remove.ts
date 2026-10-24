@@ -23,6 +23,11 @@ import { appPaths, deployedEnvironments } from "./list";
 export interface RemoveAppOptions {
   /** Picks the IaC engine that reads an encrypted state (default: the installed one). */
   engine?: EngineFactory;
+  /**
+   * Asks the user to confirm removing the app `key`, once it may be removed and before anything
+   * is; throws to stop (nothing removed).
+   */
+  confirm?: (key: string) => Promise<void>;
 }
 
 /**
@@ -35,7 +40,8 @@ export interface RemoveAppOptions {
  * @throws OpsCrewError `INVALID_INPUT` for the first app or an unknown key, and
  * `PHASE_PRECONDITION` (nothing removed) while one of its environments is deployed, or while the
  * state of its GitHub Pages verification root may still hold the record (an encrypted state the
- * engine cannot read counts), since without the state nothing could delete it later.
+ * engine cannot read counts), since without the state nothing could delete it later. Only then
+ * is `options.confirm` asked.
  */
 export async function removeApp(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "redactor" | "runner" | "env" | "clock">,
@@ -76,6 +82,7 @@ export async function removeApp(
       },
     );
   }
+  await options.confirm?.(key);
   // Only an environment with a plan was ever provisioned, so only its roots and workflow exist.
   const repository: string[] = [];
   for (const name of await environmentsOf(paths.root, key)) {

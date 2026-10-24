@@ -1,14 +1,4 @@
-import {
-  type AppSummary,
-  addApp,
-  chooseEngine,
-  listApps,
-  type PhaseDeps,
-  pagesVerificationStateFile,
-  removeApp,
-  stateContents,
-} from "@opscrew/agents";
-import { readOptionalArtifact } from "@opscrew/plan-schema";
+import { type AppSummary, addApp, listApps, removeApp } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps } from "../deps";
@@ -40,20 +30,6 @@ async function add(ctx: CliContext, key: string, dir: string): Promise<void> {
 }
 
 /**
- * False when `removeApp` refuses the further app `deps.paths` belong to before removing anything:
- * it is deployed, or the state of its GitHub Pages verification root may still hold the record.
- */
-async function appRemovable(deps: PhaseDeps): Promise<boolean> {
-  const { paths } = deps;
-  if ((await listApps(paths)).some((one) => one.key === paths.app && one.deployed)) return false;
-  const prod = await readOptionalArtifact("plan", paths.files.plan);
-  const held = await stateContents(deps, pagesVerificationStateFile(paths), () =>
-    chooseEngine(deps, prod?.infra.engine ?? "auto"),
-  );
-  return held === "nothing";
-}
-
-/**
  * `opscrew app remove <key>`: removes a further app's files (agents' `removeApp`: refused for the
  * first app and while the app is deployed). They hold its deploy keys, state passphrases and
  * generated secrets, so a terminal has the key typed back and a script needs `--confirm <key>`.
@@ -62,18 +38,18 @@ async function remove(ctx: CliContext, key: string, flags: { confirm?: string })
   const app = await resolveCliApp(ctx, key, "app remove");
   const deps = createPhaseDeps(ctx, { ai: false, app });
   // removeApp refuses the first app, a deployed one and one whose GitHub Pages verification
-  // record may still be in DNS: nothing is asked for those.
-  if (app !== undefined && (await appRemovable(deps))) {
-    await confirmRemoval(ctx, {
-      name: app,
-      confirm: flags.confirm,
-      what: "the app's key",
-      subject: `the app ${app}`,
-      details: `This removes the app ${app}'s files: its record, plans and answers in opscrew/apps/${app}, its infrastructure code and deploy workflows, and what OpsCrew keeps for it on this computer (its deploy keys, state passphrases and generated secrets). Its folder in the repository stays.`,
-      again: `opscrew app remove ${app}`,
-    });
-  }
-  await removeApp(deps);
+  // record may still be in DNS before it asks.
+  await removeApp(deps, {
+    confirm: (name) =>
+      confirmRemoval(ctx, {
+        name,
+        confirm: flags.confirm,
+        what: "the app's key",
+        subject: `the app ${name}`,
+        details: `This removes the app ${name}'s files: its record, plans and answers in opscrew/apps/${name}, its infrastructure code and deploy workflows, and what OpsCrew keeps for it on this computer (its deploy keys, state passphrases and generated secrets). Its folder in the repository stays.`,
+        again: `opscrew app remove ${name}`,
+      }),
+  });
 }
 
 /**

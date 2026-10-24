@@ -17,6 +17,7 @@ const FRAMEWORK_NAMES: Record<string, string> = {
   next: "Next.js",
   nuxt: "Nuxt",
   remix: "Remix",
+  "react-router": "React Router",
   sveltekit: "SvelteKit",
   astro: "Astro",
   vite: "Vite",

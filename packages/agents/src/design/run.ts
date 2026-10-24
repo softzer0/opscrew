@@ -876,16 +876,16 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
    * `designed` named for the environment, with the user's edits ({@link keptEdits}, and the lines
    * saying them) and the previous plan's settings kept.
    */
-  const ownPlan = (designed: DeployPlan) => {
+  const ownPlan = (designed: DeployPlan, edits = sharedEdits) => {
     const edited = keptEdits(
       prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, options),
       previous,
-      sharedEdits,
+      edits,
     );
     const plan = previous ? keepPlanSettings(edited.plan, previous, requirements) : edited.plan;
     return { plan, lines: edited.lines };
   };
-  const { plan: own, lines: keptLines } = ownPlan(fresh);
+  const { plan: own, lines: ownLines } = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
   // image comes from) is chosen.
   const source = await sharedPartsSource(paths, own);
@@ -898,10 +898,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // The variables what runs fills (DATABASE_URL, REDIS_URL, CRON_SECRET, the moved SQLite
   // database's) follow the processes, services and SQLite the plan takes from its source, with
   // the kept services, not those designed from the code here.
-  const shared =
+  // Their edits are the source plan's, so the lines name its file and values.
+  const fromSource =
     source === undefined
-      ? own
-      : ownPlan(planFor(sourceComponents(planned, source.plan, keep))).plan;
+      ? undefined
+      : ownPlan(planFor(sourceComponents(planned, source.plan, keep)), source.plan);
+  const shared = fromSource?.plan ?? own;
+  const keptLines = fromSource?.lines ?? ownLines;
   const kept =
     prodPlan === undefined && source === undefined
       ? own

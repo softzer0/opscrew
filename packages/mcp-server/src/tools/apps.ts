@@ -1,15 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  addApp,
-  chooseEngine,
-  listApps,
-  type PhaseDeps,
-  pagesVerificationStateFile,
-  removeApp,
-  stateContents,
-} from "@opscrew/agents";
+import { addApp, listApps, removeApp } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
-import { readOptionalArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
@@ -19,20 +10,6 @@ const KEY_INPUT = z
   .string()
   .min(1)
   .describe("The app's key, for example docs (lower-case letters, digits, -).");
-
-/**
- * False when `removeApp` refuses the further app `deps.paths` belong to before removing anything:
- * it is deployed, or the state of its GitHub Pages verification root may still hold the record.
- */
-async function appRemovable(deps: PhaseDeps): Promise<boolean> {
-  const { paths } = deps;
-  if ((await listApps(paths)).some((one) => one.key === paths.app && one.deployed)) return false;
-  const prod = await readOptionalArtifact("plan", paths.files.plan);
-  const held = await stateContents(deps, pagesVerificationStateFile(paths), () =>
-    chooseEngine(deps, prod?.infra.engine ?? "auto"),
-  );
-  return held === "nothing";
-}
 
 /**
  * The tools for several apps in one repository (contracts/apps.md "CLI and MCP"):
@@ -115,25 +92,26 @@ export function registerAppTools(server: McpServer, deps: ResolvedMcpDeps): void
           app: appKey,
         });
         // removeApp refuses the first app, a deployed one and one whose GitHub Pages verification
-        // record may still be in DNS: nothing is asked for those.
-        if (appKey !== undefined && (await appRemovable(phase))) {
-          // It deletes the app's deploy keys, passphrases and secrets: the user types its key.
-          const approval = await phase.approvals.request({
-            kind: "repo-write",
-            title: `Remove the app ${appKey}'s files`,
-            details: `This removes the app ${appKey}'s files: its record, plans and answers in opscrew/apps/${appKey}, its infrastructure code and deploy workflows, and what OpsCrew keeps for it on this computer (its deploy keys, state passphrases and generated secrets). Its folder in the repository stays.`,
-            allowDestroy: true,
-            confirmPhrase: appKey,
-          });
-          if (!approval.approved) {
-            throw new OpsCrewError(
-              "APPROVAL_REFUSED",
-              `The user did not confirm removing the app ${appKey}, so nothing was removed.`,
-              { hint: "Call opscrew_app_remove again only when the user asks." },
-            );
-          }
-        }
-        const removed = await removeApp(phase);
+        // record may still be in DNS before it asks. It deletes the app's deploy keys,
+        // passphrases and secrets: the user types its key.
+        const removed = await removeApp(phase, {
+          confirm: async (name) => {
+            const approval = await phase.approvals.request({
+              kind: "repo-write",
+              title: `Remove the app ${name}'s files`,
+              details: `This removes the app ${name}'s files: its record, plans and answers in opscrew/apps/${name}, its infrastructure code and deploy workflows, and what OpsCrew keeps for it on this computer (its deploy keys, state passphrases and generated secrets). Its folder in the repository stays.`,
+              allowDestroy: true,
+              confirmPhrase: name,
+            });
+            if (!approval.approved) {
+              throw new OpsCrewError(
+                "APPROVAL_REFUSED",
+                `The user did not confirm removing the app ${name}, so nothing was removed.`,
+                { hint: "Call opscrew_app_remove again only when the user asks." },
+              );
+            }
+          },
+        });
         return {
           text: `Removed the app ${appKey}'s files${removed.length === 0 ? "; none were left" : `: ${removed.join(", ")}`}.`,
           data: { removed },

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { exists } from "@opscrew/core";
+import { exists, listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import {
   additionsPath,
   type RenderedFile,
@@ -33,7 +33,7 @@ import {
   readValidJson,
   requireGitRepo,
   type ServerAddress,
-  serverlessNotSupported,
+  serverlessName,
 } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
 import { type CloudflareSetup, setupCloudflare } from "./credentials";
@@ -263,7 +263,9 @@ export function withCloudflareZone(
  * No server is contacted and no Cloudflare plan is made: the one-time PIN login's id comes from the
  * committed `terraform.tfvars.json` of the last run, and a server the user owns gets the SSH port
  * provision used (the recorded login port in public mode, sshd's committed port in tunnel mode).
- * On this computer (the localhost target), the local stack's files (`previewLocalStack`).
+ * On this computer (the localhost target), the local stack's files (`previewLocalStack`). A site
+ * (a server-less target) is refused (`PHASE_PRECONDITION`), naming its workflow and Wrangler
+ * config to read instead.
  */
 export async function previewDeploymentFiles(
   deps: PhaseDeps,
@@ -277,7 +279,16 @@ export async function previewDeploymentFiles(
   let plan = await readArtifact("plan", deps.paths.files.plan);
   if (plan.target.provider === "localhost") return previewLocalStack(deps, plan);
   if (isServerlessProvider(plan.target.provider)) {
-    throw serverlessNotSupported("Previewing the deployment files", plan.target.provider);
+    const files = [plan.cicd.workflowPath];
+    if (plan.target.provider === "cloudflare-workers") {
+      const wrangler = join(deps.paths.artefactsDir, "cloudflare", "wrangler.jsonc");
+      files.push(toPosixRelative(deps.paths.root, wrangler));
+    }
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew previews the deployment files of an app on a server; a site on ${serverlessName(plan.target.provider)} has none to preview.`,
+      { hint: `To see how the site deploys, read ${listText(files)} in the repository.` },
+    );
   }
   const requirements = await readRequirements(deps);
   const git = await requireGitRepo(deps);
