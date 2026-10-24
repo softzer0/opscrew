@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { ACTIONS, PACKAGE_MANAGERS, TOOLS } from "../pins";
@@ -85,6 +85,10 @@ async function tree(files: Record<string, string>): Promise<string> {
   }
   return dir;
 }
+
+// The bash runs below take a few seconds each, and far longer on a loaded machine (Git Bash
+// starts slowly on Windows), so this file's tests get more than the default 5 seconds.
+vi.setConfig({ testTimeout: 60_000 });
 
 /** Bash with GNU find, sort and sha256sum, as on GitHub's machines (Git Bash on Windows). */
 const bash = (() => {
