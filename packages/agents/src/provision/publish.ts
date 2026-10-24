@@ -1,7 +1,13 @@
 import { join, posix } from "node:path";
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, upperFirst, writeFileAtomic } from "@opscrew/core";
+import {
+  exists,
+  isUserFacingError,
+  OpsCrewError,
+  upperFirst,
+  writeFileAtomic,
+} from "@opscrew/core";
 import {
   pagesVerificationRootDir,
   portainerDeployBranch,
@@ -692,7 +698,11 @@ export async function publishDeploySetup(
           ),
         });
   const recovery = await recoveryCopyFiles(deps, input);
-  const paths = [...input.paths, ...recovery.map((file) => file.path)];
+  const paths = [
+    ...input.paths,
+    ...(await providerLockFiles(deps.paths.root, input.paths)),
+    ...recovery.map((file) => file.path),
+  ];
   const copy = copyPath(deps.paths);
   const body = deploySetupPullRequestBody(plan, deps.version, {
     flag: (await planWhere(deps.paths.root, plan)).flag,
@@ -714,6 +724,20 @@ export async function publishDeploySetup(
     push: input.push,
     phase,
   });
+}
+
+/**
+ * The `.terraform.lock.hcl` files that `tofu init` / `terraform init` wrote beside the IaC in
+ * `paths` (one per folder with a `.tf` or `.tofu` file, once initialised). They pin the providers'
+ * checksums and belong in git, so they are committed with the IaC they lock.
+ */
+async function providerLockFiles(root: string, paths: readonly string[]): Promise<string[]> {
+  const dirs = new Set(
+    paths.filter((p) => /\.(?:tf|tofu)(?:\.json)?$/.test(p)).map((p) => posix.dirname(p)),
+  );
+  const locks = [...dirs].map((dir) => posix.join(dir, ".terraform.lock.hcl"));
+  const found = await Promise.all(locks.map((lock) => exists(join(root, lock))));
+  return locks.filter((_, i) => found[i]);
 }
 
 /**

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findExecutable } from "@opscrew/core";
@@ -111,5 +111,38 @@ describe.skipIf(!findExecutable("git"))("publishDeploySetup and the recovery cop
     });
     expect(await p.git(p.root, "rev-parse", "HEAD")).toBe(before);
     expect(p.github.pulls).toEqual([]);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("publishDeploySetup and the provider lock files", () => {
+  const roots = ["opscrew/infra/prod", "opscrew/infra/prod-storage"];
+  const lock = (root: string) => `${root}/.terraform.lock.hcl`;
+
+  it("commits each initialised folder's lock file beside its IaC, and a changed one again", async () => {
+    const p = await provisioned();
+    for (const root of roots) {
+      await mkdir(join(p.root, root), { recursive: true });
+      await writeFile(join(p.root, root, "main.tf"), "terraform {}\n");
+      await writeFile(join(p.root, lock(root)), "# lock v1\n");
+    }
+    // A folder OpsCrew has not initialised yet has no lock file to commit.
+    await mkdir(join(p.root, "opscrew/infra/staging"), { recursive: true });
+    await writeFile(join(p.root, "opscrew/infra/staging/main.tf"), "terraform {}\n");
+    const paths = [...roots, "opscrew/infra/staging"].map((root) => `${root}/main.tf`);
+    await p.publish({ paths });
+    expect((await p.committed()).filter(Boolean).sort()).toEqual(
+      [...paths, ...roots.map(lock)].sort(),
+    );
+    const push = p.handler.requests.find((r) => r.kind === "git-push");
+    for (const root of roots) expect(push?.details).toContain(`  ${lock(root)}`);
+
+    // A later provision whose init changed one lock file commits that change.
+    await p.git(p.root, "checkout", "-q", "main");
+    await p.git(p.root, "merge", "-q", DEPLOY_SETUP_BRANCH);
+    await p.git(p.root, "branch", "-q", "-D", DEPLOY_SETUP_BRANCH);
+    p.github.pulls.length = 0;
+    await writeFile(join(p.root, lock("opscrew/infra/prod")), "# lock v2\n");
+    await p.publish({ paths });
+    expect((await p.committed()).filter(Boolean)).toEqual([lock("opscrew/infra/prod")]);
   });
 });
