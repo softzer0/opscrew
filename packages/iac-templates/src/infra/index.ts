@@ -23,7 +23,11 @@ import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
-export { pagesVerificationRootDir, renderPagesVerification } from "./serverless";
+export {
+  pagesVerificationRootDir,
+  renderPagesVerification,
+  verificationRecordName,
+} from "./serverless";
 export {
   type BucketProvider,
   type ProviderBucket,

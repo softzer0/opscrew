@@ -47,6 +47,7 @@ export {
   type RunbookContext,
   runbookHead,
 } from "./shared";
+export { renderSiteRunbook, type SiteRunbookContext } from "./site";
 
 const PENDING = "_(set by `opscrew provision`)_";
 

@@ -185,6 +185,14 @@ export function pagesVerificationRootDir(plan: Pick<DeployPlan, "app" | "infra">
 }
 
 /**
+ * The name of GitHub's domain verification record for `domain`, `_github-pages-challenge-<owner>.<domain>`
+ * with the owner in lower case, as GitHub's settings page names it.
+ */
+export function verificationRecordName(owner: string, domain: string): string {
+  return `_github-pages-challenge-${owner.toLowerCase()}.${domain}`;
+}
+
+/**
  * The root of GitHub's domain verification record for a site on GitHub Pages
  * ({@link pagesVerificationRootDir}): one DNS-only TXT record `_github-pages-challenge-<owner>.<domain>`
  * holding `verification`, the value GitHub's verification page shows (not a secret: it is public in

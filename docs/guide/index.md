@@ -8,6 +8,8 @@ an app yet.
 - [Deploy to a server you already have](own-server.md)
 - [Deploy to a Portainer you already run](portainer-target.md)
 - [Your app's production stack on your own computer](localhost.md)
+- [Host your site on Cloudflare, with no server](cloudflare-hosting.md)
+- [Publish your site on GitHub Pages](github-pages.md)
 - [dev, staging and prod: environments](environments.md)
 - [Several apps in one repository](several-apps.md)
 - [Portainer: a web UI for your containers](portainer.md)
@@ -30,6 +32,10 @@ an app yet.
 - [Object storage](object-storage.md)
 - [Message brokers and queues](brokers.md)
 - [Search and analytics engines](search-and-analytics.md)
+
+## Using OpsCrew
+
+- [OpsCrew in Claude Code: the plugin](claude-code-plugin.md)
 
 ## Security
 

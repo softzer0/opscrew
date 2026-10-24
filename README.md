@@ -24,6 +24,8 @@ Where it deploys:
 - **A server you already have, shared by several OpsCrew apps if you like:** see [Deploy to a server you already have](docs/guide/own-server.md).
 - **A Portainer you already run, for example on a NAS:** see [Deploy to a Portainer you already run](docs/guide/portainer-target.md). OpsCrew can also add [Portainer](docs/guide/portainer.md) to a server as a web UI for your containers.
 - **Your own computer, with the same production stack in your Docker:** see [Your app's production stack on your own computer](docs/guide/localhost.md). No server, no cloud account and no domain needed.
+- **Cloudflare, with no server, for static and server-rendered sites:** see [Host your site on Cloudflare](docs/guide/cloudflare-hosting.md). Free for static files.
+- **GitHub Pages, for static sites in public repositories:** see [Publish your site on GitHub Pages](docs/guide/github-pages.md). Free, without custom headers or commercial use.
 
 One app can have several environments, such as dev on your computer, staging on a small server and prod on the live one, and a tested image moves to prod unchanged: see [dev, staging and prod](docs/guide/environments.md). Deploy jobs can also run on the server itself or on your computer: see [Self-hosted runners](docs/guide/runners.md).
 

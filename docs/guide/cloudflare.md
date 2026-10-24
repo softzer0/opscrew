@@ -1,11 +1,11 @@
 # Your domain on Cloudflare, and several apps in one zone
 
-When your app's domain is on Cloudflare, OpsCrew protects every hostname of the app with two rules
-in your Cloudflare zone. You can put several OpsCrew apps under one domain (`shop.example.com`,
+When your app's domain is on Cloudflare, OpsCrew protects every hostname of the app with OpsCrew's
+rules in your Cloudflare zone. You can put several OpsCrew apps under one domain (`shop.example.com`,
 `api.example.com`, `status.example.com`) and in one Cloudflare account: each app gets the same
 protection, your own rules stay yours, and removing one app leaves the others as they are.
 
-## The two rules OpsCrew keeps in your zone
+## The rules OpsCrew keeps in your zone
 
 OpsCrew keeps one rule of its own of each kind in the zone, whatever the number of apps:
 
@@ -15,15 +15,19 @@ OpsCrew keeps one rule of its own of each kind in the zone, whatever the number 
 - **"OpsCrew: verify the origin certificate (Full (strict) TLS)"**, in **Rules → Configuration
   Rules**. Cloudflare checks your server's certificate when it connects to it. Apps served through
   a Cloudflare Tunnel, and apps in your own Portainer, do not need it.
+- **"OpsCrew: redirect www to the domain"**, in **Rules → Redirect Rules**, only once a site on
+  [Cloudflare's hosting](cloudflare-hosting.md#www) has `www`. It sends `www.<domain>` to the
+  domain with a 301.
 
 Each rule lists the hostnames of every OpsCrew app in the zone. Each app adds only its own
 hostnames, remembers them in `.opscrew/cloudflare.json` on your computer, and later removes only
-those. So the zone uses two rule slots, one of each kind, whether it has one OpsCrew app or twenty.
+those. So the zone uses one rule slot of each kind, whether it has one OpsCrew app or twenty.
 
 **Your own rules are never touched.** OpsCrew does not change, reorder or delete any rule it did not
-create. It adds its rule after the rules already in the zone, and it creates a zone's custom rules
-or configuration rules only when the zone has none of that kind yet. Rule kinds OpsCrew does not
-use, such as redirects or cache rules, are never read or changed.
+create. It adds its rule after the rules already in the zone, and it creates a zone's rules of a
+kind only when the zone has none of that kind yet. Rule kinds OpsCrew does not use, such as cache
+rules, are never read or changed, and it reads the redirect rules only for a site with `www` on
+Cloudflare's hosting.
 
 ## The Cloudflare plan
 
@@ -75,7 +79,8 @@ changes or deletes them. They cost nothing.
 
 - **Rule slots.** Each Cloudflare plan allows only so many rules of each kind in a zone: Free 5
   custom rules and 10 configuration rules, Pro 20 and 25, Business 100 and 50, Enterprise 1,000
-  and 300. OpsCrew needs one slot of each kind for all its apps together. When the zone's slots are
+  and 300. The Free plan also allows 10 redirect rules (single redirects); for the other plans, see
+  **Rules → Redirect Rules** in the dashboard, which shows how many the zone has left. OpsCrew needs one slot of each kind for all its apps together. When the zone's slots are
   all used by your own rules, OpsCrew stops before changing anything and says how many rules the
   zone's plan allows. Delete or merge one of your rules, or move the zone to a higher plan.
 - **Hostnames per rule.** Cloudflare accepts rule expressions of up to 4,096 characters, which is
@@ -93,7 +98,7 @@ another OpsCrew app uses that hostname, or when the app that added it is gone wi
 - If the other app still exists, run `npx opscrew destroy` in its project, or give this app
   another hostname.
 - If the other app is gone, open the rule in the Cloudflare dashboard (**Security → WAF → Custom
-  rules**, or **Rules → Configuration Rules**), remove the hostname from its list and save. Then
+  rules**, **Rules → Configuration Rules** or **Rules → Redirect Rules**), remove the hostname from its list and save. Then
   run the command again.
 
 If `.opscrew/cloudflare.json` is damaged, copy it back from the computer that deployed the app.
@@ -120,7 +125,7 @@ account's Zero Trust organization and one-time PIN login always stay.
 ## Environments in one zone
 
 Each of an app's [environments](environments.md) is protected like an app of its own: staging's
-hostnames (`staging.example.com`) join the same two OpsCrew rules, each environment's provision
+hostnames (`staging.example.com`) join the same OpsCrew rules, each environment's provision
 shows its own Cloudflare plan, and each remembers its hostnames in its own record
 (`.opscrew/environments/<env>/cloudflare.json`; prod's stays `.opscrew/cloudflare.json`).
 Every environment needs hostnames of its own: design refuses one that another environment of the
@@ -141,10 +146,15 @@ Give your `CLOUDFLARE_API_TOKEN` these permissions for the zone:
 - Zone → SSL and Certificates → Edit ([origin protection](origin-protection.md))
 - Zone → Zone Settings → Edit (the [minimum TLS version](tls-and-caa.md#the-minimum-tls-version))
 
+For a site on [Cloudflare's hosting](cloudflare-hosting.md#the-tokens), also add Account → Workers
+Scripts → Edit (the Worker and its custom domains) and, when the site has `www`, Zone → Single
+Redirect → Edit (the redirect rule). Its deploy workflow uses a second token with only Account →
+Workers Scripts → Edit.
+
 Where the app uses Cloudflare Access (tunnel mode on your own server, Portainer on a subdomain or
 Portainer's Cloudflare redeploys), also add Account → Access: Organizations, Identity Providers, and Groups →
 Edit, plus the tunnel and Access permissions listed in
 [Deploy to a server you already have](own-server.md#cloudflare-token-permissions) and
 [Deploy to a Portainer you already run](portainer-target.md#the-tokens-and-what-they-may-do).
 
-`npx opscrew init` reads both rule lists and names the permission that is missing.
+`npx opscrew init` reads the rule lists and names the permission that is missing.

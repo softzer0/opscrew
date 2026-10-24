@@ -4,7 +4,7 @@
  */
 import { join } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
-import { pagesVerificationRootDir } from "@opscrew/iac-templates";
+import { pagesVerificationRootDir, verificationRecordName } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../../context";
@@ -27,10 +27,8 @@ export function verificationPage(owner: string, ownerType: string): string {
     : "https://github.com/settings/pages";
 }
 
-/** The TXT record's name: `_github-pages-challenge-<owner>.<domain>`. */
-export function verificationRecordName(owner: string, domain: string): string {
-  return `_github-pages-challenge-${owner.toLowerCase()}.${domain}`;
-}
+/** The TXT record's name, as iac-templates renders it (destroy names it from here). */
+export { verificationRecordName };
 
 /** How to find the value on GitHub's page, for the prompt's caller and the stop's hint. */
 function whereToFind(domain: string, page: string): string {

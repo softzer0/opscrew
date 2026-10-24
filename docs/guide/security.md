@@ -65,6 +65,15 @@ Give `CLOUDFLARE_API_TOKEN` these zone permissions (`npx opscrew init` lists the
 - Zone → SSL and Certificates → Edit
 - Zone → Zone Settings → Edit
 
+For [Cloudflare's hosting](cloudflare-hosting.md#the-tokens), also add:
+
+- Account → Workers Scripts → Edit (the Worker and its custom domains)
+- Zone → Single Redirect → Edit, only for a site with `www` (OpsCrew's redirect to the domain)
+
+Cloudflare's hosting also needs a second token for the deploy workflow,
+`OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`, with only Account → Workers Scripts → Edit.
+`npx opscrew provision` stores it as a GitHub secret; it never stores `CLOUDFLARE_API_TOKEN` there.
+
 Tunnels, Cloudflare Access and R2 need a few more; see
 [Cloudflare token permissions](cloudflare.md#cloudflare-token-permissions).
 
@@ -77,15 +86,22 @@ Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's reposito
 - Contents: Read and write
 - Pull requests: Read and write
 - Secrets: Read and write
-- Actions: Read and write (this also lets OpsCrew read GitHub environments)
+- Actions: Read and write (this also lets OpsCrew read GitHub environments, and re-run a
+  [GitHub Pages](github-pages.md#rolling-back) run for a rollback)
 - Workflows: Read and write
 - Metadata: Read
 - Administration: Read and write, only for an app with
   [several environments](environments.md#where-each-environments-secrets-live) (OpsCrew creates
-  their GitHub environments) and for [self-hosted runners](runners.md) (runner registration and the
-  fork pull request policy)
+  their GitHub environments), for [self-hosted runners](runners.md) (runner registration and the
+  fork pull request policy) and for [GitHub Pages](github-pages.md) (GitHub accepts nothing
+  narrower for changing a Pages site)
 - Environments: Read and write, only for an app with several environments (the secrets in their
   GitHub environments)
+- Pages: Read and write, only for GitHub Pages (turning the site on and off, its custom domain and
+  HTTPS, and its certificate's state)
+- Plan: Read, optional, for GitHub Pages on a private repository: without it GitHub hides the
+  owner's plan, so OpsCrew cannot tell before any change whether GitHub allows Pages there. It is
+  an account permission, or an organization permission when an organization owns the repository.
 
 GitHub's container registry may not accept a fine-grained token. Where OpsCrew reads it
 ([`opscrew promote`](environments.md#the-registry-token-for-promote), a private image

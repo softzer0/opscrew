@@ -236,6 +236,16 @@ describe("renderCloudflareWorkersWorkflow", () => {
     ]);
   });
 
+  it("checks the 100,000 files of Workers Paid when the design chose it", () => {
+    const plan = cloudflarePlan();
+    const monthly = { amount: 5, currency: "USD" } as const;
+    const paid = doc(render({ ...plan, cost: { ...plan.cost, monthly } }).content);
+    const limit = step(paid.jobs.build, "Check the site against Cloudflare's limits").run ?? "";
+    expect(limit).toContain('if [[ "$files" -gt 100000 ]]; then');
+    expect(limit).toContain("100,000 files a version may have on Cloudflare's Workers Paid plan");
+    expect(limit).not.toContain("20000");
+  });
+
   it("checks the 20,000 files of the free plan, records the SHA-256, and uploads the build with its hidden files", () => {
     const limit = step(ssrDoc.jobs.build, "Check the site against Cloudflare's limits").run ?? "";
     expect(limit).toContain("if [[ ! -f '.output/server/index.mjs' ]]; then");

@@ -2,21 +2,23 @@
  * `opscrew verify` for the server-less targets (feature 016, FR-1608): per hostname its DNS, its
  * certificate, an answer, and on Cloudflare's hosting OpsCrew's security headers (with server
  * rendering, also on an answer of the Worker itself); on GitHub Pages the site's certificate and
- * HTTPS as GitHub reports them. Read-only: it changes nothing at Cloudflare or GitHub, and writes
- * no file.
+ * HTTPS as GitHub reports them. Read-only: it changes nothing at Cloudflare or GitHub; the only file
+ * it writes is the runbook.
  */
 import { isIPv6 } from "node:net";
 import type { GitHubClient, PagesHealth, PagesSite } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { isUserFacingError, errorText as userErrorText } from "@opscrew/core";
+import { isUserFacingError, toPosixRelative, errorText as userErrorText } from "@opscrew/core";
+import { renderSiteRunbook } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  environmentsOf,
   isServerlessProvider,
   type ServerlessProvider,
 } from "@opscrew/plan-schema";
 import { daysLeft } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { checkResult, editCheckText, summarizeChecks } from "../shared";
+import { checkResult, editCheckText, summarizeChecks, writeRenderedFiles } from "../shared";
 import {
   type CloudflareRanges,
   certificateCoversHost,
@@ -471,7 +473,8 @@ function pagesCheck(state: PagesState, domain: string, flag: string): CheckResul
  * certificate and an answer; on Cloudflare OpsCrew's headers ({@link siteHeaderChecks}); on GitHub
  * Pages its certificate and HTTPS ({@link pagesCheck}), and that GitHub sets no headers. While
  * GitHub has not issued the certificate, the hostnames' certificate and answer checks warn instead
- * of failing. Changes nothing anywhere, writes no file, and marks `verify`.
+ * of failing. Changes nothing anywhere, writes the runbook (`renderSiteRunbook`) beside the plan,
+ * and marks `verify`.
  */
 export async function verifySite(
   deps: PhaseDeps,
@@ -525,17 +528,31 @@ export async function verifySite(
   }
   const passed = checks.every((check) => check.status !== "fail");
   const summary = summarizeChecks(checks);
+
+  // The environment's own runbook, beside its plan (prod's `opscrew/RUNBOOK.md`).
+  const { paths } = deps;
+  const owner = input.github.repo?.owner;
+  const runbook = renderSiteRunbook(plan, {
+    opscrewVersion: deps.version,
+    environments: await environmentsOf(paths.root, paths.app),
+    ...(owner !== undefined ? { owner } : {}),
+  });
+  const runbookPath = toPosixRelative(paths.root, paths.files.runbook);
+  await writeRenderedFiles(paths.root, [{ ...runbook, path: runbookPath }]);
+
   if (passed && pending !== undefined) {
     reporter.warn(
       `${url} is set up on GitHub Pages, but GitHub has not issued its certificate yet (${summary}). Run \`opscrew verify${input.flag}\` again later; once it is issued, \`opscrew provision${input.flag}\` enforces HTTPS.`,
     );
+    reporter.info(`Runbook: ${runbookPath}`);
   } else if (passed) {
-    reporter.success(`${url} is live on ${where} (${summary}).`);
+    reporter.success(`${url} is live on ${where} (${summary}). Runbook: ${runbookPath}`);
   } else {
     reporter.error(
       `Verification found problems (${summary}). Fix them and run \`opscrew verify${input.flag}\` again.`,
     );
+    reporter.info(`Runbook: ${runbookPath}`);
   }
   await deps.state.markPhase("verify", passed ? "ok" : "failed", summary);
-  return { checks, passed, url, plan };
+  return { checks, passed, url, runbookPath, plan };
 }

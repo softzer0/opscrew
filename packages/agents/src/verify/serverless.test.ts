@@ -85,12 +85,18 @@ async function setup(plan: DeployPlan) {
   deps.env.GITHUB_TOKEN = fakeSecret("github-token", "verify-site");
   await writeArtifact("plan", deps.paths.files.plan, plan);
   const before = await readFile(deps.paths.files.plan, "utf8");
-  /** The plan is as it was, and verify wrote no runbook or any other file into the repository. */
-  const unchanged = async () => {
+  /**
+   * The plan is as it was, and verify wrote no file into the repository but its runbook (`written`:
+   * after the checks ran).
+   */
+  const unchanged = async (written = false) => {
     expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
-    expect(await readdir(join(deps.paths.root, "opscrew"))).toEqual(["plan.yaml"]);
+    expect((await readdir(join(deps.paths.root, "opscrew"))).sort()).toEqual(
+      written ? ["RUNBOOK.md", "plan.yaml"] : ["plan.yaml"],
+    );
   };
-  return { deps, runner, unchanged };
+  const runbook = () => readFile(join(deps.paths.root, "opscrew", "RUNBOOK.md"), "utf8");
+  return { deps, runner, unchanged, runbook };
 }
 
 const statuses = (checks: { id: string; status: string }[]) =>
@@ -108,7 +114,9 @@ describe("opscrew verify on Cloudflare's hosting", () => {
   });
 
   it("checks each hostname's DNS, certificate and answer, and OpsCrew's headers, changing nothing", async () => {
-    const { deps, runner, unchanged } = await setup(sitePlan({ www: true, deployed: true }));
+    const { deps, runner, unchanged, runbook } = await setup(
+      sitePlan({ www: true, deployed: true }),
+    );
     const site = fakeInternet();
     const result = await runVerify(deps, {
       resolver: CLOUDFLARE_DNS,
@@ -127,16 +135,22 @@ describe("opscrew verify on Cloudflare's hosting", () => {
       ["security-headers", "pass"],
     ]);
     expect(result).toMatchObject({ passed: true, url: "https://docs.example.com" });
-    expect(result.runbookPath).toBeUndefined();
+    expect(result.runbookPath).toBe("opscrew/RUNBOOK.md");
     expect(result.checks[1]?.message).toContain("issued by Google Trust Services");
-    // Only reads of the site: no GitHub, no command, nothing written.
+    // Only reads of the site: no GitHub, no command, nothing written but the runbook.
     expect(site.calls.every((call) => call.method === "GET")).toBe(true);
     expect(site.calls.some((call) => call.url.includes("api.github.com"))).toBe(false);
     expect(runner.calls).toEqual([]);
-    await unchanged();
+    await unchanged(true);
+    const text = await runbook();
+    expect(text).toContain("the Worker `example-app`");
+    expect(text).toContain("`opscrew promote --to prod --version <id>`");
+    expect(text).not.toContain(deps.env.GITHUB_TOKEN as string);
     expect((await deps.state.read()).phases.verify?.status).toBe("ok");
     const output = deps.reporter.text();
-    expect(output).toContain("https://docs.example.com is live on Cloudflare");
+    expect(output).toContain(
+      "https://docs.example.com is live on Cloudflare (7 passed, 0 failed, 0 warnings, 0 skipped). Runbook: opscrew/RUNBOOK.md",
+    );
     expect(output).not.toMatch(/server/i);
   });
 
@@ -183,6 +197,8 @@ describe("opscrew verify on Cloudflare's hosting", () => {
     expect(headers).toMatchObject({ id: "security-headers", status: "skip" });
     expect((await deps.state.read()).phases.verify?.status).toBe("failed");
     expect(deps.reporter.text()).not.toMatch(/server/i);
+    // A failed verify writes the runbook too.
+    expect(deps.reporter.text()).toContain("Runbook: opscrew/RUNBOOK.md");
   });
 });
 
@@ -209,7 +225,10 @@ describe("opscrew verify on GitHub Pages", () => {
   const pagesCheck = (checks: CheckResult[]) => checks.find((c) => c.id === "pages-https");
 
   it("passes once GitHub issued the certificate and enforces HTTPS, and sets no headers", async () => {
-    const { result, deps, github, unchanged } = await verifyPages({ site: SITE, health: "issued" });
+    const { result, deps, github, unchanged, runbook } = await verifyPages({
+      site: SITE,
+      health: "issued",
+    });
 
     expect(statuses(result.checks)).toEqual([
       ["dns-records", "pass"],
@@ -226,7 +245,13 @@ describe("opscrew verify on GitHub Pages", () => {
     expect(result.checks.at(-1)?.message).toContain("GitHub Pages cannot set security headers");
     // Read only: the site and its health, never a change.
     expect(github.log).toEqual(["pages GET /pages", "pages GET /pages/health"]);
-    await unchanged();
+    await unchanged(true);
+    // The runbook names the repository owner's verification record.
+    const text = await runbook();
+    expect(text).toContain("`_github-pages-challenge-example-org.example.com`");
+    expect(text).toContain("`opscrew promote --to prod --version <run id>`");
+    expect(text).not.toContain(deps.env.GITHUB_TOKEN as string);
+    expect(result.runbookPath).toBe("opscrew/RUNBOOK.md");
     expect(deps.reporter.text()).not.toMatch(/server/i);
   });
 

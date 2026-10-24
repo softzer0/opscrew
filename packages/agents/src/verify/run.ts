@@ -117,8 +117,8 @@ export interface VerifyResult {
   passed: boolean;
   /** The site address that was checked. */
   url: string;
-  /** Repo-relative path of the runbook that was written; none for a server-less target. */
-  runbookPath?: string;
+  /** Repo-relative path of the runbook that was written. */
+  runbookPath: string;
   /** The plan after verification (with `deployment.url`/`firstDeployAt` when passed). */
   plan: DeployPlan;
 }
@@ -131,7 +131,7 @@ export interface VerifyResult {
  * proxy); when nothing fails, records `deployment.firstDeployAt` (once) and, with a domain,
  * `deployment.url` in `opscrew/plan.yaml`, which stays as it is when neither changes. Marks
  * `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by `verifySite`, which
- * changes nothing and writes no file.
+ * changes nothing and writes only its runbook.
  */
 export async function runVerify(
   deps: PhaseDeps,

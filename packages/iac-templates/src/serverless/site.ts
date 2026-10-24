@@ -35,6 +35,17 @@ export function workersTarget(plan: DeployPlan): CloudflareWorkersDeployTarget {
 }
 
 /**
+ * The Workers plan the design chose for a site on Cloudflare's hosting, in words, and the files a
+ * version may have on it (016's spike, result 8): Workers Paid when the plan has a monthly cost
+ * (design prices only Workers Paid's minimum), else Cloudflare's free plan.
+ */
+export function workersPlan(plan: DeployPlan): { name: string; files: number } {
+  return plan.cost.monthly.amount > 0
+    ? { name: "Cloudflare's Workers Paid plan", files: 100_000 }
+    : { name: "Cloudflare's free plan", files: 20_000 };
+}
+
+/**
  * The repository folder of the environment's Cloudflare files (the Wrangler config and, for
  * server rendering, the headers wrapper), `<artefactsFolder>/cloudflare` ({@link artefactsFolder}):
  * `opscrew/cloudflare` for the first app's prod, `opscrew/environments/<env>/cloudflare` for a

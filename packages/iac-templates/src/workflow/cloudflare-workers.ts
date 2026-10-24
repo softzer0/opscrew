@@ -14,6 +14,7 @@ import {
   siteExists,
   siteFiles,
   siteUrl,
+  workersPlan,
   workersTarget,
 } from "../serverless/site";
 import { wranglerConfigPath } from "../serverless/wrangler";
@@ -44,9 +45,6 @@ export const CLOUDFLARE_DEPLOY_SECRETS = {
   apiToken: "OPSCREW_CLOUDFLARE_API_TOKEN",
   accountId: "OPSCREW_CLOUDFLARE_ACCOUNT_ID",
 } as const;
-
-/** The files a version may have on Cloudflare's free plan. */
-const FREE_PLAN_FILES = 20_000;
 
 /** Where the deploy job writes the app's secrets for the new version (bash, then Actions syntax). */
 const SECRETS_FILE = "$RUNNER_TEMP/opscrew-secrets.json";
@@ -120,7 +118,7 @@ function prepareWrangler(env: readonly string[], lines: readonly string[]): stri
 /**
  * The build job: the site's build ({@link siteBuildSteps}, with `WORKERS_CI=1` as Cloudflare's own
  * builds have it, so SvelteKit builds for Workers and not for Pages) and the check against the
- * free plan's 20,000 files per version. For server rendering, Wrangler then bundles the Worker
+ * files a version may have on the plan's Workers plan ({@link workersPlan}). For server rendering, Wrangler then bundles the Worker
  * (the headers wrapper around the adapter's module) with the site's packages, which only this job
  * has, into the artifact (`wrangler deploy --dry-run --outdir`). Then the static files are copied
  * next to it, and the build's SHA-256 (output `sha256`, {@link MANIFEST}) covers exactly what the
@@ -128,6 +126,7 @@ function prepareWrangler(env: readonly string[], lines: readonly string[]): stri
  */
 function buildJob(plan: DeployPlan, files: SiteFiles): string[] {
   const ssr = files.entry !== undefined;
+  const limit = workersPlan(plan);
   return job({
     id: "build",
     name: "Build the site",
@@ -140,8 +139,8 @@ function buildJob(plan: DeployPlan, files: SiteFiles): string[] {
         "set -euo pipefail",
         ...siteExists(plan, files),
         `files="$(find ${shellQuote(files.assets)} -type f -printf . | wc -c)"`,
-        `if [[ "$files" -gt ${FREE_PLAN_FILES} ]]; then`,
-        `  echo "::error::The site has $files files in ${files.assets}, over the 20,000 files a version may have on Cloudflare's free plan. Leave out the files the site does not need, then push again."`,
+        `if [[ "$files" -gt ${limit.files} ]]; then`,
+        `  echo "::error::The site has $files files in ${files.assets}, over the ${limit.files.toLocaleString("en-US")} files a version may have on ${limit.name}. Leave out the files the site does not need, then push again."`,
         "  exit 1",
         "fi",
       ]),
