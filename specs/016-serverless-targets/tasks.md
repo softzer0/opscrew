@@ -494,6 +494,7 @@ Effort`.
       - rollbacks by re-run, and destroy with the verification record kept.
     - **The index and the README's target list** name both. The runbook for these targets covers status, rollback and destroy. **`opscrew verify` writes it** for these targets, as it does for servers: T1612b's Owns widen to `packages/agents/src/verify/serverless.ts` and `verify/run.ts` for that call, and `VerifyResult.runbookPath` becomes required again (T1610a left it optional), so the CLI's verify next steps and MCP's deploy tool, which print it, need no change.
     - **`docs/guide/security.md`'s token list** gains what T1603 and T1604 added to the permission lists: Account → Workers Scripts → Edit (and the deploy token), Pages and Administration for GitHub Pages, Plan: Read as optional, and whatever the Pages rollback settles (T1604's report).
+    - **`docs/guide/claude-code-plugin.md`** (added 2026-10-24): installing the plugin from the `softzer0/opscrew` marketplace (`/plugin marketplace add softzer0/opscrew`, `/plugin install opscrew@opscrew`, and the shell forms), what it runs (`npx -y opscrew@<version> mcp`, Node.js 22+, the native-Windows `cmd /c` note), its skills, and how approvals work there; the index links it. The README already has the two commands and links `plugin/README.md`.
     - No "before X" framing.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: high
