@@ -80,6 +80,10 @@ steps you run:
   package and image versions OpsCrew pins.
 - **Your live site:** `verify` and `secure` send it HTTP requests and connect to its ports.
 
+## Privacy
+
+OpsCrew's privacy policy: [opscrew.dev/privacy](https://opscrew.dev/privacy/).
+
 ## Local development
 
 With `claude --plugin-dir ./plugin`, Claude Code loads the folder in place and doesn't install its
