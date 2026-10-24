@@ -137,6 +137,14 @@ describe("addApp", () => {
     expect(await filesIn(root, ".opscrew")).toEqual([]);
   });
 
+  it("takes a Hugo site, which has no manifest, as an app", async () => {
+    const root = await twoSites();
+    await mkdir(join(root, "sites", "blog", "content"), { recursive: true });
+    await writeFile(join(root, "sites", "blog", "hugo.toml"), 'title = "Blog"\n');
+    await writeFile(join(root, "sites", "blog", "content", "_index.md"), "# Blog\n");
+    expect(await addApp(root, "blog", "sites/blog")).toEqual({ key: "blog", dir: "sites/blog" });
+  });
+
   it("refuses a folder with no app it can deploy, a key twice and a key the rules refuse", async () => {
     const root = await twoSites();
     await mkdir(join(root, "notes"), { recursive: true });

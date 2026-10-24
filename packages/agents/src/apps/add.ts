@@ -7,8 +7,8 @@ import {
   OpsCrewError,
   resolveProjectPaths,
 } from "@opscrew/core";
-import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
-import { type RepositoryApp, writeArtifact } from "@opscrew/plan-schema";
+import { detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/detect";
+import { type ProjectFacts, type RepositoryApp, writeArtifact } from "@opscrew/plan-schema";
 import { requireUniqueNames } from "./names";
 
 /**
@@ -41,16 +41,17 @@ export async function addApp(root: string, key: string, dir: string): Promise<Re
   }
   const folder = normalizeAppDir(dir);
   const retry = `then run \`opscrew app add ${key} --dir <folder>\` again`;
-  let kind: string;
+  let facts: ProjectFacts;
   try {
-    kind = (await detectProjectDetails(paths.root, { appDir: folder })).facts.appKind;
+    facts = (await detectProjectDetails(paths.root, { appDir: folder })).facts;
   } catch (error) {
     if (!isUserFacingError(error) || error.code !== "INVALID_INPUT") throw error;
     throw new OpsCrewError("INVALID_INPUT", error.message, {
       hint: `Name one of the listed folders with \`--dir\`, ${retry}.`,
     });
   }
-  if (kind === "unknown") {
+  // A site with no manifest (a Hugo site) has no app kind; its site is what OpsCrew deploys.
+  if (facts.appKind === "unknown" && (await detectSite(paths.root, facts)) === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       `OpsCrew found no app it can deploy in ${folder}: detection recognises no framework, server or static site there. Nothing was changed.`,
