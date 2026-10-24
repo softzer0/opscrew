@@ -605,6 +605,7 @@ Effort`.
   - Cloudflare hosting doesn't plan the zone's minimum TLS (014 sets 1.2 where OpsCrew owns the zone), nor the shared rules' "leave" plan for a record naming another zone (T1608's report). Add both where provision plans the shared rules.
   - `normaliseDir` in iac-templates' `docker/stacks.ts` is a second path cleaner beside plan-schema's `cleanRepoPath` (T1617b's report).
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
+  - `app remove`'s pre-check repeats `removeApp`'s condition in the CLI and in MCP (T1612a's report): export one check from agents, or let `removeApp` take a `confirm` callback.
   - The guide says how deploy workflows filter pushes by path (T1619): `app.sharedPaths`, root files except Markdown, and GitHub's limit of evaluating only the first 300 changed files of a push (a bigger push may skip a deploy; run the workflow by hand then).
   - Drift compares no generated files for the server-less targets, because `previewDeploymentFiles` (`provision/render.ts`) refuses them (T1610a's report). Decide whether drift should compare the workflow and Wrangler config too.
 
