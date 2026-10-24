@@ -635,6 +635,18 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents --filter=opscrew` and `pnpm lint`
   - Effort: medium
 
+- [ ] T1625 A site without a manifest is an app folder too, in `packages/detect/src/**`
+  - Owns: that path (+ tests, fixtures)
+  - Reads: `detect/src/site.ts` (how a Hugo site is recognised), `detect/src/detect.ts` (units, members, deployable folders)
+  - Depends: T1607, T1617b
+  - Accept:
+    - **Found live (2026-10-24, the two-apps pass):** in a repository with `examples/static-vite` in `sites/landing` and `examples/hugo-site` in `sites/docs`, `opscrew app add e2e-docs --dir sites/docs` refused: "\"sites/docs\" is not an app directory OpsCrew detected. Deployable apps found: sites/landing." Apps are found by their manifests, and a Hugo site has none, although detection recognises Hugo at the repository root.
+    - **Every folder detection recognises as a site of its own** (Hugo today, and any other kind `site.ts` detects without a manifest) counts as an app folder: `app add --dir`, `analyze --dir` and the monorepo's candidate list accept it, and its facts are the site's.
+    - Nothing else changes for folders with a manifest, and a folder that merely holds Markdown or an `index.html` inside another app is not a separate app.
+    - **Tests:** the live pass's layout as a fixture (static-vite in `sites/landing`, hugo-site in `sites/docs`): both are candidates, `--dir sites/docs` gives Hugo's site facts; a Hugo folder inside a Node app's folder stays part of it.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents` and `pnpm lint`
+  - Effort: medium
+
 - [ ] T1615 Live runs (lead), after T1614: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1615)
