@@ -187,6 +187,106 @@ describe("runDesign", () => {
     expect(deps.reporter.text()).toContain("Every deploy runs `npx prisma migrate deploy`");
   });
 
+  it("keeps the port, health route and release command the user set, saying what analyze found", async () => {
+    const deps = await setup(
+      makeFacts({
+        languages: ["python"],
+        packageManager: "pip",
+        frameworks: [{ name: "django", path: "." }],
+        appKind: "fullstack",
+        port: 8000,
+        build: { releaseCommand: "python manage.py migrate --noinput" },
+        services: [{ kind: "postgres", evidence: ["dependency:psycopg"] }],
+      }),
+    );
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.plan.app).toMatchObject({ port: 8000, healthPath: "/health" });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: {
+        ...first.plan.app,
+        port: 9000,
+        healthPath: "/up",
+        releaseCommand: "python manage.py migrate --noinput --database default",
+      },
+    });
+    const again = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    const { plan } = await runDesign(again, { catalog: euCatalog() });
+    expect(plan.app).toMatchObject({
+      port: 9000,
+      healthPath: "/up",
+      releaseCommand: "python manage.py migrate --noinput --database default",
+    });
+    const said = again.reporter.text();
+    expect(said).toContain(
+      "Kept app.port 9000 from opscrew/plan.yaml; analyze found 8000. To use it, set app.port to 8000 in opscrew/plan.yaml.",
+    );
+    expect(said).toContain(
+      "Kept app.healthPath /up from opscrew/plan.yaml; analyze found /health. To use it, set app.healthPath to /health in opscrew/plan.yaml.",
+    );
+    expect(said).toContain(
+      "Kept app.releaseCommand `python manage.py migrate --noinput --database default` from opscrew/plan.yaml; analyze found `python manage.py migrate --noinput`. To use it, set app.releaseCommand to `python manage.py migrate --noinput` in opscrew/plan.yaml.",
+    );
+    expect(said).toContain("opscrew/plan.yaml is up to date");
+
+    // Every environment shares them: another environment takes prod's, not its own copy's.
+    const staging = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "staging",
+    });
+    expect((await runDesign(staging, { catalog: euCatalog() })).plan.app.port).toBe(9000);
+    const stagingPlan = await readArtifact("plan", staging.paths.files.plan);
+    await writeArtifact("plan", staging.paths.files.plan, {
+      ...stagingPlan,
+      app: { ...stagingPlan.app, port: 9999 },
+    });
+    const stagingAgain = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "staging",
+    });
+    const redesigned = await runDesign(stagingAgain, { catalog: euCatalog() });
+    expect(redesigned.plan.app).toMatchObject({ port: 9000, healthPath: "/up" });
+    const stagingSaid = stagingAgain.reporter.text();
+    expect(stagingSaid).toContain("Kept app.port 9000 from opscrew/plan.yaml; analyze found 8000.");
+    expect(stagingSaid).toContain(
+      "Set app.port to 9000 as in opscrew/plan.yaml: the environments built from the same code share it, so 9999 from opscrew/environments/staging/plan.yaml no longer applies.",
+    );
+
+    // An environment on its own branch builds other code: it keeps its own, not prod's.
+    const preview = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "preview",
+    });
+    const own = await runDesign(preview, { catalog: euCatalog(), branch: "preview" });
+    expect(own.plan.app.port).toBe(8000);
+    await writeArtifact("plan", preview.paths.files.plan, {
+      ...own.plan,
+      app: { ...own.plan.app, port: 7000 },
+    });
+    const previewAgain = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "preview",
+    });
+    expect((await runDesign(previewAgain, { catalog: euCatalog() })).plan.app.port).toBe(7000);
+    expect(previewAgain.reporter.text()).toContain(
+      "Kept app.port 7000 from opscrew/environments/preview/plan.yaml; analyze found 8000.",
+    );
+
+    // A removed command cannot be told from one analyze did not find before: it comes back, said.
+    const { releaseCommand: _removed, ...app } = plan.app;
+    await writeArtifact("plan", deps.paths.files.plan, { ...plan, app });
+    const third = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    const result = await runDesign(third, { catalog: euCatalog() });
+    expect(result.plan.app.releaseCommand).toBe("python manage.py migrate --noinput");
+    expect(third.reporter.text()).toContain(
+      "Set app.releaseCommand to `python manage.py migrate --noinput`, which analyze found; opscrew/plan.yaml had none.",
+    );
+  });
+
   it("says nothing about migrations for an app without a command or a database", async () => {
     const deps = await setup();
     await runDesign(deps, { catalog: euCatalog() });
@@ -617,6 +717,46 @@ describe("runDesign", () => {
       expect(result.plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
     });
 
+    it("keeps the server's image, www and DNS only that the user set in plan.yaml", async () => {
+      const deps = await setup(
+        staticSpaFacts(),
+        makeRequirements({ dnsProvider: "cloudflare", domain: "app.example.com" }),
+      );
+      const first = await runDesign(deps, { catalog: euCatalog() });
+      expect(first.plan.dns).toMatchObject({ proxied: true, www: false });
+      await writeArtifact("plan", deps.paths.files.plan, {
+        ...first.plan,
+        target: { ...cloudTarget(first.plan.target), image: "debian-13" },
+        dns: { ...first.plan.dns, proxied: false, www: true },
+        security: { ...first.plan.security, httpAllowedFrom: "any" },
+      });
+      const again = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+      const { plan } = await runDesign(again, { catalog: euCatalog() });
+      expect(plan.target).toMatchObject({ provider: "hetzner", image: "debian-13" });
+      expect(plan.dns).toMatchObject({ proxied: false, www: true });
+      expect(plan.security.httpAllowedFrom).toBe("any");
+      expect(again.reporter.text()).toContain("opscrew/plan.yaml is up to date");
+    });
+
+    it("leaves www off for a new domain, whatever the old one had", async () => {
+      const deps = await setup(
+        staticSpaFacts(),
+        makeRequirements({ dnsProvider: "cloudflare", domain: "app.example.com" }),
+      );
+      const first = await runDesign(deps, { catalog: euCatalog() });
+      await writeArtifact("plan", deps.paths.files.plan, {
+        ...first.plan,
+        dns: { ...first.plan.dns, www: true },
+      });
+      await writeArtifact(
+        "requirements",
+        deps.paths.files.requirements,
+        makeRequirements({ dnsProvider: "cloudflare", domain: "shop.example.org" }),
+      );
+      const { plan } = await runDesign(deps, { catalog: euCatalog() });
+      expect(plan.dns).toMatchObject({ domain: "shop.example.org", www: false });
+    });
+
     describe("with Portainer enabled", () => {
       const onCloudflare = makeRequirements({
         dnsProvider: "cloudflare",
@@ -936,6 +1076,21 @@ describe("runDesign", () => {
         const { deps } = await hetznerDeployment({});
         const result = await runDesign(deps, { catalog: doEuCatalog() });
         expect(result.plan.target.provider).toBe("digitalocean");
+      });
+
+      it("takes the new provider's image, not the image the user set for the old one", async () => {
+        const deps = await setup();
+        const { plan } = await runDesign(deps, { catalog: euCatalog() });
+        await writeArtifact("plan", deps.paths.files.plan, {
+          ...plan,
+          target: { ...cloudTarget(plan.target), image: "debian-13" },
+        });
+        await writeArtifact("requirements", deps.paths.files.requirements, doRequirements());
+        const result = await runDesign(deps, { catalog: doEuCatalog() });
+        expect(result.plan.target).toMatchObject({
+          provider: "digitalocean",
+          image: "ubuntu-24-04-x64",
+        });
       });
 
       it("on a fresh clone of a deployed app, says where to move it, never `opscrew provision`", async () => {

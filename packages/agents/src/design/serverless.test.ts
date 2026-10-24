@@ -41,6 +41,8 @@ interface ProjectOptions {
   git?: ProjectFacts["git"];
   /** Facts set over the analysed ones. */
   facts?: Partial<ProjectFacts>;
+  /** The app's folder in a monorepo, analysed and chosen as `opscrew analyze --dir` does. */
+  appDir?: string;
 }
 
 /** A project analysed as `opscrew analyze` writes it, with the interview's answers. */
@@ -57,7 +59,7 @@ async function project(o: ProjectOptions = {}): Promise<TestPhaseDeps> {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
   }
-  const detected = await detectProject(root);
+  const detected = await detectProject(root, o.appDir === undefined ? {} : { appDir: o.appDir });
   const facts = { ...detected, ...o.facts, ...(o.git === undefined ? {} : { git: o.git }) };
   await writeArtifact("architecture", deps.paths.files.architecture, {
     schemaVersion: 1,
@@ -75,6 +77,7 @@ async function project(o: ProjectOptions = {}): Promise<TestPhaseDeps> {
       provider: "cloudflare-workers",
       domain: DOMAIN,
       dnsProvider: "cloudflare",
+      ...(o.appDir === undefined ? {} : { appDir: o.appDir }),
       ...o.requirements,
     }),
   );
@@ -175,7 +178,9 @@ describe("design on Cloudflare's hosting", () => {
       expect.arrayContaining([
         expect.stringContaining("20,000 files on Workers Free, each at most 25 MiB"),
         expect.stringContaining("no database, cache, queue, worker or cron job"),
-        expect.stringContaining("Preview URLs and the workers.dev address stay off"),
+        expect.stringContaining(
+          "Preview URLs and the workers.dev address are off unless target.previewUrls and target.workersDev in opscrew/plan.yaml turn them on, and a later design keeps them.",
+        ),
       ]),
     );
     const said = deps.reporter.text();
@@ -463,6 +468,290 @@ describe("design on Cloudflare's hosting", () => {
     const result = await runDesign(staging);
     expect(result.plan.app.name).toBe("static-vite-demo-staging");
     expect(result.plan.target).toMatchObject({ worker: "static-vite-demo-staging" });
+  });
+
+  it("keeps the plan's own settings on a later design: www, the names, the Worker's addresses, the workflow and the registration", async () => {
+    const deps = await project({ example: "static-vite" });
+    const { plan } = await runDesign(deps);
+    if (plan.target.provider !== "cloudflare-workers") throw new Error("Expected Cloudflare.");
+    const registration = {
+      registrar: "cloudflare",
+      autoRenew: true,
+      privacy: true,
+      dnssec: true,
+    } as const;
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, name: "landing" },
+      target: { ...plan.target, worker: "landing-site", workersDev: true, previewUrls: true },
+      dns: { ...plan.dns, zone: "example.com", www: true, registration },
+      cicd: { ...plan.cicd, workflowPath: ".github/workflows/site.yml" },
+    });
+    const again = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    const result = await runDesign(again);
+    expect(result.plan.dns).toEqual({
+      provider: "cloudflare",
+      domain: DOMAIN,
+      zone: "example.com",
+      proxied: true,
+      www: true,
+      registration,
+    });
+    expect(result.plan.app.name).toBe("landing");
+    expect(result.plan.target).toMatchObject({
+      worker: "landing-site",
+      workersDev: true,
+      previewUrls: true,
+    });
+    expect(result.plan.cicd.workflowPath).toBe(".github/workflows/site.yml");
+    expect(again.reporter.text()).toContain("opscrew/plan.yaml is up to date");
+  });
+
+  it("leaves www off for a new domain, whatever the old one had", async () => {
+    const deps = await project({ example: "static-vite" });
+    const { plan } = await runDesign(deps);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      dns: { ...plan.dns, www: true },
+    });
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({
+        provider: "cloudflare-workers",
+        dnsProvider: "cloudflare",
+        domain: "site.example.org",
+      }),
+    );
+    const result = await runDesign(deps);
+    expect(result.plan.dns).toMatchObject({ domain: "site.example.org", www: false });
+  });
+
+  it("names a Worker new to the plan after the app's kept name, with the proxy back on", async () => {
+    const deps = await project({
+      example: "static-vite",
+      requirements: { provider: "hetzner", region: "eu-central" },
+    });
+    const { plan } = await runDesign(deps);
+    expect(plan.target.provider).toBe("hetzner");
+    // A server plan the user named, served DNS only and gave a release command.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, name: "landing", port: 9000, releaseCommand: "npm run migrate" },
+      dns: { ...plan.dns, proxied: false },
+      security: { ...plan.security, httpAllowedFrom: "any" },
+    });
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({
+        provider: "cloudflare-workers",
+        dnsProvider: "cloudflare",
+        domain: DOMAIN,
+      }),
+    );
+    const result = await runDesign(deps);
+    expect(result.plan.app.name).toBe("landing");
+    expect(result.plan.target).toMatchObject({ provider: "cloudflare-workers", worker: "landing" });
+    expect(result.plan.dns.proxied).toBe(true);
+    // A release command cannot run without a server: it is left out, and said so.
+    expect(result.plan.app.releaseCommand).toBeUndefined();
+    const said = deps.reporter.text();
+    expect(said).toContain(
+      "Left out app.releaseCommand `npm run migrate` from opscrew/plan.yaml: a site without a server has no image to run it in before a deploy.",
+    );
+    // A site has no server's port: the server's is neither kept nor named.
+    expect(result.plan.app.port).not.toBe(9000);
+    expect(said).not.toContain("app.port");
+  });
+
+  it("keeps the site settings the user set, saying what analyze found", async () => {
+    const deps = await project({ example: "static-vite" });
+    const { plan } = await runDesign(deps);
+    if (plan.target.provider !== "cloudflare-workers") throw new Error("Expected Cloudflare.");
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      target: {
+        ...plan.target,
+        notFound: "none",
+        site: { ...plan.target.site, command: "npm run build:site", outputDir: "build" },
+      },
+    });
+    const again = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    const result = await runDesign(again);
+    expect(result.plan.target).toMatchObject({
+      notFound: "none",
+      site: { command: "npm run build:site", outputDir: "build" },
+    });
+    const said = again.reporter.text();
+    expect(said).toContain(
+      "Kept target.notFound none from opscrew/plan.yaml; analyze found single-page-application. To use it, set target.notFound to single-page-application in opscrew/plan.yaml.",
+    );
+    expect(said).toContain(
+      "Kept target.site.command `npm run build:site` from opscrew/plan.yaml; analyze found `npm run build`. To use it, set target.site.command to `npm run build` in opscrew/plan.yaml.",
+    );
+    expect(said).toContain(
+      "Kept target.site.outputDir build from opscrew/plan.yaml; analyze found dist. To use it, set target.site.outputDir to dist in opscrew/plan.yaml.",
+    );
+    expect(said).toContain("opscrew/plan.yaml is up to date");
+  });
+
+  it("takes analysis's site settings where the user's no longer apply, and says so", async () => {
+    // An earlier plan for a Hugo site; the folder now holds a Vite site.
+    const deps = await project({ example: "static-vite" });
+    const { plan } = await runDesign(deps);
+    if (plan.target.provider !== "cloudflare-workers") throw new Error("Expected Cloudflare.");
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      target: {
+        ...plan.target,
+        site: { tool: "hugo", command: "hugo --minify", outputDir: "public" },
+      },
+    });
+    const result = await runDesign(deps);
+    expect(result.plan.target).toMatchObject({
+      site: { tool: "node", command: "npm run build", outputDir: "dist" },
+    });
+    const said = deps.reporter.text();
+    expect(said).toContain(
+      "Set target.site.command to `npm run build`: analyze found another site (node with npm in .), so `hugo --minify` from opscrew/plan.yaml no longer applies.",
+    );
+    expect(said).toContain(
+      "Set target.site.outputDir to dist: analyze found another site (node with npm in .), so public from opscrew/plan.yaml no longer applies.",
+    );
+  });
+
+  it("takes analysis's not-found setting when the site renders another way, and says so", async () => {
+    // An earlier plan rendered the site as static files with its 404 page; it renders on the
+    // server now.
+    const deps = await project({ example: "astro-ssr" });
+    const { plan } = await runDesign(deps);
+    if (plan.target.provider !== "cloudflare-workers") throw new Error("Expected Cloudflare.");
+    const { entry: _entry, compatibilityFlags: _flags, ...site } = plan.target.site;
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      target: {
+        ...plan.target,
+        render: "static",
+        notFound: "404-page",
+        site: { ...site, command: "npm run build:static", outputDir: "dist" },
+      },
+    });
+    const result = await runDesign(deps);
+    expect(result.plan.target).toMatchObject({
+      render: "ssr",
+      notFound: "none",
+      site: { command: "npm run build", outputDir: "dist/client" },
+    });
+    const said = deps.reporter.text();
+    expect(said).toContain(
+      "Set target.notFound to none: the app now renders on the server, so 404-page from opscrew/plan.yaml no longer applies.",
+    );
+    expect(said).toContain(
+      "Set target.site.command to `npm run build`: analyze found another site (node with npm, rendered on the server in .), so `npm run build:static` from opscrew/plan.yaml no longer applies.",
+    );
+    expect(said).toContain(
+      "Set target.site.outputDir to dist/client: analyze found another site (node with npm, rendered on the server in .), so dist from opscrew/plan.yaml no longer applies.",
+    );
+  });
+
+  it("takes analysis's site settings after a change of package manager or folder, and says so", async () => {
+    const deps = await project({ example: "static-vite" });
+    const { plan } = await runDesign(deps);
+    if (plan.target.provider !== "cloudflare-workers") throw new Error("Expected Cloudflare.");
+    // Built with pnpm before; only npm's lockfile is there now.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      target: {
+        ...plan.target,
+        site: {
+          ...plan.target.site,
+          packageManager: "pnpm",
+          command: "pnpm run build",
+          outputDir: "build",
+        },
+      },
+    });
+    const result = await runDesign(deps);
+    expect(result.plan.target).toMatchObject({
+      site: { packageManager: "npm", command: "npm run build", outputDir: "dist" },
+    });
+    expect(deps.reporter.text()).toContain(
+      "Set target.site.command to `npm run build`: analyze found another site (node with npm in .), so `pnpm run build` from opscrew/plan.yaml no longer applies.",
+    );
+
+    // The same kind of site, in another folder before.
+    const moved = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    if (result.plan.target.provider !== "cloudflare-workers")
+      throw new Error("Expected Cloudflare.");
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...result.plan,
+      app: { ...result.plan.app, buildContext: "web" },
+      target: {
+        ...result.plan.target,
+        site: { ...result.plan.target.site, command: "npm run build:web", outputDir: "web/dist" },
+      },
+    });
+    const again = await runDesign(moved);
+    expect(again.plan.app.buildContext).toBe(".");
+    expect(again.plan.target).toMatchObject({
+      site: { command: "npm run build", outputDir: "dist" },
+    });
+    expect(moved.reporter.text()).toContain(
+      "Set target.site.outputDir to dist: analyze found another site (node with npm in .), so web/dist from opscrew/plan.yaml no longer applies.",
+    );
+  });
+
+  it("leaves a site's port out of a server's plan, and says nothing of it", async () => {
+    const deps = await project({ example: "static-vite" });
+    const { plan } = await runDesign(deps);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, port: 9999 },
+    });
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({ dnsProvider: "cloudflare", domain: DOMAIN }),
+    );
+    const result = await runDesign(deps);
+    expect(result.plan.target.provider).toBe("hetzner");
+    expect(result.plan.app.port).not.toBe(9999);
+    expect(deps.reporter.text()).not.toContain("app.port");
+  });
+
+  it("leaves the variables only the repository's own scripts read out of a folder app's plan", async () => {
+    const json = (value: unknown) => JSON.stringify(value);
+    const deps = await project({
+      appDir: "sites/landing",
+      files: {
+        "package.json": json({ name: "acme-site", private: true, packageManager: "pnpm@10.18.0" }),
+        "pnpm-workspace.yaml": "packages:\n  - sites/*\n  - packages/*\n",
+        "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+        "sites/landing/package.json": json({
+          name: "landing",
+          scripts: { build: "vite build" },
+          dependencies: { "@acme/brand": "workspace:*" },
+          devDependencies: { vite: "^7.1.0" },
+        }),
+        "sites/landing/index.html": "<!doctype html><title>Landing</title>",
+        "sites/docs/package.json": json({
+          name: "docs",
+          scripts: { build: "astro build" },
+          dependencies: { astro: "^5.14.0", "@acme/brand": "workspace:*" },
+        }),
+        "sites/docs/src/search.mjs": "export const key = process.env.DOCS_SEARCH_KEY;\n",
+        "packages/brand/package.json": json({ name: "@acme/brand" }),
+        "scripts/copy-brand.mjs": "import { cp } from 'node:fs/promises';\n",
+        "scripts/screenshots.mjs":
+          "const browser = process.env.BROWSER_PATH;\nconst channel = process.env.BROWSER_CHANNEL;\n",
+        "scripts/sync-docs.mjs": "const dir = process.env.OPSCREW_GUIDE_DIR;\n",
+      },
+    });
+    const { plan } = await runDesign(deps);
+    expect(plan.app.env).toEqual([]);
+    expect(plan.codeChanges.map((change) => change.id)).not.toContain("env-example");
+    expect(plan.app.sharedPaths).toEqual(["packages/brand"]);
   });
 });
 

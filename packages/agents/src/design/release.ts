@@ -31,7 +31,7 @@ export function releaseCommandNote(
   const detected = facts?.build.releaseNote;
   const file = planFile({ app: plan.app });
   if (command !== undefined) {
-    const runs = `Every deploy runs \`${command}\` (database migrations) in a one-off container of the new version before it takes traffic. If the command fails, the deploy stops and the previous version keeps serving. To run another command, or none, change or remove \`app.releaseCommand\` in ${file} (running \`opscrew design${app}\` again sets the detected command back).`;
+    const runs = `Every deploy runs \`${command}\` (database migrations) in a one-off container of the new version before it takes traffic. If the command fails, the deploy stops and the previous version keeps serving. To run none, remove \`app.releaseCommand\` in ${file} (running \`opscrew design${app}\` again sets the detected command back). To run another command, change it there: a later design keeps your command.`;
     // A note next to a command says what OpsCrew chose not to run (a skipped package script).
     return detected === undefined || detected.atStartup
       ? { warning: false, text: runs }

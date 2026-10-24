@@ -48,7 +48,10 @@ export const CloudTargetSchema = z.strictObject({
   location: z.string().min(1),
   /** Provider server type or size, for example `cpx22` or `s-2vcpu-4gb`. */
   serverType: z.string().min(1),
-  /** Provider image name; the provider's Ubuntu 24.04 image when omitted (`DEFAULT_IMAGES`). */
+  /**
+   * Provider image name; the provider's Ubuntu 24.04 image when omitted (`DEFAULT_IMAGES`). A later
+   * design on the same provider keeps it.
+   */
   image: z.string().min(1).optional(),
   /** The provider's automated daily backups. */
   backups: z.boolean(),
@@ -140,14 +143,25 @@ export const SiteSchema = z
     tool: z.enum(["node", "hugo", "none"]),
     /** The package manager that installs and builds a `node` site. */
     packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional(),
-    /** Node.js for a `node` site: as the app declares it, else OpsCrew's default. */
+    /**
+     * Node.js for a `node` site: as the app declares it, else OpsCrew's default. Design sets it
+     * from what analyze detects. A later design keeps yours unless the app declares an exact
+     * version, or a range yours is outside of, and then says which version it uses.
+     */
     nodeVersion: z
       .string()
       .regex(/^\d+(?:\.\d+){0,2}$/, { message: "must be a version such as `24` or `22.12`" })
       .optional(),
-    /** The build command. */
+    /**
+     * The build command. Design sets it from what analyze detects; a later design keeps yours
+     * and names what analyze found, unless analyze finds another kind of site or folder.
+     */
     command: CommandLineSchema.optional(),
-    /** The folder of static files that is uploaded. */
+    /**
+     * The folder of static files that is uploaded. Design sets it from what analyze detects; a
+     * later design keeps yours and names what analyze found, unless analyze finds another kind of
+     * site or folder.
+     */
     outputDir: RepoPathSchema,
     /** The Worker module the adapter builds, for server rendering on Cloudflare only. */
     entry: RepoPathSchema.optional(),
@@ -212,19 +226,20 @@ export const CloudflareWorkersTargetSchema = z
     mode: z.literal("workers-assets"),
     /**
      * The Worker's name, unique in the account: the app's name, `<app>-<env>` for another
-     * environment.
+     * environment. A later design keeps it.
      */
     worker: WorkerNameSchema,
     /** `static`: files only. `ssr`: the adapter's Worker renders pages per request. */
     render: z.enum(["static", "ssr"]),
     /**
      * What a path that is no file gets: the app itself (a single-page app), `404.html`, or a
-     * plain 404.
+     * plain 404. Design sets it from what analyze detects; a later design keeps yours and names
+     * what analyze found, unless the site's rendering changed.
      */
     notFound: z.enum(["single-page-application", "404-page", "none"]),
-    /** The Worker's `workers.dev` address. */
+    /** The Worker's `workers.dev` address. Off unless set here; a later design keeps it. */
     workersDev: z.boolean().default(false),
-    /** Cloudflare's URL for each version. */
+    /** Cloudflare's URL for each version. Off unless set here; a later design keeps it. */
     previewUrls: z.boolean().default(false),
     site: SiteSchema,
   })
@@ -1018,7 +1033,8 @@ const DeployPlanFieldsSchema = z.strictObject({
   app: z.strictObject({
     /**
      * DNS-label safe; used for resource names. Unique in the repository: a further app's is its
-     * key unless the user names it, and another environment's is `<name>-<env>`.
+     * key unless the user names it, and another environment's is `<name>-<env>`. A later design
+     * keeps it.
      */
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
       message:
@@ -1030,8 +1046,15 @@ const DeployPlanFieldsSchema = z.strictObject({
      * `deploySecretPrefix`, `githubEnvironmentFor`, `ghcrImageFor`, `appBranch`).
      */
     key: AppKeySchema.optional(),
-    /** Container port. */
+    /**
+     * Container port. Design sets it from what analyze detects; a later design keeps yours and
+     * names what analyze found.
+     */
     port: PortSchema,
+    /**
+     * The health route. Design sets it from what analyze detects; a later design keeps yours and
+     * names what analyze found.
+     */
     healthPath: UrlPathSchema.default("/health"),
     buildContext: RepoPathSchema.default("."),
     dockerfile: RepoPathSchema.default("Dockerfile"),
@@ -1046,7 +1069,9 @@ const DeployPlanFieldsSchema = z.strictObject({
     /**
      * Runs before each new version takes traffic (database migrations), in a one-off container
      * of the new image with the app's environment, from the image's working folder. A failure
-     * stops the deploy and the previous version keeps serving. Change or remove it freely.
+     * stops the deploy and the previous version keeps serving. Design sets it from what analyze
+     * detects; a later design keeps yours and names what analyze found. A removed one comes back
+     * while analyze finds a command (a later design says so).
      */
     releaseCommand: CommandLineSchema.optional(),
     /** The web process's memory limit. */
@@ -1109,10 +1134,17 @@ const DeployPlanFieldsSchema = z.strictObject({
     domain: FqdnSchema.optional(),
     /** Registrable zone, for example `example.com`. */
     zone: FqdnSchema.optional(),
+    /**
+     * Behind Cloudflare's proxy. Design sets it from the target and the interview; on a server
+     * OpsCrew creates, a later design keeps it.
+     */
     proxied: z.boolean().default(true),
-    /** Also serve `www.<domain>`. */
+    /** Also serve `www.<domain>`. A later design keeps it while the domain stays the same. */
     www: z.boolean().default(false),
-    /** Set when OpsCrew bought the domain (`opscrew domain buy`). */
+    /**
+     * Set when OpsCrew bought the domain (`opscrew domain buy`). A later design keeps it, with
+     * `zone`, while the domain stays inside the zone.
+     */
     registration: z
       .strictObject({
         registrar: RegistrarSchema,
@@ -1126,7 +1158,10 @@ const DeployPlanFieldsSchema = z.strictObject({
   }),
   cicd: z.strictObject({
     provider: z.literal("github-actions"),
-    /** Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name)`. */
+    /**
+     * Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name)`. A
+     * later design keeps it.
+     */
     workflowPath: RepoPathSchema.optional(),
     registry: z.literal("ghcr"),
     /** Deploys run on pushes to this branch. */

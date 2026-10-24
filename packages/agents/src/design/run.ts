@@ -12,9 +12,12 @@ import {
 import { detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/detect";
 import { type EdgeProxy, edgeMemoryMb, edgeProxy, serviceSpec } from "@opscrew/iac-templates";
 import {
+  type CloudDeployTarget,
+  CloudProviderSchema,
   type DeployPlan,
   DeployPlanSchema,
   type DeployProvider,
+  type DeployTarget,
   type DesignOption,
   EnvironmentSchema,
   infraDirFor,
@@ -91,6 +94,7 @@ import {
   uncallableRouteJobs,
 } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
+import { keptEdits } from "./kept-edits";
 import { buildDesignOptions, lowHeadroomText, minimumMonthlyCost } from "./options";
 import {
   buildOwnServerOption,
@@ -863,13 +867,25 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     planned = { ...components, processes: { ...components.processes, cron } };
     fresh = planFor(planned);
   }
-  /** `designed` named for the environment, with the previous plan's settings kept. */
+  // The parts environments share keep the edits of the plan that holds them: prod's for an
+  // environment built from prod's branch (the same code), else its own. A promoted one's come
+  // from its source below.
+  const branch = previous?.cicd.branch ?? options.branch ?? fresh.cicd.branch;
+  const sharedEdits = prodPlan?.cicd.branch === branch ? prodPlan : previous;
+  /**
+   * `designed` named for the environment, with the user's edits ({@link keptEdits}, and the lines
+   * saying them) and the previous plan's settings kept.
+   */
   const ownPlan = (designed: DeployPlan) => {
-    const named =
-      prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, options);
-    return previous ? keepPlanSettings(named, previous, requirements) : named;
+    const edited = keptEdits(
+      prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, options),
+      previous,
+      sharedEdits,
+    );
+    const plan = previous ? keepPlanSettings(edited.plan, previous, requirements) : edited.plan;
+    return { plan, lines: edited.lines };
   };
-  const own = ownPlan(fresh);
+  const { plan: own, lines: keptLines } = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
   // image comes from) is chosen.
   const source = await sharedPartsSource(paths, own);
@@ -883,7 +899,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // database's) follow the processes, services and SQLite the plan takes from its source, with
   // the kept services, not those designed from the code here.
   const shared =
-    source === undefined ? own : ownPlan(planFor(sourceComponents(planned, source.plan, keep)));
+    source === undefined
+      ? own
+      : ownPlan(planFor(sourceComponents(planned, source.plan, keep))).plan;
   const kept =
     prodPlan === undefined && source === undefined
       ? own
@@ -910,6 +928,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     }
     if (memory?.warning !== undefined) warn(memory.warning);
   }
+  // A value the user set where design follows analysis is kept, and said with what it found.
+  for (const line of keptLines) reporter.info(say(line));
   if (previous) {
     for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
     const owner = sqliteOwnerWarning(previous, plan);
@@ -1388,19 +1408,25 @@ async function requireChosenApp(
 }
 
 /**
- * Carries what the user and later phases put into the previous plan over to the new one:
- * `deployment`, `approvals`, `security`, `infra`, `environment`, `cicd.branch`, `app.maxBodyMb`,
- * the server's proxy (`target.edge`, between server targets) and the status of code changes that
- * are still the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the
- * DNS proxy setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
- * `portainer` is kept exactly as it was, with the Cloudflare zone learned for it (`dns.zone`)
- * while the app's domain is still on Cloudflare inside that zone. A Portainer subdomain the new
- * DNS settings no longer allow stops design before plan.yaml changes. Image retention is kept, and
- * signing and deploy tags too unless the interview was answered after the previous plan was
- * written. A server-less plan keeps no signing and no Portainer CE, and GitHub Pages no WAF rules.
- * The deploy settings come from {@link keptDeploy}. Of the app, each variable that is
- * still there keeps its `secret` (secret if either plan says so), `source` and `optional`, except
- * the variables what runs fills in either plan (`serviceFilledNames`), which follow it, and one it
+ * Carries what the user and later phases put into the previous plan over to the new one, every
+ * field design does not derive from the requirements or the facts: `deployment`, `approvals`,
+ * `security`, `infra`, `environment`, `cicd.branch`, `cicd.workflowPath`, `app.name`,
+ * `app.maxBodyMb`, `dns.www` (for the same domain), what the user sets on the target
+ * ({@link keptTarget}), and the status of code changes that are still the same change (id, kind
+ * and path); and the user's edits of the fields design sets from analysis ({@link keptEdits}). On
+ * a server OpsCrew creates, with the domain on Cloudflare in both plans, `dns.proxied` is the
+ * user's too.
+ * `security.httpAllowedFrom` is re-derived when the DNS proxy setting changed, so a
+ * Cloudflare-only allow-list never outlives the Cloudflare proxy. The Cloudflare zone learned at
+ * provision (`dns.zone`), with the registration `opscrew domain buy` recorded, stays while the
+ * app's domain is still on Cloudflare inside that zone. `portainer` is kept exactly as it was. A
+ * Portainer subdomain the new DNS settings no longer allow stops design before plan.yaml changes.
+ * Image retention is kept, and signing and deploy tags too unless the interview was answered after
+ * the previous plan was written. A server-less plan keeps no signing and no Portainer CE, and
+ * GitHub Pages no WAF rules. The deploy settings come from {@link keptDeploy}. Of the app, each
+ * variable that is still there keeps its `secret` (secret if either plan says so), `source` and
+ * `optional`, except the variables what runs fills in either plan (`serviceFilledNames`), which
+ * follow it, and one it
  * filled that nothing fills now, which is the user's again; the user's own Dockerfile they chose
  * (`app.build.chosen: user`) keeps its path; and `app.sharedPaths` keeps the folders plan.yaml
  * names, followed by any new ones detection found. The components (workers, cron, services,
@@ -1435,14 +1461,23 @@ function keepPlanSettings(
   // A server-less site has no image to sign and no server for Portainer CE, and GitHub Pages'
   // DNS-only hostnames no WAF rules, whatever an earlier plan had.
   const serverless = isServerlessTarget(fresh.target);
-  const keptSecurity = previous.dns.proxied === fresh.dns.proxied ? previous.security : security;
+  // Design leaves a server it creates behind Cloudflare's proxy; DNS only there is the user's.
+  const userProxy =
+    isCloudServer(fresh.target) &&
+    isCloudServer(previous.target) &&
+    fresh.dns.provider === "cloudflare" &&
+    previous.dns.provider === "cloudflare";
+  const proxied = userProxy ? previous.dns.proxied : fresh.dns.proxied;
+  const keptSecurity = previous.dns.proxied === proxied ? previous.security : security;
+  const { registration } = previous.dns;
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
-    ...("edge" in fresh.target && "edge" in previous.target
-      ? { target: { ...fresh.target, edge: previous.target.edge } }
-      : {}),
+    // The names the user may set by hand (the app's, its Worker's, its workflow's) are kept, so
+    // the resources and the workflow keep theirs.
+    target: keptTarget(fresh.target, previous.target, previous.app.name),
     app: {
       ...fresh.app,
+      name: previous.app.name,
       maxBodyMb: previous.app.maxBodyMb,
       ...(userDockerfile ? { dockerfile: previous.app.dockerfile } : {}),
       ...(sharedPaths.length > 0 ? { sharedPaths } : {}),
@@ -1459,7 +1494,14 @@ function keepPlanSettings(
         return { ...before, secret: before.secret || variable.secret };
       }),
     },
-    ...(sameZone ? { dns: { ...fresh.dns, zone } } : {}),
+    // `www` is the user's for the same domain; the zone, with a registration `opscrew domain buy`
+    // recorded, stays while the domain is inside it.
+    dns: {
+      ...fresh.dns,
+      proxied,
+      ...(previous.dns.domain === fresh.dns.domain ? { www: previous.dns.www } : {}),
+      ...(sameZone ? { zone, ...(registration === undefined ? {} : { registration }) } : {}),
+    },
     codeChanges: fresh.codeChanges.map((change) => ({
       ...change,
       status: statuses.get(key(change)) ?? change.status,
@@ -1476,6 +1518,7 @@ function keepPlanSettings(
     deploy: keptDeploy(fresh, previous),
     cicd: {
       ...fresh.cicd,
+      workflowPath: previous.cicd.workflowPath,
       // The branch it follows, set by `opscrew env add|set --branch` or by an earlier design.
       branch: previous.cicd.branch,
       imageRetention: previous.cicd.imageRetention,
@@ -1505,6 +1548,29 @@ function keepPlanSettings(
       hint: "Change your answers with `opscrew interview`, or fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again.",
     },
   );
+}
+
+/**
+ * `fresh` with what the user may set on the same kind of target kept from `previous`: on a server
+ * OpsCrew creates (the same provider) its image, between server targets their proxy (`edge`), and
+ * on Cloudflare's hosting the Worker's name, its `workers.dev` address and its preview URLs. A
+ * Worker new to the plan is named after the app's kept name, `name`.
+ */
+function keptTarget(fresh: DeployTarget, previous: DeployTarget, name: string): DeployTarget {
+  if (fresh.provider === "cloudflare-workers") {
+    if (previous.provider !== "cloudflare-workers") return { ...fresh, worker: name };
+    const { worker, workersDev, previewUrls } = previous;
+    return { ...fresh, worker, workersDev, previewUrls };
+  }
+  if (isCloudServer(fresh) && isCloudServer(previous) && fresh.provider === previous.provider) {
+    return { ...fresh, image: previous.image, edge: previous.edge };
+  }
+  return "edge" in fresh && "edge" in previous ? { ...fresh, edge: previous.edge } : fresh;
+}
+
+/** True for a server OpsCrew creates (Hetzner Cloud, DigitalOcean). */
+function isCloudServer(target: DeployTarget): target is CloudDeployTarget {
+  return CloudProviderSchema.safeParse(target.provider).success;
 }
 
 /**

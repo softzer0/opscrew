@@ -301,7 +301,7 @@ function cloudflareText(
           "The app's secrets reach its Worker from your repository's GitHub secrets at each deploy, never through a file, a plan or the infrastructure's state.",
         ]
       : []),
-    "Preview URLs and the workers.dev address stay off (target.previewUrls and target.workersDev in opscrew/plan.yaml).",
+    "Preview URLs and the workers.dev address are off unless target.previewUrls and target.workersDev in opscrew/plan.yaml turn them on, and a later design keeps them.",
     ...(adapter !== undefined && !adapter.installed
       ? [`\`opscrew adapt\` adds ${adapterText(adapter)} in a pull request.`]
       : []),

@@ -116,3 +116,61 @@ describe("the workspace packages an app's build uses", () => {
     expect((await detectProject(python)).workspacePackages).toBeUndefined();
   });
 });
+
+describe("the variables of an app in a folder", () => {
+  it("come from the app's folder and its workspace packages, never the repository's scripts or other apps", async () => {
+    const root = await tree({
+      ...PNPM_WORKSPACE,
+      "sites/landing/src/main.js": "const url = import.meta.env.VITE_SITE_URL;\n",
+      "sites/landing/.env.example": "VITE_CONTACT_EMAIL=\n",
+      "packages/ui/src/index.js": "export const cdn = process.env.UI_CDN_URL;\n",
+      "sites/docs/src/search.mjs": "export const key = process.env.DOCS_SEARCH_KEY;\n",
+      // The repository's own scripts (screenshots, a docs sync), and its root example file.
+      "scripts/screenshots.mjs":
+        "const browser = process.env.BROWSER_PATH;\nconst channel = process.env.BROWSER_CHANNEL;\n",
+      "scripts/sync-docs.mjs": "const dir = process.env.OPSCREW_GUIDE_DIR;\n",
+      ".env.example": "SITE_ORIGIN=\n",
+    });
+    // The root's committed env files are every app's; the code in the root's folders is not.
+    const landing = await detectProject(root, { appDir: "sites/landing" });
+    expect(landing.envVars.map((variable) => variable.name)).toEqual([
+      "SITE_ORIGIN",
+      "UI_CDN_URL",
+      "VITE_CONTACT_EMAIL",
+      "VITE_SITE_URL",
+    ]);
+    const docs = await detectProject(root, { appDir: "sites/docs" });
+    expect(docs.envVars.map((variable) => variable.name)).toEqual([
+      "DOCS_SEARCH_KEY",
+      "SITE_ORIGIN",
+    ]);
+    // The repository's root app reads the whole repository, its scripts included.
+    const { facts } = await detectProjectDetails(root, { appDir: "." });
+    expect(facts.envVars.map((variable) => variable.name)).toEqual(
+      expect.arrayContaining(["BROWSER_CHANNEL", "BROWSER_PATH", "OPSCREW_GUIDE_DIR"]),
+    );
+  });
+
+  it("come from a workspace package the app uses, even one that looks like an app itself", async () => {
+    const root = await tree({
+      "package.json": json({ name: "acme", private: true, packageManager: "pnpm@10.18.0" }),
+      "pnpm-workspace.yaml": "packages:\n  - apps/*\n  - packages/*\n",
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+      "apps/web/package.json": json({
+        name: "web",
+        scripts: { start: "node server.js" },
+        dependencies: { "@acme/db": "workspace:*", express: "^5.1.0" },
+      }),
+      "apps/web/server.js": "const app = require('express')();\napp.listen(process.env.PORT);\n",
+      "packages/db/package.json": json({
+        name: "@acme/db",
+        dependencies: { express: "^5.1.0", pg: "^8.16.0" },
+      }),
+      "packages/db/src/index.js": "export const url = process.env.DATABASE_URL;\n",
+    });
+    const web = await detectProject(root, { appDir: "apps/web" });
+    expect(web.workspacePackages).toEqual(["packages/db"]);
+    expect(web.envVars.map((variable) => variable.name)).toContain("DATABASE_URL");
+    expect(web.services.map((service) => service.kind)).toContain("postgres");
+  });
+});

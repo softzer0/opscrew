@@ -375,11 +375,6 @@ export async function detectProjectDetails(
     primary = rootInfo;
     appCandidates = deployableDirs;
   }
-  const inScope = (path: string) => !otherApps.some((dir) => isWithin(dir, path));
-  const scopedFiles = otherApps.length > 0 ? files.filter(inScope) : files;
-  const scopedMembers = members.filter((info) => inScope(info.unit.dir));
-  const relevant = rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers;
-  const appDir = primary?.unit.dir ?? ".";
   // The local packages the build uses, from every member (also those left out of the facts).
   const workspacePackages =
     monorepo && primary
@@ -388,6 +383,18 @@ export async function detectProjectDetails(
           members.map((info) => info.unit),
         )
       : [];
+  // A workspace package the app uses is part of it, never another app (it may look deployable).
+  otherApps = otherApps.filter((dir) => !workspacePackages.includes(dir));
+  const inScope = (path: string) => !otherApps.some((dir) => isWithin(dir, path));
+  const scopedFiles = otherApps.length > 0 ? files.filter(inScope) : files;
+  const scopedMembers = members.filter((info) => inScope(info.unit.dir));
+  const relevant = rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers;
+  const appDir = primary?.unit.dir ?? ".";
+  // An app in a folder reads its variables in its own files and its workspace packages (and the
+  // repository root's committed env files) only, never in the repository's other folders (its
+  // scripts, other apps).
+  const envDirs = [appDir, ...workspacePackages];
+  const inEnvScope = (path: string) => envDirs.some((dir) => isWithin(dir, path));
   const appPackage = primary?.unit.packageJson;
   const appKind: AppKind = primary?.appKind ?? "unknown";
   const appFrameworkNames = new Set(primary?.frameworks.map((f) => f.name) ?? []);
@@ -403,11 +410,16 @@ export async function detectProjectDetails(
   });
 
   const envFiles: { path: string; text: string }[] = [];
-  for (const path of scopedFiles.filter(isCommittedEnvFile)) {
+  // The repository root's committed env files are the app's too.
+  const envFileInScope = (file: string) => inEnvScope(file) || dirnameRel(file) === ".";
+  for (const path of scopedFiles.filter(
+    (file) => isCommittedEnvFile(file) && envFileInScope(file),
+  )) {
     envFiles.push({ path, text: (await read(path)) ?? "" });
   }
   const envTexts = envFiles.map((file) => file.text);
-  const { envVars, configUrlSchemes, envUrls } = collectEnvVars(signals, envFiles);
+  const envSignals = new Map([...signals].filter(([file]) => inEnvScope(file)));
+  const { envVars, configUrlSchemes, envUrls } = collectEnvVars(envSignals, envFiles);
   const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
   const composeEngines = new Set<ComposeRedisEngine>();
