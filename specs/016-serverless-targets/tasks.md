@@ -524,7 +524,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1619 Deploy workflows run only when what they deploy changes, in `packages/iac-templates/src/workflow/**`, `packages/detect/src/**`, `packages/plan-schema/src/**`, `packages/agents/src/design/**`
+- [X] T1619 Deploy workflows run only when what they deploy changes, in `packages/iac-templates/src/workflow/**`, `packages/detect/src/**`, `packages/plan-schema/src/**`, `packages/agents/src/design/**`
   - Owns: those paths (+ tests, snapshots)
   - Reads: plan.md "5."; data-model.md (the plan's `app`); contracts/targets.md
   - Depends: T1606, T1617b
