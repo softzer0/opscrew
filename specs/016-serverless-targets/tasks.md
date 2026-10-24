@@ -621,7 +621,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server` and `pnpm lint`
   - Effort: high
 
-- [ ] T1624 Cloudflare's answers to a forced rollback, in `packages/connectors/cloudflare/src/**`, `packages/agents/src/promote/**`, `packages/cli/test/live/cloudflare-hosting.test.ts`, `packages/cli/test/live/site-checks.ts`
+- [X] T1624 Cloudflare's answers to a forced rollback, in `packages/connectors/cloudflare/src/**`, `packages/agents/src/promote/**`, `packages/cli/test/live/cloudflare-hosting.test.ts`, `packages/cli/test/live/site-checks.ts`
   - Owns: those paths (+ tests)
   - Reads: T1623's block
   - Depends: T1623
