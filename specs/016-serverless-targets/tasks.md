@@ -509,15 +509,16 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new file>` and `pnpm lint`
   - Effort: high
 
-- [ ] T1618 Wait for the uploaded Worker version before activating it, in `packages/iac-templates/src/workflow/cloudflare-workers.ts`
+- [ ] T1618 Retry the activation of a just-uploaded Worker version, in `packages/iac-templates/src/workflow/cloudflare-workers.ts`
   - Owns: that path (+ tests, snapshots)
   - Reads: plan.md "5."; research.md R1 "Deploy"
   - Depends: T1606
   - Accept:
-    - **Found live (2026-10-24):** `wrangler versions deploy <id>@100` failed with Cloudflare's error 100146 ("The requested Worker version could not be found") about 5 s after `versions upload` created that version. It failed twice in a row. Wrangler's own version list already showed the version, and a minute later the API returned it with both tokens. The workflow's rollback then re-activated the version before, as designed.
-    - **The deploy job waits until the uploaded version can be read** before the activate step: it polls `GET /accounts/{account}/workers/scripts/{worker}/versions/{id}` with the deploy token, every 5 s for up to 2 minutes. On a timeout it fails with a plain message, and the rollback step runs as today. The token stays in `env:`, never on a command line or in output.
-    - The same wait applies to promotion and rollback runs that activate a version uploaded in the same job; a version uploaded earlier needs none.
-    - **Tests:** the rendered workflow's snapshot, and a check that the wait step comes after the upload and before the activation.
+    - **Found live (2026-10-24, the website's run 40044536735, attempts 1 and 2):** `wrangler versions deploy <id>@100` failed with Cloudflare's error 100146 ("The requested Worker version could not be found") 5–11 s after `versions upload` created that version, although the existing step "Wait until Cloudflare lists the new version" had just read it (`GET …/versions/{id}`, "after 2 attempt(s)" and "after 6 attempt(s)"). The third attempt passed. The workflow's rollback then re-activated the version before, as designed. So a readable version is no proof that it can be activated yet.
+    - **The activation itself retries:** the `activate` step activates the new version at 100 % and, while Cloudflare answers 100146, tries again every 5 s for up to 2 minutes. Any other error, or 100146 after 2 minutes, fails the step with a plain message, so the rollback and the report run as today (the step keeps the id `activate`). The token stays in `env:`, never on a command line or in output. Use the smaller of: a bash step running Wrangler from the prepared folder, or a POST of the deployment through the existing `api` helper (extended for it).
+    - **The wait step goes:** it is replaced by the retrying activation. The doc comment on `deployJob` says what the job does now.
+    - Promoted runs upload in the same job and get the same activation. The rollback step (an earlier version) needs no retry.
+    - **Tests:** the rendered workflow's snapshot, the step order (upload, version, activate, check, rollback), and that the retry is bounded and limited to 100146.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: medium
 
