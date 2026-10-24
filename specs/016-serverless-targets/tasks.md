@@ -556,6 +556,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint` (and `--filter=@opscrew/iac-engine` if it changed)
   - Effort: medium
 
+- [ ] T1621 The Claude Agent SDK only when an AI step runs, in `packages/runtime-claude/**`, `packages/cli/package.json`, `packages/cli/tsup.config.ts`
+  - Owns: those paths (+ tests); `packages/cli/src/deps.ts` only where it builds the runtime; `pnpm-lock.yaml`, regenerated for this dependency move (the lead grants it for this task)
+  - Reads: `packages/runtime-claude/src/runtime.ts`; `packages/cli/src/deps.ts`; core's paths (the user-level folders)
+  - Depends: none
+  - Accept:
+    - **Found 2026-10-24:** `opscrew` lists `@anthropic-ai/claude-agent-sdk` as a dependency, and the SDK brings a Claude Code binary for the platform (about 284 MB). So every `npx opscrew …` (the free `scan`, `init`, `--no-ai` runs, `opscrew mcp`) and the Claude Code plugin's locked install download about 350 MB, although only AI steps use the SDK. The plugin's install has a 60-second limit.
+    - **`opscrew` no longer installs the SDK:** in `packages/cli/package.json` it becomes an optional peer dependency (`peerDependenciesMeta`) pinned to one exact version, and stays a dev dependency for builds and tests. Nothing loads it at startup: runtime-claude imports it dynamically when an AI step runs, and the bundle keeps it external.
+    - **On the first AI step without it,** OpsCrew installs that exact version once into its own user-level folder (core's paths, never inside the repository), through the injected command runner, and loads it from there; later runs reuse it. In a terminal it asks first and names the size ("about 300 MB, once"); with `--yes` it goes ahead; with neither, it stops with the one command that installs it. If the SDK is already resolvable (the monorepo, or installed beside the CLI), that copy is used.
+    - `opscrew mcp`, `scan`, `init` and every `--no-ai` run never load or install it.
+    - **Tests:** nothing imports the SDK at startup; the AI path asks, installs through the fake runner and loads; the refusal and `--yes` paths; a second run reuses the install; the packed package's dependencies no longer include the SDK.
+    - After the next npm release, the lead regenerates the plugin's lockfile (it then no longer contains the SDK).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/runtime-claude --filter=opscrew` and `pnpm lint`
+  - Effort: high
+
 - [ ] T1614 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md; plan.md "14."
