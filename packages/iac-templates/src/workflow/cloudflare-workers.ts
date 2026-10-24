@@ -205,6 +205,46 @@ function apiFunction(worker: string): string[] {
   ];
 }
 
+/** How many times, 5 s apart, the activation tries while Cloudflare answers 100146 (2 minutes). */
+const ACTIVATE_ATTEMPTS = 24;
+
+/**
+ * The step `activate`: `wrangler versions deploy <new id>@100` with the Wrangler the upload
+ * installed in {@link WRANGLER_DIR}, and the deploy token and account id from `env` (the job's
+ * `apiEnv` lines). Cloudflare can answer 100146 ("version could not be found") for a version it
+ * created seconds before, even after it has read it, so on that error the step tries again every
+ * 5 s for up to 2 minutes; any other error fails it at once.
+ */
+function activateStep(plan: DeployPlan, env: readonly string[]): string[] {
+  return [
+    "- id: activate",
+    "  name: Activate the new version",
+    ...env,
+    "    VERSION: ${{ steps.version.outputs.id }}",
+    ...run([
+      "set -uo pipefail",
+      `cd "${WRANGLER_DIR}"`,
+      `for attempt in $(seq 1 ${ACTIVATE_ATTEMPTS}); do`,
+      `  if output="$(npx --no-install wrangler versions deploy "$VERSION@100" -y --config "$GITHUB_WORKSPACE"/${shellQuote(wranglerConfigPath(plan))} 2>&1)"; then`,
+      "    printf '%s\\n' \"$output\"",
+      "    exit 0",
+      "  fi",
+      "  printf '%s\\n' \"$output\"",
+      "  if ! grep -q 'code: 100146' <<< \"$output\"; then",
+      '    echo "::error::Wrangler could not activate the new version $VERSION; its output above says why."',
+      "    exit 1",
+      "  fi",
+      `  if [[ "$attempt" -lt ${ACTIVATE_ATTEMPTS} ]]; then`,
+      '    echo "Cloudflare does not find the new version yet; trying again in 5 s."',
+      "    sleep 5",
+      "  fi",
+      "done",
+      'echo "::error::Cloudflare did not find the new version $VERSION within 2 minutes, so OpsCrew could not activate it. Run the workflow again."',
+      "exit 1",
+    ]),
+  ];
+}
+
 /**
  * A promoted environment's trigger: `opscrew promote` dispatches the workflow with the run that
  * built the site the source environment runs, and that build's SHA-256.
@@ -311,10 +351,9 @@ function buildRunCheck(
  *    bundle's other modules from its folder), with `--secrets-file`: the app's variables written
  *    from their GitHub secrets to a file only the runner user can read, removed right after, so
  *    they come with the version and have no version of their own;
- * 4. the new version's id from the action's `command-output`, and a wait (at most a minute) until
- *    Cloudflare lists it, since a deploy right after the upload can fail ("version could not be
- *    found");
- * 5. `wrangler versions deploy <id>@100`, then a check of the answer on the domain
+ * 4. the new version's id from the action's `command-output`;
+ * 5. `wrangler versions deploy <id>@100`, tried again for up to 2 minutes while Cloudflare does not
+ *    find the version it just created ({@link activateStep}), then a check of the answer on the domain
  *    ({@link answerCheck}). When the activation or the check fails, the version that ran before
  *    (the latest deployment's, read before the upload) is activated again and the job fails.
  */
@@ -432,27 +471,7 @@ function deployJob(
       "fi",
       'echo "id=$id" >> "$GITHUB_OUTPUT"',
     ]),
-    "- name: Wait until Cloudflare lists the new version",
-    ...apiEnv,
-    "    VERSION: ${{ steps.version.outputs.id }}",
-    ...run([
-      "set -uo pipefail",
-      ...apiFunction(target.worker),
-      "for attempt in $(seq 1 30); do",
-      '  if api "versions/$VERSION" > /dev/null 2>&1; then',
-      '    echo "Cloudflare lists the new version after $attempt attempt(s)."',
-      "    exit 0",
-      "  fi",
-      "  sleep 2",
-      "done",
-      'echo "::error::Cloudflare did not list the new version $VERSION within a minute, so OpsCrew did not activate it. Run the workflow again."',
-      "exit 1",
-    ]),
-    ...wrangler(
-      "activate",
-      "Activate the new version",
-      "versions deploy ${{ steps.version.outputs.id }}@100 -y",
-    ),
+    ...activateStep(plan, apiEnv),
     "- id: check",
     "  name: Check that the new version answers",
     "  env:",

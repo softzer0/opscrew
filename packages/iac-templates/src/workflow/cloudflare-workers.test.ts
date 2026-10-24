@@ -268,7 +268,7 @@ describe("renderCloudflareWorkersWorkflow", () => {
     expect(staticDoc.jobs.build?.steps.some((s) => s.id === "bundle")).toBe(false);
   });
 
-  it("uploads with Wrangler and the committed config, waits for the version, activates it and checks the answer", () => {
+  it("uploads with Wrangler and the committed config, activates the new version and checks the answer", () => {
     const deploy = staticDoc.jobs.deploy;
     expect(deploy).toMatchObject({
       name: "Deploy to Cloudflare",
@@ -285,7 +285,6 @@ describe("renderCloudflareWorkersWorkflow", () => {
       "previous",
       "upload",
       "version",
-      "Wait until Cloudflare lists the new version",
       "activate",
       "check",
       "rollback",
@@ -308,14 +307,20 @@ describe("renderCloudflareWorkersWorkflow", () => {
     expect(step(deploy, "version").env).toEqual({
       OUTPUT: "${{ steps.upload.outputs.command-output }}",
     });
-    const wait = step(deploy, "Wait until Cloudflare lists the new version").run ?? "";
-    expect(wait).toContain("for attempt in $(seq 1 30); do");
-    expect(wait).toContain("  sleep 2");
-    expect(wait).toContain('api "versions/$VERSION"');
-    expect(step(deploy, "activate").with).toEqual({
-      ...wrangler,
-      command: `versions deploy \${{ steps.version.outputs.id }}@100 -y --config ${config}`,
+    expect(step(deploy, "activate").env).toEqual({
+      CLOUDFLARE_API_TOKEN: "${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}",
+      CLOUDFLARE_ACCOUNT_ID: "${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}",
+      VERSION: "${{ steps.version.outputs.id }}",
     });
+    // The token stays in env, never on Wrangler's command line.
+    expect(step(deploy, "activate").run).not.toMatch(
+      /secrets\.|apiToken|--api-token|CLOUDFLARE_API_TOKEN/,
+    );
+    // A promoted environment uploads in the same job, so it activates the same way.
+    expect(promotedDoc.jobs.deploy.steps.map((s) => s.id).filter((id) => id !== undefined)).toEqual(
+      ["previous", "upload", "version", "activate", "check", "rollback"],
+    );
+    expect(step(promotedDoc.jobs.deploy, "activate").run).toContain("code: 100146");
     expect(step(deploy, "check").env).toEqual({ URL: "https://docs.example.com/" });
     expect(step(deploy, "Prepare Wrangler").run).toContain(
       `printf '{"private": true}\\n' > "$RUNNER_TEMP/wrangler/package.json"`,
@@ -522,6 +527,69 @@ describe("renderCloudflareWorkersWorkflow", () => {
     expect(refused.status).toBe(1);
     expect(refused.stdout).toContain("::error::The downloaded site has the SHA-256");
   });
+
+  it("tries the activation again only while Cloudflare answers 100146, at most 24 times 5 s apart", async () => {
+    if (!bash) {
+      console.warn("Skipped the bash run of the activation script: no bash.");
+      return;
+    }
+    const s = step(staticDoc.jobs.deploy, "activate");
+    // The fakes answer from WRANGLER_ANSWERS (one exit code per attempt, 0 once it passes) and
+    // record each call.
+    const fakes = [
+      "npx() {",
+      '  printf \'%s|%s\\n\' "${PWD##*/}" "$*" >> "$CALLS"',
+      '  local n; n="$(grep -c . "$CALLS")"',
+      '  local code; code="$(cut -d , -f "$n" <<< "$WRANGLER_ANSWERS")"',
+      '  case "${code:-100146}" in',
+      "    0) echo 'Deployed example-app version' ;;",
+      "    100146) echo '✘ [ERROR] The requested Worker version could not be found [code: 100146]'; return 1 ;;",
+      '    *) echo "✘ [ERROR] Authentication error [code: $code]"; return 1 ;;',
+      "  esac",
+      "}",
+      'sleep() { echo "slept $1" >> "$SLEPT"; }',
+    ].join("\n");
+    async function activate(answers: string) {
+      const dir = await tree({ "wrangler/package.json": "{}" });
+      const result = await runScript(`${fakes}\n${s.run ?? ""}`, dir, {
+        RUNNER_TEMP: slashed(dir),
+        GITHUB_WORKSPACE: "/work",
+        VERSION: "1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b",
+        WRANGLER_ANSWERS: answers,
+        CALLS: slashed(join(dir, "calls")),
+        SLEPT: slashed(join(dir, "slept")),
+      });
+      const read = (name: string) =>
+        readFile(join(dir, name), "utf8").then(
+          (text) => text.split("\n").filter(Boolean),
+          () => [],
+        );
+      return { ...result, calls: await read("calls"), slept: await read("slept") };
+    }
+
+    const passed = await activate("100146,100146,0");
+    expect(passed.status, passed.stdout).toBe(0);
+    expect(passed.calls).toHaveLength(3);
+    expect(passed.calls[0]).toBe(
+      `wrangler|--no-install wrangler versions deploy 1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b@100 -y --config /work/opscrew/cloudflare/wrangler.jsonc`,
+    );
+    expect(passed.slept).toEqual(["slept 5", "slept 5"]);
+
+    const other = await activate("100146,10000");
+    expect(other.status).toBe(1);
+    expect(other.calls).toHaveLength(2);
+    expect(other.stdout).toContain(
+      "::error::Wrangler could not activate the new version 1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b; its output above says why.",
+    );
+
+    const never = await activate("");
+    expect(never.status).toBe(1);
+    expect(never.calls).toHaveLength(24);
+    expect(never.slept).toHaveLength(23);
+    expect(never.stdout).toContain(
+      "::error::Cloudflare did not find the new version 1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b within 2 minutes",
+    );
+  }, 60_000);
 
   it("reads the new version's id from Wrangler's output, and stops without one", async () => {
     if (!bash) {

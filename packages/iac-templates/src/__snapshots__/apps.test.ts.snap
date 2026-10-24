@@ -784,38 +784,32 @@ jobs:
             exit 1
           fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
-      - name: Wait until Cloudflare lists the new version
+      - id: activate
+        name: Activate the new version
         env:
           CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_DOCS_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_DOCS_CLOUDFLARE_ACCOUNT_ID }}
           VERSION: \${{ steps.version.outputs.id }}
         run: |
           set -uo pipefail
-          api() {
-            local headers="$RUNNER_TEMP/opscrew-cloudflare-headers" code=0
-            (umask 077 && printf 'Authorization: Bearer %s\\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
-            curl -fsS --max-time 30 -H @"$headers" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/example-app/$1" || code=$?
-            rm -f "$headers"
-            return "$code"
-          }
-          for attempt in $(seq 1 30); do
-            if api "versions/$VERSION" > /dev/null 2>&1; then
-              echo "Cloudflare lists the new version after $attempt attempt(s)."
+          cd "$RUNNER_TEMP/wrangler"
+          for attempt in $(seq 1 24); do
+            if output="$(npx --no-install wrangler versions deploy "$VERSION@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/apps/docs/cloudflare/wrangler.jsonc' 2>&1)"; then
+              printf '%s\\n' "$output"
               exit 0
             fi
-            sleep 2
+            printf '%s\\n' "$output"
+            if ! grep -q 'code: 100146' <<< "$output"; then
+              echo "::error::Wrangler could not activate the new version $VERSION; its output above says why."
+              exit 1
+            fi
+            if [[ "$attempt" -lt 24 ]]; then
+              echo "Cloudflare does not find the new version yet; trying again in 5 s."
+              sleep 5
+            fi
           done
-          echo "::error::Cloudflare did not list the new version $VERSION within a minute, so OpsCrew did not activate it. Run the workflow again."
+          echo "::error::Cloudflare did not find the new version $VERSION within 2 minutes, so OpsCrew could not activate it. Run the workflow again."
           exit 1
-      - id: activate
-        name: Activate the new version
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_DOCS_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_DOCS_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.version.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/apps/docs/cloudflare/wrangler.jsonc
       - id: check
         name: Check that the new version answers
         env:
