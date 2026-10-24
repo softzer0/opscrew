@@ -607,7 +607,7 @@ Effort`.
   - `siteWorkflowStart` copies `shared.ts`'s `workflowStart` because the dispatch inputs differ: `workflowStart` could take its inputs (T1606's report).
   - `app remove`'s pre-check repeats `removeApp`'s condition in the CLI and in MCP (T1612a's report): export one check from agents, or let `removeApp` take a `confirm` callback.
   - The guide says how deploy workflows filter pushes by path (T1619): `app.sharedPaths`, root files except Markdown, and GitHub's limit of evaluating only the first 300 changed files of a push (a bigger push may skip a deploy; run the workflow by hand then).
-  - Drift compares no generated files for the server-less targets, because `previewDeploymentFiles` (`provision/render.ts`) refuses them (T1610a's report). Decide whether drift should compare the workflow and Wrangler config too.
+  - Drift compares no generated files for the server-less targets, because `previewDeploymentFiles` (`provision/render.ts`) refuses them (T1610a's report), and `opscrew_render` on a site still says "not available … yet" (T1612a's review). Decide: preview and compare the workflow and Wrangler config for sites, or refuse plainly without "yet".
 
 ## Dependencies
 
