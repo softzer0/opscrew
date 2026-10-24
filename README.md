@@ -1,6 +1,4 @@
-# OpsCrew
-
-**The ops crew you didn't hire.**
+<p align="center"><img src="https://raw.githubusercontent.com/softzer0/opscrew/main/.github/assets/opscrew-header.png" alt="OpsCrew: the ops crew you didn't hire" width="100%"></p>
 
 From a GitHub repo to a hardened production deployment on your own cloud. Any cloud. You keep the infrastructure code.
 
