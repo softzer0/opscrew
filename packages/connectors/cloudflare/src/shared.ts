@@ -772,7 +772,10 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
 /**
  * The decision on the zone's minimum TLS version (research R4), when provision asks for it: raised
  * from 1.0 to 1.2 only when Cloudflare lets it be changed and every proxied A, AAAA and CNAME
- * record in the zone is OpsCrew's; otherwise advised while it is below 1.2.
+ * record in the zone is OpsCrew's; otherwise advised while it is below 1.2. A record is OpsCrew's
+ * when it carries OpsCrew's comment, or when its hostname is this app's or listed in one of
+ * OpsCrew's shared rules (another OpsCrew app's): a Worker's custom domain makes its own record,
+ * without the comment.
  */
 function planMinTls(
   facts: SharedFacts,
@@ -782,8 +785,16 @@ function planMinTls(
   if (!desired.minTls || !setting || (setting.value !== "1.0" && setting.value !== "1.1")) {
     return { changes: [], advice: [] };
   }
+  const opscrew = new Set(
+    REFS.flatMap((ref) => {
+      const rule = ownRule(ref, facts.entrypoints[SHARED_RULES[ref].phase]);
+      return [...(desired.hostnames[ref] ?? []), ...((rule && hostnamesOf(ref, rule)) ?? [])];
+    }),
+  );
   const others = sortedUnique(
-    setting.proxied.filter((r) => r.comment !== OPSCREW_MANAGED_COMMENT).map((r) => r.name),
+    setting.proxied
+      .filter((r) => r.comment !== OPSCREW_MANAGED_COMMENT && !opscrew.has(r.name))
+      .map((r) => r.name),
   );
   if (setting.value === "1.0" && setting.editable && others.length === 0) {
     return { changes: [{ kind: "set-min-tls", from: "1.0", to: "1.2" }], advice: [] };

@@ -1,6 +1,12 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { CloudflareClient, type CloudflareDnsRecord } from "@opscrew/connector-cloudflare";
+import {
+  applyShared,
+  CloudflareClient,
+  type CloudflareDnsRecord,
+  inspectShared,
+  planShared,
+} from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
@@ -662,6 +668,53 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
       "the zone has proxied hostnames that are not OpsCrew's: blog.example.com",
     );
     expect(s.zone.writes().some((c) => c.path.includes("min_tls_version"))).toBe(false);
+  });
+
+  it("a second Workers app raises the minimum TLS beside the first's Worker domains, not beside someone else's Worker", async () => {
+    const BLOCKED = "blog.example.com";
+    /** The first OpsCrew app on Cloudflare's hosting: blog.example.com in OpsCrew's probe block. */
+    const firstApp = async (zone: FakeZone) => {
+      const client = fakeSharedCloudflare(zone);
+      const facts = await inspectShared(client, {
+        zoneId: FAKE_ZONE_ID,
+        accountId: FAKE_ACCOUNT_ID,
+        access: false,
+      });
+      const plan = planShared(
+        facts,
+        { hostnames: { "opscrew-block-probes": [BLOCKED] } },
+        undefined,
+      );
+      await applyShared(client, plan, { approvedHash: plan.hash });
+    };
+    // The record a Worker's custom domain makes: proxied, without OpsCrew's comment.
+    const workerRecord = (zone: FakeZone, name: string) =>
+      zone.addDnsRecord({ type: "AAAA", name, proxied: true });
+
+    const second = await setup();
+    await firstApp(second.zone);
+    workerRecord(second.zone, BLOCKED);
+    await runProvision(second.deps, { services: second.services });
+    expect(second.zone.minTls.value).toBe("1.2");
+
+    // The same zone with a custom domain of a Worker someone else made: advice only.
+    const foreign = await setup();
+    await firstApp(foreign.zone);
+    workerRecord(foreign.zone, BLOCKED);
+    workerRecord(foreign.zone, "shop.example.com");
+    foreign.zone.workerDomains.push({
+      id: "domain-shop",
+      hostname: "shop.example.com",
+      service: "someone-elses-worker",
+      zone_id: FAKE_ZONE_ID,
+      zone_name: "example.com",
+    });
+    await runProvision(foreign.deps, { services: foreign.services });
+    expect(foreign.zone.minTls.value).toBe("1.0");
+    const shared = foreign.handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(shared?.details).toContain(
+      "the zone has proxied hostnames that are not OpsCrew's: shop.example.com.",
+    );
   });
 
   it("an app moved to another zone first removes its hostnames, www redirect included, from the zone it leaves", async () => {

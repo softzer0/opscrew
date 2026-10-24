@@ -221,6 +221,10 @@ Every answer carries OpsCrew's security headers: HSTS, `X-Content-Type-Options`,
 Static files never reach the Worker, so they cost no Worker request. OpsCrew's probe block in your
 zone also protects the site's hostnames (see [Your domain on Cloudflare](cloudflare.md)).
 
+`npx opscrew provision` raises the zone's minimum TLS version to 1.2 under the same conditions as
+for an app on a server (see [The minimum TLS version](tls-and-caa.md#the-minimum-tls-version)). The
+records Cloudflare makes for the custom domains of OpsCrew apps' Workers count as OpsCrew's.
+
 ## Previews
 
 Cloudflare's preview URLs and the `workers.dev` address are off, so the site answers only on your

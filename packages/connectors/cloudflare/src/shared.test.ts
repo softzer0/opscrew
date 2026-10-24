@@ -2128,6 +2128,26 @@ describe("origin TLS and the zone's minimum TLS", () => {
     expect(zone.calls.slice(before).some((c) => c.path.includes("/settings/"))).toBe(false);
   });
 
+  it("counts a record without OpsCrew's comment as OpsCrew's at this app's hostnames and those OpsCrew's rules list", async () => {
+    const zone = new FakeZone();
+    // Another OpsCrew app on Cloudflare's hosting: its hostname in the probe block, and the
+    // record its Worker's custom domain made, which carries no comment.
+    await deploy(zone, { hostnames: { [BLOCK]: B } });
+    zone.addDnsRecord({ type: "AAAA", name: "api.example.com", proxied: true });
+    // This app's own Worker domain, made before its rules are in place.
+    zone.addDnsRecord({ type: "AAAA", name: "shop.example.com", proxied: true });
+    const desired = { hostnames: { [BLOCK]: ["shop.example.com"] }, minTls: true };
+    expect(kinds(await tlsPlan(zone, desired))).toContain("set-min-tls");
+
+    // A hostname neither lists, a custom domain of someone else's Worker, still blocks the raise.
+    zone.addDnsRecord({ type: "AAAA", name: "blog.example.com", proxied: true });
+    const plan = await tlsPlan(zone, desired);
+    expect(kinds(plan)).not.toContain("set-min-tls");
+    expect(plan.advice[0]?.message).toContain(
+      "the zone has proxied hostnames that are not OpsCrew's: blog.example.com.",
+    );
+  });
+
   it("raises the minimum TLS only from 1.0: a value changed after the plan stops the apply", async () => {
     const zone = new FakeZone();
     const plan = await tlsPlan(zone, { hostnames: {}, minTls: true });
