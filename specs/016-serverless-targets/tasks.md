@@ -647,7 +647,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1615 Live runs (lead), after T1614: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
+- [X] T1615 Live runs (lead), after T1614: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1615)
 
