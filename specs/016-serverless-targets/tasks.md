@@ -570,7 +570,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/runtime-claude --filter=opscrew` and `pnpm lint`
   - Effort: high
 
-- [ ] T1622 Re-design keeps the plan's own settings, and analysis keeps a folder app's variables to its own files, in `packages/agents/src/design/**`, `packages/detect/src/**`
+- [X] T1622 Re-design keeps the plan's own settings, and analysis keeps a folder app's variables to its own files, in `packages/agents/src/design/**`, `packages/detect/src/**`
   - Owns: those paths (+ tests, fixtures)
   - Reads: plan.md; data-model.md (the plan's `app` and `dns`); `packages/plan-schema/src/plan.ts`
   - Depends: T1619
