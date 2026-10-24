@@ -450,7 +450,7 @@ Effort`.
 
 ## Phase 5: Surfaces, the Docker pass and live tests
 
-- [ ] T1612a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
+- [X] T1612a [P] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
   - Owns: those paths (+ tests)
   - Reads: contracts/targets.md "CLI and MCP"; plan.md "12."; quickstart.md
   - Depends: T1610a, T1610b, T1611
