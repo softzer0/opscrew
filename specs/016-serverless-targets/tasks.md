@@ -509,6 +509,18 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=opscrew -- test/e2e/<the new file>` and `pnpm lint`
   - Effort: high
 
+- [ ] T1618 Wait for the uploaded Worker version before activating it, in `packages/iac-templates/src/workflow/cloudflare-workers.ts`
+  - Owns: that path (+ tests, snapshots)
+  - Reads: plan.md "5."; research.md R1 "Deploy"
+  - Depends: T1606
+  - Accept:
+    - **Found live (2026-10-24):** `wrangler versions deploy <id>@100` failed with Cloudflare's error 100146 ("The requested Worker version could not be found") about 5 s after `versions upload` created that version. It failed twice in a row. Wrangler's own version list already showed the version, and a minute later the API returned it with both tokens. The workflow's rollback then re-activated the version before, as designed.
+    - **The deploy job waits until the uploaded version can be read** before the activate step: it polls `GET /accounts/{account}/workers/scripts/{worker}/versions/{id}` with the deploy token, every 5 s for up to 2 minutes. On a timeout it fails with a plain message, and the rollback step runs as today. The token stays in `env:`, never on a command line or in output.
+    - The same wait applies to promotion and rollback runs that activate a version uploaded in the same job; a version uploaded earlier needs none.
+    - **Tests:** the rendered workflow's snapshot, and a check that the wait step comes after the upload and before the activation.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
+  - Effort: medium
+
 - [ ] T1614 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md; plan.md "14."
