@@ -556,7 +556,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint` (and `--filter=@opscrew/iac-engine` if it changed)
   - Effort: medium
 
-- [ ] T1621 The Claude Agent SDK only when an AI step runs, in `packages/runtime-claude/**`, `packages/cli/package.json`, `packages/cli/tsup.config.ts`
+- [X] T1621 The Claude Agent SDK only when an AI step runs, in `packages/runtime-claude/**`, `packages/cli/package.json`, `packages/cli/tsup.config.ts`
   - Owns: those paths (+ tests); `packages/core/src/**` for the command runner (it can't start npm's `.cmd` shims on Windows, which also broke adapt's lockfile update there; T1611's report); `packages/cli/src/deps.ts` only where it builds the runtime; `pnpm-lock.yaml`, regenerated for this dependency move (the lead grants it for this task)
   - Reads: `packages/runtime-claude/src/runtime.ts`; `packages/cli/src/deps.ts`; core's paths (the user-level folders)
   - Depends: none
