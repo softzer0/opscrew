@@ -14,7 +14,7 @@ on:
       - packages/connectors/ssh-host/src/local.test.ts
       - packages/core/src/crypto/x509.ts
       - packages/core/src/crypto/x509.test.ts
-      - examples/**
+      - examples/express-mysql/**
       - packages/cli/test/e2e/localhost*.ts
       - .github/workflows/localhost.yml
   pull_request:
@@ -26,7 +26,7 @@ on:
       - packages/connectors/ssh-host/src/local.test.ts
       - packages/core/src/crypto/x509.ts
       - packages/core/src/crypto/x509.test.ts
-      - examples/**
+      - examples/express-mysql/**
       - packages/cli/test/e2e/localhost*.ts
       - .github/workflows/localhost.yml
   schedule:
