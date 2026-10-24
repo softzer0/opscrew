@@ -187,6 +187,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
   if (extra.runtime !== undefined) return { ...deps, runtime: extra.runtime };
   if (!claudeConfigured(ctx.env)) return deps;
   // Phases record their own spend in the cost ledger, so the runtime gets none (no doubles).
+  const confirmInstall = sdkInstallConsent(ctx, options.assumeYes === true);
   const runtime = new ClaudeAgentRuntime({
     policy: new DefaultToolPolicy({ realpath: nodeRealpath }),
     audit: deps.audit,
@@ -194,8 +195,31 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     approvals: deps.approvals,
     env: ctx.env,
     ...(options.model === undefined ? {} : { defaultModel: options.model }),
+    sdk: {
+      homeDir: deps.paths.homeDir,
+      runner: deps.runner,
+      reporter: deps.reporter,
+      ...(confirmInstall === undefined ? {} : { confirmInstall }),
+    },
   });
   return { ...deps, runtime };
+}
+
+/**
+ * Who agrees to the Claude Agent SDK's one-time download: `--yes` agrees, a terminal asks, and
+ * otherwise nobody can (undefined), so the AI step stops with the install command.
+ */
+export function sdkInstallConsent(
+  ctx: CliContext,
+  assumeYes: boolean,
+): ((question: string) => Promise<boolean>) | undefined {
+  if (assumeYes) return async () => true;
+  if (!ctx.isInteractive) return undefined;
+  return async (question) => {
+    const prompts = promptsOf(ctx);
+    const answer = await prompts.confirm({ message: question, initialValue: true });
+    return !prompts.isCancel(answer) && answer === true;
+  };
 }
 
 /** `--model <id>`, else `OPSCREW_MODEL`, else undefined (the phase's default model). */

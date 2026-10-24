@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { OpsCrewError } from "./errors";
-import { findExecutable, NodeCommandRunner } from "./exec";
+import { findExecutable, NodeCommandRunner, nodeShimScript } from "./exec";
 
 const node = process.execPath;
 const isWindows = process.platform === "win32";
@@ -211,5 +211,131 @@ describe("findExecutable", () => {
     expect(findExecutable("mytool", { PATH: tmp })).toBeUndefined();
     await chmod(file, 0o755);
     expect(findExecutable("mytool", { PATH: `/nonexistent${path.delimiter}${tmp}` })).toBe(file);
+  });
+});
+
+/** `npm.cmd` as the Node.js installer writes it. */
+const NODE_INSTALLER_NPM_CMD = String.raw`:: Created by npm, please don't edit manually.
+@ECHO OFF
+
+SETLOCAL
+
+SET "NODE_EXE=%~dp0\node.exe"
+IF NOT EXIST "%NODE_EXE%" (
+  SET "NODE_EXE=node"
+)
+
+SET "NPM_PREFIX_JS=%~dp0\node_modules\npm\bin\npm-prefix.js"
+SET "NPM_CLI_JS=%~dp0\node_modules\npm\bin\npm-cli.js"
+FOR /F "delims=" %%F IN ('CALL "%NODE_EXE%" "%NPM_PREFIX_JS%"') DO (
+  SET "NPM_PREFIX_NPM_CLI_JS=%%F\node_modules\npm\bin\npm-cli.js"
+)
+IF EXIST "%NPM_PREFIX_NPM_CLI_JS%" (
+  SET "NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%"
+)
+
+"%NODE_EXE%" "%NPM_CLI_JS%" %*
+`.replaceAll("\n", "\r\n");
+
+/** A shim as npm's `cmd-shim` writes it for a global package (`pnpm.cmd`, `yarn.cmd`...). */
+function cmdShim(entry: string): string {
+  return String.raw`@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\ENTRY" %*
+`
+    .replace("ENTRY", entry)
+    .replaceAll("\n", "\r\n");
+}
+
+describe("nodeShimScript", () => {
+  const dir = path.resolve("shim-dir");
+
+  it("finds npm's script in the Node.js installer's npm.cmd", () => {
+    expect(nodeShimScript(NODE_INSTALLER_NPM_CMD, dir)).toBe(
+      path.join(dir, "node_modules", "npm", "bin", "npm-cli.js"),
+    );
+  });
+
+  it("finds the script of a cmd-shim", () => {
+    expect(nodeShimScript(cmdShim(String.raw`node_modules\pnpm\bin\pnpm.cjs`), dir)).toBe(
+      path.join(dir, "node_modules", "pnpm", "bin", "pnpm.cjs"),
+    );
+  });
+
+  it("finds nothing in a batch file that does not start a Node.js script", () => {
+    expect(nodeShimScript(String.raw`"%~dp0\tool.exe" "%~dp0\x.js" %*`, dir)).toBeUndefined();
+    expect(nodeShimScript(String.raw`"%~dp0\node.exe" "%~dp0\x.py" %*`, dir)).toBeUndefined();
+    expect(nodeShimScript("@echo off\r\necho hello\r\n", dir)).toBeUndefined();
+  });
+
+  it("gives up on variables that keep doubling", () => {
+    const doubling = Array.from({ length: 40 }, (_, i) => `SET "V${i + 1}=%V${i}%%V${i}%"`);
+    const shim = [`SET "V0=%~dp0\\x"`, ...doubling, `"%~dp0\\node.exe" "%V40%.js" %*`].join("\r\n");
+    expect(nodeShimScript(shim, dir)).toBeUndefined();
+  });
+});
+
+describe.runIf(isWindows)("NodeCommandRunner with Windows command shims", () => {
+  const runner = new NodeCommandRunner({ defaultTimeoutMs: 20_000 });
+
+  it("starts a Node.js shim's script with the arguments unchanged, through no shell", async () => {
+    const bin = path.join(tmp, "bin dir");
+    await mkdir(path.join(bin, "node_modules", "tool"), { recursive: true });
+    await writeFile(
+      path.join(bin, "node_modules", "tool", "cli.js"),
+      "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+    );
+    await writeFile(path.join(bin, "tool.cmd"), cmdShim(String.raw`node_modules\tool\cli.js`));
+    // What cmd.exe would read as a second command, a variable or an escape.
+    const args = ["a b", "x & echo injected", '"quoted"', "%PATH%", "^caret", "a|b", "back\\"];
+    const result = await runner.run(path.join(bin, "tool.cmd"), args);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  });
+
+  it("refuses a batch file that is not a Node.js shim, without running it", async () => {
+    const shim = path.join(tmp, "other.bat");
+    await writeFile(shim, "@echo off\r\necho ran > ran.txt\r\n");
+    const error = await runner.run(shim, [], { cwd: tmp }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).code).toBe("COMMAND_FAILED");
+    expect((error as OpsCrewError).message).toBe(
+      `Could not run ${shim}: on Windows OpsCrew starts programs, and Node.js command shims by their full path; this batch file is neither.`,
+    );
+  });
+
+  it("refuses a Node.js shim given by a relative path", async () => {
+    await mkdir(path.join(tmp, "node_modules", "tool"), { recursive: true });
+    await writeFile(path.join(tmp, "node_modules", "tool", "cli.js"), "");
+    await writeFile(path.join(tmp, "tool.cmd"), cmdShim(String.raw`node_modules\tool\cli.js`));
+    const error = await runner.run("tool.cmd", [], { cwd: tmp }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect((error as OpsCrewError).message).toContain("this batch file is neither");
+  });
+
+  const npm = findExecutable("npm");
+  it.runIf(npm !== undefined)("runs this computer's npm through its npm.cmd", async () => {
+    const result = await runner.run(npm as string, ["--version"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 });

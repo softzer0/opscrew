@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, readFileSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -96,6 +96,61 @@ function spawnError(command: string, error: unknown): OpsCrewError {
   });
 }
 
+/**
+ * The program and arguments that start `command`. On Windows a `.cmd` or `.bat` file is a batch
+ * script only cmd.exe runs, and cmd.exe reads its arguments as commands, so a Node.js shim (npm's,
+ * pnpm's, yarn's...) given by its full path runs as this Node.js with the shim's script, and any
+ * other batch file is refused.
+ */
+function launchTarget(command: string, args: readonly string[]): [string, string[]] {
+  if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) {
+    return [command, [...args]];
+  }
+  const script = path.isAbsolute(command)
+    ? nodeShimScript(readFileSync(command, "utf8"), path.dirname(command))
+    : undefined;
+  if (script === undefined) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `Could not run ${command}: on Windows OpsCrew starts programs, and Node.js command shims by their full path; this batch file is neither.`,
+      { hint: `Put the program's .exe on PATH before ${path.basename(command)}, then try again.` },
+    );
+  }
+  return [process.execPath, [script, ...args]];
+}
+
+/**
+ * The absolute path of the Node.js script a Windows command shim starts (its line
+ * `"<node>" "<script>" %*`, as the Node.js installer's `npm.cmd` and npm's cmd-shim write it),
+ * with `%~dp0` as `dir` (the shim's folder) and the shim's variables at their first `SET`;
+ * undefined when the shim does not start a script with Node.js, or a variable grows past 32 KB.
+ */
+export function nodeShimScript(shim: string, dir: string): string | undefined {
+  const vars = new Map<string, string>();
+  const expand = (text: string) =>
+    text.replace(/%~dp0|%(\w+)%/g, (match, name: string | undefined) =>
+      name === undefined ? `${dir}/` : (vars.get(name.toLowerCase()) ?? match),
+    );
+  let launch: RegExpExecArray | null = null;
+  for (const line of shim.split(/\r?\n/)) {
+    const set = /^\s*set\s+"?(\w+)=([^"]*)"?\s*$/i.exec(line);
+    const name = set?.[1]?.toLowerCase();
+    if (name !== undefined && !vars.has(name)) {
+      const value = expand(set?.[2] ?? "");
+      // Each SET may double an earlier variable; no real shim comes near this.
+      if (value.length > 32_768) return undefined;
+      vars.set(name, value);
+    }
+    launch = /"([^"]+)"\s+"([^"]+)"\s+%\*\s*$/.exec(line) ?? launch;
+  }
+  if (launch === null) return undefined;
+  const program = expand(launch[1] ?? "").replaceAll("\\", "/");
+  const script = expand(launch[2] ?? "").replaceAll("\\", "/");
+  if (!/^node(?:\.exe)?$/i.test(path.posix.basename(program))) return undefined;
+  if (script.includes("%") || !/\.[cm]?js$/i.test(script)) return undefined;
+  return path.resolve(script);
+}
+
 /** Kills `child` and everything it started. */
 function killTree(child: ChildProcess): void {
   const pid = child.pid;
@@ -152,7 +207,8 @@ export class NodeCommandRunner implements CommandRunner {
     return new Promise<CommandResult>((resolve, reject) => {
       let child: ChildProcess;
       try {
-        child = spawn(command, [...args], {
+        const [file, fileArgs] = launchTarget(command, args);
+        child = spawn(file, fileArgs, {
           cwd: options.cwd,
           env: options.env ? definedEnv(options.env) : process.env,
           shell: false,
@@ -162,7 +218,7 @@ export class NodeCommandRunner implements CommandRunner {
           stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
       } catch (error) {
-        reject(spawnError(command, error));
+        reject(error instanceof OpsCrewError ? error : spawnError(command, error));
         return;
       }
 

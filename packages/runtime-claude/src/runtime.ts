@@ -1,14 +1,13 @@
-import {
-  AbortError,
-  type CanUseTool,
-  type HookCallback,
-  type HookJSONOutput,
-  type Options,
-  type PermissionResult,
-  query,
-  type SDKMessage,
-  type SDKResultError,
-  type SDKResultMessage,
+// Types only: the SDK itself is loaded on the first phase (`loadClaudeAgentSdk`).
+import type {
+  CanUseTool,
+  HookCallback,
+  HookJSONOutput,
+  Options,
+  PermissionResult,
+  SDKMessage,
+  SDKResultError,
+  SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   type AgentRuntime,
@@ -25,6 +24,7 @@ import {
 } from "@opscrew/contracts";
 import {
   errorMessage,
+  errorText,
   isRecord,
   modelOutputMismatch,
   PROFILE_TOOLS,
@@ -33,11 +33,12 @@ import {
   sanitizeAgentEnv,
 } from "@opscrew/core";
 import { z } from "zod";
+import { type ClaudeAgentSdkOptions, loadClaudeAgentSdk } from "./sdk";
 
 /** The subset of the SDK's `query()` the runtime uses; `typeof query` satisfies it. */
 export type QueryFn = (params: { prompt: string; options?: Options }) => AsyncIterable<SDKMessage>;
 
-export interface ClaudeAgentRuntimeOptions {
+interface RuntimeOptions {
   /** Decides every tool call (normally `DefaultToolPolicy`). */
   policy: ToolPolicy;
   audit: AuditLog;
@@ -52,9 +53,14 @@ export interface ClaudeAgentRuntimeOptions {
   defaultModel?: string;
   /** Parent environment. Defaults to `process.env`; sanitised before it reaches the agent. */
   env?: Record<string, string | undefined>;
-  /** Injectable SDK entry point for tests. Defaults to the SDK's `query`. */
-  queryFn?: QueryFn;
 }
+
+/**
+ * The runtime's options, with how it reaches the SDK: `sdk` finds (or installs) it on the first
+ * phase, `queryFn` replaces it in tests.
+ */
+export type ClaudeAgentRuntimeOptions = RuntimeOptions &
+  ({ sdk: ClaudeAgentSdkOptions } | { queryFn: QueryFn });
 
 /** SDK tools OpsCrew agents never get, disallowed explicitly as defence in depth. */
 const ALWAYS_DISALLOWED = [
@@ -109,12 +115,11 @@ type Gate =
 export class ClaudeAgentRuntime implements AgentRuntime {
   readonly id = "claude-agent-sdk";
   readonly #options: ClaudeAgentRuntimeOptions;
-  readonly #queryFn: QueryFn;
   readonly #defaultModel: string;
+  #query: Promise<QueryFn> | undefined;
 
   constructor(options: ClaudeAgentRuntimeOptions) {
     this.#options = options;
-    this.#queryFn = options.queryFn ?? query;
     this.#defaultModel = options.defaultModel ?? "claude-opus-5-5";
   }
 
@@ -141,7 +146,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
   async runPhase<T>(request: PhaseRequest<T>): Promise<PhaseResult<T>> {
     return new PhaseRun(
       this.#options,
-      this.#queryFn,
+      () => this.#loadQuery(),
       this.#defaultModel,
       this.#env(),
       request,
@@ -150,6 +155,16 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 
   #env(): Record<string, string | undefined> {
     return this.#options.env ?? process.env;
+  }
+
+  /** The SDK's `query`, loaded once per runtime (an install the user refused is not asked again). */
+  #loadQuery(): Promise<QueryFn> {
+    const options = this.#options;
+    this.#query ??=
+      "queryFn" in options
+        ? Promise.resolve(options.queryFn)
+        : loadClaudeAgentSdk(options.sdk, this.#env());
+    return this.#query;
   }
 }
 
@@ -166,7 +181,7 @@ class PhaseRun<T> {
 
   constructor(
     private readonly options: ClaudeAgentRuntimeOptions,
-    private readonly queryFn: QueryFn,
+    private readonly loadQuery: () => Promise<QueryFn>,
     private readonly defaultModel: string,
     private readonly env: Record<string, string | undefined>,
     private readonly request: PhaseRequest<T>,
@@ -180,10 +195,22 @@ class PhaseRun<T> {
     if (this.#isAborted()) return this.#finish(this.#aborted());
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
+    let query: QueryFn;
+    try {
+      query = await this.loadQuery();
+    } catch (error) {
+      request.signal?.removeEventListener("abort", onAbort);
+      return this.#finish(
+        this.#failed(
+          errorText(error, `OpsCrew could not load the Claude Agent SDK: ${errorMessage(error)}`),
+        ),
+      );
+    }
+
     let result: SDKResultMessage | undefined;
     let failure: PhaseResult<T> | undefined;
     try {
-      const stream = this.queryFn({
+      const stream = query({
         prompt: this.#redact(request.prompt),
         options: this.buildOptions(controller),
       });
@@ -728,5 +755,5 @@ function parseJson(text: string | undefined): unknown {
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof AbortError || (error instanceof Error && error.name === "AbortError");
+  return error instanceof Error && error.name === "AbortError";
 }

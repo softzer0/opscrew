@@ -252,6 +252,7 @@ describe("ClaudeAgentRuntime.isConfigured", () => {
       audit: new MemoryAuditLog(),
       redact: (text) => text,
       env,
+      queryFn: scriptedQuery([]).queryFn,
     });
 
   it("has the id claude-agent-sdk", () => {
