@@ -19,8 +19,8 @@ When Claude Code installs the plugin, it also installs the OpsCrew CLI at the pl
 (`opscrew` 0.1.0 from npm) and its dependencies, exactly as `package-lock.json` pins them, with npm
 and without running any install script. The plugin's MCP server then runs that copy:
 `node ${CLAUDE_PLUGIN_ROOT}/node_modules/opscrew/dist/opscrew.js mcp`. You need Node.js 22+ and npm
-on your PATH. The download is about 350 MB, most of it the Claude Code binary that the Claude Agent
-SDK brings for the CLI's own AI steps; the MCP server itself never calls a model.
+on your PATH. The download is about 35 MB. The MCP server never calls a model, so it needs none of
+the Claude Agent SDK that the CLI's own AI steps install once, when you first run one.
 
 ## Skills
 

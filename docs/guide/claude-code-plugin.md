@@ -37,9 +37,9 @@ your computer from that copy:
 node ${CLAUDE_PLUGIN_ROOT}/node_modules/opscrew/dist/opscrew.js mcp
 ```
 
-You need Node.js 22 or newer and npm on your `PATH`. The download is about 350 MB, most of it the
-Claude Code binary that the Claude Agent SDK brings for the CLI's own AI steps; the MCP server
-itself never calls a model.
+You need Node.js 22 or newer and npm on your `PATH`. The download is about 35 MB. The MCP server
+never calls a model, so it needs none of the Claude Agent SDK that the CLI's own AI steps install
+once, when you first run one.
 
 The server runs with your shell's environment, so it reads the same tokens as the CLI
 (`HCLOUD_TOKEN`, `CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN` and the others the guide's pages name).
