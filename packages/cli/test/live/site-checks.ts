@@ -14,7 +14,7 @@ import { httpRequest, minutes, waitFor } from "./cloud";
 import type { AppEnvironments } from "./environment-checks";
 import type { LiveRun, ServerSettings } from "./harness";
 import { missingHeaders, servingVersion, statusVersions, versionBuild } from "./serverless-support";
-import { approveHashes } from "./support";
+import { approveHashes, duration } from "./support";
 
 /** The deploy token the Cloudflare passes give OpsCrew (`OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`). */
 export const DEPLOY_TOKEN = process.env.OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN?.trim() ?? "";
@@ -136,6 +136,24 @@ export async function expectHeaders(
   );
   run.log(`observed: ${url} answers ${status} with OpsCrew's security headers`);
   return answer;
+}
+
+/**
+ * Waits, logged, up to 15 minutes until `https://www.<host>/` answers over HTTPS with any status:
+ * Cloudflare issues a Workers custom domain's own certificate minutes after provision when the
+ * hostname is below the zone's first level (seen live).
+ */
+export async function wwwAnswers(run: LiveRun, host: string): Promise<void> {
+  const url = `https://www.${host}/`;
+  const started = Date.now();
+  run.log(`waiting for ${url} to answer over HTTPS (its certificate may take minutes)`);
+  const answer = await waitFor(
+    `${url} answering over HTTPS`,
+    minutes(15),
+    () => httpRequest(url),
+    10_000,
+  );
+  run.log(`observed: ${url} answered ${answer.status} ${duration(Date.now() - started)} later`);
 }
 
 /**

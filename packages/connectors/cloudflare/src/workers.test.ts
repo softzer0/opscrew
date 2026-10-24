@@ -185,7 +185,7 @@ describe("CloudflareClient Workers calls", () => {
       const { zone, client } = setup();
       zone.faults.push({
         match: `POST ${SCRIPT}/deployments`,
-        reply: { status: 400, body: { success: false, errors: [{ code: 10021, message }] } },
+        reply: { status: 400, body: { success: false, errors: [{ code: 10220, message }] } },
       });
       const error = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
       expect(error, message).not.toBeInstanceOf(WorkerSecretsChangedError);
@@ -194,14 +194,53 @@ describe("CloudflareClient Workers calls", () => {
     }
   });
 
-  it("sends force=true only when asked, and Cloudflare then activates the version", async () => {
+  it("reads the refusal by its code 10220, with the probe's exact answer", async () => {
+    const message =
+      "A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: PROBE_SECRET";
+    const { zone, client } = setup();
+    zone.faults.push({
+      match: `POST ${SCRIPT}/deployments`,
+      reply: {
+        status: 400,
+        body: { result: null, success: false, errors: [{ code: 10220, message }], messages: [] },
+      },
+    });
+    const error = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
+    expect(error).toBeInstanceOf(WorkerSecretsChangedError);
+    expect((error as WorkerSecretsChangedError).secrets).toEqual(["PROBE_SECRET"]);
+    // The same words under another code are an ordinary refusal.
+    zone.faults.push({
+      match: `POST ${SCRIPT}/deployments`,
+      reply: { status: 400, body: { success: false, errors: [{ code: 10021, message }] } },
+    });
+    const other = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
+    expect(other).not.toBeInstanceOf(WorkerSecretsChangedError);
+    expect(other.code).toBe("PROVIDER_ERROR");
+  });
+
+  it("sends force=true only when asked, accepts the short answer and confirms by reading", async () => {
     const { zone, client } = setup();
     const old = zone.workers.get(WORKER)?.versions[1];
     if (old) old.secretsChanged = ["STRIPE_SECRET_KEY"];
     await client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m", { force: true });
     expect(zone.writes().map((write) => write.path)).toEqual([`${SCRIPT}/deployments?force=true`]);
+    expect(zone.calls.at(-1)).toMatchObject({ method: "GET", path: `${SCRIPT}/deployments` });
     const [serving] = (await client.listWorkerDeployments(ACCOUNT_ID, WORKER)) ?? [];
     expect(serving?.versions).toEqual([{ id: OLD, percentage: 100 }]);
+  });
+
+  it("fails plainly when the latest deployment does not serve the version", async () => {
+    const { zone, client } = setup();
+    zone.faults.push({
+      match: `POST ${SCRIPT}/deployments`,
+      reply: { status: 200, body: { success: true, errors: [], result: { id: "d3" } } },
+    });
+    const error = await rejection(client.deployWorkerVersion(ACCOUNT_ID, WORKER, OLD, "m"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      `Cloudflare accepted the request to activate version ${OLD} of the Worker ${WORKER}, but the Worker's latest deployment serves version ${NEW}.`,
+    );
+    expect(zone.writes()).toHaveLength(1);
   });
 
   it("adds the token hint only to Cloudflare's authentication errors", async () => {

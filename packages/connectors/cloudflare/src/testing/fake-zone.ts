@@ -535,15 +535,17 @@ export class FakeZone {
     const changed = sent.versions.flatMap(
       (v) => worker.versions.find((known) => known.id === v.version_id)?.secretsChanged ?? [],
     );
-    if (changed.length > 0 && url.searchParams.get("force") !== "true") {
-      // Cloudflare's words, as the live run saw them (its error code was not recorded).
+    const forced = url.searchParams.get("force") === "true";
+    if (changed.length > 0 && !forced) {
+      // Cloudflare's answer, as a live probe saw it.
       return {
         status: 400,
         body: {
           success: false,
           errors: [
             {
-              message: `A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: ${changed.join(", ")}.`,
+              code: 10220,
+              message: `A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: ${changed.join(", ")}`,
             },
           ],
           messages: [],
@@ -560,7 +562,8 @@ export class FakeZone {
       ...(sent.annotations ? { annotations: sent.annotations } : {}),
     };
     worker.deployments.unshift(deployment);
-    return ok(deployment);
+    // A forced activation answers only the deployment's id (seen live).
+    return ok(forced ? { id: deployment.id } : deployment);
   }
 
   #minTls(method: string, body: unknown): FakeReply {

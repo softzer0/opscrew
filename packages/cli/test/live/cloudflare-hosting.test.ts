@@ -43,6 +43,7 @@ import {
   workerOf,
   workerRunning,
   workflowOf,
+  wwwAnswers,
   wwwOn,
 } from "./site-checks";
 import { approveHashes, duration, missingVariables } from "./support";
@@ -146,7 +147,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "2. provisions and deploys it: the site answers within 10 minutes of provision's start (SC-1601), and verify passes",
+      "2. provisions and deploys it: the site answers within 10 minutes of provision's start (SC-1601), and once www answers too, verify passes",
       minutes(45),
       async () => {
         const started = Date.now();
@@ -166,6 +167,7 @@ describe.skipIf(MISSING.length > 0)(
             `SC-1601: the static site answered ${duration(took)} after provision started, over ${duration(SC_1601_MS)}`,
           );
         }
+        await wwwAnswers(run, host());
         await run.opscrewOk("verify");
         await run.expectSharedCloudflare("the first provision");
       },

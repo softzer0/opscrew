@@ -536,9 +536,9 @@ const AUTH_CODES = new Set([6003, 6111, 9106, 9109, 10000, 10001]);
 /** Hint for any other refusal: Cloudflare's reason, in the message, says what to fix. */
 const REFUSAL_HINT = "Fix what Cloudflare names above, then run the command again.";
 
-/** Cloudflare's refusal of a Worker version older than a secret change (seen live, T1623). */
-const SECRETS_CHANGED = /a secret has changed since this version was active/i;
-/** The list that ends Cloudflare's refusal: everything after the colon, up to its last period. */
+/** Cloudflare's error code refusing a Worker version older than a secret change (seen live). */
+const SECRETS_CHANGED_CODE = 10220;
+/** The list that ends Cloudflare's refusal: everything after the colon, up to a final period. */
 const CHANGED_SECRETS = /the following secrets have changed:([^.]*)\.?$/i;
 /**
  * A Worker secret's name as OpsCrew accepts it, in Cloudflare's list of changed secrets and in
@@ -552,7 +552,7 @@ export const WORKER_SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * on a list OpsCrew may have misread.
  */
 function changedSecrets(body: EnvelopeBody): string[] | undefined {
-  const refused = body.errors.find((e) => SECRETS_CHANGED.test(e.message));
+  const refused = body.errors.find((e) => Number(e.code) === SECRETS_CHANGED_CODE);
   const list = CHANGED_SECRETS.exec(refused?.message.trim() ?? "")?.[1];
   if (list === undefined) return undefined;
   const names = list.split(",").map((name) => name.trim());
@@ -1570,7 +1570,7 @@ export class CloudflareClient {
    * `percentage`, the version at 100), with `message` as its `workers/message` annotation: a
    * promotion or a rollback. Sent once. Cloudflare refuses a version older than a change of the
    * Worker's secrets unless `force` is set (`?force=true`), which only an approval naming those
-   * secrets may set.
+   * secrets may set. The activation is then confirmed by reading the Worker's latest deployment.
    * @throws WorkerSecretsChangedError naming the secrets, for that refusal.
    */
   async deployWorkerVersion(
@@ -1599,7 +1599,17 @@ export class CloudflareClient {
         );
       },
     });
-    this.#parseWrite(WorkerDeploymentSchema, answer.body.result, what);
+    // A forced activation answers only the deployment's id (seen live): confirm it by reading.
+    this.#parseWrite(z.looseObject({ id: z.string().min(1) }), answer.body.result, what);
+    const [latest] = (await this.listWorkerDeployments(accountId, worker)) ?? [];
+    const serving = latest?.versions.find((v) => v.percentage === 100)?.id;
+    if (serving !== versionId) {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `Cloudflare accepted the request to ${what}, but the Worker's latest deployment ${serving !== undefined ? `serves version ${serving}` : "does not serve one version at 100%"}.`,
+        { hint: "Run the command again: OpsCrew reads the current state first." },
+      );
+    }
   }
 
   /** The Worker's custom domains (`GET /accounts/{id}/workers/domains?service=`). Read-only. */
