@@ -556,6 +556,45 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
+/**
+ * The package an npm dependency's spec names in its stead, `<name>` of `workspace:<name>@…` or
+ * `npm:<name>@…` (an alias, `@scope/` included); undefined for any other spec.
+ */
+function aliasedName(spec: string | undefined): string | undefined {
+  return /^(?:workspace|npm):((?:@[^/@]+\/)?[^@]+)@/.exec(spec ?? "")?.[1];
+}
+
+/**
+ * The folders of the workspace `members` that `unit`'s build uses, transitively: every npm
+ * dependency of `unit` (development ones too, which the build installs) named after a member,
+ * whether through the `workspace:` protocol (pnpm, Yarn 2+, Bun), by its name alone (npm and
+ * Yarn workspaces link it) or through an alias (`workspace:<name>@…`, `npm:<name>@…`), then
+ * those members' own, and so on. Sorted; never `unit`'s own folder.
+ */
+export function workspaceDependencies(unit: Unit, members: readonly Unit[]): string[] {
+  const byName = new Map<string, Unit>();
+  for (const member of members) {
+    const name = member.packageJson?.name;
+    if (name !== undefined && member.dir !== unit.dir) byName.set(name, member);
+  }
+  const memberOf = (dependency: Dependency) => {
+    if (dependency.ecosystem !== "npm") return undefined;
+    const alias = aliasedName(dependency.version);
+    return byName.get(dependency.name) ?? (alias === undefined ? undefined : byName.get(alias));
+  };
+  const used = new Set<string>();
+  const pending = [unit];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    for (const dependency of current.dependencies) {
+      const member = memberOf(dependency);
+      if (member === undefined || used.has(member.dir)) continue;
+      used.add(member.dir);
+      pending.push(member);
+    }
+  }
+  return sortStrings(used);
+}
+
 /** True when `dir` matches the workspace globs (`!pattern` excludes). */
 export function matchesWorkspace(dir: string, patterns: readonly string[]): boolean {
   let matched = false;

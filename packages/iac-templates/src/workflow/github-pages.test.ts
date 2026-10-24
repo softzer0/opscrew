@@ -59,7 +59,18 @@ function step(job: Job, name: string): Step {
 describe("renderGithubPagesWorkflow", () => {
   it("publishes on each push to the branch, one run at a time", () => {
     expect(flow).toMatchObject({ path: ".github/workflows/opscrew-deploy.yml", kind: "workflow" });
-    expect(workflow.on).toEqual({ push: { branches: ["main"] }, workflow_dispatch: {} });
+    expect(workflow.on).toEqual({
+      push: {
+        branches: ["main"],
+        paths: [
+          "**",
+          "!opscrew/**",
+          "!.github/workflows/opscrew-deploy*.yml",
+          ".github/workflows/opscrew-deploy.yml",
+        ],
+      },
+      workflow_dispatch: {},
+    });
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(workflow.concurrency).toEqual({ group: "opscrew-deploy", "cancel-in-progress": false });
   });

@@ -258,7 +258,7 @@ async function setup(options: SetupOptions = {}) {
   const rendered = cloudflare ? { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } } : plan;
   const files = renderDeployment(
     rendered,
-    deploymentRenderContext(deps, {
+    await deploymentRenderContext(deps, {
       plan: rendered,
       requirements: undefined,
       github: { owner: "acme", repo: "shop" },

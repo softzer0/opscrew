@@ -225,6 +225,25 @@ describe("ProjectFacts", () => {
     expect(pathsOf(ProjectFactsSchema.safeParse(value))).toEqual(["envVars.0.urlScheme"]);
   });
 
+  it("records the folders of the workspace packages the build uses, sorted and unique", async () => {
+    const f = await facts();
+    expect(ProjectFactsSchema.parse(f).workspacePackages).toBeUndefined();
+    const used = { ...f, workspacePackages: ["packages/config", "packages/ui"] };
+    expect(ProjectFactsSchema.parse(used).workspacePackages).toEqual([
+      "packages/config",
+      "packages/ui",
+    ]);
+    for (const [list, path] of [
+      [["packages/ui", "packages/config"], "workspacePackages.1"],
+      [["packages/ui", "packages/ui"], "workspacePackages.1"],
+      [[], "workspacePackages"],
+      [["/packages/ui"], "workspacePackages.0"],
+    ] as const) {
+      const wrong = { ...f, workspacePackages: list };
+      expect(pathsOf(ProjectFactsSchema.safeParse(wrong)), list.join()).toEqual([path]);
+    }
+  });
+
   it("needs the app directory: an architecture.json without facts.appDir is refused", async () => {
     const architecture = JSON.parse(await fixture("architecture.json"));
     const { appDir: _appDir, ...noAppDir } = architecture.facts;
@@ -513,6 +532,19 @@ describe("DeployPlan target provider", () => {
     expect(pathsOf(DeployPlanSchema.safeParse(multiLine))).toEqual(["app.releaseCommand"]);
     const blank = { ...plan, app: { ...plan.app, releaseCommand: " " } };
     expect(pathsOf(DeployPlanSchema.safeParse(blank))).toEqual(["app.releaseCommand"]);
+  });
+
+  it("carries the folders outside the app's folder that its build uses, none by default", async () => {
+    const plan = await validPlan();
+    expect(plan.app.sharedPaths).toBeUndefined();
+    const app = { ...plan.app, sharedPaths: ["packages/ui", "packages/config"] };
+    const parsed = DeployPlanSchema.parse({ ...plan, app });
+    expect(parsed.app.sharedPaths).toEqual(["packages/ui", "packages/config"]);
+    expect(parseArtifact("plan", serializeArtifact("plan", parsed), "plan.yaml")).toEqual(parsed);
+    for (const bad of ["/srv/ui", "../ui", "packages\\ui"]) {
+      const wrong = { ...plan, app: { ...plan.app, sharedPaths: [bad] } };
+      expect(pathsOf(DeployPlanSchema.safeParse(wrong)), bad).toEqual(["app.sharedPaths.0"]);
+    }
   });
 
   it("fills the provider's own Ubuntu image when the image is omitted", async () => {

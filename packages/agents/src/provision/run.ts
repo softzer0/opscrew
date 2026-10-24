@@ -338,7 +338,7 @@ async function provisionFlow(
   await checkAdditions(
     deps,
     plan,
-    deploymentRenderContext(deps, {
+    await deploymentRenderContext(deps, {
       plan,
       builderBranch: await builderBranch(deps.paths, plan),
       requirements,
@@ -560,7 +560,7 @@ async function provisionFlow(
   // The app's site: origin TLS as Cloudflare now has it (a missing permission keeps today's
   // site), and the user's additions.
   const site = await recordedEdge(deps, persisted(plan));
-  const ctx = deploymentRenderContext(deps, {
+  const ctx = await deploymentRenderContext(deps, {
     plan,
     builderBranch: await builderBranch(deps.paths, plan),
     requirements,

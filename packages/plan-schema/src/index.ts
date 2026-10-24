@@ -13,6 +13,7 @@ export * from "./enums";
 export {
   appsOf,
   environmentsOf,
+  otherAppDirs,
   type RepositoryApp,
   resolveEnvironmentPaths,
 } from "./environments";

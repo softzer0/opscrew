@@ -719,12 +719,12 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       server: { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 },
     };
     const open = testPlan();
-    const shown = deploymentRenderContext(deps, { ...input, plan: open });
+    const shown = await deploymentRenderContext(deps, { ...input, plan: open });
     expect(shown).toMatchObject({ serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 });
     expect(renderRunbook(open, shown).content).toContain(SERVER_IPV4);
 
     const proxied = testPlan({ domain: "shop.example.com" });
-    const hidden = deploymentRenderContext(deps, { ...input, plan: proxied });
+    const hidden = await deploymentRenderContext(deps, { ...input, plan: proxied });
     expect(hidden.serverIpv4).toBeUndefined();
     expect(hidden.serverIpv6).toBeUndefined();
     expect(JSON.stringify(hidden)).not.toContain(SERVER_IPV4);

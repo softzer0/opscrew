@@ -87,7 +87,7 @@ describe.skipIf(!GIT)("opscrew drift", () => {
     const key = await ensureDeployKey(deps.paths, deps.redactor);
     const files = renderDeployment(
       plan,
-      deploymentRenderContext(deps, {
+      await deploymentRenderContext(deps, {
         plan,
         requirements: undefined,
         github: { owner: "acme", repo: "shop" },

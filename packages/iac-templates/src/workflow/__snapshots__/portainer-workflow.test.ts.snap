@@ -10,6 +10,14 @@ name: OpsCrew deploy
 on:
   push:
     branches: ["main"]
+    # A push starts it only when it changes one of these paths, which the run reads.
+    paths:
+      - "**"
+      - "!opscrew/**"
+      - "!.github/workflows/opscrew-deploy*.yml"
+      - "Dockerfile"
+      - "opscrew/runtime/compose.yaml"
+      - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}
 
 permissions:
@@ -504,6 +512,14 @@ name: OpsCrew deploy
 on:
   push:
     branches: ["main"]
+    # A push starts it only when it changes one of these paths, which the run reads.
+    paths:
+      - "**"
+      - "!opscrew/**"
+      - "!.github/workflows/opscrew-deploy*.yml"
+      - "Dockerfile"
+      - "opscrew/runtime/compose.yaml"
+      - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}
 
 permissions:

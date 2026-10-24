@@ -1036,6 +1036,14 @@ const DeployPlanFieldsSchema = z.strictObject({
     buildContext: RepoPathSchema.default("."),
     dockerfile: RepoPathSchema.default("Dockerfile"),
     /**
+     * The folders outside the app's folder that its build uses; its deploy runs when they change.
+     * A file works too, and `.` is the whole repository. Design sets them from detection (the
+     * local workspace packages the build uses). Add your own: a later design keeps every entry
+     * here and adds back any folder detection finds, so a detected one you remove returns.
+     * Absent means none.
+     */
+    sharedPaths: z.array(RepoPathSchema).optional(),
+    /**
      * Runs before each new version takes traffic (database migrations), in a one-off container
      * of the new image with the app's environment, from the image's working folder. A failure
      * stops the deploy and the previous version keeps serving. Change or remove it freely.

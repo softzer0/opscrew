@@ -9,6 +9,16 @@ name: OpsCrew deploy docs
 on:
   push:
     branches: ["main"]
+    # A push starts it only when it changes one of these paths, which the run reads.
+    paths:
+      - "**"
+      - "!opscrew/**"
+      - "!.github/workflows/opscrew-deploy*.yml"
+      - "Dockerfile"
+      - "opscrew/apps/docs/runtime/compose.yaml"
+      - "opscrew/apps/docs/runtime/edge/**"
+      - "opscrew/apps/docs/proxy/additions.caddy"
+      - ".github/workflows/opscrew-deploy-docs.yml"
   workflow_dispatch: {}
 
 permissions:
@@ -586,6 +596,13 @@ name: OpsCrew deploy docs
 on:
   push:
     branches: ["main"]
+    # A push starts it only when it changes one of these paths, which the run reads.
+    paths:
+      - "**"
+      - "!opscrew/**"
+      - "!.github/workflows/opscrew-deploy*.yml"
+      - "opscrew/apps/docs/cloudflare/wrangler.jsonc"
+      - ".github/workflows/opscrew-deploy-docs.yml"
   workflow_dispatch: {}
 
 permissions:

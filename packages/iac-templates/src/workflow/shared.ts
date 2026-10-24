@@ -392,7 +392,8 @@ export function runbookFilePath(plan: AppEnvironment): string {
 
 /**
  * The workflow's header comment (`about`), triggers, default permissions and concurrency. An
- * environment that follows the branch deploys on each push to it (and by hand); a promoted one only
+ * environment that follows the branch deploys on each push to it that changes one of `paths`
+ * (the filter `pushPaths` makes from what the run reads), and by hand; a promoted one only
  * through a dispatch with `dispatch`'s inputs (by default the image's digest and commit tag). Each
  * environment's runs queue in a group of their own (the first app's prod's `opscrew-deploy`, any
  * other's `opscrew-deploy-<app name>`, which is unique in the repository), so one environment never
@@ -402,6 +403,7 @@ export function runbookFilePath(plan: AppEnvironment): string {
 export function workflowStart(
   plan: DeployPlan,
   about: readonly string[],
+  paths: readonly string[],
   dispatch: readonly string[] = DISPATCH_WITH_DIGEST,
 ): string[] {
   const first = plan.app.key === undefined && plan.environment?.name === undefined;
@@ -416,6 +418,9 @@ export function workflowStart(
       : [
           "  push:",
           `    branches: [${JSON.stringify(plan.cicd.branch)}]`,
+          "    # A push starts it only when it changes one of these paths, which the run reads.",
+          "    paths:",
+          ...paths.map((path) => `      - ${JSON.stringify(path)}`),
           "  workflow_dispatch: {}",
         ]),
     "",

@@ -308,13 +308,13 @@ export function newServer(session: Pick<MoveSession, "servers" | "command">): Se
 }
 
 /** Every file of the deployment for `plan` (default: the session's) in `layout` (none: final). */
-export function renderFiles(
+export async function renderFiles(
   session: MoveSession,
   layout?: InfraLayout,
   movePlan: DeployPlan = session.plan,
-): RenderedFile[] {
+): Promise<RenderedFile[]> {
   const plan = withCloudflareZone(movePlan, session.cloudflare);
-  const ctx = deploymentRenderContext(session.deps, {
+  const ctx = await deploymentRenderContext(session.deps, {
     plan,
     requirements: session.requirements,
     github: { owner: session.github.owner, repo: session.github.repo },
@@ -342,7 +342,7 @@ export async function useLayout(
   name: MoveLayoutName,
 ): Promise<RenderedFile[]> {
   const { deps } = session;
-  const files = renderFiles(session, layoutOf(session, name)).filter(
+  const files = (await renderFiles(session, layoutOf(session, name))).filter(
     (file) => file.kind === "infra",
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
@@ -372,11 +372,11 @@ export async function writeFinalFiles(
   kinds: "infra" | "all",
 ): Promise<{ files: RenderedFile[]; removed: string[] }> {
   const { deps } = session;
-  const rendered = renderFiles(session, undefined, plan);
+  const rendered = await renderFiles(session, undefined, plan);
   const files = kinds === "all" ? rendered : rendered.filter((file) => file.kind === "infra");
   await writeRenderedFiles(deps.paths.root, files);
   const kept = new Set(rendered.map((file) => file.path));
-  const stale = renderFiles(session, transitional, plan)
+  const stale = (await renderFiles(session, transitional, plan))
     .filter((file) => file.kind === "infra" && !kept.has(file.path))
     .map((file) => file.path);
   const dirs = new Set<string>();

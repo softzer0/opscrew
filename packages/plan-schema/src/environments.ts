@@ -12,7 +12,7 @@ import {
 } from "@opscrew/core";
 import type { AppRecord } from "./apps";
 import { ArtifactError, readOptionalArtifact } from "./io";
-import type { DeployPlan } from "./plan";
+import { cleanRepoPath, type DeployPlan } from "./plan";
 
 /** An app of the repository: a further app's key (none for the first app) and its folder. */
 export interface RepositoryApp {
@@ -34,6 +34,20 @@ export async function appsOf(root: string): Promise<RepositoryApp[]> {
   const dir = requirements?.appDir ?? (await analysedAppDir(paths)) ?? ".";
   const further = await furtherApps(root);
   return [{ dir }, ...further.map(({ key, record }) => ({ key, dir: record.dir }))];
+}
+
+/**
+ * The folders of the repository's apps ({@link appsOf}) other than the one `paths` belong to
+ * (`paths.app`, absent for the first app), which an app built from the repository root leaves
+ * out of its deploy workflow's push filter. A folder that is the app's own or holds it (the
+ * repository root, `site` for an app in `site/admin`) is never one of them: leaving it out would
+ * leave out the app's own files.
+ */
+export async function otherAppDirs(paths: Pick<ProjectPaths, "root" | "app">): Promise<string[]> {
+  const apps = (await appsOf(paths.root)).map((app) => ({ ...app, dir: cleanRepoPath(app.dir) }));
+  const own = apps.find((app) => app.key === paths.app)?.dir ?? ".";
+  const holdsOwn = (dir: string) => dir === "." || own === dir || own.startsWith(`${dir}/`);
+  return apps.filter((app) => app.key !== paths.app && !holdsOwn(app.dir)).map((app) => app.dir);
 }
 
 /** The folder of the app `opscrew/architecture.json` describes, when it exists. */

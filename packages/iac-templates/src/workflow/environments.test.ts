@@ -90,7 +90,22 @@ describe("a workflow per environment", () => {
   it("builds and deploys an environment that follows main on each push", () => {
     const doc = workflow(staging);
     expect(doc.name).toBe("OpsCrew deploy (staging)");
-    expect(doc.on).toEqual({ push: { branches: ["main"] }, workflow_dispatch: {} });
+    expect(doc.on).toEqual({
+      push: {
+        branches: ["main"],
+        // Its own runtime files and workflow, never prod's.
+        paths: [
+          "**",
+          "!opscrew/**",
+          "!.github/workflows/opscrew-deploy*.yml",
+          "Dockerfile",
+          "opscrew/environments/staging/runtime/compose.yaml",
+          "opscrew/environments/staging/runtime/edge/**",
+          ".github/workflows/opscrew-deploy-staging.yml",
+        ],
+      },
+      workflow_dispatch: {},
+    });
     expect(Object.keys(doc.jobs)).toEqual(["build", "deploy", "prune", "label"]);
     expect(doc.jobs.deploy?.needs).toBe("build");
     expect(stepOf(doc.jobs.deploy, "start").env?.IMAGE).toBe("${{ needs.build.outputs.image }}");

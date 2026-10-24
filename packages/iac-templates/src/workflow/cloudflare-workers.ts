@@ -6,6 +6,7 @@ import { shellQuote } from "../runtime/services";
 import { HEADERS_ENTRY, headersProgram } from "../serverless/headers";
 import {
   answerCheck,
+  cloudflareDir,
   SITE_ARTIFACT,
   type SiteFiles,
   siteBuildSteps,
@@ -17,6 +18,7 @@ import {
 } from "../serverless/site";
 import { wranglerConfigPath } from "../serverless/wrangler";
 import type { RenderContext, RenderedFile } from "../types";
+import { pushPaths, siteReads } from "./paths";
 import {
   appFlag,
   block,
@@ -522,12 +524,14 @@ function deployJob(
  * `opscrew promote`) names the build the source environment runs, which it deploys after checking
  * where it was built ({@link buildRunCheck}, from `ctx.builderBranch` and
  * `ctx.builderWorkflowPath`) and its SHA-256. The triggers, permissions and concurrency are as for
- * servers.
+ * servers; the push filter ({@link pushPaths}) adds the repository root's files the build reads
+ * ({@link siteReads}) and the committed Wrangler config with, for server rendering, the headers
+ * wrapper it names as `main`, with `ctx.otherAppDirs` for a site at the root.
  * @throws OpsCrewError `INTERNAL` for a promoted environment rendered without either.
  */
 export function renderCloudflareWorkersWorkflow(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "builderBranch" | "builderWorkflowPath">,
+  ctx: Pick<RenderContext, "builderBranch" | "builderWorkflowPath" | "otherAppDirs">,
 ): RenderedFile {
   const target = workersTarget(plan);
   const files = siteFiles(plan);
@@ -543,8 +547,13 @@ export function renderCloudflareWorkersWorkflow(
           `# Builds the site and deploys it to Cloudflare as a new version of the Worker ${target.worker}, with`,
           "# Wrangler. Secrets are set by `opscrew provision`; their values never appear in this file.",
         ];
+  const reads = [
+    ...siteReads(plan),
+    wranglerConfigPath(plan),
+    ...(files.entry === undefined ? [] : [`${cloudflareDir(plan)}/${HEADERS_ENTRY}`]),
+  ];
   const lines = [
-    ...workflowStart(plan, about, DISPATCH_WITH_BUILD),
+    ...workflowStart(plan, about, pushPaths(plan, reads, ctx), DISPATCH_WITH_BUILD),
     ...(promoted(plan) ? [] : [...buildJob(plan, files), ""]),
     ...deployJob(plan, ctx, files),
     "",

@@ -627,6 +627,14 @@
           "type": "string",
           "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
         },
+        "workspacePackages": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+          }
+        },
         "notes": {
           "minItems": 1,
           "type": "array",

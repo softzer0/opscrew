@@ -1401,9 +1401,10 @@ async function requireChosenApp(
  * The deploy settings come from {@link keptDeploy}. Of the app, each variable that is
  * still there keeps its `secret` (secret if either plan says so), `source` and `optional`, except
  * the variables what runs fills in either plan (`serviceFilledNames`), which follow it, and one it
- * filled that nothing fills now, which is the user's again; and the user's own
- * Dockerfile they chose (`app.build.chosen: user`) keeps its path. The components (workers, cron,
- * services, storage, the web process's memory) are already the user's: `fresh` was made from
+ * filled that nothing fills now, which is the user's again; the user's own Dockerfile they chose
+ * (`app.build.chosen: user`) keeps its path; and `app.sharedPaths` keeps the folders plan.yaml
+ * names, followed by any new ones detection found. The components (workers, cron, services,
+ * storage, the web process's memory) are already the user's: `fresh` was made from
  * `designComponents` with this previous plan.
  */
 function keepPlanSettings(
@@ -1417,6 +1418,9 @@ function keepPlanSettings(
   const variables = new Map(previous.app.env.map((variable) => [variable.name, variable]));
   const userDockerfile =
     fresh.app.build?.chosen === "user" && fresh.app.build.builder === "own-dockerfile";
+  const sharedPaths = [
+    ...new Set([...(previous.app.sharedPaths ?? []), ...(fresh.app.sharedPaths ?? [])]),
+  ];
   const { httpAllowedFrom, ...security } = previous.security;
   const zone = previous.dns.zone;
   const sameZone =
@@ -1441,6 +1445,7 @@ function keepPlanSettings(
       ...fresh.app,
       maxBodyMb: previous.app.maxBodyMb,
       ...(userDockerfile ? { dockerfile: previous.app.dockerfile } : {}),
+      ...(sharedPaths.length > 0 ? { sharedPaths } : {}),
       env: fresh.app.env.map((variable) => {
         const before = variables.get(variable.name);
         if (before === undefined) return variable;

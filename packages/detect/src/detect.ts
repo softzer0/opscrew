@@ -44,6 +44,7 @@ import {
   type ReadText,
   readUnits,
   type Unit,
+  workspaceDependencies,
   workspacePatterns,
 } from "./manifests";
 import {
@@ -379,6 +380,14 @@ export async function detectProjectDetails(
   const scopedMembers = members.filter((info) => inScope(info.unit.dir));
   const relevant = rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers;
   const appDir = primary?.unit.dir ?? ".";
+  // The local packages the build uses, from every member (also those left out of the facts).
+  const workspacePackages =
+    monorepo && primary
+      ? workspaceDependencies(
+          primary.unit,
+          members.map((info) => info.unit),
+        )
+      : [];
   const appPackage = primary?.unit.packageJson;
   const appKind: AppKind = primary?.appKind ?? "unknown";
   const appFrameworkNames = new Set(primary?.frameworks.map((f) => f.name) ?? []);
@@ -850,6 +859,7 @@ export async function detectProjectDetails(
     monorepo,
     // Always set: `.` when the facts describe the repository root.
     appDir,
+    ...(workspacePackages.length > 0 ? { workspacePackages } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     git,
   };

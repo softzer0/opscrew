@@ -1199,6 +1199,23 @@ describe("runDesign: the image builder and the deploy strategy", () => {
     expect(plan.cicd.imageRetention).toEqual({ enabled: false, keep: 10 });
   });
 
+  it("keeps the folders the user added to app.sharedPaths, with the ones detection finds", async () => {
+    const deps = await setup(
+      nextPostgresFacts({ monorepo: true, appDir: "apps/web", workspacePackages: ["packages/ui"] }),
+    );
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    expect(first.plan.app.sharedPaths).toEqual(["packages/ui"]);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: { ...first.plan.app, sharedPaths: ["shared/brand", "packages/ui"] },
+    });
+    const again = await later(deps);
+    expect((await runDesign(again, { catalog: euCatalog() })).plan.app.sharedPaths).toEqual([
+      "shared/brand",
+      "packages/ui",
+    ]);
+  });
+
   it("keeps the path of the user's own Dockerfile they chose in plan.yaml", async () => {
     const deps = await setup(nextPostgresFacts({ docker: { dockerfile: "Dockerfile" } }));
     const first = await runDesign(deps, { catalog: euCatalog() });

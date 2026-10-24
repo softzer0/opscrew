@@ -203,7 +203,7 @@ async function renderChange(
     plan.target.provider === "own" || hidesServerAddress(plan)
       ? undefined
       : (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
-  const ctx = deploymentRenderContext(deps, {
+  const ctx = await deploymentRenderContext(deps, {
     plan,
     builderBranch: await builderBranch(deps.paths, plan),
     requirements: await readRequirements(deps),

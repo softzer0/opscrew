@@ -322,6 +322,16 @@ export const ProjectFactsSchema = z.strictObject({
   /** Repo-relative directory of the app the facts describe (`.` for the repository root). */
   appDir: RepoPathSchema,
   /**
+   * The repository folders of the local workspace packages the app's build uses (npm, pnpm and
+   * Yarn workspaces: its `workspace:` and same-name dependencies, development ones included, and
+   * theirs in turn), sorted. Absent when none.
+   */
+  workspacePackages: z
+    .array(RepoPathSchema)
+    .min(1)
+    .superRefine(strictlyAscending((dir) => dir, "workspace package folder"))
+    .optional(),
+  /**
    * Plain-English notes on what OpsCrew deploys that the user must know, for example a part of the
    * app it does not serve yet; `design` and the adapt pull request show them. Absent when none.
    */

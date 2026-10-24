@@ -7,6 +7,7 @@ import {
   appsOf,
   type DeployPlan,
   environmentsOf,
+  otherAppDirs,
   parseArtifact,
   resolveEnvironmentPaths,
   writeArtifact,
@@ -216,6 +217,25 @@ describe("appsOf", () => {
       { key: "docs", dir: "sites/docs" },
       { key: "landing", dir: "sites/landing" },
     ]);
+  });
+
+  it("names the other apps' folders, never the asking app's own", async () => {
+    expect(await otherAppDirs({ root })).toEqual([]);
+    await addApp("landing", "sites/landing");
+    await addApp("docs", "sites/docs");
+    expect(await otherAppDirs({ root })).toEqual(["sites/docs", "sites/landing"]);
+    // The first app's folder is the repository root, which holds every app's folder.
+    expect(await otherAppDirs({ root, app: "docs" })).toEqual(["sites/landing"]);
+  });
+
+  it("never names a folder that holds the asking app's own: nested apps", async () => {
+    await addApp("web", "site/");
+    await addApp("admin", "site/admin");
+    // `site` holds `site/admin`: leaving it out would leave out admin's own files.
+    expect(await otherAppDirs({ root, app: "admin" })).toEqual([]);
+    // admin's folder lies inside web's, and is another app's: web's deploys leave it out.
+    expect(await otherAppDirs({ root, app: "web" })).toEqual(["site/admin"]);
+    expect(await otherAppDirs({ root })).toEqual(["site/admin", "site"]);
   });
 
   it("refuses a folder that is not an app's key", async () => {

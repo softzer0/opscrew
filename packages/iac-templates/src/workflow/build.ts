@@ -613,6 +613,16 @@ const OWN_DOCKER_CONFIG = [
 ];
 
 /**
+ * The repository files the build job reads besides `app.buildContext`: the Dockerfile
+ * (`app.dockerfile`) of a build from one ({@link dockerfileSteps}), which may lie outside the
+ * context. Buildpacks and Railpack read only the context.
+ */
+export function buildReads(plan: DeployPlan): string[] {
+  const builder = plan.app.build?.builder;
+  return builder === "buildpacks" || builder === "railpack" ? [] : [plan.app.dockerfile];
+}
+
+/**
  * The `build` job: builds the image with the plan's builder on a runner of the server's
  * architecture and pushes it to GHCR (`app.build` absent: the Dockerfile, as before). Buildpacks,
  * Railpack and, with cron jobs or SQLite, the user's own Dockerfile push

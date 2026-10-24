@@ -169,6 +169,21 @@ describe("optionToPlan", () => {
       });
     });
 
+    it("records the workspace packages its build uses, whose changes deploy it", async () => {
+      const member = nextPostgresFacts({
+        monorepo: true,
+        appDir: "apps/web",
+        workspacePackages: ["packages/tokens", "packages/ui"],
+      });
+      const plan = await planOf(member);
+      expect(plan.app.sharedPaths).toEqual(["packages/tokens", "packages/ui"]);
+      expect(parseArtifact("plan", serializeArtifact("plan", plan), "plan.yaml")).toEqual(plan);
+      // None: the field stays out of plan.yaml.
+      const alone = await planOf(nextPostgresFacts({ monorepo: true, appDir: "apps/web" }));
+      expect(alone.app.sharedPaths).toBeUndefined();
+      expect(serializeArtifact("plan", alone)).not.toContain("sharedPaths");
+    });
+
     it("is built from the repository root as a JavaScript workspace member or with a Dockerfile", async () => {
       const member = makeFacts({ packageManager: "bun", monorepo: true, appDir: "apps/api" });
       expect((await planOf(member)).app).toMatchObject({

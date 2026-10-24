@@ -420,6 +420,14 @@ name: OpsCrew deploy
 on:
   push:
     branches: ["main"]
+    # A push starts it only when it changes one of these paths, which the run reads.
+    paths:
+      - "**"
+      - "!opscrew/**"
+      - "!.github/workflows/opscrew-deploy*.yml"
+      - "opscrew/cloudflare/wrangler.jsonc"
+      - "opscrew/cloudflare/headers-entry.js"
+      - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}
 
 permissions:
@@ -742,6 +750,13 @@ name: OpsCrew deploy
 on:
   push:
     branches: ["main"]
+    # A push starts it only when it changes one of these paths, which the run reads.
+    paths:
+      - "**"
+      - "!opscrew/**"
+      - "!.github/workflows/opscrew-deploy*.yml"
+      - "opscrew/cloudflare/wrangler.jsonc"
+      - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}
 
 permissions:

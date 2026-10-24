@@ -11,7 +11,9 @@ import {
 import { portainerTarget } from "../providers";
 import { PORTAINER_VERSION_PATH } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
+import { buildReads } from "./build";
 import { afterDeployJobs, imageSourceJob } from "./jobs";
+import { pushPaths } from "./paths";
 import {
   DIGEST_REF_PATTERN,
   deployJob,
@@ -233,11 +235,13 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
  * `cloudflare` mode) and fails the run. Without a domain, or in web mode `proxy` when the site
  * does not answer GitHub at all before the deploy (a domain only the user's network resolves),
  * there is no site to check: the job writes the branch and says so. A promoted environment's
- * verify job takes the branch that builds its images from `ctx.builderBranch`.
+ * verify job takes the branch that builds its images from `ctx.builderBranch`. The push filter
+ * ({@link pushPaths}) adds the build's Dockerfile and the stack template, with
+ * `ctx.otherAppDirs` for an app at the repository root.
  */
 export function renderPortainerWorkflow(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "builderBranch">,
+  ctx: Pick<RenderContext, "builderBranch" | "otherAppDirs">,
 ): RenderedFile {
   const target = portainerTarget(plan.target);
   const branch = portainerDeployBranch(plan);
@@ -335,6 +339,7 @@ export function renderPortainerWorkflow(
             `# ${branch} branch, which your Portainer deploys. Secrets are set by \`opscrew provision\`;`,
             "# their values never appear in this file.",
           ],
+      pushPaths(plan, [...buildReads(plan), portainerStackTemplatePath(plan)], ctx),
     ),
     ...imageSourceJob(plan, ctx),
     "",

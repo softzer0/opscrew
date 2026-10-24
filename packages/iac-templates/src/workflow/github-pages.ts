@@ -5,7 +5,8 @@ import { ACTIONS } from "../pins";
 import { wrongTarget } from "../providers";
 import { shellQuote } from "../runtime/services";
 import { answerCheck, siteBuildSteps, siteExists, siteFiles, siteUrl } from "../serverless/site";
-import type { RenderedFile } from "../types";
+import type { RenderContext, RenderedFile } from "../types";
+import { pushPaths, siteReads } from "./paths";
 import { appFlag, job, promoted, provisionCommand, run, workflowStart } from "./shared";
 
 /** The largest site GitHub Pages publishes: 1 GB. */
@@ -19,11 +20,15 @@ const PAGES_SITE_BYTES = 1024 ** 3;
  * with `deploy-pages` in the `github-pages` environment, the only job with `pages: write` and
  * `id-token: write`, then checks the site's answer on its domain; while GitHub has not issued the
  * certificate yet, that is a warning ({@link answerCheck}). The triggers, permissions and
- * concurrency are as for servers.
+ * concurrency are as for servers; the push filter ({@link pushPaths}) adds the repository root's
+ * files the build reads ({@link siteReads}), with `ctx.otherAppDirs` for a site at the root.
  * @throws OpsCrewError `INVALID_INPUT` for a promoted environment: GitHub Pages publishes from a
  * build, so each environment builds its own.
  */
-export function renderGithubPagesWorkflow(plan: DeployPlan): RenderedFile {
+export function renderGithubPagesWorkflow(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "otherAppDirs"> = {},
+): RenderedFile {
   if (plan.target.provider !== "github-pages") {
     throw wrongTarget("This step only applies to a site on GitHub Pages.");
   }
@@ -82,10 +87,14 @@ export function renderGithubPagesWorkflow(plan: DeployPlan): RenderedFile {
     ],
   });
   const lines = [
-    ...workflowStart(plan, [
-      "# Builds the site and publishes it on GitHub Pages. Secrets are set by `opscrew provision`; their",
-      "# values never appear in this file, but whatever the build puts into the site is public.",
-    ]),
+    ...workflowStart(
+      plan,
+      [
+        "# Builds the site and publishes it on GitHub Pages. Secrets are set by `opscrew provision`; their",
+        "# values never appear in this file, but whatever the build puts into the site is public.",
+      ],
+      pushPaths(plan, siteReads(plan), ctx),
+    ),
     ...build,
     "",
     ...deploy,

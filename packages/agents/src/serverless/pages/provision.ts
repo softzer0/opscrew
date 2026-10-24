@@ -271,7 +271,7 @@ export async function provisionPages(
   }
 
   // 3. The files.
-  const ctx = deploymentRenderContext(deps, {
+  const ctx = await deploymentRenderContext(deps, {
     plan,
     requirements: input.requirements,
     github,

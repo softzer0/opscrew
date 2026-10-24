@@ -79,6 +79,12 @@ export interface RenderContext {
    */
   builderWorkflowPath?: string | undefined;
   /**
+   * The folders of the repository's other apps (`appsOf`'s `dir`). The deploy workflow of an app
+   * at the repository root leaves them out of its push filter unless its `app.sharedPaths` names
+   * them, so a change to another app alone does not deploy it.
+   */
+  otherAppDirs?: readonly string[] | undefined;
+  /**
    * Which server modules the root module contains during a move to another provider
    * (`opscrew retarget`), from `moveLayout`. Without it the root module deploys `plan.target` as
    * `module "server"`.

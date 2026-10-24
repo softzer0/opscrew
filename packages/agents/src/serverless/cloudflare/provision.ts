@@ -130,14 +130,14 @@ export async function provisionCloudflareWorkers(
   // 2. The generated files. Applying a saved plan keeps the infrastructure code the --plan-only
   // run wrote, which that plan was made from.
   const ctx = {
-    ...deploymentRenderContext(deps, {
+    ...(await deploymentRenderContext(deps, {
       plan,
       requirements: input.requirements,
       github,
       // A Worker has no SSH deploy: its files never use the deploy key.
       deployPublicKey: "",
       cloudflare,
-    }),
+    })),
     ...(await builder(deps.paths, plan)),
   };
   const writes = approvePlanHash === undefined;

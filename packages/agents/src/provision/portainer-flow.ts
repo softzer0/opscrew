@@ -467,7 +467,7 @@ export async function provisionPortainer(
   const dependabot = await deploySetupDependabot(deps, plan, { writes });
   const site = await recordedEdge(deps, plan);
   const originChanged = originBefore !== undefined && originBefore !== stackOrigin(site);
-  const ctx = deploymentRenderContext(deps, {
+  const ctx = await deploymentRenderContext(deps, {
     plan,
     builderBranch: await builderBranch(deps.paths, plan),
     requirements: input.requirements,

@@ -122,7 +122,21 @@ describe("renderCloudflareWorkersWorkflow", () => {
       kind: "workflow",
     });
     expect(staticDoc.name).toBe("OpsCrew deploy");
-    expect(staticDoc.on).toEqual({ push: { branches: ["main"] }, workflow_dispatch: {} });
+    expect(staticDoc.on).toEqual({
+      push: {
+        branches: ["main"],
+        // A site at the repository root: every path but OpsCrew's own files and the other deploy
+        // workflows, then the Wrangler config and the workflow itself.
+        paths: [
+          "**",
+          "!opscrew/**",
+          "!.github/workflows/opscrew-deploy*.yml",
+          "opscrew/cloudflare/wrangler.jsonc",
+          ".github/workflows/opscrew-deploy.yml",
+        ],
+      },
+      workflow_dispatch: {},
+    });
     expect(staticDoc.permissions).toEqual({ contents: "read" });
     expect(staticDoc.concurrency).toEqual({ group: "opscrew-deploy", "cancel-in-progress": false });
     const staging = doc(render(cloudflarePlan({ environment: "staging" })).content);

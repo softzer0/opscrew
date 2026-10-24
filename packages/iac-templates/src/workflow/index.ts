@@ -10,10 +10,12 @@ import { runtimeDir } from "../runtime-dir";
 import { siteEnvSecret } from "../serverless/site";
 import { sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
+import { buildReads } from "./build";
 import { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
 import { renderGithubPagesWorkflow } from "./github-pages";
 import { afterDeployJobs, imageSourceJob } from "./jobs";
+import { inFolder, pushPaths } from "./paths";
 import { PORTAINER_DEPLOY_SECRETS, renderPortainerWorkflow } from "./portainer";
 import {
   block,
@@ -257,6 +259,18 @@ function runtimeUploads(plan: DeployPlan): string[] {
     (file) => `${dir}/${file.path.slice(dir.length + 1).split("/")[0]}`,
   );
   return [...new Set(top)];
+}
+
+/**
+ * The push filter's patterns of the repository paths the upload copies (`files`): every file of a
+ * folder {@link renderRuntimeFiles} renders into (`services`, and `edge`, which the edge check reads
+ * too), or the file itself (`compose.yaml`, the crontab, the additions).
+ */
+function uploadReads(plan: DeployPlan, files: readonly string[]): string[] {
+  const rendered = renderRuntimeFiles(plan).map((file) => file.path);
+  return files.map((path) =>
+    rendered.some((file) => file.startsWith(`${path}/`)) ? inFolder(path) : path,
+  );
 }
 
 /** The lines of a server script for a `run: |` block, ended by the heredoc's `REMOTE`. */
@@ -669,12 +683,16 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  *
  * The server-less targets have workflows of their own: {@link renderCloudflareWorkersWorkflow}
  * and {@link renderGithubPagesWorkflow}.
+ *
+ * Every target's push trigger has the path filter {@link pushPaths} makes from what the run reads
+ * (here the build's Dockerfile and the uploaded runtime files), with `ctx.otherAppDirs` for an app
+ * at the repository root.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   if (plan.target.provider === "cloudflare-workers") {
     return renderCloudflareWorkersWorkflow(plan, ctx);
   }
-  if (plan.target.provider === "github-pages") return renderGithubPagesWorkflow(plan);
+  if (plan.target.provider === "github-pages") return renderGithubPagesWorkflow(plan, ctx);
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
   checkSshPort(ctx.sshPort);
   // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).
@@ -762,6 +780,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
               "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
               "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
             ],
+      pushPaths(plan, [...buildReads(plan), ...uploadReads(plan, upload.files)], ctx),
     ),
     ...imageSourceJob(plan, ctx),
     "",

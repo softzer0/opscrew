@@ -180,8 +180,9 @@ function withServerThreads(services: readonly PlanService[], option: DesignOptio
 
 /**
  * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release
- * command, memory limit, environment variable names), target (the option's provider and its default
- * image; for the user's own server its architecture and `input.access`), the components
+ * command, memory limit, environment variable names, and as `sharedPaths` the workspace packages
+ * its build uses), target (the option's provider and its default image; for the user's own
+ * server its architecture and `input.access`), the components
  * (`input.components`: workers, cron jobs, services and storage), cost, code changes, DNS from the
  * requirements and GitHub Actions + GHCR for CI/CD, with deploy tags and signing as the interview
  * answered. The image's builder comes from `input.build` (Buildpacks and Railpack build an app in a
@@ -301,6 +302,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       healthPath: healthRouteFor(facts, input.signals).path,
       buildContext,
       ...(dockerfile !== undefined ? { dockerfile } : {}),
+      // The local workspace packages the build uses: a change to them deploys the app too.
+      ...(facts.workspacePackages !== undefined ? { sharedPaths: facts.workspacePackages } : {}),
       // Database migrations, run before each new version takes traffic (FR-813).
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       memoryMb: components.app.memoryMb,

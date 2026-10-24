@@ -531,7 +531,7 @@ export async function portainerDrift(
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
   const files = deploymentFiles(
     current,
-    deploymentRenderContext(deps, {
+    await deploymentRenderContext(deps, {
       plan: current,
       builderBranch: await builderBranch(deps.paths, current),
       requirements: await readRequirements(deps),

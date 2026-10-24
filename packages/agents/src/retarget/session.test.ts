@@ -39,7 +39,7 @@ async function portainerSession(committed: Record<string, unknown> | undefined) 
 describe.skipIf(!findExecutable("git"))("a move's session", () => {
   it("renders Portainer's Access with the one-time PIN login the last provision used", async () => {
     const session = await portainerSession({ one_time_pin_identity_provider_id: "pin-last-run" });
-    const tfvars = renderFiles(session).find((file) => file.path === TFVARS);
+    const tfvars = (await renderFiles(session)).find((file) => file.path === TFVARS);
     expect(JSON.parse(tfvars?.content ?? "{}")).toMatchObject({
       portainer_hostname: "portainer.example.com",
       one_time_pin_identity_provider_id: "pin-last-run",
@@ -48,7 +48,7 @@ describe.skipIf(!findExecutable("git"))("a move's session", () => {
 
   it("stops plainly without the PIN login's id, saying to run provision", async () => {
     const session = await portainerSession(undefined);
-    expect(() => renderFiles(session)).toThrow(
+    await expect(renderFiles(session)).rejects.toThrow(
       expect.objectContaining({
         code: "PHASE_PRECONDITION",
         hint: expect.stringContaining("Run `opscrew provision` again"),

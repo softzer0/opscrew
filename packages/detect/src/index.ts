@@ -2,8 +2,8 @@
  * @opscrew/detect: deterministic repository analysis. Lists project files (gitignore-aware),
  * reads git metadata without a git binary and detects frameworks, app kind, build/start
  * commands, port, environment variables, services (self-hostable and hosted), workers, cron jobs,
- * SQLite files, object storage, builder platform and Docker files, and the site a server-less
- * target publishes (`detectSite`).
+ * SQLite files, object storage, builder platform and Docker files, the local workspace packages
+ * the app's build uses, and the site a server-less target publishes (`detectSite`).
  * All paths are repo-relative POSIX paths on every platform.
  */
 export { normalizeAppDir } from "./app-dir";

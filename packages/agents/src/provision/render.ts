@@ -14,6 +14,7 @@ import {
 import {
   type DeployPlan,
   isServerlessProvider,
+  otherAppDirs,
   type Requirements,
   readArtifact,
 } from "@opscrew/plan-schema";
@@ -86,9 +87,11 @@ export function siteContext(
  * `serverAddress`) only when the plan does not hide it behind Cloudflare's proxy: then the
  * runbook shows the same address `opscrew verify` writes into it, and never one behind the proxy.
  * A server the user owns never gets its address into a rendered file (FR-902): the engine reads it
- * from `TF_VAR_server_ipv4`/`TF_VAR_server_ipv6`.
+ * from `TF_VAR_server_ipv4`/`TF_VAR_server_ipv6`. It names the folders of the repository's other
+ * apps (`otherAppDirs`), which the deploy workflow of an app built from the repository root leaves
+ * out of its push filter.
  */
-export function deploymentRenderContext(
+export async function deploymentRenderContext(
   deps: PhaseDeps,
   input: {
     plan: DeployPlan;
@@ -108,10 +111,11 @@ export function deploymentRenderContext(
      */
     builderBranch?: string | undefined;
   },
-): RuntimeContext {
+): Promise<RuntimeContext> {
   const { requirements, cloudflare, own, edge } = input;
   const ownServer = input.plan.target.provider === "own";
   const server = hidesServerAddress(input.plan) || ownServer ? undefined : input.server;
+  const others = await otherAppDirs(deps.paths);
   return {
     ...siteContext(edge, cloudflare?.ipRanges),
     opscrewVersion: deps.version,
@@ -123,6 +127,7 @@ export function deploymentRenderContext(
     ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
     ...(own?.sshPort !== undefined ? { sshPort: own.sshPort } : {}),
     ...(input.builderBranch !== undefined ? { builderBranch: input.builderBranch } : {}),
+    ...(others.length > 0 ? { otherAppDirs: others } : {}),
     ...(cloudflare
       ? {
           cloudflare: {
@@ -293,7 +298,7 @@ export async function previewDeploymentFiles(
   const { edge, values } = await recordedEdge(deps, plan);
   const files = deploymentFiles(
     plan,
-    deploymentRenderContext(deps, {
+    await deploymentRenderContext(deps, {
       plan,
       builderBranch: await builderBranch(deps.paths, plan),
       requirements,

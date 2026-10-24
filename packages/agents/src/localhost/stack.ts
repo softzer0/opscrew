@@ -21,7 +21,7 @@ import {
   renderWorkflow,
   runtimeDir,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, LocalhostDeployTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, type LocalhostDeployTarget, otherAppDirs } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -33,9 +33,11 @@ import { localSite } from "./site";
 
 /**
  * The render context of a localhost plan: the app's hostname on this computer (the scripts route
- * it, the site serves it), the user's own additions to the proxy, and for a promoted plan the
- * branch that builds its images (its workflow checks it). Nothing else of a server's context
- * applies, and the image name comes from the repository at deploy time.
+ * it, the site serves it), the user's own additions to the proxy, for a promoted plan the branch
+ * that builds its images (its workflow checks it), and the folders of the repository's other apps
+ * (`otherAppDirs`), which the local runner's workflow of an app built from the repository root
+ * leaves out of its push filter. Nothing else of a server's context applies, and the image name
+ * comes from the repository at deploy time.
  */
 export async function localRenderContext(
   deps: Pick<PhaseDeps, "paths" | "version">,
@@ -44,6 +46,7 @@ export async function localRenderContext(
 ): Promise<RuntimeContext> {
   const additions = await exists(join(deps.paths.root, additionsPath(plan)));
   const builder = await builderBranch(deps.paths, plan);
+  const others = await otherAppDirs(deps.paths);
   return {
     opscrewVersion: deps.version,
     github: { owner: "", repo: "" },
@@ -52,6 +55,7 @@ export async function localRenderContext(
     localhost: site,
     ...(additions ? { additions: true } : {}),
     ...(builder !== undefined ? { builderBranch: builder } : {}),
+    ...(others.length > 0 ? { otherAppDirs: others } : {}),
   };
 }
 
