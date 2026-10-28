@@ -1,4 +1,9 @@
-import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
+import type {
+  CommandResult,
+  CommandRunner,
+  RemoteExec,
+  RemoteRunOptions,
+} from "@opscrew/contracts";
 
 export interface SshRemoteExecOptions {
   host: string;
@@ -74,15 +79,19 @@ export class SshRemoteExec implements RemoteExec {
     this.#options = options;
   }
 
-  run(
-    command: string,
-    options: { timeoutMs?: number; input?: string } = {},
-  ): Promise<CommandResult> {
+  /**
+   * Runs `command` over SSH. `onLine` gets each output line as it arrives, and `signal` stops ssh
+   * (and with it the remote command), as `CommandRunner.run` does.
+   */
+  run(command: string, options: RemoteRunOptions = {}): Promise<CommandResult> {
     const { runner, ...rest } = this.#options;
+    const { onLine, signal } = options;
     const sent = remoteInvocation(command, options.input);
     return runner.run("ssh", [...sshArgs(rest), sent.command], {
       timeoutMs: options.timeoutMs ?? 60_000,
       ...(sent.input === undefined ? {} : { input: sent.input }),
+      ...(onLine === undefined ? {} : { onLine: (line, stream) => onLine(stream, line) }),
+      ...(signal === undefined ? {} : { signal }),
     });
   }
 }

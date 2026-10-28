@@ -24,7 +24,7 @@ import {
   refreshRecoveryCopy,
   rotateRecoveryKey,
 } from "./copy";
-import { isCopyPath, readLocalFiles } from "./files";
+import { isCopyPath, localPath, readLocalFiles } from "./files";
 import { setRecoveryFolder } from "./store";
 
 const PLAN = { app: { name: "shop" } } as const;
@@ -81,6 +81,9 @@ describe("the copy's files", () => {
       "home/portainer-env.key": "RkFLRS12YWx1ZS1rZXktZm9yLXRlc3RzLW9ubHktMDA=\n",
       "home/portainer-webhook": "00000000-0000-4000-8000-000000000000\n",
       "home/portainer_password": "FAKE-portainer-password\n",
+      "home/check_key": "FAKE-check-key\n",
+      "home/beszel_secrets.json": '{"password":"FAKE-beszel-password"}\n',
+      "home/grafana_cloud_token": "FAKE-grafana-cloud-token\n",
       "state/tfstate/storage.tfstate": '{"version":4}\n',
       "state/cloudflare.json": "{}\n",
     };
@@ -97,6 +100,13 @@ describe("the copy's files", () => {
     const files = await readLocalFiles(deps.paths, deps.redactor);
     expect(Object.keys(files).sort()).toEqual(Object.keys(every).sort());
     expect(files["state/tfstate/prod.tfstate"]).toBe(every["state/tfstate/prod.tfstate"]);
+    // The check's key and the add-ons' secrets are copied from where OpsCrew keeps them.
+    const { checkKey, beszelSecrets, grafanaCloudToken } = deps.paths.files;
+    expect([
+      localPath(deps.paths, "home/check_key"),
+      localPath(deps.paths, "home/beszel_secrets.json"),
+      localPath(deps.paths, "home/grafana_cloud_token"),
+    ]).toEqual([checkKey, beszelSecrets, grafanaCloudToken]);
 
     await rm(join(deps.paths.projectHomeDir, "known_hosts"));
     expect(Object.keys(await readLocalFiles(deps.paths, deps.redactor))).not.toContain(
@@ -108,6 +118,9 @@ describe("the copy's files", () => {
     for (const path of [
       "home/generated_values.json",
       "home/portainer_password",
+      "home/check_key",
+      "home/beszel_secrets.json",
+      "home/grafana_cloud_token",
       "state/server.json",
       "state/cloudflare.json",
       "state/tfstate/prod.tfstate",

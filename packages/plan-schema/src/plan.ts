@@ -437,46 +437,241 @@ export const PortainerSchema = z
     }
   });
 
+/** An `https://` URL. */
+const HttpsUrlSchema = z.url({
+  protocol: /^https$/,
+  error: "must be an https:// URL",
+});
+
+/** The scheduled check's run interval in minutes (`observability.check.intervalMinutes`). */
+const CHECK_INTERVALS = [5, 10, 15, 20, 30, 60] as const;
+
 /**
- * A Portainer subdomain is served through Cloudflare (tunnel and Access), so it needs the app's
- * Cloudflare DNS: a hostname inside the zone, but not the app's own domain or its `www.` alias.
+ * The scheduled check in GitHub Actions (`observability.check`). Design turns it on for prod and
+ * off for the other environments. The interval and the webhook are repository-wide: only the
+ * first app's prod plan sets them (agents refuse them in any other plan).
  */
-function checkPortainerSubdomain(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
-  const { dns, portainer } = plan;
-  if (portainer?.access !== "subdomain") return;
-  if (dns.provider !== "cloudflare") {
+export const ObservabilityCheckSchema = z.strictObject({
+  /** Refused on localhost: GitHub can't reach the user's computer. */
+  enabled: z.boolean().optional(),
+  /** Absent: 15 in a public repository, 60 in a private one. */
+  intervalMinutes: z
+    .literal(CHECK_INTERVALS, { error: "must be 5, 10, 15, 20, 30 or 60 (minutes)" })
+    .optional(),
+  /** Where alerts are also posted. Its address is a GitHub secret, never in the plan. */
+  webhook: z
+    .enum(["slack", "discord", "ntfy"], { error: 'must be "slack", "discord" or "ntfy"' })
+    .optional(),
+});
+
+/** Beszel's hub public key, as the hub shows it: `ssh-ed25519 AAAA…` (public, not a secret). */
+const ED25519_PUBLIC_KEY = /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/]{48}$/;
+
+/**
+ * Beszel (`observability.beszel`), on a cloud server or the user's own: the hub and its agent on
+ * this server (`hub`), or only the agent, connected out to the user's hub (`agent`).
+ */
+export const BeszelSchema = z
+  .strictObject({
+    enabled: z.boolean().default(false),
+    /** The hub's and the agent's pinned version. */
+    version: PinnedVersionSchema,
+    mode: z.enum(["hub", "agent"]).default("hub"),
+    /**
+     * `hub` mode only. `local`: through an SSH tunnel. `subdomain`: behind Cloudflare Access, as
+     * Portainer's.
+     */
+    access: z.enum(["local", "subdomain"]).default("local"),
+    /** A subdomain of the app's Cloudflare zone; with `subdomain` only, and required there. */
+    hostname: FqdnSchema.optional(),
+    /** Email addresses Cloudflare Access lets in; with `subdomain` only, at least one there. */
+    allowedEmails: z.array(z.email()).optional(),
+    /** The user's hub; `agent` mode only, and required there. */
+    hubUrl: HttpsUrlSchema.optional(),
+    /** The hub's public key; `agent` mode only, and required there. */
+    hubKey: z
+      .string()
+      .regex(ED25519_PUBLIC_KEY, {
+        message: "must be the hub's public key as Beszel shows it: ssh-ed25519 AAAA…",
+      })
+      .optional(),
+    /** The containers' memory limits in MB. */
+    memoryMb: z
+      .strictObject({
+        hub: z.int().positive().default(128),
+        agent: z.int().positive().default(64),
+        proxy: z.int().positive().default(32),
+      })
+      .prefault({}),
+  })
+  .superRefine((beszel, ctx) => {
+    const issue = (field: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [field], message });
+    const agent = beszel.mode === "agent";
+    if (agent && beszel.access === "subdomain") {
+      issue(
+        "access",
+        'is for "hub" mode only: in "agent" mode the dashboard is your own hub; leave access out, or use mode "hub"',
+      );
+    }
+    for (const field of ["hubUrl", "hubKey"] as const) {
+      if (agent && beszel[field] === undefined) {
+        issue(field, `is required in "agent" mode: the agent connects out to your hub`);
+      }
+      if (!agent && beszel[field] !== undefined) {
+        issue(field, 'is "agent" mode only: in "hub" mode the hub runs on this server');
+      }
+    }
+    if (beszel.access !== "subdomain") {
+      for (const field of ["hostname", "allowedEmails"] as const) {
+        if (beszel[field] !== undefined) {
+          issue(field, 'is only allowed when access is "subdomain"');
+        }
+      }
+      return;
+    }
+    if (beszel.hostname === undefined) issue("hostname", 'is required when access is "subdomain"');
+    if ((beszel.allowedEmails ?? []).length === 0) {
+      issue("allowedEmails", 'must list at least one email address when access is "subdomain"');
+    }
+  });
+
+/** A Grafana Cloud stack's endpoint: its URL and the numeric user id that goes with it. */
+const GrafanaEndpointSchema = z.strictObject({
+  url: HttpsUrlSchema,
+  user: z.string().regex(/^\d+$/, { message: "must be the stack's numeric user id" }),
+});
+
+/**
+ * Grafana Cloud through Grafana Alloy (`observability.grafanaCloud`), on a cloud server or the
+ * user's own: masked logs and the server's metrics sent to the user's stack.
+ */
+export const GrafanaCloudSchema = z
+  .strictObject({
+    enabled: z.boolean().default(false),
+    /** Alloy's pinned version. */
+    version: PinnedVersionSchema,
+    /** The stack's Prometheus `remote_write` URL (`https://…/api/prom/push`) and its user id. */
+    metrics: GrafanaEndpointSchema.optional(),
+    /** The stack's Loki push URL (`https://…/loki/api/v1/push`) and its user id. */
+    logs: GrafanaEndpointSchema.optional(),
+    /** The percentage of log lines sent. */
+    logSampling: z.int().min(1).max(100).default(100),
+    /** The containers' memory limits in MB. */
+    memoryMb: z
+      .strictObject({
+        alloy: z.int().positive().default(192),
+        proxy: z.int().positive().default(32),
+      })
+      .prefault({}),
+  })
+  .superRefine((grafana, ctx) => {
+    if (!grafana.enabled) return;
+    for (const field of ["metrics", "logs"] as const) {
+      if (grafana[field] === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `is required when enabled: the stack's ${field === "metrics" ? "Prometheus" : "Loki"} URL and user id`,
+        });
+      }
+    }
+  });
+
+/**
+ * `plan.observability`: the scheduled check, and the Beszel and Grafana Cloud add-ons. Every part
+ * is optional and off unless design or the user turns it on.
+ */
+export const ObservabilitySchema = z.strictObject({
+  check: ObservabilityCheckSchema.optional(),
+  beszel: BeszelSchema.optional(),
+  grafanaCloud: GrafanaCloudSchema.optional(),
+});
+
+/**
+ * The add-ons and the check where the target allows them: Beszel and Grafana Cloud run on a cloud
+ * server or the user's own, and the check can't reach the localhost target.
+ */
+function checkObservability(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const { observability, target } = plan;
+  const addons = [
+    ["beszel", "Beszel"],
+    ["grafanaCloud", "Grafana Cloud"],
+  ] as const;
+  for (const [field, name] of addons) {
+    if (observability?.[field]?.enabled !== true || onOneServer(target.provider)) continue;
     ctx.addIssue({
       code: "custom",
-      path: ["portainer", "access"],
+      path: ["observability", field, "enabled"],
+      message: `can be true only on a server: Beszel and Grafana Cloud run on a server OpsCrew deploys to (a cloud server or your own); set observability.${field}.enabled to false, or choose a server target for ${name}`,
+    });
+  }
+  if (observability?.check?.enabled === true && target.provider === "localhost") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["observability", "check", "enabled"],
       message:
-        'can be "subdomain" only when dns.provider is "cloudflare": the subdomain is served through Cloudflare',
-    });
-    return;
-  }
-  if (dns.zone === undefined) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["dns", "zone"],
-      message: 'is required when portainer.access is "subdomain"',
-    });
-    return;
-  }
-  const { hostname } = portainer;
-  // A missing or malformed hostname already has its own issue.
-  if (hostname === undefined || !FqdnSchema.safeParse(hostname).success) return;
-  if (!hostname.endsWith(`.${dns.zone}`)) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["portainer", "hostname"],
-      message: `must be a subdomain of ${dns.zone}, the app's Cloudflare zone`,
+        "must be false with the localhost target: GitHub can't reach your computer, so the scheduled check could never see the app; set observability.check.enabled to false",
     });
   }
-  if (dns.domain !== undefined && (hostname === dns.domain || hostname === `www.${dns.domain}`)) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["portainer", "hostname"],
-      message: `must differ from the app's domain (${dns.domain}) and its www. alias`,
-    });
+}
+
+/**
+ * The web interfaces at a subdomain, Portainer's and Beszel's, each at its `hostname` behind
+ * Cloudflare Access.
+ */
+function subdomains(plan: DeployPlanFields): { field: string; hostname: string | undefined }[] {
+  const all = [
+    { field: "portainer", settings: plan.portainer },
+    { field: "observability.beszel", settings: plan.observability?.beszel },
+  ];
+  return all.flatMap(({ field, settings }) =>
+    settings?.access === "subdomain" ? [{ field, hostname: settings.hostname }] : [],
+  );
+}
+
+/**
+ * A subdomain (Portainer's, Beszel's) is served through Cloudflare (tunnel and Access), so it needs
+ * the app's Cloudflare DNS: a hostname inside the zone, but not the app's own domain or its `www.`
+ * alias.
+ */
+function checkSubdomains(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const { dns } = plan;
+  const at = (field: string, ...rest: string[]) => [...field.split("."), ...rest];
+  for (const { field, hostname } of subdomains(plan)) {
+    if (dns.provider !== "cloudflare") {
+      ctx.addIssue({
+        code: "custom",
+        path: at(field, "access"),
+        message:
+          'can be "subdomain" only when dns.provider is "cloudflare": the subdomain is served through Cloudflare',
+      });
+      continue;
+    }
+    if (dns.zone === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["dns", "zone"],
+        message: `is required when ${field}.access is "subdomain"`,
+      });
+      continue;
+    }
+    // A missing or malformed hostname already has its own issue.
+    if (hostname === undefined || !FqdnSchema.safeParse(hostname).success) continue;
+    if (!hostname.endsWith(`.${dns.zone}`)) {
+      ctx.addIssue({
+        code: "custom",
+        path: at(field, "hostname"),
+        message: `must be a subdomain of ${dns.zone}, the app's Cloudflare zone`,
+      });
+    }
+    if (dns.domain !== undefined && (hostname === dns.domain || hostname === `www.${dns.domain}`)) {
+      ctx.addIssue({
+        code: "custom",
+        path: at(field, "hostname"),
+        message: `must differ from the app's domain (${dns.domain}) and its www. alias`,
+      });
+    }
   }
 }
 
@@ -536,12 +731,12 @@ export function likelyCloudflareZone(domain: string): string {
 /**
  * Every name Cloudflare's proxy serves for the app must be the zone or one label below it (see
  * {@link cloudflareEdgeCoverage}): the domain when proxied or behind the tunnel, its `www.` alias
- * then, and a Portainer subdomain. DNS-only names get Caddy's own certificates and are unaffected,
+ * then, and a Portainer or Beszel subdomain. DNS-only names get Caddy's own certificates and are unaffected,
  * and so are the server-less targets: a Worker's custom domain gets a certificate of its own, and
  * GitHub issues GitHub Pages' certificates.
  */
 function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
-  const { dns, target, portainer } = plan;
+  const { dns, target } = plan;
   const zone = dns.zone;
   if (dns.provider !== "cloudflare" || zone === undefined) return;
   if (isServerlessTarget(target)) return;
@@ -577,14 +772,14 @@ function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx):
       }
     }
   }
-  const hostname = portainer?.access === "subdomain" ? portainer.hostname : undefined;
-  // The app's own names as Portainer's hostname already have their own issue.
-  if (hostname !== undefined && hostname !== domain && hostname !== `www.${domain}`) {
+  for (const { field, hostname } of subdomains(plan)) {
+    // The app's own names as a subdomain's hostname already have their own issue.
+    if (hostname === undefined || hostname === domain || hostname === `www.${domain}`) continue;
     const deep = cloudflareEdgeCoverage(hostname, zone);
     if (deep !== undefined) {
       ctx.addIssue({
         code: "custom",
-        path: ["portainer", "hostname"],
+        path: [...field.split("."), "hostname"],
         message: `must be one level below ${zone}: ${deep.reason}; use a name one level below ${zone}, such as ${deep.suggestion}`,
       });
     }
@@ -1207,6 +1402,8 @@ const DeployPlanFieldsSchema = z.strictObject({
     .prefault({}),
   /** Portainer CE on the server; absent means off. */
   portainer: PortainerSchema.optional(),
+  /** The scheduled check and the Beszel and Grafana Cloud add-ons; absent (or a part absent) is off. */
+  observability: ObservabilitySchema.optional(),
   /** Informational copy of approvals; the approval store is authoritative. */
   approvals: z
     .array(
@@ -1289,7 +1486,8 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
   if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
   if (plan.environment !== undefined) checkEnvironment(plan.environment, plan, ctx);
-  checkPortainerSubdomain(plan, ctx);
+  checkSubdomains(plan, ctx);
+  checkObservability(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
   checkComponents(plan, ctx);
 });
@@ -1446,3 +1644,9 @@ export type PortainerWeb = PortainerDeployTarget["web"];
 export type Retarget = NonNullable<DeployPlan["retarget"]>;
 /** Portainer CE settings with their defaults filled in. */
 export type PortainerSettings = NonNullable<DeployPlan["portainer"]>;
+/** The scheduled check and the add-ons, with their defaults filled in. */
+export type Observability = NonNullable<DeployPlan["observability"]>;
+/** Beszel's settings with their defaults filled in. */
+export type BeszelSettings = NonNullable<Observability["beszel"]>;
+/** Grafana Cloud's settings with their defaults filled in. */
+export type GrafanaCloudSettings = NonNullable<Observability["grafanaCloud"]>;

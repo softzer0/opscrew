@@ -31,12 +31,11 @@ import {
   type AppEnvironment,
   assembleAppEnv,
   dotenvLine,
-  fixedProductionValue,
   type GeneratedValues,
-  hostListKind,
   readValidJson,
   type StorageLogin,
 } from "../shared";
+import { registerAppSecrets } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
@@ -123,18 +122,7 @@ export async function buildAppEnvironment(
     generatedValuesFile(deps),
     `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
   );
-  const { app, build, services: secrets } = environment.values;
-  for (const [name, value] of Object.entries({ ...app, ...build })) {
-    // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual, and
-    // a fixed production setting is a plain word (`production`), masked nowhere.
-    if (hostListKind(name) === undefined && fixedProductionValue(name) !== value) {
-      deps.redactor.addLiteral(value, "app-env");
-    }
-  }
-  // Each service's generated secrets (Postgres's password among them).
-  for (const value of Object.values(secrets).flatMap(Object.values)) {
-    deps.redactor.addLiteral(value, "app-env");
-  }
+  await registerAppSecrets(deps, plan, environment);
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);
   else reportUnsetVariables(deps, environment);
   return environment;

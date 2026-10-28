@@ -1,6 +1,8 @@
 export * from "./adapt";
+export * from "./addons";
 export * from "./analyze";
 export * from "./apps";
+export * from "./check";
 export * from "./context";
 export * from "./design";
 export * from "./destroy";
@@ -11,6 +13,7 @@ export * from "./environments";
 export * from "./init";
 export * from "./interview";
 export * from "./localhost";
+export * from "./logs";
 export * from "./portainer";
 export * from "./promote";
 export * from "./providers";

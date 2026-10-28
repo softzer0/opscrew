@@ -34,6 +34,9 @@ const HOME_FILES = [
   "portainer-env.key",
   "portainer-webhook",
   "portainer_password",
+  "check_key",
+  "beszel_secrets.json",
+  "grafana_cloud_token",
 ] as const;
 
 /**

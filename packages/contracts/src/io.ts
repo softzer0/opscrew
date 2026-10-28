@@ -34,9 +34,20 @@ export interface RemoteExec {
   readonly host: string;
   /**
    * `input` is written to the remote command's stdin: the only way a secret may reach the server
-   * (never on the command line, which other users can see in the process list).
+   * (never on the command line, which other users can see in the process list). `onLine` gets each
+   * complete output line as it arrives (`--follow`), and `signal` stops the command.
    */
-  run(command: string, options?: { timeoutMs?: number; input?: string }): Promise<CommandResult>;
+  run(command: string, options?: RemoteRunOptions): Promise<CommandResult>;
+}
+
+/** The options of {@link RemoteExec.run}. */
+export interface RemoteRunOptions {
+  timeoutMs?: number;
+  input?: string;
+  /** Called for every complete stdout/stderr line as it arrives. */
+  onLine?: (stream: "stdout" | "stderr", line: string) => void;
+  /** Stops the command (a followed log). */
+  signal?: AbortSignal;
 }
 
 /** The subset of the WHATWG `fetch` signature OpsCrew uses. Injected into every HTTP client. */

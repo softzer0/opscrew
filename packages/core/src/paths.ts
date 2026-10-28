@@ -27,6 +27,16 @@ export interface ProjectFiles {
   statePassphrase: string;
   /** Private record of the server and repository the deploy secrets were last stored for. */
   deploySecrets: string;
+  /**
+   * The scheduled check's private SSH key (`check_key`), which servers let run only `df`. The check
+   * is one per repository, so only the first app's prod paths hold it
+   * (`~/.opscrew/projects/<id>/check_key`).
+   */
+  checkKey: string;
+  /** Beszel's dashboard password and agent token (`beszel_secrets.json`), private. */
+  beszelSecrets: string;
+  /** The Grafana Cloud access token (`grafana_cloud_token`), private. */
+  grafanaCloudToken: string;
   /** The files every environment of the app shares, at the app's prod paths. */
   shared: SharedProjectFiles;
 }
@@ -220,6 +230,9 @@ export function resolveProjectPaths(
       knownHosts: path.join(projectHomeDir, "known_hosts"),
       statePassphrase: path.join(projectHomeDir, "state_passphrase"),
       deploySecrets: path.join(projectHomeDir, "deploy_secrets.json"),
+      checkKey: path.join(projectHomeDir, "check_key"),
+      beszelSecrets: path.join(projectHomeDir, "beszel_secrets.json"),
+      grafanaCloudToken: path.join(projectHomeDir, "grafana_cloud_token"),
       shared,
     },
   };

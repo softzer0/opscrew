@@ -65,6 +65,9 @@ describe("resolveProjectPaths", () => {
       knownHosts: path.join(p.projectHomeDir, "known_hosts"),
       statePassphrase: path.join(p.projectHomeDir, "state_passphrase"),
       deploySecrets: path.join(p.projectHomeDir, "deploy_secrets.json"),
+      checkKey: path.join(p.projectHomeDir, "check_key"),
+      beszelSecrets: path.join(p.projectHomeDir, "beszel_secrets.json"),
+      grafanaCloudToken: path.join(p.projectHomeDir, "grafana_cloud_token"),
       shared: {
         architecture: path.join(root, "opscrew", "architecture.json"),
         architectureMd: path.join(root, "opscrew", "ARCHITECTURE.md"),
@@ -159,6 +162,9 @@ describe("resolveProjectPaths", () => {
       knownHosts: path.join(home, "known_hosts"),
       statePassphrase: path.join(home, "state_passphrase"),
       deploySecrets: path.join(home, "deploy_secrets.json"),
+      checkKey: path.join(home, "check_key"),
+      beszelSecrets: path.join(home, "beszel_secrets.json"),
+      grafanaCloudToken: path.join(home, "grafana_cloud_token"),
       shared: prod.files.shared,
     });
   });
@@ -335,6 +341,9 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         knownHosts: "home/.opscrew/projects/<id>/known_hosts",
         statePassphrase: "home/.opscrew/projects/<id>/state_passphrase",
         deploySecrets: "home/.opscrew/projects/<id>/deploy_secrets.json",
+        checkKey: "home/.opscrew/projects/<id>/check_key",
+        beszelSecrets: "home/.opscrew/projects/<id>/beszel_secrets.json",
+        grafanaCloudToken: "home/.opscrew/projects/<id>/grafana_cloud_token",
         shared: {
           architecture: "app/opscrew/architecture.json",
           architectureMd: "app/opscrew/ARCHITECTURE.md",
@@ -380,6 +389,9 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         knownHosts: "home/.opscrew/projects/<id>/environments/staging/known_hosts",
         statePassphrase: "home/.opscrew/projects/<id>/environments/staging/state_passphrase",
         deploySecrets: "home/.opscrew/projects/<id>/environments/staging/deploy_secrets.json",
+        checkKey: "home/.opscrew/projects/<id>/environments/staging/check_key",
+        beszelSecrets: "home/.opscrew/projects/<id>/environments/staging/beszel_secrets.json",
+        grafanaCloudToken: "home/.opscrew/projects/<id>/environments/staging/grafana_cloud_token",
         shared: {
           architecture: "app/opscrew/architecture.json",
           architectureMd: "app/opscrew/ARCHITECTURE.md",
@@ -424,6 +436,9 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         knownHosts: "home/.opscrew/projects/<id>/apps/docs/known_hosts",
         statePassphrase: "home/.opscrew/projects/<id>/apps/docs/state_passphrase",
         deploySecrets: "home/.opscrew/projects/<id>/apps/docs/deploy_secrets.json",
+        checkKey: "home/.opscrew/projects/<id>/apps/docs/check_key",
+        beszelSecrets: "home/.opscrew/projects/<id>/apps/docs/beszel_secrets.json",
+        grafanaCloudToken: "home/.opscrew/projects/<id>/apps/docs/grafana_cloud_token",
         shared: {
           architecture: "app/opscrew/apps/docs/architecture.json",
           architectureMd: "app/opscrew/apps/docs/ARCHITECTURE.md",
@@ -471,6 +486,9 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         knownHosts: `${home}/known_hosts`,
         statePassphrase: `${home}/state_passphrase`,
         deploySecrets: `${home}/deploy_secrets.json`,
+        checkKey: `${home}/check_key`,
+        beszelSecrets: `${home}/beszel_secrets.json`,
+        grafanaCloudToken: `${home}/grafana_cloud_token`,
         shared: {
           architecture: "app/opscrew/apps/docs/architecture.json",
           architectureMd: "app/opscrew/apps/docs/ARCHITECTURE.md",

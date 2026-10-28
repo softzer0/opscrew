@@ -4,7 +4,7 @@
  * their `# opscrew-host: <name>` header and quoted parameters. Every call is recorded so tests can
  * check which commands ran, what reached stdin, and that each script passes `sh -n`.
  */
-import type { CommandResult, RemoteExec } from "@opscrew/contracts";
+import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
 import { sha256Hex as sha256 } from "@opscrew/core";
 import {
   APP_RECORDS_DIR,
@@ -367,7 +367,25 @@ export class FakeHost implements RemoteExec {
     return [...new Set(this.calls.map((call) => call.script))];
   }
 
-  async run(command: string, options: { timeoutMs?: number; input?: string } = {}): Promise<CommandResult> {
+  /**
+   * Answers `command` from the model. A stopped `signal` rejects as a real command would, and
+   * `onLine` gets the answer's lines one by one, stdout's first.
+   */
+  async run(command: string, options: RemoteRunOptions = {}): Promise<CommandResult> {
+    const { onLine, signal } = options;
+    signal?.throwIfAborted();
+    const answer = await this.answer(command, options);
+    if (onLine !== undefined) {
+      for (const stream of ["stdout", "stderr"] as const) {
+        const lines = answer[stream].split("\n");
+        if (lines.at(-1) === "") lines.pop();
+        for (const line of lines) onLine(stream, line);
+      }
+    }
+    return answer;
+  }
+
+  private async answer(command: string, options: RemoteRunOptions): Promise<CommandResult> {
     let sudo = false;
     let rest = command;
     if (rest.startsWith("sudo -n ")) {

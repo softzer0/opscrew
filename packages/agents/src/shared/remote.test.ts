@@ -89,6 +89,51 @@ describe("SshRemoteExec with long commands", () => {
   });
 });
 
+describe("SshRemoteExec streaming", () => {
+  it("passes each output line to onLine as the runner reads it, with its stream", async () => {
+    const runner = new ScriptedRunner((_command, _args, options) => {
+      options?.onLine?.("2026-10-28T10:00:00Z web started", "stdout");
+      options?.onLine?.("2026-10-28T10:00:01Z web warning", "stderr");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const remote = new SshRemoteExec({ ...target, runner });
+    const lines: [string, string][] = [];
+    await remote.run("docker logs --follow web", {
+      onLine: (stream, line) => lines.push([stream, line]),
+    });
+    expect(lines).toEqual([
+      ["stdout", "2026-10-28T10:00:00Z web started"],
+      ["stderr", "2026-10-28T10:00:01Z web warning"],
+    ]);
+  });
+
+  it("stops the command through signal", async () => {
+    const runner = new ScriptedRunner(
+      (_command, _args, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The command was aborted.", "AbortError")),
+          );
+          options?.onLine?.("first", "stdout");
+        }),
+    );
+    const remote = new SshRemoteExec({ ...target, runner });
+    const stop = new AbortController();
+    const running = remote.run("docker logs --follow web", {
+      signal: stop.signal,
+      onLine: () => stop.abort(),
+    });
+    await expect(running).rejects.toMatchObject({ name: "AbortError" });
+    expect(runner.calls[0]?.options?.signal).toBe(stop.signal);
+  });
+
+  it("adds no streaming options when none are given", async () => {
+    const runner = new ScriptedRunner();
+    await new SshRemoteExec({ ...target, runner }).run("uptime");
+    expect(runner.calls[0]?.options).toEqual({ timeoutMs: 60_000 });
+  });
+});
+
 function findShell(): string | undefined {
   const candidates = [findExecutable("sh"), findExecutable("bash")];
   if (process.platform === "win32") {
@@ -179,6 +224,24 @@ describe.skipIf(shell === undefined)("the bootstrap in a real shell", () => {
     expect(result.exitCode).toBe(7);
     expect(result.stdout).toBe("alone\n");
     expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("streams a running command's lines and stops it through signal", async () => {
+    const { remote } = await setup();
+    const stop = new AbortController();
+    const lines: [string, string][] = [];
+    const running = remote.run("echo one; echo two >&2; sleep 30; echo never", {
+      signal: stop.signal,
+      onLine: (stream, line) => {
+        lines.push([stream, line]);
+        if (line === "two") stop.abort();
+      },
+    });
+    await expect(running).rejects.toMatchObject({ name: "AbortError" });
+    expect(lines).toEqual([
+      ["stdout", "one"],
+      ["stderr", "two"],
+    ]);
   });
 
   it("fails without running anything when the command arrives truncated or not at all", async () => {
