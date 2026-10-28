@@ -1,16 +1,21 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PortainerApiError, type PortainerClient } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
+import { shellQuote } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
-import { recordPortainerConnection, recordServerAddress } from "../shared";
+import { recordOwnServer, recordPortainerConnection, recordServerAddress } from "../shared";
 import {
   createTestPhaseDeps,
+  ED25519_FINGERPRINT,
   fakeCertificate,
+  OWN_IPV4,
+  ownPlan,
+  ownRunner,
   PORTAINER_HOST,
   PORTAINER_URL,
   portainerPlan,
@@ -101,22 +106,33 @@ function serverOutput(secret: string): string {
   ].join("\n");
 }
 
-/** The deploy user's shell: the figures command gets `figures`, `docker ps` gets `ps`. */
-function shell(figures: string, ps = "shop-app-1|running\nshop-worker-1|running\n") {
+/**
+ * A shell on the server: the figures command gets `figures` (exiting with `exitCode`), `docker ps`
+ * gets `ps`.
+ */
+function shell(figures: string, exitCode = 0, ps = "shop-app-1|running\nshop-worker-1|running\n") {
   const commands: string[] = [];
   const hosts: string[] = [];
+  const run = async (command: string): Promise<CommandResult> => {
+    commands.push(command);
+    return command.startsWith("docker ps -a")
+      ? { exitCode: 0, stdout: ps, stderr: "" }
+      : { exitCode, stdout: figures, stderr: "" };
+  };
   const remote = (host: string): RemoteExec => {
     hosts.push(host);
-    return {
-      host,
-      run: async (command: string): Promise<CommandResult> => {
-        commands.push(command);
-        const stdout = command.startsWith("docker ps -a") ? ps : figures;
-        return { exitCode: 0, stdout, stderr: "" };
-      },
-    };
+    return { host, run };
   };
-  return { remote, commands, hosts };
+  return { remote, run, commands, hosts };
+}
+
+/** Phase deps that know the server's address and have the project's deploy key. */
+async function serverDeps() {
+  const deps = await createTestPhaseDeps();
+  await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+  await mkdir(dirname(deps.paths.files.deployKey), { recursive: true });
+  await writeFile(deps.paths.files.deployKey, "placeholder for the deploy key file\n");
+  return deps;
 }
 
 describe("the server command", () => {
@@ -147,9 +163,8 @@ describe("the server command", () => {
 
 describe("readResources on a server OpsCrew created", () => {
   it("parses the command's answer with a container at 95% of its limit and a disk 90% full", async () => {
-    const deps = await createTestPhaseDeps();
+    const deps = await serverDeps();
     const plan = withWorker();
-    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
     const secret = fakeSecret("generic-password", "database-password");
     const ssh = shell(serverOutput(secret));
 
@@ -214,15 +229,76 @@ describe("readResources on a server OpsCrew created", () => {
   });
 
   it("names the server's figures as unavailable when their part of the answer is unreadable", async () => {
-    const deps = await createTestPhaseDeps();
-    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
-    const ssh = shell("nproc: command not found\n");
+    const deps = await serverDeps();
+    const ssh = shell("==opscrew-figures:cpus\nnproc: command not found\n");
     const reading = await readResources(deps, withWorker(), { services: { remote: ssh.remote } });
     expect(reading.server).toBeUndefined();
     expect(reading.containers).toEqual([]);
     expect(reading.unavailable).toEqual([
       "the server's load, memory and disk (OpsCrew could not read them from its answer)",
     ]);
+  });
+
+  it("a step that failed (exit 1) leaves the rest of the figures; ssh's 255 is an error", async () => {
+    const deps = await serverDeps();
+    const failed = shell(serverOutput(fakeSecret("generic-password", "database-password")), 1);
+    const reading = await readResources(deps, withWorker(), {
+      services: { remote: failed.remote },
+    });
+    expect(reading.server?.cpus).toBe(2);
+    expect(reading.containers).toHaveLength(2);
+
+    const unreachable = shell("", 255);
+    await expect(
+      readResources(deps, withWorker(), { services: { remote: unreachable.remote } }),
+    ).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+  });
+
+  it("the command runs in the C locale and ends with true", () => {
+    const command = serverFiguresCommand("shop");
+    expect(command.startsWith("export LC_ALL=C; ")).toBe(true);
+    expect(command.endsWith("; true")).toBe(true);
+  });
+});
+
+describe("readResources on a server the user owns", () => {
+  it("runs the command over the admin login, as root where it can, audited without the address", async () => {
+    const deps = await createTestPhaseDeps({ runner: ownRunner() });
+    await recordOwnServer(deps.paths, {
+      host: OWN_IPV4,
+      port: 22,
+      user: "alice",
+      agent: true,
+      reachable: true,
+    });
+    const admin = shell(serverOutput(fakeSecret("generic-password", "database-password")));
+    const logins: string[] = [];
+    const reading = await readResources(deps, withWorker(ownPlan({ deployed: true })), {
+      hostKey: ED25519_FINGERPRINT,
+      services: {
+        own: {
+          remote: (connection) => {
+            logins.push(connection.user);
+            return { host: connection.host, run: admin.run };
+          },
+        },
+      },
+    });
+
+    expect(logins).toEqual(["alice"]);
+    const command = shellQuote(serverFiguresCommand("shop"));
+    // The login test, then the figures: as root, with sudo -n, or as the login.
+    expect(admin.commands).toEqual([
+      "true",
+      `if [ "$(id -u)" = 0 ]; then sh -c ${command}; elif sudo -n true 2>/dev/null </dev/null; then sudo -n sh -c ${command}; else sh -c ${command}; fi`,
+    ]);
+    expect(reading.server?.disk?.usedBytes).toBe(36_000_000_000);
+    expect(deps.audit.entries.at(-1)).toMatchObject({
+      kind: "remote-exec",
+      action: "read the server's and the app's figures (read-only)",
+      target: "own server",
+    });
+    expect(JSON.stringify(deps.audit.entries)).not.toContain(OWN_IPV4);
   });
 });
 
@@ -263,10 +339,41 @@ describe("resourceFlags", () => {
       ["the memory of the web process (app)", "warning"],
     ]);
   });
+
+  it("the cron jobs' memory fix names app.memoryMb, a worker's its own memoryMb", () => {
+    const cron = DeployPlanSchema.parse({
+      ...plan,
+      processes: {
+        ...plan.processes,
+        cron: [{ name: "cleanup", schedule: "0 3 * * *", command: "node cleanup.js" }],
+      },
+    });
+    const full = (service: string) => ({
+      service,
+      cpuPercent: 1,
+      memory: { usedBytes: 95, limitBytes: 100 },
+      restarts: 0,
+      startedAt: "2026-10-11T10:00:00Z",
+    });
+    const [cronFlag, workerFlag] = resourceFlags(cron, {
+      containers: [full("cron"), full("worker")],
+      unavailable: [],
+    });
+    expect(cronFlag?.fix).toMatch(
+      /^Raise `app\.memoryMb` \(the cron jobs run with the web process's memory\) in opscrew\/plan\.yaml/,
+    );
+    expect(workerFlag?.fix).toMatch(/^Raise its `memoryMb` in opscrew\/plan\.yaml/);
+  });
 });
 
 describe("readResources in the user's Portainer", () => {
-  it("reads each container through Portainer, with the host's disk not available", async () => {
+  /**
+   * Phase deps with a recorded Portainer, and a client whose token's user cannot read the worker
+   * and sees no database; `dockerInfo` answers Docker's totals by default.
+   */
+  async function portainer(
+    dockerInfo = async () => ({ swarmActive: false, cpus: 4, memoryBytes: 8 * 1024 * MIB }),
+  ) {
     const token = fakeSecret("generic-password", "portainer-token");
     const deps = await createTestPhaseDeps({
       env: { OPSCREW_HOME: join(await mkdtemp(join(tmpdir(), "opscrew-figures-")), "home") },
@@ -288,7 +395,7 @@ describe("readResources in the user's Portainer", () => {
           { id: "c-tunnel", project: "opscrew-shop", service: "cloudflared", running: true },
           { id: "c-other", project: "media", service: "app", running: true },
         ],
-        dockerInfo: async () => ({ swarmActive: false, cpus: 4, memoryBytes: 8 * 1024 * MIB }),
+        dockerInfo,
         containerStats: async (_env: number, id: string) => {
           read.push(`stats ${id}`);
           return { cpuPercent: 12.5, memoryUsedBytes: 100 * MIB };
@@ -310,7 +417,25 @@ describe("readResources in the user's Portainer", () => {
           };
         },
       }) as unknown as PortainerClient;
+    return { deps, client, read };
+  }
 
+  it("Docker's /info failing leaves the containers' figures, and names the totals", async () => {
+    const { deps, client } = await portainer(async () => {
+      throw new PortainerApiError("PROVIDER_ERROR", 500, "Portainer failed.", "Try again.");
+    });
+    const reading = await readResources(deps, withWorker(portainerPlan({ deployed: true })), {
+      services: { portainer: { client } },
+    });
+    expect(reading.server).toBeUndefined();
+    expect(reading.containers.map((c) => c.service)).toEqual(["app"]);
+    expect(reading.unavailable[0]).toBe(
+      "the host's CPUs, memory, load and disk (Portainer did not give Docker's figures for them)",
+    );
+  });
+
+  it("reads each container through Portainer, with the host's disk not available", async () => {
+    const { deps, client, read } = await portainer();
     const reading = await readResources(deps, withWorker(portainerPlan({ deployed: true })), {
       services: { portainer: { client } },
     });
@@ -352,9 +477,7 @@ describe("readResources on this computer", () => {
       const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
       if (command !== "docker") return ok("");
       if (args[0] === "ps") {
-        return ok(
-          "opscrew-shop-app-1|running|app|False|\nopscrew-shop-release-1|exited|release|False|\n",
-        );
+        return ok("opscrew-shop-app-1|app\nopscrew-shop-release-1|release\n");
       }
       if (args[0] === "stats")
         return ok(`${stats("opscrew-shop-app-1", "1.50%", "64MiB / 512MiB")}\n`);
@@ -372,13 +495,11 @@ describe("readResources on this computer", () => {
 
     expect(runner.calls.map((c) => c.args.slice(0, 2).join(" "))).toEqual([
       "ps -a",
-      "network ls",
-      "volume ls",
       "stats --no-stream",
       "inspect --format",
       "info --format",
     ]);
-    expect(runner.calls[3]?.args.at(-1)).toBe("opscrew-shop-app-1");
+    expect(runner.calls[1]?.args.at(-1)).toBe("opscrew-shop-app-1");
     expect(reading.server).toEqual({ cpus: 8, memory: { totalBytes: 8589934592 } });
     expect(reading.containers).toEqual([
       {
@@ -428,9 +549,8 @@ describe("readResources on the server-less targets", () => {
 
 describe("componentStatusReport with the figures", () => {
   it("adds the figures after the components and returns the reading", async () => {
-    const deps = await createTestPhaseDeps();
+    const deps = await serverDeps();
     const plan = withWorker();
-    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
     const ssh = shell(serverOutput(fakeSecret("generic-password", "database-password")));
 
     const report = await componentStatusReport(deps, plan, { services: { remote: ssh.remote } });
@@ -449,8 +569,7 @@ describe("componentStatusReport with the figures", () => {
   });
 
   it("a figures read that fails leaves a note under the components", async () => {
-    const deps = await createTestPhaseDeps();
-    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    const deps = await serverDeps();
     const remote = (host: string): RemoteExec => ({
       host,
       run: async (command) =>

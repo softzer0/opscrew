@@ -7,17 +7,22 @@
  */
 import { PortainerApiError } from "@opscrew/connector-portainer";
 import type { RemoteExec } from "@opscrew/contracts";
-import { listText, OpsCrewError, plural, upperFirst } from "@opscrew/core";
-import { localComposeProject, portainerStackName, portainerTarget } from "@opscrew/iac-templates";
+import { isUserFacingError, listText, OpsCrewError, plural, upperFirst } from "@opscrew/core";
+import {
+  localComposeProject,
+  portainerStackName,
+  portainerTarget,
+  shellQuote,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { DISK_HIGH_PERCENT, DISK_WARN_PERCENT } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { projectObjects } from "../localhost/docker";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
-import { portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
+import { portainerClientFor } from "../shared";
 import { connectOwnServer } from "../shared/own-server";
+import { deployShell } from "./certificates";
 import { containerService, oneShotServices, plannedComponents } from "./components";
 import type { ComponentStatusOptions } from "./run";
 
@@ -73,7 +78,7 @@ export interface ResourceReading {
 }
 
 /** A container uses this share of its memory limit or more: a warning. */
-export const MEMORY_WARN_PERCENT = 90;
+const MEMORY_WARN_PERCENT = 90;
 
 /** A Compose project name as Compose allows it (checked before it reaches a command). */
 const PROJECT_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -90,9 +95,10 @@ const MARK = "==opscrew-figures:";
 
 /**
  * The one fixed, read-only command that reads a server's figures for the Compose project
- * `project`: `nproc`, `/proc/loadavg`, `free -b`, `df -P -B1 /`, then `docker stats` and
- * `docker inspect` (only {@link INSPECT_FORMAT}'s fields, never the environment) of the project's
- * containers.
+ * `project`, in the C locale (`free`'s headers): `nproc`, `/proc/loadavg`, `free -b`,
+ * `df -P -B1 /`, then `docker stats` and `docker inspect` (only {@link INSPECT_FORMAT}'s fields,
+ * never the environment) of the project's containers. It ends with `true`: a step that fails (a
+ * container recreated mid-read) leaves its part out, not the rest.
  */
 export function serverFiguresCommand(project: string): string {
   if (!PROJECT_NAME.test(project)) {
@@ -100,6 +106,7 @@ export function serverFiguresCommand(project: string): string {
   }
   const filters = `--filter label=com.docker.compose.project=${project} --filter label=com.docker.compose.oneoff=False`;
   return [
+    "export LC_ALL=C",
     `echo '${MARK}cpus'`,
     "nproc",
     `echo '${MARK}load'`,
@@ -110,7 +117,17 @@ export function serverFiguresCommand(project: string): string {
     "df -P -B1 /",
     `ids=$(docker ps -aq ${filters})`,
     `if [ -n "$ids" ]; then echo '${MARK}stats'; docker stats --no-stream --format '{{json .}}' $ids; echo '${MARK}inspect'; docker inspect --format '${INSPECT_FORMAT}' $ids; fi`,
+    "true",
   ].join("; ");
+}
+
+/**
+ * `command` as root where the admin login of the user's own server can be (it is root, or has
+ * passwordless sudo), else as the login itself, as the host adapter's inspection runs it.
+ */
+function asAdmin(command: string): string {
+  const quoted = shellQuote(command);
+  return `if [ "$(id -u)" = 0 ]; then sh -c ${quoted}; elif sudo -n true 2>/dev/null </dev/null; then sudo -n sh -c ${quoted}; else sh -c ${quoted}; fi`;
 }
 
 /** The output's lines under each mark. */
@@ -234,7 +251,7 @@ function jsonLines<T extends z.ZodType>(lines: readonly string[], schema: T): z.
  * ({@link INSPECT_FORMAT}) lines, joined by name; `serviceOf` names each container's service, or
  * leaves it out. Lines that are neither are ignored, and nothing but these fields is kept.
  */
-export function parseContainers(
+function parseContainers(
   stats: readonly string[],
   inspect: readonly string[],
   serviceOf: (name: string) => string | undefined,
@@ -262,49 +279,35 @@ export function parseContainers(
 /** The figures part of a reading, before its time and flags. */
 type Figures = Pick<ResourceReading, "server" | "containers" | "unavailable" | "edgeRequests">;
 
-/** The deploy user's shell on the app's server: OpsCrew's, or the user's own (host key pinned). */
-async function deployShell(
+/**
+ * The shell and command that read the figures: on the user's own server, the admin login
+ * `connectOwnServer` checks (host key pinned) with the command as root where it can be; on a
+ * server OpsCrew created, the deploy user's shell (`deployShell`).
+ */
+async function figuresShell(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions,
-): Promise<RemoteExec> {
-  const services = options.services ?? {};
+): Promise<{ remote: RemoteExec; command: string }> {
+  const command = serverFiguresCommand(plan.app.name);
   if (plan.target.provider === "own") {
-    const session = await connectOwnServer(deps, {
+    const { remote } = await connectOwnServer(deps, {
       hostKey: options.hostKey,
-      services: services.own,
+      services: options.services?.own,
     });
-    const { host, port } = session.connection;
-    return (
-      services.remote?.(host) ??
-      new SshRemoteExec({
-        host,
-        port,
-        keyFile: deps.paths.files.deployKey,
-        knownHostsFile: session.knownHostsFile,
-        runner: deps.runner,
-      })
-    );
+    return { remote, command: asAdmin(command) };
   }
-  const address = await serverAddress(deps, plan);
-  if (address === undefined) {
+  const remote = await deployShell(deps, plan, options.services);
+  if (remote === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "OpsCrew does not know the server's address on this computer, so it could not read the server's figures.",
+      "OpsCrew has no SSH login to the server on this computer (its address or the project's deploy key is missing), so it could not read the server's figures.",
       {
-        hint: "Run the command on the computer that ran `opscrew provision` (the address is kept there, in .opscrew/server.json).",
+        hint: "Run the command on the computer that ran `opscrew provision` (the address is kept there, in .opscrew/server.json, and the deploy key in ~/.opscrew).",
       },
     );
   }
-  return (
-    services.remote?.(address.ipv4) ??
-    new SshRemoteExec({
-      host: address.ipv4,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    })
-  );
+  return { remote, command };
 }
 
 /** The figures of a server OpsCrew created or the user's own, with one fixed command. */
@@ -314,9 +317,9 @@ async function serverFigures(
   options: ComponentStatusOptions,
 ): Promise<Figures> {
   const app = plan.app.name;
-  const remote = await deployShell(deps, plan, options);
+  const { remote, command } = await figuresShell(deps, plan, options);
   deps.reporter.step("Reading the server's and the app's figures (read-only)");
-  const result = await remote.run(serverFiguresCommand(app), { timeoutMs: 60_000 });
+  const result = await remote.run(command, { timeoutMs: 60_000 });
   await deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",
@@ -324,12 +327,14 @@ async function serverFigures(
     target: plan.target.provider === "own" ? "own server" : "server",
     decision: "allow",
   });
-  if (result.exitCode !== 0) {
+  // The command ends with `true`: only ssh's own failure (255) or a shell that ran none of it
+  // leaves no figures.
+  if (result.exitCode === 255 || !result.stdout.includes(MARK)) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
       `OpsCrew could not read the server's figures over SSH (exit code ${result.exitCode}).`,
       {
-        hint: "Check that the server is on and that this computer reaches it as the deploy user with the project's deploy key, then try again (`opscrew verify` checks the deployment).",
+        hint: "Check that the server is on and that this computer reaches it over SSH, then try again (`opscrew verify` checks the deployment).",
       },
     );
   }
@@ -374,7 +379,13 @@ async function portainerFigures(
       ? [{ id, service }]
       : [],
   );
-  const info = await client.dockerInfo(environment);
+  // Without Docker's /info, the containers' figures still stand; the totals are named below.
+  const info: { cpus?: number; memoryBytes?: number } = await client
+    .dockerInfo(environment)
+    .catch((error: unknown) => {
+      if (!isUserFacingError(error)) throw error;
+      return {};
+    });
   const hidden = new Set(planned.filter((s) => !listed.some((c) => c.service === s)));
   const read = await Promise.all(
     listed.map(async ({ id, service }): Promise<ContainerReading | string> => {
@@ -411,8 +422,12 @@ async function portainerFigures(
     target: "portainer",
     decision: "allow",
   });
+  const { cpus, memoryBytes } = info;
+  const totals = cpus !== undefined && memoryBytes !== undefined;
   const unavailable = [
-    `the host's ${info.cpus === undefined || info.memoryBytes === undefined ? "CPUs, " : ""}load, memory in use and disk (Docker's API through Portainer does not give them)`,
+    totals
+      ? "the host's load, memory in use and disk (Docker's API through Portainer does not give them)"
+      : "the host's CPUs, memory, load and disk (Portainer did not give Docker's figures for them)",
   ];
   if (hidden.size > 0) {
     unavailable.push(
@@ -420,9 +435,7 @@ async function portainerFigures(
     );
   }
   return {
-    ...(info.cpus !== undefined && info.memoryBytes !== undefined
-      ? { server: { cpus: info.cpus, memory: { totalBytes: info.memoryBytes } } }
-      : {}),
+    ...(totals ? { server: { cpus, memory: { totalBytes: memoryBytes } } } : {}),
     containers,
     unavailable,
   };
@@ -430,16 +443,28 @@ async function portainerFigures(
 
 /** The figures of the app's Compose project in this computer's Docker. */
 async function localFigures(deps: PhaseDeps, plan: DeployPlan): Promise<Figures> {
-  const oneShot = oneShotServices(plan);
-  const { containers } = await projectObjects(deps, localComposeProject(plan));
-  const services = new Map(
-    containers.filter((c) => !oneShot.has(c.service)).map((c) => [c.name, c.service]),
-  );
-  const names = [...services.keys()];
   const docker = async (args: string[]) => {
     const result = await deps.runner.run("docker", args, { timeoutMs: 60_000 });
     return result.exitCode === 0 ? result.stdout.split(/\r?\n/).map((l) => l.trim()) : [];
   };
+  const oneShot = oneShotServices(plan);
+  const listed = await docker([
+    "ps",
+    "-a",
+    "--filter",
+    `label=com.docker.compose.project=${localComposeProject(plan)}`,
+    "--filter",
+    "label=com.docker.compose.oneoff=False",
+    "--format",
+    '{{.Names}}|{{.Label "com.docker.compose.service"}}',
+  ]);
+  const services = new Map(
+    listed.flatMap((line) => {
+      const [name, service] = line.split("|");
+      return name && service && !oneShot.has(service) ? [[name, service] as const] : [];
+    }),
+  );
+  const names = [...services.keys()];
   const read =
     names.length === 0
       ? []
@@ -485,7 +510,7 @@ function componentWords(plan: DeployPlan): (service: string) => string {
 }
 
 /** Bytes as `512 MB` or `3.8 GB` (MB and GB of 1024, as memory limits are given). */
-export function bytesText(bytes: number): string {
+function bytesText(bytes: number): string {
   const mb = bytes / 1024 ** 2;
   return mb < 1024 ? `${Math.round(mb)} MB` : `${(mb / 1024).toFixed(1)} GB`;
 }
@@ -520,7 +545,7 @@ export function resourceFlags(plan: DeployPlan, figures: Figures, flag = ""): Re
         figure: `the memory of ${name}`,
         severity: "warning",
         meaning: `${upperFirst(name)} uses ${Math.round((usedBytes * 100) / limitBytes)}% of its ${bytesText(limitBytes)} memory limit. At the limit, the system stops it and Docker starts it again.`,
-        fix: `Raise its \`memoryMb\` in opscrew/plan.yaml and run \`opscrew provision${flag}\` (it shows the plan first), or find what in the app holds on to memory.`,
+        fix: `Raise ${container.service === "cron" ? "`app.memoryMb` (the cron jobs run with the web process's memory)" : "its `memoryMb`"} in opscrew/plan.yaml and run \`opscrew provision${flag}\` (it shows the plan first), or find what in the app holds on to memory.`,
       });
     }
     if (container.restarts > 0) {
