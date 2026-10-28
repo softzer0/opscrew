@@ -562,6 +562,7 @@ export async function destroyOwnServer(
     const keptBucket = deleteData ? undefined : providerBucket(plan);
     if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
     else if (keptBucket !== undefined) deps.reporter.info(bucketStays(keptBucket));
+    for (const note of checkPauseNote(plan)) deps.reporter.info(note);
     await confirmDeletion(
       scope,
       {

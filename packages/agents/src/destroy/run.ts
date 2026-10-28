@@ -608,6 +608,7 @@ export async function runDestroy(
       `${profile.displayName} has no delete protection for ${texts.noun}s, so the only safeguard is OpsCrew's own confirmation: once you confirm with the name ${name}, the ${texts.noun} is deleted as soon as the destroy plan is applied.`,
     );
   }
+  for (const note of checkPauseNote(plan)) deps.reporter.info(note);
   await confirmDeletion(
     session,
     {

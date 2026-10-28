@@ -525,6 +525,7 @@ export async function destroyPortainer(
   else if (!deleteData && removeApp && bucketAt !== undefined) {
     deps.reporter.info(bucketStays(bucketAt));
   }
+  if (removeApp) for (const note of checkPauseNote(plan)) deps.reporter.info(note);
   await confirmDeletion(
     scope,
     {

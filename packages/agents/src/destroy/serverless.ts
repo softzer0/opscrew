@@ -219,6 +219,7 @@ export async function destroyCloudflareWorkers(
       : "The Worker and its custom domains are already deleted; OpsCrew finishes the cleanup.",
   );
   if (rules !== undefined) deps.reporter.info(rules);
+  for (const note of checkPauseNote(plan)) deps.reporter.info(note);
   await confirmDeletion(
     scope,
     {
@@ -484,6 +485,7 @@ export async function destroyGithubPages(
       ...(held && !deleteVerification ? [kept] : []),
     ].join("\n"),
   );
+  if (!verificationOnly) for (const note of checkPauseNote(plan)) deps.reporter.info(note);
   await confirmDeletion(
     scope,
     {

@@ -270,7 +270,18 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
   it("pauses the scheduled check once the server is deleted, before its secrets go", async () => {
     const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
     const s = await setup({ plan });
-    await runDestroy(s.deps, { services: s.services });
+    // Said before the name is typed (the CLI shows the approvals' titles only).
+    let shownBeforeName = "";
+    await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => {
+        shownBeforeName = s.deps.reporter.text();
+        return true;
+      },
+    });
+    expect(shownBeforeName).toContain(
+      "This also pauses the scheduled check for shop/prod (the repository variable OPSCREW_CHECK_PAUSED), so it opens no issue for the app that is gone and closes its open ones.",
+    );
     // Under the destroy plan's typed confirmation, which says so: no question of its own.
     expect(s.events).not.toContain("approval:github-settings");
     const destroy = s.handler.requests.find(
