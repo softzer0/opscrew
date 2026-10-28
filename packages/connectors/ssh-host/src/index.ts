@@ -57,6 +57,7 @@ export { inspectHost, inspectRunners } from "./inspect";
 export { localExec } from "./local";
 export { canonicalSshSource, isPublicAddress } from "./parse";
 export {
+  type AddonConnector,
   type AddonEnable,
   type AddonPlanKind,
   planAddon,

@@ -15,6 +15,9 @@ import {
   provision,
   SHOP_PROJECT,
   SHOP_REPOSITORY,
+  TUNNEL_COMPOSE,
+  TUNNEL_ID,
+  tunnelToken,
 } from "./__fixtures__/helpers";
 import { keyFingerprint } from "./addons";
 import { applyHostPlan } from "./apply";
@@ -281,6 +284,42 @@ describe("beszel", () => {
     expect(fake.madeDirs.has(`${dir}/data`)).toBe(false);
     expect(fake.calls.every((call) => !call.sudo)).toBe(true);
     expect(fake.files.has("/etc/opscrew/host.json")).toBe(false);
+  });
+
+  it("runs the tunnel connector of its subdomain first on a server OpsCrew created, and removes it", async () => {
+    const fake = cloudServer();
+    const { secrets } = addonSecrets();
+    const connectorDir = "/home/deploy/opscrew/cloudflared";
+    const plan = planAddon("beszel", {
+      app: "shop",
+      runAs: "login",
+      enable: HUB,
+      connector: {
+        dir: connectorDir,
+        compose: TUNNEL_COMPOSE,
+        tunnelId: TUNNEL_ID,
+        needsToken: true,
+      },
+    });
+    expect(plan.steps.map((step) => step.id)).toEqual(["tunnel-connector", "beszel"]);
+    expect(plan.steps[0]?.title).toContain("Beszel's subdomain");
+    const token = tunnelToken();
+    const result = await applyApproved(fake, plan, { secrets: { ...secrets, tunnelToken: token } });
+    expect(result.applied).toEqual(["tunnel-connector", "beszel"]);
+    expect(fake.calls.every((call) => !call.sudo)).toBe(true);
+    expect(fake.files.get(`${connectorDir}/tunnel.env`)).toBe(`TUNNEL_TOKEN=${token}\n`);
+    expect(JSON.stringify(plan)).not.toContain(token);
+
+    const off = planAddon("beszel", {
+      app: "shop",
+      runAs: "login",
+      disable: { keepData: true },
+      connector: { dir: connectorDir, remove: true },
+    });
+    expect(off.steps.map((step) => step.id)).toEqual(["tunnel-connector", "beszel"]);
+    const removed = await applyApproved(fake, off);
+    expect(removed.applied).toEqual(["tunnel-connector", "beszel"]);
+    expect(fake.files.has(`${connectorDir}/tunnel.env`)).toBe(false);
   });
 
   it("turned off with keepData keeps only its history; without, everything goes", async () => {

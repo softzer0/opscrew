@@ -959,6 +959,43 @@ describe("memoryText", () => {
       "Memory limits: the app 512 MB, mysql 512 MB; OpsCrew's edge and the system 576 MB; 2.4 GB of 4.0 GB free.",
     );
   });
+
+  it("counts a plan's enabled add-ons, each with all its containers and its price share", () => {
+    const plan = { ...testPlan(), services: [] };
+    const observability: DeployPlan["observability"] = {
+      beszel: {
+        enabled: true,
+        version: "0.21.1",
+        mode: "hub",
+        access: "local",
+        memoryMb: { hub: 128, agent: 64, proxy: 32 },
+      },
+      grafanaCloud: {
+        enabled: true,
+        version: "1.21.2",
+        metrics: { url: "https://prometheus.example.net/api/prom/push", user: "123" },
+        logs: { url: "https://logs.example.net/loki/api/v1/push", user: "456" },
+        logSampling: 100,
+        memoryMb: { alloy: 192, proxy: 32 },
+      },
+    };
+    expect(memoryText({ ...plan, observability }, 4096, 128, { amount: 8, currency: "EUR" })).toBe(
+      "Memory limits: the app 512 MB (€1.00/month), Beszel 224 MB (€0.44/month), Grafana Alloy 224 MB (€0.44/month); OpsCrew's edge and the system 512 MB; 2.6 GB of 4.0 GB free.",
+    );
+    // An add-on that is off, and Beszel's agent alone (no hub on this server).
+    const agentOnly = {
+      beszel: {
+        ...observability.beszel,
+        mode: "agent",
+        access: "local",
+        hubUrl: "https://beszel.example.net",
+      },
+      grafanaCloud: { ...observability.grafanaCloud, enabled: false },
+    } as DeployPlan["observability"];
+    expect(memoryText({ ...plan, observability: agentOnly }, 4096, 128)).toContain(
+      "the app 512 MB, Beszel 96 MB;",
+    );
+  });
 });
 
 describe("checkSqliteFolder", () => {

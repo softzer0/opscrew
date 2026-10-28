@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import {
   applyHostPlan,
   type HostPlan,
@@ -6,65 +5,31 @@ import {
   PORTAINER_DIR,
   planPortainer,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, RemoteExec } from "@opscrew/contracts";
+import type { RemoteExec } from "@opscrew/contracts";
 import { exists, OpsCrewError } from "@opscrew/core";
-import type { EnginePreference } from "@opscrew/iac-engine";
-import {
-  keepNewerPins,
-  portainerHostname,
-  renderPortainerCompose,
-  renderTunnelConnectorCompose,
-  usesTunnel,
-} from "@opscrew/iac-templates";
+import { portainerHostname, renderPortainerCompose, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { builderBranch } from "../environments/branches";
-import { type CloudflareSetup, setupCloudflare } from "../provision/credentials";
+import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
+import { applyOwnHostPlan, portainerPasswordFile, portainerPasswordToSend } from "../provision/own";
 import {
-  applyOwnHostPlan,
-  type OwnServerRun,
-  ownEngineEnv,
-  portainerPasswordFile,
-  portainerPasswordToSend,
-  prepareOwnServer,
-} from "../provision/own";
-import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "../provision/plan-apply";
-import {
-  deploymentFiles,
-  deploymentRenderContext,
-  type OwnRenderInput,
-  readRequirements,
-  withCloudflareZone,
-} from "../provision/render";
-import { applySharedCloudflare, planSharedCloudflare } from "../provision/shared-cloudflare";
-import { currentOutputs } from "../provision/steps";
-import type { ProvisionServices } from "../provision/types";
-import {
-  approvalEntry,
   approveAndApplyHostPlan,
-  approveAndWriteRenderedFiles,
-  committedText,
-  diffRenderedFiles,
-  ensureDeployKey,
-  githubCoordinates,
-  type HostAdapterApi,
   type HostPlanOutcome,
   hasDeployment,
-  hidesServerAddress,
-  infrastructureOutputs,
   localhostNotSupported,
-  PlanRefusedError,
-  projectEngine,
-  readServerAddresses,
-  requireGitRepo,
-  SshRemoteExec,
   serverlessNoPortainer,
-  stringOutput,
-  writePlanIfChanged,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
-import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
+import type { HostChangeResult } from "../shared/tunnel-connections";
+import {
+  cloudTunnelConnector,
+  deployRemote,
+  NO_LOGIN_CHECK,
+  runTunnelledChange,
+  type TunnelledChangeOptions,
+  type TunnelledChangeServices,
+} from "./change";
 import {
   clearPendingPortainer,
   optionsDiffer,
@@ -83,28 +48,10 @@ import {
 import { describePortainerStatus, type PortainerStatus, portainerStatusOf } from "./status";
 
 /** Collaborators of the Portainer commands; each defaults to the real implementation. */
-export interface PortainerServices extends ProvisionServices {
-  /** Hetzner/DigitalOcean: the deploy user's shell (default: SSH with the deploy key). */
-  deployRemote?: (host: string) => RemoteExec;
-  /** Hetzner/DigitalOcean: the host adapter's apply (default `applyHostPlan`). */
-  applyHost?: HostAdapterApi["apply"];
-}
+export type PortainerServices = TunnelledChangeServices;
 
 /** Options shared by `opscrew portainer enable` and `disable`. */
-export interface PortainerRunOptions {
-  /** Save and show the plans with their hashes; change nothing. */
-  planOnly?: boolean;
-  /**
-   * Every hash given with `--approve`. A saved infrastructure plan among them is applied instead
-   * of planning again; host plan hashes are granted by the approval handler.
-   */
-  approvePlanHashes?: readonly string[];
-  /** `--host-key SHA256:…` for the first connection to the user's own server. */
-  hostKey?: string;
-  /** Overrides `plan.infra.engine`. */
-  engine?: EnginePreference;
-  services?: PortainerServices;
-}
+export type PortainerRunOptions = TunnelledChangeOptions;
 
 export interface PortainerEnableOptions extends PortainerEnableRequest, PortainerRunOptions {}
 
@@ -155,106 +102,13 @@ function noDeployment(command: Command): OpsCrewError {
   );
 }
 
-/** The saved infrastructure plan among the `--approve` hashes (never a removal plan). */
-async function savedInfrastructureHash(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  hashes: readonly string[],
-): Promise<string | undefined> {
-  const applied = plan.deployment.lastPlanHash?.toLowerCase();
-  for (const hash of hashes) {
-    if (hash.toLowerCase() === applied) continue;
-    const saved = await findSavedPlan(deps.paths.files.plansDir, hash);
-    if (saved !== undefined && !saved.planFile.endsWith(REMOVAL_PLAN_SUFFIX)) return hash;
-  }
-  return undefined;
-}
-
 /**
- * Renders the deployment files for the changed plan (the runbook's Portainer section, and the
- * tunnel and Access modules for a subdomain) with the same inputs provision uses, plus the id of
- * the one-time PIN login Portainer's Access application uses (from the Cloudflare plan applied
- * first). Writes the changed files after a `repo-write` approval (not when a saved plan is
- * applied: its run wrote them).
- */
-async function renderChange(
-  deps: PhaseDeps,
-  change: Change,
-  input: {
-    ownRun?: OwnServerRun;
-    deployPublicKey: string;
-    write: boolean;
-    cloudflare: CloudflareSetup | undefined;
-    oneTimePinId: string | undefined;
-  },
-): Promise<{ plan: DeployPlan; files: ReturnType<typeof deploymentFiles>; written: string[] }> {
-  const root = deps.paths.root;
-  const git = await requireGitRepo(deps);
-  const github = await githubCoordinates(git);
-  const { cloudflare } = input;
-  const plan = withCloudflareZone(change.after, cloudflare);
-  const own: OwnRenderInput = {
-    ...(input.ownRun ? { sshPort: input.ownRun.sshPort } : {}),
-    ...(input.oneTimePinId !== undefined
-      ? { oneTimePinIdentityProviderId: input.oneTimePinId }
-      : {}),
-  };
-  const server =
-    plan.target.provider === "own" || hidesServerAddress(plan)
-      ? undefined
-      : (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
-  const ctx = await deploymentRenderContext(deps, {
-    plan,
-    builderBranch: await builderBranch(deps.paths, plan),
-    requirements: await readRequirements(deps),
-    github,
-    deployPublicKey: input.deployPublicKey,
-    cloudflare,
-    server,
-    own,
-  });
-  const files = deploymentFiles(plan, ctx);
-  if (!input.write) {
-    // Applying a saved plan: the files its --plan-only run wrote must be what these options render.
-    const diff = await diffRenderedFiles(root, files);
-    if (diff.created.length + diff.changed.length > 0) throw optionsDiffer();
-    return { plan, files, written: [] };
-  }
-  const written = await approveAndWriteRenderedFiles(deps, root, files, {
-    what: "the deployment files for Portainer",
-    refused: "Nothing was written and nothing was changed.",
-  });
-  return { plan, files, written: written.map((file) => file.path) };
-}
-
-/** Records the run's approvals and applies in `opscrew/plan.yaml` (informational copies). */
-function recorded(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  approvals: readonly ApprovalRecord[],
-  applied: { iacHash?: string; any: boolean },
-): DeployPlan {
-  const now = deps.clock.now().toISOString();
-  return {
-    ...plan,
-    approvals: [...plan.approvals, ...approvals.map(approvalEntry)],
-    deployment: {
-      ...plan.deployment,
-      ...(applied.iacHash !== undefined ? { lastPlanHash: applied.iacHash } : {}),
-      ...(applied.any ? { lastApplyAt: now } : {}),
-    },
-  };
-}
-
-/**
- * The shared enable/disable flow: with a subdomain involved, the Cloudflare plan of OpsCrew's
- * shared resources (`cloudflare-apply` by its hash) → render (own servers always, others when a
- * subdomain is involved) → infrastructure plan, policies, `iac-apply` approval and apply when a tunnel is
- * involved → host plan, `host-apply` approval and apply → (disable with `deleteData`) the data
- * deletion's own approval with the typed app name → `opscrew/plan.yaml` updated. When the
- * infrastructure plan deletes the tunnel, both plans are approved first, then the host plan (which
- * removes the connector) is applied, then OpsCrew waits until Cloudflare reports no active
- * connections for the tunnel, and only then applies the infrastructure plan.
+ * The shared enable/disable flow ({@link runTunnelledChange}) for Portainer: with a subdomain
+ * involved, the Cloudflare plan of OpsCrew's shared resources (`cloudflare-apply` by its hash) →
+ * render (when a subdomain is involved) → infrastructure plan, policies, `iac-apply` approval and
+ * apply when a tunnel is involved → host plan, `host-apply` approval and apply → (disable with
+ * `deleteData` on an own server) the data deletion's own approval with the typed app name →
+ * `opscrew/plan.yaml` updated.
  */
 async function runChange(
   deps: PhaseDeps,
@@ -262,307 +116,90 @@ async function runChange(
   options: PortainerRunOptions,
 ): Promise<PortainerResult> {
   const services = options.services ?? {};
-  const planOnly = options.planOnly === true;
   const command = `opscrew portainer ${change.command}`;
-  const own = change.before.target.provider === "own";
-  const subdomainInvolved =
-    portainerHostname(change.before) !== undefined || portainerHostname(change.after) !== undefined;
-  const tunnelInvolved = usesTunnel(change.before) || usesTunnel(change.after);
-  const approvals: ApprovalRecord[] = [];
-
-  const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
-  const approveHash = await savedInfrastructureHash(
-    deps,
-    change.before,
-    options.approvePlanHashes ?? [],
-  );
-
-  // A server the user owns: connect (pinned host key), inspect read-only, stop on blockers.
-  let ownRun: OwnServerRun | undefined;
-  if (own) {
-    ownRun = await prepareOwnServer(deps, {
-      plan: change.after,
-      options: {
-        ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
-        ...(options.planOnly === true ? { planOnly: true } : {}),
-      },
-      services,
-      deployPublicKey: deployKey.publicKeyOpenSsh,
-      deployKeyFile: deployKey.privateKeyFile,
-      phase: "portainer",
-      command,
-    });
-  }
-  // Hetzner/DigitalOcean: the deploy user's shell; enabling needs Docker 28 and looks for
-  // Portainer's data (both read-only).
-  let cloudRemote: RemoteExec | undefined;
+  const enabling = change.command === "enable";
+  // Hetzner/DigitalOcean: enabling needs Docker 28 and looks for Portainer's data (both read-only).
   let cloudFacts: CloudFacts | undefined;
-  if (!own) {
-    cloudRemote = await deployRemote(deps, services);
-    if (change.command === "enable") cloudFacts = await cloudPreflight(deps, cloudRemote);
-  }
-
-  // OpsCrew's shared Cloudflare change (only a subdomain involves Cloudflare) before anything
-  // changes: the account's Zero Trust organization and one-time PIN login for Portainer's Access,
-  // and the app's hostnames in OpsCrew's rules; shown, approved by its hash, applied and recorded.
-  const cloudflare = subdomainInvolved
-    ? await setupCloudflare(deps, change.after, services)
-    : undefined;
-  let oneTimePinId: string | undefined;
-  let cloudflareHash: { cloudflarePlanHash?: string } = {};
-  const sharedPlans =
-    cloudflare === undefined
-      ? undefined
-      : await planSharedCloudflare(deps, { services, plan: change.after, cloudflare, command });
-  if (sharedPlans !== undefined) {
-    const shared = await applySharedCloudflare(deps, sharedPlans, {
-      app: change.after.app.name,
-      planOnly,
-      command,
-      phase: "portainer",
-    });
-    approvals.push(...shared.approvals);
-    oneTimePinId = shared.oneTimePinId;
-    const { cloudflarePlanHash } = shared.fields;
-    if (cloudflarePlanHash !== undefined) cloudflareHash = { cloudflarePlanHash };
-    if (shared.infrastructureWaits) {
-      // `--approve <its hash>` without options then applies exactly this change.
-      await savePendingPortainer(deps.paths, {
-        command: change.command,
-        settings: change.after.portainer ?? null,
-        deleteData: change.deleteData,
-      });
-      return {
-        ...cloudflareHash,
-        applied: false,
-        hostApplied: false,
-        files: [],
-        status: await portainerStatusOf(deps, change.before),
-      };
-    }
-  }
-
-  // Render: only a subdomain (added, changed or removed) changes the infrastructure code. The
-  // runbook's Portainer section follows with the next `opscrew verify`, which writes the runbook.
-  let plan = change.after;
-  let files: ReturnType<typeof deploymentFiles> = [];
-  const written: string[] = [];
-  if (subdomainInvolved) {
-    const rendered = await renderChange(deps, change, {
-      ...(ownRun !== undefined ? { ownRun } : {}),
-      deployPublicKey: deployKey.publicKeyOpenSsh,
-      write: approveHash === undefined,
-      cloudflare,
-      oneTimePinId,
-    });
-    plan = rendered.plan;
-    files = rendered.files;
-    written.push(...rendered.written);
-  }
-  // `opscrew/plan.yaml` changes only once the change is on the server (see the end).
-  const planned = async (): Promise<void> =>
-    savePendingPortainer(deps.paths, {
-      command: change.command,
-      settings: plan.portainer ?? null,
-      deleteData: change.deleteData,
-    });
-
-  // The change on the server: the host plan provision applies on the user's own server, now with
-  // Portainer as the plan describes it, or the deploy user's add-on steps. It normally follows the
-  // infrastructure apply (it may need the tunnel's id); when the infrastructure plan deletes the
-  // tunnel it goes first, because Cloudflare refuses to delete a tunnel whose connector still runs.
-  // `hostHash` names its plan as soon as it is shown; a refusal says to approve it later with this
-  // command, which finishes the change.
-  let hostHash: string | undefined;
-  const shown = (hash: string) => {
-    hostHash = hash;
-  };
-  const hostChange = (
-    outputs: Record<string, unknown>,
-    hostPlanOnly: boolean,
-  ): Promise<HostChangeResult> =>
-    ownRun
-      ? applyOwnHostPlan(deps, ownRun, {
-          plan,
-          outputs,
-          deployPublicKey: deployKey.publicKeyOpenSsh,
-          planOnly: hostPlanOnly,
-          phase: "portainer",
-          command,
-          upToDate:
-            change.command === "enable"
+  const result = await runTunnelledChange(deps, {
+    ...options,
+    command,
+    phase: "portainer",
+    what: "Portainer",
+    enabling,
+    before: change.before,
+    after: change.after,
+    hostname: portainerHostname,
+    infrastructureTitle:
+      enabling && portainerHostname(change.after) !== undefined
+        ? `Serve Portainer on ${portainerHostname(change.after)} behind Cloudflare Access (Cloudflare Tunnel and Access)`
+        : "Apply the Cloudflare Tunnel and Access changes for Portainer",
+    preflight: async ({ remote }) => {
+      if (remote !== undefined && enabling) cloudFacts = await cloudPreflight(deps, remote);
+    },
+    hostChange: ({ ownRun, remote, plan, outputs, deployPublicKey, planOnly, shown }) =>
+      ownRun
+        ? applyOwnHostPlan(deps, ownRun, {
+            plan,
+            outputs,
+            deployPublicKey,
+            planOnly,
+            phase: "portainer",
+            command,
+            upToDate: enabling
               ? "Portainer already runs on your server as planned; nothing on it changes."
               : "Portainer is no longer on your server; nothing on it changes.",
-          shown,
-        })
-      : cloudHostChange(deps, change, {
-          plan,
-          outputs,
-          services,
-          remote: cloudRemote as RemoteExec,
-          facts: cloudFacts,
-          planOnly: hostPlanOnly,
-          command,
-          shown,
-        });
-  /** The host change that went before the tunnel's deletion (see {@link hostChange}). */
-  let early: HostChangeResult | undefined;
-
-  // Infrastructure: the tunnel and Access (or their removal), through the IaC engine.
-  let outputs: Record<string, unknown> = {};
-  let planHash: string | undefined;
-  let iacApplied = false;
-  if (tunnelInvolved) {
-    const { engine: inner, env } = await projectEngine(deps, plan, {
-      ...(options.engine !== undefined ? { preference: options.engine } : {}),
-      services,
-    });
-    // Applying a plan that deletes the tunnel: the server first, then the wait, then the deletion.
-    const first = connectorFirst(deps, {
-      command,
-      app: plan.app.name,
-      where: ownRun ? "on your server" : "on the server",
-      hostChange: () => hostChange({}, false),
-      hostHash: () => hostHash,
-      done: CONNECTOR_GONE,
-      ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
-    });
-    if (ownRun) {
-      await ownEngineEnv(deps, ownRun, env, () =>
-        infrastructureOutputs(deps, plan, { engine: async () => inner, engineEnv: env }),
-      );
-    }
-    let result: Awaited<ReturnType<typeof planAndApply>>;
-    try {
-      result = await planAndApply(deps, {
-        engine: inner,
-        ...first.hooks,
-        dir: join(deps.paths.root, plan.infra.dir),
-        env,
-        deployPlan: plan,
-        files,
-        command,
-        phase: "portainer",
-        costDelta: null,
-        approvalTitle:
-          change.command === "enable" && portainerHostname(plan) !== undefined
-            ? `Serve Portainer on ${portainerHostname(plan)} behind Cloudflare Access (Cloudflare Tunnel and Access)`
-            : "Apply the Cloudflare Tunnel and Access changes for Portainer",
-        ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
-        ...(planOnly ? { planOnly: true } : {}),
-      });
-    } catch (error) {
-      // `--approve <infrastructure plan hash>` without options then applies exactly this change.
-      await planned();
-      throw infrastructureStopped(deps, first.stopped(error), written);
-    }
-    early = first.host;
-    planHash = result.planHash;
-    iacApplied = result.applied;
-    if (result.approval) approvals.push(result.approval);
-    const pending = (result.plan?.changes.length ?? 0) > 0 && !result.applied;
-    if (planOnly && pending) {
-      await planned();
-      // A plan that deletes the tunnel is applied after the host plan: both are shown now.
-      const shownFirst = tunnelChange(result.plan?.changes ?? [], "delete")
-        ? await hostChange({}, true)
-        : undefined;
-      deps.reporter.info(
-        shownFirst !== undefined
-          ? `Approve both plans to apply them (\`${command} --approve ${planHash} --approve ${shownFirst.hash}\`, typing ${plan.app.name} to confirm): the change on ${ownRun ? "your server" : "the server"} goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`
-          : `The host plan follows once this infrastructure plan is applied (\`${command} --approve ${planHash}\`), because it needs the Cloudflare Tunnel.`,
-      );
-      return {
-        ...(planHash !== undefined ? { planHash } : {}),
-        ...cloudflareHash,
-        applied: false,
-        ...(shownFirst !== undefined ? { hostPlanHash: shownFirst.hash } : {}),
-        hostApplied: false,
-        files: written,
-        status: await portainerStatusOf(deps, change.before),
-      };
-    }
-    outputs = await currentOutputs(result, inner, join(deps.paths.root, plan.infra.dir), env);
-  }
-
-  // The server (unless its change went first, before the tunnel's deletion).
-  let hostPlanHashValue: string | undefined;
-  let hostApplied = false;
-  let dataPlanHash: string | undefined;
-  try {
-    const host = early ?? (await hostChange(outputs, planOnly));
-    hostPlanHashValue = host.hash;
-    hostApplied = host.applied;
-    if (host.approval) approvals.push(host.approval);
-    if (ownRun && change.deleteData) {
-      const data = await approveAndApplyHostPlan(deps, {
-        plan: planPortainer({
-          app: plan.app.name,
-          dir: PORTAINER_DIR,
-          runAs: "root",
-          disable: { deleteData: true },
-        }),
-        remote: ownRun.session.remote,
-        apply: ownRun.host.apply,
-        verifyLogin: ownRun.verifyLogin,
-        title: `Delete Portainer's data on your server (its admin account and settings)`,
-        server: "your server",
-        upToDate: "Portainer's data is no longer on your server; nothing on it changes.",
-        command,
-        phase: "portainer",
-        allowDestroy: true,
-        planOnly,
-        secrets: async () => ({}),
-      });
-      dataPlanHash = data.hash;
-      hostApplied ||= data.applied;
-      if (data.approval) approvals.push(data.approval);
-    }
-  } catch (error) {
-    // The server did not get the change: plan.yaml keeps the earlier settings, and only an
-    // infrastructure apply that already happened is recorded (so its hash is not applied again).
-    if (iacApplied && planHash !== undefined) {
-      await writePlanIfChanged(
-        deps,
-        recorded(deps, change.before, approvals, { iacHash: planHash, any: true }),
-      );
-      // `--approve <host plan hash>` without options then finishes exactly this change.
-      await planned();
-      throw halfDone(deps, error, {
-        command,
-        enabling: change.command === "enable",
-        hostname: portainerHostname(plan) ?? portainerHostname(change.before),
-        ...(hostHash !== undefined ? { hostHash } : {}),
-        written,
-      });
-    }
-    // A host plan was shown: `--approve <its hash>` without options applies exactly this change.
-    if (hostHash !== undefined) await planned();
-    throw error;
-  }
-
-  if (planOnly) {
-    await planned();
-    return {
-      ...(planHash !== undefined ? { planHash } : {}),
-      ...cloudflareHash,
-      applied: false,
-      ...(hostPlanHashValue !== undefined ? { hostPlanHash: hostPlanHashValue } : {}),
-      hostApplied: false,
-      ...(dataPlanHash !== undefined ? { dataPlanHash } : {}),
-      files: written,
-      status: await portainerStatusOf(deps, change.before),
-    };
-  }
-  // The change is on the server now: plan.yaml describes it, with the approvals and applies.
-  plan = recorded(deps, plan, approvals, {
-    ...(iacApplied && planHash !== undefined ? { iacHash: planHash } : {}),
-    any: iacApplied || hostApplied,
+            shown,
+          })
+        : cloudHostChange(deps, change, {
+            plan,
+            outputs,
+            services,
+            remote: remote as RemoteExec,
+            facts: cloudFacts,
+            planOnly,
+            command,
+            shown,
+          }),
+    afterHost: async ({ ownRun, plan, planOnly }) =>
+      ownRun && change.deleteData
+        ? approveAndApplyHostPlan(deps, {
+            plan: planPortainer({
+              app: plan.app.name,
+              dir: PORTAINER_DIR,
+              runAs: "root",
+              disable: { deleteData: true },
+            }),
+            remote: ownRun.session.remote,
+            apply: ownRun.host.apply,
+            verifyLogin: ownRun.verifyLogin,
+            title: `Delete Portainer's data on your server (its admin account and settings)`,
+            server: "your server",
+            upToDate: "Portainer's data is no longer on your server; nothing on it changes.",
+            command,
+            phase: "portainer",
+            allowDestroy: true,
+            planOnly,
+            secrets: async () => ({}),
+          })
+        : undefined,
+    planned: (plan) =>
+      savePendingPortainer(deps.paths, {
+        command: change.command,
+        settings: plan.portainer ?? null,
+        deleteData: change.deleteData,
+      }),
   });
-  await writePlanIfChanged(deps, plan);
+  const { plan, afterHostPlanHash, ...fields } = result;
+  const done = {
+    ...fields,
+    ...(afterHostPlanHash !== undefined ? { dataPlanHash: afterHostPlanHash } : {}),
+  };
+  if (plan === undefined) {
+    return { ...done, status: await portainerStatusOf(deps, change.before) };
+  }
   await clearPendingPortainer(deps.paths);
   const status = await portainerStatusOf(deps, plan);
-  if (change.command === "enable") {
+  if (enabling) {
     deps.reporter.success("Portainer is on.");
     deps.reporter.info(describePortainerStatus(status));
   } else {
@@ -572,114 +209,11 @@ async function runChange(
         : "Portainer is off; its data stays on the server (`opscrew portainer disable --delete-data` deletes it).",
     );
   }
-  const changedFiles = [...written, "opscrew/plan.yaml"];
+  const changedFiles = [...result.files, "opscrew/plan.yaml"];
   deps.reporter.info(
     `Commit ${changedFiles.join(", ")} so the repository describes the deployment (the next \`opscrew provision\` also publishes them in its pull request).`,
   );
-  return {
-    ...(planHash !== undefined ? { planHash } : {}),
-    ...cloudflareHash,
-    applied: iacApplied,
-    ...(hostPlanHashValue !== undefined ? { hostPlanHash: hostPlanHashValue } : {}),
-    hostApplied,
-    ...(dataPlanHash !== undefined ? { dataPlanHash } : {}),
-    files: written,
-    status,
-  };
-}
-
-/** Said when the server's change went first and the tunnel's deletion did not follow (yet). */
-const CONNECTOR_GONE =
-  "The change on the server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel and Access for Portainer are still there.";
-
-/**
- * The error of an infrastructure plan that was refused or failed after this run wrote repository
- * files: it lists them. A refusal (of the infrastructure plan, or of the host plan that goes before
- * a tunnel's deletion) changed nothing in Cloudflare or on the server and says so once, after the
- * files; a failed apply keeps the engine's own words about what happened.
- */
-function infrastructureStopped(
-  deps: Pick<PhaseDeps, "redactor">,
-  error: unknown,
-  written: readonly string[],
-): unknown {
-  if (!(error instanceof OpsCrewError) || written.length === 0) return error;
-  const files = `The repository files were written (${written.join(", ")})`;
-  if (error instanceof PlanRefusedError) {
-    const unchanged = `${files}; nothing in Cloudflare or on the server changed.`;
-    return new PlanRefusedError({ ...error.refusal, unchanged }, error);
-  }
-  return new OpsCrewError(error.code, deps.redactor.redact(`${error.message}\n${files}.`), {
-    ...(error.hint !== undefined ? { hint: error.hint } : {}),
-    cause: error,
-  });
-}
-
-/**
- * The error of a host step that stopped after the Cloudflare changes were applied: it says what
- * is applied and what is not, how to finish (`--approve <host plan hash>`) or undo it, and which
- * repository files were written. Redacted; never an address or a secret.
- */
-function halfDone(
-  deps: Pick<PhaseDeps, "redactor">,
-  error: unknown,
-  input: {
-    command: string;
-    enabling: boolean;
-    hostname: string | undefined;
-    hostHash?: string;
-    written: readonly string[];
-  },
-): unknown {
-  if (!(error instanceof OpsCrewError)) return error;
-  const where = input.hostname !== undefined ? ` for ${input.hostname}` : "";
-  const state = input.enabling
-    ? "Portainer on the server is not"
-    : "Portainer is still on the server";
-  const files =
-    input.written.length > 0
-      ? ` Files written to the repository: ${input.written.join(", ")}.`
-      : "";
-  const finish =
-    input.hostHash !== undefined
-      ? `Run \`${input.command} --approve ${input.hostHash}\` to finish`
-      : `Run \`${input.command}\` again to finish`;
-  return new OpsCrewError(
-    error.code,
-    deps.redactor.redact(
-      `${error.message} The Cloudflare changes${where} (tunnel, Access, DNS) are applied; ${state}.${files}`,
-    ),
-    {
-      hint: deps.redactor.redact(
-        `${finish}, or \`opscrew provision\` to ${input.enabling ? "remove them" : "put them back"}.`,
-      ),
-      cause: error,
-    },
-  );
-}
-
-/**
- * Hetzner and DigitalOcean: the deploy user's shell on the server, over the deploy key and the
- * pinned host key (the address from this computer's local state).
- */
-async function deployRemote(deps: PhaseDeps, services: PortainerServices): Promise<RemoteExec> {
-  const address = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
-  if (address === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "This computer does not know the server's address, so OpsCrew cannot reach it. Nothing was changed.",
-      { hint: "Run `opscrew provision` here first; it records the address." },
-    );
-  }
-  return (
-    services.deployRemote?.(address.ipv4) ??
-    new SshRemoteExec({
-      host: address.ipv4,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    })
-  );
+  return { ...done, status };
 }
 
 /**
@@ -808,9 +342,6 @@ function cloudPortainerPlan(
   });
 }
 
-/** Add-on steps never touch SSH or the firewall, so the adapter never needs a login check. */
-const NO_LOGIN_CHECK = async () => true;
-
 /**
  * Hetzner and DigitalOcean: Portainer (and, for a subdomain, its tunnel connector) runs as the
  * deploy user in its home directory (the deploy user is in the docker group; no root needed),
@@ -848,28 +379,12 @@ async function cloudHostChange(
   let connector: Parameters<typeof planPortainer>[0]["connector"];
   let tunnelToken: string | undefined;
   if (enabling && portainerHostname(plan) !== undefined) {
-    const tunnelId = stringOutput(outputs, "tunnel_id");
-    tunnelToken = stringOutput(outputs, "tunnel_token");
-    if (tunnelToken !== undefined) deps.redactor.addLiteral(tunnelToken, "tunnel-token");
-    if (tunnelId === undefined || tunnelToken === undefined) {
-      throw new OpsCrewError(
-        "ENGINE_FAILED",
-        "The infrastructure state has no Cloudflare Tunnel id or token, so OpsCrew cannot start the tunnel connector for Portainer's subdomain.",
-        { hint: `Run \`${input.command}\` again; it plans what is missing.` },
-      );
-    }
-    // The connector runs with the newer pins of its committed Compose file.
-    const rendered = renderTunnelConnectorCompose(plan);
-    connector = {
-      dir: CLOUD_TUNNEL_DIR,
-      compose: keepNewerPins(
-        await committedText(deps.paths.root, [rendered.path]),
-        rendered.content,
-      ),
-      tunnelId,
-      needsToken: true,
-    };
-  } else if (portainerHostname(change.before) !== undefined) {
+    ({ connector, tunnelToken } = await cloudTunnelConnector(deps, plan, outputs, {
+      command: input.command,
+      whose: "Portainer's",
+    }));
+  } else if (portainerHostname(change.before) !== undefined && !usesTunnel(plan)) {
+    // The connector stays while another subdomain (Beszel's) still goes through the tunnel.
     connector = { dir: CLOUD_TUNNEL_DIR, remove: true };
   }
   return approveAndApplyHostPlan(deps, {

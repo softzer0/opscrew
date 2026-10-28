@@ -2302,6 +2302,47 @@ export function planUndo(
   };
 }
 
+/** The Cloudflare Tunnel connector of an add-on's subdomain (`planPortainer`, `planAddon`). */
+export type AddonConnector =
+  | { dir: string; compose: string; tunnelId: string; needsToken: boolean }
+  | { dir: string; remove: true };
+
+/**
+ * The step that runs (or removes) the Cloudflare Tunnel connector serving `whose` subdomain
+ * (`Portainer's`, `Beszel's`), as `runAs` in the connector's own `dir`.
+ */
+function tunnelConnectorStep(
+  app: string,
+  runAs: RunAs,
+  connector: AddonConnector,
+  whose: string,
+): HostStep {
+  if ("remove" in connector) {
+    return {
+      id: "tunnel-connector",
+      title: `${TITLES.removeTunnel} that served ${whose} subdomain`,
+      state: "change",
+      scope: "app",
+      params: { remove: true, app, dir: connector.dir, runAs },
+    };
+  }
+  return {
+    id: "tunnel-connector",
+    title: `Run the Cloudflare Tunnel connector for ${whose} subdomain${imageIn(connector.compose)}`,
+    state: "change",
+    scope: "app",
+    reason: `cloudflared runs as its own Compose project ${tunnelProject(app)} and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.`,
+    params: {
+      app,
+      compose: connector.compose,
+      tunnelId: connector.tunnelId,
+      needsToken: connector.needsToken,
+      dir: connector.dir,
+      runAs,
+    },
+  };
+}
+
 /**
  * A one-step host plan that turns Portainer on or off in `dir`. On servers OpsCrew created
  * (Hetzner, DigitalOcean) it runs as the SSH login (`runAs: "login"`, the default: the deploy user
@@ -2319,41 +2360,15 @@ export function planPortainer(options: {
   runAs?: RunAs;
   enable?: { version: string; compose: { initial: string; final: string }; needsPassword: boolean };
   disable?: { deleteData: boolean };
-  connector?:
-    | { dir: string; compose: string; tunnelId: string; needsToken: boolean }
-    | { dir: string; remove: true };
+  connector?: AddonConnector;
 }): HostPlan {
   const { app, dir, enable, disable, connector } = options;
   const runAs = options.runAs ?? "login";
   if ((enable === undefined) === (disable === undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "Turn Portainer either on or off, not both.");
   }
-  const connectorStep: HostStep | undefined =
-    connector === undefined
-      ? undefined
-      : "remove" in connector
-        ? {
-            id: "tunnel-connector",
-            title: `${TITLES.removeTunnel} that served Portainer's subdomain`,
-            state: "change",
-            scope: "app",
-            params: { remove: true, app, dir: connector.dir, runAs },
-          }
-        : {
-            id: "tunnel-connector",
-            title: `Run the Cloudflare Tunnel connector for Portainer's subdomain${imageIn(connector.compose)}`,
-            state: "change",
-            scope: "app",
-            reason: `cloudflared runs as its own Compose project ${tunnelProject(app)} and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.`,
-            params: {
-              app,
-              compose: connector.compose,
-              tunnelId: connector.tunnelId,
-              needsToken: connector.needsToken,
-              dir: connector.dir,
-              runAs,
-            },
-          };
+  const connectorStep =
+    connector === undefined ? undefined : tunnelConnectorStep(app, runAs, connector, "Portainer's");
   const params: HostStep["params"] = enable
     ? {
         version: enable.version,
@@ -2469,6 +2484,10 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  * each add-on on: planning it for another app is refused, naming that app; only turning it off
  * is allowed once that app is no longer set up on the server. Apply it with `applyHostPlan` like
  * any host plan.
+ *
+ * `connector` adds the Cloudflare Tunnel connector that serves Beszel's dashboard at its subdomain
+ * on a server OpsCrew created, as `planPortainer`'s does (its token supplied at apply as
+ * `tunnelToken`), or `{ dir, remove: true }` removes it. It comes before the add-on's step.
  */
 export function planAddon<K extends AddonPlanKind>(
   kind: K,
@@ -2480,9 +2499,10 @@ export function planAddon<K extends AddonPlanKind>(
     repository?: string;
     enable?: AddonEnable<K>;
     disable?: { keepData?: boolean };
+    connector?: AddonConnector;
   },
 ): HostPlan {
-  const { app, runAs, enable, disable } = options;
+  const { app, runAs, enable, disable, connector } = options;
   if ((enable === undefined) === (disable === undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "Turn the add-on either on or off, not both.");
   }
@@ -2543,14 +2563,17 @@ export function planAddon<K extends AddonPlanKind>(
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
     purpose: "setup",
     app,
-    steps: [item],
+    steps: [
+      ...(connector === undefined ? [] : [tunnelConnectorStep(app, runAs, connector, "Beszel's")]),
+      item,
+    ],
     findings: [],
     ...(kind === "beszel" && disable !== undefined && disable.keepData !== true
       ? { deleteData: true }
       : {}),
   };
   // Validate now so bad files or settings fail before anything is approved.
-  stepScripts(plan, item);
+  for (const step of plan.steps) stepScripts(plan, step);
   return plan;
 }
 

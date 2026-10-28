@@ -7,18 +7,25 @@ export const SYSTEM_RESERVE_MB = 384;
 /** Below this share of the server's memory (after the system's) left free, design warns. */
 const MIN_HEADROOM = 0.15;
 
-/** What the memory limits of an app's containers are read from: a plan or design's components. */
+/**
+ * What the memory limits of an app's containers are read from: a plan or design's components (with
+ * the plan's add-ons when it has them).
+ */
 export type AppMemoryInput = {
   app: Pick<DeployPlan["app"], "memoryMb">;
-} & Pick<DeployPlan, "processes" | "services">;
+} & Pick<DeployPlan, "processes" | "services"> &
+  Partial<Pick<DeployPlan, "observability">>;
 
 /**
  * Each running container's memory limit in MB with its name, the web process first: each enabled
  * worker times its copies, the cron container when a cron job is enabled (its limit from
- * `cronMemoryMb`), then each enabled service.
+ * `cronMemoryMb`), each enabled service, then each enabled add-on with all its containers (Beszel:
+ * its hub in hub mode, its agent and its Docker proxy; Grafana Alloy: Alloy and its Docker proxy).
  */
 export function appMemoryLimits(plan: AppMemoryInput): { name: string; memoryMb: number }[] {
   const cron = cronMemoryMb(plan);
+  const beszel = plan.observability?.beszel;
+  const grafana = plan.observability?.grafanaCloud;
   return [
     { name: "the app", memoryMb: plan.app.memoryMb },
     ...plan.processes.workers
@@ -28,6 +35,20 @@ export function appMemoryLimits(plan: AppMemoryInput): { name: string; memoryMb:
     ...plan.services
       .filter((service) => service.enabled)
       .map((service) => ({ name: service.name, memoryMb: service.memoryMb })),
+    ...(beszel?.enabled
+      ? [
+          {
+            name: "Beszel",
+            memoryMb:
+              (beszel.mode === "hub" ? beszel.memoryMb.hub : 0) +
+              beszel.memoryMb.agent +
+              beszel.memoryMb.proxy,
+          },
+        ]
+      : []),
+    ...(grafana?.enabled
+      ? [{ name: "Grafana Alloy", memoryMb: grafana.memoryMb.alloy + grafana.memoryMb.proxy }]
+      : []),
   ];
 }
 

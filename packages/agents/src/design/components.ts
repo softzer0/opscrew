@@ -1225,10 +1225,11 @@ export function appNameFor(facts: ProjectFacts): string {
  * The containers' memory on a server of `serverMb`, next to the edge's `edgeMb`, each with its
  * share of the server's monthly price when there is one (SC-1308): `Memory: the app 512 MB
  * (€1.37/month), mysql 512 MB (€1.37/month); OpsCrew's edge and the system 512 MB; 1.0 GB of 2 GB
- * free.`
+ * free.` A plan's enabled add-ons (Beszel, Grafana Alloy) count as containers too.
  */
 export function memoryText(
-  components: Pick<Components, "app" | "processes" | "services">,
+  components: Pick<Components, "app" | "processes" | "services"> &
+    Partial<Pick<DeployPlan, "observability">>,
   serverMb: number,
   edgeMb: number,
   monthly?: Money,

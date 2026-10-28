@@ -3,6 +3,7 @@
  * projects, IaC engines, servers, Cloudflare, GitHub, registrars, Portainer, runners). Tests only:
  * nothing here reaches the network, a real server or a real cloud.
  */
+export * from "./addons";
 export * from "./catalog";
 export * from "./connect";
 export * from "./deploy";

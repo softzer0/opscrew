@@ -48,7 +48,7 @@ function portainerTunnelCommand(
 }
 
 /** The server SSH reaches from this computer: the own server's login address, else the deployment's. */
-async function serverEndpoint(
+export async function serverEndpoint(
   deps: Pick<PhaseDeps, "paths">,
   plan: DeployPlan,
 ): Promise<{ host: string; port: number } | undefined> {
