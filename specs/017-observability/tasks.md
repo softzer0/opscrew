@@ -476,6 +476,14 @@ Effort`.
         - `OPSCREW_CHECK_WEBHOOK` (and `OPSCREW_CHECK_NTFY_TOKEN`, optional), asked like an app secret and never echoed.
       - **The files:** `renderCheck`'s files, re-rendered from every app's and environment's plan, go into the deploy-setup pull request.
       - **The pause:** after a healthy deploy, the environment's entry in `OPSCREW_CHECK_PAUSED` is removed (`github-settings`).
+    - **From T1707's report:** use its exports, not new names:
+      - `renderCheck`;
+      - `CHECK_SECRETS` (the server secret is `deploySecretName(plan, CHECK_SECRETS.server)`);
+      - `CHECK_PAUSED_VARIABLE`;
+      - `checkEnvironmentKey(plan)`, for the pause's keys;
+      - `checkServerSecret({ host, port, user, knownHosts })`, for the secret's JSON.
+
+      Two environments on the same own server get two disk checks: plans alone can't tell they share a server. Pass a server id from the own-server record into `renderCheck` only if that is small; otherwise leave it as a known gap.
     - **Retarget:** adds `{ reason: "retarget" }` when its window opens, and removes it at `--finish`.
     - **Destroy:** adds `{ reason: "destroyed" }`, and removes the check key line in its teardown.
     - **Variable updates** read, change one entry, and write back.
