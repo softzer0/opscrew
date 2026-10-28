@@ -93,7 +93,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1701b [P] Pins and module seams: Beszel's and Alloy's images, and the empty `check` and `addons` modules in iac-templates, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`, `packages/iac-templates/src/{check,addons}/index.ts`, `packages/iac-templates/src/index.ts`
+- [X] T1701b [P] Pins and module seams: Beszel's and Alloy's images, and the empty `check` and `addons` modules in iac-templates, in `packages/iac-templates/src/pins.ts`, `packages/iac-templates/scripts/**`, `packages/iac-templates/src/{check,addons}/index.ts`, `packages/iac-templates/src/index.ts`
   - Owns: those paths (+ tests). In `src/index.ts`, only the two new export lines.
   - Reads: research.md R6, R7; plan.md "2."
   - Depends: —
