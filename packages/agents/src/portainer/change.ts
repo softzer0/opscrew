@@ -115,6 +115,8 @@ export interface TunnelledChange extends TunnelledChangeOptions {
     ownRun?: OwnServerRun;
     plan: DeployPlan;
     planOnly: boolean;
+    /** Told its host plan's hash as soon as it is shown: a stop then names that plan's hash. */
+    shown: (hash: string) => void;
   }) => Promise<HostChangeResult | undefined>;
   /** Saves what was planned, so `--approve` without options applies exactly it. */
   planned: (plan: DeployPlan) => Promise<void>;
@@ -450,6 +452,7 @@ export async function runTunnelledChange(
       ...(ownRun !== undefined ? { ownRun } : {}),
       plan,
       planOnly,
+      shown,
     });
     if (further !== undefined) {
       afterHostPlanHash = further.hash;

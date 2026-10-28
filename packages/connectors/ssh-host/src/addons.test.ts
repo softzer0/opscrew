@@ -24,7 +24,7 @@ import { applyHostPlan } from "./apply";
 import { checkKeyLine } from "./constants";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
-import { planAddon, planHost, planTeardown } from "./plan";
+import { type AddonEnable, planAddon, planHost, planTeardown } from "./plan";
 import type { HostPlan } from "./types";
 
 const BESZEL_DIR = "/srv/opscrew/addons/beszel";
@@ -331,6 +331,48 @@ describe("beszel", () => {
     const removed = await applyApproved(fake, off);
     expect(removed.applied).toEqual(["tunnel-connector", "beszel"]);
     expect(fake.files.has(`${connectorDir}/tunnel.env`)).toBe(false);
+  });
+
+  it("the agent's removal keeps a history an earlier hub mode left in data/", async () => {
+    const fake = await ownServer();
+    const { secrets } = addonSecrets();
+    const plan = async (change: {
+      enable?: AddonEnable<"beszel">;
+      disable?: { keepData?: boolean; mode?: "hub" | "agent" };
+    }) =>
+      planAddon("beszel", {
+        app: "shop",
+        runAs: "root",
+        facts: await inspectHost(fake),
+        ...change,
+      });
+    await applyApproved(fake, await plan({ enable: HUB }), { secrets });
+    await applyApproved(fake, await plan({ disable: { keepData: true } }));
+    await applyApproved(
+      fake,
+      await plan({ enable: { mode: "agent", files: BESZEL_AGENT_FILES } }),
+      {
+        secrets: { beszelToken: secrets.beszelToken },
+      },
+    );
+    const off = await plan({ disable: { mode: "agent" } });
+    expect(off.deleteData).toBeUndefined();
+    expect(off.steps[0]?.params).toMatchObject({ remove: true, keepData: true });
+    expect((await applyApproved(fake, off)).applied).toEqual(["beszel"]);
+    const left = [...fake.files.keys()].filter((path) => path.startsWith(`${BESZEL_DIR}/`));
+    expect(left).toEqual([`${BESZEL_DIR}/data/id_ed25519`]);
+    expect(hostRecord(fake).addons).toEqual({ beszel: "shop" });
+  });
+
+  it("refuses a tunnel connector for an add-on other than Beszel", () => {
+    expect(() =>
+      planAddon("alloy", {
+        app: "shop",
+        runAs: "login",
+        disable: {},
+        connector: { dir: "/home/deploy/opscrew/cloudflared", remove: true },
+      }),
+    ).toThrow(/Only Beszel's dashboard has a tunnel connector/);
   });
 
   it("turned off with keepData keeps only its history; without, everything goes", async () => {

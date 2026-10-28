@@ -2412,7 +2412,7 @@ const ADDON_TITLES: Readonly<Record<AddonKind, string>> = {
 
 /**
  * A step that removes an add-on; Beszel's history (`data/`) stays with `keepData`. `agent`: only
- * Beszel's agent ran there, which keeps no history.
+ * Beszel's agent ran there: it made no history, and a `data/` kept from an earlier hub mode stays.
  */
 function addonRemoval(
   kind: AddonKind,
@@ -2430,12 +2430,14 @@ function addonRemoval(
         : keepData
           ? `Remove Beszel (its history in ${dir}/data stays)`
           : "Remove Beszel and its history";
+  // The agent's removal never deletes data/: a history kept from an earlier hub mode stays.
+  const keep = keepData || agent;
   return step(
     kind,
     title,
     "change",
-    { remove: true, runAs, keepData },
-    keepData
+    { remove: true, runAs, keepData: keep },
+    keep
       ? `Its Compose project ${ADDON_PROJECTS[kind]}, and everything in ${dir} but data/, its secret files included.`
       : `Its Compose project ${ADDON_PROJECTS[kind]}, and ${dir} with everything in it, its secret files included.`,
   );
@@ -2517,6 +2519,9 @@ export function planAddon<K extends AddonPlanKind>(
   const { app, runAs, enable, disable, connector } = options;
   if ((enable === undefined) === (disable === undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "Turn the add-on either on or off, not both.");
+  }
+  if (connector !== undefined && kind !== "beszel") {
+    throw new OpsCrewError("INVALID_INPUT", "Only Beszel's dashboard has a tunnel connector.");
   }
   const repository =
     kind === "check-key"

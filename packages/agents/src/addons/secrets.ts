@@ -90,10 +90,11 @@ export async function writeBeszelSecrets(
 }
 
 /**
- * Hub mode's secrets: the ones on this computer, or, the first time (or after agent mode), new
- * ones, written at once: a 32-character password of letters, digits, `-` and `_`, a token of 48
- * lowercase hex digits and the hub's Ed25519 key. They are generated here because the hub's public
- * key is part of the host plan.
+ * Hub mode's secrets: the ones on this computer, or, only when there are none, new ones, written
+ * at once (before the plan is shown, so its hash stays the same for `--plan-only` and `--approve`):
+ * a 32-character password of letters, digits, `-` and `_`, a token of 48 lowercase hex digits and
+ * the hub's Ed25519 key, whose public half is part of the host plan. Never written over agent
+ * mode's token.
  */
 export async function ensureBeszelHubSecrets(deps: {
   paths: Pick<ProjectPaths, "files">;
@@ -101,6 +102,15 @@ export async function ensureBeszelHubSecrets(deps: {
 }): Promise<Extract<BeszelSecrets, { mode: "hub" }>> {
   const existing = await readBeszelSecrets(deps);
   if (existing?.mode === "hub") return existing;
+  if (existing !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${deps.paths.files.beszelSecrets} holds the token of Beszel's agent mode, so OpsCrew does not make hub mode's secrets over it. Nothing was changed.`,
+      {
+        hint: "Turn agent mode off first with `opscrew addon disable beszel`, then run this command again.",
+      },
+    );
+  }
   const key = generateEd25519KeyPair("beszel-hub");
   const secrets = {
     mode: "hub" as const,

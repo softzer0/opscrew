@@ -28,6 +28,7 @@ import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { applyOwnHostPlan, type OwnServerRun } from "../provision/own";
 import { approveAndApplyHostPlan, hasDeployment } from "../shared";
+import { connectAndInspectOwnServer } from "../shared/own-server";
 import type { HostChangeResult } from "../shared/tunnel-connections";
 import { estimateText, grafanaEstimate, readServer, type ServerReading } from "./estimate";
 import {
@@ -180,6 +181,44 @@ interface EnableInput {
   secrets: ApplySecrets;
   /** Kept on this computer once the add-on runs (values the user gave). */
   keep?: () => Promise<void>;
+  /** The variable a later run needs set again: the token was given, not kept on this computer. */
+  tokenVariable?: string;
+}
+
+/** A value as one shell word (quoted when it holds anything but plain characters). */
+function shellWord(value: string): string {
+  return /^[A-Za-z0-9@%+=:,./_-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The command that runs this change again, as every `--approve` hint names it: the non-secret
+ * options given, and the token's variable when it must be set again (never its value).
+ */
+function enableCommand(
+  kind: AddonKind,
+  options: AddonEnableOptions,
+  tokenVariable: string | undefined,
+): string {
+  const flags: [string, string | number | undefined][] = [
+    ["--mode", options.mode],
+    ["--access", options.access],
+    ["--hostname", options.hostname],
+    ...(options.allowEmails ?? []).map((email): [string, string] => ["--allow-email", email]),
+    ["--hub-url", options.hubUrl],
+    ["--hub-key", options.hubKey],
+    ["--metrics-url", options.metricsUrl],
+    ["--metrics-user", options.metricsUser],
+    ["--logs-url", options.logsUrl],
+    ["--logs-user", options.logsUser],
+    ["--log-sampling", options.logSampling],
+  ];
+  return [
+    ...(tokenVariable !== undefined ? [`${tokenVariable}=<token>`] : []),
+    `opscrew addon enable ${kind}`,
+    ...flags.flatMap(([flag, value]) =>
+      value === undefined ? [] : [`${flag} ${shellWord(String(value))}`],
+    ),
+  ].join(" ");
 }
 
 /** Beszel: the plan's settings, the hub's secrets (generated once) or the agent's token. */
@@ -189,6 +228,27 @@ async function beszelInput(
   options: AddonEnableOptions,
 ): Promise<EnableInput> {
   const services = options.services ?? {};
+  const current = plan.observability?.beszel;
+  const mode = options.mode ?? "hub";
+  if (current?.enabled && current.mode !== mode) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Beszel runs in ${current.mode} mode on this server, so OpsCrew does not switch it to ${mode} mode in place. Nothing was changed.`,
+      {
+        hint: `Turn it off first with \`opscrew addon disable beszel\` (add \`--keep-data\` to keep its history), then run this command again.`,
+      },
+    );
+  }
+  const stored = await readBeszelSecrets(deps);
+  if (mode === "agent" && stored?.mode === "hub") {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Beszel's history from hub mode is kept on the server, and its dashboard's password is in ${deps.paths.files.beszelSecrets}, so OpsCrew does not turn on agent mode over it. Nothing was changed.`,
+      {
+        hint: "Turn hub mode on again with `opscrew addon enable beszel`, or delete the kept history with `opscrew addon disable beszel` (it asks for the app's name), then run this command again.",
+      },
+    );
+  }
   let zone = plan.dns.zone;
   if (options.access === "subdomain" && zone === undefined && plan.dns.provider === "cloudflare") {
     // A bare label (`beszel`) needs the zone; the Cloudflare check learns it.
@@ -204,23 +264,19 @@ async function beszelInput(
       secrets: { beszelPassword: hub.password, beszelToken: hub.token, beszelHubKey: hub.hubKey },
     };
   }
-  const stored = await readBeszelSecrets(deps);
-  const token = await answerFor(
-    deps,
-    services,
-    deps.env.OPSCREW_BESZEL_TOKEN ?? (stored?.mode === "agent" ? stored.token : undefined),
-    {
-      name: "OPSCREW_BESZEL_TOKEN",
-      prompt: "the token your Beszel hub shows for this server (Add system)",
-      secret: true,
-    },
-  );
+  const kept = stored?.mode === "agent" ? stored.token : undefined;
+  const token = await answerFor(deps, services, deps.env.OPSCREW_BESZEL_TOKEN ?? kept, {
+    name: "OPSCREW_BESZEL_TOKEN",
+    prompt: "the token your Beszel hub shows for this server (Add system)",
+    secret: true,
+  });
   deps.redactor.addLiteral(token, "beszel-token");
   return {
     after,
     step: { mode: "agent" },
     secrets: { beszelToken: token },
     keep: () => writeBeszelSecrets(deps.paths, { mode: "agent", token }),
+    ...(token !== kept ? { tokenVariable: "OPSCREW_BESZEL_TOKEN" } : {}),
   };
 }
 
@@ -280,6 +336,7 @@ async function grafanaInput(
     step: undefined,
     secrets: { grafanaCloudToken: token },
     keep: () => writeGrafanaToken(deps.paths, token),
+    ...(token !== stored ? { tokenVariable: "OPSCREW_GRAFANA_CLOUD_TOKEN" } : {}),
   };
 }
 
@@ -330,6 +387,8 @@ interface AddonChange {
   /** Enabling: the step's settings and the secrets. */
   input?: EnableInput;
   keepData: boolean;
+  /** Beszel is off already; only the history its hub mode left on the server goes. */
+  history?: boolean;
   services: AddonServices;
   /** Said before the host plan (memory and price share, Grafana's estimate). */
   intro: string[];
@@ -379,9 +438,11 @@ async function addonHostChange(
       : `Run Grafana Alloy on ${server}, sending the app's logs and the server's metrics to Grafana Cloud`
     : agentOnly(change)
       ? `Remove Beszel's agent from ${server}`
-      : hostPlan.deleteData === true
-        ? `Remove Beszel and delete its history on ${server}`
-        : `Remove ${what} from ${server}${kind === "beszel" ? " (its history stays)" : ""}`;
+      : change.history === true
+        ? `Delete Beszel's kept history on ${server}`
+        : hostPlan.deleteData === true
+          ? `Remove Beszel and delete its history on ${server}`
+          : `Remove ${what} from ${server}${kind === "beszel" ? " (its history stays)" : ""}`;
   return approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote: ownRun?.session.remote ?? (input.remote as RemoteExec),
@@ -511,14 +572,14 @@ async function runAddonChange(
             shown: shownHash(shown),
           }),
     // On a server the user owns, the connector came with its host plan; the add-on's own follows.
-    afterHost: async ({ ownRun, plan, planOnly }) =>
+    afterHost: async ({ ownRun, plan, planOnly, shown }) =>
       ownRun && subdomain
         ? addonHostChange(deps, addon, {
             ownRun,
             plan,
             outputs: {},
             planOnly,
-            shown: shownHash(),
+            shown: shownHash(shown),
           })
         : undefined,
     // `--approve` binds to the host plan's hash: the same options make the same plan again.
@@ -542,9 +603,11 @@ async function runAddonChange(
         ? "Grafana Cloud is off: Grafana Alloy, its buffer and its token are removed from the server, and the token from this computer. The data already in Grafana Cloud stays in your account."
         : agentOnly(change)
           ? "Beszel's agent is off: it and its token are removed from the server and from this computer. Remove the system from your hub too."
-          : change.keepData
-            ? "Beszel is off; its history stays on the server (`opscrew addon disable beszel` without `--keep-data` deletes it)."
-            : "Beszel is off, and its history and secrets are deleted.",
+          : change.history === true
+            ? "Beszel's kept history and its dashboard's password are deleted."
+            : change.keepData
+              ? "Beszel is off; its history stays on the server (`opscrew addon disable beszel` without `--keep-data` deletes it)."
+              : "Beszel is off, and its history and secrets are deleted.",
     );
   }
   deps.reporter.info(
@@ -612,7 +675,7 @@ export async function addonEnable(
     {
       kind,
       enabling: true,
-      command,
+      command: enableCommand(kind, options, input.tokenVariable),
       before: plan,
       after: input.after,
       input,
@@ -647,7 +710,12 @@ export async function addonDisable(
       { hint: "Leave out `--keep-data`." },
     );
   }
-  if (!addonEnabled(plan, kind)) {
+  const keepData = options.keepData === true;
+  const enabled = addonEnabled(plan, kind);
+  // Off, but its history kept: without --keep-data the history goes now.
+  const history =
+    !enabled && kind === "beszel" && !keepData && (await keptHistory(deps, plan, options));
+  if (!enabled && !history) {
     deps.reporter.info(`${ADDON_NAMES[kind]} is already off for this app; nothing to do.`);
     return {
       applied: false,
@@ -662,12 +730,34 @@ export async function addonDisable(
     {
       kind,
       enabling: false,
-      command,
+      command: `${command}${keepData ? " --keep-data" : ""}`,
       before: plan,
-      after: withAddon(plan, kind, undefined),
-      keepData: options.keepData === true,
+      after: enabled ? withAddon(plan, kind, undefined) : plan,
+      keepData,
+      history,
       services: options.services ?? {},
     },
     options,
   );
+}
+
+/**
+ * Beszel is off, but the history of its hub mode is kept on the server: its secrets on this
+ * computer are hub mode's, or (on a server the user owns) the host record names this app as
+ * Beszel's (read-only).
+ */
+async function keptHistory(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: AddonDisableOptions,
+): Promise<boolean> {
+  if ((await readBeszelSecrets(deps))?.mode === "hub") return true;
+  if (plan.target.provider !== "own") return false;
+  const { facts } = await connectAndInspectOwnServer(deps, {
+    hostKey: options.hostKey,
+    services: options.services?.own,
+    phase: ADDON_PHASE,
+    detail: "Beszel's kept history",
+  });
+  return facts.record?.addons?.beszel === plan.app.name;
 }

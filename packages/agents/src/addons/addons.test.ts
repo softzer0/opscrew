@@ -415,6 +415,115 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     expect(keep.message).toContain("`--keep-data` is for Beszel's history");
     expect(s.server.applies).toEqual([]);
   });
+
+  it("refuses a mode change while Beszel is on, and agent mode over a kept hub history", async () => {
+    const token = randomBytes(20).toString("hex");
+    const s = await cloudSetup({ env: { OPSCREW_BESZEL_TOKEN: token } });
+    const agent = {
+      mode: "agent" as const,
+      hubUrl: "https://beszel.example.net",
+      hubKey: USER_HUB_KEY,
+      services: s.services,
+    };
+    await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });
+    const secrets = await readFile(s.deps.paths.files.beszelSecrets, "utf8");
+    const switching = await failure(addonEnable(s.deps, await s.plan(), "beszel", agent));
+    expect(switching.message).toContain("Beszel runs in hub mode on this server");
+    expect(switching.hint).toContain("--keep-data");
+
+    // Off with its history kept: agent mode would leave that history without its password.
+    await addonDisable(s.deps, await s.plan(), "beszel", { keepData: true, services: s.services });
+    const over = await failure(addonEnable(s.deps, await s.plan(), "beszel", agent));
+    expect(over.message).toContain("history from hub mode is kept on the server");
+    expect(over.hint).toContain("opscrew addon enable beszel");
+    expect(over.hint).toContain("opscrew addon disable beszel");
+    expect(await readFile(s.deps.paths.files.beszelSecrets, "utf8")).toBe(secrets);
+  });
+
+  it("disable without --keep-data deletes a history kept earlier, with the typed app name", async () => {
+    const s = await cloudSetup();
+    await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });
+    await addonDisable(s.deps, await s.plan(), "beszel", { keepData: true, services: s.services });
+    expect(s.deps.reporter.text()).toContain("without `--keep-data` deletes it");
+    s.handler.requests.length = 0;
+
+    const result = await addonDisable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(s.handler.requests[0]).toMatchObject({
+      kind: "host-apply",
+      title: "Delete Beszel's kept history on the server",
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    expect(s.server.applies.at(-1)?.plan.deleteData).toBe(true);
+    expect(result.hostPlanHashes).toHaveLength(1);
+    await expect(stat(s.deps.paths.files.beszelSecrets)).rejects.toThrow();
+
+    // Nothing is kept any more.
+    s.handler.requests.length = 0;
+    await addonDisable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(kinds(s.handler)).toEqual([]);
+  });
+
+  it("--plan-only then --approve: a first hub enable shows the same host plan both runs", async () => {
+    const s = await cloudSetup();
+    const planned = await addonEnable(s.deps, await s.plan(), "beszel", {
+      planOnly: true,
+      services: s.services,
+    });
+    expect(kinds(s.handler)).toEqual([]);
+    expect(s.server.applies).toEqual([]);
+    expect((await s.plan()).observability).toBeUndefined();
+    const [hash] = planned.hostPlanHashes;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+
+    const result = await addonEnable(s.deps, await s.plan(), "beszel", {
+      approvePlanHashes: [hash as string],
+      services: s.services,
+    });
+    expect(result.hostPlanHashes).toEqual([hash]);
+    expect(s.server.applies[0]?.options.approvedHash).toBe(hash);
+    expect((await s.plan()).observability?.beszel?.enabled).toBe(true);
+  });
+
+  it("a refused host plan's hint repeats the options given and the token's variable, never its value", async () => {
+    const token = grafanaToken();
+    const s = await cloudSetup({
+      env: { OPSCREW_GRAFANA_CLOUD_TOKEN: token },
+      answer: (request) => request.kind !== "host-apply",
+    });
+    const error = await failure(
+      addonEnable(s.deps, await s.plan(), "grafana-cloud", {
+        ...GRAFANA,
+        logSampling: 50,
+        services: s.services,
+      }),
+    );
+    const hash = s.handler.requests[0]?.planHash;
+    expect(error.hint).toContain(
+      `OPSCREW_GRAFANA_CLOUD_TOKEN=<token> opscrew addon enable grafana-cloud --metrics-url ${GRAFANA.metricsUrl} --metrics-user ${GRAFANA.metricsUser} --logs-url ${GRAFANA.logsUrl} --logs-user ${GRAFANA.logsUser} --log-sampling 50 --approve ${hash}`,
+    );
+    expect(JSON.stringify(error)).not.toContain(token);
+    // Not written before the apply: a later run needs it set again.
+    await expect(stat(s.deps.paths.files.grafanaCloudToken)).rejects.toThrow();
+
+    const agentToken = randomBytes(20).toString("hex");
+    const beszel = await cloudSetup({
+      env: { OPSCREW_BESZEL_TOKEN: agentToken },
+      answer: (request) => request.kind !== "host-apply",
+    });
+    const refused = await failure(
+      addonEnable(beszel.deps, await beszel.plan(), "beszel", {
+        mode: "agent",
+        hubUrl: "https://beszel.example.net",
+        hubKey: USER_HUB_KEY,
+        services: beszel.services,
+      }),
+    );
+    expect(refused.hint).toContain(
+      `OPSCREW_BESZEL_TOKEN=<token> opscrew addon enable beszel --mode agent --hub-url https://beszel.example.net --hub-key '${USER_HUB_KEY}' --approve ${beszel.handler.requests[0]?.planHash}`,
+    );
+    expect(JSON.stringify(refused)).not.toContain(agentToken);
+  });
 });
 
 describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
@@ -587,6 +696,40 @@ describe.skipIf(!hasGit)("Beszel's dashboard at a subdomain (Hetzner)", () => {
     expect(result.status.addons[0]?.url).toBe("https://beszel.example.com");
   });
 
+  it("--plan-only then --approve: the planned hashes apply exactly that change", async () => {
+    const s = await cloudSetup();
+    const planned = await addonEnable(s.deps, await s.plan(), "beszel", {
+      ...SUBDOMAIN,
+      planOnly: true,
+      services: s.services,
+    });
+    // Only the files are written; nothing in Cloudflare or on the server changes.
+    expect(kinds(s.handler)).toEqual(["repo-write"]);
+    expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(planned.cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(planned.hostPlanHashes).toEqual([]);
+    expect(s.server.applies).toEqual([]);
+    expect((await s.plan()).observability).toBeUndefined();
+
+    s.handler.requests.length = 0;
+    const result = await addonEnable(s.deps, await s.plan(), "beszel", {
+      ...SUBDOMAIN,
+      approvePlanHashes: [planned.cloudflarePlanHash as string, planned.planHash as string],
+      services: s.services,
+    });
+    // The saved plans are applied as approved (no files written again), then the host plan.
+    expect(kinds(s.handler)).toEqual(["cloudflare-apply", "iac-apply", "host-apply"]);
+    expect(s.handler.requests[0]?.planHash).toBe(planned.cloudflarePlanHash);
+    expect(result.planHash).toBe(planned.planHash);
+    expect(s.engine.applied.at(-1)?.approval.approvedPlanHash).toBe(planned.planHash);
+    expect(result.hostPlanHashes).toEqual([s.handler.requests[2]?.planHash]);
+    expect(s.server.applies[0]?.plan.steps.map((step) => step.id)).toEqual([
+      "tunnel-connector",
+      "beszel",
+    ]);
+    expect((await s.plan()).observability?.beszel?.hostname).toBe("beszel.example.com");
+  });
+
   it("Portainer's subdomain off keeps the connector while Beszel's remains, and the reverse", async () => {
     const s = await cloudSetup();
     await portainerEnable(s.deps, {
@@ -685,11 +828,11 @@ describe.skipIf(!hasGit)("status and open", () => {
   });
 });
 
-async function ownSetup() {
+async function ownSetup(answer: (request: ApprovalRequest) => boolean = () => true) {
   const project = await createProject(ownPlan());
   const engine = new OwnEngine(PUBLIC_CHANGES, publicOutputs());
   const host = new FakeHostServer(freshFacts());
-  const handler = new ScriptedApprovalHandler(() => true);
+  const handler = new ScriptedApprovalHandler(answer);
   // The account already has its Zero Trust organization and one-time PIN login. (Setting them up
   // for a Beszel-only subdomain waits for provision/shared-cloudflare.ts to count Beszel's.)
   const zone = new FakeZone();
@@ -785,6 +928,43 @@ describe.skipIf(!hasGit)("add-ons on a server the user owns", () => {
     expect(result.hostPlanHashes).toHaveLength(2);
     expect(s.deps.reporter.text()).not.toContain(token);
     expect((await s.plan()).observability?.beszel?.hostname).toBe("beszel.example.com");
+  });
+
+  it("a refused Beszel plan after the connector's names Beszel's hash, not the connector plan's", async () => {
+    const s = await ownSetup((request) => !request.title.startsWith("Run Beszel"));
+    const token = `eyJ${fakeSecret("cloudflare-token", "own-beszel-refused")}`;
+    s.engine.changes = tunnelCreate;
+    s.engine.nextOutputs = { ...publicOutputs(), tunnel_id: TUNNEL_ID, tunnel_token: token };
+    const error = await failure(
+      addonEnable(s.deps, await s.plan(), "beszel", {
+        access: "subdomain",
+        hostname: "beszel",
+        allowEmails: ["owner@example.com"],
+        services: s.services,
+      }),
+    );
+    const hostRequests = s.handler.requests.filter((request) => request.kind === "host-apply");
+    expect(hostRequests).toHaveLength(2);
+    const [connectorHash, beszelHash] = hostRequests.map((request) => request.planHash);
+    expect(error.hint).toContain(
+      `opscrew addon enable beszel --access subdomain --hostname beszel --allow-email owner@example.com --approve ${beszelHash}`,
+    );
+    expect(error.hint).not.toContain(connectorHash as string);
+  });
+
+  it("disable deletes a history the host record shows, though this computer has no secrets", async () => {
+    const s = await ownSetup();
+    const record = s.host.facts.record;
+    if (record === null) throw new Error("provision wrote no host record");
+    s.host.facts = { ...s.host.facts, record: { ...record, addons: { beszel: "shop" } } };
+    await addonDisable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(s.handler.requests[0]).toMatchObject({
+      title: "Delete Beszel's kept history on your server",
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    expect(s.server.applies[0]?.plan.deleteData).toBe(true);
+    expect(s.server.applies[0]?.plan.steps[0]?.params).toMatchObject({ runAs: "root" });
   });
 
   it("refuses an add-on another app on the server has, naming it, before anything changes", async () => {
