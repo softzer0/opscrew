@@ -24,10 +24,14 @@
  * Beszel's dashboard showing the server and its containers to its one user, Alloy's masked lines
  * and allow-listed series, and every container's memory after two minutes.
  *
- * **The check key.** An Ubuntu 24.04 sshd container with OpsCrew's sshd drop-in (`sshdDropIn`)
- * and a deploy user. The `check-key` host step (`planAddon`) is applied over SSH as deploy with
- * `applyHostPlan`, as provision does on a server OpsCrew created; then the check key gets the
- * `df` table whatever it asks, and is refused a port forward.
+ * Beszel's hub listens on the fixed `127.0.0.1:8090`, as on a server, so two runs at once on one
+ * computer collide: the second fails to start its hub.
+ *
+ * **The check key.** An Ubuntu 24.04 sshd container with OpsCrew's own-server sshd drop-in
+ * (`sshdDropIn`; the cloud-init drop-in of the servers OpsCrew creates is exported by no package,
+ * so it is not run here) and a deploy user. The `check-key` host step (`planAddon`) is applied
+ * over SSH as deploy (`runAs: "login"`) with `applyHostPlan`; then the check key gets the `df`
+ * table whatever it asks, and is refused a port forward.
  *
  * Gated like the Docker pass: OPSCREW_DOCKER_TESTS=1 with a running Docker daemon, Linux (where
  * bind mounts keep their owner) as a user other than root, `ssh`, and the network (the images and
@@ -287,12 +291,17 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
     const config = alloyFiles.get("config.alloy") ?? "";
     const maskPath = /filename\s+=\s+"\/host\/root(\/[^"]+\/mask\.re)"/.exec(config)?.[1];
     if (maskPath === undefined) throw new Error("config.alloy reads no masking file.");
-    alloyFiles.set(
-      "config.alloy",
-      config
-        .replace(JSON.stringify(CLOUD.metrics.url), JSON.stringify(STAND_INS.metrics))
-        .replace(JSON.stringify(CLOUD.logs.url), JSON.stringify(STAND_INS.logs)),
-    );
+    const local = config
+      .replace(JSON.stringify(CLOUD.metrics.url), JSON.stringify(STAND_INS.metrics))
+      .replace(JSON.stringify(CLOUD.logs.url), JSON.stringify(STAND_INS.logs));
+    // Alloy must never send to a real host from this test.
+    if (
+      !Object.values(STAND_INS).every((url) => local.includes(JSON.stringify(url))) ||
+      [CLOUD.metrics.url, CLOUD.logs.url].some((url) => local.includes(url))
+    ) {
+      throw new Error("config.alloy doesn't send to the local Loki and Prometheus only.");
+    }
+    alloyFiles.set("config.alloy", local);
     const compose = parse(alloyFiles.get("compose.yaml") ?? "") as {
       services: Record<string, ComposeService>;
     };
@@ -421,11 +430,6 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
     }
   }
 
-  /** The containers of an add-on's project, by service. */
-  async function addonContainers(kind: "beszel" | "alloy") {
-    return projectContainers(projects[kind].name);
-  }
-
   /**
    * Requests through the add-on's proxy socket from a container running as the deploy user (no
    * network, the proxy's volume): each `[method, path]` with its HTTP status.
@@ -525,7 +529,7 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
     "runs every add-on container as the deploy user (the proxy as root in its group, without capabilities), writing its data as that user",
     async () => {
       for (const kind of ["beszel", "alloy"] as const) {
-        const containers = await addonContainers(kind);
+        const containers = await projectContainers(projects[kind].name);
         expect(containers.map((c) => c.service).sort()).toEqual(
           Object.keys(services[kind] ?? {}).sort(),
         );
@@ -623,7 +627,12 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
         2_000,
       );
       expect(system.users).toEqual([auth.record.id]);
-      const containers = await until(
+      const expected = [
+        `${app}-web-1`,
+        `${projects.beszel.name}-hub-1`,
+        `${projects.alloy.name}-alloy-1`,
+      ];
+      await until(
         "the server's containers in Beszel",
         async () => {
           const { items } = (await api(
@@ -631,13 +640,10 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
             { headers },
           )) as { items: { name: string }[] };
           const names = items.map((item) => item.name);
-          return names.includes(`${app}-web-1`) ? names : undefined;
+          return expected.every((name) => names.includes(name)) ? names : undefined;
         },
         TWO_MINUTES,
         2_000,
-      );
-      expect(containers).toEqual(
-        expect.arrayContaining([`${projects.beszel.name}-hub-1`, `${projects.alloy.name}-alloy-1`]),
       );
     },
     TEN_MINUTES,
@@ -716,7 +722,7 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
       const wait = started + SETTLE_MS - Date.now();
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
       for (const kind of ["beszel", "alloy"] as const) {
-        const containers = await addonContainers(kind);
+        const containers = await projectContainers(projects[kind].name);
         expect(limitProblems(containers, services[kind] ?? {})).toEqual([]);
         for (const c of containers) {
           expect(c, c.name).toMatchObject({ running: true, oomKilled: false, restarts: 0 });
@@ -836,7 +842,7 @@ RUN apt-get update -qq \\
       (await remote.run("true")).exitCode === 0 ? true : undefined,
     );
 
-    // The check-key host step, applied as provision applies it on a server OpsCrew created.
+    // The check-key host step, applied over SSH as the deploy user (`runAs: "login"`).
     const plan = planAddon("check-key", {
       app: "shop",
       runAs: "login",
