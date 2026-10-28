@@ -14,6 +14,10 @@ export const DOCKER = findExecutable("docker");
 export const TEN_MINUTES = 600_000;
 export const TWO_MINUTES = 120_000;
 
+/** Ubuntu 24.04 (noble), the servers' release, for the tests' stand-in servers. */
+export const UBUNTU =
+  "ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac";
+
 /** On every container these tests start themselves (Compose projects carry their own labels). */
 export const LABEL = "opscrew.test=docker-pass";
 

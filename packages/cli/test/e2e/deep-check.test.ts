@@ -33,7 +33,14 @@ import {
   runTestssl,
 } from "@opscrew/secops";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { docker, dockerSkipReason, LABEL, TEN_MINUTES, TWO_MINUTES } from "./docker-support";
+import {
+  docker,
+  dockerSkipReason,
+  LABEL,
+  TEN_MINUTES,
+  TWO_MINUTES,
+  UBUNTU,
+} from "./docker-support";
 import { dockerOk, freePort, hasImage, tempDir, unique, until } from "./edge-support";
 
 const SSH = findExecutable("ssh");
@@ -47,10 +54,6 @@ const PINS: DeepPins = {
   sshAudit: IMAGES.sshAudit.ref,
   testssl: IMAGES.testssl.ref,
 };
-
-/** Ubuntu 24.04 (noble), the server's release; pinned for this test only. */
-const UBUNTU =
-  "ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac";
 
 const DOCKERFILE = `FROM ${UBUNTU}
 RUN apt-get update -qq \\
