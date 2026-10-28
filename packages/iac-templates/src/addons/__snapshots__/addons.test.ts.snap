@@ -295,7 +295,7 @@ services:
       - --disable-reporting
       - /etc/alloy/config.alloy
     environment:
-      GOMEMLIMIT: 153MiB
+      GOMEMLIMIT: 204MiB
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy:ro
       - ./grafana_cloud_credential:/etc/alloy/grafana_cloud_credential:ro
@@ -308,8 +308,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 192m
-    memswap_limit: 192m
+    mem_limit: 256m
+    memswap_limit: 256m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -544,7 +544,7 @@ services:
       - --disable-reporting
       - /etc/alloy/config.alloy
     environment:
-      GOMEMLIMIT: 153MiB
+      GOMEMLIMIT: 204MiB
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy:ro
       - ./grafana_cloud_credential:/etc/alloy/grafana_cloud_credential:ro
@@ -557,8 +557,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 192m
-    memswap_limit: 192m
+    mem_limit: 256m
+    memswap_limit: 256m
     security_opt:
       - no-new-privileges:true
     logging:

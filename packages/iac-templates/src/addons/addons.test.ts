@@ -289,7 +289,7 @@ describe("Grafana Alloy", () => {
         "--disable-reporting",
         "/etc/alloy/config.alloy",
       ],
-      environment: { GOMEMLIMIT: "153MiB" },
+      environment: { GOMEMLIMIT: "204MiB" },
       volumes: [
         "./config.alloy:/etc/alloy/config.alloy:ro",
         "./grafana_cloud_credential:/etc/alloy/grafana_cloud_credential:ro",
@@ -302,7 +302,7 @@ describe("Grafana Alloy", () => {
       tmpfs: ["/tmp"],
       cap_drop: ["ALL"],
       security_opt: ["no-new-privileges:true"],
-      mem_limit: "192m",
+      mem_limit: "256m",
     });
     // Nothing privileged: no host network, no Docker socket, no writable host folder.
     expect(alloy).not.toHaveProperty("privileged");

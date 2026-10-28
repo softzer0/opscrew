@@ -39,7 +39,7 @@ In a terminal, OpsCrew asks for any value you leave out, and for the token witho
 
 OpsCrew reads the server first, then shows the host plan with:
 
-- **Alloy and OpsCrew's read-only Docker proxy,** each with its memory limit (192 MB and 32 MB) and
+- **Alloy and OpsCrew's read-only Docker proxy,** each with its memory limit (256 MB and 32 MB) and
   next to its share of the server's monthly price on a server OpsCrew created, or the server's memory
   on your own. Measured in OpsCrew's tests, Alloy used 70 to 80 MB;
 - **OpsCrew's estimate** of what the server will send, next to the free tier's limits.

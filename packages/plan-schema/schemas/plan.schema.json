@@ -1486,7 +1486,7 @@
               "type": "object",
               "properties": {
                 "alloy": {
-                  "default": 192,
+                  "default": 256,
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991

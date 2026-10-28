@@ -113,7 +113,7 @@ describe("plan.observability", () => {
         enabled: false,
         version: "1.21.0",
         logSampling: 100,
-        memoryMb: { alloy: 192, proxy: 32 },
+        memoryMb: { alloy: 256, proxy: 32 },
       },
     });
     expectTypeOf<BeszelSettings["memoryMb"]>().toEqualTypeOf<{

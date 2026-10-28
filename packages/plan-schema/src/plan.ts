@@ -560,7 +560,7 @@ export const GrafanaCloudSchema = z
     /** The containers' memory limits in MB. */
     memoryMb: z
       .strictObject({
-        alloy: z.int().positive().default(192),
+        alloy: z.int().positive().default(256),
         proxy: z.int().positive().default(32),
       })
       .prefault({}),
