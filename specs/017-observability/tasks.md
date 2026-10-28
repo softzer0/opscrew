@@ -721,6 +721,7 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
+  - Cloudflare's dated log allowance table lives in `agents/src/logs/cloudflare.ts` (`WORKERS_LOGS_ALLOWANCES`, T1709c), not in iac-templates' `prices.ts` beside the other dated figures. Decide whether to move it.
   - The masking file (`mask.re`) still masks the frameworks' fixed production words (`production` and the like), because their table (`FRAMEWORK_ENV` in agents' `app-env.ts`) is agents'. Decide whether to move the word pairs to plan-schema as `hostListKind` was (T1708's review). It also has no URL-encoded forms and none of the service env files' values, unlike the redactor.
   - The container-name pattern is in `status/components.ts` and again in `logs/commands.ts` (T1709a): export it once and import it.
   - Re-enabling an add-on with nothing changed still asks for an approval, because `planAddon` always marks its step as a change (T1711). Let the plan say "nothing to change" when the step's check finds it in place.
