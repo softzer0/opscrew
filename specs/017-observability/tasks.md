@@ -474,7 +474,7 @@ Effort`.
   - Effort: high
 
 - [ ] T1710 [P] [US3] The check in agents: settings, cost, provision's check key, secrets and files, the pause, and `init`'s permission checks, in `packages/agents/src/check/**`, `packages/agents/src/{design,provision,retarget,destroy,init}/**`
-  - Owns: those paths (+ tests). Not `design/components.ts` (T1711). Not `provision/secrets.ts`'s registering lines (T1701a).
+  - Owns: those paths (+ tests). Not `design/components.ts` (T1711). Not `provision/secrets.ts`'s registering lines (T1701a). Also, for the check key in cloud-init: `packages/iac-templates/modules/{hetzner-vps,digitalocean-droplet}/**`, `packages/iac-templates/src/infra/**`, the regenerated `src/generated/modules.ts`, and the e2e tests `packages/cli/test/e2e/{digitalocean,own-server}.test.ts`.
   - Reads: spec US3, FR-1705–FR-1710, FR-1714; data-model.md "The plan block", "Secrets kept apart", "The check's files", "Alerts"; research.md R3, R4; plan.md "8."; T1704's, T1706's and T1707's reports
   - Depends: T1701a, T1704, T1706, T1707
   - Accept:
@@ -489,7 +489,9 @@ Effort`.
         - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages), and an own server reached through the tunnel unless it deploys from its own runner (T1707: the check's `ssh` can't pass the tunnel's Access login);
         - it says localhost gets no check.
     - **Provision,** when the environment has the check on:
-      - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). It passes the repository (`owner/repo`) to both the `check-key` enable and disable: the key's comment is `opscrew-check:<owner>/<repo>`, so two repositories on one own server keep their own lines (T1706's review). Apps of one repository on one server share the line until the last one's teardown removes it. The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
+      - **The check key:** generated once (Ed25519).
+        - A new cloud server gets its line through cloud-init, in the IaC plan (`iac-apply`), with a module variable that is empty without the check; `ignore_changes = [user_data]` keeps existing servers.
+        - An existing cloud server or an own server gets the `check-key` host step (`host-apply`). `--plan-only` shows and saves that plan with its hash, so scripts can approve every hash up front (the lead, 2026-10-28, from T1710's finding). It passes the repository (`owner/repo`) to both the `check-key` enable and disable: the key's comment is `opscrew-check:<owner>/<repo>`, so two repositories on one own server keep their own lines (T1706's review). Apps of one repository on one server share the line until the last one's teardown removes it. The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
       - **The secrets** (`github-secrets`), each set as a repository secret:
         - `OPSCREW_CHECK_SSH_KEY`;
         - `<prefix>CHECK_SERVER`, holding the host, port, user and known-hosts line;
