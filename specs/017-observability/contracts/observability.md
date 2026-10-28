@@ -83,13 +83,14 @@ includedMinutes(owner: string): Promise<number | undefined>;  // from the accoun
 **Portainer (T1705)**
 
 ```ts
-containerLogs(envId: number, containerId: string, o: { tail: number; since?: number; timestamps: true }):
-  Promise<{ stream: "stdout" | "stderr"; line: string }[]>;   // demultiplexed; a TTY stream as stdout
+containerLogs(envId: number, containerId: string, o: { tail: number; since?: number | string }):
+  Promise<{ stream: "stdout" | "stderr"; time: string; line: string }[]>; // demultiplexed, oldest first; a TTY stream as stdout
+  // since: whole Unix seconds, or "<seconds>.<nanoseconds>"; sinceAfter(time) gives the next nanosecond
 containerStats(envId: number, containerId: string):
-  Promise<{ cpuPercent: number; memoryUsedBytes: number; memoryLimitBytes?: number }>;
+  Promise<{ cpuPercent: number; memoryUsedBytes: number }>;   // the limit comes from containerInspect
 containerInspect(envId: number, containerId: string):
   Promise<{ restartCount: number; startedAt: string; memoryLimitBytes?: number }>; // only these fields kept
-// dockerInfo gains cpus (NCPU) and memoryBytes (MemTotal).
+// dockerInfo gains cpus (NCPU) and memoryBytes (MemTotal), optional. ContainerSummary gains id.
 ```
 
 **ssh-host (T1706)**

@@ -187,7 +187,7 @@ Effort`.
       - It splits lines, and keeps a line cut across two frames whole.
     - **`containerStats`** reads `stream=false` without `one-shot` (with it, `precpu_stats` is empty: spike result 7), so `precpu_stats` is filled.
       - CPU % = `(cpu delta / system delta) × online_cpus × 100`.
-      - Memory is `usage − inactive_file` on cgroup v2, or `usage − cache` on v1, against `memory_stats.limit`. A limit equal to the host's memory counts as no limit.
+      - Memory is `usage − inactive_file` on cgroup v2, or `usage − cache` on v1. The limit is not read here: it comes from `containerInspect` (`HostConfig.Memory`, 0 = no limit), as on servers (T1705's review).
     - **`containerInspect`** keeps only `RestartCount`, `State.StartedAt` and `HostConfig.Memory`. Its zod schema strips everything else, so `Config.Env` never leaves the connector.
     - **`dockerInfo`** gains `cpus` (`NCPU`) and `memoryBytes` (`MemTotal`).
     - **Follow:** none here. Portainer buffers `follow=1` for about 40 s (spike result 7), so agents poll. `since` takes `<seconds>.<nanoseconds>`, so agents can ask for lines after the last one they have.
