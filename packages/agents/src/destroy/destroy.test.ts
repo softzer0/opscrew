@@ -350,6 +350,37 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(s.deps.reporter.text()).not.toContain("The scheduled check was not paused");
   });
 
+  it("a rerun with nothing left to delete asks for the pause on its own; refused, it warns", async () => {
+    const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
+    let rerun = false;
+    const s = await setup({
+      plan,
+      answer: (request) =>
+        rerun ? request.kind !== "github-settings" : request.kind !== "github-secrets",
+    });
+    // The first run deletes the server, fails to pause the check and stops at the secrets.
+    const setRepoVariable = s.github.setRepoVariable;
+    s.github.setRepoVariable = async () => {
+      throw new Error("GitHub answered 502");
+    };
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+    expect(s.events).not.toContain("approval:github-settings");
+
+    // The rerun has no typed confirmation to pause under, so it asks; refused, nothing is paused.
+    s.github.setRepoVariable = setRepoVariable;
+    s.servers.servers = [];
+    s.handler.requests.length = 0;
+    rerun = true;
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.destroyed).toEqual([]);
+    expect(s.deps.reporter.text()).toContain("Nothing is left to delete.");
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["github-settings", "github-secrets"]);
+    expect(s.github.variables.get(CHECK_PAUSED_VARIABLE)).toBeUndefined();
+    expect(s.deps.reporter.text()).toContain("The scheduled check was not paused");
+  });
+
   it("goes on with a warning when the check's pause fails", async () => {
     const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
     const s = await setup({ plan });

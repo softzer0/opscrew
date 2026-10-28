@@ -186,10 +186,10 @@ A private repository has no such rule.
   pauses the check for that environment after an approval of its own. When `npx opscrew destroy`
   removes an app, OpsCrew pauses the check after the teardown, as part of destroy's own typed
   confirmation (destroy says so before you type the name). No separate question is asked, and in
-  a script `--confirm <app>` covers it. The check then opens no issue for the environment, and
-  closes its open ones with the reason. The pause is the repository variable
-  `OPSCREW_CHECK_PAUSED`. The next healthy deploy by `npx opscrew provision`, or
-  `retarget --finish`, removes it again.
+  a script `--confirm <app>` covers it (a rerun with nothing left to delete asks for the pause on
+  its own). The check then opens no issue for the environment, and closes its open ones with the
+  reason. The pause is the repository variable `OPSCREW_CHECK_PAUSED`. The next healthy deploy by
+  `npx opscrew provision`, or `retarget --finish`, removes it again.
 - **Your own maintenance:** `gh workflow disable opscrew-check.yml` pauses the whole check, for every
   app of the repository, and `gh workflow enable opscrew-check.yml` turns it on again. The Actions
   tab has the same buttons.

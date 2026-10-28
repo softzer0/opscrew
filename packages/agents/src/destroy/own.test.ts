@@ -738,11 +738,20 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     s.host.facts = HostFactsSchema.parse(facts);
     // A script: `opscrew destroy --confirm shop`, no `--yes`.
     s.answer(scriptedConfirm("shop"));
-    await runDestroy(s.deps, { services: services(s) });
+    // Said before the name is typed (the CLI shows the approvals' titles only).
+    let shownBeforeName = "";
+    await runDestroy(s.deps, {
+      services: services(s),
+      confirm: async () => {
+        shownBeforeName = s.deps.reporter.text();
+        return true;
+      },
+    });
     // Paused once the app is removed, before its secrets go, under the host plan's typed
     // confirmation (which says so): no question of its own.
     expect(kinds(s)).toEqual(["iac-apply", "host-apply", "cloudflare-apply", "github-secrets"]);
     const note = "This also pauses the scheduled check for shop/prod";
+    expect(shownBeforeName).toContain(note);
     const teardown = s.handler.requests.find((request) => request.kind === "host-apply");
     expect(teardown?.details).toContain(note);
     expect(s.handler.requests.filter((request) => request.details.includes(note))).toHaveLength(1);
