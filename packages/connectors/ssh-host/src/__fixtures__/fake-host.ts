@@ -1697,12 +1697,17 @@ export class FakeHost implements RemoteExec {
       case "alloy.verify":
         return this.verify(this.addonOk(p), p);
       case "beszel.remove.check":
-      case "alloy.remove.check":
-        return this.check(this.addonRemovedOk(p));
+      case "alloy.remove.check": {
+        const checked = this.check(this.addonRemovedOk(p));
+        return p.KEEP_DATA === "true" && this.hasHistory(p.DIR ?? "")
+          ? result(`addon.history=kept\n${checked.stdout}`)
+          : checked;
+      }
       case "beszel.remove.apply":
       case "alloy.remove.apply": {
         const dir = p.DIR ?? "";
-        const kept = (path: string) => p.KEEP_DATA === "true" && (path === dir || path === `${dir}/data` || path.startsWith(`${dir}/data/`));
+        const history = p.KEEP_DATA === "true" && this.hasHistory(dir);
+        const kept = (path: string) => history && (path === dir || path === `${dir}/data` || path.startsWith(`${dir}/data/`));
         this.removeProject(p.PROJECT ?? "", true);
         for (const path of [...this.files.keys()]) if (path.startsWith(`${dir}/`) && !kept(path)) this.files.delete(path);
         for (const path of [...this.madeDirs]) if ((path === dir || path.startsWith(`${dir}/`)) && !kept(path)) this.madeDirs.delete(path);
@@ -1714,6 +1719,14 @@ export class FakeHost implements RemoteExec {
         return this.verify(this.addonRemovedOk(p), p);
     }
     throw new Error(`fake host: unknown script ${name}`);
+  }
+
+  /** An add-on's history: its `data/` folder is there. */
+  private hasHistory(dir: string): boolean {
+    return (
+      this.madeDirs.has(`${dir}/data`) ||
+      [...this.files.keys()].some((path) => path.startsWith(`${dir}/data/`))
+    );
   }
 
   /** The `.env` the add-on steps write: the deploy user's ids. */

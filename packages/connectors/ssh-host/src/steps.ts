@@ -2288,6 +2288,8 @@ function addonRemoveScripts(plan: HostPlan, step: HostStep, kind: AddonKind): St
       RUN_AS: p.runAs,
     },
     helpers: PROJECT_HELPERS,
+    // The apply keeps the add-on's owner in the host record only while a history really stays.
+    snapshot: `if [ "$KEEP_DATA" = true ] && [ -d "$DIR/data" ] && [ ! -L "$DIR/data" ]; then echo addon.history=kept; fi`,
     verify: `  project_gone "$PROJECT" true || return 1
   if [ "$KEEP_DATA" = true ]; then
     [ -z "$(ls -A "$DIR" 2>/dev/null | grep -vx data)" ] || return 1
@@ -2304,6 +2306,8 @@ elif [ -d "$DIR" ]; then
     if [ "$f" = "$DIR/data" ]; then continue; fi
     rm -rf "$f"
   done
+  # No history to keep (Beszel's agent): the folder goes too.
+  if [ -z "$(ls -A "$DIR")" ]; then rmdir "$DIR"; fi
 fi
 if [ -n "$MASK" ]; then rm -f "$MASK"; fi
 # The add-ons' parent goes too once it is empty, and on a server the user owns OpsCrew's root.

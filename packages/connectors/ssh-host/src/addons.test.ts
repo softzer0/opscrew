@@ -364,6 +364,43 @@ describe("beszel", () => {
     expect(hostRecord(fake).addons).toEqual({ beszel: "shop" });
   });
 
+  it("the agent's removal with no history clears the owner, so another app may turn Beszel on", async () => {
+    const fake = await ownServer();
+    await addBlog(fake);
+    const { secrets } = addonSecrets();
+    const shop = async (change: {
+      enable?: AddonEnable<"beszel">;
+      disable?: { keepData?: boolean; mode?: "hub" | "agent" };
+    }) =>
+      planAddon("beszel", {
+        app: "shop",
+        runAs: "root",
+        facts: await inspectHost(fake),
+        ...change,
+      });
+    await applyApproved(
+      fake,
+      await shop({ enable: { mode: "agent", files: BESZEL_AGENT_FILES } }),
+      {
+        secrets: { beszelToken: secrets.beszelToken },
+      },
+    );
+    expect(hostRecord(fake).addons).toEqual({ beszel: "shop" });
+    await applyApproved(fake, await shop({ disable: { mode: "agent" } }));
+    expect(hostRecord(fake).addons).toEqual({});
+    expect(
+      [...fake.files.keys(), ...fake.madeDirs].some((path) => path.startsWith(BESZEL_DIR)),
+    ).toBe(false);
+    const blog = planAddon("beszel", {
+      app: "blog",
+      runAs: "root",
+      facts: await inspectHost(fake),
+      enable: HUB,
+    });
+    expect((await applyApproved(fake, blog, { secrets })).applied).toEqual(["beszel"]);
+    expect(hostRecord(fake).addons).toEqual({ beszel: "blog" });
+  });
+
   it("refuses a tunnel connector for an add-on other than Beszel", () => {
     expect(() =>
       planAddon("alloy", {

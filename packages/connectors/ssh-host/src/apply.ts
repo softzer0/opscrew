@@ -135,6 +135,8 @@ interface Context {
   recorder: Recorder | null;
   /** The apps whose runner was removed without GitHub unregistering it. */
   stillRegistered: string[];
+  /** The add-on removals whose check found a history (`data/`) that stays on the server. */
+  historyKept: Set<string>;
   /** Written to the host record as `opscrewVersion`. */
   version: string;
   /** Clock for the host record's timestamps. */
@@ -450,6 +452,8 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
     { timeoutMs: 120_000 },
     `checking "${step.title}"`,
   );
+  // An add-on's removal with keepData says whether a history stays (its check runs either way).
+  if (/^addon\.history=kept$/m.test(check.stdout)) ctx.historyKept.add(step.id);
   if (/^state=in-place$/m.test(check.stdout)) return false;
 
   await ctx.recorder?.before(step.id, previousValues(check.stdout));
@@ -700,6 +704,7 @@ export async function applyHostPlan(
     deadManSeconds,
     recorder: null,
     stillRegistered: [],
+    historyKept: new Set(),
     version: opts.version ?? HOST_ADAPTER_VERSION,
     now: opts.now ?? (() => new Date()),
     command: opts.command,
@@ -739,7 +744,7 @@ export async function applyHostPlan(
     }
     // The host record names the app that turns an add-on on before its setup runs, so a failed
     // setup never leaves an add-on without an owner; a removal clears it only once it is done
-    // (and never while its history is kept: that is still the app's).
+    // (and never while a history really stays on the server: that is still the app's).
     const addon = isAddon(step.id) && runAsOf(step) === "root" ? step.id : undefined;
     const removal = isRemoval(valid, step);
     try {
@@ -750,7 +755,7 @@ export async function applyHostPlan(
       if (step.id === "app-record" && valid.purpose !== "undo") {
         await ctx.recorder?.list(valid.app, valid.purpose === "setup");
       }
-      if (addon !== undefined && removal && step.params.keepData !== true) {
+      if (addon !== undefined && removal && !ctx.historyKept.has(step.id)) {
         await ctx.recorder?.setAddon(addon, null);
       }
     } catch (error) {
