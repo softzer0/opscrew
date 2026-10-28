@@ -103,8 +103,11 @@ containerInspect(envId: number, containerId: string):
 ## iac-templates (T1707, T1708)
 
 ```ts
-renderCheck(input: { plans: DeployPlan[]; repo: { owner: string; name: string; public: boolean } }):
-  { path: string; content: string }[];   // the workflow, check.json, check.mjs
+renderCheck(input: {
+  plans: DeployPlan[];
+  repo: { owner: string; name: string; public: boolean };
+  serverIds?: Record<string, string>;    // by checkEnvironmentKey(plan): the server's identity, so a shared server is checked once
+}): { path: string; content: string }[]; // the workflow, check.json, check.mjs
 renderAddon(plan: DeployPlan, kind: "beszel" | "grafana-cloud"):
   { path: string; content: string }[];   // compose.yaml, the proxy's Caddyfile, config.yml or config.alloy
 ```
@@ -115,7 +118,7 @@ renderAddon(plan: DeployPlan, kind: "beszel" | "grafana-cloud"):
   - `GITHUB_TOKEN`, `GITHUB_REPOSITORY` and `GITHUB_EVENT_PATH`;
   - `OPSCREW_CHECK_PAUSED`;
   - the secrets the workflow maps into its environment.
-- **Exit code:** 0 when it could report everything, else 1 (issues off, or GitHub's API failing).
+- **Exit code:** 0 when it could report everything. 1 when GitHub's API fails, or when issues are off and something is failing.
 
 ## Agents and surfaces (T1709–T1712)
 

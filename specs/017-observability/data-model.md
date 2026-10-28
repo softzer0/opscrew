@@ -71,7 +71,7 @@ None is ever in a plan, a committed file, a host plan's text, a log or an audit 
       "key": "example-app/prod",        // <app key or name>/<env>
       "hosts": [{ "hostname": "example.com", "healthPath": "/health" }],
       "server": {                       // absent for Portainer, Cloudflare and GitHub Pages
-        "id": "hetzner-12345678",       // stable: deduplicates two apps on one server
+        "id": "own-<host key fingerprint>", // from renderCheck's serverIds, else <provider>-<app name>; a shared server is checked once
         "secret": "OPSCREW_CHECK_SERVER",
         "via": "github"                 // "github", "runner-host" or "own-runner"
       }

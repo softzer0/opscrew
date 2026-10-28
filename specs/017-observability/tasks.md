@@ -265,7 +265,7 @@ Effort`.
         - Discord: `{"content", "allowed_mentions": {"parse": []}}`, cut at 2,000.
         - ntfy: the body cut at 4,096 bytes, with `Title`, `Priority` 4 on opening and 3 on closing, and `Authorization: Bearer` when `OPSCREW_CHECK_NTFY_TOKEN` is set.
         - The address is never printed.
-      - **Issues off** (410, or `has_issues` false): it posts the webhook, writes the job summary and exits 1.
+      - **Issues off** (410, or `has_issues` false): it posts the webhook and writes the job summary. It exits 1 only when something is failing, so a healthy repository's runs stay green.
       - **What goes into issue and webhook text:**
         - only fixed sentences, names, hostnames, status codes, Node error codes, days and disk figures;
         - never a response body or header;
@@ -298,7 +298,7 @@ Effort`.
         - never an address.
     - **Tests:**
       - **The script, in Vitest with fakes:**
-        - up, then down (one issue, then nothing on a repeat, a comment when another check also fails, closed with the duration);
+        - up, then down (one issue, then nothing on a repeat, a comment when that check's failure changes, closed with the duration);
         - one slow answer opening nothing;
         - a certificate with 10 days;
         - a disk at 86% and at 96%;
@@ -483,7 +483,7 @@ Effort`.
       - `checkEnvironmentKey(plan)`, for the pause's keys;
       - `checkServerSecret({ host, port, user, knownHosts })`, for the secret's JSON.
 
-      Two environments on the same own server get two disk checks: plans alone can't tell they share a server. Pass a server id from the own-server record into `renderCheck` only if that is small; otherwise leave it as a known gap.
+      Plans alone can't tell that two environments share an own server. So provision passes `renderCheck`'s `serverIds` (keyed by `checkEnvironmentKey`) from each own server's record, such as its pinned host key's fingerprint, never its address. A shared server is then checked once.
     - **Retarget:** adds `{ reason: "retarget" }` when its window opens, and removes it at `--finish`.
     - **Destroy:** adds `{ reason: "destroyed" }`, and removes the check key line in its teardown.
     - **Variable updates** read, change one entry, and write back.
@@ -587,7 +587,7 @@ Effort`.
       - the issues and the webhook (how to set Slack, Discord or ntfy);
       - the interval and its cost against each plan;
       - GitHub's 60-day rule and how to turn the check on again;
-      - planned outages, forks, and issues off;
+      - planned outages, forks, and issues off (the webhook is then posted on every failing run, since nothing records that it was already sent);
       - what it can't do: minute-level alerting, the user's computer, Portainer's disk, and the disk of an own server reached through the tunnel unless it deploys from its own runner.
     - **`beszel.md`:**
       - hub and agent modes, opening it, and the subdomain behind Access;
