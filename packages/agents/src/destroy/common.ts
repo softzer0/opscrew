@@ -21,12 +21,14 @@ import {
 } from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
 import { changeCheckPause } from "../check/pause";
+import { teardownCheckSecretNames } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
 import {
   deploySecretNames,
   deploySecretPlaces,
   readSecretsRecord,
+  type SecretPlace,
   secretsEnvironment,
 } from "../provision/secrets";
 import { planWhere } from "../runners/words";
@@ -541,7 +543,8 @@ function ownSecretsEnvironment(plan: DeployPlan): string | undefined {
 
 /**
  * 8. Removes the plan environment's deploy secrets ({@link deploySecretPlaces}, its own names only)
- * after one `github-secrets` approval, the teardown's typed name confirms: the repository's, and
+ * and the scheduled check's it no longer needs (`teardownCheckSecretNames`) after one
+ * `github-secrets` approval, the teardown's typed name confirms: the repository's, and
  * those in its GitHub environment one by one when the user made that environment (it stays, with
  * everything else in it). A GitHub environment OpsCrew created (its record says so) is deleted
  * with its secrets under the same approval. Names only, never values. Returns the names really
@@ -559,7 +562,11 @@ export async function removeDeploySecrets(
   const environment = ownSecretsEnvironment(input.plan);
   const created =
     environment !== undefined && (await readSecretsRecord(deps))?.createdEnvironment === true;
-  const places = deploySecretPlaces(input.plan, environment);
+  // The scheduled check's repository secrets go with them (its server's holds the address).
+  const places: SecretPlace[] = [
+    ...deploySecretPlaces(input.plan, environment),
+    ...(await teardownCheckSecretNames(deps.paths, input.plan)).map((name) => ({ name })),
+  ];
   const inEnvironment = places.filter((place) => place.environment !== undefined);
   const oneByOne = created ? places.filter((place) => place.environment === undefined) : places;
   const repository = oneByOne.filter((place) => place.environment === undefined);

@@ -11,7 +11,12 @@ import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-clou
 import type { FetchLike } from "@opscrew/contracts";
 import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../../provision/run";
 import type { ProvisionServices } from "../../provision/types";
@@ -790,5 +795,27 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
     expect(workflow).toContain('BUILD_WORKFLOW: ".github/workflows/opscrew-deploy-staging.yml"');
     expect(workflow).toContain('BUILD_BRANCH: "main"');
+  });
+
+  it("with the scheduled check: its files (HTTPS and certificate only) and its webhook, no key", async () => {
+    const webhook = "https://hooks.slack.example.com/services/opscrew-alerts-9c1f";
+    const plan = DeployPlanSchema.parse({
+      ...sitePlan({ env: ["API_KEY"] }),
+      observability: { check: { enabled: true, webhook: "slack" } },
+    });
+    const s = await setup({ plan, env: { OPSCREW_CHECK_WEBHOOK: webhook } });
+    await runProvision(s.deps, { services: s.services });
+    const config = JSON.parse(await readFile(join(s.root, "opscrew/check/check.json"), "utf8"));
+    expect(config).toMatchObject({ webhook: "slack", public: false });
+    expect(config.environments).toEqual([
+      { key: "example-app/prod", hosts: [{ hostname: "docs.example.com", healthPath: "/" }] },
+    ]);
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-check.yml"), "utf8");
+    expect(workflow).toContain("OPSCREW_CHECK_WEBHOOK: $" + "{{ secrets.OPSCREW_CHECK_WEBHOOK }}");
+    expect(workflow).not.toContain("OPSCREW_CHECK_SSH_KEY");
+    expect(s.github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(webhook);
+    expect(s.github.secrets.has("OPSCREW_CHECK_SSH_KEY")).toBe(false);
+    expect(s.handler.requests.map((r) => r.kind)).not.toContain("host-apply");
+    expect(await everything(s)).not.toContain(webhook);
   });
 });

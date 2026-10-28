@@ -22,6 +22,23 @@ function ownServerId(hostKey: string): string {
     .replace(/\//g, "_")}`;
 }
 
+/** Every other app's and environment's plan in the repository than `plan`'s, with its paths. */
+export async function otherPlans(
+  paths: Pick<ProjectPaths, "root" | "homeDir">,
+  plan: DeployPlan,
+): Promise<{ plan: DeployPlan; paths: ProjectPaths }[]> {
+  const key = checkEnvironmentKey(plan);
+  const others: { plan: DeployPlan; paths: ProjectPaths }[] = [];
+  for (const app of await appsOf(paths.root)) {
+    for (const name of await environmentsOf(paths.root, app.key)) {
+      const own = appPaths(paths, app.key, name);
+      const other = await readArtifact("plan", own.files.plan);
+      if (checkEnvironmentKey(other) !== key) others.push({ plan: other, paths: own });
+    }
+  }
+  return others;
+}
+
 /**
  * The scheduled check's files (`renderCheck`), re-rendered from every app's and environment's plan
  * in the repository, with `plan` (this run's, perhaps changed since it was read) in place of its
@@ -34,15 +51,10 @@ export async function checkFiles(
   plan: DeployPlan,
   repo: CheckRepo,
 ): Promise<RenderedFile[]> {
-  const key = checkEnvironmentKey(plan);
-  const entries = [{ plan, paths: appPaths(paths, plan.app.key, plan.environment?.name) }];
-  for (const app of await appsOf(paths.root)) {
-    for (const name of await environmentsOf(paths.root, app.key)) {
-      const own = appPaths(paths, app.key, name);
-      const other = await readArtifact("plan", own.files.plan);
-      if (checkEnvironmentKey(other) !== key) entries.push({ plan: other, paths: own });
-    }
-  }
+  const entries = [
+    { plan, paths: appPaths(paths, plan.app.key, plan.environment?.name) },
+    ...(await otherPlans(paths, plan)),
+  ];
   const serverIds: Record<string, string> = {};
   for (const entry of entries) {
     if (entry.plan.target.provider !== "own") continue;

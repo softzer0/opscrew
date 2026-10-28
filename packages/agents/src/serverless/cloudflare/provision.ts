@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ProjectPaths } from "@opscrew/core";
 import { CLOUDFLARE_DEPLOY_SECRETS, type RenderContext } from "@opscrew/iac-templates";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
+import { deploySetupCheckFiles, provisionCheck, resumeCheck } from "../../check/provision";
 import type { PhaseDeps } from "../../context";
 import { builderCicd } from "../../environments/branches";
 import { setupCloudflare, setupGitHub } from "../../provision/credentials";
@@ -165,6 +166,8 @@ export async function provisionCloudflareWorkers(
   const files = [
     ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
+    // The scheduled check's files, rendered from every app's and environment's plan.
+    ...(await deploySetupCheckFiles(deps, plan, github)),
   ];
   await approveAndWriteRenderedFiles(
     deps,
@@ -230,6 +233,15 @@ export async function provisionCloudflareWorkers(
           },
     done: SET_UP,
   });
+  // 5b. The scheduled check's secrets: only the webhook's here, with no server to read.
+  await provisionCheck(deps, {
+    plan,
+    github,
+    storeSecrets: storesSecrets,
+    services,
+    command,
+    phase: "provision",
+  });
 
   // 6. Commit, push and open the deploy-setup pull request.
   const published = await publishDeployment(deps, {
@@ -246,6 +258,8 @@ export async function provisionCloudflareWorkers(
   });
   const merge = mergeDeploysNote(plan, published.published, storesSecrets);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // The site is set up again: a pause of its check (a teardown) ends.
+  await resumeCheck(deps, github, plan, { command, phase: "provision" });
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),
     ...applied.fields,

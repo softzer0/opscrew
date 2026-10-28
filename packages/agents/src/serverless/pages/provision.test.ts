@@ -5,7 +5,7 @@ import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { pagesVerificationRootDir } from "@opscrew/iac-templates";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it, vi } from "vitest";
 import { runProvision } from "../../provision/run";
 import type { ProvisionOptions } from "../../provision/types";
@@ -33,6 +33,8 @@ const GITHUB_TOKEN = fakeSecret("github-token", "pages-provision");
 const CLOUDFLARE_TOKEN = fakeSecret("cloudflare-token", "pages-provision");
 /** A value of GitHub's verification record, as its settings page shows one. */
 const VERIFICATION = "a1b2c3d4e5f60718293a4b5c6d7e8f";
+/** The scheduled check's webhook address: a secret, never shown. */
+const WEBHOOK = "https://discord.example.com/api/webhooks/opscrew-alerts-4d2e";
 const { owner, repo } = PAGES_REPO;
 
 interface SetupOptions {
@@ -505,5 +507,29 @@ describe.skipIf(!findExecutable("git"))("provision on GitHub Pages", () => {
     expect(handler.requests[0]?.title).toBe(
       `Apply the Pages plan to the GitHub Pages site of ${owner}/${repo} (2 changes)`,
     );
+  });
+
+  it("with the scheduled check: its files (HTTPS and certificate only) and its webhook, no key", async () => {
+    const s = await setup();
+    const file = join(s.root, "opscrew/plan.yaml");
+    await writeArtifact("plan", file, {
+      ...(await readArtifact("plan", file)),
+      observability: { check: { enabled: true, webhook: "discord" } },
+    });
+    s.env.OPSCREW_CHECK_WEBHOOK = WEBHOOK;
+    const { deps, handler, result } = await s.run({ pagesVerification: VERIFICATION });
+    await result;
+    const config = JSON.parse(await readFile(join(s.root, "opscrew/check/check.json"), "utf8"));
+    expect(config.environments).toEqual([
+      { key: "example-app/prod", hosts: [{ hostname: "docs.example.com", healthPath: "/" }] },
+    ]);
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-check.yml"), "utf8");
+    expect(workflow).not.toContain("OPSCREW_CHECK_SSH_KEY");
+    expect(s.log).toContain("github secret OPSCREW_CHECK_WEBHOOK");
+    expect(s.github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(WEBHOOK);
+    expect(s.github.secrets.has("OPSCREW_CHECK_SSH_KEY")).toBe(false);
+    expect(handler.requests.map((r) => r.kind)).not.toContain("host-apply");
+    const said = `${deps.reporter.text()}\n${JSON.stringify(deps.audit.entries)}`;
+    expect(said).not.toContain(WEBHOOK);
   });
 });

@@ -1,11 +1,17 @@
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
-import { type RenderedFile, tunnelMode } from "@opscrew/iac-templates";
+import type { ProjectPaths } from "@opscrew/core";
+import {
+  CHECK_SECRETS,
+  deploySecretName,
+  type RenderedFile,
+  tunnelMode,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
 import type { HostAdapterApi, HostPlanOutcome } from "../shared/host-plan";
-import { checkFiles } from "./files";
+import { checkFiles, otherPlans } from "./files";
 import { addCheckKey, checkKeyLine } from "./host";
 import { type CheckKey, ensureCheckKey, readCheckKey } from "./key";
 import { changeCheckPause } from "./pause";
@@ -161,6 +167,26 @@ export async function provisionCheck(
     });
   }
   return host;
+}
+
+/**
+ * The check's repository secrets a teardown of `plan`'s environment deletes, when it has the
+ * check on: its server's (`<prefix>CHECK_SERVER`, which holds the address) where the check reads
+ * the disk over SSH, and the check key (`OPSCREW_CHECK_SSH_KEY`) when no other environment of
+ * the repository still has the check on.
+ */
+export async function teardownCheckSecretNames(
+  paths: Pick<ProjectPaths, "root" | "homeDir">,
+  plan: DeployPlan,
+): Promise<string[]> {
+  if (plan.observability?.check?.enabled !== true) return [];
+  const names = checkReachesOverSsh(plan) ? [deploySecretName(plan, CHECK_SECRETS.server)] : [];
+  const checked = (await otherPlans(paths, plan)).some(
+    (other) =>
+      other.plan.observability?.check?.enabled === true &&
+      other.plan.deployment.destroyedAt === undefined,
+  );
+  return checked ? names : [...names, CHECK_SECRETS.sshKey];
 }
 
 /**

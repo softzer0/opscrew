@@ -9,6 +9,7 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { appFlag } from "../../apps/choice";
+import { deploySetupCheckFiles, provisionCheck, resumeCheck } from "../../check/provision";
 import type { PhaseDeps } from "../../context";
 import { missing, setupCloudflare, setupGitHub } from "../../provision/credentials";
 import { deploySetupDependabot } from "../../provision/dependabot";
@@ -288,6 +289,8 @@ export async function provisionPages(
     ...siteFiles,
     ...verificationFiles,
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
+    // The scheduled check's files, rendered from every app's and environment's plan.
+    ...(await deploySetupCheckFiles(deps, plan, github)),
   ];
   await approveAndWriteRenderedFiles(
     deps,
@@ -367,6 +370,15 @@ export async function provisionPages(
       store: options.secrets !== false,
       done: "The GitHub Pages site and its DNS records are set up; its build gets none of the app's values yet.",
     }));
+  // The scheduled check's secrets: only the webhook's here, with no server to read.
+  await provisionCheck(deps, {
+    plan,
+    github,
+    storeSecrets: options.secrets !== false,
+    services,
+    command,
+    phase: "provision",
+  });
   const published = await publishDeployment(deps, {
     git: input.git,
     github,
@@ -381,6 +393,8 @@ export async function provisionPages(
   });
   const merge = mergeDeploysNote(published.plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // The site is set up again: a pause of its check (a teardown) ends.
+  await resumeCheck(deps, github, plan, { command, phase: "provision" });
   if (record.applied) deps.reporter.info(verifyStepNote({ owner, domain, page }));
   const https = httpsNote({
     domain,

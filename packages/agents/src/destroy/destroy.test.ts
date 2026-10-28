@@ -13,7 +13,12 @@ import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/cont
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { CHECK_PAUSED_VARIABLE, cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ensureStatePassphrase, readServerAddresses, recordServerAddress } from "../shared";
 import {
@@ -273,6 +278,31 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(JSON.parse(s.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "")).toEqual({
       "shop/prod": { reason: "destroyed", since: NOW },
     });
+    // The check's secrets go with the deploy secrets: the server's (its address) and, as the
+    // last environment with the check, the check key.
+    expect(s.github.deleted).toEqual(
+      expect.arrayContaining(["OPSCREW_CHECK_SERVER", "OPSCREW_CHECK_SSH_KEY"]),
+    );
+    const approval = s.handler.requests.find((request) => request.kind === "github-secrets");
+    expect(approval?.details).toContain("  OPSCREW_CHECK_SERVER");
+  });
+
+  it("keeps the check key while another environment still has the check", async () => {
+    const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
+    const s = await setup({ plan });
+    const staging = DeployPlanSchema.parse({
+      ...plan,
+      app: { ...plan.app, name: "shop-staging" },
+      environment: { name: "staging" },
+    });
+    await writeArtifact(
+      "plan",
+      join(s.root, "opscrew", "environments", "staging", "plan.yaml"),
+      staging,
+    );
+    await runDestroy(s.deps, { services: s.services });
+    expect(s.github.deleted).toContain("OPSCREW_CHECK_SERVER");
+    expect(s.github.deleted).not.toContain("OPSCREW_CHECK_SSH_KEY");
   });
 
   it("deletes nothing when the check's pause is declined", async () => {
