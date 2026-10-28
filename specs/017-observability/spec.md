@@ -11,7 +11,7 @@
 - no self-hosted Grafana, Prometheus or Loki stack;
 - dashboards across several projects, team alerts and spend alerts belong to the later hosted control plane.
 
-On 2026-10-24 the founder asked for this spec only: no plan, tasks or code until he gives the go-ahead.
+On 2026-10-24 the founder asked for this spec only, and on 2026-10-28 gave the go-ahead for the plan, tasks and implementation.
 
 ## Why
 
@@ -42,8 +42,8 @@ The user runs `opscrew logs` in the app's repository and sees the app's recent l
 1. **Given** an app on a cloud server or the user's own server, **When** the user runs `opscrew logs`, **Then** the app's last lines are shown, newest last, each with its time. `--follow` keeps showing new lines until the user stops it.
 2. **Given** an app with workers, cron jobs or services, **When** the user names one with `--service <name>`, **Then** that part's lines are shown. A name that doesn't exist is refused, and the refusal lists the names that do.
 3. **Given** an app in a Portainer or on the user's own computer, **When** the user runs `opscrew logs`, **Then** the lines come the same way: through the Portainer, or from local Docker.
-4. **Given** an app on Cloudflare's hosting, **When** the user runs `opscrew logs`, **Then** the logs of its recent requests are shown, with each request's status and any errors it raised. `--follow` shows requests as they arrive.
-5. **Given** a site on GitHub Pages, **When** the user runs `opscrew logs`, **Then** OpsCrew says plainly that GitHub Pages keeps no request logs, and shows the last deploy runs with their result and a link to each.
+4. **Given** a server-rendered app on Cloudflare's hosting, **When** the user runs `opscrew logs`, **Then** the logs of its recent requests are shown, with each request's status and any errors it raised. `--follow` shows requests as they arrive.
+5. **Given** a site on GitHub Pages, or a static site on Cloudflare's hosting, **When** the user runs `opscrew logs`, **Then** OpsCrew says plainly that the host keeps no request logs for it, and shows the last deploy runs with their result and a link to each. Cloudflare serves a static site's files without running any of its code, so it logs no requests (research R2).
 6. **Given** a log line that holds one of the app's secret values, or a value shaped like a known kind of secret, **When** the line is shown, **Then** that value is masked.
 7. **Given** several apps or environments, **When** the user passes `--app` or `--env`, **Then** the lines are that app's and environment's, chosen the way every other command chooses them.
 
@@ -71,7 +71,7 @@ The figures are read when the command runs; nothing runs on the server to collec
    - a disk 85% full, or 95% for the higher severity, the same as `secure`;
    - a container that restarted since the last deploy.
 4. **Given** an app in a Portainer, **When** the user runs `status`, **Then** each container's figures are shown through the Portainer. Figures the Portainer can't give (the host's disk) are named as not available.
-5. **Given** an app on Cloudflare's hosting, **When** the user runs `status`, **Then** it shows the last 24 hours' requests, errors and CPU time per request, against the free plan's daily request limit and CPU time per request.
+5. **Given** an app on Cloudflare's hosting, **When** the user runs `status`, **Then** it shows the last 24 hours' requests, errors and CPU time per request, against the free plan's daily request limit and CPU time per request. Requests served from a site's static files run no code and aren't counted; status says so.
 6. **Given** a site on GitHub Pages, **When** the user runs `status`, **Then** it shows the latest build and its result. Nothing else applies, and status says so.
 
 ---
@@ -153,7 +153,7 @@ A user working in Claude Code asks "why is my app failing?" or "how much memory 
 - **The server doesn't answer over SSH:** `logs` and `status` say so, and suggest `verify`. The scheduled check still reports the app down over HTTPS.
 - **Deploys that reach the server through its own runner, with SSH from GitHub closed:** the disk check runs where the deploy job runs, so it needs no new way in.
 - **Logs before the last deploy:** each deploy replaces the containers, and a server keeps logs only within the size limit OpsCrew sets for each container. `logs` says how far back its lines go. Grafana Cloud keeps 14 days, for users who need more.
-- **Very chatty apps:** `logs` shows the last 200 lines by default, and `--since` and `--tail` change that. On Cloudflare, the free plan keeps 200,000 log events a day for 3 days. When an app goes past that, `logs` says lines are missing and why.
+- **Very chatty apps:** `logs` shows the last 200 lines by default, and `--since` and `--tail` change that. On Cloudflare, the free plan keeps 200,000 log events a day for 3 days until 2026-11-30, and from 2026-12-01 0.5 GB a day for 7 days (research R2). When an app goes past that, `logs` says lines are missing and why.
 - **The app's own computer (localhost):** `logs` and `status` work against local Docker. The scheduled check doesn't apply, because GitHub can't reach the user's computer, and design says so.
 - **A Portainer target:** `logs` and `status` read through the Portainer. The disk check, Beszel and Grafana Alloy are not offered in this version, and design says why.
 - **GitHub Pages:** no runtime logs and no resource figures exist. The uptime and certificate checks apply.
@@ -173,7 +173,7 @@ A user working in Claude Code asks "why is my app failing?" or "how much memory 
   - cloud and own servers, through the same read-only access `status` already uses;
   - a Portainer, through its API;
   - the user's computer, through local Docker;
-  - Cloudflare's hosting, through Cloudflare's logs of the app's requests, past and live;
+  - Cloudflare's hosting, through Cloudflare's logs of a server-rendered app's requests, past and live; a static site has the last deploys instead, as GitHub Pages does;
   - GitHub Pages, which has no request logs: the last deploy runs instead, and a plain sentence saying so.
 - **FR-1702**: Every log line OpsCrew shows, returns or sends MUST pass through the redactor first. The app's known secret values, and values shaped like known kinds of secret, MUST be masked (constitution IV). This covers lines shown in the terminal, returned by MCP, written in issues, posted to webhooks or shipped to Grafana Cloud.
 - **FR-1703**: Reading logs and figures MUST change nothing on any target. On servers it MUST use only fixed, read-only commands. It MUST NOT add a way for any caller to run arbitrary commands on the server.
@@ -220,7 +220,7 @@ A user working in Claude Code asks "why is my app failing?" or "how much memory 
 
 ### Measurable Outcomes
 
-- **SC-1701**: On each target kind (cloud server, own server, Portainer, the user's computer, Cloudflare's hosting), `opscrew logs` shows the app's latest lines within 10 seconds. With `--follow`, a request's line appears within 10 seconds of the request.
+- **SC-1701**: On each target kind (cloud server, own server, Portainer, the user's computer, Cloudflare's hosting with a server-rendered app), `opscrew logs` shows the app's latest lines within 10 seconds. With `--follow`, a request's line appears within 10 seconds of the request.
 - **SC-1702**: When a deployed example stops answering, an issue naming it opens within the check's interval plus 10 minutes of GitHub's scheduling delay. It closes within one interval after the example answers again.
 - **SC-1703**: A server whose disk passes the threshold gets an issue naming its free space within one interval.
 - **SC-1704**: In a run where the example app prints a seeded secret, the secret's value appears in none of the outputs: the terminal output of `logs`, the MCP answers, the issues, the webhook posts, the lines in Grafana Cloud, or the audit entries.

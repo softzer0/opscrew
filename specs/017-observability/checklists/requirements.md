@@ -37,4 +37,4 @@
   - whether Cloudflare's analytics are available on the free plan;
   - the GitHub token permission for issues;
   - whether GitHub notifies anyone when it turns off an inactive repository's schedule.
-- The plan, tasks and implementation wait for the founder's go-ahead (2026-10-24).
+- The founder gave the go-ahead for the plan, tasks and implementation on 2026-10-28.
