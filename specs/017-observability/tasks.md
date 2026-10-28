@@ -727,11 +727,33 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
+- [ ] T1717 Found live: `addon open` on Ctrl+C, and destroy's pause in a script, in `packages/agents/src/{addons,destroy,check}/**`
+  - Owns: those paths (+ tests)
+  - Reads: research.md and the T1715 notes below; `packages/cli/src/approval.ts` (`FlagConfirmation`)
+  - Depends: T1716
+  - Accept:
+    - **Found live (2026-10-29, the Hetzner pass with `OPSCREW_E2E_OBSERVABILITY=1` and `OPSCREW_E2E_ADDONS=1`):**
+      - Ctrl+C on `opscrew addon open beszel` exited 2 with "This operation was aborted". `addonOpen` checks `signal.aborted` only after `runner.run` returns, but the runner rejects with an AbortError when the signal aborts.
+      - `opscrew destroy --confirm <app> --no-snapshot` (no `--yes`) left the check unpaused, so the disk issue stayed open. The pause is a separate `github-settings` approval, which a script's `--confirm` doesn't grant, and destroy only warns.
+    - **`addonOpen`:** an abort, whether it rejects or resolves, ends it quietly, as `logs --follow` does. Test with a runner that rejects on abort.
+    - **Destroy's pause is covered by destroy's own typed confirmation:**
+      - when the plan has the check on, that approval's details say that destroy also pauses the scheduled check for the environment;
+      - `pauseCheckForTeardown` then sets the pause without a second approval, still audited (`changeCheckPause` takes an already-given approval, or a flag that skips its request);
+      - every destroy flow that pauses (cloud, own server, Portainer, serverless) does this;
+      - retarget's and provision's pause changes keep their own `github-settings` approval.
+    - **Tests:**
+      - a scripted destroy (`--confirm`, no `--yes`) sets the pause;
+      - the confirmation's details name it;
+      - the audit records it;
+      - interactive destroy asks no extra question.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --concurrency=2` and `pnpm lint`
+  - Effort: high
+
 - [ ] T1715 Live runs (lead), after T1714: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1715)
 
-- [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
+- [X] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - **The lead's decisions (2026-10-28):**
     - **Done in T1716's implementation:**
       - Portainer drift uses `registerAppSecrets` and `GeneratedValuesSchema`, with `generatedValuesFile` moved into `shared/` (the cycle goes);
