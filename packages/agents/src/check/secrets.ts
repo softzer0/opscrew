@@ -21,19 +21,30 @@ const WEBHOOK_NAMES = { slack: "Slack", discord: "Discord", ntfy: "ntfy" } as co
 
 /**
  * The webhook's secrets: its address (`OPSCREW_CHECK_WEBHOOK`), from the variable of that name
- * or, in a terminal, asked with `askCheckWebhook` (never echoed); a cancelled question says the
- * address was not stored. For ntfy, its optional access token (`OPSCREW_CHECK_NTFY_TOKEN`) from
- * the variable of that name. One not given keeps what GitHub holds.
+ * or, in a terminal, asked with `askCheckWebhook` (never echoed) when the repository has no such
+ * secret yet; a cancelled question says the address was not stored. A secret GitHub already holds
+ * is kept, with a hint that a changed webhook kind needs the variable set again. For ntfy, its
+ * optional access token (`OPSCREW_CHECK_NTFY_TOKEN`) from the variable of that name. One not given
+ * keeps what GitHub holds.
  */
 async function webhookSecrets(
   deps: Pick<PhaseDeps, "env" | "interactive" | "reporter">,
+  github: GitHubSetup,
   settings: CheckSettings | undefined,
   services: Pick<ProvisionServices, "askCheckWebhook">,
 ): Promise<Record<string, string>> {
   const kind = settings?.webhook;
   if (kind === undefined) return {};
   let address = deps.env[CHECK_SECRETS.webhook]?.trim();
-  if (!address && deps.interactive && services.askCheckWebhook !== undefined) {
+  const stored =
+    !address &&
+    (await github.api.actionsSecretExists(github.owner, github.repo, CHECK_SECRETS.webhook));
+  if (stored) {
+    deps.reporter.info(
+      `GitHub already holds the scheduled check's webhook address (${CHECK_SECRETS.webhook}), so it is kept. If you changed the webhook to ${WEBHOOK_NAMES[kind]}, set ${CHECK_SECRETS.webhook} to its address and run \`opscrew provision\` again.`,
+    );
+  }
+  if (!address && !stored && deps.interactive && services.askCheckWebhook !== undefined) {
     address = (
       await services.askCheckWebhook({
         kind,
@@ -79,7 +90,7 @@ export async function storeCheckSecrets(
     ...(server === undefined
       ? {}
       : { [deploySecretName(plan, CHECK_SECRETS.server)]: checkServerSecret(server) }),
-    ...(await webhookSecrets(deps, input.settings, input.services)),
+    ...(await webhookSecrets(deps, github, input.settings, input.services)),
   };
   const names = Object.keys(secrets).sort();
   if (names.length === 0) return;

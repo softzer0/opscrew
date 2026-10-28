@@ -169,6 +169,42 @@ describe("GitHubClient", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("tells whether an Actions secret exists, with 404 as absent", async () => {
+    for (const [status, exists] of [
+      [200, true],
+      [404, false],
+    ] as const) {
+      const { fetch, calls } = fakeFetch({
+        "GET /repos/acme/shop/actions/secrets/OPSCREW_CHECK_WEBHOOK": {
+          status,
+          body: status === 200 ? { name: "OPSCREW_CHECK_WEBHOOK" } : { message: "Not Found" },
+        },
+      });
+      await expect(
+        new GitHubClient({ token: TOKEN, fetch }).actionsSecretExists(
+          "acme",
+          "shop",
+          "OPSCREW_CHECK_WEBHOOK",
+        ),
+      ).resolves.toBe(exists);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("names Secrets: Read when GitHub refuses to say whether a secret exists (403)", async () => {
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/secrets/OPSCREW_CHECK_WEBHOOK": {
+        status: 403,
+        body: { message: "Resource not accessible by personal access token" },
+      },
+    });
+    const error = (await new GitHubClient({ token: TOKEN, fetch })
+      .actionsSecretExists("acme", "shop", "OPSCREW_CHECK_WEBHOOK")
+      .catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.hint).toContain("Secrets: Read");
+  });
+
   it("deletes an Actions secret (204)", async () => {
     const { fetch, calls } = fakeFetch({
       "DELETE /repos/acme/shop/actions/secrets/OPSCREW_SSH_KEY": { status: 204 },

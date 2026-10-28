@@ -373,6 +373,8 @@ const ENVIRONMENTS = "Environments: Read and write";
 const ACTIONS_READ = "Actions: Read";
 /** What reading the check's issues needs. */
 const ISSUES_READ = "Issues: Read";
+/** What reading an Actions secret's metadata needs. */
+const SECRETS_READ = "Secrets: Read";
 /** What the repository variable endpoints need. */
 const VARIABLES = "Variables: Read and write";
 /** Actions minutes a month each GitHub plan includes for private repositories. */
@@ -1078,6 +1080,18 @@ export class GitHubClient {
     assertSecretName(name);
     const key = publicKey ?? (await this.getActionsPublicKey(owner, repo));
     await this.#putSecret(`/repos/${owner}/${repo}/actions/secrets`, name, value, key);
+  }
+
+  /** Whether the repository has the Actions secret `name` (its value is never read); 404 is false. */
+  async actionsSecretExists(owner: string, repo: string, name: string): Promise<boolean> {
+    assertSecretName(name);
+    const { status } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/secrets/${name}`,
+      `read whether the secret ${name} exists`,
+      { ok: [404], permission: SECRETS_READ },
+    );
+    return status !== 404;
   }
 
   /** Deletes an Actions secret. A secret that does not exist (404) counts as deleted. */

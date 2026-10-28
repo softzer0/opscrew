@@ -54,6 +54,7 @@ export type GitHubApi = Pick<
   | "getActionsPublicKey"
   | "deleteActionsSecret"
   | "setActionsSecret"
+  | "actionsSecretExists"
   | "findOpenPullRequest"
   | "createPullRequest"
   | "dispatchWorkflow"

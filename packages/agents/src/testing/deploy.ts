@@ -590,6 +590,9 @@ export class FakeGitHub implements GitHubApi {
   async deleteActionsSecret(_owner: string, _repo: string, name: string) {
     this.secrets.delete(name);
   }
+  async actionsSecretExists(_owner: string, _repo: string, name: string) {
+    return this.secrets.has(name);
+  }
   /** GitHub environments with their secrets (plaintext, test only). */
   readonly environments = new Map<string, Map<string, string>>();
   /** False: the repository has no GitHub environments (a private one on GitHub Free). */

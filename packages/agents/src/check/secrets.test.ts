@@ -4,13 +4,19 @@ import { createTestPhaseDeps, FakeGitHub, testPlan } from "../testing";
 import { storeCheckSecrets } from "./secrets";
 
 const WEBHOOK = "https://hooks.slack.example.com/services/opscrew-alerts-2b7d";
+const OLD = "https://hooks.slack.example.com/services/opscrew-alerts-old";
 
-async function store(answer: string | undefined, env: Record<string, string> = {}) {
+async function store(
+  answer: string | undefined,
+  env: Record<string, string> = {},
+  held: Record<string, string> = {},
+) {
   const deps = await createTestPhaseDeps({
     interactive: true,
     env: { OPSCREW_HOME: "/x", ...env },
   });
   const github = new FakeGitHub();
+  for (const [name, value] of Object.entries(held)) github.secrets.set(name, value);
   const asked: { kind: string; prompt: string }[] = [];
   const plan = DeployPlanSchema.parse({
     ...testPlan(),
@@ -57,5 +63,25 @@ describe("storeCheckSecrets' webhook", () => {
     const { github, asked } = await store(undefined, { OPSCREW_CHECK_WEBHOOK: WEBHOOK });
     expect(asked).toEqual([]);
     expect(github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(WEBHOOK);
+  });
+
+  it("keeps a webhook GitHub already holds without asking, and says how to change it", async () => {
+    const { deps, github, asked } = await store(WEBHOOK, {}, { OPSCREW_CHECK_WEBHOOK: OLD });
+    expect(asked).toEqual([]);
+    expect(github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(OLD);
+    expect(deps.reporter.text()).toContain(
+      "If you changed the webhook to Slack, set OPSCREW_CHECK_WEBHOOK to its address",
+    );
+  });
+
+  it("lets OPSCREW_CHECK_WEBHOOK replace a webhook GitHub already holds", async () => {
+    const { deps, github, asked } = await store(
+      undefined,
+      { OPSCREW_CHECK_WEBHOOK: WEBHOOK },
+      { OPSCREW_CHECK_WEBHOOK: OLD },
+    );
+    expect(asked).toEqual([]);
+    expect(github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(WEBHOOK);
+    expect(deps.reporter.text()).not.toContain("already holds");
   });
 });
