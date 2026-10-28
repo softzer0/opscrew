@@ -715,6 +715,7 @@ Effort`.
         - disabled leaving nothing.
     - **The other targets (SC-1701):** the existing own-server (`OPSCREW_E2E_OWN_SERVER`), Portainer (`OPSCREW_E2E_PORTAINER`) and localhost (`OPSCREW_E2E_LOCAL_RUNNER`) passes each gain a step: `logs` shows the latest lines within 10 seconds, `logs --follow` a request's line within 10 seconds, and `status` the figures (the host's disk named as not available on Portainer).
     - **Cloudflare** (`OPSCREW_E2E_CLOUDFLARE_HOSTING=1`, the SSR example): `logs` and `logs --follow` showing a request, and `status`'s figures.
+    - **Windows (if a Windows machine is available for the run):** Ctrl+C on `logs --follow` over SSH and on `addon open beszel` ends without an error message. The runner doesn't detach children on win32, so `ssh.exe` may get the signal first (T1712a's review).
     - **The leak search:** a seeded secret, printed by the example app, searched in every output (SC-1704):
       - the terminal;
       - MCP's `opscrew_logs`;
@@ -739,6 +740,7 @@ Effort`.
   - After `addon enable grafana-cloud`, a hint could say that the app's own secret values are masked only once the next deploy writes the masking file (until then only secret-shaped values are). The guide says so (T1712b).
   - Cloudflare's dated log allowance table lives in `agents/src/logs/cloudflare.ts` (`WORKERS_LOGS_ALLOWANCES`, T1709c), not in iac-templates' `prices.ts` beside the other dated figures. Decide whether to move it.
   - The masking file (`mask.re`) still masks the frameworks' fixed production words (`production` and the like), because their table (`FRAMEWORK_ENV` in agents' `app-env.ts`) is agents'. Decide whether to move the word pairs to plan-schema as `hostListKind` was (T1708's review). It also has no URL-encoded forms and none of the service env files' values, unlike the redactor.
+  - `lineText` is defined in both the CLI's and MCP's `logs.ts` (T1712a's review). Move it to agents if that's small.
   - The container-name pattern is in `status/components.ts` and again in `logs/commands.ts` (T1709a): export it once and import it.
   - Re-enabling an add-on with nothing changed still asks for an approval, because `planAddon` always marks its step as a change (T1711). Let the plan say "nothing to change" when the step's check finds it in place.
   - On an own server, the host plan that carries the tunnel connector for Beszel's subdomain keeps its generic title ("Apply the host plan to your server"), and the shared Cloudflare plan's title is generic too (T1711). Name the add-on there.
