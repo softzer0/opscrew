@@ -595,6 +595,7 @@ Effort`.
     - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
     - **`status`** prints the figures with their flags, and the check's state and open alerts. The CLI's and MCP's status fixtures write no deploy key, so today they show "could not read the resource figures" (T1709b's report): give them the key, and assert the figures' lines and `resources` data.
     - **`ALL_COMMANDS`** has 25 entries, and `program.test.ts` lists both new names.
+    - **`provision --plan-only`'s hash list** (`cli/src/commands/provision.ts`) names the check-key host plan's hash too (T1710's report: only the reporter line names it today).
     - **MCP:**
       - **`opscrew_logs`** (`readOnlyHint: true`): at most 500 lines and 64 KiB, `truncated: true` past either, no follow, redacted through `runTool`;
       - **`opscrew_status`'s structured data** gains `resources` and `check`;
@@ -711,6 +712,9 @@ Effort`.
   - The container-name pattern is in `status/components.ts` and again in `logs/commands.ts` (T1709a): export it once and import it.
   - Re-enabling an add-on with nothing changed still asks for an approval, because `planAddon` always marks its step as a change (T1711). Let the plan say "nothing to change" when the step's check finds it in place.
   - On an own server, the host plan that carries the tunnel connector for Beszel's subdomain keeps its generic title ("Apply the host plan to your server"), and the shared Cloudflare plan's title is generic too (T1711). Name the add-on there.
+  - The check key's `authorized_keys` line is written out in agents (`check/`) and built again in ssh-host. Export ssh-host's builder and use it in both (T1710).
+  - `checkEnvironmentKey` gives `shop-staging/staging` for a named environment, because the app's name is `<app>-<env>`. Decide whether the key should use the first app's base name (T1707's review, T1710).
+  - A repository's check-key line stays on an own server while another repository's app remains there, because host records don't name an app's repository (T1706, T1710). The line can only run `df`. Decide whether app records should carry the repository.
   - `status` reads a server over two SSH connections, one for the components and one for the figures (T1709b). Decide whether one connection is worth a seam. On own servers the figures choose root with a small `asAdmin` wrapper, where the components use ssh-host's privilege probe (`asRoot`, not exported): one shared helper would do.
   - ssh-host's add-on tables: `SECRET_NEEDS` could be a `needs` field of `SECRET_CHECKS`. The add-ons' names live in four tables (`ADDON_NAMES`, `ADDON_TITLES`, `variant.what`, `addonRemoveScripts`' `what`), where one record in `constants.ts` would do (T1706's review).
   - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`, and have Portainer's drift use `app-secrets.ts`'s `GeneratedValuesSchema` instead of its own copy (T1701a's review).
