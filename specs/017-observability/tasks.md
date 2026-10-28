@@ -400,6 +400,17 @@ Effort`.
 
 ## Phase 4: Agents (parallel)
 
+- [ ] T1708b [US5] Alloy's default memory limit is 256 MB, in `packages/plan-schema/src/plan.ts` (the default only) and `packages/iac-templates/src/addons/**` (snapshots)
+  - Owns: those paths (+ tests, snapshots, and plan-schema's generated JSON schema)
+  - Reads: T1713's report: Alloy reached 91% of 192 MB from reclaimable file cache in one run, which `status` would flag
+  - Depends: T1713
+  - Accept:
+    - `grafanaCloud.memoryMb.alloy` defaults to 256, and `GOMEMLIMIT` follows at 80%.
+    - Snapshots updated. Nothing else changes.
+    - data-model.md's "Defaults from the spike" stays true (the lead updates the docs).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: medium
+
 - [X] T1709a [P] [US1] `readLogs` for every target, in `packages/agents/src/logs/**`
   - Owns: that path (+ tests; fakes in `packages/agents/src/testing/logs.ts` (new))
   - Reads: spec US1, FR-1701–FR-1703, SC-1701; data-model.md "Log lines"; contracts/observability.md "Agents and surfaces"; research.md R1 and "Spike results" 7, 8; plan.md "7."; T1705's report

@@ -545,7 +545,7 @@ Items 1–4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2, 8 
   - The masking file is read with `poll_frequency = "10s"`. With no values, it holds a pattern that never matches (`[^\s\S]`).
 - **Memory defaults:**
   - Beszel's 128/64/32 stand;
-  - Alloy's 192 stands;
+  - Alloy's is 256 (T1713's Docker pass saw 62–79 MiB of its own memory, but up to 175 MiB with reclaimable file cache, which `status` would flag at 90% of 192);
   - Alloy's proxy shares the 32.
 - **Portainer's `--follow`** polls with nanosecond `since`. Stats never use `one-shot`.
 - **A standard user's token sees only that user's stacks,** so `status` and `logs` say so when the app's containers aren't visible to it, rather than calling them absent.
