@@ -692,7 +692,7 @@ Effort`.
 
 ## Phase 6: Live
 
-- [ ] T1714 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1714 Live tests, in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: quickstart.md; plan.md "12."
   - Depends: T1712a, T1712b, T1713
