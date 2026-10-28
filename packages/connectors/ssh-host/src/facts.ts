@@ -296,14 +296,15 @@ export const HostFactsSchema = z.object({
     }),
   ),
   /**
-   * The deploy user: its groups, and the lines of its authorized_keys other than the scheduled
-   * check's key, whose line in OpsCrew's form (`CHECK_KEY_LINE_RE`) is `checkKey`.
+   * The deploy user: its groups, and the lines of its authorized_keys other than the
+   * scheduled checks' keys in OpsCrew's form (`CHECK_KEY_LINE_RE`), whose repositories
+   * (`owner/repo`) are `checkKeys`.
    */
   deployUser: z
     .object({
       groups: z.array(z.string()),
       keys: z.array(z.string()),
-      checkKey: z.boolean().optional(),
+      checkKeys: z.array(z.string()).optional(),
     })
     .nullable(),
   packages: z.object({

@@ -13,10 +13,11 @@ const ADDON_NAMES: Readonly<Record<AddonKind, { name: string; command: string }>
 };
 
 /**
- * The refusal when `owner`, another app on the server, turned the add-on on: a server has one of
- * each, and it stays with that app.
+ * The refusal when `owner`, another app, turned the add-on on: a server has one of each, and it
+ * stays with that app. `gone`: that app is no longer set up on the server, so turning the add-on
+ * off from this project is allowed (and the hint says so).
  */
-export function addonTaken(kind: AddonKind, owner: string): OpsCrewError {
+export function addonTaken(kind: AddonKind, owner: string, gone: boolean): OpsCrewError {
   const { name, command } = ADDON_NAMES[kind];
   const what =
     kind === "beszel"
@@ -26,7 +27,9 @@ export function addonTaken(kind: AddonKind, owner: string): OpsCrewError {
     "PHASE_PRECONDITION",
     `${name} is already on this server for the app "${owner}", and a server has only one, so OpsCrew changes nothing.`,
     {
-      hint: `${what} To move it to this app, run \`opscrew addon disable ${command}\` in the project of "${owner}" first, then run this command again.`,
+      hint: gone
+        ? `"${owner}" is no longer set up on this server. Run \`opscrew addon disable ${command}\` in this project to remove what it left, then run this command again.`
+        : `${what} To move it to this app, run \`opscrew addon disable ${command}\` in the project of "${owner}" first, then run this command again.`,
     },
   );
 }

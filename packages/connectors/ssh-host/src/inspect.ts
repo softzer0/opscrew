@@ -7,6 +7,7 @@ import {
   APP_RECORDS_DIR,
   APPS_DIR,
   addonDir,
+  CHECK_KEY_COMMENT,
   CHECK_KEY_LINE_RE,
   DATA_DIR,
   DOCKER_DAEMON_JSON,
@@ -718,7 +719,11 @@ export function factsFromOutput(
         ? {
             groups: linesOf(deploy.text).flatMap((line) => line.split(/\s+/)),
             keys: deployKeys.filter((line) => !checkLine.test(line)),
-            checkKey: deployKeys.some((line) => checkLine.test(line)),
+            checkKeys: deployKeys
+              .filter((line) => checkLine.test(line))
+              .map((line) =>
+                line.slice(line.lastIndexOf(CHECK_KEY_COMMENT) + CHECK_KEY_COMMENT.length),
+              ),
           }
         : null,
     packages: {

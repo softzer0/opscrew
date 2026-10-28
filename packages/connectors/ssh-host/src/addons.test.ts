@@ -72,25 +72,36 @@ function everythingButStdin(fake: FakeHost, plan: HostPlan): string {
   ].join("\n");
 }
 
+/** The test project's repository, as the check key's comment names it. */
+const REPOSITORY = "acme/shop";
+
+/** The check key plan of `REPOSITORY` (or another repository) on a server. */
+function checkKeyPlan(
+  runAs: "root" | "login",
+  change: { publicKey: string } | "off",
+  repository = REPOSITORY,
+) {
+  return change === "off"
+    ? planAddon("check-key", { app: "shop", runAs, repository, disable: {} })
+    : planAddon("check-key", { app: "shop", runAs, repository, enable: change });
+}
+
 describe("check-key", () => {
   it("adds the restricted line as the deploy user, shows only the key's fingerprint, and re-applies as a no-op", async () => {
     const fake = await ownServer();
     const check = ed25519PublicKey();
-    const plan = planAddon("check-key", {
-      app: "shop",
-      runAs: "root",
-      enable: { publicKey: `${check} opscrew-check-key` },
-    });
+    const plan = checkKeyPlan("root", { publicKey: `${check} a-comment` });
     expect(plan.steps.map((step) => step.id)).toEqual(["check-key"]);
     const [step] = plan.steps;
     expect(step?.title).toContain(keyFingerprint(check));
+    expect(step?.title).toContain(REPOSITORY);
     expect(`${step?.title} ${step?.reason}`).not.toContain(check.split(" ")[1]);
     expect(JSON.stringify(plan)).not.toContain("PRIVATE KEY");
 
     const result = await applyApproved(fake, plan);
     expect(result.applied).toEqual(["check-key"]);
-    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check`;
-    expect(checkKeyLine(check)).toBe(line);
+    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`;
+    expect(checkKeyLine(check, REPOSITORY)).toBe(line);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, line]);
     const calls = fake.calls.filter((call) => call.name.startsWith("check-key"));
     expect(calls.map((call) => call.name)).toEqual([
@@ -104,67 +115,60 @@ describe("check-key", () => {
     expect(again).toEqual({ applied: [], skipped: ["check-key"] });
   });
 
-  it("replaces a line with the same comment and keeps every other key", async () => {
+  it("replaces only the line with its repository's comment; another repository's key stays", async () => {
     const fake = await ownServer();
-    const old = ed25519PublicKey();
     const deploy = fake.users.get("deploy");
-    deploy?.keys.push(`${old} opscrew-check`);
+    const other = checkKeyLine(ed25519PublicKey(), "acme/blog");
+    deploy?.keys.push(`${ed25519PublicKey()} opscrew-check:acme/shop`, other);
     const check = ed25519PublicKey();
-    await applyApproved(
-      fake,
-      planAddon("check-key", {
-        app: "shop",
-        runAs: "root",
-        enable: { publicKey: check },
-      }),
-    );
-    expect(deploy?.keys).toEqual([DEPLOY_KEY, checkKeyLine(check)]);
+    await applyApproved(fake, checkKeyPlan("root", { publicKey: check }));
+    expect(deploy?.keys).toEqual([DEPLOY_KEY, other, checkKeyLine(check, REPOSITORY)]);
+    await applyApproved(fake, checkKeyPlan("root", "off"));
+    expect(deploy?.keys).toEqual([DEPLOY_KEY, other]);
   });
 
   it("survives the deploy-key step, which writes exactly the apps' deploy keys", async () => {
     const fake = await ownServer();
     const check = ed25519PublicKey();
-    await applyApproved(
-      fake,
-      planAddon("check-key", {
-        app: "shop",
-        runAs: "root",
-        enable: { publicKey: check },
-      }),
-    );
-    // Inspection keeps the check's line apart, so the deploy keys stay in place.
+    const other = checkKeyLine(ed25519PublicKey(), "acme/blog");
+    fake.users.get("deploy")?.keys.push(other);
+    await applyApproved(fake, checkKeyPlan("root", { publicKey: check }));
+    // Inspection keeps the check keys apart, so the deploy keys stay in place.
     const facts = await inspectHost(fake);
-    expect(facts.deployUser).toMatchObject({ keys: [DEPLOY_KEY], checkKey: true });
+    expect(facts.deployUser).toMatchObject({
+      keys: [DEPLOY_KEY],
+      checkKeys: ["acme/blog", "acme/shop"],
+    });
     const same = planHost(facts, desiredFor(fake), "opscrew provision");
     expect(same.steps.find((step) => step.id === "deploy-key")?.state).toBe("in-place");
-    // A rotated deploy key rewrites the file, and the check's line stays.
+    // A rotated deploy key rewrites the file, and every check key stays.
     const rotated = DEPLOY_KEY.replace("FAKEFAKEFAKE", "ROTATEDROTAT");
     await provision(fake, desiredFor(fake, { deploy: { user: "deploy", publicKey: rotated } }));
-    expect(fake.users.get("deploy")?.keys).toEqual([rotated, checkKeyLine(check)]);
+    expect(fake.users.get("deploy")?.keys).toEqual([
+      rotated,
+      other,
+      checkKeyLine(check, REPOSITORY),
+    ]);
   });
 
-  it("is removed alone by its undo, and by the last app's teardown", async () => {
+  it("is removed alone by its undo, and by the last app's teardown (its own repository's only)", async () => {
     const fake = await ownServer();
-    const check = ed25519PublicKey();
-    const on = planAddon("check-key", {
-      app: "shop",
-      runAs: "root",
-      enable: { publicKey: check },
-    });
+    const on = checkKeyPlan("root", { publicKey: ed25519PublicKey() });
     await applyApproved(fake, on);
-    const off = planAddon("check-key", { app: "shop", runAs: "root", disable: {} });
-    expect((await applyApproved(fake, off)).applied).toEqual(["check-key"]);
+    expect((await applyApproved(fake, checkKeyPlan("root", "off"))).applied).toEqual(["check-key"]);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
 
     await applyApproved(fake, on);
+    const other = checkKeyLine(ed25519PublicKey(), "acme/blog");
+    fake.users.get("deploy")?.keys.push(other);
     const teardown = planTeardown(
       await inspectHost(fake),
       { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
-    expect(teardown.steps.map((step) => step.id)).toContain("check-key");
+    expect(teardown.steps.filter((step) => step.id === "check-key")).toHaveLength(1);
     await applyApproved(fake, teardown, { command: "opscrew destroy" });
-    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
+    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, other]);
   });
 
   it("runs as the deploy login on a server OpsCrew created", async () => {
@@ -175,15 +179,23 @@ describe("check-key", () => {
       keys: [DEPLOY_KEY],
       groups: ["deploy"],
     });
-    const check = ed25519PublicKey();
-    const plan = planAddon("check-key", {
-      app: "shop",
-      runAs: "login",
-      enable: { publicKey: check },
-    });
+    const plan = checkKeyPlan("login", { publicKey: ed25519PublicKey() });
     expect((await applyApproved(fake, plan)).applied).toEqual(["check-key"]);
     expect(fake.calls.every((call) => !call.sudo && call.asUser === undefined)).toBe(true);
     expect(fake.files.has("/etc/opscrew/host.json")).toBe(false);
+  });
+
+  it("needs the repository as owner/repo", () => {
+    for (const repository of [undefined, "acme", "acme/shop/x", "-acme/shop"]) {
+      expect(() =>
+        planAddon("check-key", {
+          app: "shop",
+          runAs: "root",
+          ...(repository === undefined ? {} : { repository }),
+          enable: { publicKey: ed25519PublicKey() },
+        }),
+      ).toThrow(/repository is not valid/);
+    }
   });
 });
 
@@ -355,6 +367,83 @@ describe("beszel", () => {
     });
     await applyApproved(fake, alloy, { secrets: { grafanaCloudToken: secrets.grafanaCloudToken } });
     expect(hostRecord(fake).addons).toEqual({ beszel: "shop", alloy: "blog" });
+  });
+
+  it("is recorded before its setup runs, and stays recorded when a setup or a removal fails", async () => {
+    const fake = await ownServer();
+    const { secrets } = addonSecrets();
+    const on = planAddon("beszel", {
+      app: "shop",
+      runAs: "root",
+      facts: await inspectHost(fake),
+      enable: HUB,
+    });
+    fake.failScripts.set("beszel.apply", "Beszel did not start (docker compose up failed).");
+    await rejection(applyApproved(fake, on, { secrets }));
+    expect(hostRecord(fake).addons).toEqual({ beszel: "shop" });
+    fake.failScripts.clear();
+    await applyApproved(fake, on, { secrets });
+
+    const off = planAddon("beszel", {
+      app: "shop",
+      runAs: "root",
+      facts: await inspectHost(fake),
+      disable: {},
+    });
+    fake.failScripts.set("beszel.remove.apply", "Docker is not running.");
+    await rejection(applyApproved(fake, off));
+    expect(hostRecord(fake).addons).toEqual({ beszel: "shop" });
+    fake.failScripts.clear();
+    await applyApproved(fake, off);
+    expect(hostRecord(fake).addons).toEqual({});
+  });
+
+  it("left by an app that is gone: another app may only turn it off, and the hint says so", async () => {
+    const fake = await ownServer();
+    await addBlog(fake);
+    const { secrets } = addonSecrets();
+    await applyApproved(
+      fake,
+      planAddon("beszel", {
+        app: "shop",
+        runAs: "root",
+        facts: await inspectHost(fake),
+        enable: HUB,
+      }),
+      { secrets },
+    );
+    // "shop" goes with its data kept: Beszel's history stays, still recorded as its.
+    await applyApproved(
+      fake,
+      planTeardown(
+        await inspectHost(fake),
+        { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+        "opscrew destroy",
+      ),
+      { command: "opscrew destroy" },
+    );
+    const facts = await inspectHost(fake);
+    let refused: (Error & { hint?: string }) | undefined;
+    try {
+      planAddon("beszel", { app: "blog", runAs: "root", facts, enable: HUB });
+    } catch (error) {
+      refused = error as Error & { hint?: string };
+    }
+    expect(refused?.message).toContain('for the app "shop"');
+    expect(refused?.hint).toContain('"shop" is no longer set up on this server');
+    expect(refused?.hint).toContain("opscrew addon disable beszel` in this project");
+
+    const off = planAddon("beszel", { app: "blog", runAs: "root", facts, disable: {} });
+    await applyApproved(fake, off);
+    expect(hostRecord(fake).addons).toEqual({});
+    const on = planAddon("beszel", {
+      app: "blog",
+      runAs: "root",
+      facts: await inspectHost(fake),
+      enable: HUB,
+    });
+    await applyApproved(fake, on, { secrets });
+    expect(hostRecord(fake).addons).toEqual({ beszel: "blog" });
   });
 
   it("goes with the app that turned it on: a teardown keeps its history unless it deletes the data", async () => {

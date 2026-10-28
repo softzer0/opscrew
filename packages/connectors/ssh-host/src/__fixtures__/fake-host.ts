@@ -1799,7 +1799,8 @@ export class FakeHost implements RemoteExec {
   private checkKeyScript(name: string, p: Record<string, string>): CommandResult {
     const deploy = this.users.get("deploy");
     if (deploy === undefined) return fail("The deploy user has no home directory.");
-    const ours = (key: string) => /\sopscrew-check$/.test(key);
+    const comment = new RegExp((p.COMMENT_RE ?? "").replace("[[:space:]]", "\\s"));
+    const ours = (key: string) => comment.test(key);
     const remove = name.startsWith("check-key.remove");
     const ok = remove
       ? !deploy.keys.some(ours)

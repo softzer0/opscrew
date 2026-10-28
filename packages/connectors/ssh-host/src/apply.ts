@@ -592,6 +592,11 @@ function isAddon(id: HostStepId): id is AddonKind {
   return (ADDON_KINDS as readonly string[]).includes(id);
 }
 
+/** The step removes what it manages (a teardown's or undo's steps, or `remove: true`). */
+function isRemoval(plan: HostPlan, step: HostStep): boolean {
+  return plan.purpose !== "setup" || step.params.remove === true;
+}
+
 /**
  * Applies an approved host plan. Refuses with PLAN_HASH_MISMATCH when the plan's hash is not
  * `approvedHash`, and with PHASE_PRECONDITION when it has findings or blocked steps or a secret
@@ -713,11 +718,14 @@ export async function applyHostPlan(
     ctx.privilege = privilege;
     ctx.recorder = await Recorder.load(ctx);
     await appsCheck(ctx, ctx.recorder.apps);
-    // One of each add-on per server: another app's stays as it is.
+    // One of each add-on per server: another app's stays as it is, unless that app is gone and
+    // this plan turns the add-on off.
     for (const { step } of changes) {
       if (!isAddon(step.id)) continue;
       const owner = ctx.recorder.addonOwner(step.id);
-      if (owner !== undefined && owner !== valid.app) throw addonTaken(step.id, owner);
+      if (owner === undefined || owner === valid.app) continue;
+      const gone = !ctx.recorder.apps.includes(owner);
+      if (!gone || !isRemoval(valid, step)) throw addonTaken(step.id, owner, gone);
     }
   }
 
@@ -729,17 +737,21 @@ export async function applyHostPlan(
       skipped.push(step.id);
       continue;
     }
+    // The host record names the app that turns an add-on on before its setup runs, so a failed
+    // setup never leaves an add-on without an owner; a removal clears it only once it is done
+    // (and never while its history is kept: that is still the app's).
+    const addon = isAddon(step.id) && runAsOf(step) === "root" ? step.id : undefined;
+    const removal = isRemoval(valid, step);
     try {
+      if (addon !== undefined && !removal) await ctx.recorder?.setAddon(addon, valid.app);
       if (await runStep(ctx, step, work.scripts)) applied.push(step.id);
       else skipped.push(step.id);
       // The host record lists the apps set up on the server.
       if (step.id === "app-record" && valid.purpose !== "undo") {
         await ctx.recorder?.list(valid.app, valid.purpose === "setup");
       }
-      // ... and which app turned each add-on on (its history kept is still that app's).
-      if (isAddon(step.id) && runAsOf(step) === "root" && step.params.keepData !== true) {
-        const on = valid.purpose === "setup" && step.params.remove !== true;
-        await ctx.recorder?.setAddon(step.id, on ? valid.app : null);
+      if (addon !== undefined && removal && step.params.keepData !== true) {
+        await ctx.recorder?.setAddon(addon, null);
       }
     } catch (error) {
       throw failure(error, applied);

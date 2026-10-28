@@ -141,6 +141,13 @@ export const RepositoryUrlSchema = z
     message: "must be https://github.com/<owner>/<repo>",
   });
 
+/** A GitHub repository as `<owner>/<repo>` (the check key's comment names it). */
+export const RepositoryNameSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/, {
+    message: "must be a GitHub repository as <owner>/<repo>",
+  });
+
 /** The two URLs name one repository: GitHub's owner and repository names ignore case. */
 export function sameRepository(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();

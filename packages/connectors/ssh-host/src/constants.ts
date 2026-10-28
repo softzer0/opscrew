@@ -199,23 +199,31 @@ export function maskFilePath(app: string): string {
 /** The masking file's content until the deploy job writes the app's values: it never matches. */
 export const EMPTY_MASK = "[^\\s\\S]";
 
-/** The comment that marks the scheduled check's key in the deploy user's authorized_keys. */
-export const CHECK_KEY_COMMENT = "opscrew-check";
+/**
+ * The comment that marks a scheduled check's key in the deploy user's authorized_keys, followed
+ * by its repository (`opscrew-check:<owner>/<repo>`): each repository has its own key.
+ */
+export const CHECK_KEY_COMMENT = "opscrew-check:";
+
+/** The check key's comment for a repository (`owner/repo`). */
+export function checkKeyComment(repository: string): string {
+  return `${CHECK_KEY_COMMENT}${repository}`;
+}
 
 /** The only command the check's key can run (OpenSSH's forced command). */
 export const CHECK_KEY_COMMAND = "df -P -B1 /";
 
 /**
- * The check key's line in authorized_keys, as the spike tested it under OpsCrew's sshd settings:
- * `restrict` turns off terminals and forwarding, and the forced command runs only `df`.
- * `publicKey` is `<type> <base64>`.
+ * A repository's check key line in authorized_keys, as the spike tested it under OpsCrew's sshd
+ * settings: `restrict` turns off terminals and forwarding, and the forced command runs only `df`.
+ * `publicKey` is `<type> <base64>`, `repository` is `owner/repo`.
  */
-export function checkKeyLine(publicKey: string): string {
-  return `restrict,command="${CHECK_KEY_COMMAND}" ${publicKey} ${CHECK_KEY_COMMENT}`;
+export function checkKeyLine(publicKey: string, repository: string): string {
+  return `restrict,command="${CHECK_KEY_COMMAND}" ${publicKey} ${checkKeyComment(repository)}`;
 }
 
-/** ERE for a check key line in OpsCrew's form: the deploy-key step keeps such a line. */
-export const CHECK_KEY_LINE_RE = `^restrict,command="${CHECK_KEY_COMMAND}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}$`;
+/** ERE for a check key line in OpsCrew's form, of any repository: the deploy-key step keeps it. */
+export const CHECK_KEY_LINE_RE = `^restrict,command="${CHECK_KEY_COMMAND}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
 
 /** Seconds before the server undoes an SSH or firewall change on its own. */
 export const DEFAULT_DEAD_MAN_SECONDS = 180;

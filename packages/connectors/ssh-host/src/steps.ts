@@ -18,8 +18,8 @@ import {
   appDirs,
   BACKUP_DIR,
   BESZEL_TOKEN_PLACEHOLDER,
-  CHECK_KEY_COMMENT,
   CHECK_KEY_LINE_RE,
+  checkKeyComment,
   checkKeyLine,
   DEAD_MAN_DIR,
   DOCKER_DAEMON_JSON,
@@ -86,6 +86,7 @@ import {
   type HostStepId,
   PortainerVersionSchema,
   ProjectIdSchema,
+  RepositoryNameSchema,
   type SecretName,
   ServiceNameSchema,
   TunnelIdSchema,
@@ -124,7 +125,8 @@ export interface StepScripts {
   deadMan?: { step: GuardedStep; capture: string; params: ScriptParams };
   /**
    * Secrets the apply script reads from stdin, one line each in this order (the Beszel hub's key
-   * as two lines: its base64 and its public key line). `required`: the step fails without them.
+   * as one line of base64; its public half is the plan's `hubKey`). `required`: the step fails
+   * without them.
    */
   secrets?: { names: readonly SecretName[]; required: boolean };
   /** The GitHub runner token the apply script reads from stdin, fetched when the step runs. */
@@ -1931,25 +1933,35 @@ rm -f "$DIR/admin_password"`,
 /** A public key without its comment: `<type> <base64>`. */
 const BareKeySchema = z.string().regex(/^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}$/);
 
-/** Lines of authorized_keys with the check key's comment, whatever their options. */
-const CHECK_COMMENT_RE = `[[:space:]]${CHECK_KEY_COMMENT}$`;
+/**
+ * ERE for the lines of authorized_keys with exactly the repository's check key comment
+ * (`opscrew-check:<owner>/<repo>`), whatever their options.
+ */
+function checkCommentRe(repository: string): string {
+  return `[[:space:]]${checkKeyComment(repository).replaceAll(".", "\\.")}$`;
+}
 
 /**
- * `check-key`: the deploy user's authorized_keys holds one line with the check's comment,
- * `restrict,command="df -P -B1 /" <key> opscrew-check` (a line with the same comment is
- * replaced); removed, it holds none. Every other line stays. It runs as the deploy user.
+ * `check-key`: the deploy user's authorized_keys holds one line with the repository's check
+ * comment, `restrict,command="df -P -B1 /" <key> opscrew-check:<owner>/<repo>` (a line with the
+ * same comment is replaced); removed, it holds none. Every other line stays, other repositories'
+ * check keys included. It runs as the deploy user, and changes nothing when the file can't be
+ * read.
  */
 function checkKeyScripts(step: HostStep): StepScripts {
   const remove = step.params.remove === true;
-  const p = params(step, z.object({ runAs: RunAsSchema }));
+  const p = params(step, z.object({ runAs: RunAsSchema, repository: RepositoryNameSchema }));
+  // `read_others` runs in the script's own shell, so a failed read stops it before any write.
   const helpers = `keys_file() { printf '%s/.ssh/authorized_keys' "$(getent passwd "$USER_NAME" | cut -d: -f6)"; }
-keep_others() {
-  others=$(grep -vE "$COMMENT_RE" "$1") || [ $? -eq 1 ] || fail "OpsCrew could not read $1."
-  if [ -n "$others" ]; then printf '%s\\n' "$others"; fi
+read_others() {
+  others=''
+  if [ -f "$1" ]; then
+    others=$(grep -vE "$COMMENT_RE" "$1") || [ $? -eq 1 ] || fail "OpsCrew could not read $1, so it changed nothing."
+  fi
 }`;
   const shared = {
     USER_NAME: "deploy",
-    COMMENT_RE: CHECK_COMMENT_RE,
+    COMMENT_RE: checkCommentRe(p.repository),
     RUN_AS: p.runAs,
   };
   if (remove) {
@@ -1962,7 +1974,8 @@ keep_others() {
       apply: `k=$(keys_file)
 if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
 if [ -f "$k" ] && grep -qE "$COMMENT_RE" "$k"; then
-  keep_others "$k" | write_file "$k" 0600
+  read_others "$k"
+  if [ -n "$others" ]; then printf '%s\\n' "$others"; fi | write_file "$k" 0600
 fi`,
       failed: "The scheduled check's key is still in the deploy user's authorized_keys.",
       asDeploy: true,
@@ -1973,7 +1986,7 @@ fi`,
   const { publicKey } = params(step, z.object({ publicKey: BareKeySchema }));
   return scripts({
     name: "check-key",
-    params: { ...shared, LINE: checkKeyLine(publicKey) },
+    params: { ...shared, LINE: checkKeyLine(publicKey, p.repository) },
     helpers,
     verify: `  k=$(keys_file)
   [ -f "$k" ] && [ ! -L "$k" ] || return 1
@@ -1985,8 +1998,9 @@ if [ -L "$h/.ssh" ]; then fail "$h/.ssh is a symbolic link; OpsCrew does not fol
 install -d -m 0700 "$h/.ssh"
 k="$h/.ssh/authorized_keys"
 if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
+read_others "$k"
 {
-  if [ -f "$k" ]; then keep_others "$k"; fi
+  if [ -n "$others" ]; then printf '%s\\n' "$others"; fi
   printf '%s\\n' "$LINE"
 } | write_file "$k" 0600`,
     failed: "The scheduled check's key is not in the deploy user's authorized_keys as planned.",
@@ -2292,11 +2306,10 @@ elif [ -d "$DIR" ]; then
   done
 fi
 if [ -n "$MASK" ]; then rm -f "$MASK"; fi
-# OpsCrew's shared parents go too once they are empty.
-if [ "$RUN_AS" = root ]; then
-  for d in "$PARENT" "$ADDONS_ROOT"; do
-    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
-  done
+# The add-ons' parent goes too once it is empty, and on a server the user owns OpsCrew's root.
+if [ -d "$PARENT" ] && [ -z "$(ls -A "$PARENT")" ]; then rmdir "$PARENT"; fi
+if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then
+  rmdir "$ADDONS_ROOT"
 fi`,
     failed: `${what} is still on the server.`,
     doing: `removing ${what}`,

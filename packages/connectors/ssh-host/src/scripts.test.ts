@@ -265,6 +265,7 @@ async function everyPlan(): Promise<HostPlan[]> {
     planAddon("check-key", {
       app: "shop",
       runAs: "root",
+      repository: "acme/shop",
       enable: { publicKey: ed25519PublicKey() },
     }),
     planAddon("beszel", { app: "shop", runAs: "root", facts, enable: BESZEL_HUB }),
@@ -272,7 +273,7 @@ async function everyPlan(): Promise<HostPlan[]> {
   ];
   plans.push(
     ...addonsOn,
-    planAddon("check-key", { app: "shop", runAs: "login", disable: {} }),
+    planAddon("check-key", { app: "shop", runAs: "login", repository: "acme/shop", disable: {} }),
     planAddon("beszel", {
       app: "shop",
       runAs: "login",
@@ -958,44 +959,105 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
     return stepScripts(plan, step);
   };
 
-  it("check-key: replaces the line with its comment, keeps every other key, and the deploy-key step keeps it", async () => {
+  /** The check key scripts of a repository, on and off. */
+  const checkKeyScriptsOf = (publicKey: string, repository: string) => ({
+    on: scriptsOf(
+      planAddon("check-key", { app: "shop", runAs: "root", repository, enable: { publicKey } }),
+    ),
+    off: scriptsOf(planAddon("check-key", { app: "shop", runAs: "root", repository, disable: {} })),
+  });
+  const KEYS = "/home/deploy/.ssh/authorized_keys";
+
+  it("check-key: replaces only its repository's line, keeps every other key, and the deploy-key step keeps every check key", async () => {
     const check = ed25519PublicKey();
-    const old = ed25519PublicKey();
-    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check`;
-    const on = scriptsOf(
-      planAddon("check-key", {
-        app: "shop",
-        runAs: "root",
-        enable: { publicKey: check },
-      }),
-    );
-    const off = scriptsOf(planAddon("check-key", { app: "shop", runAs: "root", disable: {} }));
+    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop.web`;
+    // A name that would match if the dot were not escaped, and another repository's key.
+    const lookalike = `restrict,command="df -P -B1 /" ${ed25519PublicKey()} opscrew-check:acme/shopxweb`;
+    const { on, off } = checkKeyScriptsOf(check, "acme/shop.web");
     const h = harness();
     try {
-      const keys = "/home/deploy/.ssh/authorized_keys";
-      h.write(keys, `${DEPLOY_KEY}\n${old} opscrew-check\n`);
+      h.write(
+        KEYS,
+        `${DEPLOY_KEY}\n${ed25519PublicKey()} opscrew-check:acme/shop.web\n${lookalike}\n`,
+      );
       expect(h.run(on.check).stdout).toContain("state=change");
       const applied = h.run(on.apply);
       expect(applied.status, applied.stderr).toBe(0);
-      expect(h.read(keys)).toBe(`${DEPLOY_KEY}\n${line}\n`);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${lookalike}\n${line}\n`);
       expect(h.run(on.verify).status).toBe(0);
       expect(h.run(on.check).stdout).toContain("state=in-place");
 
-      // The deploy-key step writes exactly the apps' keys, and keeps the check's line.
+      // The deploy-key step writes exactly the apps' keys, and keeps every check key.
       const fake = new FakeHost();
       const plan = planHost(await inspectHost(fake), desiredFor(fake), "opscrew provision");
       const step = plan.steps.find((item) => item.id === "deploy-key");
       if (step === undefined) throw new Error("no deploy-key step");
       const deployKey = stepScripts(plan, step);
-      h.write(keys, `ssh-ed25519 AAAAold old-key\n${line}\n`);
+      h.write(KEYS, `ssh-ed25519 AAAAold old-key\n${lookalike}\n${line}\n`);
       expect(h.run(deployKey.apply).status).toBe(0);
-      expect(h.read(keys)).toBe(`${DEPLOY_KEY}\n${line}\n`);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${lookalike}\n${line}\n`);
       expect(h.run(deployKey.verify).status).toBe(0);
 
       const removed = h.run(off.apply);
       expect(removed.status, removed.stderr).toBe(0);
-      expect(h.read(keys)).toBe(`${DEPLOY_KEY}\n`);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${lookalike}\n`);
       expect(h.run(off.verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("alloy on a server OpsCrew created: turning it off removes the add-ons' folder once empty", () => {
+    const on = scriptsOf(
+      planAddon("alloy", { app: "shop", runAs: "login", enable: { files: ALLOY_FILES } }),
+    );
+    const off = scriptsOf(planAddon("alloy", { app: "shop", runAs: "login", disable: {} }));
+    const h = harness();
+    try {
+      h.stub("systemctl", "exit 0");
+      h.stub(
+        "docker",
+        `case "$*" in
+  *" config --services") printf 'alloy\\nproxy\\n' ;;
+  *" ps --services --status running") if [ -f "$S/up" ]; then printf 'alloy\\nproxy\\n'; fi ;;
+  *" up -d "*) touch "$S/up" ;;
+  *" down "*) rm -f "$S/up" ;;
+esac`,
+      );
+      h.write("/home/deploy/opscrew/portainer/compose.yaml", "name: opscrew-portainer\n");
+      const applied = h.run(on.apply, `${addonSecrets().secrets.grafanaCloudToken}\n`);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(h.exists("/home/deploy/opscrew/addons/alloy/compose.yaml")).toBe(true);
+      const removed = h.run(off.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(h.exists("/home/deploy/opscrew/addons")).toBe(false);
+      // The deploy user's other OpsCrew folders stay.
+      expect(h.exists("/home/deploy/opscrew/portainer/compose.yaml")).toBe(true);
+      expect(h.run(off.verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("check-key: changes nothing when the other lines can't be read", () => {
+    const { on, off } = checkKeyScriptsOf(ed25519PublicKey(), "acme/shop");
+    const h = harness();
+    try {
+      // `grep -v` fails (exit 2, as on a read error); every other grep is the real one.
+      h.stub(
+        "grep",
+        `case "$1" in -v*) exit 2 ;; esac
+PATH=/usr/bin:/bin exec grep "$@"`,
+        { log: false },
+      );
+      const before = `${DEPLOY_KEY}\n${ed25519PublicKey()} opscrew-check:acme/shop\n`;
+      for (const script of [on.apply, off.apply]) {
+        h.write(KEYS, before);
+        const run = h.run(script);
+        expect(run.status).not.toBe(0);
+        expect(run.stderr).toContain("could not read");
+        expect(h.read(KEYS)).toBe(before);
+      }
     } finally {
       h.dispose();
     }

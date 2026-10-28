@@ -13,7 +13,7 @@ import {
   addonDir,
   appDirs,
   CHECK_KEY_COMMAND,
-  CHECK_KEY_COMMENT,
+  checkKeyComment,
   DATA_DIR,
   type EcdsaHostKeyType,
   EDGE_DIR,
@@ -106,6 +106,7 @@ import {
   type HostStepId,
   ProjectIdSchema,
   PublicKeyLineSchema,
+  RepositoryNameSchema,
   RepositoryUrlSchema,
   sameRepository,
 } from "./types";
@@ -1918,7 +1919,11 @@ export function planTeardown(
       steps.push(addonRemoval(kind, app, "root", keepData));
     }
   }
-  if (last && f.deployUser?.checkKey) steps.push(checkKeyRemoval("root"));
+  // The project's check key goes with the last app; another repository's stays.
+  const checked = f.deployUser?.checkKeys?.find(
+    (name) => repository !== undefined && sameRepository(`https://github.com/${name}`, repository),
+  );
+  if (last && checked !== undefined) steps.push(checkKeyRemoval("root", checked));
   if (last) {
     // The folder goes only when OpsCrew created it; a /srv/edge of the user's own stays.
     const removeDir =
@@ -2410,14 +2415,14 @@ function addonRemoval(kind: AddonKind, app: string, runAs: RunAs, keepData: bool
   );
 }
 
-/** A step that removes the scheduled check's key from the deploy user's authorized_keys. */
-function checkKeyRemoval(runAs: RunAs): HostStep {
+/** A step that removes a repository's check key from the deploy user's authorized_keys. */
+function checkKeyRemoval(runAs: RunAs, repository: string): HostStep {
   return step(
     "check-key",
-    "Remove the scheduled check's key from the deploy user",
+    `Remove the scheduled check's key of ${repository} from the deploy user`,
     "change",
-    { remove: true, runAs },
-    `Only its line (comment ${CHECK_KEY_COMMENT}) goes; the deploy keys stay.`,
+    { remove: true, runAs, repository },
+    `Only its line (comment ${checkKeyComment(repository)}) goes; the deploy keys and other repositories' check keys stay.`,
   );
 }
 
@@ -2447,9 +2452,10 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
 /**
  * A one-step host plan that turns an add-on on (`enable`) or off (`disable`), the step's undo:
  *
- * - `check-key`: the scheduled check's public key in the deploy user's authorized_keys, as
- *   `restrict,command="df -P -B1 /" <key> opscrew-check` (a line with that comment is replaced);
- *   off, only that line goes. The plan shows the key's fingerprint.
+ * - `check-key`: the scheduled check's public key of `repository` (`owner/repo`) in the deploy
+ *   user's authorized_keys, as `restrict,command="df -P -B1 /" <key> opscrew-check:<owner>/<repo>`
+ *   (the line with that exact comment is replaced); off, only that line goes. Other
+ *   repositories' check keys stay. The plan shows the key's fingerprint.
  * - `beszel` (`mode` hub, with the dashboard user's `email` and the hub's public key `hubKey`,
  *   the agent's `KEY`; or agent) and `alloy`: the files
  *   `renderAddon` rendered, by name (`compose.yaml`, `Caddyfile`, `config.yml` or
@@ -2460,8 +2466,9 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *
  * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record);
  * `"root"` on a server the user owns, where `facts` (from `inspectHost`) name the app that turned
- * each add-on on: planning it for another app is refused, naming that app. Apply it with
- * `applyHostPlan` like any host plan.
+ * each add-on on: planning it for another app is refused, naming that app; only turning it off
+ * is allowed once that app is no longer set up on the server. Apply it with `applyHostPlan` like
+ * any host plan.
  */
 export function planAddon<K extends AddonPlanKind>(
   kind: K,
@@ -2469,6 +2476,8 @@ export function planAddon<K extends AddonPlanKind>(
     app: string;
     runAs: RunAs;
     facts?: HostFacts;
+    /** `check-key` only: the project's GitHub repository, `owner/repo`. */
+    repository?: string;
     enable?: AddonEnable<K>;
     disable?: { keepData?: boolean };
   },
@@ -2477,6 +2486,15 @@ export function planAddon<K extends AddonPlanKind>(
   if ((enable === undefined) === (disable === undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "Turn the add-on either on or off, not both.");
   }
+  const repository =
+    kind === "check-key"
+      ? parseInput(
+          RepositoryNameSchema,
+          options.repository,
+          "The project's repository is not valid",
+          "Check that the project's origin remote is its GitHub repository, then try again.",
+        )
+      : "";
   if (!AppNameSchema.safeParse(app).success) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -2490,8 +2508,12 @@ export function planAddon<K extends AddonPlanKind>(
         "Planning an add-on on your server needs its inspected facts.",
       );
     }
-    const owner = parseFacts(options.facts).record?.addons?.[kind as AddonKind];
-    if (owner !== undefined && owner !== app) throw addonTaken(kind as AddonKind, owner);
+    const record = parseFacts(options.facts).record;
+    const owner = record?.addons?.[kind as AddonKind];
+    if (owner !== undefined && owner !== app) {
+      const gone = !(record?.apps ?? []).includes(owner);
+      if (!gone || disable === undefined) throw addonTaken(kind as AddonKind, owner, gone);
+    }
   }
   let item: HostStep;
   if (disable !== undefined) {
@@ -2501,13 +2523,14 @@ export function planAddon<K extends AddonPlanKind>(
     }
     item =
       kind === "check-key"
-        ? checkKeyRemoval(runAs)
+        ? checkKeyRemoval(runAs, repository)
         : addonRemoval(kind as AddonKind, app, runAs, keepData);
   } else {
     item = addonStep(
       kind,
       app,
       runAs,
+      repository,
       parseInput(
         AddonEnableSchemas[kind] as z.ZodType<AddonSettings>,
         enable,
@@ -2541,15 +2564,16 @@ function addonStep(
   kind: AddonPlanKind,
   app: string,
   runAs: RunAs,
+  repository: string,
   enable: AddonSettings,
 ): HostStep {
   if ("publicKey" in enable) {
     return step(
       "check-key",
-      `Let the scheduled check read this server's disk usage with its own key (${keyFingerprint(enable.publicKey)}), which can run only "${CHECK_KEY_COMMAND}"`,
+      `Let the scheduled check of ${repository} read this server's disk usage with its own key (${keyFingerprint(enable.publicKey)}), which can run only "${CHECK_KEY_COMMAND}"`,
       "change",
-      { publicKey: keyId(enable.publicKey), runAs },
-      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only df. A line with its comment (${CHECK_KEY_COMMENT}) is replaced; the other keys stay.`,
+      { publicKey: keyId(enable.publicKey), repository, runAs },
+      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only df. A line with its comment (${checkKeyComment(repository)}) is replaced; the other keys stay.`,
     );
   }
   const addon = kind as AddonKind;
