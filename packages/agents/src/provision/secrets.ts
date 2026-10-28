@@ -36,15 +36,10 @@ import {
   readValidJson,
   type StorageLogin,
 } from "../shared";
-import { registerAppSecrets } from "../shared/app-secrets";
+import { generatedValuesFile, registerAppSecrets } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
-
-/** Private file (0600) beside the deploy key holding generated values between runs. */
-export function generatedValuesFile(deps: Pick<PhaseDeps, "paths">): string {
-  return join(deps.paths.projectHomeDir, "generated_values.json");
-}
 
 /**
  * The generated values of earlier runs, with the app's origin TLS values (`originTls`, kept by

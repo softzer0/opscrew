@@ -44,9 +44,9 @@ import {
   recordedStack,
   SshRemoteExec,
 } from "../shared";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { readOwnServerRecord } from "../shared/own-server";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
-import { generatedValuesFile } from "./secrets";
 import { readCloudflareRecord, type SharedCloudflareInput } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 

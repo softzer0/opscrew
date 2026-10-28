@@ -1,5 +1,5 @@
 import type { GitHubClient } from "@opscrew/connector-github";
-import { tunnelMode } from "@opscrew/iac-templates";
+import { checkDiskVia } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { githubClientFromToken } from "../shared/github";
@@ -80,7 +80,7 @@ function noDiskReason(plan: DeployPlan): string | undefined {
     case "github-pages":
       return "GitHub Pages has no server of the app's";
     default:
-      return tunnelMode(plan) && plan.environment?.runner !== "server"
+      return checkDiskVia(plan) === undefined
         ? "your server is reached through a Cloudflare Tunnel, and the check's SSH can't pass the tunnel's Cloudflare Access login. With the server's own runner (environment.runner: server) the check reads the disk there"
         : undefined;
   }

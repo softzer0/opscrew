@@ -8,8 +8,8 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
-import { generatedValuesFile } from "../provision/secrets";
 import { recordOwnServer, recordPortainerConnection, recordServerAddress } from "../shared";
+import { generatedValuesFile } from "../shared/app-secrets";
 import {
   createTestPhaseDeps,
   ED25519_FINGERPRINT,

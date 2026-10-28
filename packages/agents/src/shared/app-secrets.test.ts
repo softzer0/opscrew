@@ -2,10 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { generatedValuesFile } from "../provision/secrets";
 import { createTestPhaseDeps, testPlan } from "../testing";
 import { assembleAppEnv } from "./app-env";
-import { registerAppSecrets } from "./app-secrets";
+import { generatedValuesFile, registerAppSecrets } from "./app-secrets";
 
 /**
  * A plan on a domain with a host list, fixed production settings, a generated key, a value the

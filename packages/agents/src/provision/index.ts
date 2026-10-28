@@ -77,7 +77,6 @@ export {
   deploySecretNames,
   deploySecrets,
   deploySecretsStoredFor,
-  generatedValuesFile,
   serviceEnvSecrets,
   setDeploySecrets,
 } from "./secrets";

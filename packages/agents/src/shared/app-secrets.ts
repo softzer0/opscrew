@@ -3,15 +3,19 @@ import { OpsCrewError, readTextIfExists } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { generatedValuesFile } from "../provision/secrets";
 import { type AppEnvironment, fixedProductionValue, hostListKind, parseDotenv } from "./app-env";
 import { readValidJson } from "./files";
 
+/** Private file (0600) beside the deploy key holding generated values between runs. */
+export function generatedValuesFile(deps: Pick<PhaseDeps, "paths">): string {
+  return join(deps.paths.projectHomeDir, "generated_values.json");
+}
+
 /** The generated values provision keeps (`generated_values.json`), as far as they are secrets. */
-const GeneratedValuesSchema = z.object({
-  dbPassword: z.string().optional(),
+export const GeneratedValuesSchema = z.object({
+  dbPassword: z.string().min(1).optional(),
   env: z.record(z.string(), z.string()).optional(),
-  services: z.record(z.string(), z.record(z.string(), z.string())).optional(),
+  services: z.record(z.string(), z.record(z.string(), z.string().min(1))).optional(),
 });
 
 /** The app's values by name, and the services' secrets. */

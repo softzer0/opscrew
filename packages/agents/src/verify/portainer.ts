@@ -1,6 +1,7 @@
 import { normalizeHostName, OpsCrewError, type Redactor, replaceNames } from "@opscrew/core";
 import {
   cell,
+  checkSection,
   componentsSection,
   deployRows,
   externalDatabaseCell,
@@ -221,8 +222,9 @@ export function renderPortainerRunbook(
     ),
     "## Logs and status",
     "",
-    `In your Portainer: Stacks → \`${app}\` → a container → Logs. \`opscrew verify${flag}\` checks the site from outside, \`opscrew drift${flag}\` compares the stacks with what OpsCrew sets up, and \`opscrew secure${flag}\` checks the app and its stack.`,
+    `\`opscrew logs${flag}\` shows the app's latest log lines (\`--service <name>\` for a worker or a service, \`--follow\` for new lines), and \`opscrew status${flag}\` its containers; in your Portainer: Stacks → \`${app}\` → a container → Logs. \`opscrew verify${flag}\` checks the site from outside, \`opscrew drift${flag}\` compares the stacks with what OpsCrew sets up, and \`opscrew secure${flag}\` checks the app and its stack.`,
     "",
+    ...checkSection(plan, environments),
     ...(dns !== undefined ? ["## DNS", "", dns, ""] : []),
     "## Secrets",
     "",

@@ -19,8 +19,9 @@ const AGENT_DATA_DIR = "/var/lib/beszel-agent";
 
 /**
  * Beszel's `compose.yaml` (project `opscrew-beszel`): the agent and the read-only Docker proxy, and
- * in hub mode the hub. Every container runs as the deploy user with no capability, a read-only root
- * and the plan's memory limit:
+ * in hub mode the hub. Every container has a read-only root and the plan's memory limit:
+ * - the hub and the agent run as the deploy user with no capability;
+ * - the proxy runs as root with the deploy group, no network and only `NET_BIND_SERVICE`;
  * - the hub listens on the server's loopback only, keeps its data in the bind-mounted `data/`
  *   folder (the host step writes OpsCrew's key there as `data/id_ed25519`), reads `config.yml`, and
  *   creates its user from `hub.env` (`USER_EMAIL`, `USER_PASSWORD`);

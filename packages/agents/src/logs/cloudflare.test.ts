@@ -8,7 +8,7 @@ import {
 } from "@opscrew/connector-cloudflare/testing";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { generatedValuesFile } from "../provision/secrets";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { createTestPhaseDeps, fakeCloudflare } from "../testing";
 import { sitePlan } from "../testing/serverless";
 import type { LogLine, LogRead } from "./lines";

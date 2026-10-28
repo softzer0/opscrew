@@ -41,6 +41,7 @@ import {
 
 export { componentsSection, objectStorageSection, recoverySection } from "./components";
 export { renderLocalRunbook } from "./localhost";
+export { checkSection } from "./observability";
 export {
   cell,
   deployRows,

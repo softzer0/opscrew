@@ -22,7 +22,6 @@ import {
   renderPlaceholderStack,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, ghcrImageFor, type PortainerDeployTarget } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import {
@@ -48,7 +47,6 @@ import {
   readRequirements,
   withCloudflareZone,
 } from "../provision/render";
-import { generatedValuesFile } from "../provision/secrets";
 import {
   providerBucket,
   requireStorageKey,
@@ -73,6 +71,11 @@ import {
   stateContents,
   stringOutput,
 } from "../shared";
+import {
+  GeneratedValuesSchema,
+  generatedValuesFile,
+  registerAppSecrets,
+} from "../shared/app-secrets";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
 import {
   compareInfrastructure,
@@ -111,13 +114,6 @@ function asRemote(
     keys.map((name) => [name, remote?.[name] ?? valueFingerprint(key, name, "")]),
   );
 }
-
-/** The values provision generated before (`generated_values.json`), as far as they are valid. */
-const GeneratedValuesSchema = z.looseObject({
-  dbPassword: z.string().min(1).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  services: z.record(z.string(), z.record(z.string(), z.string().min(1))).optional(),
-});
 
 /** Stands for a value provision would generate now: this computer does not know it. */
 const UNKNOWN = "__OPSCREW_DRIFT_UNKNOWN__";
@@ -180,9 +176,7 @@ async function readAppValues(
   for (const { service, secret, variable } of portainerSecretVariables(plan)) {
     values[variable] = known(services[service]?.[secret]);
   }
-  for (const value of Object.values(values)) {
-    if (value !== undefined && value.length >= 8) deps.redactor.addLiteral(value, "app-env");
-  }
+  await registerAppSecrets(deps, plan, environment);
   return true;
 }
 

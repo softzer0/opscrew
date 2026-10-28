@@ -17,8 +17,8 @@ import {
   withBucket,
 } from "../provision/__fixtures__/storage";
 import { portainerValueKeyFile } from "../provision/portainer";
-import { generatedValuesFile } from "../provision/secrets";
 import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { DATA_ZONE, encryptedState, MANAGED_TUNNEL, plainState, withStateList } from "../testing";
 import {
   APP_IMAGE,

@@ -42,7 +42,7 @@ component's count, memory or version, or turn one off, in \`opscrew/plan.yaml\`,
 
 ## Logs and status
 
-In your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
+\`opscrew logs\` shows the app's latest log lines (\`--service <name>\` for a worker or a service, \`--follow\` for new lines), and \`opscrew status\` its containers; in your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
 
 ## DNS
 
@@ -128,7 +128,7 @@ component's count, memory or version, or turn one off, in \`opscrew/plan.yaml\`,
 
 ## Logs and status
 
-In your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
+\`opscrew logs\` shows the app's latest log lines (\`--service <name>\` for a worker or a service, \`--follow\` for new lines), and \`opscrew status\` its containers; in your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
 
 ## DNS
 
@@ -215,7 +215,7 @@ component's count, memory or version, or turn one off, in \`opscrew/plan.yaml\`,
 
 ## Logs and status
 
-In your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
+\`opscrew logs\` shows the app's latest log lines (\`--service <name>\` for a worker or a service, \`--follow\` for new lines), and \`opscrew status\` its containers; in your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
 
 ## Secrets
 
@@ -312,7 +312,7 @@ with its files unless you add \`--delete-data\`.
 
 ## Logs and status
 
-In your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
+\`opscrew logs\` shows the app's latest log lines (\`--service <name>\` for a worker or a service, \`--follow\` for new lines), and \`opscrew status\` its containers; in your Portainer: Stacks → \`opscrew-shop\` → a container → Logs. \`opscrew verify\` checks the site from outside, \`opscrew drift\` compares the stacks with what OpsCrew sets up, and \`opscrew secure\` checks the app and its stack.
 
 ## Secrets
 

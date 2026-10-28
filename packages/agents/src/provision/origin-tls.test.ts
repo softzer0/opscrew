@@ -9,6 +9,7 @@ import {
 import { renderEdgeSite, renderPortainerStack } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { createTestPhaseDeps, ownPlan, portainerPlan, testPlan } from "../testing";
 import type { GitHubSetup } from "./credentials";
 import {
@@ -30,7 +31,6 @@ import {
   stackServed,
   tlsWarnings,
 } from "./origin-tls";
-import { generatedValuesFile } from "./secrets";
 
 const ZONE = "0123456789abcdef0123456789abcdef";
 const SHA = (c: string) => c.repeat(64);

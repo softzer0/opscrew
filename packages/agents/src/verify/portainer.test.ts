@@ -762,4 +762,17 @@ describe("renderPortainerRunbook", () => {
     expect(tunnel).toContain("## The secrets recovery copy");
     expect(tunnel).not.toContain("## Origin protection");
   });
+
+  it("names `opscrew logs`, and the scheduled check when the plan has it on", () => {
+    const render = (plan: DeployPlan) =>
+      renderPortainerRunbook(plan, { opscrewVersion: "0.1.0", github }).content;
+    const base = portainerPlan();
+    expect(render(base)).toContain("`opscrew logs` shows the app's latest log lines");
+    expect(render(base)).not.toContain("## The scheduled check");
+    const checked = render(
+      DeployPlanSchema.parse({ ...base, observability: { check: { enabled: true } } }),
+    );
+    expect(checked).toContain("## The scheduled check");
+    expect(checked).toContain("each certificate's days left (an issue below 14).");
+  });
 });
