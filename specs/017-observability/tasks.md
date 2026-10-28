@@ -732,6 +732,27 @@ Effort`.
 ## End-of-feature simplify pass (after T1715)
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
+  - **The lead's decisions (2026-10-28):**
+    - **Done in T1716's implementation:**
+      - Portainer drift uses `registerAppSecrets` and `GeneratedValuesSchema`, with `generatedValuesFile` moved into `shared/` (the cycle goes);
+      - the `beszel.ts` comment;
+      - `noDiskReason` uses `checkDiskVia`;
+      - Portainer's runbook names `opscrew logs` and the check;
+      - the `docker compose logs` hints point to `opscrew logs`;
+      - the hint after `addon enable grafana-cloud`;
+      - one `lineText`;
+      - one container-name pattern;
+      - one check-key line builder (ssh-host's, exported);
+      - `checkEnvironmentKey` uses the app's base name (`shop/staging`);
+      - ssh-host's add-on names in one record, and `SECRET_NEEDS` folded into `SECRET_CHECKS`.
+    - **Left as they are:**
+      - the allowance table (its only user is `logs`);
+      - `mask.re`'s production words (masking more is safe);
+      - the re-enable approval;
+      - the generic plan titles;
+      - a check-key line left by another repository (it can only run `df`; the guide says so);
+      - two SSH reads in `status` and the two privilege helpers;
+      - one table of read commands (it adds indirection).
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
   - `renderBeszelCompose`'s comment (`iac-templates/src/addons/beszel.ts` ~20) says every add-on container runs as the deploy user with no capabilities; the proxy runs as root with the deploy group and `NET_BIND_SERVICE` (T1712b's review). Correct the comment.
   - `agents/src/check/design.ts`' `noDiskReason` repeats the tunnel and own-runner rule that iac-templates' `checkDiskVia` now exports (T1712b's review). Use it.
