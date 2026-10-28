@@ -191,14 +191,12 @@ function shellWord(value: string): string {
 }
 
 /**
- * The command that runs this change again, as every `--approve` hint names it: the non-secret
- * options given, and the token's variable when it must be set again (never its value).
+ * The command that runs this change again, as every `--approve` hint names it: Beszel's options
+ * given, Grafana Cloud's settings as planned (answers at a prompt included), and the token's
+ * variable when it must be set again (never its value).
  */
-function enableCommand(
-  kind: AddonKind,
-  options: AddonEnableOptions,
-  tokenVariable: string | undefined,
-): string {
+function enableCommand(kind: AddonKind, options: AddonEnableOptions, input: EnableInput): string {
+  const grafana = input.after.observability?.grafanaCloud;
   const flags: [string, string | number | undefined][] = [
     ["--mode", options.mode],
     ["--access", options.access],
@@ -206,12 +204,17 @@ function enableCommand(
     ...(options.allowEmails ?? []).map((email): [string, string] => ["--allow-email", email]),
     ["--hub-url", options.hubUrl],
     ["--hub-key", options.hubKey],
-    ["--metrics-url", options.metricsUrl],
-    ["--metrics-user", options.metricsUser],
-    ["--logs-url", options.logsUrl],
-    ["--logs-user", options.logsUser],
-    ["--log-sampling", options.logSampling],
+    ...(kind === "grafana-cloud" && grafana !== undefined
+      ? ([
+          ["--metrics-url", grafana.metrics?.url],
+          ["--metrics-user", grafana.metrics?.user],
+          ["--logs-url", grafana.logs?.url],
+          ["--logs-user", grafana.logs?.user],
+          ["--log-sampling", grafana.logSampling],
+        ] as [string, string | number | undefined][])
+      : []),
   ];
+  const { tokenVariable } = input;
   return [
     ...(tokenVariable !== undefined ? [`${tokenVariable}=<token>`] : []),
     `opscrew addon enable ${kind}`,
@@ -243,7 +246,7 @@ async function beszelInput(
   if (mode === "agent" && stored?.mode === "hub") {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `Beszel's history from hub mode is kept on the server, and its dashboard's password is in ${deps.paths.files.beszelSecrets}, so OpsCrew does not turn on agent mode over it. Nothing was changed.`,
+      `Beszel's history from hub mode may be kept on the server, and its dashboard's password is in ${deps.paths.files.beszelSecrets}, so OpsCrew does not turn on agent mode over it. Nothing was changed.`,
       {
         hint: "Turn hub mode on again with `opscrew addon enable beszel`, or delete the kept history with `opscrew addon disable beszel` (it asks for the app's name), then run this command again.",
       },
@@ -675,7 +678,7 @@ export async function addonEnable(
     {
       kind,
       enabling: true,
-      command: enableCommand(kind, options, input.tokenVariable),
+      command: enableCommand(kind, options, input),
       before: plan,
       after: input.after,
       input,
@@ -716,6 +719,13 @@ export async function addonDisable(
   const history =
     !enabled && kind === "beszel" && !keepData && (await keptHistory(deps, plan, options));
   if (!enabled && !history) {
+    // An agent token left on this computer is only a copy of the user's hub's: it goes.
+    if (kind === "beszel" && (await readBeszelSecrets(deps))?.mode === "agent") {
+      await removeAddonSecrets(deps.paths, kind);
+      deps.reporter.info(
+        `Removed Beszel's agent token left on this computer (${deps.paths.files.beszelSecrets}); your hub still has it.`,
+      );
+    }
     deps.reporter.info(`${ADDON_NAMES[kind]} is already off for this app; nothing to do.`);
     return {
       applied: false,

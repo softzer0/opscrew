@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, scriptParams } from "./__fixtures__/fake-host";
@@ -1006,6 +1006,35 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
       h.dispose();
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "beszel: the removal's check reports a kept history only in a real folder, never through a link",
+    () => {
+      const off = scriptsOf(
+        planAddon("beszel", { app: "shop", runAs: "login", disable: { keepData: true } }),
+      );
+      const h = harness();
+      try {
+        h.stub("docker", "exit 0");
+        const dir = "/home/deploy/opscrew/addons/beszel";
+        // The add-on's folder is a link to a folder with a data/ in it: not a history of its own.
+        h.write("/home/deploy/elsewhere/data/id_ed25519", "not a key\n");
+        mkdirSync(h.native("/home/deploy/opscrew/addons"), { recursive: true });
+        symlinkSync(h.native("/home/deploy/elsewhere"), h.native(dir));
+        const linked = h.run(off.check);
+        expect(linked.status, linked.stderr).toBe(0);
+        expect(linked.stdout).not.toContain("addon.history=kept");
+
+        rmSync(h.native(dir));
+        h.write(`${dir}/data/id_ed25519`, "not a key\n");
+        const real = h.run(off.check);
+        expect(real.status, real.stderr).toBe(0);
+        expect(real.stdout).toContain("addon.history=kept");
+      } finally {
+        h.dispose();
+      }
+    },
+  );
 
   it("alloy on a server OpsCrew created: turning it off removes the add-ons' folder once empty", () => {
     const on = scriptsOf(

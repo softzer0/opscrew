@@ -2289,7 +2289,7 @@ function addonRemoveScripts(plan: HostPlan, step: HostStep, kind: AddonKind): St
     },
     helpers: PROJECT_HELPERS,
     // The apply keeps the add-on's owner in the host record only while a history really stays.
-    snapshot: `if [ "$KEEP_DATA" = true ] && [ -d "$DIR/data" ] && [ ! -L "$DIR/data" ]; then echo addon.history=kept; fi`,
+    snapshot: `if [ "$KEEP_DATA" = true ] && [ ! -L "$DIR" ] && [ -d "$DIR/data" ] && [ ! -L "$DIR/data" ]; then echo addon.history=kept; fi`,
     verify: `  project_gone "$PROJECT" true || return 1
   if [ "$KEEP_DATA" = true ]; then
     [ -z "$(ls -A "$DIR" 2>/dev/null | grep -vx data)" ] || return 1

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { type ApplyOptions, type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
@@ -434,7 +434,7 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     // Off with its history kept: agent mode would leave that history without its password.
     await addonDisable(s.deps, await s.plan(), "beszel", { keepData: true, services: s.services });
     const over = await failure(addonEnable(s.deps, await s.plan(), "beszel", agent));
-    expect(over.message).toContain("history from hub mode is kept on the server");
+    expect(over.message).toContain("history from hub mode may be kept on the server");
     expect(over.hint).toContain("opscrew addon enable beszel");
     expect(over.hint).toContain("opscrew addon disable beszel");
     expect(await readFile(s.deps.paths.files.beszelSecrets, "utf8")).toBe(secrets);
@@ -483,6 +483,47 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     expect(result.hostPlanHashes).toEqual([hash]);
     expect(s.server.applies[0]?.options.approvedHash).toBe(hash);
     expect((await s.plan()).observability?.beszel?.enabled).toBe(true);
+  });
+
+  it("a refused host plan's hint carries Grafana Cloud's values answered at a prompt", async () => {
+    const s = await cloudSetup({
+      interactive: true,
+      answer: (request) => request.kind !== "host-apply",
+    });
+    const answers: Record<string, string> = {
+      "--metrics-url": GRAFANA.metricsUrl,
+      "--metrics-user": GRAFANA.metricsUser,
+      "--logs-url": GRAFANA.logsUrl,
+      "--logs-user": GRAFANA.logsUser,
+      OPSCREW_GRAFANA_CLOUD_TOKEN: grafanaToken(),
+    };
+    const error = await failure(
+      addonEnable(s.deps, await s.plan(), "grafana-cloud", {
+        services: { ...s.services, ask: async (question) => answers[question.name] as string },
+      }),
+    );
+    expect(error.hint).toContain(
+      `OPSCREW_GRAFANA_CLOUD_TOKEN=<token> opscrew addon enable grafana-cloud --metrics-url ${GRAFANA.metricsUrl} --metrics-user ${GRAFANA.metricsUser} --logs-url ${GRAFANA.logsUrl} --logs-user ${GRAFANA.logsUser} --log-sampling 100 --approve ${s.handler.requests[0]?.planHash}`,
+    );
+  });
+
+  it("disable with Beszel off removes an agent token left here, so hub mode can be turned on", async () => {
+    const s = await cloudSetup();
+    await mkdir(dirname(s.deps.paths.files.beszelSecrets), { recursive: true });
+    await writeFile(
+      s.deps.paths.files.beszelSecrets,
+      JSON.stringify({ mode: "agent", token: randomBytes(20).toString("hex") }),
+    );
+    const refused = await failure(addonEnable(s.deps, await s.plan(), "beszel", {}));
+    expect(refused.hint).toContain("opscrew addon disable beszel");
+
+    await addonDisable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(kinds(s.handler)).toEqual([]);
+    await expect(stat(s.deps.paths.files.beszelSecrets)).rejects.toThrow();
+    expect(s.deps.reporter.text()).toContain("Removed Beszel's agent token left on this computer");
+
+    const on = await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(on.hostApplied).toBe(true);
   });
 
   it("a refused host plan's hint repeats the options given and the token's variable, never its value", async () => {
