@@ -1183,6 +1183,8 @@ export class GitHubRepo {
                 steps?: { conclusion: string | null }[];
                 runner_name?: string | null;
                 labels?: string[];
+                started_at?: string | null;
+                completed_at?: string | null;
               }[];
             }
           | undefined
@@ -1193,6 +1195,8 @@ export class GitHubRepo {
       steps: (job.steps ?? []).map((step) => ({ conclusion: step.conclusion })),
       runnerName: job.runner_name ?? null,
       labels: job.labels ?? [],
+      startedAt: job.started_at ?? null,
+      completedAt: job.completed_at ?? null,
     }));
   }
 
@@ -1226,41 +1230,6 @@ export class GitHubRepo {
     if (started.status !== 204) {
       throw new Error(`GitHub did not start the workflow ${workflow} (HTTP ${started.status}).`);
     }
-  }
-
-  /** Each job of run `runId` with when it started and completed (jobs that never ran left out). */
-  async jobTimes(
-    runId: number,
-  ): Promise<{ name: string; startedAt: string; completedAt: string }[]> {
-    const got = await this.call(
-      "GET",
-      `/repos/${this.name}/actions/runs/${runId}/jobs?per_page=100`,
-    );
-    const jobs =
-      (
-        got.json as
-          | { jobs?: { name: string; started_at?: string | null; completed_at?: string | null }[] }
-          | undefined
-      )?.jobs ?? [];
-    return jobs.flatMap((job) =>
-      job.started_at && job.completed_at
-        ? [{ name: job.name, startedAt: job.started_at, completedAt: job.completed_at }]
-        : [],
-    );
-  }
-
-  /**
-   * The billable time GitHub states for run `runId` (`/timing`, every runner kind summed), in ms;
-   * `undefined` when it states none (a public repository, or an endpoint GitHub retired).
-   */
-  async billableMs(runId: number): Promise<number | undefined> {
-    const got = await this.call("GET", `/repos/${this.name}/actions/runs/${runId}/timing`);
-    const billable = (got.json as { billable?: Record<string, { total_ms?: number }> } | undefined)
-      ?.billable;
-    if (got.status !== 200 || billable === undefined || Object.keys(billable).length === 0) {
-      return undefined;
-    }
-    return Object.values(billable).reduce((sum, kind) => sum + (kind.total_ms ?? 0), 0);
   }
 
   /** The repository variable `name`, or `undefined` when it is not set. */

@@ -351,6 +351,18 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
       timeout: minutes(extra ? 180 : 75),
     }, async (context) => {
       const cleanup = { skipDestroy: onHetzner && skipDestroy };
+      // One extra pass per run: the first of TLS, components, observability and builders runs.
+      const taken = [
+        { pass: tls, name: "OPSCREW_E2E_TLS" },
+        { pass: components, name: "OPSCREW_E2E_COMPONENTS" },
+        { pass: observability, name: "OPSCREW_E2E_OBSERVABILITY/OPSCREW_E2E_ADDONS" },
+        { pass: builders, name: "OPSCREW_E2E_BUILDS" },
+      ].filter(({ pass }) => pass !== undefined);
+      for (const { name } of taken.slice(1)) {
+        console.log(
+          `OpsCrew E2E: not run in this pass: ${name}'s checks (${taken[0]?.name} takes it; run them on their own)`,
+        );
+      }
       if (tls !== undefined) {
         if ("skip" in tls) {
           console.log(`OpsCrew E2E: skipped: ${tls.skip}`);
@@ -556,7 +568,7 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub && isDefault
           expect((await fetch(health)).status, `GET ${health}`).toBe(200);
           // Feature 017 (FR-1709): until --finish the move keeps the scheduled check paused.
           if (process.env[OBSERVABILITY_GATE] === "1" && withDns) {
-            await retargetPause(run, newIp, health);
+            await retargetPause(run, { oldIp, newIp }, health);
           } else {
             console.log(
               `OpsCrew E2E: not checked: the scheduled check paused by the move (set ${OBSERVABILITY_GATE}=1 with a Cloudflare domain)`,

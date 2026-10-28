@@ -443,6 +443,7 @@ describe.skipIf(MISSING.length > 0)(
       async () => {
         await logsAndFigures(liveRunTarget(ssr), {
           request: (path) => httpRequest(`https://${ssr.appHost}${path}`),
+          following: "Following the Worker's requests live",
           figures: "worker",
         });
       },

@@ -10,7 +10,7 @@
  * - {@link retargetPause}, the check during a move's pause (FR-1709).
  * Nothing here prints a secret, an issue's text or a log line: only labels, counts and timings.
  */
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -28,6 +28,7 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
   type CheckIssue,
   canConnect,
+  type DeployRun,
   type GitHubRepo,
   httpRequest,
   minutes,
@@ -122,10 +123,31 @@ async function cliOk(target: CliTarget, ...args: string[]): Promise<string> {
   const result = await target.opscrew(...args);
   if (result.exitCode !== 0) {
     throw new Error(
-      `opscrew ${args.join(" ")} exited with ${result.exitCode}:\n${tail(target, result.output)}`,
+      target.scrub(
+        `opscrew ${args.join(" ")} exited with ${result.exitCode}:\n${tail(target, result.output)}`,
+      ),
     );
   }
   return result.output;
+}
+
+/**
+ * Runs `body`, rethrowing any error with its message and stack passed through `scrub` (the
+ * servers' addresses and Grafana Cloud's stack values among what it masks): vitest prints a
+ * failed run's error as it is.
+ */
+async function scrubbedErrors(
+  scrub: (text: string) => string,
+  body: () => Promise<void>,
+): Promise<void> {
+  try {
+    await body();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const clean = new Error(scrub(message));
+    clean.stack = scrub(error instanceof Error ? (error.stack ?? message) : message);
+    throw clean;
+  }
 }
 
 /**
@@ -148,6 +170,8 @@ class RunningCli {
       cwd: target.repo,
       env: target.env,
       stdio: ["ignore", "pipe", "pipe"],
+      // A process group of its own, so a kill reaches its ssh too.
+      detached: process.platform !== "win32",
     });
     this.child.stdout?.setEncoding("utf8");
     this.child.stderr?.setEncoding("utf8");
@@ -203,11 +227,26 @@ class RunningCli {
     }
   }
 
+  /** Ends it and what it started: `taskkill /T /F` on Windows, its process group's SIGKILL elsewhere. */
+  private kill(): void {
+    const pid = this.child.pid;
+    if (pid === undefined) return;
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+      return;
+    }
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // The group has ended already.
+    }
+  }
+
   private async interrupt(what: string): Promise<void> {
     const early = this.endedEarly();
     if (early !== undefined) throw new Error(early);
     if (process.platform === "win32") {
-      this.child.kill();
+      this.kill();
       this.target.log(`not checked on Windows: Ctrl+C on ${what} (check it by hand, docs/e2e.md)`);
       return;
     }
@@ -220,7 +259,7 @@ class RunningCli {
       250,
     ).catch(() => undefined);
     if (ended === undefined) {
-      this.child.kill("SIGKILL");
+      this.kill();
       throw new Error(`${what} did not end within 30 s of Ctrl+C.`);
     }
     const said = this.stderr.slice(before);
@@ -246,6 +285,11 @@ export async function logsAndFigures(
   options: {
     args?: readonly string[];
     request?: (path: string) => Promise<unknown>;
+    /**
+     * The line `logs --follow` prints once it follows live (Cloudflare's tail sees only the
+     * requests after it connects); without it, the follow's first line of output.
+     */
+    following?: string;
     figures: FiguresKind;
   },
 ): Promise<string> {
@@ -265,7 +309,7 @@ export async function logsAndFigures(
       "not checked: a request's line in logs --follow (the app has no request log; docs/e2e.md)",
     );
   } else {
-    await followRequest(target, args, options.request);
+    await followRequest(target, args, options.request, options.following);
   }
   const status = await cliOk(target, "status", ...args);
   const figures = statusFigures(status);
@@ -288,19 +332,27 @@ async function followRequest(
   target: CliTarget,
   args: readonly string[],
   request: (path: string) => Promise<unknown>,
+  following: string | undefined,
 ): Promise<void> {
   const follow = new RunningCli(target, ["logs", "--follow", ...args]);
   let done = false;
   try {
+    const ready = () =>
+      following === undefined
+        ? follow.stdout.includes("\n")
+        : follow.stderr.includes(following) || follow.stdout.includes(following);
     await waitFor(
-      "the first line of opscrew logs --follow",
+      following === undefined
+        ? "the first line of opscrew logs --follow"
+        : `opscrew logs --follow saying "${following}"`,
       minutes(2),
-      async () => (follow.stdout.includes("\n") ? true : undefined),
+      async () => (ready() ? true : undefined),
       500,
       follow.endedEarly,
     );
-    // The follow starts once the latest lines are shown.
-    await sleep(2_000);
+    // The follow starts once the latest lines are shown; a live tail a few seconds after it says
+    // it follows.
+    await sleep(following === undefined ? 2_000 : 5_000);
     for (let attempt = 1; ; attempt++) {
       const path = requestPath("follow");
       const sent = Date.now();
@@ -348,14 +400,14 @@ interface CheckConfig {
 /**
  * Runs the check's workflow on `main` by dispatch, as a user can (`gh workflow run
  * opscrew-check.yml`), and waits for it to succeed: it exits 0 whenever it could report. Returns
- * the run's id.
+ * the run with its jobs.
  */
 export async function dispatchCheck(
   github: GitHubRepo,
   git: (...args: string[]) => Promise<string>,
   what: string,
   log: (message: string) => void,
-): Promise<number> {
+): Promise<DeployRun> {
   await git("fetch", "-q", "origin");
   const head = await git("rev-parse", "origin/main");
   const since = new Date();
@@ -368,7 +420,7 @@ export async function dispatchCheck(
     throw new Error(`The check's run ${run.id} (${what}) ended ${run.conclusion}.`);
   }
   log(`the check's run ${run.id} (${what}) succeeded`);
-  return run.id;
+  return run;
 }
 
 /** The check's issues of environment `key` opened since `since`. */
@@ -406,10 +458,27 @@ async function waitForHealth(url: string, up: boolean): Promise<void> {
 /**
  * The check during a move (FR-1709): retarget's window put the environment in
  * `OPSCREW_CHECK_PAUSED`, where it stays until `--finish`, so a run of the check with the app
- * stopped on the new server at `host` opens no issue for it. The app is started again after.
+ * stopped on the new server opens no issue for it. The app is started again after. An error
+ * names neither server's address.
  */
-export async function retargetPause(run: DeployedRun, host: string, health: URL): Promise<void> {
-  const log = (message: string) => console.log(`OpsCrew E2E (retarget's pause): ${message}`);
+export async function retargetPause(
+  run: DeployedRun,
+  servers: { oldIp: string; newIp: string },
+  health: URL,
+): Promise<void> {
+  const mask = new Scrubber();
+  mask.add(servers.oldIp, "server-ipv4");
+  mask.add(servers.newIp, "server-ipv4");
+  await scrubbedErrors(mask.scrub, () => pausedRun(run, servers.newIp, health, mask.scrub));
+}
+
+async function pausedRun(
+  run: DeployedRun,
+  host: string,
+  health: URL,
+  scrub: (text: string) => string,
+): Promise<void> {
+  const log = (message: string) => console.log(`OpsCrew E2E (retarget's pause): ${scrub(message)}`);
   const plan = await readArtifact("plan", join(run.repo, "opscrew/plan.yaml"));
   const key = checkEnvironmentKey(plan);
   const paused = JSON.parse((await run.github.variable(CHECK_PAUSED_VARIABLE)) ?? "{}") as Record<
@@ -483,6 +552,13 @@ export function observabilityPass(
   scrubber.add(settings.ntfyTopic, "ntfy-topic");
   scrubber.add(settings.grafana?.token, "grafana-cloud-token");
   scrubber.add(settings.grafana?.readToken, "grafana-cloud-read-token");
+  // Never printed, but not secrets: the stack's addresses and user ids, and the server's address.
+  const printOnly = new Scrubber();
+  printOnly.add(settings.grafana?.metricsUrl, "grafana-cloud-metrics-url");
+  printOnly.add(settings.grafana?.metricsUser, "grafana-cloud-metrics-user");
+  printOnly.add(settings.grafana?.logsUrl, "grafana-cloud-logs-url");
+  printOnly.add(settings.grafana?.logsUser, "grafana-cloud-logs-user");
+  const scrub = (text: string) => printOnly.scrub(scrubber.scrub(text));
   return {
     appEnv: { [SEEDED_VARIABLE]: seeded },
     files: requestLogFiles(OBSERVABILITY_APP, true) ?? {},
@@ -503,7 +579,10 @@ export function observabilityPass(
           }),
         }
       : {}),
-    afterDeploy: (run) => afterDeploy(run, settings, scrubber, state),
+    afterDeploy: (run) =>
+      scrubbedErrors(scrub, () =>
+        afterDeploy(run, settings, { scrubber, printOnly, scrub }, state),
+      ),
     afterTeardown: (destroyed) => afterTeardown(github, state, destroyed),
   };
 }
@@ -517,22 +596,29 @@ interface PassRun {
   /** Where the app answers: `https://<domain>`, or the server's address without a domain. */
   base: string;
   log: (message: string) => void;
-  /** Masks what the test prints; its values are the leak search's. */
+  /** The secrets the test knows: what it masks, and the leak search's values. */
   scrubber: Scrubber;
+  /** Masks the secrets, and what is never printed but no secret (addresses, Grafana's stack). */
+  scrub: (text: string) => string;
   /** Terminal outputs besides the run's CLI outputs (follows, the tunnel). */
   outputs: string[];
   /** Texts to search besides the outputs, by where they are. */
   sources: LeakSource[];
+  /** Grafana Cloud's lines: `on` once its enable started, `read` once the leak search has them. */
+  grafana: { on: boolean; read: boolean };
 }
+
+/** Grafana Cloud's lines read for the leak search at most, a page of Loki. */
+const LOKI_LINES = 5000;
 
 async function afterDeploy(
   run: DeployedRun,
   settings: ObservabilitySettings,
-  scrubber: Scrubber,
+  masks: { scrubber: Scrubber; printOnly: Scrubber; scrub: (text: string) => string },
   state: PassState,
 ): Promise<void> {
-  const log = (message: string) =>
-    console.log(`OpsCrew E2E (observability): ${scrubber.scrub(message)}`);
+  const { scrubber, printOnly, scrub } = masks;
+  const log = (message: string) => console.log(`OpsCrew E2E (observability): ${scrub(message)}`);
   const paths = resolveProjectPaths(run.repo, { env: run.env });
   for (const value of (await readGeneratedValues(paths)) ?? []) {
     scrubber.add(value, "generated-value");
@@ -540,6 +626,7 @@ async function afterDeploy(
   const plan = await readArtifact("plan", paths.files.plan);
   const ipv4 = (await readServerAddresses(paths)).deployment?.ipv4;
   if (ipv4 === undefined) throw new Error("OpsCrew recorded no server address.");
+  printOnly.add(ipv4, "server-ipv4");
   const outputs: string[] = [];
   const findings: string[] = [];
   const target: CliTarget = {
@@ -547,7 +634,7 @@ async function afterDeploy(
     env: run.env,
     opscrew: run.opscrew,
     log,
-    scrub: scrubber.scrub,
+    scrub,
     findings,
     keep: (_label, output) => outputs.push(output),
   };
@@ -559,25 +646,41 @@ async function afterDeploy(
     base: plan.deployment.url ?? `http://${ipv4}`,
     log,
     scrubber,
+    scrub,
     outputs,
     sources: [],
+    grafana: { on: false, read: false },
   };
   state.startedAt = run.startedAt;
   state.git = run.git;
   state.key = checkEnvironmentKey(plan);
   const request = (path: string) => httpRequest(new URL(path, ctx.base).toString());
 
-  await logsAndFigures(target, { request, figures: "server" });
   const grafana = settings.grafana;
-  if (grafana !== undefined) await grafanaOn(ctx, grafana);
-  await seededLine(ctx);
-  if (settings.check) await checkPass(ctx, settings, state);
-  if (settings.addons) await beszelPass(ctx);
-  if (grafana !== undefined) await grafanaOff(ctx, grafana);
-  else if (settings.addons) {
-    log("not checked: Grafana Cloud (set its six variables; see docs/e2e.md)");
+  // The leak search runs whatever a step did; its problems join a step's error.
+  let failure: unknown;
+  try {
+    await logsAndFigures(target, { request, figures: "server" });
+    if (grafana !== undefined) await grafanaOn(ctx, grafana);
+    await seededLine(ctx);
+    if (settings.check) await checkPass(ctx, settings, state);
+    if (settings.addons) await beszelPass(ctx);
+    if (grafana !== undefined) await grafanaOff(ctx, grafana);
+    else if (settings.addons) {
+      log("not checked: Grafana Cloud (set its six variables; see docs/e2e.md)");
+    }
+  } catch (error) {
+    failure = error;
   }
-  await leakSearch(ctx, settings);
+  const leaks = await leakSearch(ctx, settings).catch((error: unknown) => [
+    `the leak search could not finish: ${error instanceof Error ? error.message : String(error)}`,
+  ]);
+  if (leaks.length > 0) {
+    const text = `Leaks (SC-1704):\n- ${leaks.join("\n- ")}`;
+    if (failure instanceof Error) failure.message = `${failure.message}\n${text}`;
+    else failure = new Error(failure === undefined ? text : `${String(failure)}\n${text}`);
+  }
+  if (failure !== undefined) throw failure;
   for (const finding of findings) log(`finding: ${finding}`);
   if (findings.length > 0) {
     throw new Error(`Findings of the observability pass:\n- ${findings.join("\n- ")}`);
@@ -656,12 +759,13 @@ async function checkPass(
   const ntfySince = Math.floor(run.startedAt.getTime() / 1000);
 
   const passing = await check("the app up");
-  const jobs = await run.github.jobTimes(passing);
+  const jobs = passing.jobs.flatMap(({ name, startedAt, completedAt }) =>
+    startedAt && completedAt ? [{ name, startedAt, completedAt }] : [],
+  );
   const billed = billedMinutes(jobs);
-  const stated = await run.github.billableMs(passing);
   const monthly = billed * monthlyRuns(config.intervalMinutes);
   log(
-    `a passing run of the check: ${jobs.map((job) => `${job.name} ${seconds(Date.parse(job.completedAt) - Date.parse(job.startedAt))}`).join(", ")}; billed ${billed} min${stated === undefined ? "" : ` (GitHub states ${seconds(stated)})`}; every ${config.intervalMinutes} min that is ${monthly} min a month in a ${config.public ? "public" : "private"} repository (SC-1705: at most ${MONTHLY_MINUTES} in a private one)`,
+    `a passing run of the check: ${jobs.map((job) => `${job.name} ${seconds(Date.parse(job.completedAt) - Date.parse(job.startedAt))}`).join(", ")}; billed ${billed} min (each job rounded up to a minute); every ${config.intervalMinutes} min that is ${monthly} min a month in a ${config.public ? "public" : "private"} repository (SC-1705: at most ${MONTHLY_MINUTES} in a private one)`,
   );
   if (!config.public && monthly > MONTHLY_MINUTES) {
     target.findings.push(
@@ -880,7 +984,9 @@ async function addonChange(
 ): Promise<string> {
   const planned = await cliOk(target, "addon", ...args, "--plan-only", "--yes");
   const hashes = approveHashes(planned);
-  if (hashes.length === 0) throw new Error(`opscrew addon ${args.join(" ")} planned nothing.`);
+  if (hashes.length === 0) {
+    throw new Error(target.scrub(`opscrew addon ${args.join(" ")} planned nothing.`));
+  }
   await cliOk(
     target,
     "addon",
@@ -1037,6 +1143,8 @@ async function grafanaGet(url: string, user: string, grafana: GrafanaCloudSettin
 async function grafanaOn(ctx: PassRun, grafana: GrafanaCloudSettings): Promise<void> {
   const { target, plan, log } = ctx;
   const app = plan.app.name;
+  // From here on Alloy may send lines, which the leak search then reads.
+  ctx.grafana.on = true;
   const planned = await addonChange(target, [
     "enable",
     "grafana-cloud",
@@ -1127,24 +1235,7 @@ async function grafanaOn(ctx: PassRun, grafana: GrafanaCloudSettings): Promise<v
  * workflow writing the masking file, which must stay gone after that deploy (SC-1706).
  */
 async function grafanaOff(ctx: PassRun, grafana: GrafanaCloudSettings): Promise<void> {
-  // Every line the app sent this run, for the leak search.
-  const lines = lokiStreams(
-    await grafanaGet(
-      lokiQueryUrl(
-        grafana.logsUrl,
-        `{app="${ctx.plan.app.name}"}`,
-        ctx.run.startedAt.getTime(),
-        5000,
-      ),
-      grafana.logsUser,
-      grafana,
-    ),
-  ).flatMap((stream) => stream.lines);
-  ctx.sources.push({
-    kind: "file",
-    where: "the app's lines in Grafana Cloud",
-    text: lines.join("\n"),
-  });
+  await readGrafanaLines(ctx, grafana);
   await addonChange(ctx.target, ["disable", "grafana-cloud"]);
   const mask = `${appDirs(ctx.plan.app.name).app}/mask.re`;
   const leftovers = [
@@ -1195,8 +1286,11 @@ async function provisionAndDeploy(ctx: PassRun, what: string): Promise<void> {
  * (titles, bodies, comments), the ntfy posts, the Grafana Cloud lines, the commits, the pull
  * requests and the audit log. Only labels and places are printed.
  */
-async function leakSearch(ctx: PassRun, settings: ObservabilitySettings): Promise<void> {
+async function leakSearch(ctx: PassRun, settings: ObservabilitySettings): Promise<string[]> {
   const { run, scrubber } = ctx;
+  if (settings.grafana !== undefined && ctx.grafana.on && !ctx.grafana.read) {
+    await readGrafanaLines(ctx, settings.grafana);
+  }
   const known = scrubber.entries();
   const sources: LeakSource[] = [
     ...run.outputs.map((text, i) => ({
@@ -1226,7 +1320,6 @@ async function leakSearch(ctx: PassRun, settings: ObservabilitySettings): Promis
   }
   if (settings.check) {
     const messages = await ntfyPoll(settings, Math.floor(run.startedAt.getTime() / 1000));
-    if (messages.length === 0) throw new Error("ntfy holds none of the check's posts.");
     sources.push({
       kind: "file",
       where: `the ${messages.length} ntfy posts`,
@@ -1239,8 +1332,33 @@ async function leakSearch(ctx: PassRun, settings: ObservabilitySettings): Promis
     if (found.length > 0) problems.push(`${where} contains: ${found.join(", ")}`);
   }
   for (const problem of problems) ctx.log(`leak: ${problem}`);
-  if (problems.length > 0) throw new Error(`Leaks (SC-1704):\n- ${problems.join("\n- ")}`);
-  ctx.log(
-    `the leak search found none of ${known.length} known values in ${sources.length} places (SC-1704)`,
+  if (problems.length === 0) {
+    ctx.log(
+      `the leak search found none of ${known.length} known values in ${sources.length} places (SC-1704)`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * Every line the app sent Grafana Cloud this run, for the leak search, read before anything can
+ * stop the pass; at Loki's page of {@link LOKI_LINES} lines the rest is unread, a finding.
+ */
+async function readGrafanaLines(ctx: PassRun, grafana: GrafanaCloudSettings): Promise<void> {
+  ctx.grafana.read = true;
+  const query = `{app="${ctx.plan.app.name}"}`;
+  const url = lokiQueryUrl(grafana.logsUrl, query, ctx.run.startedAt.getTime(), LOKI_LINES);
+  const lines = lokiStreams(await grafanaGet(url, grafana.logsUser, grafana)).flatMap(
+    (stream) => stream.lines,
   );
+  if (lines.length >= LOKI_LINES) {
+    ctx.target.findings.push(
+      `Grafana Cloud holds ${LOKI_LINES} or more of the app's lines this run, so the leak search read only the first ${LOKI_LINES}`,
+    );
+  }
+  ctx.sources.push({
+    kind: "file",
+    where: "the app's lines in Grafana Cloud",
+    text: lines.join("\n"),
+  });
 }

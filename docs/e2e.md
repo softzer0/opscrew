@@ -908,7 +908,7 @@ the server's `run=<id>` label), as described for your own server.
 | `OPSCREW_E2E_PORTAINER` | `1` runs this test. |
 | `OPSCREW_E2E_PORTAINER_STEPS` | Optional, `core` (the default), `full` or a list of steps such as `11,12`: which steps run (see above and [Running chosen steps](#running-chosen-steps)). |
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test for the server, its key and firewall. Use a separate, empty project. |
-| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). The token must cover `OPSCREW_E2E_GITHUB_REPO_B` too, with the same permissions. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions, Workflows, Issues and Variables read and write, Metadata read). The token must cover `OPSCREW_E2E_GITHUB_REPO_B` too, with the same permissions. |
 | `OPSCREW_E2E_GITHUB_REPO_B` | `owner/name` of a second **throwaway** repository of the same owner, for the second app, `examples/node-mongo` (steps 7b and 9b). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions; the test reads the Zero Trust pieces and seeds its own rules with it). Cloudflare Zero Trust must be turned on. |
 | `OPSCREW_E2E_DOMAIN` | As for your own server: names the zone; each run uses `e2e-<run id>.<zone>` (and `e2e-<run id>-b.<zone>` for the second app). |
@@ -1568,7 +1568,10 @@ Feature 017 (logs, figures, the scheduled check and the two add-ons) runs live i
 - **The Hetzner pass of `live.test.ts`** with `OPSCREW_E2E_OBSERVABILITY=1` (logs, status, the
   check, the leak search) and/or `OPSCREW_E2E_ADDONS=1` (Beszel, and Grafana Cloud when its
   variables are set), on a server OpsCrew creates
-  (`packages/cli/test/live/observability-checks.ts`). Both run with the default app only.
+  (`packages/cli/test/live/observability-checks.ts`). Both run with the default app only. A
+  Hetzner pass runs one set of extra checks: with `OPSCREW_E2E_TLS` or `OPSCREW_E2E_COMPONENTS`
+  set too, those run and the observability pass does not; with `OPSCREW_E2E_BUILDS` too, the
+  observability pass runs and the builder checks do not. The pass logs which it left out.
 - **The move** from Hetzner to DigitalOcean (`live.test.ts`, both provider tokens) gains the
   check's pause with `OPSCREW_E2E_OBSERVABILITY=1` and a Cloudflare domain.
 - **The other targets' passes** each gain one step of logs and figures: your own server (step 2b),
@@ -1597,12 +1600,15 @@ The step every target's pass takes (SC-1701, US2):
 1. `opscrew logs` (with `--env dev` on the local runner) must show at least one line, timed from
    the command's start to its end; over 10 seconds is a finding that fails the run at its end.
 2. With the request log: `opscrew logs --follow` is started as a user starts it, and once it shows
-   its first line, the test requests `/opscrew-e2e-follow-<random>` from the app's address. The
+   its first line (on Cloudflare, once it says "Following the Worker's requests live", then 5
+   seconds more: the live tail sees only the requests after it connects), the test requests
+   `/opscrew-e2e-follow-<random>` from the app's address. The
    request's line must show within 10 seconds of the request; slower, or missed, is a finding, and
    after three requests 30 seconds apart without the line the step fails. Then the test sends
    Ctrl+C (SIGINT): the command must end within 30 seconds with exit code 0 and no error message.
-   On Windows no Ctrl+C can be sent to another process, so there the command is stopped and the
-   test logs that Ctrl+C is to be checked by hand.
+   When it does not end, the test kills its process group (its `ssh` with it). On Windows no
+   Ctrl+C can be sent to another process, so there the command and what it started are ended with
+   `taskkill /pid <pid> /T /F`, and the test logs that Ctrl+C is to be checked by hand.
 3. `opscrew status` must show the figures ("Resources (read now)"): on a server, the load against
    the CPUs, the memory used of total and the disk used and free, and each part's CPU and memory;
    in a Portainer, each part's figures and the host's disk named as not available; on this
@@ -1641,8 +1647,8 @@ verify, secure and drift:
    the ntfy webhook, and the deploy-setup pull request must have put the workflow and
    `opscrew/check/check.json` on `main`. Each dispatched run must succeed (the check exits 0
    whenever it could report).
-   - **A passing run:** its jobs' times are logged, with the minutes GitHub bills (each job rounded
-     up to a whole minute, and GitHub's own `/timing` figure when it gives one), and the month's
+   - **A passing run:** its jobs' times are logged, with the minutes GitHub bills (each job's time
+     from GitHub's list of the run's jobs, rounded up to a whole minute), and the month's
      minutes at the interval in `check.json`; over 750 in a private repository is a finding
      (SC-1705). It opens no issue.
    - **The app stopped** (`docker compose stop` in the app's folder, as `deploy`), once its health
@@ -1667,7 +1673,8 @@ verify, secure and drift:
    (deleting its history) must leave nothing: no container, volume or network of the Compose
    project `opscrew-beszel`, no `/home/deploy/opscrew/addons/beszel`, and no
    `beszel_secrets.json` on this computer.
-6. **Grafana Cloud off:** every line the app sent this run is read back for the leak search; then
+6. **Grafana Cloud off:** every line the app sent this run is read back for the leak search (at
+   most 5,000; reaching that cap is a finding, since the rest goes unsearched); then
    `addon disable grafana-cloud` (plan, approve) must leave no container, volume or network of
    `opscrew-alloy`, no `/home/deploy/opscrew/addons/alloy` (nor the empty `addons` folder), no
    masking file (`/srv/apps/<app>/mask.re`) and no token on this computer. `provision` and its
@@ -1678,7 +1685,15 @@ verify, secure and drift:
    commands' outputs (the terminal), MCP's results and standard error, the run's `opscrew-check`
    issues (titles, bodies and comments), the ntfy posts since the run started, the app's lines in
    Grafana Cloud, the commits (every branch), the run's pull requests and the audit log. Only
-   labels and places are printed.
+   labels and places are printed. It runs even when an earlier step failed (reading Grafana
+   Cloud's lines itself when Grafana Cloud was turned on), and its leaks are added to that step's
+   error.
+
+Nothing the pass prints names the server's address or Grafana Cloud's stack: its log lines, the
+output tails in its errors and every error it throws mask them (`[server-ipv4]`,
+`[grafana-cloud-metrics-url]` and the like), as they mask the secrets. The stack's addresses and
+user ids are not secrets, so the leak search does not look for them. The same holds for the
+move's pause check, with both servers' addresses.
 
 Then the usual teardown. After a finished destroy, `OPSCREW_CHECK_PAUSED` must pause the
 environment as destroyed, and one more dispatched run must close the open disk issue with "Closed

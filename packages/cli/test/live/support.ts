@@ -578,6 +578,9 @@ export interface DeployJob {
   steps: { conclusion: string | null }[];
   runnerName?: string | null;
   labels?: string[];
+  /** When the job started and completed (ISO times), once it has. */
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 /**
