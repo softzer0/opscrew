@@ -434,7 +434,7 @@ Effort`.
         - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages);
         - it says localhost gets no check.
     - **Provision,** when the environment has the check on:
-      - **The check key:** generated once (Ed25519, in `paths.files.checkKey`), and added by the `check-key` host step on cloud and own servers (`host-apply`).
+      - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
       - **The secrets** (`github-secrets`), each set as a repository secret:
         - `OPSCREW_CHECK_SSH_KEY`;
         - `<prefix>CHECK_SERVER`, holding the host, port, user and known-hosts line;
@@ -620,6 +620,7 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
+  - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`.
   - The fixed read commands now live in `status/components.ts`, `HOST_CHECKS`, `inspect.ts`, the figures and the logs. Decide whether one table of allowed read commands is smaller than five.
 
 ## Dependencies
