@@ -129,9 +129,10 @@ function tailEntries(event: TailEvent): WorkerLogEntry[] {
 }
 
 /**
- * The Worker's lines (US1 #4): its requests of the last 7 days (or `--since`), the newest `tail`
- * kept, then with `follow` its live tail until `signal` aborts. `--service` takes only `app` or the
- * Worker's name. Audited as a read at Cloudflare.
+ * The Worker's lines (US1 #4): its requests of the last 7 days (or `--since`), then with `follow`
+ * its live tail until `signal` aborts. Here `tail` counts requests, not lines: the newest `tail`
+ * requests (at most 2,000) are kept whole, each with all its console lines and exceptions.
+ * `--service` takes only `app` or the Worker's name. Audited as a read at Cloudflare.
  * @throws OpsCrewError `INVALID_INPUT` for another `--service`; Cloudflare's refusal names the
  * missing permission.
  */
@@ -179,7 +180,7 @@ export async function cloudflareLogs(
   });
   const line = (entry: WorkerLogEntry) =>
     entryLine(worker, entry, (text) => deps.redactor.redact(text));
-  const past = entries.slice(-options.tail).map(line);
+  const past = entries.map(line);
   const first = deps.redactor.redact(firstLine(now));
   if (!following) return logRead(first, past);
   return logRead(

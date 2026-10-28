@@ -1,6 +1,7 @@
 import {
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
   CLOUDFLARE_HOSTING_PERMISSIONS,
+  CLOUDFLARE_OBSERVABILITY_PERMISSIONS,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -1057,8 +1058,11 @@ async function checkCloudflareHosting(
   };
 }
 
-/** The permission `opscrew logs` reads a Worker's past requests with (FR-1714). */
-const OBSERVABILITY_PERMISSION = "Account → Workers Observability → Read";
+/**
+ * The permission `opscrew logs` reads a Worker's past requests with (FR-1714), without the
+ * connector's "(only for logs …)" note.
+ */
+const OBSERVABILITY_PERMISSION = CLOUDFLARE_OBSERVABILITY_PERMISSIONS[0].replace(/ \(.*\)$/, "");
 
 /**
  * Optional (FR-1714): whether OpsCrew's Cloudflare token can read the Worker's logs, which

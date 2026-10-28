@@ -116,7 +116,7 @@ describe("readLogs on Cloudflare's hosting, a server-rendered app", () => {
     );
   });
 
-  it("keeps the latest --tail lines, and reads only --since", async () => {
+  it("keeps the latest --tail requests, and reads only --since", async () => {
     const { zone, deps, services } = await cloudflare();
     zone.requests.push(
       request("old", 50, { logs: [{ message: "old line" }] }),
@@ -125,12 +125,25 @@ describe("readLogs on Cloudflare's hosting, a server-rendered app", () => {
 
     const lines = await collect(await readLogs(deps, SSR, { services, tail: 2, since: "15m" }));
 
-    expect(lines.map((line) => line.text)).toEqual(["one", "two"]);
+    expect(lines.map((line) => line.text)).toEqual(["GET /api/new 200 ok", "one", "two"]);
     const query = zone.calls.find((call) => call.path.endsWith("/telemetry/query"));
     expect(query?.body).toMatchObject({
       timeframe: { from: NOW - 15 * 60_000, to: NOW },
       limit: 2,
     });
+  });
+
+  it("counts --tail in whole requests, never cutting one's lines", async () => {
+    const { deps, zone, services } = await cloudflare();
+    zone.requests.push(
+      request("earlier", 3, { logs: [{ message: "earlier line" }] }),
+      request("latest", 1, { logs: [{ message: "first" }, { message: "second" }] }),
+    );
+
+    const lines = await collect(await readLogs(deps, SSR, { services, tail: 1 }));
+
+    // A cut by lines would keep only "second", without its request.
+    expect(lines.map((line) => line.text)).toEqual(["GET /api/latest 200 ok", "first", "second"]);
   });
 
   it("follows new requests through the Worker's live tail until aborted, then deletes it", async () => {
