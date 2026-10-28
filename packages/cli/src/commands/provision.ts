@@ -88,6 +88,19 @@ function pagesVerificationPrompt(
   };
 }
 
+/**
+ * The scheduled check's webhook address, asked with hidden input (it is a secret); cancelling
+ * leaves it unset, which provision says.
+ */
+function checkWebhookPrompt(
+  prompts: UiPrompts,
+): NonNullable<ProvisionOptions["services"]>["askCheckWebhook"] {
+  return async ({ prompt }) => {
+    const answer = await prompts.password({ message: prompt });
+    return prompts.isCancel(answer) ? undefined : answer;
+  };
+}
+
 /** Commander parser of the repeatable `--replace-token repository|registry`. */
 function collectToken(value: string, previous: ReplaceableToken[] | undefined): ReplaceableToken[] {
   const token = value.trim().toLowerCase();
@@ -328,6 +341,7 @@ export async function runInfraCommand(
           ...(ctx.isInteractive
             ? {
                 askEnv: createEnvPrompt(promptsOf(ctx), flag),
+                askCheckWebhook: checkWebhookPrompt(promptsOf(ctx)),
                 askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout),
                 askPagesVerification: pagesVerificationPrompt(promptsOf(ctx)),
               }
@@ -371,6 +385,13 @@ export async function runInfraCommand(
           (await planChanges(deps, "host", result.hostPlanHash))
         ) {
           planned.push({ label: "host plan for your server", hash: result.hostPlanHash });
+        }
+        // The scheduled check's key on a server that exists: a host plan of its own.
+        if (result.checkKeyPlanHash !== undefined) {
+          planned.push({
+            label: "host plan for the scheduled check's key",
+            hash: result.checkKeyPlanHash,
+          });
         }
         if (
           result.stackPlanHash !== undefined &&

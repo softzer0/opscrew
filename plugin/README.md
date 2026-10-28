@@ -29,9 +29,10 @@ the Claude Agent SDK that the CLI's own AI steps install once, when you first ru
 | `/opscrew:opscrew-deploy` | The full flow: scan → analyze → interview → design → prepare code → provision → verify |
 | `/opscrew:opscrew-scan` | Free security scan and guided fixes |
 | `/opscrew:opscrew-adapt` | Prepare the code for container deployment |
+| `/opscrew:opscrew-troubleshoot` | Why the app is failing or slow, and what it uses: status, figures, alerts and logs, read-only |
 
-Claude also uses these skills on its own when you ask things like "deploy my app" or "is my app
-secure?".
+Claude also uses these skills on its own when you ask things like "deploy my app", "is my app
+secure?" or "why is my app failing?".
 
 ## Safety
 
@@ -52,6 +53,12 @@ time (Claude never confirms it for you). The access token comes only from `PORTA
 shell, and the tools show "your Portainer" instead of its address. Removing the app and deleting its
 data stay in your terminal (`npx opscrew destroy`). See
 [An existing Portainer as a deploy target](../docs/guide/portainer-target.md).
+
+The add-ons (Beszel and Grafana Cloud) are turned on and off through plans you approve in a dialog.
+Their tokens come only from `OPSCREW_BESZEL_TOKEN` and `OPSCREW_GRAFANA_CLOUD_TOKEN` in the MCP
+server's environment, never from the chat, so Claude never sees them. Opening Beszel's dashboard and
+deleting its history stay in your terminal (`npx opscrew addon open beszel`,
+`npx opscrew addon disable beszel`).
 
 ## Data and the services it talks to
 

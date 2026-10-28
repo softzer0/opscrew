@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { type OwnServerServices, recordOwnServer, recordServerAddress } from "@opscrew/agents";
 import {
+  FakeGitHub,
   forbiddenFetch,
   OWN_IPV4,
   ownPlan,
@@ -113,6 +114,47 @@ async function status(step: Retarget["step"], abort?: AbortStep) {
   return { text, data: result.structuredContent };
 }
 
+const MIB = 1024 ** 2;
+
+/** A stats line as `docker stats --format '{{json .}}'` prints it. */
+function stats(name: string, cpu: string, memory: string): string {
+  return JSON.stringify({ CPUPerc: cpu, MemUsage: memory, Name: name, MemPerc: "1.00%" });
+}
+
+/**
+ * The server figures command's output: 2 CPUs, a disk 90% full, the web process at 95% of its
+ * 512 MB limit and a worker that restarted twice.
+ */
+const FIGURES = [
+  "==opscrew-figures:cpus",
+  "2",
+  "==opscrew-figures:load",
+  "0.52 0.40 0.31 1/123 4567",
+  "==opscrew-figures:memory",
+  "               total        used        free      shared  buff/cache   available",
+  "Mem:      4000000000  1500000000   500000000     1000000  2000000000  2400000000",
+  "==opscrew-figures:disk",
+  "Filesystem        1-blocks        Used   Available Capacity Mounted on",
+  "/dev/sda1      40000000000 36000000000  4000000000      90% /",
+  "==opscrew-figures:stats",
+  stats("shop-app-1", "3.25%", "486.4MiB / 512MiB"),
+  stats("shop-worker-1", "0.10%", "40MiB / 3.725GiB"),
+  "==opscrew-figures:inspect",
+  JSON.stringify({
+    name: "/shop-app-1",
+    restarts: 0,
+    startedAt: "2026-10-11T09:59:59Z",
+    memoryLimit: 512 * MIB,
+  }),
+  JSON.stringify({
+    name: "/shop-worker-1",
+    restarts: 2,
+    startedAt: "2026-10-11T11:30:00Z",
+    memoryLimit: 0,
+  }),
+  "",
+].join("\n");
+
 describe("opscrew_status: the app's components (FR-1331)", () => {
   /** A deployed Hetzner plan with a worker, after a deploy `opscrew verify` saw. */
   function deployedPlan() {
@@ -124,26 +166,55 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
     });
   }
 
-  async function call(plan: ReturnType<typeof deployedPlan>, stdout: string, exitCode = 0) {
+  /**
+   * `opscrew_status` on `plan`, deployed at {@link SERVER_IPV4} with the project's deploy key: the
+   * deploy user's shell answers the figures command with {@link FIGURES} and anything else with
+   * `stdout`, both exiting with `exitCode`; `github` is the GitHub of `acme/shop`.
+   */
+  async function call(
+    plan: ReturnType<typeof deployedPlan>,
+    stdout: string,
+    exitCode = 0,
+    github?: FakeGitHub,
+  ) {
     const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
     await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), plan);
     const env = { OPSCREW_HOME: path.join(dir, "home") };
-    await recordServerAddress(resolveProjectPaths(dir, { env }), { ipv4: SERVER_IPV4 });
+    const paths = resolveProjectPaths(dir, { env });
+    await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
+    await mkdir(path.dirname(paths.files.deployKey), { recursive: true });
+    await writeFile(paths.files.deployKey, "placeholder for the deploy key file\n");
     const hosts: string[] = [];
     const remote = (host: string): RemoteExec => {
       hosts.push(host);
-      return { host, run: async () => ({ exitCode, stdout, stderr: "" }) };
+      return {
+        host,
+        run: async (command) => ({
+          exitCode,
+          stdout: command.startsWith("export LC_ALL=C") ? FIGURES : stdout,
+          stderr: "",
+        }),
+      };
     };
+    // The repository's GitHub remote, for the scheduled check's state.
+    const runner = new ScriptedRunner((_command, args) =>
+      args.includes("get-url")
+        ? { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" }
+        : { exitCode: 0, stdout: "", stderr: "" },
+    );
     const deps = resolveMcpDeps({
       version: "0.0.0-test",
       env,
       fetch: forbiddenFetch,
-      runner: new ScriptedRunner(),
+      runner,
       cwd: dir,
+      clock: { now: () => new Date("2026-10-11T12:00:00.000Z") },
     });
     const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
-    registerStatusTool(server, deps, { services: { remote } });
+    registerStatusTool(server, deps, {
+      services: { remote, ...(github === undefined ? {} : { github }) },
+    });
     const client = new Client({ name: "opscrew-test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -165,7 +236,8 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
       deployedPlan(),
       "shop-app-1|running\nshop-worker-1|exited\nshop-db-1|running\n",
     );
-    expect(hosts).toEqual([SERVER_IPV4]);
+    // The components, then the figures.
+    expect(hosts).toEqual([SERVER_IPV4, SERVER_IPV4]);
     expect(text).toContain(
       [
         "Components:",
@@ -175,6 +247,26 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
       ].join("\n"),
     );
     expect(text).not.toContain(SERVER_IPV4);
+    // The resource figures, read now, with their flags.
+    expect(text).toContain(
+      [
+        "Resources (read now):",
+        "  Server: load 0.52, 0.40, 0.31 (1, 5 and 15 minutes) on 2 CPUs; memory 1.5 GB used of 3.7 GB; disk 33.5 GB used, 3.7 GB free of 37.3 GB (90% full)",
+        "  The web process (app): CPU 3.3%, memory 486 MB of 512 MB (95%), 0 restarts, started 2 hours ago",
+        "  The worker (worker): CPU 0.1%, memory 40 MB (no limit), 2 restarts, started 30 minutes ago",
+      ].join("\n"),
+    );
+    expect(text).toContain("  Warning: The server's disk is 90% full (3.7 GB free).");
+    expect(data).toMatchObject({
+      resources: {
+        server: { cpus: 2, disk: { freeBytes: 4_000_000_000 } },
+        containers: [
+          { service: "app", restarts: 0, memory: { limitBytes: 512 * MIB } },
+          { service: "worker", restarts: 2 },
+        ],
+      },
+    });
+    expect((data as { resources: { flags: unknown[] } }).resources.flags).toHaveLength(3);
     expect(data).toMatchObject({
       components: {
         components: [
@@ -183,6 +275,35 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
           { service: "db", running: 1 },
         ],
         others: [],
+      },
+    });
+  });
+
+  it("adds the scheduled check's state and open alerts, as text and data", async () => {
+    const github = new FakeGitHub();
+    github.workflowStates.set("opscrew-check.yml", "disabled_inactivity");
+    github.issues.set("opscrew-check", [
+      {
+        number: 12,
+        title: "shop (prod) is down: https://shop.example.com",
+        url: "https://github.com/acme/shop/issues/12",
+        body: "",
+        createdAt: "2026-10-11T11:00:00Z",
+      },
+    ]);
+    const plan = DeployPlanSchema.parse({
+      ...deployedPlan(),
+      observability: { check: { enabled: true } },
+    });
+    const { text, data } = await call(plan, "shop-app-1|running\n", 0, github);
+    expect(text).toContain("State: off. GitHub turned it off after 60 days without activity");
+    expect(text).toContain(
+      "    #12 shop (prod) is down: https://shop.example.com: https://github.com/acme/shop/issues/12",
+    );
+    expect(data).toMatchObject({
+      check: {
+        workflow: "disabled_inactivity",
+        alerts: [{ number: 12, url: "https://github.com/acme/shop/issues/12" }],
       },
     });
   });

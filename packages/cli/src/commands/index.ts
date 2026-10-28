@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import * as adapt from "./adapt";
+import * as addon from "./addon";
 import * as analyze from "./analyze";
 import * as app from "./app";
 import * as design from "./design";
@@ -12,6 +13,7 @@ import * as env from "./env";
 import * as init from "./init";
 import * as interview from "./interview";
 import * as localhost from "./localhost";
+import * as logs from "./logs";
 import * as mcp from "./mcp";
 import * as portainer from "./portainer";
 import * as promote from "./promote";
@@ -47,9 +49,11 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   verify,
   drift,
   portainer,
+  addon,
   retarget,
   destroy,
   status,
+  logs,
   localhost,
   runner,
   secrets,

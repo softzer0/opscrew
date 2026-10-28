@@ -110,9 +110,10 @@ function componentsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOpt
 /**
  * `opscrew_status`: which phases have run (from `.opscrew/state.json`), which artefacts exist, the
  * plan's image builder and deploy strategy, its supply-chain settings (signing, deploy tags,
- * image retention), the app's components and whether each runs, the proxy, certificates and
- * recovery copy (`tlsStatusReport`), and the next step. Writes
- * nothing. `options` is for tests only.
+ * image retention), the app's components and whether each runs, the resource figures and the
+ * scheduled check's state and alerts (`resources` and `check` in the data), the proxy,
+ * certificates and recovery copy (`tlsStatusReport`), and the next step. Writes nothing.
+ * `options` is for tests only.
  */
 export function registerStatusTool(
   server: McpServer,
@@ -124,7 +125,7 @@ export function registerStatusTool(
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew promote --to <env> --version <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer), the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew promote --to <env> --version <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -218,6 +219,8 @@ export function registerStatusTool(
             nextStep: step,
             move: moveData,
             ...(components?.status === undefined ? {} : { components: components.status }),
+            ...(components?.resources === undefined ? {} : { resources: components.resources }),
+            ...(components?.check === undefined ? {} : { check: components.check }),
             ...(tls === undefined ? {} : { tls: tls.lines }),
           },
         };

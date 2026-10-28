@@ -1,8 +1,14 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { recordServerAddress, serverAddressesFile } from "@opscrew/agents";
-import { SERVER_IPV4, SERVER_IPV6, testPlan } from "@opscrew/agents/testing";
+import {
+  FakeGitHub,
+  ScriptedRunner,
+  SERVER_IPV4,
+  SERVER_IPV6,
+  testPlan,
+} from "@opscrew/agents/testing";
 import type { RemoteExec } from "@opscrew/contracts";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
@@ -194,6 +200,117 @@ describe("opscrew status and the server's address", () => {
           "  MySQL (mysql): no container",
         ].join("\n"),
       );
+    });
+
+    it("shows the resource figures with their flags, and the scheduled check's state and alerts", async () => {
+      const env = { OPSCREW_HOME: path.join(dir, "home") };
+      const paths = resolveProjectPaths(dir, { env });
+      const base = testPlan({ deployed: true, userSecret: false });
+      await writeArtifact(
+        "plan",
+        paths.files.plan,
+        DeployPlanSchema.parse({
+          ...base,
+          deployment: { ...base.deployment, firstDeployAt: "2026-10-11T09:00:00.000Z" },
+          processes: {
+            workers: [{ name: "worker", command: "node worker.js", source: "procfile" }],
+          },
+          observability: { check: { enabled: true } },
+        }),
+      );
+      await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
+      // The project's deploy key: the figures are read as the deploy user.
+      await mkdir(path.dirname(paths.files.deployKey), { recursive: true });
+      await writeFile(paths.files.deployKey, "placeholder for the deploy key file\n");
+      const MIB = 1024 ** 2;
+      const stats = (name: string, cpu: string, memory: string) =>
+        JSON.stringify({ CPUPerc: cpu, MemUsage: memory, Name: name, MemPerc: "1.00%" });
+      const figures = [
+        "==opscrew-figures:cpus",
+        "2",
+        "==opscrew-figures:load",
+        "0.52 0.40 0.31 1/123 4567",
+        "==opscrew-figures:memory",
+        "               total        used        free      shared  buff/cache   available",
+        "Mem:      4000000000  1500000000   500000000     1000000  2000000000  2400000000",
+        "==opscrew-figures:disk",
+        "Filesystem        1-blocks        Used   Available Capacity Mounted on",
+        "/dev/sda1      40000000000 39000000000  1000000000      98% /",
+        "==opscrew-figures:stats",
+        stats("shop-app-1", "3.25%", "486.4MiB / 512MiB"),
+        stats("shop-worker-1", "0.10%", "40MiB / 3.725GiB"),
+        "==opscrew-figures:inspect",
+        JSON.stringify({
+          name: "/shop-app-1",
+          restarts: 0,
+          startedAt: "2026-10-11T09:59:59Z",
+          memoryLimit: 512 * MIB,
+        }),
+        JSON.stringify({
+          name: "/shop-worker-1",
+          restarts: 1,
+          startedAt: "2026-10-11T11:30:00Z",
+          memoryLimit: 0,
+        }),
+        "",
+      ].join("\n");
+      const remote = (host: string): RemoteExec => ({
+        host,
+        run: async (command) => ({
+          exitCode: 0,
+          stdout: command.startsWith("export LC_ALL=C")
+            ? figures
+            : "shop-app-1|running\nshop-worker-1|running\nshop-db-1|running\n",
+          stderr: "",
+        }),
+      });
+      const github = new FakeGitHub();
+      github.workflowStates.set("opscrew-check.yml", "active");
+      github.issues.set("opscrew-check", [
+        {
+          number: 12,
+          title: "shop (prod): the disk is filling up",
+          url: "https://github.com/acme/shop/issues/12",
+          body: "",
+          createdAt: "2026-10-11T11:00:00Z",
+        },
+      ]);
+      const ctx = withServices(createTestContext({ cwd: dir, env }), {
+        clock: { now: () => new Date("2026-10-11T12:00:00.000Z") },
+        // The repository's GitHub remote, for the scheduled check.
+        runner: new ScriptedRunner((_command, args) =>
+          args.includes("get-url")
+            ? { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" }
+            : { exitCode: 1, stdout: "", stderr: "" },
+        ),
+        provision: { remote, github },
+      });
+      expect(await main(argv("status"), ctx), ctx.errors).toBe(0);
+      expect(ctx.output).toContain(
+        [
+          "Resources (read now):",
+          "  Server: load 0.52, 0.40, 0.31 (1, 5 and 15 minutes) on 2 CPUs; memory 1.5 GB used of 3.7 GB; disk 36.3 GB used, 954 MB free of 37.3 GB (98% full)",
+          "  The web process (app): CPU 3.3%, memory 486 MB of 512 MB (95%), 0 restarts, started 2 hours ago",
+          "  The worker (worker): CPU 0.1%, memory 40 MB (no limit), 1 restart, started 30 minutes ago",
+        ].join("\n"),
+      );
+      // Each flag: the disk past 95% (high), the memory near its limit, the restart.
+      expect(ctx.output).toMatch(/\n {2}High: The server's disk is 98% full/);
+      expect(ctx.output).toContain(
+        "  Warning: The web process (app) uses 95% of its 512 MB memory limit.",
+      );
+      expect(ctx.output).toContain(
+        "  Warning: The worker (worker) restarted 1 time since the last deploy",
+      );
+      expect(ctx.output).toContain(
+        [
+          "Scheduled check (.github/workflows/opscrew-check.yml, read from GitHub now):",
+          "  State: on",
+          "  Open alerts:",
+          "    #12 shop (prod): the disk is filling up: https://github.com/acme/shop/issues/12",
+        ].join("\n"),
+      );
+      expect(ctx.output).not.toContain("could not read the resource figures");
     });
 
     it("a server it cannot read leaves a note, and the rest of status is shown", async () => {

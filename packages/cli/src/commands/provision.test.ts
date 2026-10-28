@@ -129,6 +129,33 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(ctx.output).not.toContain(project.env.OPSCREW_STORAGE_SECRET_ACCESS_KEY);
   });
 
+  it("--plan-only lists the scheduled check key's host plan on a server that exists", async () => {
+    const base = testPlan({ domain: "shop.example.com", deployed: true, userSecret: false });
+    project = await deployProject(
+      DeployPlanSchema.parse({ ...base, observability: { check: { enabled: true } } }),
+    );
+    // The server exists: the infrastructure plan only updates its firewall.
+    const engine = new FakeEngine({
+      planJson: planJsonFor({ proxied: true }),
+      changes: [
+        {
+          address: "module.server.hcloud_firewall.this",
+          type: "hcloud_firewall",
+          name: "this",
+          provider: "registry.opentofu.org/hetznercloud/hcloud",
+          action: "update",
+        },
+      ],
+    });
+    const { ctx } = context(project, { engine });
+    expect(await run(ctx, "provision", "--plan-only", "--yes"), ctx.errors).toBe(0);
+    const key = /host plan for the scheduled check's key:\s+([0-9a-f]{64})/.exec(ctx.output)?.[1];
+    expect(key).toBeDefined();
+    expect(ctx.output).toMatch(
+      new RegExp(`    opscrew provision (--approve [0-9a-f]{64} )*--approve ${key}`),
+    );
+  });
+
   it("--plan-only --yes prints the hash; --approve <hash> --yes applies exactly that plan", async () => {
     project = await deployProject();
     const first = context(project);
@@ -306,6 +333,31 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(await run(ctx, "provision", "--plan-only", "--yes")).toBe(1);
     expect(ctx.errors).toMatch(/The plan fails 1 security policy/);
     expect(ctx.output).not.toContain("Plan hash (SHA-256):");
+  });
+
+  it("asks for the scheduled check's webhook address with hidden input, and stores it as a secret", async () => {
+    const base = testPlan({ userSecret: false });
+    project = await deployProject(
+      DeployPlanSchema.parse({
+        ...base,
+        observability: { check: { enabled: true, webhook: "ntfy" } },
+      }),
+    );
+    const webhook = `https://ntfy.example.com/opscrew-${fakeSecret("generic-password", "ntfy")}`;
+    // The webhook's address; then no age key of the user's own, and no file for a new one yet.
+    const prompts = new ScriptedPrompts([webhook, "", CANCEL]);
+    const { ctx, github } = context(project, {
+      interactive: true,
+      approvals: new ApproveAll(),
+      prompts,
+    });
+    expect(await run(ctx, "provision"), ctx.errors).toBe(0);
+    expect(prompts.calls[0]).toEqual({
+      kind: "password",
+      message: "Address of the ntfy webhook for the scheduled check (stored as a GitHub secret)",
+    });
+    expect(github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(webhook);
+    expect(`${ctx.output}${ctx.errors}`).not.toContain(webhook);
   });
 
   it("asks for production values in an interactive terminal without printing them", async () => {

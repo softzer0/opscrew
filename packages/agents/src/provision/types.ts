@@ -281,6 +281,8 @@ export interface ProvisionResult {
   hostPlanHash?: string;
   /** A server the user owns: true when this run applied host changes. */
   hostApplied?: boolean;
+  /** With `--plan-only`: the scheduled check key's host plan hash (`check-key`), to approve too. */
+  checkKeyPlanHash?: string;
   /**
    * The runner machines' host plan hashes (each file is `.opscrew/plans/host-<hash>.json`): the
    * environment's runner removed from each machine it left, then, with `runner: host`, installed on

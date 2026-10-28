@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type OpscrewMcpDeps, resolveMcpDeps } from "./deps";
+import { registerAddonTools } from "./tools/addons";
 import { registerAppTools } from "./tools/apps";
 import { registerDeployTools } from "./tools/deploy";
 import { registerDesignTools } from "./tools/design";
@@ -9,6 +10,7 @@ import { registerDriftTool } from "./tools/drift";
 import { registerEnvironmentTools } from "./tools/environments";
 import { registerInitCheckTool } from "./tools/init";
 import { registerInterviewTools } from "./tools/interview";
+import { registerLogsTool } from "./tools/logs";
 import { registerPortainerTools } from "./tools/portainer";
 import { registerRunnerHostTools } from "./tools/runners";
 import { registerScanTool } from "./tools/scan";
@@ -51,11 +53,13 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerInterviewTools(server, resolved);
   registerDesignTools(server, resolved);
   registerStatusTool(server, resolved);
+  registerLogsTool(server, resolved);
   registerDeployTools(server, resolved);
   registerDriftTool(server, resolved);
   registerInitCheckTool(server, resolved);
   registerDomainCheckTool(server, resolved);
   registerPortainerTools(server, resolved);
+  registerAddonTools(server, resolved);
   registerSecretsTools(server, resolved);
   registerEnvironmentTools(server, resolved);
   registerAppTools(server, resolved);

@@ -1,12 +1,14 @@
 import type { Readable, Writable } from "node:stream";
 import {
   type AdaptGitHub,
+  type AddonServices,
   buildPhaseDeps,
   type DestroyServices,
   type DomainServices,
   type InitServices,
   type LocalhostServices,
   type LocalRunnerServices,
+  type LogServices,
   type PhaseDeps,
   type PortainerAccess,
   type PortainerServices,
@@ -88,6 +90,17 @@ export interface CliServices {
   promote?: PromoteServices;
   /** The runner machine's shell and host adapter, and GitHub's runner API, for `runner host`. */
   runnerHost?: { machine?: RunnerHostServices; github?: RunnerGitHubApi };
+  /** The server's shell, own-server, Portainer and Cloudflare fakes for `logs`. */
+  logs?: LogServices;
+  /** The deploy user's shell, host adapter, engine, Cloudflare and own-server fakes for `addon`. */
+  addon?: AddonServices;
+  /**
+   * Calls `stop` when the user stops `logs --follow` or `addon open` (default: Ctrl-C and SIGTERM
+   * of this process); returns what unsubscribes it.
+   */
+  onStop?: (stop: () => void) => () => void;
+  /** Ends the process after `logs --follow` (default: once stdout and stderr have flushed). */
+  endProcess?: () => void;
 }
 
 const services = new WeakMap<CliContext, CliServices>();

@@ -824,6 +824,7 @@ async function provisionFlow(
     }
     // The scheduled check's key on a server that exists: its host plan, shown and saved (a new
     // server gets it at its first boot, from the infrastructure plan).
+    let checkKeyPlanHash: string | undefined;
     if (checkKey !== undefined && !createsServer(applied.plan?.changes ?? [], profile)) {
       const server = await checkKeyServer(deps, {
         plan,
@@ -834,15 +835,17 @@ async function provisionFlow(
         created: false,
       });
       if (server !== undefined) {
-        await checkKeyStep(deps, {
-          plan,
-          key: checkKey,
-          repository,
-          server,
-          command,
-          phase,
-          planOnly: true,
-        });
+        checkKeyPlanHash = (
+          await checkKeyStep(deps, {
+            plan,
+            key: checkKey,
+            repository,
+            server,
+            command,
+            phase,
+            planOnly: true,
+          })
+        )?.hash;
       }
     }
     // The environment's runner on the runner machines it leaves and on its own: their host plans,
@@ -861,6 +864,7 @@ async function provisionFlow(
       ...storageHash,
       ...cloudflareHash,
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
+      ...(checkKeyPlanHash !== undefined ? { checkKeyPlanHash } : {}),
       ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
       applied: false,
       outputs: {},

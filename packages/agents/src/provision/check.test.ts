@@ -290,9 +290,10 @@ describe.skipIf(!findExecutable("git"))("provision with the scheduled check", ()
     serverExists();
     // The server exists from an earlier provision: its address is recorded on this computer.
     await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
-    await runProvision(deps, { services, planOnly: true });
+    const result = await runProvision(deps, { services, planOnly: true });
     const hash = /check-key plan ([0-9a-f]{64})/.exec(deps.reporter.text())?.[1];
     expect(hash).toBeDefined();
+    expect(result.checkKeyPlanHash).toBe(hash);
     expect(deps.reporter.text()).toContain(`\`--approve ${hash}\``);
     expect(existsSync(join(deps.paths.files.plansDir, `host-${hash}.json`))).toBe(true);
     expect(handler.requests.map((request) => request.kind)).not.toContain("host-apply");
