@@ -40,7 +40,8 @@ In a terminal, OpsCrew asks for any value you leave out, and for the token witho
 OpsCrew reads the server first, then shows the host plan with:
 
 - **Alloy and OpsCrew's read-only Docker proxy,** each with its memory limit (192 MB and 32 MB) and
-  its share of the server's monthly price. Measured on a test server, Alloy used 70 to 80 MB;
+  next to its share of the server's monthly price on a server OpsCrew created, or the server's memory
+  on your own. Measured in OpsCrew's tests, Alloy used 70 to 80 MB;
 - **OpsCrew's estimate** of what the server will send, next to the free tier's limits.
 
 Nothing changes until you approve the plan's hash. In scripts, add `--plan-only` to see the plan and
@@ -118,9 +119,13 @@ mask them, and sends only masked lines. Its own local page, which shows the mask
 reachable only inside its container.
 
 Alloy also reads the server's `/` and `/sys`, read-only, for the disk and CPU figures. Every
-container runs from an image pinned to a tested version, with a read-only file system, no Linux
-capabilities and a memory limit, as the server's `deploy` user, which already has Docker access.
-Alloy runs on a network of its own, not the server's, so it sends no network figures.
+container runs from an image pinned to a tested version, with a read-only file system and a memory
+limit:
+
+- **Alloy** runs as the server's `deploy` user, which already has Docker access, with no Linux
+  capability. It runs on a network of its own, not the server's, so it sends no network figures.
+- **The read-only Docker proxy** runs as root with the deploy user's group, because Docker's socket
+  is root's. It has no network, and only the capability to bind its socket.
 
 On your own server with several OpsCrew apps, Grafana Cloud belongs to the app that turned it on:
 Alloy sends that app's lines and the server's metrics. Turning it on for another app is refused with

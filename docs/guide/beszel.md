@@ -28,12 +28,13 @@ OpsCrew first reads the server's memory, then shows the host plan of what it add
 - the agent (64 MB);
 - OpsCrew's read-only Docker proxy (32 MB).
 
-Each memory limit comes with its share of the server's monthly price, as [components](components.md)
-do. The plan has its hash, and nothing changes until you approve it. In scripts,
+On a server OpsCrew created, each memory limit comes with its share of the server's monthly price,
+as [components](components.md) do; on your own server, with the server's memory. The plan has its
+hash, and nothing changes until you approve it. In scripts,
 `npx opscrew addon enable beszel --plan-only` shows the plan and its hash, and
 `npx opscrew addon enable beszel --approve <hash>` applies exactly that plan.
 
-Measured on a test server, Beszel used far less than its limits: about 11 MB for the hub, 7 MB for
+Measured in OpsCrew's tests, Beszel used far less than its limits: about 11 MB for the hub, 7 MB for
 the agent and 12 MB for the proxy.
 
 In hub mode, OpsCrew generates the dashboard's password, the agent's token and the hub's key on your
@@ -116,9 +117,15 @@ as your app's environment values, nor their log lines, and neither can a hub els
 
 Beszel shows every container on the server, those of other apps too.
 
-Every Beszel container runs from an image pinned to a tested version, with a read-only file system,
-no Linux capabilities and a memory limit, as the server's `deploy` user, which already has Docker
-access. Its files are under `/home/deploy/opscrew/addons/beszel` on a server OpsCrew created, and
+Every container runs from an image pinned to a tested version, with a read-only file system and a
+memory limit:
+
+- **Beszel's hub and agent** run as the server's `deploy` user, which already has Docker access,
+  with no Linux capability.
+- **The read-only Docker proxy** runs as root with the deploy user's group, because Docker's socket
+  is root's. It has no network, and only the capability to bind its socket.
+
+Its files are under `/home/deploy/opscrew/addons/beszel` on a server OpsCrew created, and
 under `/srv/opscrew/addons/beszel` on your own.
 
 On your own server with several OpsCrew apps, Beszel belongs to the app that turned it on. It already
@@ -176,5 +183,6 @@ turn it off, then on with the new one:
 ## From Claude Code
 
 The [OpsCrew plugin](claude-code-plugin.md) can show Beszel's status and turn it on or off. You
-approve each plan in a dialog. To open the dashboard, run `npx opscrew addon open beszel` in your
+approve each plan in a dialog. Turning it off there always keeps its history; deleting the history is
+done in a terminal with the typed app name (`npx opscrew addon disable beszel`). To open the dashboard, run `npx opscrew addon open beszel` in your
 terminal.

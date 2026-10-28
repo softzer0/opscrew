@@ -36,7 +36,8 @@ A name `--service` doesn't know is refused, and the refusal lists the names the 
 - **The cron jobs** run in one container, so `--service <job>` and `--service cron` both show the
   lines of every cron job.
 - **The edge** on a server is the reverse proxy every OpsCrew app on that server shares, so its lines
-  are of all of them. In [a Portainer](portainer-target.md) it is the Caddy in the app's own stack.
+  are of all of them. In [a Portainer](portainer-target.md), `edge` exists only when the stack's web
+  mode is `caddy`: it is then the Caddy in the app's own stack.
 
 ### Where the lines come from
 
@@ -49,8 +50,8 @@ A name `--service` doesn't know is refused, and the refusal lists the names the 
 | [Cloudflare's hosting](cloudflare-hosting.md), server-rendered | Cloudflare's logs of the Worker's requests; `--follow` uses Cloudflare's live tail |
 | Cloudflare's hosting with a static site, and [GitHub Pages](github-pages.md) | No request logs: the last deploy runs instead |
 
-On a server, `logs` runs one fixed, read-only `docker logs` command, built only from names it has
-checked. It can't run anything else on the server, and each read is written to OpsCrew's audit log
+On a server, `logs` runs fixed, read-only Docker commands (a listing of the part's containers, and
+`docker logs`), built only from names it has checked. It can't run anything else on the server, and each read is written to OpsCrew's audit log
 without the server's address. When you stop `--follow`, the command ends on the server within about
 a second.
 
@@ -75,11 +76,13 @@ tier.
 Every line passes OpsCrew's masking before it is shown. It masks:
 
 - the values OpsCrew generated for the app, such as the database password;
-- your app's values in the file `OPSCREW_APP_ENV_FILE` names, when you set it;
+- the values of the names in your plan's `app.env`, from the file `OPSCREW_APP_ENV_FILE` names,
+  when you set it;
 - anything shaped like a known kind of secret, such as an API token or a private key.
 
 A masked value shows as `[REDACTED:<kind>]`. A secret of your own with no known shape is masked only
-when OpsCrew knows its value: set `OPSCREW_APP_ENV_FILE` to your production values file to cover it.
+when OpsCrew knows its value: set `OPSCREW_APP_ENV_FILE` to a file with the production values of the
+names in your plan's `app.env` to cover it.
 
 ### Cloudflare's hosting
 
@@ -91,13 +94,17 @@ printed for it and any error it raised. OpsCrew shows no request headers and no 
   status and outcome followed by its console lines and errors. Without `--tail`, the last 200
   requests; at most 2,000.
 - **Past requests** can take up to about 30 seconds to show. `--follow` shows new requests at once.
+- **The live tail is shared:** Cloudflare keeps one live tail per Worker, shared by everyone on the
+  account, so stopping `--follow` also stops `wrangler tail` and the dashboard's live logs of that
+  Worker. Cloudflare samples a busy Worker's live tail.
 - **Requests for the site's static files** run no code, so they are in no log.
 - **`--service`** doesn't apply: the Worker is the whole app.
 - **The permission:** reading past requests needs Account → Workers Observability → Read on
   `CLOUDFLARE_API_TOKEN`, on top of the Workers Scripts → Edit that hosting needs. The live tail
   works with Workers Scripts → Edit alone. `npx opscrew init` names a missing permission.
 
-Cloudflare keeps the logs within its plan's allowance, and drops what goes past it. Nothing in
+Cloudflare keeps the logs within its plan's allowance. On Workers Free, Cloudflare keeps nothing
+past the allowance until the next day; on a paid plan, the extra is billed. Nothing in
 Cloudflare's answers says the allowance was reached, so `logs` always states it. As OpsCrew read
 Cloudflare's [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) and
 [Observability pricing](https://developers.cloudflare.com/observability/pricing/) on 2026-10-28:
@@ -141,6 +148,7 @@ Figures past a threshold are flagged with what they mean and what to do:
 | A Portainer | Each container's figures, and the host's CPUs and total memory | The host's load, memory in use and disk: Docker's API through Portainer doesn't give them. Containers the token's user can't see are named too |
 | Your computer | Each container's figures, and Docker's CPUs and total memory | Your computer's load, memory in use and disk |
 | Cloudflare's hosting, server-rendered | The last 24 hours' requests, errors and CPU time per request, against Workers Free's 100,000 requests a day and 10 ms of CPU time per request | |
+| Cloudflare's hosting, static site | The Worker's versions and custom domains | Request figures and request logs: Cloudflare serves the site's files without running any code |
 | GitHub Pages | The latest build and its result | Any figure: no code of the site runs |
 
 On Cloudflare:
@@ -164,7 +172,8 @@ When the [scheduled check](alerts.md) is on, `status` also reads its state from 
 - **Search across days, or across apps:** `logs` reads one app and environment at a time.
 - **Request logs of a static site,** on GitHub Pages or on Cloudflare's hosting.
 - **The host's disk in a Portainer:** neither Docker nor Portainer gives it.
-- **Logs Cloudflare didn't keep:** lines past the plan's allowance are gone.
+- **Logs Cloudflare didn't keep:** on Workers Free, Cloudflare keeps nothing past the allowance
+  until the next day.
 
 ## From Claude Code
 

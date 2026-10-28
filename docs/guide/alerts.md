@@ -1,13 +1,14 @@
 # Alerts: the scheduled check
 
-OpsCrew adds a scheduled check to your repository that runs in GitHub Actions. Every few minutes it
+OpsCrew adds a scheduled check to your repository that runs in GitHub Actions. On a schedule, it
 checks that your app answers, that its certificate is valid and that its server's disk has room.
 When something fails, it opens a GitHub issue, so everyone watching the repository is told, and it
 can post the same message to Slack, Discord or ntfy. When the app recovers, it closes the issue and
 says how long the problem lasted.
 
-Nothing runs on your server for it, and it costs nothing: Actions minutes are free in a public
-repository, and in a private one the check uses a small share of the minutes your plan includes.
+Nothing runs on your server for it, apart from a disk job on a server that deploys from its own
+runner. With the default interval it costs nothing: Actions minutes are free in a public repository,
+and in a private one the check uses a small share of the minutes your plan includes.
 
 ## Turning it on
 
@@ -200,13 +201,19 @@ A private repository has no such rule.
 
 Set `observability.check.enabled` to `false` in the environment's plan and run
 `npx opscrew provision`: its pull request updates `check.json`. When no environment has the check
-on, OpsCrew writes no check files any more: delete `.github/workflows/opscrew-check.yml` and
-`opscrew/check/` yourself, or turn the workflow off on the Actions tab.
+on any more, the next deploy-setup pull request removes `.github/workflows/opscrew-check.yml` and
+`opscrew/check/`.
+
+The check key's line in the server's `authorized_keys` (it can only run `df`) and the secrets
+`OPSCREW_CHECK_SSH_KEY` and `OPSCREW_CHECK_SERVER` (with the environment's prefix outside prod) stay
+until the environment is destroyed. To delete the secrets earlier, run `gh secret delete <name>` for
+each.
 
 ## What it can't do
 
-- **Alert within a minute:** GitHub runs schedules at most every 5 minutes, and can delay a run by
-  several minutes when it is busy. Expect an issue within the interval plus up to about 10 minutes.
+- **Alert within a minute:** GitHub runs schedules at most every 5 minutes. Expect an issue within
+  the interval, plus whatever delay GitHub adds to scheduled runs when it is busy (often several
+  minutes, sometimes more), plus up to a minute of retries.
 - **Check your computer:** GitHub can't reach an app running [on your computer](localhost.md), so
   design offers no check there.
 - **Read the disk of a Portainer's server:** OpsCrew reaches your Portainer only through its API.
