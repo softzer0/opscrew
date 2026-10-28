@@ -45,7 +45,7 @@ Effort`.
 
 ## Phase 1: Foundation
 
-- [ ] T1701a Contracts: `plan.observability`, `RemoteExec`'s streaming options, the new paths and recovery-copy entries, `registerAppSecrets`, and the empty modules the agents waves fill, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/paths.ts`, `packages/agents/src/{shared/remote.ts,shared/app-secrets.ts,secrets/files.ts,provision/secrets.ts,logs/index.ts,check/index.ts,addons/index.ts,index.ts}`, and the `RemoteExec` fakes
+- [X] T1701a Contracts: `plan.observability`, `RemoteExec`'s streaming options, the new paths and recovery-copy entries, `registerAppSecrets`, and the empty modules the agents waves fill, in `packages/plan-schema/**`, `packages/contracts/**`, `packages/core/src/paths.ts`, `packages/agents/src/{shared/remote.ts,shared/app-secrets.ts,secrets/files.ts,provision/secrets.ts,logs/index.ts,check/index.ts,addons/index.ts,index.ts}`, and the `RemoteExec` fakes
   - Owns: those paths (+ the generated JSON schema, tests and fixtures). In `provision/secrets.ts`, only the lines that register the app's values. In `agents/src/index.ts`, only the three new export lines. The `RemoteExec` fakes are `connectors/ssh-host/src/__fixtures__/fake-host.ts` and any other test double of `RemoteExec`, for the new options only.
   - Reads: data-model.md "The plan block", "Secrets kept apart"; contracts/observability.md "plan-schema", "contracts"; plan.md "1."; ADR 0021
   - Depends: —
@@ -475,7 +475,7 @@ Effort`.
     - **Beszel:**
       - **Hub mode:** generates a password (24+ characters) and a token into Beszel's secrets file.
       - **Agent mode:** takes `--hub-url`, the hub's public key, and the token (from `OPSCREW_BESZEL_TOKEN`, or asked, never echoed).
-      - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. It refuses without `allowedEmails`, and never makes the dashboard public.
+      - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. It refuses without `allowedEmails`, and never makes the dashboard public. It also refuses a hostname that Portainer's web UI already uses on the server, since both go through one tunnel (T1701a's review).
       - **`addonOpen`:** runs `ssh -N -L 8090:127.0.0.1:8090` as Portainer's status command builds it, until stopped. It prints the local address and where the password is.
     - **Grafana Cloud:**
       - asks for the metrics URL and user and the logs URL and user (or takes flags), and the token from `OPSCREW_GRAFANA_CLOUD_TOKEN` or asked;
@@ -620,7 +620,7 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
-  - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`.
+  - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`, and have Portainer's drift use `app-secrets.ts`'s `GeneratedValuesSchema` instead of its own copy (T1701a's review).
   - The fixed read commands now live in `status/components.ts`, `HOST_CHECKS`, `inspect.ts`, the figures and the logs. Decide whether one table of allowed read commands is smaller than five.
 
 ## Dependencies
