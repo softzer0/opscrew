@@ -239,7 +239,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
   - Effort: high
 
-- [ ] T1707 [P] [US3] The scheduled check: `check.mjs`, its generated copy, and `renderCheck` (the workflow and `check.json`), in `packages/iac-templates/check/**` (new), `packages/iac-templates/src/check/**`, `packages/iac-templates/src/generated/check.ts` (new), `packages/iac-templates/scripts/gen-modules.ts`
+- [X] T1707 [P] [US3] The scheduled check: `check.mjs`, its generated copy, and `renderCheck` (the workflow and `check.json`), in `packages/iac-templates/check/**` (new), `packages/iac-templates/src/check/**`, `packages/iac-templates/src/generated/check.ts` (new), `packages/iac-templates/scripts/gen-modules.ts`
   - Owns: those paths (+ tests, snapshots, and the package's `gen:modules` script line if it needs one)
   - Reads: spec US3, FR-1702, FR-1705–FR-1710, SC-1702, SC-1703, SC-1705; data-model.md "The check's files", "Alerts (GitHub issues)"; contracts/observability.md "iac-templates"; research.md R3, R4 and "Spike results" 4, 5; plan.md "5."
   - Depends: T1701a, T1701b, T1702
