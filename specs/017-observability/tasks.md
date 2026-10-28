@@ -606,7 +606,7 @@ Effort`.
 
 ## Phase 5: Surfaces and the Docker pass (parallel)
 
-- [ ] T1712a [P] [US1] [US2] [US4] [US5] [US6] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
+- [X] T1712a [P] [US1] [US2] [US4] [US5] [US6] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
   - Owns: those paths (+ tests)
   - Reads: spec US6, FR-1715; contracts/observability.md "Agents and surfaces"; plan.md "10."; quickstart.md; the reports of T1709a–T1711
   - Depends: T1709a, T1709b, T1709c, T1710, T1711
