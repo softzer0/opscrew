@@ -400,7 +400,7 @@ Effort`.
 
 ## Phase 4: Agents (parallel)
 
-- [ ] T1708b [US5] Alloy's default memory limit is 256 MB, in `packages/plan-schema/src/plan.ts` (the default only) and `packages/iac-templates/src/addons/**` (snapshots)
+- [X] T1708b [US5] Alloy's default memory limit is 256 MB, in `packages/plan-schema/src/plan.ts` (the default only) and `packages/iac-templates/src/addons/**` (snapshots)
   - Owns: those paths (+ tests, snapshots, and plan-schema's generated JSON schema)
   - Reads: T1713's report: Alloy reached 91% of 192 MB from reclaimable file cache in one run, which `status` would flag
   - Depends: T1713
