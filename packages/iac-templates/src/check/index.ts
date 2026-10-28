@@ -47,8 +47,8 @@ export const CHECK_SECRETS = {
   ntfyToken: "OPSCREW_CHECK_NTFY_TOKEN",
 } as const;
 
-/** The `check` job's runner. Spike result 5 (GitHub) may move it to `ubuntu-slim`. */
-const CHECK_RUNNER = "ubuntu-latest";
+/** The `check` job's runner: `ubuntu-slim` (spike result 5, a third of a 2-core minute). */
+const CHECK_RUNNER = "ubuntu-slim";
 
 const CHECK_DIR = "opscrew/check";
 

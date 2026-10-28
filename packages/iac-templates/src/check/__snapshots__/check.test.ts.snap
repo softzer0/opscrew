@@ -22,7 +22,7 @@ jobs:
   check:
     name: Check the hostnames, certificates and disks
     if: github.repository == 'example-org/example-app'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     concurrency:
       group: opscrew-check
@@ -139,7 +139,7 @@ jobs:
   check:
     name: Check the hostnames, certificates and disks
     if: github.repository == 'example-org/example-app'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     concurrency:
       group: opscrew-check
