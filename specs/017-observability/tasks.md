@@ -389,8 +389,8 @@ Effort`.
 
 - [ ] T1709a [P] [US1] `readLogs` for every target, in `packages/agents/src/logs/**`
   - Owns: that path (+ tests; fakes in `packages/agents/src/testing/logs.ts` (new))
-  - Reads: spec US1, FR-1701–FR-1703, SC-1701; data-model.md "Log lines"; contracts/observability.md "Agents and surfaces"; research.md R1, R2 and "Spike results" 6–8; plan.md "7."; T1703's and T1705's reports
-  - Depends: T1701a, T1703, T1705
+  - Reads: spec US1, FR-1701–FR-1703, SC-1701; data-model.md "Log lines"; contracts/observability.md "Agents and surfaces"; research.md R1 and "Spike results" 7, 8; plan.md "7."; T1705's report
+  - Depends: T1701a, T1705
   - Accept:
     - **`readLogs(deps, plan, { service?, since?, tail?, follow? })`** returns an async iterable of `LogLine`. It calls `registerAppSecrets` first.
     - **Targets:**
@@ -400,7 +400,7 @@ Effort`.
         - `--follow` streams through `onLine` and stops on `signal`. The remote command is wrapped so it ends when ssh goes, because without a terminal a quiet `docker logs --follow` outlives the CLI (spike result 8): `docker logs --follow … & p=$!; while kill -0 $PPID 2>/dev/null && kill -0 $p 2>/dev/null; do sleep 1; done; kill $p 2>/dev/null; wait $p`.
       - **Portainer:** `containerLogs`. `--follow` polls every 2 seconds with `since` just after the last line's nanosecond timestamp (spike result 7). When the token's user can't see the app's containers, it says that a standard user's token sees only that user's stacks.
       - **localhost:** `docker logs` through `deps.runner` with `onLine`.
-      - **Cloudflare, SSR:** `workersLogs` for the past, and `workersTail` for `--follow`.
+      - **Cloudflare, SSR:** a plain "not available yet" refusal, which T1709c replaces.
       - **Cloudflare static, and GitHub Pages:** one sentence ("<host> keeps no request logs for this site: its files are served without running any code"), then the last deploy runs with their result and link.
     - **Services:**
       - the web process, each worker, each cron job and each service by its plan name, and `edge`;
@@ -423,8 +423,8 @@ Effort`.
 
 - [ ] T1709b [P] [US2] Resource figures and the check's state in `status`, in `packages/agents/src/status/**`, and the disk thresholds' export in `packages/secops/src/hardening/checks.ts`
   - Owns: those paths (+ tests). In secops, only the export of the two thresholds (and its index line).
-  - Reads: spec US2, FR-1704, FR-1708; data-model.md "Reading figures"; research.md R1, R2; plan.md "7."; T1703's, T1704's and T1705's reports
-  - Depends: T1701a, T1703, T1704, T1705
+  - Reads: spec US2, FR-1704, FR-1708; data-model.md "Reading figures"; research.md R1; plan.md "7."; T1704's and T1705's reports
+  - Depends: T1701a, T1704, T1705
   - Accept:
     - **`readResources(deps, plan)`** returns a `ResourceReading`:
       - **Servers:** one fixed command. Its output is parsed with zod, and anything else in it is ignored.
@@ -433,7 +433,7 @@ Effort`.
         - `docker inspect --format` with only `.Name`, `.RestartCount`, `.State.StartedAt` and `.HostConfig.Memory`.
       - **Portainer:** `containerStats`, `containerInspect` and `dockerInfo`. `unavailable` names the host's disk. Containers the token's user can't see are named as not visible to that user, never as absent (spike result 7).
       - **localhost:** the same Docker figures through `deps.runner`, and `docker info` for the totals.
-      - **Cloudflare:** `workersAnalytics` for the last 24 hours, against 100,000 requests a day and 10 ms of CPU time. It notes that requests served from the site's files aren't counted.
+      - **Cloudflare:** no figures yet. `unavailable` names them, and T1709c fills them.
       - **GitHub Pages:** none, and `unavailable` says so. The latest build stays as today.
     - **Flags,** each with its meaning and what to do:
       - memory at 90% or more of a limit;
@@ -451,6 +451,25 @@ Effort`.
       - the check off for inactivity;
       - no `Config.Env` value anywhere in the reading.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops` and `pnpm lint`
+  - Effort: high
+
+- [ ] T1709c [US1] [US2] Cloudflare in `logs`, `status` and `init`, in `packages/agents/src/{logs,status,init}/**`
+  - Owns: those paths, for the Cloudflare branches and the permission check only (+ tests)
+  - Reads: spec US1 #4–5, US2 #5, FR-1714, SC-1701; research.md R2 and "Spike results" 6; plan.md "7."; T1703's, T1709a's, T1709b's and T1710's reports
+  - Depends: T1703, T1709a, T1709b, T1710
+  - Accept:
+    - **`logs` on Cloudflare with SSR:**
+      - `workersLogs` for the past, mapped to `LogLine`: the request's method, path, status and outcome, then its console lines and exceptions;
+      - `workersTail` for `--follow`, stopped by `signal`;
+      - the dated allowance from `prices.ts` in the first line, and the reached-allowance note when T1703 reports it.
+    - **`status` on Cloudflare:** `workersAnalytics` for the last 24 hours, against 100,000 requests a day and 10 ms of CPU time. It notes that requests served from the site's files aren't counted.
+    - **`init`:** with Cloudflare hosting in use, it checks `observabilityPermissions` (FR-1714), naming each missing permission and where to add it.
+    - **Tests:**
+      - each with the Cloudflare fake;
+      - a follow stopped by abort;
+      - a missing permission;
+      - a registered secret in a console line, masked.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
 
 - [ ] T1710 [P] [US3] The check in agents: settings, cost, provision's check key, secrets and files, the pause, and `init`'s permission checks, in `packages/agents/src/check/**`, `packages/agents/src/{design,provision,retarget,destroy,init}/**`
@@ -487,10 +506,7 @@ Effort`.
     - **Retarget:** adds `{ reason: "retarget" }` when its window opens, and removes it at `--finish`.
     - **Destroy:** adds `{ reason: "destroyed" }`, and removes the check key line in its teardown.
     - **Variable updates** read, change one entry, and write back.
-    - **`init`:**
-      - with Cloudflare hosting in use, it checks `observabilityPermissions` (FR-1714);
-      - with the check on, it checks the GitHub token's Issues, Actions and Variables permissions;
-      - each missing permission is named, with where to add it.
+    - **`init`:** with the check on, it checks the GitHub token's Issues, Actions and Variables permissions, naming each missing one and where to add it. The Cloudflare permissions are T1709c's.
     - **Tests:**
       - design's figures for public, private Free, and private Pro;
       - the interval rule;
@@ -548,7 +564,7 @@ Effort`.
 - [ ] T1712a [P] [US1] [US2] [US4] [US5] [US6] The CLI, MCP and the plugin, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
   - Owns: those paths (+ tests)
   - Reads: spec US6, FR-1715; contracts/observability.md "Agents and surfaces"; plan.md "10."; quickstart.md; the reports of T1709a–T1711
-  - Depends: T1709a, T1709b, T1710, T1711
+  - Depends: T1709a, T1709b, T1709c, T1710, T1711
   - Accept:
     - **`opscrew logs`:**
       - `--follow`, `--service <name>`, `--since <duration>`, `--tail <lines>`, and `--app` and `--env` through `addEnvOption` and `chooseEnvironment`;
@@ -675,11 +691,11 @@ Effort`.
 
 ## Dependencies
 
-{T1701a, T1701b}, with T1702 (lead) once T1701b's pins exist → {T1703, T1704, T1705, T1706, T1707, T1708} → {T1709a, T1709b, T1710, T1711} → {T1712a, T1712b, T1713} → T1714 → T1715 → T1716.
+{T1701a, T1701b}, with T1702 (lead) once T1701b's pins exist → {T1703, T1704, T1705, T1706, T1707, T1708} → {T1709a, T1709b, T1710, T1711} → T1709c (after T1703) → {T1712a, T1712b, T1713} → T1714 → T1715 → T1716.
 
 **User stories:**
-- **US1** (logs): T1701a, T1703, T1705, T1709a, T1712a.
-- **US2** (figures): T1703, T1704, T1705, T1709b, T1712a.
+- **US1** (logs): T1701a, T1703, T1705, T1709a, T1709c, T1712a.
+- **US2** (figures): T1703, T1704, T1705, T1709b, T1709c, T1712a.
 - **US3** (the scheduled check): T1704, T1706, T1707, T1710, T1713.
 - **US4** (Beszel): T1701b, T1706, T1708, T1711, T1713.
 - **US5** (Grafana Cloud): T1701b, T1706, T1708, T1711, T1713.
@@ -697,6 +713,8 @@ Effort`.
    - `status/`;
    - `check/` with design (except `components.ts`), provision, retarget, destroy and init;
    - `addons/` with `design/components.ts`, `shared/memory.ts` and Portainer's exports.
+
+   Then T1709c, the Cloudflare branches, once T1703 is in (the lead, 2026-10-28: T1703 waits for the e2e Cloudflare token's permissions, so wave 3 doesn't).
 4. T1712a, T1712b, T1713.
 5. T1714, then T1715, then T1716.
 
