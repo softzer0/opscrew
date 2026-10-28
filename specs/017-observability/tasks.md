@@ -608,7 +608,8 @@ Effort`.
   - Accept:
     - **With `OPSCREW_DOCKER_TESTS=1`:**
       - **The proxy:** in front of the test host's Docker, the rendered Caddyfile answers each allowed `GET`. It refuses `POST /containers/{id}/stop`, `POST /containers/{id}/exec`, `GET /containers/{id}/archive`, `GET /containers/{id}/export` and `GET /images/json` with 403, and the container stays running.
-      - **Beszel:** the rendered hub mode starts. The agent connects through the proxy, the hub's API lists the system and its containers, and each container stays within its `mem_limit` after 2 minutes.
+      - **As the deploy user:** every add-on container runs as a non-root uid:gid like the deploy user's, with the files owned as T1706 writes them (the spike ran them as root).
+      - **Beszel:** the rendered hub mode starts, and the system shows for the one user with no `users:` in `config.yml`. The agent connects through the proxy, the hub's API lists the system and its containers, and each container stays within its `mem_limit` after 2 minutes.
       - **Alloy:** the rendered config, pointed at a local Loki and a Prometheus receiver in containers.
         - A line with a fake secret from an example container arrives masked, labelled app, env and service.
         - The allow-listed series arrive, and nothing else does.
