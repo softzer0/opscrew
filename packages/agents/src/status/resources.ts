@@ -19,6 +19,8 @@ import { DISK_HIGH_PERCENT, DISK_WARN_PERCENT } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { cloudflareWorkerAccount } from "../logs/cloudflare";
+import { providerProfile } from "../providers";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import { portainerClientFor } from "../shared";
 import { connectOwnServer } from "../shared/own-server";
@@ -64,7 +66,7 @@ export interface ResourceReading {
     disk?: { usedBytes: number; freeBytes: number; totalBytes: number };
   };
   containers: ContainerReading[];
-  /** Cloudflare's requests of the last day (T1709c). */
+  /** A server-rendered app's Worker on Cloudflare: its last 24 hours (CPU time in ms). */
   edgeRequests?: {
     since: string;
     requests: number;
@@ -76,6 +78,9 @@ export interface ResourceReading {
   unavailable: string[];
   flags: ResourceFlag[];
 }
+
+/** The span of a Worker's figures: the last 24 hours. */
+const DAY_MS = 86_400_000;
 
 /** A container uses this share of its memory limit or more: a warning. */
 const MEMORY_WARN_PERCENT = 90;
@@ -488,15 +493,41 @@ async function localFigures(deps: PhaseDeps, plan: DeployPlan): Promise<Figures>
   };
 }
 
-/** What a site on Cloudflare's hosting or GitHub Pages gives: nothing yet, or nothing at all. */
-function siteFigures(plan: DeployPlan): Figures {
+/**
+ * What a site on Cloudflare's hosting or GitHub Pages gives: a server-rendered app's Worker, its
+ * requests, exceptions and CPU time of the last 24 hours (`workersAnalytics`); a site that runs
+ * no code, nothing.
+ */
+async function siteFigures(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: ComponentStatusOptions["services"],
+): Promise<Figures> {
+  const { target } = plan;
+  if (target.provider !== "cloudflare-workers") {
+    return {
+      containers: [],
+      unavailable: [
+        "resource figures (GitHub Pages serves the site's files without running any code, so there are none)",
+      ],
+    };
+  }
+  if (target.render !== "ssr") {
+    return {
+      containers: [],
+      unavailable: [
+        "request figures (Cloudflare serves the site's files without running any code, so it counts no requests)",
+      ],
+    };
+  }
+  const { client, accountId } = await cloudflareWorkerAccount(deps, plan, services);
+  const since = new Date(deps.clock.now().getTime() - DAY_MS);
+  deps.reporter.step(`Reading the Worker's figures of the last 24 hours at Cloudflare (read-only)`);
+  const figures = await client.workersAnalytics(accountId, target.worker, since);
   return {
     containers: [],
-    unavailable: [
-      plan.target.provider === "cloudflare-workers"
-        ? "the Worker's requests, errors and CPU time per request (OpsCrew does not read them from Cloudflare yet)"
-        : "resource figures (GitHub Pages serves the site's files without running any code, so there are none)",
-    ],
+    edgeRequests: { since: since.toISOString(), ...figures },
+    unavailable: [],
   };
 }
 
@@ -568,7 +599,10 @@ export function resourceFlags(plan: DeployPlan, figures: Figures, flag = ""): Re
  * - in the user's Portainer, Docker's API through it: the host's disk is named as not available,
  *   and containers the token's user cannot see as not visible to that user;
  * - on this computer, local Docker, with `docker info`'s totals;
- * - on Cloudflare's hosting and GitHub Pages, none (named in `unavailable`).
+ * - on Cloudflare's hosting, a server-rendered app's requests, exceptions and CPU time of the
+ *   last 24 hours, against Workers Free's limits;
+ * - for a site that runs no code (a static site on Cloudflare, GitHub Pages), none (named in
+ *   `unavailable`).
  */
 export async function readResources(
   deps: PhaseDeps,
@@ -577,7 +611,7 @@ export async function readResources(
 ): Promise<ResourceReading> {
   const { provider } = plan.target;
   const figures = isServerlessProvider(provider)
-    ? siteFigures(plan)
+    ? await siteFigures(deps, plan, options.services)
     : provider === "portainer"
       ? await portainerFigures(deps, plan, options)
       : provider === "localhost"
@@ -620,11 +654,27 @@ function serverLine(server: NonNullable<ResourceReading["server"]>): string {
   return `  Server: ${parts.join("; ")}`;
 }
 
+/**
+ * The Worker's lines: its last 24 hours against Workers Free's requests a day and CPU time per
+ * request, then what the figures leave out.
+ */
+function workerLines(figures: NonNullable<ResourceReading["edgeRequests"]>): string[] {
+  const { freeRequestsPerDay, freeCpuMs } = providerProfile("cloudflare-workers").plans;
+  const count = (n: number) => n.toLocaleString("en-US");
+  const share = Math.round((figures.requests * 100) / freeRequestsPerDay);
+  const requests = `${count(figures.requests)} request${figures.requests === 1 ? "" : "s"}`;
+  return [
+    `  The Worker (last 24 hours): ${requests} (${share}% of Workers Free's ${count(freeRequestsPerDay)} a day), ${plural(figures.errors, "error")}; CPU time per request ${figures.cpuTimeP50Ms.toFixed(1)} ms median and ${figures.cpuTimeP99Ms.toFixed(1)} ms at the 99th percentile (Workers Free allows ${freeCpuMs} ms)`,
+    "  Requests served from the site's files run no code, so they are not counted. Errors are only the exceptions the Worker threw, not its 4xx or 5xx answers. The figures lag about a minute.",
+  ];
+}
+
 /** The status lines of a reading: the server, each container, what is not available, the flags. */
 export function resourceLines(plan: DeployPlan, reading: ResourceReading, now: Date): string[] {
   const words = componentWords(plan);
   const lines = ["Resources (read now):"];
   if (reading.server !== undefined) lines.push(serverLine(reading.server));
+  if (reading.edgeRequests !== undefined) lines.push(...workerLines(reading.edgeRequests));
   for (const container of reading.containers) {
     const { usedBytes, limitBytes } = container.memory;
     const memory =

@@ -489,6 +489,30 @@ describe("readLogs in the user's Portainer", () => {
     ]);
   });
 
+  it("reads the stack's Caddy as the edge, and says a stack without one has no edge", async () => {
+    const docker = new FakeDocker([
+      container("opscrew-shop-caddy-1", "opscrew-shop", "caddy", [at(0, "GET / 200")]),
+    ]);
+    const { deps, fake } = await portainer(docker);
+    const services = { portainer: { client: fake.client } };
+
+    const caddy = await readLogs(deps, portainerPlan({ deployed: true, web: { mode: "caddy" } }), {
+      services,
+      service: "edge",
+    });
+    expect(caddy.first).toContain("The edge is the Caddy in the app's stack");
+    expect(await collect(caddy)).toEqual([expect.objectContaining({ text: "GET / 200" })]);
+
+    const tunnel = await readLogs(deps, portainerPlan({ deployed: true }), {
+      services,
+      service: "edge",
+    }).catch((e: unknown) => e);
+    expect(tunnel).toMatchObject({ code: "INVALID_INPUT" });
+    expect((tunnel as OpsCrewError).message).toBe(
+      "The app's stack in your Portainer has no Caddy (its web mode is tunnel), so it has no edge lines. --service takes app and db.",
+    );
+  });
+
   it("says that a standard user's token sees only that user's stacks", async () => {
     const docker = new FakeDocker([container("opscrew-shop-app-1", "opscrew-shop", "app")]);
     const { deps, fake } = await portainer(docker, { visible: false });
@@ -609,18 +633,6 @@ describe("readLogs on the server-less targets", () => {
       "Cloudflare keeps no request logs for this site: its files are served without running any code.",
     );
     expect(await collect(read)).toHaveLength(3);
-  });
-
-  it("on Cloudflare, a server-rendered app's logs are not available yet", async () => {
-    const plan = sitePlan({ render: "ssr" });
-    const { deps, asked } = await site(plan);
-    const error = await readLogs(deps, plan).catch((e: unknown) => e);
-    expect(error).toMatchObject({
-      code: "PHASE_PRECONDITION",
-      message:
-        "Reading a server-rendered app's logs on Cloudflare's hosting is not available in OpsCrew yet.",
-    });
-    expect(asked).toEqual([]);
   });
 });
 

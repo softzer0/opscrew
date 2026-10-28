@@ -17,9 +17,10 @@ import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { registerAppSecrets } from "../shared/app-secrets";
 import { plannedComponents } from "../status/components";
+import { cloudflareLogs } from "./cloudflare";
 import { parseSince } from "./commands";
 import { type LogLine, type LogRead, logRead } from "./lines";
-import { cloudflareLogsNotYet, siteDeployRuns } from "./sites";
+import { siteDeployRuns } from "./sites";
 import { byTime, type ContainersOf, dockerLogs, type LogServices } from "./targets";
 
 /** Options of {@link readLogs}: the command's flags, and fakes in tests. */
@@ -39,7 +40,10 @@ export interface LogOptions {
   signal?: AbortSignal;
   /** A server the user owns: `--host-key SHA256:…` for the first connection from this computer. */
   hostKey?: string;
-  /** The server's shell, the own server's fakes, Portainer's client and the poll's sleep (tests). */
+  /**
+   * The server's shell, the own server's fakes, Portainer's client and the poll's sleep, and
+   * Cloudflare's clients (tests).
+   */
   services?: LogServices;
 }
 
@@ -84,26 +88,29 @@ function logParts(plan: DeployPlan): LogPart[] {
       composeService: "cron",
       note: "The cron jobs run in one container (cron), so these are the lines of every cron job.",
     }));
+  if (plan.target.provider === "portainer") {
+    // Only web mode `caddy` puts a Caddy in the app's stack.
+    if (plan.target.web.mode !== "caddy") return [...components, ...cronJobs];
+    const caddy: LogPart = {
+      service: "edge",
+      what: "the edge (Caddy in the app's stack)",
+      project,
+      composeService: "caddy",
+      note: "The edge is the Caddy in the app's stack, in front of the app.",
+    };
+    return [...components, ...cronJobs, caddy];
+  }
   const proxy = EDGE_PROXIES[edgeProxy(plan)].label;
-  const edge: LogPart =
-    provider === "portainer"
-      ? {
-          service: "edge",
-          what: "the edge (Caddy in the app's stack)",
-          project,
-          composeService: "caddy",
-          note: "The edge is the Caddy in the app's stack, in front of the app.",
-        }
-      : {
-          service: "edge",
-          what: `the edge (${proxy})`,
-          project: EDGE_PROJECT,
-          composeService: edgeProxy(plan),
-          note:
-            provider === "localhost"
-              ? `The edge is this computer's shared proxy (${proxy}), in front of every OpsCrew app here, so its lines are of all of them.`
-              : `The edge is the server's shared proxy (${proxy}), in front of every OpsCrew app on the server, so its lines are of all of them.`,
-        };
+  const edge: LogPart = {
+    service: "edge",
+    what: `the edge (${proxy})`,
+    project: EDGE_PROJECT,
+    composeService: edgeProxy(plan),
+    note:
+      provider === "localhost"
+        ? `The edge is this computer's shared proxy (${proxy}), in front of every OpsCrew app here, so its lines are of all of them.`
+        : `The edge is the server's shared proxy (${proxy}), in front of every OpsCrew app on the server, so its lines are of all of them.`,
+  };
   return [...components, ...cronJobs, edge];
 }
 
@@ -115,9 +122,13 @@ function logPart(plan: DeployPlan, name: string): LogPart {
   const parts = logParts(plan);
   const part = parts.find((candidate) => candidate.service === name);
   if (part !== undefined) return part;
+  const none =
+    name === "edge" && plan.target.provider === "portainer"
+      ? `The app's stack in your Portainer has no Caddy (its web mode is ${plan.target.web.mode}), so it has no edge lines.`
+      : `The app has no part named "${name}".`;
   throw new OpsCrewError(
     "INVALID_INPUT",
-    `The app has no part named "${name}". --service takes ${listText(parts.map((p) => p.service))}.`,
+    `${none} --service takes ${listText(parts.map((p) => p.service))}.`,
     { hint: "Without --service, `opscrew logs` shows the web process's lines (app)." },
   );
 }
@@ -140,10 +151,13 @@ function firstLine(oldest: string | undefined, since: string | undefined, note?:
  *   created and through the pinned admin login on the user's own; a follow ends with ssh.
  * - **Portainer:** its Docker API; a follow asks again every 2 seconds.
  * - **This computer:** Docker through the runner.
+ * - **A server-rendered app on Cloudflare:** the Worker's requests from Workers Logs, and its live
+ *   tail when following (`cloudflareLogs`).
  * - **GitHub Pages and a static site on Cloudflare:** no request logs; the last deploy runs.
  *
- * Every read is audited as `remote-exec`, without an address. Errors (an unknown `--service`, a
- * server that does not answer) reject before any line.
+ * Every read of containers is audited as `remote-exec`, and of a Worker as `provider-call`,
+ * without an address. Errors (an unknown `--service`, a server that does not answer, a permission
+ * Cloudflare refused) reject before any line.
  * @throws OpsCrewError `INVALID_INPUT` for a bad `--service`, `--since` or `--tail`.
  */
 export async function readLogs(
@@ -161,7 +175,14 @@ export async function readLogs(
   const seconds = options.since === undefined ? undefined : parseSince(options.since);
   const { target } = plan;
   if (target.provider === "cloudflare-workers" && target.render === "ssr") {
-    throw cloudflareLogsNotYet(target.worker);
+    return cloudflareLogs(deps, plan, target, {
+      service: options.service,
+      sinceSeconds: seconds,
+      tail,
+      follow: options.follow,
+      signal: options.signal,
+      services: options.services,
+    });
   }
   if (isServerlessProvider(target.provider)) {
     const site = await siteDeployRuns(deps, plan);

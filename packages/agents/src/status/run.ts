@@ -195,8 +195,18 @@ export async function componentStatusReport(
       plan,
       options.services ? { services: options.services } : {},
     );
-    const resources = await readResources(deps, plan);
-    report = { lines: joinBlocks(site.lines, readingLines(deps, plan, resources)), resources };
+    try {
+      const resources = await readResources(
+        deps,
+        plan,
+        options.services ? { services: options.services } : {},
+      );
+      report = { lines: joinBlocks(site.lines, readingLines(deps, plan, resources)), resources };
+    } catch (error) {
+      if (!isUserFacingError(error)) throw error;
+      const note = `OpsCrew could not read the resource figures. ${errorText(error)}`;
+      report = { lines: joinBlocks(site.lines, [deps.redactor.redact(note)]) };
+    }
   } else {
     const components = await componentsReport(deps, plan, options);
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);

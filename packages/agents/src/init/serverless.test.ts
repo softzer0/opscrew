@@ -4,6 +4,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedRunner } from "../testing";
+import { sitePlan } from "../testing/serverless";
 import { type InitCheck, runInitChecks } from "./index";
 
 const CLOUDFLARE = fakeSecret("cloudflare-token", "init-hosting");
@@ -225,6 +226,44 @@ describe("opscrew init with Cloudflare hosting", () => {
     // Without www the redirect phase is never read.
     const without = await checks(plan("cloudflare-workers"), { net: denied });
     expect(without.find((check) => check.id === "cloudflare")?.status).toBe("pass");
+  });
+});
+
+describe("opscrew init with a server-rendered app on Cloudflare hosting", () => {
+  const logs = (list: InitCheck[]) => list.find((check) => check.id === "cloudflare-logs");
+  const OBSERVABILITY = "Account → Workers Observability → Read";
+
+  it("passes when OpsCrew's token can read the Worker's logs", async () => {
+    const found = logs(await checks(sitePlan({ render: "ssr" })));
+    expect(found).toEqual({
+      id: "cloudflare-logs",
+      title: "Cloudflare token for `opscrew logs` (optional)",
+      status: "pass",
+      message: `CLOUDFLARE_API_TOKEN holds ${OBSERVABILITY} for the account that holds example.com, so \`opscrew logs\` can read the Worker's logs.`,
+    });
+  });
+
+  it("names the missing permission and where to add it, as a warning", async () => {
+    const denied = net();
+    denied.main.denied.add("logs");
+    const list = await checks(sitePlan({ render: "ssr" }), { net: denied });
+    expect(logs(list)).toEqual({
+      id: "cloudflare-logs",
+      title: "Cloudflare token for `opscrew logs` (optional)",
+      status: "warn",
+      message: `CLOUDFLARE_API_TOKEN lacks ${OBSERVABILITY} for the account that holds example.com, so \`opscrew logs\` cannot read the Worker's logs.`,
+      fix: `Add ${OBSERVABILITY} to CLOUDFLARE_API_TOKEN at https://dash.cloudflare.com/profile/api-tokens, then run \`opscrew init\` again.`,
+    });
+    // Hosting itself needs only the Workers permission.
+    expect(provider(list)?.status).toBe("pass");
+  });
+
+  it("only names the permission offline, and is not listed for a static site", async () => {
+    expect(logs(await checks(sitePlan({ render: "ssr" }), { offline: true }))).toMatchObject({
+      status: "skip",
+      message: `Not checked (offline). \`opscrew logs\` needs ${OBSERVABILITY} on CLOUDFLARE_API_TOKEN.`,
+    });
+    expect(logs(await checks(plan("cloudflare-workers")))).toBeUndefined();
   });
 });
 

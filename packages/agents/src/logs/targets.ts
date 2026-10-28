@@ -26,7 +26,10 @@ import {
 } from "./commands";
 
 /** The fakes `logs` takes in tests. */
-export type LogServices = Pick<ProvisionServices, "remote" | "own" | "portainer" | "sleep">;
+export type LogServices = Pick<
+  ProvisionServices,
+  "remote" | "own" | "portainer" | "sleep" | "cloudflare" | "sharedCloudflare"
+>;
 
 /** The containers of one part of the app: their Compose project and service. */
 export interface ContainersOf {

@@ -99,6 +99,11 @@ export type InitCheckId =
   /** Optional, listed only for a Portainer target: the read-only GitHub tokens Portainer pulls with. */
   | "portainer-tokens"
   | "cloudflare"
+  /**
+   * Optional, listed only for a server-rendered app on Cloudflare hosting: whether the Cloudflare
+   * token can read the Worker's logs (FR-1714).
+   */
+  | "cloudflare-logs"
   /** Optional: whether the Cloudflare token can buy domains through Cloudflare Registrar. */
   | "registrar"
   /** Optional, listed only when configured (even partly): registrar API access (feature 007). */
@@ -279,6 +284,12 @@ export async function runInitChecks(
     choice.provider === "portainer" ? await readPortainerRecord(deps) : undefined;
 
   const cloudflare = cloudflareAccess(deps, offline);
+  // A server-rendered app's Worker logs its requests; a static site's runs no code.
+  const target = artifacts.plan?.target;
+  const loggedWorker =
+    target?.provider === "cloudflare-workers" && target.render === "ssr"
+      ? target.worker
+      : undefined;
 
   const checks = await Promise.all([
     guard("node", "Node.js", true, async () => checkNode(services.nodeVersion)),
@@ -334,6 +345,18 @@ export async function runInitChecks(
         usage.needed === true,
       );
     }),
+    ...(loggedWorker !== undefined
+      ? [
+          guard("cloudflare-logs", "Cloudflare token for `opscrew logs` (optional)", false, () =>
+            withBudget(
+              checkCloudflareLogs(artifacts.plan?.dns.domain, loggedWorker, cloudflare),
+              budget,
+              "Cloudflare",
+              false,
+            ),
+          ),
+        ]
+      : []),
     guard("registrar", "Buying domains through Cloudflare (optional)", false, () =>
       withBudget(checkRegistrar(cloudflare), budget, "Cloudflare", false),
     ),
@@ -1031,6 +1054,48 @@ async function checkCloudflareHosting(
   return {
     status: "pass",
     message: `CLOUDFLARE_API_TOKEN and ${deployVar} both hold ${WORKERS_PERMISSION} for the account that holds ${zoneName}.`,
+  };
+}
+
+/** The permission `opscrew logs` reads a Worker's past requests with (FR-1714). */
+const OBSERVABILITY_PERMISSION = "Account → Workers Observability → Read";
+
+/**
+ * Optional (FR-1714): whether OpsCrew's Cloudflare token can read the Worker's logs, which
+ * `opscrew logs` needs and hosting does not (`observabilityPermissions`, read-only), naming the
+ * missing permission and where to add it. Offline, or without the token or the zone (the hosting
+ * check says so), not checked.
+ */
+async function checkCloudflareLogs(
+  domain: string | undefined,
+  worker: string,
+  access: CloudflareAccess,
+): Promise<CheckResult> {
+  if (access.state === "offline") {
+    return {
+      status: "skip",
+      message: `Not checked (offline). \`opscrew logs\` needs ${OBSERVABILITY_PERMISSION} on CLOUDFLARE_API_TOKEN.`,
+    };
+  }
+  const notChecked: CheckResult = {
+    status: "skip",
+    message:
+      "Not checked: the Cloudflare hosting check above says what OpsCrew's Cloudflare token needs first.",
+  };
+  if (access.state === "unset" || domain === undefined) return notChecked;
+  const zone = await access.client.findZone(domain);
+  if (zone?.accountId === undefined) return notChecked;
+  const { missing } = await access.client.observabilityPermissions(zone.accountId, worker);
+  if (missing.length > 0) {
+    return {
+      status: "warn",
+      message: `CLOUDFLARE_API_TOKEN lacks ${missing.join(" and ")} for the account that holds ${zone.name}, so \`opscrew logs\` cannot read the Worker's logs.`,
+      fix: `Add ${missing.join(" and ")} to CLOUDFLARE_API_TOKEN at ${CLOUDFLARE_TOKEN_PAGE}, then run \`opscrew init\` again.`,
+    };
+  }
+  return {
+    status: "pass",
+    message: `CLOUDFLARE_API_TOKEN holds ${OBSERVABILITY_PERMISSION} for the account that holds ${zone.name}, so \`opscrew logs\` can read the Worker's logs.`,
   };
 }
 

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { type FakeWorkerFigures, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { PortainerApiError, type PortainerClient } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -13,6 +14,8 @@ import {
   createTestPhaseDeps,
   ED25519_FINGERPRINT,
   fakeCertificate,
+  fakeCloudflare,
+  fakeSharedCloudflare,
   OWN_IPV4,
   ownPlan,
   ownRunner,
@@ -524,17 +527,71 @@ describe("readResources on this computer", () => {
 });
 
 describe("readResources on the server-less targets", () => {
-  it("Cloudflare's hosting names its figures as not available yet", async () => {
+  /** Deps with a Cloudflare token, and the account's Worker `example-app` with `figures`. */
+  async function cloudflare(figures?: FakeWorkerFigures) {
+    const zone = new FakeZone();
+    if (figures !== undefined) zone.figures.set("example-app", figures);
     const deps = await createTestPhaseDeps();
-    const reading = await readResources(deps, sitePlan({ render: "ssr" }));
+    deps.env.CLOUDFLARE_API_TOKEN = fakeSecret("cloudflare-token", "status-figures");
+    const services = { cloudflare: fakeCloudflare(), sharedCloudflare: fakeSharedCloudflare(zone) };
+    return { zone, deps, services };
+  }
+
+  it("a server-rendered app on Cloudflare: the Worker's last 24 hours against Workers Free", async () => {
+    const { zone, deps, services } = await cloudflare({
+      requests: 12_345,
+      errors: 7,
+      cpuTimeP50: 1_250,
+      cpuTimeP99: 8_400,
+    });
+    const plan = sitePlan({ render: "ssr", deployed: true });
+
+    const reading = await readResources(deps, plan, { services });
+
     expect(reading).toEqual({
       takenAt: "2026-10-11T12:00:00.000Z",
       containers: [],
-      unavailable: [
-        "the Worker's requests, errors and CPU time per request (OpsCrew does not read them from Cloudflare yet)",
-      ],
+      edgeRequests: {
+        since: "2026-10-10T12:00:00.000Z",
+        requests: 12_345,
+        errors: 7,
+        cpuTimeP50Ms: 1.25,
+        cpuTimeP99Ms: 8.4,
+      },
+      unavailable: [],
       flags: [],
     });
+    const query = zone.calls.find((call) => call.path === "/graphql");
+    expect(query?.body).toMatchObject({
+      variables: { since: "2026-10-10T12:00:00.000Z", worker: "example-app" },
+    });
+    expect(resourceLines(plan, reading, new Date("2026-10-11T12:00:00.000Z"))).toEqual([
+      "Resources (read now):",
+      "  The Worker (last 24 hours): 12,345 requests (12% of Workers Free's 100,000 a day), 7 errors; CPU time per request 1.3 ms median and 8.4 ms at the 99th percentile (Workers Free allows 10 ms)",
+      "  Requests served from the site's files run no code, so they are not counted. Errors are only the exceptions the Worker threw, not its 4xx or 5xx answers. The figures lag about a minute.",
+    ]);
+  });
+
+  it("a static site on Cloudflare runs no code, so it has no figures and says so", async () => {
+    const { zone, deps, services } = await cloudflare();
+    const reading = await readResources(deps, sitePlan({ deployed: true }), { services });
+    expect(reading.edgeRequests).toBeUndefined();
+    expect(reading.unavailable).toEqual([
+      "request figures (Cloudflare serves the site's files without running any code, so it counts no requests)",
+    ]);
+    expect(zone.calls).toEqual([]);
+  });
+
+  it("names the permission when Cloudflare refuses the figures, under the site's lines", async () => {
+    const { zone, deps, services } = await cloudflare();
+    zone.denied.add("analytics");
+    const report = await componentStatusReport(deps, sitePlan({ render: "ssr", deployed: true }), {
+      services,
+    });
+    expect(report.resources).toBeUndefined();
+    expect(report.lines.at(-1)).toMatch(
+      /^OpsCrew could not read the resource figures\. Cloudflare refused the request to read the figures of the Worker example-app: .*Workers Scripts → Edit/,
+    );
   });
 
   it("GitHub Pages has none, and says so", async () => {

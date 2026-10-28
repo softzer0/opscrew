@@ -2,7 +2,7 @@
  * `logs` on the server-less targets (FR-1701): GitHub Pages, and a static site on Cloudflare's
  * hosting, run none of the site's code, so they log no requests (research R2). `logs` says so in
  * one sentence and shows the last deploy runs instead. A server-rendered app on Cloudflare has its
- * requests' logs, which a later task reads.
+ * requests' logs (`cloudflare.ts`).
  */
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -12,17 +12,6 @@ import type { LogLine } from "./lines";
 
 /** How many of the last deploy runs a site's `logs` shows. */
 const DEPLOY_RUNS = 10;
-
-/** The refusal for a server-rendered app on Cloudflare's hosting, until its logs are read. */
-export function cloudflareLogsNotYet(worker: string): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "Reading a server-rendered app's logs on Cloudflare's hosting is not available in OpsCrew yet.",
-    {
-      hint: `Cloudflare's dashboard shows them: Workers & Pages, the Worker ${worker}, then Logs.`,
-    },
-  );
-}
 
 /** A run's result in words: how it ended, or that it has not. */
 function runResult(run: { status: string; conclusion: string | null }): string {

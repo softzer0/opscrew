@@ -83,7 +83,7 @@ describe("opscrew status on Cloudflare's hosting", () => {
       "  A missing custom domain does not answer: run `opscrew provision` to set it up again (it shows the plan first).",
       "",
       "Resources (read now):",
-      "  Not available: the Worker's requests, errors and CPU time per request (OpsCrew does not read them from Cloudflare yet)",
+      "  Not available: request figures (Cloudflare serves the site's files without running any code, so it counts no requests)",
     ]);
     // Read only, and nothing about a server.
     expect(zone.writes()).toEqual([]);

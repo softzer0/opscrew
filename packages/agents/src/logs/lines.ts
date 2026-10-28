@@ -68,7 +68,10 @@ class LineQueue implements AsyncIterable<LogLine> {
   }
 }
 
-/** `past`, then what `follow` pushes until `signal` aborts or the caller stops iterating. */
+/**
+ * `past`, then what `follow` pushes until `signal` aborts or the caller stops iterating; the
+ * iteration ends only once the follow has settled.
+ */
 async function* linesOf(
   past: readonly LogLine[],
   follow: Follow | undefined,
@@ -81,7 +84,7 @@ async function* linesOf(
   const onAbort = () => stop.abort();
   signal?.addEventListener("abort", onAbort, { once: true });
   stop.signal.addEventListener("abort", () => queue.end(), { once: true });
-  follow((line) => queue.push(line), stop.signal).then(
+  const settled = follow((line) => queue.push(line), stop.signal).then(
     () => queue.end(),
     (error: unknown) => queue.end(stop.signal.aborted ? undefined : error),
   );
@@ -89,8 +92,10 @@ async function* linesOf(
     yield* queue;
   } finally {
     signal?.removeEventListener("abort", onAbort);
-    // A caller that stops iterating stops the follow too (ssh, the runner, the polling).
+    // A caller that stops iterating stops the follow too (ssh, the runner, the polling, the
+    // Worker's tail), and the iteration ends once the follow has: its cleanup is done.
     stop.abort();
+    await settled;
   }
 }
 
