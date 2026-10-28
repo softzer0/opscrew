@@ -727,7 +727,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint`
   - Effort: high
 
-- [ ] T1717 Found live: `addon open` on Ctrl+C, and destroy's pause in a script, in `packages/agents/src/{addons,destroy,check}/**`
+- [X] T1717 Found live: `addon open` on Ctrl+C, and destroy's pause in a script, in `packages/agents/src/{addons,destroy,check}/**`
   - Owns: those paths (+ tests)
   - Reads: research.md and the T1715 notes below; `packages/cli/src/approval.ts` (`FlagConfirmation`)
   - Depends: T1716
