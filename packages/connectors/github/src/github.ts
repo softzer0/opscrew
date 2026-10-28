@@ -183,8 +183,11 @@ export interface RepoInfo {
   defaultBranch: string;
   private: boolean;
   canPush: boolean;
-  /** Whether the repository's issues are on (the scheduled check opens issues). */
-  hasIssues: boolean;
+  /**
+   * Whether the repository's issues are on (the scheduled check opens issues), when GitHub says;
+   * only `false` means they are off.
+   */
+  hasIssues?: boolean;
 }
 
 /** The state of a workflow as GitHub reports it, `missing` when the repository has no such file. */
@@ -227,7 +230,7 @@ const ContentSchema = z.looseObject({ sha: z.string().regex(/^[0-9a-f]{40,64}$/)
 const RepoSchema = z.looseObject({
   default_branch: z.string(),
   private: z.boolean(),
-  has_issues: z.boolean(),
+  has_issues: z.boolean().optional(),
   permissions: z.looseObject({ push: z.boolean().optional() }).optional(),
 });
 const WorkflowSchema = z.looseObject({
@@ -679,7 +682,7 @@ export class GitHubClient {
       defaultBranch: data.default_branch,
       private: data.private,
       canPush: data.permissions?.push ?? false,
-      hasIssues: data.has_issues,
+      ...(data.has_issues === undefined ? {} : { hasIssues: data.has_issues }),
     };
   }
 

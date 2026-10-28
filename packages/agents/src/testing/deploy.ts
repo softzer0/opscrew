@@ -573,7 +573,7 @@ export class FakeGitHub implements GitHubApi {
   /** Heads looked up with `findOpenPullRequest`. */
   readonly lookups: string[] = [];
 
-  async getRepo() {
+  async getRepo(): ReturnType<GitHubApi["getRepo"]> {
     return {
       defaultBranch: "main",
       private: true,
