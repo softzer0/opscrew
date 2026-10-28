@@ -466,7 +466,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops` and `pnpm lint`
   - Effort: high
 
-- [ ] T1709c [US1] [US2] Cloudflare in `logs`, `status` and `init`, in `packages/agents/src/{logs,status,init}/**`
+- [X] T1709c [US1] [US2] Cloudflare in `logs`, `status` and `init`, in `packages/agents/src/{logs,status,init}/**`
   - Owns: those paths, for the Cloudflare branches and the permission check only (+ tests)
   - Reads: spec US1 #4–5, US2 #5, FR-1714, SC-1701; research.md R2 and "Spike results" 6; plan.md "7."; T1703's, T1709a's, T1709b's and T1710's reports
   - Depends: T1703, T1709a, T1709b, T1710
@@ -605,7 +605,7 @@ Effort`.
       - on GitHub Pages and a static Cloudflare site, `--service` and `--follow` are refused with the reason, or noted (T1709a's review: `readLogs` ignores them there);
       - output through `ctx.stdout` (redacted);
       - Ctrl-C stops a follow cleanly, and the command ends the process once the follow settles and stdout drains (Cloudflare's tail socket otherwise keeps it alive: T1703's review).
-    - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
+    - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`**, with `--app` and `--env` through `addEnvOption` and `chooseEnvironment` like every per-plan command, and with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
     - **`status`** prints the figures with their flags, and the check's state and open alerts. The CLI's and MCP's status fixtures write no deploy key, so today they show "could not read the resource figures" (T1709b's report): give them the key, and assert the figures' lines and `resources` data.
     - **`ALL_COMMANDS`** has 25 entries, and `program.test.ts` lists both new names.
     - **`provision --plan-only`'s hash list** (`cli/src/commands/provision.ts`) names the check-key host plan's hash too (T1710's report: only the reporter line names it today).
@@ -721,6 +721,9 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
+  - Portainer's runbook (`agents/src/verify/portainer.ts`, `renderPortainerRunbook`) doesn't mention `opscrew logs` or the check yet (T1712b).
+  - Hints that still say `docker compose logs --tail 200 app` could point to `opscrew logs`: `agents/src/verify/checks.ts` (~535, ~745), `verify/serverless.ts` (~257) and `retarget/server-ops.ts` (~303) (T1712b).
+  - After `addon enable grafana-cloud`, a hint could say that the app's own secret values are masked only once the next deploy writes the masking file (until then only secret-shaped values are). The guide says so (T1712b).
   - Cloudflare's dated log allowance table lives in `agents/src/logs/cloudflare.ts` (`WORKERS_LOGS_ALLOWANCES`, T1709c), not in iac-templates' `prices.ts` beside the other dated figures. Decide whether to move it.
   - The masking file (`mask.re`) still masks the frameworks' fixed production words (`production` and the like), because their table (`FRAMEWORK_ENV` in agents' `app-env.ts`) is agents'. Decide whether to move the word pairs to plan-schema as `hostListKind` was (T1708's review). It also has no URL-encoded forms and none of the service env files' values, unlike the redactor.
   - The container-name pattern is in `status/components.ts` and again in `logs/commands.ts` (T1709a): export it once and import it.
