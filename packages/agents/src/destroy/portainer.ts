@@ -542,12 +542,6 @@ export async function destroyPortainer(
     if (bucket !== undefined) await discardBucketDeletion(bucket);
     throw error;
   });
-  if (removeApp) {
-    await pauseCheckForTeardown(deps, github, plan).catch(async (error: unknown) => {
-      if (bucket !== undefined) await discardBucketDeletion(bucket);
-      throw error;
-    });
-  }
 
   // 5–6. The Cloudflare resources (tunnel, DNS records, Access) and the app's stacks in Portainer.
   // Both are approved before anything changes. The stacks go first when the Cloudflare plan deletes
@@ -651,6 +645,7 @@ export async function destroyPortainer(
   // 7. Deploy secrets and OpsCrew's record of the deployment
   let secretsRemoved: string[] = [];
   if (removeApp) {
+    await pauseCheckForTeardown(deps, github, plan);
     secretsRemoved = await removeDeploySecrets(deps, github, {
       plan,
       done: "The app is removed from your Portainer and Cloudflare.",

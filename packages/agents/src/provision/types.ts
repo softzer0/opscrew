@@ -108,6 +108,14 @@ export interface ProvisionServices {
   /** Interactive question for each production environment value (CLI prompt). */
   askEnv?: (question: EnvQuestion) => Promise<EnvAnswer>;
   /**
+   * Interactive question for the scheduled check's webhook address, asked with `prompt` (CLI
+   * prompt, hidden input); `undefined` when the user cancels. Never logged.
+   */
+  askCheckWebhook?: (question: {
+    kind: "slack" | "discord" | "ntfy";
+    prompt: string;
+  }) => Promise<string | undefined>;
+  /**
    * Interactive question for the key of the app's bucket at a provider, asked once with the
    * console steps (CLI prompt, hidden input). Never logged.
    */

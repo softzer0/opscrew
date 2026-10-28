@@ -266,15 +266,13 @@ async function expectNothingCleanedUp(s: Setup) {
 }
 
 describe.skipIf(!findExecutable("git"))("runDestroy", () => {
-  it("pauses the scheduled check after the confirmation and before anything is deleted", async () => {
+  it("pauses the scheduled check once the server is deleted, before its secrets go", async () => {
     const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
     const s = await setup({ plan });
     await runDestroy(s.deps, { services: s.services });
-    expect(s.events.slice(0, 3)).toEqual([
-      "plan:destroy",
-      "approval:github-settings",
-      "snapshot:create",
-    ]);
+    const pause = s.events.indexOf("approval:github-settings");
+    expect(pause).toBeGreaterThan(s.events.indexOf("apply:destroy"));
+    expect(s.events[pause + 1]).toBe("approval:github-secrets");
     expect(JSON.parse(s.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "")).toEqual({
       "shop/prod": { reason: "destroyed", since: NOW },
     });
@@ -305,15 +303,20 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(s.github.deleted).not.toContain("OPSCREW_CHECK_SSH_KEY");
   });
 
-  it("deletes nothing when the check's pause is declined", async () => {
+  it("leaves the check unpaused when the destroy plan is declined", async () => {
+    const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
+    const s = await setup({ plan, answer: (request) => request.kind !== "iac-apply" });
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toThrow();
+    expect(s.events).not.toContain("approval:github-settings");
+    expect(s.github.variables.get(CHECK_PAUSED_VARIABLE)).toBeUndefined();
+  });
+
+  it("goes on with a warning when the check's pause is declined", async () => {
     const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
     const s = await setup({ plan, answer: (request) => request.kind !== "github-settings" });
-    const error = (await runDestroy(s.deps, { services: s.services }).catch(
-      (e: unknown) => e,
-    )) as OpsCrewError;
-    expect(error.code).toBe("APPROVAL_REFUSED");
-    expect(error.message).toContain("Nothing was deleted.");
-    expect(s.events).toEqual(["plan:destroy", "approval:github-settings"]);
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.destroyed.length).toBeGreaterThan(0);
+    expect(s.deps.reporter.text()).toContain("The scheduled check was not paused");
     expect(s.github.variables.size).toBe(0);
   });
 

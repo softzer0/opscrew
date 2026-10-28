@@ -4,11 +4,11 @@ import { appsOf, type DeployPlan, environmentsOf, readArtifact } from "@opscrew/
 import { appPaths } from "../apps/list";
 import { readOwnServer } from "../shared/server-record";
 
-/** The repository the check runs in, and its visibility. */
+/** The repository the check runs in, and how to read its visibility (only when needed). */
 export interface CheckRepo {
   owner: string;
   name: string;
-  public: boolean;
+  isPublic: () => Promise<boolean>;
 }
 
 /**
@@ -44,7 +44,7 @@ export async function otherPlans(
  * in the repository, with `plan` (this run's, perhaps changed since it was read) in place of its
  * own file. Each own server's id is its pinned host key's fingerprint, from its environment's
  * record on this computer, so environments on one server are checked once. None when no plan has
- * the check on.
+ * the check on (the repository's visibility is then not read).
  */
 export async function checkFiles(
   paths: Pick<ProjectPaths, "root" | "homeDir">,
@@ -55,11 +55,21 @@ export async function checkFiles(
     { plan, paths: appPaths(paths, plan.app.key, plan.environment?.name) },
     ...(await otherPlans(paths, plan)),
   ];
+  const checked = entries.some(
+    (entry) =>
+      entry.plan.observability?.check?.enabled === true &&
+      entry.plan.deployment.destroyedAt === undefined,
+  );
+  if (!checked) return [];
   const serverIds: Record<string, string> = {};
   for (const entry of entries) {
     if (entry.plan.target.provider !== "own") continue;
     const hostKey = (await readOwnServer(entry.paths))?.hostKey;
     if (hostKey !== undefined) serverIds[checkEnvironmentKey(entry.plan)] = ownServerId(hostKey);
   }
-  return renderCheck({ plans: entries.map((entry) => entry.plan), repo, serverIds });
+  return renderCheck({
+    plans: entries.map((entry) => entry.plan),
+    repo: { owner: repo.owner, name: repo.name, public: await repo.isPublic() },
+    serverIds,
+  });
 }

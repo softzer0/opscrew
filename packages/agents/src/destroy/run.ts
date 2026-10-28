@@ -623,10 +623,6 @@ export async function runDestroy(
     if (bucket !== undefined) await discardBucketDeletion(bucket);
     throw error;
   });
-  await pauseCheckForTeardown(deps, github, plan).catch(async (error: unknown) => {
-    if (bucket !== undefined) await discardBucketDeletion(bucket);
-    throw error;
-  });
 
   // 4a. The environment's runner comes off its runner machine (`runner: host`) and any other
   // machine that has it, first and alone, with its own approval; a machine it cannot reach stops
@@ -690,6 +686,7 @@ export async function runDestroy(
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
+  await pauseCheckForTeardown(deps, github, plan);
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: "The infrastructure is deleted.",

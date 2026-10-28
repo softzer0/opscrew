@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import type { ProjectPaths } from "@opscrew/core";
 import {
@@ -10,6 +12,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
+import { trackedFiles } from "../shared/github";
 import type { HostAdapterApi, HostPlanOutcome } from "../shared/host-plan";
 import { checkFiles, otherPlans } from "./files";
 import { addCheckKey, checkKeyLine } from "./host";
@@ -29,21 +32,38 @@ export function checkReachesOverSsh(plan: DeployPlan): boolean {
   );
 }
 
+/** The check's files in a repository, as `renderCheck` writes them. */
+const CHECK_FILE_PATHS = [
+  ".github/workflows/opscrew-check.yml",
+  "opscrew/check/check.json",
+  "opscrew/check/check.mjs",
+];
+
 /**
- * The scheduled check's files for the deploy-setup pull request (`checkFiles`), with the
- * repository's visibility from GitHub.
+ * The scheduled check's part of the deploy-setup pull request: its files (`checkFiles`, with the
+ * repository's visibility read from GitHub only when a plan has the check on), or, when no plan
+ * has it on any more, the paths of its committed files, deleted here so the pull request removes
+ * them.
  */
-export async function deploySetupCheckFiles(
-  deps: Pick<PhaseDeps, "paths">,
+export async function deploySetupCheck(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "reporter">,
   plan: DeployPlan,
   github: Pick<GitHubSetup, "api" | "owner" | "repo">,
-): Promise<RenderedFile[]> {
-  const repo = await github.api.getRepo(github.owner, github.repo);
-  return checkFiles(deps.paths, plan, {
+): Promise<{ files: RenderedFile[]; removed: string[] }> {
+  const files = await checkFiles(deps.paths, plan, {
     owner: github.owner,
     name: github.repo,
-    public: !repo.private,
+    isPublic: async () => !(await github.api.getRepo(github.owner, github.repo)).private,
   });
+  if (files.length > 0) return { files, removed: [] };
+  const removed = await trackedFiles(deps, CHECK_FILE_PATHS);
+  for (const path of removed) await rm(join(deps.paths.root, path), { force: true });
+  if (removed.length > 0) {
+    deps.reporter.info(
+      "No plan has the scheduled check on any more, so the pull request removes its files.",
+    );
+  }
+  return { files, removed };
 }
 
 /** The check key of `plan`'s environment, when the check is on and reads the disk over SSH. */
@@ -138,7 +158,7 @@ export async function provisionCheck(
     key?: CheckKey;
     server?: CheckServer;
     storeSecrets: boolean;
-    services: Pick<ProvisionServices, "askEnv">;
+    services: Pick<ProvisionServices, "askCheckWebhook">;
     command: string;
     phase: PhaseName;
   },

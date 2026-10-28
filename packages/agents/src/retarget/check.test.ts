@@ -23,10 +23,18 @@ const paused = (h: MoveHarness) => {
   return text === undefined ? undefined : JSON.parse(text);
 };
 
+/** The check's server secret as the move left it. */
+const checkServer = (h: MoveHarness) => {
+  const text = h.github.secrets.get("OPSCREW_CHECK_SERVER");
+  return text === undefined ? undefined : JSON.parse(text);
+};
+
 describe.skipIf(!findExecutable("git"))("the scheduled check during a move", () => {
   it("is paused when the window opens, before the old app stops, and resumed at --finish", async () => {
     const h = await checkedMove();
     await run(h);
+    // The check's reach of the server follows the deploy secrets to the new server.
+    expect(checkServer(h)).toMatchObject({ host: h.newServer.ipv4, port: 22, user: "deploy" });
     const lines = trail(h.events);
     const pause = lines.indexOf("approve github-settings");
     expect(pause).toBeGreaterThan(lines.indexOf("approve remote-exec"));
@@ -44,8 +52,11 @@ describe.skipIf(!findExecutable("git"))("the scheduled check during a move", () 
     crashAfter(h, "migrated");
     await expect(run(h)).rejects.toThrow("interrupted");
     expect(paused(h)).toHaveProperty("shop/prod");
+    expect(checkServer(h)?.host).toBe(h.newServer.ipv4);
     await abortRetarget(h.deps, { services: h.services, confirm: h.confirm });
     expect(h.github.variables.has(CHECK_PAUSED_VARIABLE)).toBe(false);
+    // And back to the old server.
+    expect(checkServer(h)).toMatchObject({ host: OLD_IPV4, port: 22, user: "deploy" });
   });
 
   it("stops before the window, with the old app running, when the pause is declined", async () => {

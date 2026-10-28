@@ -6,7 +6,7 @@ import type { HostPlan } from "@opscrew/connector-ssh-host";
 import type { RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { CHECK_PAUSED_VARIABLE } from "@opscrew/iac-templates";
-import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ensureCheckKey } from "../check/key";
 import { recordServerAddress } from "../shared";
@@ -258,6 +258,31 @@ describe.skipIf(!findExecutable("git"))("provision with the scheduled check", ()
     // Nothing is paused, so nothing is asked about it.
     expect(kinds).not.toContain("github-settings");
     expect(applied).toHaveLength(1);
+  });
+
+  it("removes the check's files in the pull request once no plan has the check on", async () => {
+    const { deps, github, services, root, git } = await setup();
+    await runProvision(deps, { services });
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      observability: { check: { enabled: false } },
+    });
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, {
+      number: 7,
+      url: "https://github.com/acme/shop/pull/7",
+    });
+    await runProvision(deps, { services });
+    const changed = await git(root, "show", "--name-status", "--format=", "HEAD");
+    for (const path of [
+      ".github/workflows/opscrew-check.yml",
+      "opscrew/check/check.json",
+      "opscrew/check/check.mjs",
+    ]) {
+      expect(existsSync(join(root, path))).toBe(false);
+      expect(changed).toContain(`D\t${path}`);
+    }
+    expect(deps.reporter.text()).toContain("the pull request removes its files");
   });
 
   it("--plan-only shows and saves an existing server's check-key host plan, naming its hash", async () => {

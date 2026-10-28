@@ -25,7 +25,7 @@ import {
   siteHosts,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
-import { deploySetupCheckFiles, provisionCheck, resumeCheck } from "../check/provision";
+import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
@@ -484,11 +484,12 @@ export async function provisionPortainer(
   const stackKeys = portainerStackEnvKeys(plan, ctx);
   const originBundle = ctx.originTls === undefined ? undefined : portainerOriginTls(site.values);
   if (originBundle !== undefined) deps.redactor.addLiteral(originBundle, "origin-tls");
+  // The scheduled check's files, rendered from every app's and environment's plan.
+  const check = await deploySetupCheck(deps, plan, github);
   const files = [
     ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
-    // The scheduled check's files, rendered from every app's and environment's plan.
-    ...(await deploySetupCheckFiles(deps, plan, github)),
+    ...check.files,
   ];
   // A refusal names the Cloudflare plans this run applied (each one's approval is this run's).
   const cloudflareApplied = (sharedResult?.approvals ?? []).map(
@@ -974,7 +975,7 @@ export async function provisionPortainer(
     git,
     github,
     plan,
-    files: [...files.map((f) => f.path), ...removedFiles],
+    files: [...files.map((f) => f.path), ...removedFiles, ...check.removed],
     push: options.push !== false,
     secretsStored,
     phase,

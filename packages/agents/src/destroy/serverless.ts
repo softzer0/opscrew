@@ -231,7 +231,6 @@ export async function destroyCloudflareWorkers(
     },
     options.confirm,
   );
-  await pauseCheckForTeardown(deps, github, plan);
 
   // 5. The Worker's destroy plan is approved before anything changes.
   const worker = await approveRootDeletion(session, {
@@ -260,6 +259,7 @@ export async function destroyCloudflareWorkers(
       : await applyRootDeletion(session, worker, "the Worker and its custom domains");
 
   // 8. The deploy secrets, and OpsCrew's record of the deployment
+  await pauseCheckForTeardown(deps, github, plan);
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: "The Worker and its custom domains are deleted.",
@@ -495,7 +495,6 @@ export async function destroyGithubPages(
     },
     options.confirm,
   );
-  await pauseCheckForTeardown(deps, github, plan);
 
   // 5. The DNS records, while the site still claims the domain.
   const approvals: (ApprovalRecord | undefined)[] = [];
@@ -561,6 +560,7 @@ export async function destroyGithubPages(
 
   // 8. The app's values for its build, and OpsCrew's record of the deployment (an earlier run
   // wrote it when only the verification record was left).
+  if (!verificationOnly) await pauseCheckForTeardown(deps, github, plan);
   const secretsRemoved =
     verificationOnly || deploySecretNames(plan).length === 0
       ? []

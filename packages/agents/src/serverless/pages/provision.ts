@@ -9,7 +9,7 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { appFlag } from "../../apps/choice";
-import { deploySetupCheckFiles, provisionCheck, resumeCheck } from "../../check/provision";
+import { deploySetupCheck, provisionCheck, resumeCheck } from "../../check/provision";
 import type { PhaseDeps } from "../../context";
 import { missing, setupCloudflare, setupGitHub } from "../../provision/credentials";
 import { deploySetupDependabot } from "../../provision/dependabot";
@@ -285,12 +285,13 @@ export async function provisionPages(
   const dependabot = await deploySetupDependabot(deps, plan, { writes });
   const siteFiles = deploymentFiles(plan, ctx);
   const verificationFiles = renderPagesVerification(plan, ctx, verification);
+  // The scheduled check's files, rendered from every app's and environment's plan.
+  const check = await deploySetupCheck(deps, plan, github);
   const files = [
     ...siteFiles,
     ...verificationFiles,
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
-    // The scheduled check's files, rendered from every app's and environment's plan.
-    ...(await deploySetupCheckFiles(deps, plan, github)),
+    ...check.files,
   ];
   await approveAndWriteRenderedFiles(
     deps,
@@ -383,7 +384,7 @@ export async function provisionPages(
     git: input.git,
     github,
     plan,
-    files: files.map((file) => file.path),
+    files: [...files.map((file) => file.path), ...check.removed],
     push: options.push !== false,
     secretsStored,
     phase: "provision",

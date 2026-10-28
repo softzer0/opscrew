@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ProjectPaths } from "@opscrew/core";
 import { CLOUDFLARE_DEPLOY_SECRETS, type RenderContext } from "@opscrew/iac-templates";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
-import { deploySetupCheckFiles, provisionCheck, resumeCheck } from "../../check/provision";
+import { deploySetupCheck, provisionCheck, resumeCheck } from "../../check/provision";
 import type { PhaseDeps } from "../../context";
 import { builderCicd } from "../../environments/branches";
 import { setupCloudflare, setupGitHub } from "../../provision/credentials";
@@ -163,11 +163,12 @@ export async function provisionCloudflareWorkers(
   };
   const writes = approvePlanHash === undefined;
   const dependabot = await deploySetupDependabot(deps, plan, { writes });
+  // The scheduled check's files, rendered from every app's and environment's plan.
+  const check = await deploySetupCheck(deps, plan, github);
   const files = [
     ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
-    // The scheduled check's files, rendered from every app's and environment's plan.
-    ...(await deploySetupCheckFiles(deps, plan, github)),
+    ...check.files,
   ];
   await approveAndWriteRenderedFiles(
     deps,
@@ -248,7 +249,7 @@ export async function provisionCloudflareWorkers(
     git,
     github,
     plan,
-    files: files.map((file) => file.path),
+    files: [...files.map((file) => file.path), ...check.removed],
     push,
     secretsStored,
     phase: "provision",

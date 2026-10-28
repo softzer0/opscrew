@@ -9,6 +9,7 @@ import type {
 import type { PhaseName } from "@opscrew/contracts";
 import { errorText, OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
+  CHECK_SECRETS,
   DEPLOY_SECRETS,
   deploySecretName,
   deploySecretNamesFor,
@@ -757,6 +758,11 @@ export async function setDeploySecrets(
     record?: string;
     /** The text after "the app is not deployed yet" when the user refuses (default: the server's). */
     refusedState?: string;
+    /**
+     * The scheduled check's reach of this server (`checkServerSecret`), stored with the deploy
+     * secrets as the repository secret `<prefix>CHECK_SERVER` (a move re-points it).
+     */
+    checkServer?: string;
   } = {},
 ): Promise<void> {
   const { api, owner } = github;
@@ -769,6 +775,10 @@ export async function setDeploySecrets(
     const inEnvironment = environment !== undefined && !BUILD_VALUES.includes(name);
     const stored = deploySecretName(plan, name);
     placed.set(stored, { name: stored, value, ...(inEnvironment ? { environment } : {}) });
+  }
+  const checkName = deploySecretName(plan, CHECK_SECRETS.server);
+  if (options.checkServer !== undefined) {
+    placed.set(checkName, { name: checkName, value: options.checkServer });
   }
   const names = [...placed.keys()].sort();
   const all = names.map((name) => placed.get(name) as SecretPlace & { value: string });
@@ -858,7 +868,8 @@ export async function setDeploySecrets(
     `${JSON.stringify({
       host: secrets[DEPLOY_SECRETS.host] ?? options.record,
       repo,
-      names,
+      // The check's secret is the check's, never a deploy secret to move or delete.
+      names: names.filter((name) => name !== checkName),
       ...(environment !== undefined ? { environment } : {}),
       ...(previous?.createdEnvironment === true ? { createdEnvironment: true } : {}),
       ...(previous?.reviewersDeclined === true ? { reviewersDeclined: true } : {}),

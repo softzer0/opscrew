@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
+import { checkServerSecret, EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
+import { checkReachesOverSsh } from "../check/provision";
 import { providerProfile } from "../providers";
 import {
   buildAppEnvironment,
@@ -251,6 +252,18 @@ export async function storeDeploySecrets(
           : {}),
       }),
       environment.names,
+      "provision",
+      // The scheduled check reads this server's disk over SSH with its key: its reach follows.
+      plan.observability?.check?.enabled === true && checkReachesOverSsh(plan)
+        ? {
+            checkServer: checkServerSecret({
+              host,
+              port: 22,
+              user: "deploy",
+              knownHosts: pinned.knownHostsLines,
+            }),
+          }
+        : {},
     );
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "APPROVAL_REFUSED") {

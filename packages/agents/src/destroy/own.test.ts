@@ -736,11 +736,12 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     if (facts.deployUser !== null) facts.deployUser.checkKeys = ["acme/shop", "acme/other"];
     s.host.facts = HostFactsSchema.parse(facts);
     await runDestroy(s.deps, { services: services(s) });
+    // Paused once the app is removed, before its secrets go.
     expect(kinds(s)).toEqual([
-      "github-settings",
       "iac-apply",
       "host-apply",
       "cloudflare-apply",
+      "github-settings",
       "github-secrets",
     ]);
     expect(JSON.parse(s.github.variables.get("OPSCREW_CHECK_PAUSED") ?? "")).toEqual({

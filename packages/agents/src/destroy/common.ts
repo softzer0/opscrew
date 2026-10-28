@@ -46,7 +46,7 @@ import {
   stateCopyPaths,
   stateNotHere,
 } from "../shared";
-import { hintOf } from "../shared/errors";
+import { hintOf, reasonOf } from "../shared/errors";
 import {
   requireTunnelClosed,
   tunnelBusyError,
@@ -229,37 +229,40 @@ export async function resolveGitHub(
 }
 
 /**
- * 4. After the typed name and before anything is deleted: the scheduled check is paused for the
- * environment (`destroyed`, a `github-settings` approval), so it opens no issue for the app going
- * away. Declined, the teardown stops with nothing deleted. Without GitHub (the reason was said)
- * a warning says the check may open an issue.
+ * 8. Once the app is deleted, before its secrets go: the scheduled check is paused for the
+ * environment (`destroyed`, a `github-settings` approval), so it opens no issue for the app that
+ * is gone and closes its open ones. Declined or failed, a warning says what to do; the teardown
+ * goes on. Without GitHub (the reason was said) a warning says the check may open an issue.
  */
 export async function pauseCheckForTeardown(
   deps: PhaseDeps,
   github: GitHubTarget,
   plan: DeployPlan,
 ): Promise<void> {
+  if (plan.observability?.check?.enabled !== true) return;
+  const left =
+    "so it may open an issue for the app that is gone; close it, and the next deploy-setup pull request drops the environment from the check.";
   const { api, owner, repo } = github;
   if (!api || !owner || !repo) {
-    if (plan.observability?.check?.enabled === true) {
-      deps.reporter.warn(
-        "OpsCrew cannot pause the scheduled check for this environment either, so it may open an issue once the app is gone; close it, and it stays closed once the next deploy-setup pull request is merged.",
-      );
-    }
+    deps.reporter.warn(
+      `OpsCrew cannot pause the scheduled check for this environment either, ${left}`,
+    );
     return;
   }
-  const outcome = await changeCheckPause(
-    deps,
-    { api, owner, repo },
-    plan,
-    "destroyed",
-    "provision",
-  );
-  if (outcome === "refused") {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      "The scheduled check was not paused, so it would open an issue once the app is gone. Nothing was deleted.",
-      { hint: `${SHOWS_PLAN_AGAIN} Approve the pause then.` },
+  try {
+    const outcome = await changeCheckPause(
+      deps,
+      { api, owner, repo },
+      plan,
+      "destroyed",
+      "provision",
+    );
+    if (outcome === "refused") deps.reporter.warn(`The scheduled check was not paused, ${left}`);
+  } catch (error) {
+    deps.reporter.warn(
+      deps.redactor.redact(
+        `OpsCrew could not pause the scheduled check (${reasonOf(error)}), ${left}`,
+      ),
     );
   }
 }

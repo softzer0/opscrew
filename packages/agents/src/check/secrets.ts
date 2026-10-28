@@ -16,40 +16,41 @@ export interface CheckServerReach {
   knownHosts: string;
 }
 
+/** Each webhook kind as the user knows it. */
+const WEBHOOK_NAMES = { slack: "Slack", discord: "Discord", ntfy: "ntfy" } as const;
+
 /**
- * The webhook's secrets: its address (`OPSCREW_CHECK_WEBHOOK`) and, for ntfy, its optional access
- * token (`OPSCREW_CHECK_NTFY_TOKEN`), each from the variable of its name or, in a terminal, asked
- * like an app secret (never echoed). One not given keeps what GitHub holds.
+ * The webhook's secrets: its address (`OPSCREW_CHECK_WEBHOOK`), from the variable of that name
+ * or, in a terminal, asked with `askCheckWebhook` (never echoed); a cancelled question says the
+ * address was not stored. For ntfy, its optional access token (`OPSCREW_CHECK_NTFY_TOKEN`) from
+ * the variable of that name. One not given keeps what GitHub holds.
  */
 async function webhookSecrets(
-  deps: Pick<PhaseDeps, "env" | "interactive">,
+  deps: Pick<PhaseDeps, "env" | "interactive" | "reporter">,
   settings: CheckSettings | undefined,
-  services: Pick<ProvisionServices, "askEnv">,
+  services: Pick<ProvisionServices, "askCheckWebhook">,
 ): Promise<Record<string, string>> {
-  if (settings?.webhook === undefined) return {};
-  const names = [
-    CHECK_SECRETS.webhook,
-    ...(settings.webhook === "ntfy" ? [CHECK_SECRETS.ntfyToken] : []),
-  ];
-  const values: Record<string, string> = {};
-  for (const name of names) {
-    const given = deps.env[name]?.trim();
-    if (given) {
-      values[name] = given;
-      continue;
+  const kind = settings?.webhook;
+  if (kind === undefined) return {};
+  let address = deps.env[CHECK_SECRETS.webhook]?.trim();
+  if (!address && deps.interactive && services.askCheckWebhook !== undefined) {
+    address = (
+      await services.askCheckWebhook({
+        kind,
+        prompt: `Address of the ${WEBHOOK_NAMES[kind]} webhook for the scheduled check (stored as a GitHub secret)`,
+      })
+    )?.trim();
+    if (!address) {
+      deps.reporter.warn(
+        `The ${WEBHOOK_NAMES[kind]} webhook's address was not stored, so the scheduled check posts nowhere new. Run \`opscrew provision\` again to give it, or set ${CHECK_SECRETS.webhook}.`,
+      );
     }
-    if (!deps.interactive || services.askEnv === undefined) continue;
-    const answer = await services.askEnv({
-      name,
-      secret: true,
-      environment: "prod",
-      localFile: ".env",
-      localValueAvailable: false,
-      optional: true,
-    });
-    if ("value" in answer && answer.value.trim().length > 0) values[name] = answer.value.trim();
   }
-  return values;
+  const token = kind === "ntfy" ? deps.env[CHECK_SECRETS.ntfyToken]?.trim() : undefined;
+  return {
+    ...(address ? { [CHECK_SECRETS.webhook]: address } : {}),
+    ...(token ? { [CHECK_SECRETS.ntfyToken]: token } : {}),
+  };
 }
 
 /**
@@ -68,7 +69,7 @@ export async function storeCheckSecrets(
     settings: CheckSettings | undefined;
     key?: CheckKey;
     server?: CheckServerReach;
-    services: Pick<ProvisionServices, "askEnv">;
+    services: Pick<ProvisionServices, "askCheckWebhook">;
     phase: PhaseName;
   },
 ): Promise<void> {

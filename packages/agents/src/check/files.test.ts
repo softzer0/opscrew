@@ -23,7 +23,7 @@ function checked(base: DeployPlan, environment?: string, domain?: string): Deplo
   });
 }
 
-const REPO = { owner: "acme", name: "shop", public: false };
+const REPO = { owner: "acme", name: "shop", isPublic: async () => false };
 
 async function project() {
   const deps = await createTestPhaseDeps();
@@ -101,6 +101,10 @@ describe("checkFiles", () => {
     const { deps, at } = await project();
     const plan = testPlan();
     await writeArtifact("plan", at().files.plan, plan);
-    await expect(checkFiles(deps.paths, plan, REPO)).resolves.toEqual([]);
+    // Nor asks GitHub whether the repository is public.
+    const isPublic = async (): Promise<boolean> => {
+      throw new Error("visibility read without the check");
+    };
+    await expect(checkFiles(deps.paths, plan, { ...REPO, isPublic })).resolves.toEqual([]);
   });
 });

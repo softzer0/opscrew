@@ -10,7 +10,7 @@ import type { CheckKey } from "../check/key";
 import {
   type CheckServer,
   checkKeyStep,
-  deploySetupCheckFiles,
+  deploySetupCheck,
   environmentCheckKey,
   provisionCheck,
   resumeCheck,
@@ -655,11 +655,12 @@ async function provisionFlow(
   });
   // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).
   const dependabot = await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
+  // The scheduled check's files, rendered from every app's and environment's plan.
+  const check = await deploySetupCheck(deps, plan, github);
   const files = [
     ...deploymentFiles(plan, ctx, site.values),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
-    // The scheduled check's files, rendered from every app's and environment's plan.
-    ...(await deploySetupCheckFiles(deps, plan, github)),
+    ...check.files,
   ];
   // Applying a saved plan keeps the infrastructure code the --plan-only run wrote, which that plan
   // was made from. The other files are in no hashed plan (the pull request and the deploy bring
@@ -1060,7 +1061,11 @@ async function provisionFlow(
     git,
     github,
     plan: persisted(plan),
-    files: [...files.map((f) => f.path), ...(ctx.additions === true ? [additionsPath(plan)] : [])],
+    files: [
+      ...files.map((f) => f.path),
+      ...(ctx.additions === true ? [additionsPath(plan)] : []),
+      ...check.removed,
+    ],
     push: options.push !== false,
     secretsStored,
     phase,

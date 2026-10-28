@@ -580,12 +580,6 @@ export async function destroyOwnServer(
       throw error;
     });
   }
-  if (removeApp) {
-    await pauseCheckForTeardown(deps, github, plan).catch(async (error: unknown) => {
-      if (bucket !== undefined) await discardBucketDeletion(bucket);
-      throw error;
-    });
-  }
 
   // 4a. The environment's runner comes off its runner machine (`runner: host`) and any other
   // machine that has it, first and alone, with its own approval; a machine it cannot reach stops
@@ -685,6 +679,7 @@ export async function destroyOwnServer(
   let secretsRemoved: string[] = [];
   let current = plan;
   if (removeApp) {
+    await pauseCheckForTeardown(deps, github, plan);
     secretsRemoved = await removeDeploySecrets(deps, github, {
       plan,
       done: "The app is removed from your server and Cloudflare.",
