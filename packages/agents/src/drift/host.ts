@@ -107,6 +107,9 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   edge: "The shared edge (/srv/edge)",
   "tunnel-connector": "Cloudflare Tunnel connector",
   portainer: "Portainer",
+  "check-key": "The scheduled check's key",
+  beszel: "Beszel",
+  alloy: "Grafana Alloy",
 };
 
 const RUNTIME_FILES_TITLE = "OpsCrew's runtime files of the app";
@@ -652,6 +655,11 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
       return tunnelDetails(facts, step, app);
     case "portainer":
       return portainerDetails(facts, step);
+    // Planned by planAddon, never in the setup plan drift compares with.
+    case "check-key":
+    case "beszel":
+    case "alloy":
+      return [];
   }
 }
 

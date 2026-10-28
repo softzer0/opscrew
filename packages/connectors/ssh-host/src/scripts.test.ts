@@ -1,13 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, scriptParams } from "./__fixtures__/fake-host";
 import {
+  ALLOY_FILES,
+  addonSecrets,
   applyApproved,
+  BESZEL_AGENT_FILES,
+  BESZEL_HUB_FILES,
   cloudServer,
   DEPLOY_KEY,
   desiredFor,
+  ed25519Pair,
   portainerDesired,
   portainerPassword,
   provision,
@@ -22,7 +27,7 @@ import {
   tunnelToken,
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
-import { sshdDropIn } from "./constants";
+import { BESZEL_TOKEN_PLACEHOLDER, sshdDropIn } from "./constants";
 import {
   inspectHost,
   inspectRunners,
@@ -31,6 +36,7 @@ import {
   privilegeProbeScript,
 } from "./inspect";
 import {
+  planAddon,
   planHost,
   planPortainer,
   planRunner,
@@ -51,6 +57,9 @@ import type { DesiredHost, HostPlan } from "./types";
 import { WEB_FILTER_DROP_IN_TEXT, WEB_FILTER_UNIT_TEXT, webFilterScript } from "./web-filter";
 
 const MAX_MAP_COUNT = { "vm.max_map_count": "262144" };
+
+/** Beszel in hub mode, with the stand-in files. */
+const BESZEL_HUB = { mode: "hub", email: "ops@example.com", files: BESZEL_HUB_FILES } as const;
 
 /**
  * research.md R8 on a server the user owns: ssh-audit's Ubuntu 24.04 lines without GSSAPI and
@@ -249,6 +258,42 @@ async function everyPlan(): Promise<HostPlan[]> {
       "opscrew runner host remove home",
     ),
   );
+  // The check's key and the add-ons (feature 017): on and off, as root and as the deploy login,
+  // and a teardown that removes them.
+  const monitored = new FakeHost();
+  await provision(monitored);
+  const facts = await inspectHost(monitored);
+  const addonsOn = [
+    planAddon("check-key", {
+      app: "shop",
+      runAs: "root",
+      enable: { publicKey: ed25519Pair().publicKey },
+    }),
+    planAddon("beszel", { app: "shop", runAs: "root", facts, enable: BESZEL_HUB }),
+    planAddon("alloy", { app: "shop", runAs: "root", facts, enable: { files: ALLOY_FILES } }),
+  ];
+  plans.push(
+    ...addonsOn,
+    planAddon("check-key", { app: "shop", runAs: "login", disable: {} }),
+    planAddon("beszel", {
+      app: "shop",
+      runAs: "login",
+      enable: { mode: "agent", files: BESZEL_AGENT_FILES },
+    }),
+    planAddon("beszel", { app: "shop", runAs: "root", facts, disable: { keepData: true } }),
+    planAddon("alloy", { app: "shop", runAs: "login", enable: { files: ALLOY_FILES } }),
+    planAddon("alloy", { app: "shop", runAs: "root", facts, disable: {} }),
+  );
+  for (const plan of addonsOn) {
+    await applyApproved(monitored, plan, { secrets: addonSecrets().secrets });
+  }
+  plans.push(
+    planTeardown(
+      await inspectHost(monitored),
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    ),
+  );
   return plans;
 }
 
@@ -277,6 +322,12 @@ describe("generated scripts", () => {
         "setup/github-runner",
         "setup/tunnel-connector",
         "setup/portainer",
+        "setup/check-key",
+        "setup/beszel",
+        "setup/alloy",
+        "teardown/check-key",
+        "teardown/beszel",
+        "teardown/alloy",
         "teardown/github-runner",
         "teardown/app-dirs",
         "teardown/deploy-key",
@@ -323,8 +374,8 @@ describe("generated scripts", () => {
       for (const [key, script] of scripts) {
         const alone = shSyntax(script);
         if (alone && !alone.ok) failures.push(`${key}: ${alone.stderr}`);
-        // The runner's scripts also run as deploy from root.
-        const asDeploy = key.includes("github-runner")
+        // The runner's and the check key's scripts also run as deploy from root.
+        const asDeploy = /github-runner|check-key/.test(key)
           ? [asRoot("sudo", asDeployUser(script))]
           : [];
         for (const command of [
@@ -880,8 +931,8 @@ describe("secret handling in scripts", () => {
     for (const id of ["tunnel-connector", "portainer"] as const) {
       const step = plan.steps.find((item) => item.id === id);
       if (!step) throw new Error(`no ${id} step`);
-      const { apply, secret } = stepScripts(plan, step);
-      expect(secret?.required).toBe(true);
+      const { apply, secrets } = stepScripts(plan, step);
+      expect(secrets?.required).toBe(true);
       expect(apply).toMatch(/umask 077/);
       expect(apply).toMatch(/IFS= read -r (token|pw) \|\| true/);
       // The secret variable is only ever written to a root-only file with printf (a shell builtin).
@@ -891,6 +942,182 @@ describe("secret handling in scripts", () => {
           /^\s*(printf '[^']*' "\$(token|pw)" \| write_file "\$DIR\/(tunnel\.env|admin_password)" 0600|case "\$token" in|if \[ -n "\$(token|pw)" \]; then)$/,
         );
       expect(uses.some((line) => line.includes("| write_file"))).toBe(true);
+    }
+  });
+});
+
+describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a real shell", () => {
+  /** A harness whose deploy user lives in its root's /home/deploy, with uid and gid 1000. */
+  function harness(): ShellHarness {
+    const h = new ShellHarness();
+    h.stub("getent", `echo "deploy:x:1000:1000::${h.root}/home/deploy:/bin/sh"`, { log: false });
+    h.stub("id", "echo 1000", { log: false });
+    return h;
+  }
+  const scriptsOf = (plan: HostPlan) => {
+    const [step] = plan.steps;
+    if (step === undefined) throw new Error("no step");
+    return stepScripts(plan, step);
+  };
+
+  it("check-key: replaces the line with its comment, keeps every other key, and the deploy-key step keeps it", async () => {
+    const check = ed25519Pair();
+    const old = ed25519Pair();
+    const line = `restrict,command="df -P -B1 /" ${check.publicKey} opscrew-check`;
+    const on = scriptsOf(
+      planAddon("check-key", {
+        app: "shop",
+        runAs: "root",
+        enable: { publicKey: check.publicKey },
+      }),
+    );
+    const off = scriptsOf(planAddon("check-key", { app: "shop", runAs: "root", disable: {} }));
+    const h = harness();
+    try {
+      const keys = "/home/deploy/.ssh/authorized_keys";
+      h.write(keys, `${DEPLOY_KEY}\n${old.publicKey} opscrew-check\n`);
+      expect(h.run(on.check).stdout).toContain("state=change");
+      const applied = h.run(on.apply);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(h.read(keys)).toBe(`${DEPLOY_KEY}\n${line}\n`);
+      expect(h.run(on.verify).status).toBe(0);
+      expect(h.run(on.check).stdout).toContain("state=in-place");
+
+      // The deploy-key step writes exactly the apps' keys, and keeps the check's line.
+      const fake = new FakeHost();
+      const plan = planHost(await inspectHost(fake), desiredFor(fake), "opscrew provision");
+      const step = plan.steps.find((item) => item.id === "deploy-key");
+      if (step === undefined) throw new Error("no deploy-key step");
+      const deployKey = stepScripts(plan, step);
+      h.write(keys, `ssh-ed25519 AAAAold old-key\n${line}\n`);
+      expect(h.run(deployKey.apply).status).toBe(0);
+      expect(h.read(keys)).toBe(`${DEPLOY_KEY}\n${line}\n`);
+      expect(h.run(deployKey.verify).status).toBe(0);
+
+      const removed = h.run(off.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(h.read(keys)).toBe(`${DEPLOY_KEY}\n`);
+      expect(h.run(off.verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("beszel: writes the files and secrets from stdin, fills in the token, starts, and is removed keeping only its history", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    const facts = await inspectHost(fake);
+    const on = scriptsOf(
+      planAddon("beszel", { app: "shop", runAs: "root", facts, enable: BESZEL_HUB }),
+    );
+    const keep = scriptsOf(
+      planAddon("beszel", { app: "shop", runAs: "root", facts, disable: { keepData: true } }),
+    );
+    const { secrets, hubPublicKey } = addonSecrets();
+    const input = `${[
+      secrets.beszelPassword,
+      secrets.beszelToken,
+      Buffer.from(secrets.beszelHubKey).toString("base64"),
+      hubPublicKey,
+    ].join("\n")}\n`;
+    const h = harness();
+    try {
+      h.stub("systemctl", "exit 0");
+      h.stub(
+        "docker",
+        `case "$*" in
+  *" config --services") printf 'hub\\nagent\\nproxy\\n' ;;
+  *" ps --services --status running") if [ -f "$S/up" ]; then printf 'proxy\\nhub\\nagent\\n'; fi ;;
+  *" up -d "*) touch "$S/up" ;;
+  *" down "*) rm -f "$S/up" ;;
+esac`,
+      );
+      const dir = "/srv/opscrew/addons/beszel";
+      expect(h.run(on.check).stdout).toContain("state=change");
+      const applied = h.run(on.apply, input);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(h.read(`${dir}/compose.yaml`)).toBe(BESZEL_HUB_FILES["compose.yaml"]);
+      expect(h.read(`${dir}/config.yml`)).toBe(
+        BESZEL_HUB_FILES["config.yml"].replace(BESZEL_TOKEN_PLACEHOLDER, secrets.beszelToken),
+      );
+      expect(h.read(`${dir}/hub.env`)).toBe(
+        `USER_EMAIL=ops@example.com\nUSER_PASSWORD=${secrets.beszelPassword}\n`,
+      );
+      expect(h.read(`${dir}/agent.env`)).toBe(
+        `TOKEN=${secrets.beszelToken}\nKEY=${hubPublicKey}\n`,
+      );
+      expect(h.read(`${dir}/data/id_ed25519`)).toBe(secrets.beszelHubKey);
+      expect(h.read(`${dir}/.env`)).toBe("OPSCREW_DEPLOY_UID=1000\nOPSCREW_DEPLOY_GID=1000\n");
+      expect(h.exists(`${dir}/agent_data`)).toBe(true);
+      if (process.platform !== "win32") {
+        const mode = (path: string) => statSync(h.native(path)).mode & 0o777;
+        expect(mode(`${dir}/Caddyfile`)).toBe(0o644);
+        for (const file of ["hub.env", "agent.env", "config.yml", "data/id_ed25519", ".env"]) {
+          expect(mode(`${dir}/${file}`), file).toBe(0o600);
+        }
+      }
+      expect(h.calls()).toContain(
+        `docker compose -p opscrew-beszel -f ${h.posix(dir)}/compose.yaml up -d --remove-orphans --quiet-pull`,
+      );
+      expect(h.run(on.verify).status).toBe(0);
+      expect(h.run(on.check).stdout).toContain("state=in-place");
+      // No secret on a command line: the stubs log their arguments.
+      for (const value of Object.values(secrets)) expect(h.calls().join("\n")).not.toContain(value);
+
+      // Nothing written without the secrets.
+      const empty = h.run(on.apply, "");
+      expect(empty.status).not.toBe(0);
+      expect(empty.stderr).toContain("No valid Beszel dashboard password arrived");
+
+      const removed = h.run(keep.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(readdirSync(h.native(dir))).toEqual(["data"]);
+      expect(h.read(`${dir}/data/id_ed25519`)).toBe(secrets.beszelHubKey);
+      expect(h.run(keep.verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("alloy: writes a never-matching masking file only when there is none, and removes it with the rest", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    const facts = await inspectHost(fake);
+    const on = scriptsOf(
+      planAddon("alloy", { app: "shop", runAs: "root", facts, enable: { files: ALLOY_FILES } }),
+    );
+    const off = scriptsOf(planAddon("alloy", { app: "shop", runAs: "root", facts, disable: {} }));
+    const { secrets } = addonSecrets();
+    const h = harness();
+    try {
+      h.stub("systemctl", "exit 0");
+      h.stub(
+        "docker",
+        `case "$*" in
+  *" config --services") printf 'alloy\\nproxy\\n' ;;
+  *" ps --services --status running") if [ -f "$S/up" ]; then printf 'alloy\\nproxy\\n'; fi ;;
+  *" up -d "*) touch "$S/up" ;;
+  *" down "*) rm -f "$S/up" ;;
+esac`,
+      );
+      const applied = h.run(on.apply, `${secrets.grafanaCloudToken}\n`);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(h.read("/srv/opscrew/addons/alloy/grafana_cloud_credential")).toBe(
+        secrets.grafanaCloudToken,
+      );
+      expect(h.read("/srv/apps/shop/mask.re")).toBe("[^\\s\\S]");
+      expect(h.run(on.verify).status).toBe(0);
+      h.write("/srv/apps/shop/mask.re", "the deploy job's pattern");
+      expect(h.run(on.apply, `${secrets.grafanaCloudToken}\n`).status).toBe(0);
+      expect(h.read("/srv/apps/shop/mask.re")).toBe("the deploy job's pattern");
+
+      const removed = h.run(off.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(h.exists("/srv/opscrew/addons/alloy")).toBe(false);
+      expect(h.exists("/srv/apps/shop/mask.re")).toBe(false);
+      expect(h.run(off.verify).status).toBe(0);
+    } finally {
+      h.dispose();
     }
   });
 });

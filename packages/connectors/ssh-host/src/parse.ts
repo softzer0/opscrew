@@ -564,21 +564,24 @@ export function parseAddresses(text: string): HostFacts["addresses"] {
 }
 
 interface AddonLine {
+  /** Its Compose file is there (`kept`: only its folder, with its data). */
+  installed: boolean;
   composeSha256: string | null;
   secretFile: boolean;
   tunnelId: string | null;
 }
 
 /**
- * Lines `<addon> absent` or `<addon> installed <sha256 of compose.yaml> <secret yes|no> <tunnel
- * id or ->`.
+ * Lines `<addon> absent` or `<addon> installed|kept <sha256 of compose.yaml or -> <secret or data
+ * yes|no> <tunnel id or ->`.
  */
 export function parseAddons(text: string): Map<string, AddonLine> {
   const addons = new Map<string, AddonLine>();
   for (const line of linesOf(text)) {
     const [name, state, sum, secret, id] = line.split(/\s+/);
-    if (!name || state !== "installed") continue;
+    if (!name || (state !== "installed" && state !== "kept")) continue;
     addons.set(name, {
+      installed: state === "installed",
       composeSha256: sum && /^[0-9a-f]{64}$/.test(sum) ? sum : null,
       secretFile: secret === "yes",
       tunnelId: id && /^[0-9A-Fa-f-]{8,64}$/.test(id) ? id : null,

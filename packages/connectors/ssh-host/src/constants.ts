@@ -163,6 +163,60 @@ export const PORTAINER_REPOSITORY = "portainer/portainer-ce";
 /** Portainer listens only on the server itself. */
 export const PORTAINER_PORT = 9443;
 
+/** OpsCrew's monitoring add-ons (feature 017), each one per server. */
+export const ADDON_KINDS = ["beszel", "alloy"] as const;
+export type AddonKind = (typeof ADDON_KINDS)[number];
+
+/** The parent of the add-ons' folders on a server the user owns (root's, 0700). */
+export const ADDONS_DIR = `${ADDONS_ROOT}/addons`;
+/** The parent of the add-ons' folders on a server OpsCrew created (the deploy user's). */
+export const CLOUD_ADDONS_DIR = "/home/deploy/opscrew/addons";
+
+/**
+ * An add-on's folder: its Compose file and configuration as `renderAddon` renders them, its
+ * secret files and its data, all the deploy user's (the add-on's containers run as that user).
+ * `runAs: "root"` is a server the user owns, `"login"` one OpsCrew created.
+ */
+export function addonDir(kind: AddonKind, runAs: "root" | "login"): string {
+  return `${runAs === "root" ? ADDONS_DIR : CLOUD_ADDONS_DIR}/${kind}`;
+}
+
+/** Each add-on's Compose project, on every server. */
+export const ADDON_PROJECTS: Readonly<Record<AddonKind, string>> = {
+  beszel: "opscrew-beszel",
+  alloy: "opscrew-alloy",
+};
+
+/** The text in Beszel's rendered `config.yml` that the host step replaces with the agent token. */
+// biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder is literal text.
+export const BESZEL_TOKEN_PLACEHOLDER = "${BESZEL_TOKEN}";
+
+/** The app's masking file Alloy reads (in the app's folder; the deploy job writes its values). */
+export function maskFilePath(app: string): string {
+  return `${appDirs(app).app}/mask.re`;
+}
+
+/** The masking file's content until the deploy job writes the app's values: it never matches. */
+export const EMPTY_MASK = "[^\\s\\S]";
+
+/** The comment that marks the scheduled check's key in the deploy user's authorized_keys. */
+export const CHECK_KEY_COMMENT = "opscrew-check";
+
+/** The only command the check's key can run (OpenSSH's forced command). */
+export const CHECK_KEY_COMMAND = "df -P -B1 /";
+
+/**
+ * The check key's line in authorized_keys, as the spike tested it under OpsCrew's sshd settings:
+ * `restrict` turns off terminals and forwarding, and the forced command runs only `df`.
+ * `publicKey` is `<type> <base64>`.
+ */
+export function checkKeyLine(publicKey: string): string {
+  return `restrict,command="${CHECK_KEY_COMMAND}" ${publicKey} ${CHECK_KEY_COMMENT}`;
+}
+
+/** ERE for a check key line in OpsCrew's form: the deploy-key step keeps such a line. */
+export const CHECK_KEY_LINE_RE = `^restrict,command="${CHECK_KEY_COMMAND}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}$`;
+
 /** Seconds before the server undoes an SSH or firewall change on its own. */
 export const DEFAULT_DEAD_MAN_SECONDS = 180;
 

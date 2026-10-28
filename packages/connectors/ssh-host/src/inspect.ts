@@ -2,8 +2,12 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isRecord, OpsCrewError } from "@opscrew/core";
 import {
+  ADDON_KINDS,
+  ADDON_PROJECTS,
   APP_RECORDS_DIR,
   APPS_DIR,
+  addonDir,
+  CHECK_KEY_LINE_RE,
   DATA_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
@@ -241,7 +245,21 @@ if [ -d "${TUNNELS_DIR}" ] && [ ! -L "${TUNNELS_DIR}" ]; then
     addon "tunnel:\${d##*/}" "$d" tunnel.env
   done
 fi
-addon portainer ${PORTAINER_DIR} admin_password`;
+addon portainer ${PORTAINER_DIR} admin_password
+# The monitoring add-ons: "kept" is a folder without its Compose file (Beszel's history kept).
+monitor() {
+  if [ -L "$2" ] || [ ! -d "$2" ]; then echo "$1 absent"; return 0; fi
+  state=kept
+  sum=-
+  if [ -f "$2/compose.yaml" ]; then
+    state=installed
+    sum=$(sha256sum "$2/compose.yaml" | cut -d ' ' -f 1)
+  fi
+  data=no
+  if [ -d "$2/data" ]; then data=yes; fi
+  echo "$1 $state \${sum:--} $data -"
+}
+${ADDON_KINDS.map((kind) => `monitor ${kind} ${addonDir(kind, "root")}`).join("\n")}`;
 
 /**
  * Each app's GitHub Actions runner in its folder of /srv/runners: whether it registered, the
@@ -607,10 +625,12 @@ export function factsFromOutput(
   const containers = parseContainers(ok(sections, "containers"));
   const volumeProjects = [...new Set(linesOf(ok(sections, "volumes")))];
   const addons = parseAddons(text("addons"));
+  const deployKeys = linesOf(ok(sections, "deploy-keys")).filter((line) => !line.startsWith("#"));
+  const checkLine = new RegExp(CHECK_KEY_LINE_RE);
   const addon = (name: string, project: string) => {
     const found = addons.get(name);
     return {
-      installed: found !== undefined,
+      installed: found?.installed ?? false,
       composeSha256: found?.composeSha256 ?? null,
       running: containers.some((container) => container.project === project && container.running),
       secretFile: found?.secretFile ?? false,
@@ -697,7 +717,8 @@ export function factsFromOutput(
       deploy.exit === 0
         ? {
             groups: linesOf(deploy.text).flatMap((line) => line.split(/\s+/)),
-            keys: linesOf(ok(sections, "deploy-keys")).filter((line) => !line.startsWith("#")),
+            keys: deployKeys.filter((line) => !checkLine.test(line)),
+            checkKey: deployKeys.some((line) => checkLine.test(line)),
           }
         : null,
     packages: {
@@ -733,6 +754,10 @@ export function factsFromOutput(
       .sort()
       .map((app) => ({ app, ...addon(`tunnel:${app}`, tunnelProject(app)) })),
     portainer: addon("portainer", PORTAINER_PROJECT),
+    addons: {
+      beszel: addon("beszel", ADDON_PROJECTS.beszel),
+      alloy: addon("alloy", ADDON_PROJECTS.alloy),
+    },
     runners: parseRunners(text("runners")),
     webFilter: {
       ...dockerFirewall({

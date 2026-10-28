@@ -8,7 +8,8 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 /**
  * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
  * `github-runner` and `tunnel-connector` are the app's own; `edge` only appears in a teardown (the
- * edge goes with the last app).
+ * edge goes with the last app). `check-key`, `beszel` and `alloy` are planned by `planAddon` (and
+ * removed by a teardown).
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -30,6 +31,9 @@ export const HOST_STEP_IDS = [
   "edge",
   "tunnel-connector",
   "portainer",
+  "check-key",
+  "beszel",
+  "alloy",
 ] as const;
 
 export type HostStepId = (typeof HOST_STEP_IDS)[number];
@@ -112,6 +116,11 @@ export type HostPlan = z.infer<typeof HostPlanSchema>;
 /** Single-line OpenSSH public key (`type base64 [comment]`); never a private key. */
 const PUBLIC_KEY_RE =
   /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [^\r\n\0]{0,200})?$/;
+
+/** One OpenSSH public key line (`type base64 [comment]`), never a private key. */
+export const PublicKeyLineSchema = z
+  .string()
+  .regex(PUBLIC_KEY_RE, { message: "must be one OpenSSH public key line" });
 
 /** A rendered Compose file: non-empty text without NUL bytes, at most 16 KiB. */
 export const ComposeTextSchema = z
@@ -349,13 +358,34 @@ export const DesiredHostSchema = z
   );
 export type DesiredHost = z.infer<typeof DesiredHostSchema>;
 
+/** The secrets a host plan's steps may need, each checked by name before it is sent. */
+export interface ApplySecrets {
+  /** The app's Cloudflare Tunnel token (`tunnel-connector`). */
+  tunnelToken?: string;
+  /** Portainer's first admin password (`portainer`). */
+  portainerPassword?: string;
+  /** Beszel's dashboard password, hub mode (`beszel`): 16 to 128 letters, digits, `-` and `_`. */
+  beszelPassword?: string;
+  /** Beszel's agent token (`beszel`): 48 hex digits in hub mode, the user's hub's in agent mode. */
+  beszelToken?: string;
+  /**
+   * The Beszel hub's private Ed25519 key in PKCS #8 PEM form, hub mode (`beszel`). The step writes
+   * it to the hub's `data/id_ed25519`, and its public half to the agent's `KEY`.
+   */
+  beszelHubKey?: string;
+  /** The Grafana Cloud access policy token (`alloy`). */
+  grafanaCloudToken?: string;
+}
+
+export type SecretName = keyof ApplySecrets;
+
 export interface ApplyOptions {
   /** The hash the user approved; apply refuses any other plan. */
   approvedHash: string;
   /** What the user runs again once a problem is fixed (for example `opscrew provision`); errors name it. */
   command: string;
-  /** Supplied at apply, never part of the plan. */
-  secrets?: { tunnelToken?: string; portainerPassword?: string };
+  /** Supplied at apply, never part of the plan; they reach the server only on stdin. */
+  secrets?: ApplySecrets;
   /**
    * Fetches a GitHub token for the `github-runner` step: a registration token to install the
    * runner, a remove token to remove it. Called only when that step runs, never for one in place;

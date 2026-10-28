@@ -9,13 +9,19 @@
  * that only runs the environments' runners) has a host plan of its own, `planRunnerHost`, hardened
  * only when asked (SSH hardening, and OpsCrew's own nftables table for port 22), and is taken back
  * with `planUndo`. No plan replaces or removes another repository's runner.
+ * `planAddon` (feature 017) adds the scheduled check's key, which can run only `df`, and runs the
+ * Beszel and Grafana Alloy add-ons as the deploy user, one of each per server.
  * See `specs/009-own-server/contracts/host-adapter.md`,
- * `specs/013-component-model/contracts/components.md` and
- * `specs/015-environments-runners/contracts/runners.md`.
+ * `specs/013-component-model/contracts/components.md`,
+ * `specs/015-environments-runners/contracts/runners.md` and
+ * `specs/017-observability/contracts/observability.md`.
  */
 
 export { applyHostPlan, HostApplyError } from "./apply";
 export {
+  ADDON_PROJECTS,
+  type AddonKind,
+  addonDir,
   appDirs,
   EDGE_DIR,
   EDGE_PROJECT,
@@ -51,6 +57,9 @@ export { inspectHost, inspectRunners } from "./inspect";
 export { localExec } from "./local";
 export { canonicalSshSource, isPublicAddress } from "./parse";
 export {
+  type AddonEnable,
+  type AddonPlanKind,
+  planAddon,
   planHost,
   planPortainer,
   planRunner,
@@ -61,6 +70,7 @@ export {
 export {
   type ApplyOptions,
   type ApplyResult,
+  type ApplySecrets,
   type DesiredHost,
   type DesiredRunner,
   type DesiredRunnerHost,

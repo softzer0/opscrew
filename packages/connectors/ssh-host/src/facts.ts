@@ -53,6 +53,8 @@ export const HostRecordSchema = z.object({
   apps: z.array(z.string()),
   opscrewVersion: z.string(),
   changes: z.array(HostRecordEntrySchema),
+  /** The app that turned each add-on on (one of each per server); absent while it is off. */
+  addons: z.object({ beszel: z.string().optional(), alloy: z.string().optional() }).optional(),
 });
 export type HostRecord = z.infer<typeof HostRecordSchema>;
 
@@ -105,7 +107,10 @@ const AddonSchema = z.object({
   composeSha256: z.string().nullable(),
   /** A container of the add-on's Compose project is running. */
   running: z.boolean(),
-  /** cloudflared: the token env file; Portainer: the one-time admin password file. */
+  /**
+   * cloudflared: the token env file; Portainer: the one-time admin password file; Beszel and
+   * Alloy: their `data/` folder (Beszel's history, kept after it was turned off with keepData).
+   */
   secretFile: z.boolean(),
   /** A volume of the add-on's Compose project exists (Portainer: an admin may already exist). */
   dataVolume: z.boolean(),
@@ -113,6 +118,16 @@ const AddonSchema = z.object({
   tunnelId: z.string().nullable(),
 });
 export type AddonFact = z.infer<typeof AddonSchema>;
+
+/** An add-on that is not on the server. */
+const NO_ADDON: AddonFact = {
+  installed: false,
+  composeSha256: null,
+  running: false,
+  secretFile: false,
+  dataVolume: false,
+  tunnelId: null,
+};
 
 /** An app's Cloudflare Tunnel connector (`/srv/opscrew/cloudflared/<app>`, project `<app>-tunnel`). */
 const TunnelSchema = AddonSchema.extend({ app: z.string() });
@@ -280,7 +295,17 @@ export const HostFactsSchema = z.object({
       keys: z.boolean(),
     }),
   ),
-  deployUser: z.object({ groups: z.array(z.string()), keys: z.array(z.string()) }).nullable(),
+  /**
+   * The deploy user: its groups, and the lines of its authorized_keys other than the scheduled
+   * check's key, whose line in OpsCrew's form (`CHECK_KEY_LINE_RE`) is `checkKey`.
+   */
+  deployUser: z
+    .object({
+      groups: z.array(z.string()),
+      keys: z.array(z.string()),
+      checkKey: z.boolean().optional(),
+    })
+    .nullable(),
   packages: z.object({
     ufw: z.boolean(),
     unattendedUpgrades: z.boolean(),
@@ -336,6 +361,10 @@ export const HostFactsSchema = z.object({
   /** Each app's tunnel connector whose folder exists, by app (see {@link tunnelOf}). */
   tunnels: z.array(TunnelSchema),
   portainer: AddonSchema,
+  /** The monitoring add-ons in their folders of /srv/opscrew/addons (which app has each: `record`). */
+  addons: z
+    .object({ beszel: AddonSchema, alloy: AddonSchema })
+    .default({ beszel: NO_ADDON, alloy: NO_ADDON }),
   /** Each app's GitHub Actions runner whose folder exists (see {@link runnerOf}). */
   runners: z.array(RunnerSchema).default([]),
   /** Docker's firewall and OpsCrew's web filter. */
@@ -378,16 +407,7 @@ export type RunnerFacts = z.infer<typeof RunnerFactsSchema>;
  * container of a project named `<app>-tunnel` alone may be another app's, so it never counts).
  */
 export function tunnelOf(facts: Pick<HostFacts, "tunnels">, app: string): AddonFact {
-  return (
-    facts.tunnels.find((tunnel) => tunnel.app === app) ?? {
-      installed: false,
-      composeSha256: null,
-      running: false,
-      secretFile: false,
-      dataVolume: false,
-      tunnelId: null,
-    }
-  );
+  return facts.tunnels.find((tunnel) => tunnel.app === app) ?? NO_ADDON;
 }
 
 /** `app`'s GitHub Actions runner as inspection found it in its folder, undefined without one. */

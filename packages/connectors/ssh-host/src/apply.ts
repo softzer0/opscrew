@@ -6,7 +6,8 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { z } from "zod";
-import { DEFAULT_DEAD_MAN_SECONDS } from "./constants";
+import { addonTaken, ed25519PublicKey } from "./addons";
+import { ADDON_KINDS, type AddonKind, DEFAULT_DEAD_MAN_SECONDS } from "./constants";
 import {
   assumedApps,
   HOST_ADAPTER_VERSION,
@@ -34,10 +35,12 @@ import {
   AccessModeSchema,
   type ApplyOptions,
   type ApplyResult,
+  type ApplySecrets,
   type HostPlan,
   HostPlanSchema,
   type HostStep,
   type HostStepId,
+  type SecretName,
 } from "./types";
 
 /**
@@ -56,12 +59,78 @@ const PASSWORD_RE = /^[\x20-\x7e]{12,128}$/;
 /** GitHub's runner registration and remove tokens (29 upper-case letters and digits today). */
 const RUNNER_TOKEN_RE = /^[A-Za-z0-9_-]{16,512}$/;
 
+/** How each secret is checked before anything is sent, and what an invalid one says. */
+const SECRET_CHECKS: Record<
+  SecretName,
+  { label: string; valid: (value: string) => boolean; invalid: string; hint?: string }
+> = {
+  tunnelToken: {
+    label: "tunnel-token",
+    valid: (value) => TOKEN_RE.test(value),
+    invalid: "The tunnel token does not look like a Cloudflare Tunnel token.",
+    hint: "Read the token again from the tunnel's IaC output.",
+  },
+  portainerPassword: {
+    label: "portainer-password",
+    valid: (value) => PASSWORD_RE.test(value),
+    invalid: "The Portainer password must be 12 to 128 printable characters on one line.",
+  },
+  beszelPassword: {
+    label: "beszel-password",
+    valid: (value) => /^[A-Za-z0-9_-]{16,128}$/.test(value),
+    invalid:
+      "Beszel's dashboard password must be 16 to 128 letters, digits, dashes and underscores.",
+  },
+  beszelToken: {
+    label: "beszel-token",
+    valid: (value) => /^[A-Za-z0-9-]{16,128}$/.test(value),
+    invalid: "Beszel's agent token must be 16 to 128 letters, digits and dashes.",
+    hint: "Copy the token again from your Beszel hub (Add system).",
+  },
+  beszelHubKey: {
+    label: "beszel-hub-key",
+    valid: (value) => ed25519PublicKey(value) !== undefined,
+    invalid: "Beszel's hub key must be an Ed25519 private key in PKCS #8 PEM form.",
+  },
+  grafanaCloudToken: {
+    label: "grafana-cloud-token",
+    valid: (value) => TOKEN_RE.test(value),
+    invalid: "The Grafana Cloud token does not look like an access policy token.",
+    hint: "Copy the token again from your Grafana Cloud stack's Access Policies.",
+  },
+};
+
+/** What a step needs supplied, for the refusal when a required secret is missing. */
+const SECRET_NEEDS: Record<SecretName, string> = {
+  tunnelToken: "the tunnel token",
+  portainerPassword: "the Portainer admin password",
+  beszelPassword: "Beszel's dashboard password",
+  beszelToken: "Beszel's agent token",
+  beszelHubKey: "Beszel's hub key",
+  grafanaCloudToken: "the Grafana Cloud token",
+};
+
+/**
+ * What goes on stdin for a step's secrets: one line each, in order; the Beszel hub's key as its
+ * base64 and its public key line (the agent's `KEY`). Undefined when none is supplied.
+ */
+function stdinOf(names: readonly SecretName[], secrets: ApplySecrets): string | undefined {
+  if (names.every((name) => secrets[name] === undefined)) return undefined;
+  const lines = names.flatMap((name) => {
+    const value = secrets[name] ?? "";
+    return name === "beszelHubKey"
+      ? [Buffer.from(value, "utf8").toString("base64"), ed25519PublicKey(value) ?? ""]
+      : [value];
+  });
+  return `${lines.join("\n")}\n`;
+}
+
 interface Context {
   remote: RemoteExec;
   plan: HostPlan;
   privilege: Privilege | null;
   redactor: Redactor;
-  secrets: { tunnelToken?: string; portainerPassword?: string };
+  secrets: ApplySecrets;
   runnerToken: ApplyOptions["runnerToken"];
   verifyLogin: () => Promise<boolean>;
   deadManSeconds: number;
@@ -201,6 +270,20 @@ class Recorder {
     const next = [...apps].sort();
     if (next.join(" ") === this.record.apps.join(" ")) return;
     this.record = { ...this.record, apps: next };
+    await this.write();
+  }
+
+  /** The app that turned the add-on on, undefined while it is off. */
+  addonOwner(kind: AddonKind): string | undefined {
+    return this.record.addons?.[kind];
+  }
+
+  /** Records that `app` turned the add-on on, or (null) that it is off; written only on a change. */
+  async setAddon(kind: AddonKind, app: string | null): Promise<void> {
+    if ((this.addonOwner(kind) ?? null) === app) return;
+    const { [kind]: _, ...others } = this.record.addons ?? {};
+    const addons = app === null ? others : { ...others, [kind]: app };
+    this.record = { ...this.record, addons };
     await this.write();
   }
 
@@ -381,16 +464,16 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
       scripts.doing,
     );
   }
-  const secret =
+  const input =
     scripts.runnerToken !== undefined
-      ? await fetchRunnerToken(ctx, scripts.runnerToken)
-      : scripts.secret
-        ? ctx.secrets[scripts.secret.name]
+      ? `${await fetchRunnerToken(ctx, scripts.runnerToken)}\n`
+      : scripts.secrets
+        ? stdinOf(scripts.secrets.names, ctx.secrets)
         : undefined;
   const options: RunOptions =
-    secret === undefined
+    input === undefined
       ? { timeoutMs: scripts.timeoutMs }
-      : { timeoutMs: scripts.timeoutMs, input: `${secret}\n` };
+      : { timeoutMs: scripts.timeoutMs, input };
   if (scripts.deadMan !== undefined) {
     await guardedApply(ctx, step, scripts, scripts.deadMan, options);
   } else {
@@ -507,6 +590,10 @@ function refuse(message: string, hint: string): OpsCrewError {
   return new OpsCrewError("PHASE_PRECONDITION", message, { hint });
 }
 
+function isAddon(id: HostStepId): id is AddonKind {
+  return (ADDON_KINDS as readonly string[]).includes(id);
+}
+
 /**
  * Applies an approved host plan. Refuses with PLAN_HASH_MISMATCH when the plan's hash is not
  * `approvedHash`, and with PHASE_PRECONDITION when it has findings or blocked steps or a secret
@@ -563,24 +650,16 @@ export async function applyHostPlan(
 
   const redactor = new Redactor();
   const secrets = opts.secrets ?? {};
-  if (secrets.tunnelToken !== undefined) {
-    redactor.addLiteral(secrets.tunnelToken, "tunnel-token");
-    if (!TOKEN_RE.test(secrets.tunnelToken)) {
+  for (const name of Object.keys(SECRET_CHECKS) as SecretName[]) {
+    const value = secrets[name];
+    if (value === undefined) continue;
+    const check = SECRET_CHECKS[name];
+    redactor.addLiteral(value, check.label);
+    if (!check.valid(value)) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        "The tunnel token does not look like a Cloudflare Tunnel token.",
-        {
-          hint: "Read the token again from the tunnel's IaC output.",
-        },
-      );
-    }
-  }
-  if (secrets.portainerPassword !== undefined) {
-    redactor.addLiteral(secrets.portainerPassword, "portainer-password");
-    if (!PASSWORD_RE.test(secrets.portainerPassword)) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        "The Portainer password must be 12 to 128 printable characters on one line.",
+        check.invalid,
+        check.hint === undefined ? {} : { hint: check.hint },
       );
     }
   }
@@ -590,11 +669,12 @@ export async function applyHostPlan(
     .filter((step) => step.state === "change")
     .map((step) => ({ step, scripts: stepScripts(valid, step) }));
   for (const { scripts } of changes) {
-    if (scripts.secret?.required && secrets[scripts.secret.name] === undefined) {
+    const missing = scripts.secrets?.required
+      ? scripts.secrets.names.find((name) => secrets[name] === undefined)
+      : undefined;
+    if (missing !== undefined) {
       throw refuse(
-        scripts.secret.name === "tunnelToken"
-          ? "Applying this plan needs the tunnel token, and none was supplied."
-          : "Applying this plan needs the Portainer admin password, and none was supplied.",
+        `Applying this plan needs ${SECRET_NEEDS[missing]}, and none was supplied.`,
         "Supply it at apply time; it is never part of the plan.",
       );
     }
@@ -635,6 +715,12 @@ export async function applyHostPlan(
     ctx.privilege = privilege;
     ctx.recorder = await Recorder.load(ctx);
     await appsCheck(ctx, ctx.recorder.apps);
+    // One of each add-on per server: another app's stays as it is.
+    for (const { step } of changes) {
+      if (!isAddon(step.id)) continue;
+      const owner = ctx.recorder.addonOwner(step.id);
+      if (owner !== undefined && owner !== valid.app) throw addonTaken(step.id, owner);
+    }
   }
 
   const applied: HostStepId[] = [];
@@ -651,6 +737,11 @@ export async function applyHostPlan(
       // The host record lists the apps set up on the server.
       if (step.id === "app-record" && valid.purpose !== "undo") {
         await ctx.recorder?.list(valid.app, valid.purpose === "setup");
+      }
+      // ... and which app turned each add-on on (its history kept is still that app's).
+      if (isAddon(step.id) && runAsOf(step) === "root" && step.params.keepData !== true) {
+        const on = valid.purpose === "setup" && step.params.remove !== true;
+        await ctx.recorder?.setAddon(step.id, on ? valid.app : null);
       }
     } catch (error) {
       throw failure(error, applied);

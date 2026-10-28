@@ -8,12 +8,19 @@
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
 import {
+  ADDON_PROJECTS,
   ADDONS_ROOT,
+  type AddonKind,
   APP_RECORDS_DIR,
   APT_LOG,
   AUTO_UPGRADES_FILE,
+  addonDir,
   appDirs,
   BACKUP_DIR,
+  BESZEL_TOKEN_PLACEHOLDER,
+  CHECK_KEY_COMMENT,
+  CHECK_KEY_LINE_RE,
+  checkKeyLine,
   DEAD_MAN_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
@@ -21,10 +28,12 @@ import {
   ECDSA_HOST_KEY_TYPES,
   EDGE_DIR,
   EDGE_PROJECT,
+  EMPTY_MASK,
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
   MIN_DOCKER_MAJOR,
   MODULI_FILTER,
+  maskFilePath,
   OPSCREW_DIR,
   PORTAINER_DIR,
   PORTAINER_PORT,
@@ -77,6 +86,7 @@ import {
   type HostStepId,
   PortainerVersionSchema,
   ProjectIdSchema,
+  type SecretName,
   ServiceNameSchema,
   TunnelIdSchema,
 } from "./types";
@@ -112,8 +122,11 @@ export interface StepScripts {
    * parameters they use.
    */
   deadMan?: { step: GuardedStep; capture: string; params: ScriptParams };
-  /** Secret the apply script reads from stdin. */
-  secret?: { name: "tunnelToken" | "portainerPassword"; required: boolean };
+  /**
+   * Secrets the apply script reads from stdin, one line each in this order (the Beszel hub's key
+   * as two lines: its base64 and its public key line). `required`: the step fails without them.
+   */
+  secrets?: { names: readonly SecretName[]; required: boolean };
   /** The GitHub runner token the apply script reads from stdin, fetched when the step runs. */
   runnerToken?: "registration" | "remove";
   /**
@@ -371,19 +384,25 @@ const DeployKeysParams = z.object({
 
 /**
  * `deploy-key` (setup and teardown): the deploy user's authorized_keys holds exactly the deploy
- * keys of the apps on the server, so a removed app's key or an old key stops working.
+ * keys of the apps on the server, so a removed app's key or an old key stops working. The
+ * scheduled check's key in OpsCrew's form (`check-key`, which can run only `df`) stays.
  */
 function deployKeyScripts(step: HostStep): StepScripts {
   const p = params(step, DeployKeysParams);
   const keys = `${p.keys}\n`;
   return scripts({
     name: "deploy-key",
-    params: { USER_NAME: p.user, KEYS_B64: base64(keys), KEYS_SHA256: sha256Hex(keys) },
+    params: {
+      USER_NAME: p.user,
+      KEYS_B64: base64(keys),
+      KEYS_SHA256: sha256Hex(keys),
+      CHECK_RE: CHECK_KEY_LINE_RE,
+    },
     helpers: `user_home() { getent passwd "$USER_NAME" | cut -d: -f6; }`,
     verify: `  getent passwd "$USER_NAME" >/dev/null 2>&1 || return 1
   home=$(user_home)
   [ -f "$home/.ssh/authorized_keys" ] && [ ! -L "$home/.ssh/authorized_keys" ] || return 1
-  [ "$(sha256sum "$home/.ssh/authorized_keys" | cut -d ' ' -f 1)" = "$KEYS_SHA256" ]`,
+  [ "$(grep -vE "$CHECK_RE" "$home/.ssh/authorized_keys" | sha256sum | cut -d ' ' -f 1)" = "$KEYS_SHA256" ]`,
     apply: `getent passwd "$USER_NAME" >/dev/null 2>&1 || fail "The $USER_NAME user is missing; OpsCrew creates it first."
 home=$(user_home)
 if [ -z "$home" ] || [ "$home" = / ]; then fail "The $USER_NAME user has no home directory."; fi
@@ -392,8 +411,13 @@ install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$home/.ssh"
 keys="$home/.ssh/authorized_keys"
 if [ -L "$keys" ]; then fail "$keys is a symbolic link; OpsCrew does not follow it."; fi
 # OpsCrew created this user: its keys file holds exactly the deploy keys of the apps on the
-# server, so an old deploy key, or the key of an app that was removed, stops working.
-printf '%s' "$KEYS_B64" | base64 -d | write_file "$keys" 0600 "$USER_NAME:$USER_NAME"`,
+# server, so an old deploy key, or the key of an app that was removed, stops working. The
+# scheduled check's key, which can run only df, is not an app's: it stays.
+check=$(grep -E "$CHECK_RE" "$keys" 2>/dev/null) || check=''
+{
+  printf '%s' "$KEYS_B64" | base64 -d
+  if [ -n "$check" ]; then printf '%s\\n' "$check"; fi
+} | write_file "$keys" 0600 "$USER_NAME:$USER_NAME"`,
     failed: "The deploy user does not have the planned deploy keys after the change.",
     doing: "writing the deploy user's keys",
     timeoutMs: 2 * MINUTE,
@@ -1801,7 +1825,7 @@ until compose logs --no-color --tail 300 2>/dev/null | grep -q 'Registered tunne
   sleep 2
 done`,
     failed: "The tunnel connector is not running.",
-    secret: { name: "tunnelToken", required: p.needsToken },
+    secrets: { names: ["tunnelToken"], required: p.needsToken },
     doing: "starting the Cloudflare Tunnel connector",
     timeoutMs: 10 * MINUTE,
   });
@@ -1895,9 +1919,379 @@ if ! compose_is "$FINAL_SHA256"; then
 fi
 rm -f "$DIR/admin_password"`,
     failed: "Portainer is not running as planned.",
-    secret: { name: "portainerPassword", required: p.needsPassword },
+    secrets: { names: ["portainerPassword"], required: p.needsPassword },
     doing: "setting up Portainer",
     timeoutMs: 10 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// check-key: the scheduled check's key, which can run only df (feature 017)
+
+/** A public key without its comment: `<type> <base64>`. */
+const BareKeySchema = z.string().regex(/^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}$/);
+
+/** Lines of authorized_keys with the check key's comment, whatever their options. */
+const CHECK_COMMENT_RE = `[[:space:]]${CHECK_KEY_COMMENT}$`;
+
+/**
+ * `check-key`: the deploy user's authorized_keys holds one line with the check's comment,
+ * `restrict,command="df -P -B1 /" <key> opscrew-check` (a line with the same comment is
+ * replaced); removed, it holds none. Every other line stays. It runs as the deploy user.
+ */
+function checkKeyScripts(step: HostStep): StepScripts {
+  const remove = step.params.remove === true;
+  const p = params(step, z.object({ runAs: RunAsSchema }));
+  const helpers = `keys_file() { printf '%s/.ssh/authorized_keys' "$(getent passwd "$USER_NAME" | cut -d: -f6)"; }
+keep_others() {
+  others=$(grep -vE "$COMMENT_RE" "$1") || [ $? -eq 1 ] || fail "OpsCrew could not read $1."
+  if [ -n "$others" ]; then printf '%s\\n' "$others"; fi
+}`;
+  const shared = {
+    USER_NAME: "deploy",
+    COMMENT_RE: CHECK_COMMENT_RE,
+    RUN_AS: p.runAs,
+  };
+  if (remove) {
+    return scripts({
+      name: "check-key.remove",
+      params: shared,
+      helpers,
+      verify: `  k=$(keys_file)
+  [ ! -f "$k" ] || ! grep -qE "$COMMENT_RE" "$k"`,
+      apply: `k=$(keys_file)
+if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
+if [ -f "$k" ] && grep -qE "$COMMENT_RE" "$k"; then
+  keep_others "$k" | write_file "$k" 0600
+fi`,
+      failed: "The scheduled check's key is still in the deploy user's authorized_keys.",
+      asDeploy: true,
+      doing: "removing the scheduled check's key",
+      timeoutMs: 2 * MINUTE,
+    });
+  }
+  const { publicKey } = params(step, z.object({ publicKey: BareKeySchema }));
+  return scripts({
+    name: "check-key",
+    params: { ...shared, LINE: checkKeyLine(publicKey) },
+    helpers,
+    verify: `  k=$(keys_file)
+  [ -f "$k" ] && [ ! -L "$k" ] || return 1
+  [ "$(grep -cE "$COMMENT_RE" "$k")" = 1 ] || return 1
+  grep -qxF "$LINE" "$k"`,
+    apply: `h=$(getent passwd "$USER_NAME" | cut -d: -f6)
+if [ -z "$h" ] || [ "$h" = / ]; then fail "The $USER_NAME user has no home directory."; fi
+if [ -L "$h/.ssh" ]; then fail "$h/.ssh is a symbolic link; OpsCrew does not follow it."; fi
+install -d -m 0700 "$h/.ssh"
+k="$h/.ssh/authorized_keys"
+if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
+{
+  if [ -f "$k" ]; then keep_others "$k"; fi
+  printf '%s\\n' "$LINE"
+} | write_file "$k" 0600`,
+    failed: "The scheduled check's key is not in the deploy user's authorized_keys as planned.",
+    asDeploy: true,
+    doing: "adding the scheduled check's key",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// beszel and alloy: the monitoring add-ons, run as the deploy user (feature 017)
+
+/** A file `renderAddon` renders, at the root of the add-on's folder. */
+const AddonFileNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+
+/** The files the step writes itself; a rendered file may not take their names. */
+const OWN_ADDON_FILES = new Set([
+  "hub.env",
+  "agent.env",
+  "grafana_cloud_credential",
+  "data",
+  "agent_data",
+]);
+
+/** The prefix of the step parameters that hold the rendered files (`file:compose.yaml`). */
+export const ADDON_FILE_PARAM = "file:";
+
+/** The rendered files in a step's parameters, sorted by name; each within the Compose text cap. */
+function addonFiles(step: HostStep): [string, string][] {
+  const files = Object.entries(step.params)
+    .filter(([key]) => key.startsWith(ADDON_FILE_PARAM))
+    .map(([key, content]): [string, unknown] => [key.slice(ADDON_FILE_PARAM.length), content])
+    .sort(([a], [b]) => a.localeCompare(b));
+  for (const [name, content] of files) {
+    if (!AddonFileNameSchema.safeParse(name).success || OWN_ADDON_FILES.has(name)) {
+      throw invalid(step, `file name ${name}`);
+    }
+    if (!ComposeTextSchema.safeParse(content).success) throw invalid(step, `file ${name}`);
+  }
+  if (!files.some(([name]) => name === "compose.yaml")) throw invalid(step, "compose.yaml");
+  return files as [string, string][];
+}
+
+const EmailSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,63}$/);
+
+const AddonParams = z.object({
+  runAs: RunAsSchema,
+  /** Beszel only: `hub` (the dashboard and the agent) or `agent` (connected out to the user's hub). */
+  mode: z.enum(["hub", "agent"]).optional(),
+  /** Beszel's hub mode only: the dashboard user's email. */
+  email: EmailSchema.optional(),
+});
+
+/** What differs between the add-ons and Beszel's modes. */
+interface AddonVariant {
+  what: string;
+  secrets: SecretName[];
+  /** The files the step writes from stdin, which must be there (non-empty). */
+  secretFiles: string[];
+  /** Folders the containers write, bind-mounted, the deploy user's. */
+  dataDirs: string[];
+  /** The rendered file whose token placeholder the step fills in ("" for none). */
+  templated: string;
+  /** Reads the secrets from stdin into variables, and checks them. */
+  read: string;
+  /** Writes the secret files (and Alloy's masking file) from those variables. */
+  write: string;
+}
+
+function readLines(names: string[]): string {
+  return [
+    ...names.map((name) => `${name}=''`),
+    ...names.map((name) => `IFS= read -r ${name} || true`),
+  ].join("\n");
+}
+
+function addonVariant(kind: AddonKind, mode: "hub" | "agent" | undefined): AddonVariant {
+  const refuse = (what: string, product: string) =>
+    `fail 'No valid ${what} arrived on standard input, so ${product} was not set up.'`;
+  if (kind === "alloy") {
+    return {
+      what: "Grafana Alloy",
+      secrets: ["grafanaCloudToken"],
+      secretFiles: ["grafana_cloud_credential"],
+      dataDirs: ["data"],
+      templated: "",
+      read: `${readLines(["token"])}
+case "$token" in ''|*[!A-Za-z0-9+/=_.-]*) token=''; ${refuse("Grafana Cloud token", "Grafana Alloy")} ;; esac`,
+      write: `printf '%s' "$token" | put "$DIR/grafana_cloud_credential"
+token=''
+# Alloy reads the app's masking file, which the deploy job writes; until then, one that never
+# matches. The app's folder may not be there before the first deploy.
+appdir=$(dirname "$MASK")
+if [ -L "$appdir" ] || [ -L "$MASK" ]; then fail "$appdir holds a symbolic link; OpsCrew does not follow it."; fi
+if [ ! -d "$appdir" ]; then
+  install -d -m 0750 "$appdir"
+  if [ -n "$owner" ]; then chown "$owner" "$appdir"; fi
+fi
+if [ ! -e "$MASK" ]; then printf '%s' "$EMPTY_MASK" | put "$MASK"; fi`,
+    };
+  }
+  if (mode === "agent") {
+    return {
+      what: "Beszel's agent",
+      secrets: ["beszelToken"],
+      secretFiles: ["agent.env"],
+      dataDirs: ["agent_data"],
+      templated: "",
+      read: `${readLines(["token"])}
+case "$token" in ''|*[!A-Za-z0-9-]*) token=''; ${refuse("Beszel agent token", "Beszel")} ;; esac`,
+      write: `printf 'TOKEN=%s\\n' "$token" | put "$DIR/agent.env"`,
+    };
+  }
+  return {
+    what: "Beszel",
+    secrets: ["beszelPassword", "beszelToken", "beszelHubKey"],
+    secretFiles: ["hub.env", "agent.env", "config.yml", "data/id_ed25519"],
+    dataDirs: ["data", "agent_data"],
+    templated: "config.yml",
+    read: `${readLines(["pw", "token", "key", "pub"])}
+case "$pw" in ''|*[!A-Za-z0-9_-]*) pw=''; ${refuse("Beszel dashboard password", "Beszel")} ;; esac
+case "$token" in *[!0-9a-f]*) token='' ;; esac
+if [ "\${#token}" -ne 48 ]; then token=''; ${refuse("Beszel agent token", "Beszel")}; fi
+case "$key" in ''|*[!A-Za-z0-9+/=]*) key=''; ${refuse("Beszel hub key", "Beszel")} ;; esac
+case "$pub" in 'ssh-ed25519 '*) ;; *) ${refuse("Beszel hub public key", "Beszel")} ;; esac`,
+    // The hub reads its key from its data folder at the first start (spike result 2).
+    write: `printf '%s' "$key" | base64 -d | put "$DIR/data/id_ed25519"
+key=''
+printf 'USER_EMAIL=%s\\nUSER_PASSWORD=%s\\n' "$EMAIL" "$pw" | put "$DIR/hub.env"
+pw=''
+printf 'TOKEN=%s\\nKEY=%s\\n' "$token" "$pub" | put "$DIR/agent.env"`,
+  };
+}
+
+/** Shell helpers of the add-on scripts. */
+const MONITOR_HELPERS = `compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+sum_of() { sha256sum "$1" 2>/dev/null | cut -d ' ' -f 1; }
+ids() { printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u "$USER_NAME")" "$(id -g "$USER_NAME")"; }
+put() {
+  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
+  write_file "$1" "\${2:-0600}" "$owner"
+}
+own_dir() {
+  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
+  install -d -m 0700 "$1"
+  if [ -n "$owner" ]; then chown "$owner" "$1"; fi
+}
+all_running() {
+  want=$(compose config --services 2>/dev/null | sort) || return 1
+  have=$(compose ps --services --status running 2>/dev/null | sort) || return 1
+  [ -n "$want" ] && [ "$want" = "$have" ]
+}
+files_ok() {
+  [ -f "$DIR/.opscrew-files" ] && [ "$(cat "$DIR/.opscrew-files")" = "$MANIFEST" ] || return 1
+  for entry in $PLAIN; do [ "$(sum_of "$DIR/\${entry%%:*}")" = "\${entry#*:}" ] || return 1; done
+  for f in $SECRET_FILES; do [ -s "$DIR/$f" ] || return 1; done
+  for d in $DATA_DIRS; do [ -d "$DIR/$d" ] && [ ! -L "$DIR/$d" ] || return 1; done
+  [ -z "$MASK" ] || [ -f "$MASK" ] || return 1
+  [ "$(cat "$DIR/.env" 2>/dev/null)" = "$(ids)" ]
+}`;
+
+/**
+ * `beszel` and `alloy`: the files `renderAddon` rendered (`file:<name>` parameters), the secrets
+ * from stdin, the `.env` with the deploy user's ids and the data folders, all the deploy user's
+ * (the rendered files without a secret 0644, the others 0600, folders 0700), then
+ * `docker compose up -d` until every container runs. As root
+ * on a server the user owns (in `/srv/opscrew/addons/<name>`), as the deploy user on one OpsCrew
+ * created (in `/home/deploy/opscrew/addons/<name>`).
+ */
+function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScripts {
+  if (plan.purpose !== "setup" || step.params.remove === true) {
+    return addonRemoveScripts(plan, step, kind);
+  }
+  const p = params(step, AddonParams);
+  if ((kind === "beszel") !== (p.mode !== undefined)) throw invalid(step, "mode");
+  if ((p.mode === "hub") !== (p.email !== undefined)) throw invalid(step, "email");
+  const files = addonFiles(step);
+  const variant = addonVariant(kind, p.mode);
+  const templated = files.find(([name]) => name === variant.templated);
+  if (variant.templated !== "" && !templated?.[1].includes(BESZEL_TOKEN_PLACEHOLDER)) {
+    throw invalid(step, `${variant.templated} has no token placeholder`);
+  }
+  const dir = addonDir(kind, p.runAs);
+  const app = AppNameSchema.safeParse(plan.app);
+  if (kind === "alloy" && !app.success) throw invalid(step, "app");
+  const sums = files.map(([name, content]) => `${name}:${sha256Hex(content)}`);
+  return scripts({
+    name: kind,
+    params: {
+      DIR: dir,
+      PARENT: dir.slice(0, dir.lastIndexOf("/")),
+      RUN_AS: p.runAs,
+      USER_NAME: "deploy",
+      PROJECT: ADDON_PROJECTS[kind],
+      EMAIL: p.email ?? "",
+      MASK: kind === "alloy" && app.success ? maskFilePath(app.data) : "",
+      EMPTY_MASK,
+      FILES: files.map(([name, content]) => `${name}:${base64(content)}`).join(" "),
+      MANIFEST: sums.join(" "),
+      PLAIN: sums.filter((entry) => !entry.startsWith(`${variant.templated}:`)).join(" "),
+      TEMPLATED: variant.templated,
+      PLACEHOLDER: BESZEL_TOKEN_PLACEHOLDER,
+      SECRET_FILES: variant.secretFiles.join(" "),
+      DATA_DIRS: variant.dataDirs.join(" "),
+      WHAT: variant.what,
+    },
+    helpers: MONITOR_HELPERS,
+    verify: `  files_ok || return 1
+  all_running`,
+    snapshot: `if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
+    apply: `umask 077
+getent passwd "$USER_NAME" >/dev/null 2>&1 || fail "The $USER_NAME user is missing, so OpsCrew cannot run $WHAT as it."
+owner=''
+if [ "$RUN_AS" = root ]; then
+  install -d -m 0700 "$PARENT"
+  owner="$(id -u "$USER_NAME"):$(id -g "$USER_NAME")"
+fi
+${variant.read}
+own_dir "$DIR"
+for d in $DATA_DIRS; do own_dir "$DIR/$d"; done
+${variant.write}
+# The containers run as the deploy user: Compose reads its ids from .env.
+ids | put "$DIR/.env"
+for entry in $FILES; do
+  name=\${entry%%:*}
+  if [ "$name" = "$TEMPLATED" ]; then
+    # The token goes through the environment, never a command line.
+    printf '%s' "\${entry#*:}" | base64 -d | T="$token" P="$PLACEHOLDER" awk '{ out = ""; while ((i = index($0, ENVIRON["P"])) > 0) { out = out substr($0, 1, i - 1) ENVIRON["T"]; $0 = substr($0, i + length(ENVIRON["P"])) } print out $0 }' | put "$DIR/$name"
+  else
+    # No secret in it; readable by the Docker proxy, which runs as root without capabilities.
+    printf '%s' "\${entry#*:}" | base64 -d | put "$DIR/$name" 0644
+  fi
+done
+token=''
+printf '%s\\n' "$MANIFEST" | put "$DIR/.opscrew-files"
+compose up -d --remove-orphans --quiet-pull >/dev/null 2>&1 || fail "$WHAT did not start (docker compose up failed)."
+i=0
+until all_running; do
+  i=$((i + 1))
+  if [ "$i" -ge 30 ]; then fail "$WHAT did not keep all its containers running within a minute. See docker compose -p $PROJECT logs on the server."; fi
+  sleep 2
+done`,
+    failed: `${variant.what} is not running as planned.`,
+    secrets: { names: variant.secrets, required: true },
+    doing: `starting ${variant.what}`,
+    timeoutMs: 10 * MINUTE,
+  });
+}
+
+/**
+ * Removes an add-on: its containers and its volumes (only the Docker proxy's socket), its files
+ * and secrets, and its data folders, except Beszel's history (`data/`) with `keepData`. Alloy's
+ * removal also deletes the app's masking file (it holds the app's secret values).
+ */
+function addonRemoveScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScripts {
+  const p = params(
+    step,
+    z.object({ remove: z.literal(true), runAs: RunAsSchema, keepData: z.boolean() }),
+  );
+  if (kind === "alloy" && p.keepData) throw invalid(step, "keepData");
+  const app = AppNameSchema.safeParse(plan.app);
+  if (kind === "alloy" && !app.success) throw invalid(step, "app");
+  const dir = addonDir(kind, p.runAs);
+  const what = kind === "alloy" ? "Grafana Alloy" : "Beszel";
+  return scripts({
+    name: `${kind}.remove`,
+    params: {
+      DIR: dir,
+      PARENT: dir.slice(0, dir.lastIndexOf("/")),
+      PROJECT: ADDON_PROJECTS[kind],
+      KEEP_DATA: p.keepData,
+      MASK: kind === "alloy" && app.success ? maskFilePath(app.data) : "",
+      ADDONS_ROOT,
+      RUN_AS: p.runAs,
+    },
+    helpers: PROJECT_HELPERS,
+    verify: `  project_gone "$PROJECT" true || return 1
+  if [ "$KEEP_DATA" = true ]; then
+    [ -z "$(ls -A "$DIR" 2>/dev/null | grep -vx data)" ] || return 1
+  else
+    [ ! -e "$DIR" ] && [ ! -L "$DIR" ] || return 1
+  fi
+  [ -z "$MASK" ] || [ ! -e "$MASK" ]`,
+    apply: `remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" true
+if [ -L "$DIR" ] || [ "$KEEP_DATA" != true ]; then
+  rm -rf "$DIR"
+elif [ -d "$DIR" ]; then
+  for f in "$DIR"/* "$DIR"/.[!.]*; do
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then continue; fi
+    if [ "$f" = "$DIR/data" ]; then continue; fi
+    rm -rf "$f"
+  done
+fi
+if [ -n "$MASK" ]; then rm -f "$MASK"; fi
+# OpsCrew's shared parents go too once they are empty.
+if [ "$RUN_AS" = root ]; then
+  for d in "$PARENT" "$ADDONS_ROOT"; do
+    if [ -d "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi`,
+    failed: `${what} is still on the server.`,
+    doing: `removing ${what}`,
+    timeoutMs: 5 * MINUTE,
   });
 }
 
@@ -2179,17 +2573,22 @@ quiet systemctl --user enable --now "$UNIT" || fail "The runner's service did no
   });
 }
 
+/** Steps that run as the login (the deploy user) on Hetzner and DigitalOcean (`runAs: "login"`). */
+const LOGIN_STEPS: ReadonlySet<HostStepId> = new Set([
+  "portainer",
+  "tunnel-connector",
+  "github-runner",
+  "check-key",
+  "beszel",
+  "alloy",
+]);
+
 /**
- * How a step's scripts run: the Portainer, tunnel connector and runner steps for Hetzner and
- * DigitalOcean run as the login (the deploy user); everything else as root.
+ * How a step's scripts run: the Portainer, tunnel connector, runner, check key and add-on steps
+ * for Hetzner and DigitalOcean run as the login (the deploy user); everything else as root.
  */
 export function runAsOf(step: HostStep): RunAs {
-  return (step.id === "portainer" ||
-    step.id === "tunnel-connector" ||
-    step.id === "github-runner") &&
-    step.params.runAs === "login"
-    ? "login"
-    : "root";
+  return LOGIN_STEPS.has(step.id) && step.params.runAs === "login" ? "login" : "root";
 }
 
 /** The fixed scripts for one step of a plan; throws INVALID_INPUT on bad parameters. */
@@ -2235,6 +2634,11 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return tunnelScripts(plan, step);
     case "portainer":
       return portainerScripts(plan, step);
+    case "check-key":
+      return checkKeyScripts(step);
+    case "beszel":
+    case "alloy":
+      return addonScripts(plan, step, id);
   }
 }
 

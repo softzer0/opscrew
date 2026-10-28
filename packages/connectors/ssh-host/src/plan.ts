@@ -4,9 +4,16 @@
  */
 import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
+import { addonTaken, keyFingerprint } from "./addons";
 import {
+  ADDON_KINDS,
+  ADDON_PROJECTS,
+  type AddonKind,
   APPS_DIR,
+  addonDir,
   appDirs,
+  CHECK_KEY_COMMAND,
+  CHECK_KEY_COMMENT,
   DATA_DIR,
   type EcdsaHostKeyType,
   EDGE_DIR,
@@ -75,7 +82,7 @@ import {
   sshPortsText,
   sshSources,
 } from "./ssh-firewall";
-import { appRecord, dataKeptRecord, type RunAs, stepScripts } from "./steps";
+import { ADDON_FILE_PARAM, appRecord, dataKeptRecord, type RunAs, stepScripts } from "./steps";
 import {
   type AccessMode,
   AppNameSchema,
@@ -91,6 +98,7 @@ import {
   type HostStep,
   type HostStepId,
   ProjectIdSchema,
+  PublicKeyLineSchema,
   RepositoryUrlSchema,
   sameRepository,
 } from "./types";
@@ -1888,6 +1896,22 @@ export function planTeardown(
       ),
     );
   }
+  // The add-ons the app turned on (or left without a record, with the last app); Beszel's
+  // history only with the app's data.
+  for (const kind of ADDON_KINDS) {
+    const fact = f.addons[kind];
+    const owner = f.record?.addons?.[kind];
+    const keepData = kind === "beszel" && !deleteData;
+    const present =
+      fact.installed ||
+      fact.dataVolume ||
+      (!keepData && fact.secretFile) ||
+      f.containers.some((container) => container.project === ADDON_PROJECTS[kind]);
+    if (present && (owner === app || (owner === undefined && last))) {
+      steps.push(addonRemoval(kind, app, "root", keepData));
+    }
+  }
+  if (last && f.deployUser?.checkKey) steps.push(checkKeyRemoval("root"));
   if (last) {
     // The folder goes only when OpsCrew created it; a /srv/edge of the user's own stays.
     const removeDir =
@@ -2351,6 +2375,200 @@ export function planPortainer(options: {
   // Validate now so a bad directory or version fails before anything is approved.
   for (const item of plan.steps) stepScripts(plan, item);
   return plan;
+}
+
+/** The add-ons' names in plan titles. */
+const ADDON_TITLES: Readonly<Record<AddonKind, string>> = {
+  beszel: "Beszel",
+  alloy: "Grafana Alloy",
+};
+
+/** A step that removes an add-on; Beszel's history (`data/`) stays with `keepData`. */
+function addonRemoval(kind: AddonKind, app: string, runAs: RunAs, keepData: boolean): HostStep {
+  const dir = addonDir(kind, runAs);
+  const title =
+    kind === "alloy"
+      ? `Remove Grafana Alloy, its buffered data and the masking file of "${app}"`
+      : keepData
+        ? `Remove Beszel (its history in ${dir}/data stays)`
+        : "Remove Beszel and its history";
+  return step(
+    kind,
+    title,
+    "change",
+    { remove: true, runAs, keepData },
+    keepData
+      ? `Its Compose project ${ADDON_PROJECTS[kind]}, and everything in ${dir} but data/, its secret files included.`
+      : `Its Compose project ${ADDON_PROJECTS[kind]}, and ${dir} with everything in it, its secret files included.`,
+  );
+}
+
+/** A step that removes the scheduled check's key from the deploy user's authorized_keys. */
+function checkKeyRemoval(runAs: RunAs): HostStep {
+  return step(
+    "check-key",
+    "Remove the scheduled check's key from the deploy user",
+    "change",
+    { remove: true, runAs },
+    `Only its line (comment ${CHECK_KEY_COMMENT}) goes; the deploy keys stay.`,
+  );
+}
+
+const AddonFilesSchema = z.record(z.string(), z.string());
+
+/** What `planAddon` turns on, by kind. */
+const AddonEnableSchemas = {
+  "check-key": z.strictObject({ publicKey: PublicKeyLineSchema }),
+  beszel: z.discriminatedUnion("mode", [
+    z.strictObject({ files: AddonFilesSchema, mode: z.literal("hub"), email: z.string() }),
+    z.strictObject({ files: AddonFilesSchema, mode: z.literal("agent") }),
+  ]),
+  alloy: z.strictObject({ files: AddonFilesSchema }),
+} as const;
+
+/** The kinds `planAddon` plans: the check's key, and the monitoring add-ons. */
+export type AddonPlanKind = "check-key" | AddonKind;
+
+/** What `planAddon` turns on for each kind. */
+export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSchemas)[K]>;
+
+/**
+ * A one-step host plan that turns an add-on on (`enable`) or off (`disable`), the step's undo:
+ *
+ * - `check-key`: the scheduled check's public key in the deploy user's authorized_keys, as
+ *   `restrict,command="df -P -B1 /" <key> opscrew-check` (a line with that comment is replaced);
+ *   off, only that line goes. The plan shows the key's fingerprint.
+ * - `beszel` (`mode` hub, with the dashboard user's `email`, or agent) and `alloy`: the files
+ *   `renderAddon` rendered, by name (`compose.yaml`, `Caddyfile`, `config.yml` or
+ *   `config.alloy`), each within the Compose text cap (16 KiB), written to the add-on's folder
+ *   (`addonDir`) with its secrets (supplied at apply, never part of the plan), then started. Off,
+ *   everything of it goes, except Beszel's history with `keepData`; without it the plan has
+ *   `deleteData` (a destroying plan: approve it with allowDestroy and the typed app name).
+ *
+ * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record);
+ * `"root"` on a server the user owns, where `facts` (from `inspectHost`) name the app that turned
+ * each add-on on: planning it for another app is refused, naming that app. Apply it with
+ * `applyHostPlan` like any host plan.
+ */
+export function planAddon<K extends AddonPlanKind>(
+  kind: K,
+  options: {
+    app: string;
+    runAs: RunAs;
+    facts?: HostFacts;
+    enable?: AddonEnable<K>;
+    disable?: { keepData?: boolean };
+  },
+): HostPlan {
+  const { app, runAs, enable, disable } = options;
+  if ((enable === undefined) === (disable === undefined)) {
+    throw new OpsCrewError("INVALID_INPUT", "Turn the add-on either on or off, not both.");
+  }
+  if (!AppNameSchema.safeParse(app).success) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "The app name must be lower-case letters, digits and dashes.",
+    );
+  }
+  if (kind !== "check-key" && runAs === "root") {
+    if (options.facts === undefined) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "Planning an add-on on your server needs its inspected facts.",
+      );
+    }
+    const owner = parseFacts(options.facts).record?.addons?.[kind as AddonKind];
+    if (owner !== undefined && owner !== app) throw addonTaken(kind as AddonKind, owner);
+  }
+  let item: HostStep;
+  if (disable !== undefined) {
+    const keepData = disable.keepData === true;
+    if (keepData && kind !== "beszel") {
+      throw new OpsCrewError("INVALID_INPUT", "Only Beszel keeps data when it is turned off.");
+    }
+    item =
+      kind === "check-key"
+        ? checkKeyRemoval(runAs)
+        : addonRemoval(kind as AddonKind, app, runAs, keepData);
+  } else {
+    item = addonStep(
+      kind,
+      app,
+      runAs,
+      parseInput(
+        AddonEnableSchemas[kind] as z.ZodType<AddonSettings>,
+        enable,
+        "The add-on's settings are not valid",
+        "Make the plan again with OpsCrew; if this keeps happening, report it.",
+      ),
+    );
+  }
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps: [item],
+    findings: [],
+    ...(kind === "beszel" && disable !== undefined && disable.keepData !== true
+      ? { deleteData: true }
+      : {}),
+  };
+  // Validate now so bad files or settings fail before anything is approved.
+  stepScripts(plan, item);
+  return plan;
+}
+
+/** Any kind's validated settings. */
+type AddonSettings =
+  | { publicKey: string }
+  | { files: Record<string, string>; mode?: "hub" | "agent"; email?: string };
+
+/** The step that turns an add-on on, from its validated settings. */
+function addonStep(
+  kind: AddonPlanKind,
+  app: string,
+  runAs: RunAs,
+  enable: AddonSettings,
+): HostStep {
+  if ("publicKey" in enable) {
+    return step(
+      "check-key",
+      `Let the scheduled check read this server's disk usage with its own key (${keyFingerprint(enable.publicKey)}), which can run only "${CHECK_KEY_COMMAND}"`,
+      "change",
+      { publicKey: keyId(enable.publicKey), runAs },
+      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only df. A line with its comment (${CHECK_KEY_COMMENT}) is replaced; the other keys stay.`,
+    );
+  }
+  const addon = kind as AddonKind;
+  const dir = addonDir(addon, runAs);
+  const files = Object.fromEntries(
+    Object.entries(enable.files).map(([name, content]) => [`${ADDON_FILE_PARAM}${name}`, content]),
+  );
+  const params: HostStep["params"] = {
+    runAs,
+    ...(enable.mode === undefined ? {} : { mode: enable.mode }),
+    ...(enable.email === undefined ? {} : { email: enable.email }),
+    ...files,
+  };
+  const secrets =
+    addon === "alloy"
+      ? "Its Grafana Cloud token is"
+      : enable.mode === "hub"
+        ? "Its dashboard password, agent token and hub key are"
+        : "Its agent token is";
+  const title =
+    addon === "alloy"
+      ? `Run Grafana Alloy as the deploy user, sending the logs of "${app}" (masked) and the server's metrics to your Grafana Cloud stack`
+      : enable.mode === "hub"
+        ? "Run Beszel (its dashboard and agent) as the deploy user, the dashboard on 127.0.0.1:8090 on the server"
+        : "Run Beszel's agent as the deploy user, connected out to your Beszel hub";
+  return step(
+    addon,
+    title,
+    "change",
+    params,
+    `${ADDON_TITLES[addon]} runs as its own Compose project ${ADDON_PROJECTS[addon]} in ${dir}, and reads Docker only through OpsCrew's read-only proxy. ${secrets} written at apply time to files only the deploy user can read, never part of this plan.`,
+  );
 }
 
 /**

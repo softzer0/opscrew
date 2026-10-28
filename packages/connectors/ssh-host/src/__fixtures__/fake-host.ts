@@ -7,9 +7,12 @@
 import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
 import { sha256Hex as sha256 } from "@opscrew/core";
 import {
+  ADDON_KINDS,
+  addonDir,
   APP_RECORDS_DIR,
   AUTO_UPGRADES_FILE,
   BACKUP_DIR,
+  CHECK_KEY_LINE_RE,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   EDGE_DIR,
@@ -50,6 +53,9 @@ export function fakeJump(proto: string, port: string | number): string {
 }
 
 const JUMPS = [fakeJump("tcp", 80), fakeJump("tcp", 443), fakeJump("udp", 443)];
+
+/** The scheduled check's key line in OpsCrew's form (the deploy-key step keeps it). */
+const CHECK_LINE = new RegExp(CHECK_KEY_LINE_RE);
 
 export const OS_PRESETS = {
   "ubuntu-22.04": {
@@ -328,6 +334,10 @@ export class FakeHost implements RemoteExec {
    * (the first boot of a server OpsCrew creates, or the step's root part on a server the user owns).
    */
   runnerPrepared = false;
+  /** Folders the add-on steps made (their data folders, and the add-on's own folder). */
+  madeDirs = new Set<string>();
+  /** How often each add-on's Compose project was brought up. */
+  addonUps = new Map<string, number>();
 
   // failure injection
   /** Script names that exit non-zero (with an `opscrew:` message). */
@@ -419,10 +429,14 @@ export class FakeHost implements RemoteExec {
     if (failure !== undefined) return fail(failure);
     if (this.echoStdinOn === name) return result("", 1, `got: ${options.input ?? ""}`);
     // The runner's own scripts run as deploy: through runuser from root, or as the deploy login.
+    const deploy = asUser === "deploy" || (asUser === undefined && !root && this.login === "deploy");
     if (/^github-runner(\.remove)?\.(check|apply|verify)$/.test(name)) {
-      const deploy = asUser === "deploy" || (asUser === undefined && !root && this.login === "deploy");
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.runnerScript(name, params, options.input ?? "");
+    }
+    if (/^check-key(\.remove)?\.(check|apply|verify)$/.test(name)) {
+      if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
+      return this.checkKeyScript(name, params);
     }
     return this.handle(name, params, root && asUser === undefined, options.input ?? "");
   }
@@ -532,10 +546,11 @@ export class FakeHost implements RemoteExec {
     return this.users.get("deploy")?.groups.includes("docker") ?? false;
   }
 
-  /** authorized_keys (its lines, each ending in a newline) has the given SHA-256. */
+  /** authorized_keys without the check key's line (each line ending in a newline) has the SHA-256. */
   private deployKeysOk(sum: string): boolean {
     const deploy = this.users.get("deploy");
-    return deploy !== undefined && sha256(deploy.keys.map((key) => `${key}\n`).join("")) === sum;
+    const keys = deploy?.keys.filter((key) => !CHECK_LINE.test(key)) ?? [];
+    return deploy !== undefined && sha256(keys.map((key) => `${key}\n`).join("")) === sum;
   }
 
   /** The record file `RECORD_FILE` exists and names another project than `PROJECT_ID`. */
@@ -827,6 +842,15 @@ export class FakeHost implements RemoteExec {
       [
         ...tunnelApps.map((app) => addon(`tunnel:${app}`, `${TUNNELS_DIR}/${app}`, "tunnel.env")),
         addon("portainer", PORTAINER_DIR, "admin_password"),
+        ...ADDON_KINDS.map((kind) => {
+          const dir = addonDir(kind, "root");
+          if (!this.madeDirs.has(dir)) return `${kind} absent`;
+          const compose = this.files.get(`${dir}/compose.yaml`);
+          const data = this.madeDirs.has(`${dir}/data`) ? "yes" : "no";
+          return compose === undefined
+            ? `${kind} kept - ${data} -`
+            : `${kind} installed ${sha256(compose)} ${data} -`;
+        }),
       ].join("\n"),
     );
     add("runners", this.runnerLines());
@@ -1029,7 +1053,7 @@ export class FakeHost implements RemoteExec {
       case "apps.read":
         return result(this.appRecordLines());
     }
-    const loginAddon = name.startsWith("portainer") || name.startsWith("tunnel-connector");
+    const loginAddon = /^(portainer|tunnel-connector|beszel|alloy)\./.test(name);
     if (!root && !(loginAddon && p.RUN_AS === "login")) {
       return result("", 1, "Permission denied\n");
     }
@@ -1095,8 +1119,11 @@ export class FakeHost implements RemoteExec {
       case "deploy-key.apply": {
         const deploy = this.users.get("deploy");
         if (deploy === undefined) return fail("The deploy user is missing; OpsCrew creates it first.");
-        // Exactly the planned keys: older keys and removed apps' keys are revoked.
-        deploy.keys = Buffer.from(p.KEYS_B64 ?? "", "base64").toString("utf8").trimEnd().split("\n");
+        // Exactly the planned keys: older keys and removed apps' keys are revoked; the check's stays.
+        deploy.keys = [
+          ...Buffer.from(p.KEYS_B64 ?? "", "base64").toString("utf8").trimEnd().split("\n"),
+          ...deploy.keys.filter((key) => CHECK_LINE.test(key)),
+        ];
         return result();
       }
       case "deploy-key.verify":
@@ -1658,8 +1685,129 @@ export class FakeHost implements RemoteExec {
 
       case "docker.keep.check":
         return this.check(true);
+
+      // the monitoring add-ons
+      case "beszel.check":
+      case "alloy.check":
+        return this.check(this.addonOk(p), { installed: this.files.has(`${p.DIR}/compose.yaml`) });
+      case "beszel.apply":
+      case "alloy.apply":
+        return this.addonApply(name, p, input);
+      case "beszel.verify":
+      case "alloy.verify":
+        return this.verify(this.addonOk(p), p);
+      case "beszel.remove.check":
+      case "alloy.remove.check":
+        return this.check(this.addonRemovedOk(p));
+      case "beszel.remove.apply":
+      case "alloy.remove.apply": {
+        const dir = p.DIR ?? "";
+        const kept = (path: string) => p.KEEP_DATA === "true" && (path === dir || path === `${dir}/data` || path.startsWith(`${dir}/data/`));
+        this.removeProject(p.PROJECT ?? "", true);
+        for (const path of [...this.files.keys()]) if (path.startsWith(`${dir}/`) && !kept(path)) this.files.delete(path);
+        for (const path of [...this.madeDirs]) if ((path === dir || path.startsWith(`${dir}/`)) && !kept(path)) this.madeDirs.delete(path);
+        if (p.MASK) this.files.delete(p.MASK);
+        return result();
+      }
+      case "beszel.remove.verify":
+      case "alloy.remove.verify":
+        return this.verify(this.addonRemovedOk(p), p);
     }
     throw new Error(`fake host: unknown script ${name}`);
+  }
+
+  /** The `.env` the add-on steps write: the deploy user's ids. */
+  private deployIds(): string {
+    const uid = this.users.get("deploy")?.uid ?? 1000;
+    return `OPSCREW_DEPLOY_UID=${uid}\nOPSCREW_DEPLOY_GID=${uid}\n`;
+  }
+
+  /** The add-on's files, secrets, data folders, `.env` and masking file are there, and it runs. */
+  private addonOk(p: Record<string, string>): boolean {
+    const dir = p.DIR ?? "";
+    if (this.files.get(`${dir}/.opscrew-files`)?.trimEnd() !== p.MANIFEST) return false;
+    for (const entry of FakeHost.words(p.PLAIN)) {
+      const at = entry.indexOf(":");
+      if (sha256(this.files.get(`${dir}/${entry.slice(0, at)}`) ?? "") !== entry.slice(at + 1)) return false;
+    }
+    if (FakeHost.words(p.SECRET_FILES).some((file) => !this.files.get(`${dir}/${file}`))) return false;
+    if (FakeHost.words(p.DATA_DIRS).some((data) => !this.madeDirs.has(`${dir}/${data}`))) return false;
+    if (p.MASK && !this.files.has(p.MASK)) return false;
+    return this.files.get(`${dir}/.env`) === this.deployIds() && this.running(p.PROJECT ?? "");
+  }
+
+  /** What the add-on step's apply does: its secrets from stdin, then its files, then up. */
+  private addonApply(name: string, p: Record<string, string>, input: string): CommandResult {
+    const dir = p.DIR ?? "";
+    const [first = "", second = "", key = "", pub = ""] = input.split("\n");
+    const hub = p.TEMPLATED === "config.yml";
+    const token = hub ? second : first;
+    if (name === "alloy.apply") {
+      if (!/^[A-Za-z0-9+/=_.-]+$/.test(token)) return fail("No valid Grafana Cloud token arrived on standard input, so Grafana Alloy was not set up.");
+    } else if (hub) {
+      if (!/^[A-Za-z0-9_-]+$/.test(first)) return fail("No valid Beszel dashboard password arrived on standard input, so Beszel was not set up.");
+      if (!/^[0-9a-f]{48}$/.test(token)) return fail("No valid Beszel agent token arrived on standard input, so Beszel was not set up.");
+      if (!/^[A-Za-z0-9+/=]+$/.test(key) || !pub.startsWith("ssh-ed25519 ")) return fail("No valid Beszel hub key arrived on standard input, so Beszel was not set up.");
+    } else if (!/^[A-Za-z0-9-]+$/.test(token)) {
+      return fail("No valid Beszel agent token arrived on standard input, so Beszel was not set up.");
+    }
+    this.madeDirs.add(dir);
+    for (const data of FakeHost.words(p.DATA_DIRS)) this.madeDirs.add(`${dir}/${data}`);
+    if (name === "alloy.apply") {
+      this.files.set(`${dir}/grafana_cloud_credential`, token);
+      if (p.MASK && !this.files.has(p.MASK)) this.files.set(p.MASK, p.EMPTY_MASK ?? "");
+    } else if (hub) {
+      this.files.set(`${dir}/data/id_ed25519`, Buffer.from(key, "base64").toString("utf8"));
+      this.files.set(`${dir}/hub.env`, `USER_EMAIL=${p.EMAIL}\nUSER_PASSWORD=${first}\n`);
+      this.files.set(`${dir}/agent.env`, `TOKEN=${token}\nKEY=${pub}\n`);
+    } else {
+      this.files.set(`${dir}/agent.env`, `TOKEN=${token}\n`);
+    }
+    this.files.set(`${dir}/.env`, this.deployIds());
+    for (const entry of FakeHost.words(p.FILES)) {
+      const at = entry.indexOf(":");
+      const file = entry.slice(0, at);
+      const content = Buffer.from(entry.slice(at + 1), "base64").toString("utf8");
+      this.files.set(`${dir}/${file}`, file === p.TEMPLATED ? content.replaceAll(p.PLACEHOLDER ?? "", token) : content);
+    }
+    this.files.set(`${dir}/.opscrew-files`, `${p.MANIFEST}\n`);
+    const project = p.PROJECT ?? "";
+    if (!this.running(project)) this.containers.push({ name: `${project}-main-1`, project, ports: "" });
+    this.volumes.set(project, 1);
+    this.addonUps.set(project, (this.addonUps.get(project) ?? 0) + 1);
+    return result();
+  }
+
+  /** The add-on is gone: only Beszel's `data/` stays with KEEP_DATA. */
+  private addonRemovedOk(p: Record<string, string>): boolean {
+    const dir = p.DIR ?? "";
+    const project = p.PROJECT ?? "";
+    const left = [...this.files.keys(), ...this.madeDirs].filter(
+      (path) => path === dir || path.startsWith(`${dir}/`),
+    );
+    const allowed = (path: string) =>
+      p.KEEP_DATA === "true" && (path === dir || path === `${dir}/data` || path.startsWith(`${dir}/data/`));
+    return (
+      !this.running(project) &&
+      !this.volumes.has(project) &&
+      left.every(allowed) &&
+      !(p.MASK && this.files.has(p.MASK))
+    );
+  }
+
+  /** The check key's scripts, as the deploy user: one line with the check's comment, or none. */
+  private checkKeyScript(name: string, p: Record<string, string>): CommandResult {
+    const deploy = this.users.get("deploy");
+    if (deploy === undefined) return fail("The deploy user has no home directory.");
+    const ours = (key: string) => /\sopscrew-check$/.test(key);
+    const remove = name.startsWith("check-key.remove");
+    const ok = remove
+      ? !deploy.keys.some(ours)
+      : deploy.keys.filter(ours).length === 1 && deploy.keys.includes(p.LINE ?? "");
+    if (name.endsWith(".check")) return this.check(ok);
+    if (name.endsWith(".verify")) return this.verify(ok, p);
+    deploy.keys = [...deploy.keys.filter((key) => !ours(key)), ...(remove ? [] : [p.LINE ?? ""])];
+    return result();
   }
 
   /** The app's GitHub Actions runner's own scripts, which run as deploy. */

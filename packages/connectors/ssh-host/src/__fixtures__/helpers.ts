@@ -1,7 +1,10 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: Compose interpolation in stand-in files.
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { applyHostPlan } from "../apply";
+import { BESZEL_TOKEN_PLACEHOLDER } from "../constants";
 import { hostPlanHash } from "../hash";
 import { inspectHost } from "../inspect";
 import { planHost, planTeardown } from "../plan";
@@ -197,6 +200,70 @@ export async function removeApp(fake: FakeHost, app = "shop", deleteData = true)
     "opscrew destroy",
   );
   return applyApproved(fake, plan, { command: "opscrew destroy" });
+}
+
+/** Small stand-ins for `renderAddon(plan, "beszel")` in hub mode (T1708 renders the real ones). */
+export const BESZEL_HUB_FILES = {
+  "compose.yaml": `name: opscrew-beszel
+services:
+  hub:
+    image: henrygd/beszel:0.21.1
+    user: "\${OPSCREW_DEPLOY_UID}:\${OPSCREW_DEPLOY_GID}"
+    env_file: [hub.env]
+    volumes: [./data:/beszel_data, ./config.yml:/beszel_data/config.yml:ro]
+  agent:
+    image: henrygd/beszel-agent:0.21.1
+    env_file: [agent.env]
+    volumes: [./agent_data:/var/lib/beszel-agent]
+  proxy:
+    image: caddy:2.11.7-alpine
+    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro]
+`,
+  Caddyfile: "{\n\tadmin off\n}\n",
+  "config.yml": `systems:\n  - name: home\n    host: localhost\n    port: 45876\n    token: "${BESZEL_TOKEN_PLACEHOLDER}"\n`,
+};
+
+/** `renderAddon(plan, "beszel")` in agent mode: no hub, no config.yml. */
+export const BESZEL_AGENT_FILES = {
+  "compose.yaml": "name: opscrew-beszel\nservices:\n  agent:\n    env_file: [agent.env]\n  proxy: {}\n",
+  Caddyfile: "{\n\tadmin off\n}\n",
+};
+
+/** `renderAddon(plan, "grafana-cloud")`. */
+export const ALLOY_FILES = {
+  "compose.yaml": "name: opscrew-alloy\nservices:\n  alloy:\n    volumes: [./grafana_cloud_credential:/etc/alloy/grafana_cloud_credential:ro]\n  proxy: {}\n",
+  Caddyfile: "{\n\tadmin off\n}\n",
+  "config.alloy": 'local.file "token" {\n  filename = "/etc/alloy/grafana_cloud_credential"\n  is_secret = true\n}\n',
+};
+
+/** An Ed25519 key pair made at runtime: the private key in PKCS #8 PEM, the public as OpenSSH. */
+export function ed25519Pair(): { privatePem: string; publicKey: string } {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const raw = Buffer.from(publicKey.export({ format: "jwk" }).x ?? "", "base64url");
+  const field = (bytes: Buffer) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(bytes.length);
+    return Buffer.concat([length, bytes]);
+  };
+  const blob = Buffer.concat([field(Buffer.from("ssh-ed25519")), field(raw)]);
+  return {
+    privatePem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    publicKey: `ssh-ed25519 ${blob.toString("base64")}`,
+  };
+}
+
+/** The add-ons' secrets, made at runtime (never committed), and the hub key's public half. */
+export function addonSecrets() {
+  const hub = ed25519Pair();
+  return {
+    secrets: {
+      beszelPassword: randomBytes(24).toString("base64url"),
+      beszelToken: randomBytes(24).toString("hex"),
+      beszelHubKey: hub.privatePem,
+      grafanaCloudToken: `glc_${randomBytes(48).toString("base64")}`,
+    },
+    hubPublicKey: hub.publicKey,
+  };
 }
 
 /** `sh -n` on a script; `undefined` when no POSIX shell can be started here. */
