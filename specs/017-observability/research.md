@@ -191,7 +191,7 @@ Research of 2026-10-28 (Sonnet for the products, and for the code map), from off
 **Decision:**
 - **The proxy:** an OpsCrew-rendered Caddy, from the image OpsCrew already pins. It listens on a Unix socket in a volume that only the add-on mounts, and passes only `GET` on an allow-list of paths to Docker's socket:
   - **Beszel:** `/_ping`, `/version`, `/info`, `/containers/json` and `/containers/{id}/stats`;
-  - **Alloy:** the same, plus `/containers/{id}/logs` and `/containers/{id}/json` (as the spike settles).
+  - **Alloy:** the same, plus `/networks`, `/containers/{id}/logs` and `/containers/{id}/json` (spike result 3).
 - **Everything else answers 403:** `POST`, `exec`, `archive`, `export`, image and volume calls.
 - The proxy runs with `read_only`, `cap_drop: ALL`, `no-new-privileges`, no published port and a memory limit.
 
@@ -388,7 +388,55 @@ The agent always connects to the hub over WebSocket (`HUB_URL`, `TOKEN`, `KEY`) 
 
 ## Spike results (T1702)
 
-Items 4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2), with OpsCrew's own `sshArgs` and settings. Everything was removed afterwards. Items 1–3 follow from the add-on run; items 5 and 6 need the e2e GitHub and Cloudflare accounts.
+Items 1–4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2, 8 CPUs), with the pinned images and OpsCrew's own `sshArgs` and settings. Everything was removed afterwards. Items 5 and 6 need the e2e GitHub and Cloudflare accounts, and Alloy's delivery to Grafana Cloud (part of item 3) the founder's stack; a local Loki and Prometheus stood in for it.
+
+1. **The Docker proxy (Caddy, pinned):**
+   - **Starting it:**
+     - With `cap_drop: [ALL]` alone, it doesn't start ("operation not permitted"): the binary carries `cap_net_bind_service`. `cap_add: [NET_BIND_SERVICE]` fixes that.
+     - It also needs `tmpfs: [/data, /config]`, and runs with `read_only`, `no-new-privileges` and `network_mode: none`.
+   - **The socket:** created `0200 root`, so the add-ons connect as root, which both are. A non-root client would need `bind …|0660` and a group.
+   - **What passes:**
+     - 200 for `/_ping`, `HEAD /_ping`, `/version`, `/info`, `/containers/json`, `/v1.47/…`, and stats by id and by name;
+     - in Alloy's variant, `logs` and `json` too;
+     - `logs?follow=1` streams line by line.
+   - **What it refuses, with 403:** `POST stop`, `POST exec`, `archive`, `export`, `/images/json`, `/volumes`, `attach`, `top`, `DELETE`, `PUT`, `%2F`-encoded paths and `//images`. A dot-segment path gets Docker's 301 to the clean path, which passes the proxy again. The target container kept running.
+   - **The Caddyfile:** `admin off`, `auto_https off` and `persist_config off`. An `http://` site with `bind unix//run/opscrew-docker-ro/docker.sock` routes `@allowed` (`method GET HEAD`, `path_regexp ^(/v1\.[0-9]+)?/(<list>)$`) to `reverse_proxy unix//var/run/docker.sock { flush_interval -1 }`, and answers anything else with `respond 403`.
+2. **Beszel 0.21.1, hub mode with no clicks:**
+   - **The hub:**
+     - It reads its key from `/beszel_data/id_ed25519`, so OpsCrew generates it and knows `KEY` beforehand. `/api/beszel/info` returned that key.
+     - `USER_EMAIL` and `USER_PASSWORD` create the user before `config.yml` is synced, so `systems: [{name, host: localhost, port: 45876, token: <48 hex>, users: [<email>]}]` resolves.
+     - It ran with `read_only`, `cap_drop: ALL`, `no-new-privileges` and `tmpfs: [/tmp]`.
+   - **The agent:**
+     - It ran with `network_mode: host`, `read_only` and `cap_drop: ALL`, and with `HUB_URL=http://127.0.0.1:8090`, `TOKEN`, `KEY`, `DISABLE_SSH=true`, `DOCKER_HOST=unix:///run/opscrew-docker-ro/docker.sock` and `DOCKER_IMAGE_CHECK=false`.
+     - It connected over WebSocket, and the system went up with system and per-container stats.
+     - It reports every container on the server.
+     - Through the proxy it uses only `/containers/json`, `/containers/{id}/stats`, `/info` and `/version`.
+     - **`DOCKER_IMAGE_CHECK` is read by the agent,** not the hub. Without it, the agent calls `/images/<ref>/json`.
+     - With `CONTAINER_DETAILS=false` on the hub, its logs and info routes answer 404. A refused path only logs an error.
+     - **Its fingerprint** comes from the host unless `DATA_DIR` (`/var/lib/beszel-agent`) persists it, and a changed one is refused (from the source, not tested across a reboot).
+   - **Memory after 5.5 minutes:** hub 10.8 MiB, agent 6.5 MiB, proxy 12.0 MiB.
+3. **Alloy v1.21.2, unprivileged:**
+   - **How it ran:** `read_only`, `cap_drop: ALL`, `no-new-privileges`, a 192 MB limit and `GOMEMLIMIT` at 153 MiB.
+   - **Storage:** the image's `/var/lib/alloy` belongs to uid 473, so root without capabilities can't write it. `--storage.path=/var/lib/opscrew-alloy` on a fresh volume works, with `tmpfs: [/tmp]`.
+   - **Docker access:**
+     - `discovery.docker` also needs `GET /networks`.
+     - `loki.source.docker` stops without `/containers/{id}/json`: the tailer inspects first.
+     - With `/networks`, `json` and `logs` allowed, only the filtered Compose project was tailed, labelled `app`, `env` and `service`, with no repeats after a restart.
+   - **Masking, 774 lines checked:**
+     - a fake GitHub token arrived as `<opscrew:github-token>` (`stage.replace`);
+     - a fake AWS key arrived as `<secretfilter:aws-access-token>`;
+     - the known value arrived as `<opscrew:known-value>`;
+     - none arrived unmasked.
+   - **Known values from a file:**
+     - `local.file` with `is_secret` can't be passed as a string; `convert.nonsensitive(local.file.mask.content)` can.
+     - A write in place takes effect in about 7 s. A replace by rename can take up to the poll interval, so `poll_frequency = "10s"`.
+     - After `nonsensitive`, the values show in Alloy's own API on `127.0.0.1:12345`.
+   - **Metrics:**
+     - Inside a container, `/proc` already gives the server's CPU, load and memory. Only `/` (as `rootfs_path`) and `/sys` need mounting, read-only.
+     - `netdev` sees only the container's own network unless Alloy uses the host's.
+     - `filesystem { mount_points_exclude = "^/.+" }` keeps only `/`.
+     - The series: 8 CPUs × 5 modes + 3 load + 2 memory + 2 filesystem (+ 2 per interface on the host network) = 47–51. A 2-CPU server sends 17.
+   - **Memory:** 70–79 MiB after 3–5 minutes with logs, metrics and `loki.secretfilter`.
 
 4. **The check key:**
    - **Setup:** two sshd containers, one per OpsCrew setting:
@@ -429,6 +477,22 @@ Items 4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2), with 
    - **Watching the parent ends it within about 1 s** on both OpenSSH versions, keeps stdout and stderr apart, and passes the follower's own exit code through: `<follow> & p=$!; while kill -0 $PPID 2>/dev/null && kill -0 $p 2>/dev/null; do sleep 1; done; kill $p 2>/dev/null; wait $p`.
 
 **What this changes:**
+- **The proxy container:**
+  - it gains `cap_add: [NET_BIND_SERVICE]`, `tmpfs: [/data, /config]` and `network_mode: none`;
+  - Alloy's list adds `GET /networks` and `/containers/{id}/json`. Inspect is allowed: Alloy already holds the app's values for masking, so hiding the containers' environment from it would gain nothing.
+- **Beszel:**
+  - OpsCrew generates the hub's key;
+  - `DOCKER_IMAGE_CHECK=false` and a `DATA_DIR` volume go on the agent;
+  - `DISABLE_SSH=true` goes on both.
+- **Alloy:**
+  - It stays on its own network, without network figures, so its local API (which shows the masking values) is reachable only inside its container. Spec SC-1707 asks only for CPU, memory and disk.
+  - Its flags: `--storage.path=/var/lib/opscrew-alloy` on a volume, and `--disable-reporting`.
+  - Its mounts: `/` and `/sys`, read-only.
+  - The masking file is read with `poll_frequency = "10s"`. With no values, it holds a pattern that never matches (`[^\s\S]`).
+- **Memory defaults:**
+  - Beszel's 128/64/32 stand;
+  - Alloy's 192 stands;
+  - Alloy's proxy shares the 32.
 - **Portainer's `--follow`** polls with nanosecond `since`. Stats never use `one-shot`.
 - **A standard user's token sees only that user's stacks,** so `status` and `logs` say so when the app's containers aren't visible to it, rather than calling them absent.
 - **SSH's `--follow`** runs `docker logs --follow` inside the parent-watching wrapper above.

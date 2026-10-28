@@ -248,23 +248,31 @@ Research's open items 1–8, on an e2e server, the throwaway repository and the 
 ### 6. Add-on renderers and the masking file (T1708)
 - **The Docker proxy:**
   - a Caddyfile listening on `unix//run/opscrew-docker-ro/docker.sock`;
-  - only `GET` on the add-on's allow-list (R5) goes through to `unix//var/run/docker.sock`, and everything else answers 403;
+  - only `GET` on the add-on's allow-list (R5, with Alloy's `/networks`) goes through to `unix//var/run/docker.sock`, and everything else answers 403;
   - streaming passed through (`flush_interval -1`);
-  - the container runs with `read_only`, `cap_drop: ALL`, `no-new-privileges` and a memory limit.
+  - the container runs with:
+    - `read_only`, `cap_drop: ALL` with `cap_add: [NET_BIND_SERVICE]`, and `no-new-privileges`;
+    - `tmpfs: [/data, /config]` and `network_mode: none`;
+    - a memory limit (spike result 1).
 - **Beszel:**
   - **Hub mode:**
-    - the hub on `127.0.0.1:8090`, with `USER_EMAIL`, `USER_PASSWORD` from a root-only env file, `CONTAINER_DETAILS=false` and `DOCKER_IMAGE_CHECK=false`;
-    - `config.yml` declaring the server with OpsCrew's token;
-    - the agent with `HUB_URL=http://127.0.0.1:8090`, `TOKEN`, `KEY` and `DISABLE_SSH=true`, on the host network, its `DOCKER_HOST` the proxy's socket.
+    - **The hub:**
+      - on `127.0.0.1:8090`, with `USER_EMAIL` and `USER_PASSWORD` from a root-only env file, `CONTAINER_DETAILS=false` and `DISABLE_SSH=true`;
+      - its key pregenerated in `beszel_data/id_ed25519`;
+      - `config.yml` declaring the server with OpsCrew's token.
+    - **The agent:**
+      - on the host network, with `HUB_URL=http://127.0.0.1:8090`, `TOKEN`, `KEY`, `DISABLE_SSH=true` and `DOCKER_IMAGE_CHECK=false`;
+      - its `DOCKER_HOST` the proxy's socket;
+      - a `DATA_DIR` volume (spike result 2).
   - **Agent mode:** only the agent and the proxy, `HUB_URL` the user's hub.
 - **Alloy:**
   - **`config.alloy`:**
     - `discovery.docker` and `loki.source.docker` through the proxy, for the app's Compose project only;
     - labels `app`, `env` and `service`;
     - `loki.process` with `loki.secretfilter`, `stage.replace` from OpsCrew's token patterns, the known-values file, and `stage.sampling` when `logSampling` is below 100;
-    - `prometheus.exporter.unix` with `/proc`, `/sys` and `/` read-only under `/host`, its collectors limited, and `prometheus.relabel` keeping the allow-list;
+    - `prometheus.exporter.unix` reading its own `/proc` (server-wide in a container), with `/` and `/sys` read-only under `/host`. Its collectors are limited to CPU, load, memory and the root filesystem, and `prometheus.relabel` keeps the allow-list. Alloy stays on its own network, so it sends no network figures, and its local API stays inside its container (spike result 3);
     - `loki.write` and `prometheus.remote_write` with basic auth, the token from a root-only file.
-  - **`GOMEMLIMIT`** at 80% of the limit.
+  - **`GOMEMLIMIT`** at 80% of the limit, `--storage.path=/var/lib/opscrew-alloy` on a volume, and `--disable-reporting`.
 - **Beszel at a hostname:** `cloudflare-access` gains Beszel's Access application next to Portainer's, and `infra/tunnel.ts` routes the hostname to the hub. Without it, the HCL is byte-identical.
 - **The masking file:** when Grafana Cloud is on, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) from `app.env`'s values, as the spike settles. Server workflows without Grafana Cloud stay byte-identical (snapshots). The file holds the same values as `app.env`, root-only on the server, and is never committed.
 

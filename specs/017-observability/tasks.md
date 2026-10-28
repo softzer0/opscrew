@@ -316,30 +316,51 @@ Effort`.
       - It listens on `unix//run/opscrew-docker-ro/docker.sock`, in a volume shared only with the add-on.
       - It passes only `GET` (and `HEAD`) on the add-on's allow-list, with an optional `/v1.NN` prefix, to `unix//var/run/docker.sock`:
         - **Beszel:** `/_ping`, `/version`, `/info`, `/containers/json` and `/containers/{id}/stats`;
-        - **Alloy:** those, plus `/containers/{id}/logs` and `/containers/{id}/json`, as spike result 1 settles.
-      - Everything else answers 403.
+        - **Alloy:** those, plus `/networks`, `/containers/{id}/logs` and `/containers/{id}/json` (spike result 3).
+      - Everything else answers 403. `admin off`, `auto_https off`, `persist_config off`.
       - `flush_interval -1`.
-      - The container runs with `read_only: true`, `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, no published port, `mem_limit` from the plan, and the logging limits every OpsCrew container has.
+      - The container runs with:
+        - `read_only: true`, `cap_drop: [ALL]` with `cap_add: [NET_BIND_SERVICE]` (the binary carries that file capability), and `security_opt: [no-new-privileges:true]`;
+        - `tmpfs: [/data, /config]` and `network_mode: none`;
+        - `mem_limit` from the plan, and the logging limits every OpsCrew container has (spike result 1).
+      - Research.md's "Spike results" item 1 has the working Caddyfile.
     - **Beszel:**
       - **Hub mode:**
-        - **The hub:** `127.0.0.1:8090:8090`, the `beszel_data` volume, and `USER_EMAIL` and `USER_PASSWORD` from a root-only env file, with `CONTAINER_DETAILS=false` and `DOCKER_IMAGE_CHECK=false`. `AUTO_LOGIN` is never set.
-        - **`config.yml`:** declares the server with the token, as spike result 2 settles.
-        - **The agent:** `network_mode: host`, with `HUB_URL=http://127.0.0.1:8090`, `TOKEN` and `KEY` from the env file, `DISABLE_SSH=true` and `DOCKER_HOST=unix:///run/opscrew-docker-ro/docker.sock`.
+        - **The hub:**
+          - `127.0.0.1:8090:8090`, the `beszel_data` volume, `read_only` with `tmpfs: [/tmp]`, `cap_drop: [ALL]` and `no-new-privileges`;
+          - `USER_EMAIL` and `USER_PASSWORD` from a root-only env file, with `CONTAINER_DETAILS=false` and `DISABLE_SSH=true`. `AUTO_LOGIN` is never set.
+          - **Its key:** the host step (T1706) writes OpsCrew's generated Ed25519 key to `beszel_data/id_ed25519` before the first start.
+        - **`config.yml`:** `systems: [{ name: <server>, host: localhost, port: 45876, token: <48 hex>, users: [<email>] }]` (spike result 2).
+        - **The agent:**
+          - `network_mode: host`, `read_only`, `cap_drop: [ALL]` and a `beszel_agent_data` volume at `/var/lib/beszel-agent` (`DATA_DIR`, so its fingerprint survives);
+          - `HUB_URL=http://127.0.0.1:8090`, `TOKEN` and `KEY` from the env file, `DISABLE_SSH=true`, `DOCKER_IMAGE_CHECK=false` and `DOCKER_HOST=unix:///run/opscrew-docker-ro/docker.sock`.
       - **Agent mode:** only the agent and the proxy, with `HUB_URL` the plan's `hubUrl` and `KEY` its `hubKey`.
     - **Alloy:**
-      - **The container:** `run --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy`, with `/proc`, `/sys` and `/` mounted read-only under `/host`, and `GOMEMLIMIT` at 80% of the limit.
+      - **The container:**
+        - `run --storage.path=/var/lib/opscrew-alloy --disable-reporting /etc/alloy/config.alloy`, with a volume at `/var/lib/opscrew-alloy` (the image's own folder belongs to another user);
+        - `read_only` with `tmpfs: [/tmp]`, `cap_drop: [ALL]` and `no-new-privileges`;
+        - `/` and `/sys` mounted read-only under `/host`;
+        - its own bridge network, never the host's, so its local API (which shows the masking values) stays inside the container;
+        - `GOMEMLIMIT` at 80% of the limit (spike result 3).
       - **`config.alloy`:**
         - `discovery.docker` through the proxy's socket, kept to the app's Compose project;
         - labels `app`, `env` and `service`;
         - `loki.source.docker`;
-        - `loki.process` with `loki.secretfilter`, a `stage.replace` per pattern in core's `TOKEN_PATTERNS` (each checked to be RE2-compatible in a test), the known-values rule from `/srv/apps/<app>/mask.re` as spike result 3 settles, and `stage.sampling` when `logSampling` is below 100;
+        - `loki.process` with:
+          - a `stage.replace` per pattern in core's `TOKEN_PATTERNS`, each checked to be RE2-compatible in a test;
+          - the known values: `local.file` on `/srv/apps/<app>/mask.re` with `is_secret = true` and `poll_frequency = "10s"`, into `stage.replace { expression = convert.nonsensitive(local.file.mask.content) }`;
+          - `stage.sampling` when `logSampling` is below 100;
+        - then `loki.secretfilter` (spike result 3);
         - `loki.write` to `logs.url`, basic auth with `logs.user` and the token from a root-only file read by `local.file` with `is_secret`;
-        - `prometheus.exporter.unix` with `/host` paths and only the collectors for CPU, load, memory, filesystem and network;
-        - `prometheus.relabel` keeping the allow-list;
+        - `prometheus.exporter.unix` with its own `/proc`, `rootfs_path = "/host/root"` and `sysfs_path = "/host/sys"`, `set_collectors` cpu, loadavg, meminfo and filesystem, and `filesystem { mount_points_exclude = "^/.+" }`;
+        - `prometheus.relabel` keeping the allow-list, and dropping the CPU modes nice, irq, softirq and guest;
         - `prometheus.remote_write` to `metrics.url` with `metrics.user`.
       - **Nothing privileged:** no `privileged`, no Docker socket, no writable host mount.
     - **Beszel at a hostname** (`access: "subdomain"`): `cloudflare-access` gains Beszel's Access application and policy (the listed emails, after a one-time PIN), as Portainer's, behind optional variables that default to none; `infra/tunnel.ts` routes the hostname to the hub's local port. A plan without it renders byte-identical HCL. Both engines validate the module.
-    - **The masking file:** when `grafanaCloud.enabled`, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) from `app.env`'s values after writing `app.env`, as spike result 3 settles. It holds one escaped alternation, and no value shorter than 8 characters (as `Redactor.addLiteral`). Server workflows without it stay byte-identical.
+    - **The masking file:** when `grafanaCloud.enabled`, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) in place from `app.env`'s values, after writing `app.env`.
+      - It holds one escaped RE2 alternation, and no value shorter than 8 characters (as `Redactor.addLiteral`).
+      - With no values, it holds `[^\s\S]`, which never matches.
+      - Server workflows without it stay byte-identical.
     - **The Workers Logs guard (FR-1714):** a test that the generated Wrangler config keeps `observability.enabled: true`, with no `head_sampling_rate` below 1 and no `invocation_logs = false`.
     - **Tests:**
       - snapshots of each add-on in each mode;
