@@ -200,7 +200,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-portainer` and `pnpm lint`
   - Effort: high
 
-- [ ] T1706 [P] [US3] [US4] [US5] The host adapter: the `check-key`, `beszel` and `alloy` steps, their planner and teardown, and their secrets on stdin, in `packages/connectors/ssh-host/**`
+- [X] T1706 [P] [US3] [US4] [US5] The host adapter: the `check-key`, `beszel` and `alloy` steps, their planner and teardown, and their secrets on stdin, in `packages/connectors/ssh-host/**`
   - Owns: that path (+ tests and fixtures)
   - Reads: contracts/observability.md "ssh-host"; research.md R3 "Reaching a server's disk", R5, R6, R7 and "Spike results" 1, 2, 4; plan.md "4."; how `planPortainer` and the `portainer` step work today
   - Depends: T1701a, T1702
@@ -469,7 +469,7 @@ Effort`.
         - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages), and an own server reached through the tunnel unless it deploys from its own runner (T1707: the check's `ssh` can't pass the tunnel's Access login);
         - it says localhost gets no check.
     - **Provision,** when the environment has the check on:
-      - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). It passes the repository (`owner/repo`): the key's comment is `opscrew-check:<owner>/<repo>`, so two repositories on one own server keep their own lines (T1706's review). The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
+      - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). It passes the repository (`owner/repo`) to both the `check-key` enable and disable: the key's comment is `opscrew-check:<owner>/<repo>`, so two repositories on one own server keep their own lines (T1706's review). Apps of one repository on one server share the line until the last one's teardown removes it. The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
       - **The secrets** (`github-secrets`), each set as a repository secret:
         - `OPSCREW_CHECK_SSH_KEY`;
         - `<prefix>CHECK_SERVER`, holding the host, port, user and known-hosts line;
