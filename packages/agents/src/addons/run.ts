@@ -16,6 +16,7 @@ import type {
   Observability,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
 import {
   cloudTunnelConnector,
   NO_LOGIN_CHECK,
@@ -106,6 +107,12 @@ export interface AddonResult {
   /** Repository files this run wrote. */
   files: string[];
   status: AddonStatus;
+  /**
+   * The command that makes the same plans again, to which `--approve <hash>` is added: the app's
+   * `--app` and `--env` when they are not the defaults, the add-on's options, and the token's
+   * variable when it must be set again (never its value).
+   */
+  approveCommand: string;
 }
 
 /** Grafana Cloud's access policy token: its scopes and where it is made. */
@@ -191,11 +198,16 @@ function shellWord(value: string): string {
 }
 
 /**
- * The command that runs this change again, as every `--approve` hint names it: Beszel's options
- * given, Grafana Cloud's settings as planned (answers at a prompt included), and the token's
- * variable when it must be set again (never its value).
+ * The command that runs this change again, as every `--approve` hint names it: the app's and
+ * environment's `flag`, Beszel's options given, Grafana Cloud's settings as planned (answers at a
+ * prompt included), and the token's variable when it must be set again (never its value).
  */
-function enableCommand(kind: AddonKind, options: AddonEnableOptions, input: EnableInput): string {
+function enableCommand(
+  kind: AddonKind,
+  options: AddonEnableOptions,
+  input: EnableInput,
+  flag: string,
+): string {
   const grafana = input.after.observability?.grafanaCloud;
   const flags: [string, string | number | undefined][] = [
     ["--mode", options.mode],
@@ -217,7 +229,7 @@ function enableCommand(kind: AddonKind, options: AddonEnableOptions, input: Enab
   const { tokenVariable } = input;
   return [
     ...(tokenVariable !== undefined ? [`${tokenVariable}=<token>`] : []),
-    `opscrew addon enable ${kind}`,
+    `opscrew addon enable ${kind}${flag}`,
     ...flags.flatMap(([flag, value]) =>
       value === undefined ? [] : [`${flag} ${shellWord(String(value))}`],
     ),
@@ -589,7 +601,7 @@ async function runAddonChange(
     planned: async () => undefined,
   });
   const { plan, afterHostPlanHash: _after, hostPlanHash: _host, ...fields } = result;
-  const done = { ...fields, hostPlanHashes: [...new Set(hashes)] };
+  const done = { ...fields, hostPlanHashes: [...new Set(hashes)], approveCommand: command };
   if (plan === undefined) return { ...done, status: await addonStatusOf(deps, before) };
   if (enabling) await change.input?.keep?.();
   else if (kind === "grafana-cloud" || agentOnly(change) || !change.keepData) {
@@ -657,7 +669,8 @@ export async function addonEnable(
   kind: AddonKind,
   options: AddonEnableOptions = {},
 ): Promise<AddonResult> {
-  const command = `opscrew addon enable ${kind}`;
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const command = `opscrew addon enable ${kind}${flag}`;
   requireDeployedServer(plan, kind, command, true);
   if (kind === "grafana-cloud") {
     const beszelOnly = ["mode", "access", "hostname", "allowEmails", "hubUrl", "hubKey"] as const;
@@ -678,7 +691,7 @@ export async function addonEnable(
     {
       kind,
       enabling: true,
-      command: enableCommand(kind, options, input),
+      command: enableCommand(kind, options, input, flag),
       before: plan,
       after: input.after,
       input,
@@ -704,7 +717,8 @@ export async function addonDisable(
   kind: AddonKind,
   options: AddonDisableOptions = {},
 ): Promise<AddonResult> {
-  const command = `opscrew addon disable ${kind}`;
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const command = `opscrew addon disable ${kind}${flag}${options.keepData === true ? " --keep-data" : ""}`;
   requireDeployedServer(plan, kind, command, false);
   if (options.keepData === true && kind !== "beszel") {
     throw new OpsCrewError(
@@ -733,6 +747,7 @@ export async function addonDisable(
       hostApplied: false,
       files: [],
       status: await addonStatusOf(deps, plan),
+      approveCommand: command,
     };
   }
   return runAddonChange(
@@ -740,7 +755,7 @@ export async function addonDisable(
     {
       kind,
       enabling: false,
-      command: `${command}${keepData ? " --keep-data" : ""}`,
+      command,
       before: plan,
       after: enabled ? withAddon(plan, kind, undefined) : plan,
       keepData,

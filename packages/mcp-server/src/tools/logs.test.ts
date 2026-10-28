@@ -5,11 +5,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { recordServerAddress } from "@opscrew/agents";
+import { recordOwnServer, recordServerAddress } from "@opscrew/agents";
 import {
   FakeDocker,
   type FakeLogLine,
   forbiddenFetch,
+  OWN_IPV4,
+  ownPlan,
   ScriptedRunner,
   SERVER_IPV4,
   testPlan,
@@ -32,13 +34,35 @@ function line(n: number, text: string): FakeLogLine {
   return { time: `2026-10-11T11:00:00.${ms}Z`, stream: "stdout", text };
 }
 
-/** `opscrew_logs` with `args`, on a deployed Hetzner app whose web process logged `lines`. */
-async function call(lines: FakeLogLine[], args: Record<string, unknown> = {}) {
+/**
+ * `opscrew_logs` with `args`, on a deployed Hetzner app whose web process logged `lines`; with
+ * `own`, on the user's own server whose host key was never confirmed (every connection recorded).
+ */
+async function call(
+  lines: FakeLogLine[],
+  args: Record<string, unknown> = {},
+  options: { own?: boolean } = {},
+) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-logs-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
-  await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), testPlan({ deployed: true }));
+  const planFile = path.join(dir, "opscrew", "plan.yaml");
   const env = { OPSCREW_HOME: path.join(dir, "home") };
-  await recordServerAddress(resolveProjectPaths(dir, { env }), { ipv4: SERVER_IPV4 });
+  const paths = resolveProjectPaths(dir, { env });
+  const connected: string[] = [];
+  if (options.own === true) {
+    await writeArtifact("plan", planFile, ownPlan({ deployed: true }));
+    // The interview recorded the login, but no host key was confirmed yet.
+    await recordOwnServer(paths, {
+      host: OWN_IPV4,
+      port: 22,
+      user: "root",
+      agent: true,
+      reachable: true,
+    });
+  } else {
+    await writeArtifact("plan", planFile, testPlan({ deployed: true }));
+    await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
+  }
   const docker = new FakeDocker([{ name: "shop-app-1", project: "shop", service: "app", lines }]);
   const deps = resolveMcpDeps({
     version: "0.0.0-test",
@@ -49,7 +73,20 @@ async function call(lines: FakeLogLine[], args: Record<string, unknown> = {}) {
     clock: { now: () => new Date("2026-10-11T12:00:00.000Z") },
   });
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
-  registerLogsTool(server, deps, { services: { remote: (host) => docker.remote(host) } });
+  registerLogsTool(server, deps, {
+    services: {
+      remote: (host) => {
+        connected.push(host);
+        return docker.remote(host);
+      },
+      own: {
+        remote: (connection) => {
+          connected.push(connection.host);
+          return docker.remote(connection.host);
+        },
+      },
+    },
+  });
   const client = new Client({ name: "opscrew-test", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -67,6 +104,8 @@ async function call(lines: FakeLogLine[], args: Record<string, unknown> = {}) {
     text,
     data: result.structuredContent as { lines: { text: string }[]; truncated: boolean },
     docker,
+    client,
+    connected,
   };
 }
 
@@ -114,6 +153,28 @@ describe("opscrew_logs", () => {
     const { text, result } = await call([line(1, `calling GitHub with ${token}`)]);
     expect(text).toContain("calling GitHub with ");
     expect(JSON.stringify(result)).not.toContain(token);
+  });
+
+  it("a large tail with a few lines is not truncated", async () => {
+    const { data } = await call([line(1, "a"), line(2, "b")], { tail: 5000 });
+    expect(data.lines).toHaveLength(2);
+    expect(data.truncated).toBe(false);
+  });
+
+  it("is listed as read-only", async () => {
+    const { client } = await call([]);
+    const { tools } = await client.listTools();
+    const tool = tools.find((one) => one.name === "opscrew_logs");
+    expect(tool?.annotations?.readOnlyHint).toBe(true);
+  });
+
+  it("never connects to an own server whose host key was not confirmed, sending the user to the terminal", async () => {
+    const { result, text, connected } = await call([line(1, "x")], {}, { own: true });
+    expect(result.isError).toBe(true);
+    expect(text).toContain("npx opscrew logs");
+    expect(text).toContain("Nothing was read.");
+    expect(connected).toEqual([]);
+    expect(text).not.toContain(OWN_IPV4);
   });
 
   it("refuses an unknown part with the names there are", async () => {

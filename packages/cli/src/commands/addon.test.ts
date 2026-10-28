@@ -1,7 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import type { AddonServices } from "@opscrew/agents";
 import { recordServerAddress } from "@opscrew/agents";
-import { FakeAddonServer, SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
+import {
+  FakeAddonServer,
+  FakeEngine,
+  fakeSharedCloudflare,
+  ownCloudflare,
+  SERVER_IPV4,
+  TUNNEL_ID,
+  testPlan,
+} from "@opscrew/agents/testing";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -11,10 +21,13 @@ import type {
   CommandRunner,
 } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
+import { deployProject } from "../ui/__fixtures__/deploy";
 import {
+  GIT,
   projectContext,
   run,
   ScriptedPrompts,
@@ -63,11 +76,49 @@ const GRAFANA = {
   logsUser: "7654321",
 };
 
-/** A deployed Hetzner app `shop` whose server is a {@link FakeAddonServer}. */
-async function setup() {
-  project = await tempProject();
+/**
+ * A deployed Hetzner app `shop` whose server is a {@link FakeAddonServer}; with `cloudflare`, at
+ * shop.example.com on Cloudflare, with its fakes for a subdomain.
+ */
+async function setup(options: { cloudflare?: boolean } = {}) {
+  const plan = options.cloudflare
+    ? testPlan({ domain: "shop.example.com", deployed: true, userSecret: false })
+    : testPlan({ deployed: true, userSecret: false });
+  // A subdomain's infrastructure plan goes through the repository's files: a git project.
+  project = options.cloudflare ? await deployProject(plan) : await tempProject();
   const paths = resolveProjectPaths(project.root, { env: project.env });
-  await writeArtifact("plan", paths.files.plan, testPlan({ deployed: true, userSecret: false }));
+  await writeArtifact("plan", paths.files.plan, plan);
+  let cloudflare: AddonServices = {};
+  if (options.cloudflare) {
+    project.env.CLOUDFLARE_API_TOKEN = fakeSecret("cloudflare-token", "cli-addon");
+    const zone = new FakeZone();
+    zone.organization = {
+      name: "someone-else.cloudflareaccess.com",
+      auth_domain: "someone-else.cloudflareaccess.com",
+    };
+    zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: {
+        server_ipv4: SERVER_IPV4,
+        tunnel_id: TUNNEL_ID,
+        tunnel_token: `eyJ${fakeSecret("cloudflare-token", "cli-addon-tunnel")}`,
+      },
+    });
+    cloudflare = {
+      cloudflare: ownCloudflare(),
+      engine: async () => engine,
+      sharedCloudflare: fakeSharedCloudflare(zone),
+    };
+  }
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
   const host = new FakeAddonServer();
   const p = project;
@@ -86,7 +137,9 @@ async function setup() {
         ...(options.runner === undefined ? {} : { runner: options.runner }),
       },
     });
-    return withServices(ctx, { addon: { deployRemote: host.shell, applyHost: host.apply } });
+    return withServices(ctx, {
+      addon: { deployRemote: host.shell, applyHost: host.apply, ...cloudflare },
+    });
   };
   return { context, host, paths, plan: () => readArtifact("plan", paths.files.plan) };
 }
@@ -148,10 +201,37 @@ describe("opscrew addon", () => {
     expect(await run(ctx, ...args, "--plan-only"), ctx.errors).toBe(0);
     const hash = printedHash(ctx.output);
     expect(ctx.output).toContain(
-      `    opscrew addon enable beszel --mode agent --hub-url https://beszel.example.com --hub-key '${hubKey}' --approve ${hash}\n`,
+      `    OPSCREW_BESZEL_TOKEN=<token> opscrew addon enable beszel --mode agent --hub-url https://beszel.example.com --hub-key '${hubKey}' --approve ${hash}\n`,
     );
     expect(ctx.output).not.toContain(env.OPSCREW_BESZEL_TOKEN);
   });
+
+  it.skipIf(!GIT)(
+    "repeats a subdomain's options in the --approve command of every plan",
+    async () => {
+      const s = await setup({ cloudflare: true });
+      const ctx = s.context();
+      const options = [
+        "--access",
+        "subdomain",
+        "--hostname",
+        "beszel",
+        "--allow-email",
+        "owner@example.com",
+        "--allow-email",
+        "ops@example.com",
+      ];
+      const code = await run(ctx, "addon", "enable", "beszel", ...options, "--plan-only", "--yes");
+      expect(code, ctx.errors).toBe(0);
+      expect(s.host.applies).toEqual([]);
+      const printed = /\n {4}(opscrew addon enable beszel [^\n]*)\n/.exec(ctx.output)?.[1];
+      expect(printed).toMatch(
+        new RegExp(
+          `^opscrew addon enable beszel ${options.join(" ")}( --approve [0-9a-f]{64}){2,} --yes$`,
+        ),
+      );
+    },
+  );
 
   it("disable: deleting Beszel's history needs --confirm <app> with the hash; --keep-data does not", async () => {
     const s = await setup();
@@ -258,7 +338,7 @@ describe("opscrew addon", () => {
     ).toBe(0);
     const hash = printedHash(ctx.output);
     expect(ctx.output).toContain(
-      `    opscrew addon enable grafana-cloud ${flags.join(" ")} --approve ${hash}\n`,
+      `    OPSCREW_GRAFANA_CLOUD_TOKEN=<token> opscrew addon enable grafana-cloud ${flags.join(" ")} --approve ${hash}\n`,
     );
     const beszel = s.context();
     expect(await run(beszel, "addon", "enable", "grafana-cloud", "--mode", "hub")).toBe(2);

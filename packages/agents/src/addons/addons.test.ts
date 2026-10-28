@@ -7,12 +7,13 @@ import { type ApplyOptions, type HostPlan, hostPlanHash } from "@opscrew/connect
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { portainerDisable, portainerEnable } from "../portainer";
+import { inEnvironment } from "../promote/__fixtures__/world";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { hostPlanFile, recordOwnServer } from "../shared";
+import { hostPlanFile, recordOwnServer, recordServerAddress } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -509,6 +510,31 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     expect(error.hint).toContain(
       `OPSCREW_GRAFANA_CLOUD_TOKEN=<token> opscrew addon enable grafana-cloud --metrics-url ${GRAFANA.metricsUrl} --metrics-user ${GRAFANA.metricsUser} --logs-url ${GRAFANA.logsUrl} --logs-user ${GRAFANA.logsUser} --log-sampling 100 --approve ${s.handler.requests[0]?.planHash}`,
     );
+  });
+
+  it("names --env in the commands of a staging plan: the --approve hint and approveCommand", async () => {
+    const s = await cloudSetup({ answer: (request) => request.kind !== "host-apply" });
+    const staging = inEnvironment(await s.plan(), "staging");
+    const deps = await createTestPhaseDeps({
+      root: s.root,
+      environment: "staging",
+      env: s.deps.env,
+      runner: projectRunner(),
+      approvalHandler: s.handler,
+    });
+    await writeArtifact("plan", deps.paths.files.plan, staging);
+    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    const error = await failure(addonEnable(deps, staging, "beszel", { services: s.services }));
+    expect(error.hint).toContain(
+      `opscrew addon enable beszel --env staging --approve ${s.handler.requests[0]?.planHash}`,
+    );
+    const planned = await addonEnable(deps, staging, "beszel", {
+      services: s.services,
+      planOnly: true,
+    });
+    expect(planned.approveCommand).toBe("opscrew addon enable beszel --env staging");
+    const off = await addonDisable(deps, staging, "beszel", { keepData: true });
+    expect(off.approveCommand).toBe("opscrew addon disable beszel --env staging --keep-data");
   });
 
   it("disable with Beszel off removes an agent token left here, so hub mode can be turned on", async () => {

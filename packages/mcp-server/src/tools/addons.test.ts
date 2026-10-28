@@ -123,6 +123,9 @@ describe("the add-on tools", () => {
     expect(enable?.annotations?.readOnlyHint).toBe(false);
     expect(byName.get("opscrew_addon_status")?.annotations?.readOnlyHint).toBe(true);
     expect(byName.get("opscrew_addon_disable")?.annotations?.destructiveHint).toBe(true);
+    for (const name of ["opscrew_addon_enable", "opscrew_addon_disable"]) {
+      expect(byName.get(name)?._meta?.["anthropic/requiresUserInteraction"], name).toBe(true);
+    }
   });
 
   it("Grafana Cloud without OPSCREW_GRAFANA_CLOUD_TOKEN: says to set it or use the terminal, changing nothing", async () => {
@@ -158,6 +161,27 @@ describe("the add-on tools", () => {
     const result = await h.call("opscrew_addon_enable", { addon: "beszel" });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("npx opscrew addon enable beszel");
+    const disabled = await h.call("opscrew_addon_disable", { addon: "grafana-cloud" });
+    expect(disabled.isError).toBe(true);
+    expect(textOf(disabled)).toContain("npx opscrew addon disable grafana-cloud");
+    expect(h.host.applies).toEqual([]);
+  });
+
+  it("Beszel's agent mode without OPSCREW_BESZEL_TOKEN: says to set it or use the terminal, changing nothing", async () => {
+    const h = await connect();
+    const result = await h.call("opscrew_addon_enable", {
+      addon: "beszel",
+      mode: "agent",
+      hubUrl: "https://beszel.example.com",
+      hubKey: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5${"A".repeat(48)}`,
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("which OpsCrew never takes through this chat");
+    expect(textOf(result)).toContain(
+      "set OPSCREW_BESZEL_TOKEN in the MCP server's environment and restart it",
+    );
+    expect(textOf(result)).toContain("`npx opscrew addon enable beszel` in a terminal");
+    expect(h.elicited).toEqual([]);
     expect(h.host.applies).toEqual([]);
   });
 

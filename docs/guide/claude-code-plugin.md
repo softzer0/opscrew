@@ -52,11 +52,26 @@ Set them before you start Claude Code. Tool results never contain a token or a s
 | `/opscrew:opscrew-deploy` | The whole flow: scan, analyze, interview, design, prepare the code, provision and verify |
 | `/opscrew:opscrew-scan` | The free security scan, with guided fixes |
 | `/opscrew:opscrew-adapt` | Prepares the app's code for its deployment |
+| `/opscrew:opscrew-troubleshoot` | Finds out why the app is failing or slow, and what it uses: its status, figures, alerts and logs, read-only |
 
-Claude also uses them on its own when you ask things like "deploy my app" or "is my app secure?".
+Claude also uses them on its own when you ask things like "deploy my app", "is my app secure?" or
+"why is my app failing?".
 Every target works from the chat: a cloud server, [a server you already have](own-server.md),
 [your Portainer](portainer-target.md), [your own computer](localhost.md),
 [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md).
+
+## Logs, figures and add-ons
+
+- **`opscrew_status`** includes the [resource figures and the scheduled check's state and open
+  alerts](logs-and-status.md).
+- **`opscrew_logs`** reads the app's latest lines, read-only and masked: at most 500 lines and
+  64 KiB, and it never follows. For more, or `--follow`, run `npx opscrew logs` in your terminal.
+- **`opscrew_addon_status`, `opscrew_addon_enable` and `opscrew_addon_disable`** show, turn on and
+  turn off [Beszel](beszel.md) and [Grafana Cloud](grafana-cloud.md), each plan approved by you in
+  a dialog. Their tokens come only from `OPSCREW_BESZEL_TOKEN` and `OPSCREW_GRAFANA_CLOUD_TOKEN` in
+  the MCP server's environment, never from the chat, so Claude never sees them. Turning Beszel off
+  from the chat keeps its history; deleting it, and opening Beszel's dashboard, stay in your
+  terminal (`npx opscrew addon disable beszel`, `npx opscrew addon open beszel`).
 
 ## How approvals work
 

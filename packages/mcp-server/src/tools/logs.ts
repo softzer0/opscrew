@@ -103,7 +103,9 @@ export function registerLogsTool(
         const all: LogLine[] = [];
         for await (const line of read) all.push(line);
         const kept = bounded(all);
-        const truncated = kept.truncated || (tail ?? 0) > MAX_LOG_LINES;
+        // A tail past the bound was cut only when the read filled it.
+        const truncated =
+          kept.truncated || ((tail ?? 0) > MAX_LOG_LINES && all.length >= MAX_LOG_LINES);
         const text = [
           read.first,
           ...kept.lines.map(lineText),

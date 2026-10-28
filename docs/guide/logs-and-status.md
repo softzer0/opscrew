@@ -118,7 +118,7 @@ Cloudflare's [Workers pricing](https://developers.cloudflare.com/workers/platfor
 
 These hosts serve the site's files without running any of its code, so they keep no request logs.
 `logs` says so in one sentence, then shows the site's last 10 deploy runs, each with its result and a
-link. `--service` and `--follow` don't apply there.
+link. `--service` and `--follow` are refused there, with the reason.
 
 ## The figures in `opscrew status`
 
