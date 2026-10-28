@@ -387,7 +387,7 @@ Effort`.
 
 ## Phase 4: Agents (parallel)
 
-- [ ] T1709a [P] [US1] `readLogs` for every target, in `packages/agents/src/logs/**`
+- [X] T1709a [P] [US1] `readLogs` for every target, in `packages/agents/src/logs/**`
   - Owns: that path (+ tests; fakes in `packages/agents/src/testing/logs.ts` (new))
   - Reads: spec US1, FR-1701–FR-1703, SC-1701; data-model.md "Log lines"; contracts/observability.md "Agents and surfaces"; research.md R1 and "Spike results" 7, 8; plan.md "7."; T1705's report
   - Depends: T1701a, T1705
@@ -464,6 +464,7 @@ Effort`.
       - the dated allowance from `prices.ts` in the first line, and the reached-allowance note when T1703 reports it.
     - **`status` on Cloudflare:** `workersAnalytics` for the last 24 hours, against 100,000 requests a day and 10 ms of CPU time. It notes that requests served from the site's files aren't counted.
     - **`init`:** with Cloudflare hosting in use, it checks `observabilityPermissions` (FR-1714), naming each missing permission and where to add it.
+    - **From T1709a's review:** on a Portainer stack whose `web.mode` isn't `caddy`, `logs` leaves `edge` out of its parts, or says the stack has no Caddy, instead of the generic missing-container error (`logs/read.ts` ~88).
     - **Tests:**
       - each with the Cloudflare fake;
       - a follow stopped by abort;
@@ -568,6 +569,7 @@ Effort`.
   - Accept:
     - **`opscrew logs`:**
       - `--follow`, `--service <name>`, `--since <duration>`, `--tail <lines>`, and `--app` and `--env` through `addEnvOption` and `chooseEnvironment`;
+      - on GitHub Pages and a static Cloudflare site, `--service` and `--follow` are refused with the reason, or noted (T1709a's review: `readLogs` ignores them there);
       - output through `ctx.stdout` (redacted);
       - Ctrl-C stops a follow cleanly.
     - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.

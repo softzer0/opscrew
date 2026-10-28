@@ -9,6 +9,7 @@ export * from "./deploy";
 export * from "./deps";
 export * from "./destroy";
 export * from "./domain";
+export * from "./logs";
 export * from "./move";
 export * from "./own";
 export * from "./portainer";
