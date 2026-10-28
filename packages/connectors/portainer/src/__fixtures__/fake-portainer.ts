@@ -102,7 +102,10 @@ export interface FakeContainer {
   oneOff?: boolean;
   running: boolean;
   ports: number[];
-  /** Its Docker id (default `c<index>` in the list); the routes below find it by this id. */
+  /**
+   * Its Docker id. The list shows `c<index>` for a container without one; the container routes
+   * (logs, stats, inspect) find only containers that have an id.
+   */
   id?: string;
   /** What `…/containers/{id}/logs` answers: Docker's framing ({@link dockerFrames}) or raw TTY. */
   logs?: Uint8Array;

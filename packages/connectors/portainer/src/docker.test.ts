@@ -30,8 +30,23 @@ describe("logLines", () => {
       [1, text.subarray(cut)],
     );
     expect(logLines(body)).toEqual([
-      { stream: "stderr", time: T2, line: "meanwhile" },
       { stream: "stdout", time: T1, line: "hello wörld" },
+      { stream: "stderr", time: T2, line: "meanwhile" },
+    ]);
+  });
+
+  it("sorts interleaved frames by time, so polling after the last line repeats none", () => {
+    const body = dockerFrames(
+      [2, `${T2} err two\n`],
+      [1, `${T1} out one\n${T3} out three\n`],
+      [2, `${T3} err three\n`],
+    );
+    expect(logLines(body)).toEqual([
+      { stream: "stdout", time: T1, line: "out one" },
+      { stream: "stderr", time: T2, line: "err two" },
+      // Equal times keep the order Docker sent them in.
+      { stream: "stdout", time: T3, line: "out three" },
+      { stream: "stderr", time: T3, line: "err three" },
     ]);
   });
 
@@ -92,44 +107,31 @@ describe("containerFigures", () => {
   };
 
   it("computes CPU % from the two samples and memory without inactive files (cgroup v2)", () => {
-    const figures = containerFigures(
-      {
-        ...cpu,
-        memory_stats: {
-          usage: 300_000_000,
-          limit: 512 * 1024 * 1024,
-          stats: { inactive_file: 100_000_000, anon: 150_000_000 },
-        },
+    const figures = containerFigures({
+      ...cpu,
+      memory_stats: {
+        usage: 300_000_000,
+        stats: { inactive_file: 100_000_000, anon: 150_000_000 },
       },
-      8 * 1024 ** 3,
-    );
+    });
     // (0.4e9 / 4e9) × 4 × 100
     expect(figures.cpuPercent).toBeCloseTo(40, 10);
-    expect(figures).toEqual({
-      cpuPercent: figures.cpuPercent,
-      memoryUsedBytes: 200_000_000,
-      memoryLimitBytes: 512 * 1024 * 1024,
-    });
+    expect(figures).toEqual({ cpuPercent: figures.cpuPercent, memoryUsedBytes: 200_000_000 });
   });
 
-  it("subtracts the page cache on cgroup v1, and reads the host's memory as no limit", () => {
-    const host = 8 * 1024 ** 3;
-    const figures = containerFigures(
-      {
-        ...cpu,
-        memory_stats: {
-          usage: 300_000_000,
-          limit: host,
-          stats: { cache: 120_000_000, inactive_file: 50_000_000, total_inactive_file: 50_000_000 },
-        },
+  it("subtracts the page cache on cgroup v1", () => {
+    const figures = containerFigures({
+      ...cpu,
+      memory_stats: {
+        usage: 300_000_000,
+        stats: { cache: 120_000_000, inactive_file: 50_000_000, total_inactive_file: 50_000_000 },
       },
-      host,
-    );
+    });
     expect(figures).toEqual({ cpuPercent: figures.cpuPercent, memoryUsedBytes: 180_000_000 });
   });
 
   it("gives 0% without a previous sample (a stopped container)", () => {
-    expect(containerFigures({ cpu_stats: {}, precpu_stats: {}, memory_stats: {} }, 1)).toEqual({
+    expect(containerFigures({ cpu_stats: {}, precpu_stats: {}, memory_stats: {} })).toEqual({
       cpuPercent: 0,
       memoryUsedBytes: 0,
     });

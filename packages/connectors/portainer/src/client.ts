@@ -198,7 +198,7 @@ export interface PortainerClient {
   listContainers(environmentId: number): Promise<ContainerSummary[]>;
   /**
    * `GET …/docker/containers/{id}/logs?stdout=1&stderr=1&timestamps=1&tail=N[&since=S]`: the last
-   * `tail` lines, oldest first. `since` is whole Unix seconds or `<seconds>.<nanoseconds>`; to
+   * `tail` lines, sorted by time. `since` is whole Unix seconds or `<seconds>.<nanoseconds>`; to
    * follow, poll with `sinceAfter(last line's time)` (Portainer buffers `follow=1` for ~40 s).
    */
   containerLogs(
@@ -208,7 +208,7 @@ export interface PortainerClient {
   ): Promise<ContainerLogLine[]>;
   /**
    * `GET …/docker/containers/{id}/stats?stream=false` (without `one-shot`, so Docker takes two
-   * samples, 1–2 s) and the host's memory from `…/docker/info`.
+   * samples, 1–2 s). The memory limit is {@link containerInspect}'s.
    */
   containerStats(environmentId: number, containerId: string): Promise<ContainerFigures>;
   /** `GET …/docker/containers/{id}/json`, reduced to {@link ContainerInspection}. */
@@ -528,20 +528,22 @@ export function portainerClient(
       if (response.bytes === undefined) {
         throw new OpsCrewError("INTERNAL", "The request function returned no body bytes.");
       }
-      return logLines(response.bytes);
+      try {
+        return logLines(response.bytes);
+      } catch (error) {
+        // Docker's error frame may echo what the container printed.
+        throw redactError(error, redactor);
+      }
     },
     async containerStats(environmentId, containerId) {
-      const [stats, info] = await Promise.all([
-        call({
-          method: "GET",
-          path: `${containerPath(environmentId, containerId)}/stats?stream=false`,
-          schema: dockerStatsSchema,
-          action: "read the container's CPU and memory",
-          ...CONTAINER_ACCESS,
-        }) as Promise<z.output<typeof dockerStatsSchema>>,
-        dockerInfo(environmentId),
-      ]);
-      return containerFigures(stats, info.memoryBytes);
+      const stats = (await call({
+        method: "GET",
+        path: `${containerPath(environmentId, containerId)}/stats?stream=false`,
+        schema: dockerStatsSchema,
+        action: "read the container's CPU and memory",
+        ...CONTAINER_ACCESS,
+      })) as z.output<typeof dockerStatsSchema>;
+      return containerFigures(stats);
     },
     async containerInspect(environmentId, containerId) {
       const details = (await call({

@@ -15,15 +15,13 @@ export interface ContainerFigures {
   cpuPercent: number;
   /** Used memory without the page cache Docker can reclaim. */
   memoryUsedBytes: number;
-  /** The container's memory limit; absent when it has none. */
-  memoryLimitBytes?: number;
 }
 
 const TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
 const LINE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})) ?/;
 
 /**
- * The lines of a `…/logs?timestamps=1` answer, oldest first. A container without a TTY answers in
+ * The lines of a `…/logs?timestamps=1` answer, sorted by time. A container without a TTY answers in
  * Docker's framing: 8-byte headers (the stream in byte 0, a big-endian size in bytes 4–7) before
  * each chunk, and a line may span frames. A TTY container answers its raw stream (CRLF), passed
  * as stdout. The two are told apart by the first byte: with timestamps, a raw stream starts with
@@ -67,7 +65,9 @@ export function logLines(body: Uint8Array): ContainerLogLine[] {
   for (const stream of ["stdout", "stderr"] as const) {
     if (pending[stream].length > 0) out.push(parseLine(pending[stream], stream));
   }
-  return out;
+  // Oldest first, so polling after the last line's time repeats none. Docker's timestamps are
+  // fixed-width UTC, so text order is time order; the sort is stable for equal times.
+  return out.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 }
 
 /** Appends each complete line of `data` to `out`; returns what follows the last newline. */
@@ -127,7 +127,6 @@ export const dockerStatsSchema = z.object({
   precpu_stats: cpuSchema,
   memory_stats: z.object({
     usage: z.number().optional(),
-    limit: z.number().optional(),
     stats: z.record(z.string(), z.number()).optional(),
   }),
 });
@@ -135,12 +134,9 @@ export const dockerStatsSchema = z.object({
 /**
  * CPU % = (CPU delta / system delta) × online CPUs × 100. Memory is usage without `cache` on
  * cgroup v1 (where Docker reports it), else without `inactive_file` (cgroup v2), as `docker stats`
- * shows it. A limit equal to `hostMemoryBytes` (Docker's figure when there is none) is no limit.
+ * shows it. The limit is `containerInspect`'s (`HostConfig.Memory`), not this sample's.
  */
-export function containerFigures(
-  stats: z.output<typeof dockerStatsSchema>,
-  hostMemoryBytes: number | undefined,
-): ContainerFigures {
+export function containerFigures(stats: z.output<typeof dockerStatsSchema>): ContainerFigures {
   const now = stats.cpu_stats;
   const before = stats.precpu_stats;
   const cpuDelta = (now.cpu_usage?.total_usage ?? 0) - (before.cpu_usage?.total_usage ?? 0);
@@ -151,11 +147,5 @@ export function containerFigures(
   const memory = stats.memory_stats;
   const usage = memory.usage ?? 0;
   const reclaimable = memory.stats?.cache ?? memory.stats?.inactive_file ?? 0;
-  const limit = memory.limit ?? 0;
-  return {
-    cpuPercent,
-    memoryUsedBytes: reclaimable < usage ? usage - reclaimable : usage,
-    ...(limit > 0 &&
-      (hostMemoryBytes === undefined || limit < hostMemoryBytes) && { memoryLimitBytes: limit }),
-  };
+  return { cpuPercent, memoryUsedBytes: reclaimable < usage ? usage - reclaimable : usage };
 }

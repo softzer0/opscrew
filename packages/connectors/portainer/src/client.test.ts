@@ -465,38 +465,54 @@ describe("container reads", () => {
     ]);
   });
 
-  it("reads one stats sample without one-shot, and the host's memory as no limit", async () => {
-    const host = 8 * 1024 ** 3;
-    const sample = (limit: number) => ({
-      read: "2026-10-28T09:00:02Z",
-      cpu_stats: {
-        cpu_usage: { total_usage: 3_000_000_000 },
-        system_cpu_usage: 200_000_000_000,
-        online_cpus: 2,
-      },
-      precpu_stats: {
-        cpu_usage: { total_usage: 2_000_000_000 },
-        system_cpu_usage: 190_000_000_000,
-        online_cpus: 2,
-      },
-      memory_stats: { usage: 500_000_000, limit, stats: { inactive_file: 200_000_000 } },
-      networks: { eth0: { rx_bytes: 1 } },
+  it("redacts Docker's error frame", async () => {
+    const secret = fakeSecret("stripe-live-key", "frame");
+    const { client } = setup({
+      containers: [{ ...app, logs: dockerFrames([3, `log driver failed near ${secret}`]) }],
     });
+    client.registerSecret(secret, "STRIPE_KEY");
+    const error = (await client
+      .containerLogs(3, "a1b2c3", { tail: 10 })
+      .catch((caught: unknown) => caught)) as Error;
+    expect(error.message).toMatch(/Docker could not read the container's logs: log driver failed/);
+    expect(error.message).toContain("[REDACTED:STRIPE_KEY]");
+    expect(error.message).not.toContain(secret);
+  });
+
+  it("reads one stats sample without one-shot, and nothing else", async () => {
     const { client, fake } = setup({
       containers: [
-        { ...app, stats: sample(host) },
-        { ...app, id: "limited", stats: sample(256 * 1024 * 1024) },
+        {
+          ...app,
+          stats: {
+            read: "2026-10-28T09:00:02Z",
+            cpu_stats: {
+              cpu_usage: { total_usage: 3_000_000_000 },
+              system_cpu_usage: 200_000_000_000,
+              online_cpus: 2,
+            },
+            precpu_stats: {
+              cpu_usage: { total_usage: 2_000_000_000 },
+              system_cpu_usage: 190_000_000_000,
+              online_cpus: 2,
+            },
+            memory_stats: {
+              usage: 500_000_000,
+              limit: 8 * 1024 ** 3,
+              stats: { inactive_file: 200_000_000 },
+            },
+            networks: { eth0: { rx_bytes: 1 } },
+          },
+        },
       ],
     });
     const figures = await client.containerStats(3, "a1b2c3");
     // (1e9 / 10e9) × 2 × 100
     expect(figures.cpuPercent).toBeCloseTo(20, 10);
     expect(figures).toEqual({ cpuPercent: figures.cpuPercent, memoryUsedBytes: 300_000_000 });
-    expect(await client.containerStats(3, "limited")).toMatchObject({
-      memoryLimitBytes: 256 * 1024 * 1024,
-    });
-    const stats = fake.calls.filter((call) => call.path.endsWith("/stats"));
-    expect(stats.map((call) => call.query.toString())).toEqual(["stream=false", "stream=false"]);
+    expect(fake.calls.map((call) => [call.path, call.query.toString()])).toEqual([
+      ["/api/endpoints/3/docker/containers/a1b2c3/stats", "stream=false"],
+    ]);
   });
 
   it("keeps only the restart count, start time and memory limit: never Config.Env", async () => {
