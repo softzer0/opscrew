@@ -1,6 +1,7 @@
 import { normalizeHostName, OpsCrewError } from "@opscrew/core";
 import { type AddonKind, IMAGES, portainerHostname } from "@opscrew/iac-templates";
 import {
+  ADDON_MEMORY_DEFAULTS,
   type BeszelSettings,
   cloudflareEdgeCoverage,
   type DeployPlan,
@@ -98,7 +99,7 @@ export function beszelSettings(
   const emails = [...new Set((request.allowEmails ?? []).map((email) => email.trim()))].filter(
     (email) => email !== "",
   );
-  const memoryMb = plan.observability?.beszel?.memoryMb ?? { hub: 128, agent: 64, proxy: 32 };
+  const memoryMb = plan.observability?.beszel?.memoryMb ?? { ...ADDON_MEMORY_DEFAULTS.beszel };
   if (mode === "agent") {
     const { hubUrl, hubKey } = request;
     if (hubUrl === undefined || hubKey === undefined) {
@@ -231,7 +232,9 @@ export function grafanaSettings(plan: DeployPlan, request: GrafanaRequest): Graf
     metrics: request.metrics,
     logs: request.logs,
     logSampling: request.logSampling,
-    memoryMb: plan.observability?.grafanaCloud?.memoryMb ?? { alloy: 192, proxy: 32 },
+    memoryMb: plan.observability?.grafanaCloud?.memoryMb ?? {
+      ...ADDON_MEMORY_DEFAULTS.grafanaCloud,
+    },
   };
 }
 

@@ -464,6 +464,12 @@ export const ObservabilityCheckSchema = z.strictObject({
     .optional(),
 });
 
+/** The add-ons' default container memory limits in MB. */
+export const ADDON_MEMORY_DEFAULTS = {
+  beszel: { hub: 128, agent: 64, proxy: 32 },
+  grafanaCloud: { alloy: 256, proxy: 32 },
+} as const;
+
 /** Beszel's hub public key, as the hub shows it: `ssh-ed25519 AAAA…` (public, not a secret). */
 const ED25519_PUBLIC_KEY = /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/]{48}$/;
 
@@ -498,9 +504,9 @@ export const BeszelSchema = z
     /** The containers' memory limits in MB. */
     memoryMb: z
       .strictObject({
-        hub: z.int().positive().default(128),
-        agent: z.int().positive().default(64),
-        proxy: z.int().positive().default(32),
+        hub: z.int().positive().default(ADDON_MEMORY_DEFAULTS.beszel.hub),
+        agent: z.int().positive().default(ADDON_MEMORY_DEFAULTS.beszel.agent),
+        proxy: z.int().positive().default(ADDON_MEMORY_DEFAULTS.beszel.proxy),
       })
       .prefault({}),
   })
@@ -560,8 +566,8 @@ export const GrafanaCloudSchema = z
     /** The containers' memory limits in MB. */
     memoryMb: z
       .strictObject({
-        alloy: z.int().positive().default(256),
-        proxy: z.int().positive().default(32),
+        alloy: z.int().positive().default(ADDON_MEMORY_DEFAULTS.grafanaCloud.alloy),
+        proxy: z.int().positive().default(ADDON_MEMORY_DEFAULTS.grafanaCloud.proxy),
       })
       .prefault({}),
   })

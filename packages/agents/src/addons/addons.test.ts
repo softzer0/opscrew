@@ -590,7 +590,7 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
       "Run Grafana Alloy on the server, sending the app's logs and the server's metrics to Grafana Cloud",
     );
     expect(request?.details).toContain("Grafana Cloud's free tier keeps 10,000 metric series");
-    expect(request?.details).toContain("Memory limits of Grafana Cloud's containers: Alloy 192 MB");
+    expect(request?.details).toContain("Memory limits of Grafana Cloud's containers: Alloy 256 MB");
     const apply = s.server.applies[0];
     expect(apply?.plan.steps.map((step) => step.id)).toEqual(["alloy"]);
     expect(apply?.options.secrets).toEqual({ grafanaCloudToken: token });
