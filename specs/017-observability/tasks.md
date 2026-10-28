@@ -108,7 +108,7 @@ Effort`.
 
 ## Phase 2: Spike (lead)
 
-- [ ] T1702 The spike (lead): research.md's open items 1–8.
+- [X] T1702 The spike (lead): research.md's open items 1–8.
   - **Where:**
     - an e2e cloud server (`OPSCREW_E2E_HCLOUD_TOKEN`);
     - the private throwaway repository (`OPSCREW_E2E_GITHUB_REPO`) and the public one (`OPSCREW_E2E_GITHUB_REPO_C`);
