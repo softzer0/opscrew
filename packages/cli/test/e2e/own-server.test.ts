@@ -181,6 +181,9 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       expect(planned.code, planned.text).toBe(0);
       expect(host.applies).toEqual([]);
       const { cloudflare, infra, host: hostHash } = printedHashes(planned.ctx.output);
+      // The scheduled check's key on the server: a host plan of its own (design turns the check on).
+      const checkHash = /check-key plan ([0-9a-f]{64})/.exec(planned.ctx.output)?.[1] as string;
+      expect(checkHash, planned.text).toMatch(/^[0-9a-f]{64}$/);
 
       // The Cloudflare and infrastructure hashes: Cloudflare is applied, the server is not touched.
       const half = await opscrew([
@@ -197,12 +200,21 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       expect(engine.applied).toHaveLength(1);
 
       // The DNS record exists now, so planning again finds nothing to change in Cloudflare; the
-      // host plan's hash alone finishes the run.
+      // host plans' hashes (the server's setup, then the check's key) finish the run.
       engine.scenario.changes = [];
-      const applied = await opscrew(["provision", "--approve", hostHash, "--yes"]);
+      const applied = await opscrew([
+        "provision",
+        "--approve",
+        hostHash,
+        "--approve",
+        checkHash,
+        "--yes",
+      ]);
       expect(applied.code, applied.text).toBe(0);
-      expect(host.applies).toHaveLength(1);
+      expect(host.applies).toHaveLength(2);
       expect(host.applies[0]?.options.approvedHash).toBe(hostHash);
+      expect(host.applies[1]?.options.approvedHash).toBe(checkHash);
+      expect(host.applies[1]?.plan.steps.map((step) => step.id)).toEqual(["check-key"]);
       // Served directly behind Cloudflare's proxy: the host plan has the (IPv4) web filter.
       expect(host.applies[0]?.plan.steps.find((step) => step.id === "web-filter")).toMatchObject({
         state: "change",
@@ -214,6 +226,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       expect(plan.approvals.map((a) => a.kind)).toEqual([
         "cloudflare-apply",
         "iac-apply",
+        "host-apply",
         "host-apply",
       ]);
       expect([...github.secrets.keys()]).toContain("OPSCREW_SSH_PRIVATE_KEY");

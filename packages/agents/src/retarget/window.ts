@@ -2,6 +2,7 @@ import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { edgeProxy } from "@opscrew/iac-templates";
 import type { Retarget } from "@opscrew/plan-schema";
+import { changeCheckPause } from "../check/pause";
 import { failureReason } from "../destroy/deletion";
 import { codeOf, hintOf } from "../shared/errors";
 import {
@@ -303,6 +304,16 @@ export async function maintenanceWindow(
     );
   }
 
+  // The scheduled check opens no issue while the app is offline for the window.
+  if ((await changeCheckPause(deps, session.github, plan, "retarget", "retarget")) === "refused") {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "The scheduled check was not paused, so it would open an issue while the app is offline for the copy. Nothing was changed; the app on the old server keeps running.",
+      {
+        hint: `Run \`${RUN_COMMAND}\` again and approve the pause, or \`${ABORT_COMMAND}\` to undo the move.`,
+      },
+    );
+  }
   const at = deps.clock.now().toISOString();
   await saveMove(session, { ...move, oldAppStoppedAt: at });
   await auditMove(session, {

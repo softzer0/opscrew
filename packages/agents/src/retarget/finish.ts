@@ -1,5 +1,6 @@
 import { isUserFacingError, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
+import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { dataWarning, serverData } from "../destroy/checks";
 import {
@@ -178,6 +179,11 @@ async function finish(
   deps.reporter.success(
     `The move of ${app} to ${freshWords.name} is finished; the old ${words.noun} is deleted.`,
   );
+  // The scheduled check watches the app again (it was paused for the maintenance window).
+  await resumeCheck(deps, session.github, finalPlan, {
+    command: "opscrew provision",
+    phase: "retarget",
+  });
 
   // 6. The final files in a pull request, with the recovery copy when OpsCrew's local files
   // changed (a failure here does not undo the finished move).

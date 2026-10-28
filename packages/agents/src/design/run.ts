@@ -23,6 +23,7 @@ import {
   infraDirFor,
   isServerlessProvider,
   isServerlessTarget,
+  type Observability,
   type PlanService,
   type ProjectFacts,
   type Region,
@@ -36,6 +37,12 @@ import {
 import { appCandidatesText } from "../analyze/summary";
 import { appFlag } from "../apps/choice";
 import { requireOnePagesSite, requireUniqueNames } from "../apps/names";
+import { type CheckRepositoryApi, checkDesignText, readCheckRepository } from "../check/design";
+import {
+  repositoryCheckSettings,
+  requireCheckSettingsPlace,
+  withDesignedCheck,
+} from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { environmentPaths } from "../environments/paths";
@@ -171,6 +178,11 @@ export interface RunDesignOptions {
    * service its source no longer has.
    */
   registry?: Pick<LocalRegistry, "taggedDigest">;
+  /**
+   * GitHub, for the scheduled check's cost: the repository's visibility, issues and the owner's
+   * included Actions minutes (default: a client with the user's token; `null`: none, all unknown).
+   */
+  github?: CheckRepositoryApi | null;
 }
 
 /**
@@ -905,10 +917,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       : ownPlan(planFor(sourceComponents(planned, source.plan, keep)), source.plan);
   const shared = fromSource?.plan ?? own;
   const keptLines = fromSource?.lines ?? ownLines;
-  const kept =
+  // The scheduled check: on for prod and off elsewhere, unless the plan already says.
+  const kept = withDesignedCheck(
     prodPlan === undefined && source === undefined
       ? own
-      : environmentPlan(shared, source, keep, paths);
+      : environmentPlan(shared, source, keep, paths),
+    name,
+  );
   // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
   // a newer interview it is written anyway: its date then says the answers are in it, so the next
   // design keeps what the user edits in plan.yaml instead of taking the answers again.
@@ -942,6 +957,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     for (const warning of localhostImageWarnings(plan.target, preview.localhost)) warn(warning);
   }
   await requireOwnHostnames(paths, plan);
+  requireCheckSettingsPlace(paths, plan);
   // No other app or environment of the repository may share its names or its Pages site.
   const self = { ...(paths.app === undefined ? {} : { app: paths.app }), environment: name };
   await requireUniqueNames(
@@ -1022,6 +1038,17 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const additionLines = additions.lines.map(say);
   for (const line of additionLines) reporter.info(line);
   for (const warning of additions.warnings) warn(warning);
+  // The scheduled check: its interval and Actions minutes against the repository's plan.
+  const check = checkDesignText(
+    plan,
+    await repositoryCheckSettings(paths, plan),
+    plan.observability?.check?.enabled === true
+      ? await readCheckRepository(deps, facts.git, options.github)
+      : {},
+  );
+  const checkLines = check.lines.map(say);
+  for (const line of checkLines) reporter.info(line);
+  for (const warning of check.warnings) warn(warning);
   reporter.info(
     prodPlan === undefined
       ? "Next: run `opscrew adapt` to prepare the code in a pull request."
@@ -1042,7 +1069,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     plan,
     priceSource,
     warnings,
-    lines: [...buildLines, ...componentLines, ...supplyLines, ...additionLines],
+    lines: [...buildLines, ...componentLines, ...supplyLines, ...additionLines, ...checkLines],
   };
 }
 
@@ -1518,6 +1545,10 @@ function keepPlanSettings(
     approvals: previous.approvals,
     deployment: previous.deployment,
     ...(previous.portainer === undefined || serverless ? {} : { portainer: previous.portainer }),
+    // The scheduled check and the add-ons are the user's; localhost has no check.
+    ...(previous.observability === undefined
+      ? {}
+      : { observability: keptObservability(fresh, previous.observability) }),
     deploy: keptDeploy(fresh, previous),
     cicd: {
       ...fresh.cicd,
@@ -1551,6 +1582,13 @@ function keepPlanSettings(
       hint: "Change your answers with `opscrew interview`, or fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again.",
     },
   );
+}
+
+/** The previous plan's `observability`, without the scheduled check on localhost. */
+function keptObservability(fresh: DeployPlan, kept: Observability): Observability {
+  if (fresh.target.provider !== "localhost" || kept.check === undefined) return kept;
+  const { check: _check, ...rest } = kept;
+  return rest;
 }
 
 /**

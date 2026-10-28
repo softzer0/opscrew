@@ -114,7 +114,8 @@ async function adaptApp(
       dnsProvider: "cloudflare",
     }),
   );
-  await runDesign(deps);
+  // No GitHub for the scheduled check's cost: the recording runner must see only package managers.
+  await runDesign(deps, { github: null });
   const github = new FakeGitHub();
   await runAdapt(deps, { github, ai: false });
   const diff = (await git(env, root, "show", "--format=", "HEAD", "--", ".", ":(exclude)opscrew"))

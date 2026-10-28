@@ -1198,3 +1198,63 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns:
     expect(s.handler.requests.find((r) => r.kind === "iac-apply")?.details).toContain(said);
   });
 });
+
+describe.skipIf(!findExecutable("git"))("the scheduled check on a server the user owns", () => {
+  it("adds the check key as root in a host plan of its own, once, and names the server by its host key", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...ownPlan(),
+      observability: { check: { enabled: true } },
+    });
+    const s = await setup({ plan });
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+
+    expect(kinds(s)).toEqual([
+      "cloudflare-apply",
+      "repo-write",
+      "iac-apply",
+      "host-apply",
+      "github-secrets",
+      "host-apply",
+      "github-secrets",
+      "git-push",
+      "pull-request",
+    ]);
+    const check = s.host.applies[1]?.plan;
+    expect(check?.steps).toEqual([
+      expect.objectContaining({
+        id: "check-key",
+        params: expect.objectContaining({ repository: "acme/shop", runAs: "root" }),
+      }),
+    ]);
+    expect(JSON.parse(s.github.secrets.get("OPSCREW_CHECK_SERVER") ?? "")).toEqual({
+      host: OWN_IPV4,
+      port: 22,
+      user: "deploy",
+      knownHosts: `${OWN_IPV4} ssh-ed25519 ${ED25519}\n`,
+    });
+    const config = JSON.parse(await readFile(join(s.root, "opscrew/check/check.json"), "utf8"));
+    const id = `own-${ED25519_FINGERPRINT.slice(7).replace(/\+/g, "-").replace(/\//g, "_")}`;
+    expect(config.environments[0].server).toEqual({
+      id,
+      secret: "OPSCREW_CHECK_SERVER",
+      via: "github",
+    });
+    expect(JSON.stringify(config)).not.toContain(OWN_IPV4);
+
+    // Once the server lists the repository's check key, a new run plans no step for it.
+    s.host.facts = {
+      ...s.host.facts,
+      deployUser: {
+        groups: ["deploy", "docker"],
+        keys: s.host.facts.deployUser?.keys ?? [],
+        checkKeys: ["acme/shop"],
+      },
+    };
+    s.engine.changes = [];
+    s.github.openPull = OPEN_PULL;
+    s.handler.requests.length = 0;
+    await runProvision(s.deps, { services: s.services });
+    expect(kinds(s)).not.toContain("host-apply");
+    expect(s.host.applies).toHaveLength(2);
+  });
+});

@@ -12,7 +12,7 @@ import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-clou
 import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { CHECK_PAUSED_VARIABLE, cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ensureStatePassphrase, readServerAddresses, recordServerAddress } from "../shared";
@@ -261,6 +261,32 @@ async function expectNothingCleanedUp(s: Setup) {
 }
 
 describe.skipIf(!findExecutable("git"))("runDestroy", () => {
+  it("pauses the scheduled check after the confirmation and before anything is deleted", async () => {
+    const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
+    const s = await setup({ plan });
+    await runDestroy(s.deps, { services: s.services });
+    expect(s.events.slice(0, 3)).toEqual([
+      "plan:destroy",
+      "approval:github-settings",
+      "snapshot:create",
+    ]);
+    expect(JSON.parse(s.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "")).toEqual({
+      "shop/prod": { reason: "destroyed", since: NOW },
+    });
+  });
+
+  it("deletes nothing when the check's pause is declined", async () => {
+    const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
+    const s = await setup({ plan, answer: (request) => request.kind !== "github-settings" });
+    const error = (await runDestroy(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toContain("Nothing was deleted.");
+    expect(s.events).toEqual(["plan:destroy", "approval:github-settings"]);
+    expect(s.github.variables.size).toBe(0);
+  });
+
   it("snapshots, lifts protection, destroys, removes the secrets and records the teardown", async () => {
     const s = await setup();
     const { deps, engine, servers, github, handler, services, events } = s;

@@ -127,6 +127,24 @@ describe("renderInfra", () => {
     });
   });
 
+  it("passes the scheduled check's key line to a new server only when given", () => {
+    const line = `restrict,command="df -P -B1 /" ${PUBLIC_KEY} opscrew-check:acme/shop`;
+    const without = renderInfra(plan(), ctx());
+    const files = renderInfra(plan(), ctx({ checkKeyLine: line }));
+    const content = (list: readonly RenderedFile[], name: string) =>
+      list.find((f) => f.path.endsWith(`prod/${name}`))?.content ?? "";
+    expect(content(files, "main.tf")).toContain("  check_key_line     = var.check_key_line\n");
+    expect(
+      content(files, "main.tf").replace("  check_key_line     = var.check_key_line\n", ""),
+    ).toBe(content(without, "main.tf"));
+    expect(content(files, "variables.tf")).toContain('variable "check_key_line" {');
+    expect(JSON.parse(content(files, "terraform.tfvars.json")).check_key_line).toBe(line);
+    // Without it, the root module has nothing of it (the modules' variable defaults to empty).
+    for (const file of without.filter((f) => f.path.includes("/prod/"))) {
+      expect(file.content).not.toContain("check_key");
+    }
+  });
+
   it("adds Cloudflare DNS and restricts web ports to Cloudflare when proxied", () => {
     const files = renderInfra(
       plan({ domain: "example.com", www: true }),
@@ -329,6 +347,24 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
         async (test) => {
           const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-${provider}-`));
           await initAndValidate(test, name, bin, root, renderInfra(planFor(), validatedContext()));
+        },
+        300_000,
+      );
+    }
+    for (const provider of ["hetzner", "digitalocean"] as const) {
+      it.skipIf(!engine)(
+        `validates the ${provider} root with the scheduled check's key with ${name}`,
+        async (test) => {
+          const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-${provider}-check-`));
+          const checkKeyLine = `restrict,command="df -P -B1 /" ${PUBLIC_KEY} opscrew-check:acme/shop`;
+          const context = { ...validatedContext(), checkKeyLine };
+          await initAndValidate(
+            test,
+            name,
+            bin,
+            root,
+            renderInfra(validatedPlans[provider](), context),
+          );
         },
         300_000,
       );

@@ -1,10 +1,21 @@
 import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
-import { otherActiveApps } from "@opscrew/connector-ssh-host";
-import type { IacEngine } from "@opscrew/contracts";
+import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
+import type { IacEngine, ResourceChange } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { additionsPath, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import { checkKeyLine, hasCheckKey } from "../check/host";
+import type { CheckKey } from "../check/key";
+import {
+  type CheckServer,
+  checkKeyStep,
+  deploySetupCheckFiles,
+  environmentCheckKey,
+  provisionCheck,
+  resumeCheck,
+} from "../check/provision";
+import { requireCheckSettingsPlace } from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { builderBranch, workflowBranch } from "../environments/branches";
 import { requireOwnHostnames } from "../environments/hostnames";
@@ -12,7 +23,7 @@ import { requireSharedParts } from "../environments/shared-parts";
 import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
 import { cloudConnectorRemoval } from "../portainer/run";
-import { planProvider, providerProfile } from "../providers";
+import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import {
   applyCloudRunner,
   checkCloudRunner,
@@ -50,6 +61,7 @@ import {
 import { hostPlanFile } from "../shared/host-plan";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
+import { deployShell } from "../status/certificates";
 import { checkAdditions } from "./additions";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
@@ -120,7 +132,7 @@ import {
   STORAGE_PLAN_SUFFIX,
   storageLogin,
 } from "./storage";
-import type { ProvisionOptions, ProvisionResult, SavedPlan } from "./types";
+import type { ProvisionOptions, ProvisionResult, ProvisionServices, SavedPlan } from "./types";
 
 /**
  * After a failed apply: the apply may have replaced the server before it stopped, so the address
@@ -157,6 +169,64 @@ async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPl
       },
     );
   }
+}
+
+/** True when `changes` create (or replace) the server of `module "server"`. */
+function createsServer(
+  changes: readonly ResourceChange[],
+  profile: Pick<ProviderProfile, "serverResourceType">,
+): boolean {
+  return changes.some(
+    (change) =>
+      change.type === profile.serverResourceType &&
+      change.address.startsWith("module.server.") &&
+      (change.action === "create" || change.action === "replace"),
+  );
+}
+
+/**
+ * Where the scheduled check's key goes and how: on the user's own server as root (it has the key
+ * when inspection lists the repository's), on a server OpsCrew created as deploy (it has the key
+ * when this run created it, from its first boot, or when its authorized_keys holds it).
+ * `undefined` when this computer cannot reach the server OpsCrew created (none exists yet).
+ */
+async function checkKeyServer(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    services: ProvisionServices;
+    ownRun: OwnServerRun | undefined;
+    key: CheckKey;
+    repository: string;
+    created: boolean;
+  },
+): Promise<Omit<CheckServer, "reach"> | undefined> {
+  const { ownRun, services, repository } = input;
+  if (ownRun !== undefined) {
+    const known = ownRun.facts.deployUser?.checkKeys ?? [];
+    const adapter = services.own?.host;
+    return {
+      remote: ownRun.session.remote,
+      runAs: "root",
+      apply:
+        adapter === undefined
+          ? applyHostPlan
+          : (remote, hostPlan, options) => adapter.apply(remote, hostPlan, options),
+      hasKey: async () => known.some((name) => name.toLowerCase() === repository.toLowerCase()),
+    };
+  }
+  const remote = await deployShell(deps, input.plan, services);
+  if (remote === undefined) return undefined;
+  const adapter = services.checkHost;
+  return {
+    remote,
+    runAs: "login",
+    apply:
+      adapter === undefined
+        ? applyHostPlan
+        : (shell, hostPlan, options) => adapter.apply(shell, hostPlan, options),
+    hasKey: async () => input.created || hasCheckKey(deps, remote, input.key, repository),
+  };
 }
 
 /** Extra inputs a phase passes to the shared flow. */
@@ -291,6 +361,8 @@ async function provisionFlow(
   if (isServerlessProvider(plan.target.provider) && phase !== "provision") {
     throw serverlessDnsByProvision(plan.target.provider, planFile(plan));
   }
+  // The check's interval and webhook are the repository's: only opscrew/plan.yaml sets them.
+  requireCheckSettingsPlace(deps.paths, plan);
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
 
@@ -427,6 +499,12 @@ async function provisionFlow(
   const { engine, env: engineEnv } = await provisionEngine(deps, plan, options);
   const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   if (deployKey.created) deps.reporter.info("Created a dedicated SSH deploy key for this project.");
+  // The scheduled check's key (the repository's), where the check reads the disk over SSH.
+  const repository = `${github.owner}/${github.repo}`;
+  const checkKey = await environmentCheckKey(deps, plan);
+  if (checkKey?.created) {
+    deps.reporter.info("Created the scheduled check's key, which servers let run only df.");
+  }
   const dir = join(root, plan.infra.dir);
   const approvals: PlanApproval[] = [];
 
@@ -570,12 +648,18 @@ async function provisionFlow(
     server: knownServer,
     ...(ownRender !== undefined ? { own: ownRender } : {}),
     edge: site.edge,
+    // A new cloud server gets the check's key at its first boot, inside the infrastructure plan.
+    ...(checkKey !== undefined && !ownServer
+      ? { checkKeyLine: checkKeyLine(checkKey, repository) }
+      : {}),
   });
   // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).
   const dependabot = await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
   const files = [
     ...deploymentFiles(plan, ctx, site.values),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
+    // The scheduled check's files, rendered from every app's and environment's plan.
+    ...(await deploySetupCheckFiles(deps, plan, github)),
   ];
   // Applying a saved plan keeps the infrastructure code the --plan-only run wrote, which that plan
   // was made from. The other files are in no hashed plan (the pull request and the deploy bring
@@ -736,6 +820,29 @@ async function provisionFlow(
           repository: runnerRepository,
         })
       )?.hash;
+    }
+    // The scheduled check's key on a server that exists: its host plan, shown and saved (a new
+    // server gets it at its first boot, from the infrastructure plan).
+    if (checkKey !== undefined && !createsServer(applied.plan?.changes ?? [], profile)) {
+      const server = await checkKeyServer(deps, {
+        plan,
+        services,
+        ownRun,
+        key: checkKey,
+        repository,
+        created: false,
+      });
+      if (server !== undefined) {
+        await checkKeyStep(deps, {
+          plan,
+          key: checkKey,
+          repository,
+          server,
+          command,
+          phase,
+          planOnly: true,
+        });
+      }
     }
     // The environment's runner on the runner machines it leaves and on its own: their host plans,
     // shown and saved.
@@ -911,6 +1018,42 @@ async function provisionFlow(
     noun: "server",
   });
 
+  // 9b. The scheduled check: its key on the server (a host plan of its own, approved by its hash)
+  // where it reads the disk over SSH, then its secrets.
+  // A server this apply created got the key at its first boot.
+  const created = createsServer(applied.plan?.changes ?? [], profile);
+  const keyServer =
+    checkKey === undefined
+      ? undefined
+      : await checkKeyServer(deps, { plan, services, ownRun, key: checkKey, repository, created });
+  const checkHost = await provisionCheck(deps, {
+    plan,
+    github,
+    ...(checkKey !== undefined ? { key: checkKey } : {}),
+    ...(keyServer !== undefined
+      ? {
+          server: {
+            ...keyServer,
+            reach: {
+              host: secretsTarget.host,
+              port: ownRun?.sshPort ?? 22,
+              user: "deploy",
+              knownHosts: secretsTarget.knownHosts,
+            },
+          },
+        }
+      : {}),
+    storeSecrets: options.secrets !== false,
+    services,
+    command,
+    phase,
+  });
+  if (checkHost?.approval) {
+    approvals.push(approvalEntry(checkHost.approval));
+    plan = record(checkHost.applied || host?.applied === true);
+    await writePlanIfChanged(deps, persisted(plan));
+  }
+
   // 10. Commit, push and open the pull request (with the user's additions, which the deploy
   // uploads, and the recovery copy when this computer's files changed).
   const published = await publishDeployment(deps, {
@@ -928,6 +1071,8 @@ async function provisionFlow(
   plan = published.plan;
   const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // The environment is set up again: a pause of its check (a move's window, a teardown) ends.
+  await resumeCheck(deps, github, plan, { command, phase });
   if (renewed && secretsStored && ctx.originTls !== undefined) {
     await deployRenewedCertificate(deps, github, plan, phase);
   }

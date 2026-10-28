@@ -68,7 +68,7 @@ describe("two static sites in one repository, each designed on Cloudflare", () =
         appDir: "sites/web",
       }),
     );
-    const first = (await runDesign(web)).plan;
+    const first = (await runDesign(web, { github: null })).plan;
     const firstText = await readFile(web.paths.files.plan, "utf8");
 
     await addApp(root, "docs", "sites/docs");
@@ -77,7 +77,7 @@ describe("two static sites in one repository, each designed on Cloudflare", () =
     // The interview fills the app's folder from its record.
     const interviewed = await runInterview(docs, { answers: answers("docs.example.com") });
     expect(interviewed.requirements.appDir).toBe("sites/docs");
-    const second = (await runDesign(docs)).plan;
+    const second = (await runDesign(docs, { github: null })).plan;
 
     // The first app is named as detection names it; a further app after its key, which is unique.
     expect(first.app).toMatchObject({ name: "sites", buildContext: "sites/web" });
@@ -116,7 +116,7 @@ describe("two static sites in one repository, each designed on Cloudflare", () =
       makeRequirements({ ...pages, appDir: "sites/web" }),
     );
     // No GitHub remote yet, so design cannot ask GitHub and offers Pages as it is.
-    expect((await runDesign(web)).plan.target.provider).toBe("github-pages");
+    expect((await runDesign(web, { github: null })).plan.target.provider).toBe("github-pages");
     await addApp(root, "docs", "sites/docs");
     const docs = await createTestPhaseDeps({ root, app: "docs" });
     await runAnalyze(docs, { ai: false });
@@ -126,7 +126,7 @@ describe("two static sites in one repository, each designed on Cloudflare", () =
       makeRequirements({ ...pages, domain: "docs.example.com", appDir: "sites/docs" }),
     );
     expect(await exists(web.paths.files.plan)).toBe(true);
-    const error = await runDesign(docs).catch((e: unknown) => e);
+    const error = await runDesign(docs, { github: null }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).message).toBe(
       "GitHub Pages publishes one site per repository, and the first app's prod is already on it, so the app docs's prod cannot be. Nothing was written.",

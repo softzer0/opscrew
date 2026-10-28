@@ -156,6 +156,58 @@ describe("runDesign", () => {
     expect(text).toContain("opscrew adapt");
   });
 
+  it("turns the scheduled check on for prod and off elsewhere, and shows its minutes against GitHub's plan", async () => {
+    const facts = { ...staticSpaFacts(), git: { owner: "acme", repo: "shop" } };
+    const deps = await setup(facts);
+    const github = {
+      getRepo: async () => ({ defaultBranch: "main", private: true, canPush: true }),
+      includedMinutes: async () => 3_000,
+    };
+    const result = await runDesign(deps, { catalog: euCatalog(), github });
+    expect(result.plan.observability).toEqual({ check: { enabled: true } });
+    expect(result.lines).toContain(
+      "It uses about 744 ubuntu-slim minutes a month (each run counts as a whole minute), about 248 of the 3,000 included minutes of your GitHub plan: a slim minute uses a third of an included one.",
+    );
+
+    // The user's own setting stays; a set interval past 750 minutes on GitHub Free is warned of.
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      observability: { check: { enabled: true, intervalMinutes: 15 } },
+    });
+    const free = { ...github, includedMinutes: async () => 2_000 };
+    const again = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    const kept = await runDesign(again, { catalog: euCatalog(), github: free });
+    expect(kept.plan.observability?.check).toEqual({ enabled: true, intervalMinutes: 15 });
+    expect(kept.warnings).toContainEqual(
+      expect.stringContaining("observability.check.intervalMinutes is 15"),
+    );
+
+    // Another environment's check starts off; the interval stays prod's alone.
+    const staging = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "staging",
+    });
+    const designed = await runDesign(staging, { catalog: euCatalog(), github });
+    expect(designed.plan.observability).toEqual({ check: { enabled: false } });
+    expect(designed.lines).toContain(
+      "Scheduled check: off for this environment (set observability.check.enabled to true to turn it on).",
+    );
+    await writeArtifact("plan", staging.paths.files.plan, {
+      ...designed.plan,
+      observability: { check: { enabled: true, intervalMinutes: 5 } },
+    });
+    const refused = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "staging",
+    });
+    await expect(runDesign(refused, { catalog: euCatalog(), github })).rejects.toThrow(
+      /opscrew\/environments\/staging\/plan\.yaml is not valid/,
+    );
+  });
+
   it("says which release command every deploy runs and where to change it", async () => {
     const deps = await setup(
       makeFacts({

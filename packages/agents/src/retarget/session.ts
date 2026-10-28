@@ -23,6 +23,7 @@ import {
   type Retarget,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { renderedCheckKeyLine } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import { providerProfile } from "../providers";
@@ -314,7 +315,14 @@ export async function renderFiles(
   movePlan: DeployPlan = session.plan,
 ): Promise<RenderedFile[]> {
   const plan = withCloudflareZone(movePlan, session.cloudflare);
+  // The new server gets the scheduled check's key at its first boot, as from provision.
+  const checkKeyLine = await renderedCheckKeyLine(
+    session.deps,
+    plan,
+    `${session.github.owner}/${session.github.repo}`,
+  );
   const ctx = await deploymentRenderContext(session.deps, {
+    ...(checkKeyLine !== undefined ? { checkKeyLine } : {}),
     plan,
     requirements: session.requirements,
     github: { owner: session.github.owner, repo: session.github.repo },

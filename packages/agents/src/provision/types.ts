@@ -140,6 +140,11 @@ export interface ProvisionServices {
    */
   runnerHost?: CloudRunnerHost;
   /**
+   * The scheduled check's key on a server OpsCrew created: the host adapter's apply as deploy
+   * (default: `applyHostPlan`; a fake in tests).
+   */
+  checkHost?: Pick<HostAdapterApi, "apply">;
+  /**
    * The runner machine of `runner: host`: its admin login's shell and the host adapter (default:
    * SSH with its recorded login, `inspectHost` and `applyHostPlan`; fakes in tests).
    */

@@ -8,12 +8,18 @@ import type { PortainerServices } from "../provision/types";
 
 /**
  * The GitHub calls the cleanup needs (a `GitHubClient` or a test fake): the deploy secrets, the
- * GitHub environment that holds them when they live in one, and for the user's Portainer its
- * deploy branch (without `deleteBranch` the branch stays and is listed under what remains).
+ * GitHub environment that holds them when they live in one, the scheduled check's pause, and for
+ * the user's Portainer its deploy branch (without `deleteBranch` the branch stays and is listed
+ * under what remains).
  */
 export type DestroyGitHubApi = Pick<
   GitHubClient,
-  "deleteActionsSecret" | "deleteEnvironmentSecret" | "deleteEnvironment"
+  | "deleteActionsSecret"
+  | "deleteEnvironmentSecret"
+  | "deleteEnvironment"
+  | "getRepoVariable"
+  | "setRepoVariable"
+  | "deleteRepoVariable"
 > &
   Partial<Pick<GitHubClient, "deleteBranch">>;
 

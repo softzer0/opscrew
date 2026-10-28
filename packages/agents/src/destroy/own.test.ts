@@ -11,7 +11,7 @@ import {
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { TOOLS } from "@opscrew/iac-templates";
-import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   everythingPrinted,
@@ -723,6 +723,36 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
       action: "destroy-confirm",
       decision: "refused",
     });
+  });
+
+  it("pauses the scheduled check, and the last app's teardown removes the repository's check key", async () => {
+    const s = await deployed();
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    await writeArtifact("plan", s.deps.paths.files.plan, {
+      ...plan,
+      observability: { check: { enabled: true } },
+    });
+    const facts = structuredClone(s.host.facts);
+    if (facts.deployUser !== null) facts.deployUser.checkKeys = ["acme/shop", "acme/other"];
+    s.host.facts = HostFactsSchema.parse(facts);
+    await runDestroy(s.deps, { services: services(s) });
+    expect(kinds(s)).toEqual([
+      "github-settings",
+      "iac-apply",
+      "host-apply",
+      "cloudflare-apply",
+      "github-secrets",
+    ]);
+    expect(JSON.parse(s.github.variables.get("OPSCREW_CHECK_PAUSED") ?? "")).toEqual({
+      "shop/prod": { reason: "destroyed", since: expect.any(String) },
+    });
+    // Only this repository's line goes; another repository's check key stays.
+    const removal = s.host.applies.at(-1)?.plan.steps.filter((step) => step.id === "check-key");
+    expect(removal).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({ remove: true, repository: "acme/shop" }),
+      }),
+    ]);
   });
 
   it("tunnel mode: removes the tunnel and the connector; no address and no secret anywhere", async () => {

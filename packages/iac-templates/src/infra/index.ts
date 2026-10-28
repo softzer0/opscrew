@@ -128,7 +128,15 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   };
 }
 
-function mainTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
+/** The root variable and `module "server"` argument of the scheduled check's key line. */
+const CHECK_KEY_LINE = "check_key_line";
+
+function mainTf(
+  plan: DeployPlan,
+  shape: RootShape,
+  pieces: TunnelPieces | undefined,
+  checkKey: boolean,
+): string {
   const lines = [rootHeader(plan), ""];
   if (shape.moving) lines.push(MOVE_NOTE, "");
   for (const provider of shape.providers) {
@@ -149,7 +157,12 @@ function mainTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undef
       `module "${server.module}" {`,
       `  source = "../modules/${server.provider.module}"`,
       "",
-      ...alignedArguments(server.provider.moduleArguments(server.prefix)),
+      ...alignedArguments([
+        ...server.provider.moduleArguments(server.prefix),
+        ...(checkKey && server.module === "server"
+          ? [[CHECK_KEY_LINE, `var.${CHECK_KEY_LINE}`] as const]
+          : []),
+      ]),
       "}",
       "",
     );
@@ -208,6 +221,7 @@ function variables(
   plan: DeployPlan,
   shape: RootShape,
   pieces: TunnelPieces | undefined,
+  checkKey: boolean,
 ): VariableSpec[] {
   const base: VariableSpec[] = [
     APP_NAME_VARIABLE,
@@ -217,6 +231,16 @@ function variables(
       type: "string",
       description: "Public half of the deploy key.",
     },
+    ...(checkKey
+      ? [
+          {
+            name: CHECK_KEY_LINE,
+            type: "string",
+            description:
+              "The scheduled check's line for the deploy user's authorized_keys (its key, restricted to df), written at a new server's first boot.",
+          },
+        ]
+      : []),
     {
       name: "ssh_allowed_cidrs",
       type: "list(string)",
@@ -287,6 +311,8 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
     values[`${prefix}backups`] = target.backups;
   }
   values.deploy_ssh_public_key = ctx.deploySshPublicKey.trim();
+  const checkKey = ctx.checkKeyLine !== undefined;
+  if (checkKey) values[CHECK_KEY_LINE] = ctx.checkKeyLine;
   values.ssh_allowed_cidrs = plan.security.sshAllowedCidrs;
   values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   return {
@@ -294,8 +320,8 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       ...shape.providers.map((provider) => provider.terraformProvider),
       ...(usesCloudflare(plan) ? [CLOUDFLARE_PROVIDER] : []),
     ]),
-    main: mainTf(plan, shape, pieces),
-    variables: variablesTf(plan, variables(plan, shape, pieces)),
+    main: mainTf(plan, shape, pieces, checkKey),
+    variables: variablesTf(plan, variables(plan, shape, pieces, checkKey)),
     outputs: outputsTf(plan, shape, pieces),
     tfvars: {
       ...values,

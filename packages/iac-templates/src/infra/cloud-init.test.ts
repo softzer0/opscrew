@@ -102,7 +102,7 @@ echo "host keys: $(ssh-keyscan -p 2222 127.0.0.1 2>/dev/null | awk '{ print $2 }
 `;
 }
 
-const rendered = renderTemplate(template, { ssh_public_key: PUBLIC_KEY });
+const rendered = renderTemplate(template, { ssh_public_key: PUBLIC_KEY, check_key_entry: "" });
 const config = parse(rendered) as CloudConfig;
 const file = (path: string) => config.write_files.find((f) => f.path === path);
 const installer = file("/usr/local/sbin/opscrew-install-docker");
@@ -112,6 +112,31 @@ describe("cloud-init template", () => {
   it("renders to a cloud-config with the deploy key and no stray interpolation", () => {
     expect(rendered.startsWith("#cloud-config\n")).toBe(true);
     expect(config.users[0]?.ssh_authorized_keys).toEqual([PUBLIC_KEY]);
+  });
+
+  it("adds the scheduled check's line, restricted to df, after the deploy key", () => {
+    const line = `restrict,command="df -P -B1 /" ${PUBLIC_KEY.split(" ").slice(0, 2).join(" ")} opscrew-check:acme/shop`;
+    // As main.tf builds it: a second list item, quoted by jsonencode.
+    const entry = `\n      - ${JSON.stringify(line)}`;
+    const withCheck = renderTemplate(template, {
+      ssh_public_key: PUBLIC_KEY,
+      check_key_entry: entry,
+    });
+    expect((parse(withCheck) as CloudConfig).users[0]?.ssh_authorized_keys).toEqual([
+      PUBLIC_KEY,
+      line,
+    ]);
+    // Only that line differs.
+    expect(withCheck.replace(entry, "")).toBe(rendered);
+    for (const module of MODULES) {
+      expect(MODULE_FILES[`${module}/main.tf`]).toContain(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL's interpolation, not JavaScript's.
+        'check_key_entry = var.check_key_line == "" ? "" : "\\n      - ${jsonencode(var.check_key_line)}"',
+      );
+      expect(MODULE_FILES[`${module}/variables.tf`]).toMatch(
+        /variable "check_key_line" \{[^}]*default {5}= ""/,
+      );
+    }
   });
 
   it("never installs the distribution's Docker packages", () => {

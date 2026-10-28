@@ -25,6 +25,7 @@ import {
   siteHosts,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
+import { deploySetupCheckFiles, provisionCheck, resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
@@ -486,6 +487,8 @@ export async function provisionPortainer(
   const files = [
     ...deploymentFiles(plan, ctx),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
+    // The scheduled check's files, rendered from every app's and environment's plan.
+    ...(await deploySetupCheckFiles(deps, plan, github)),
   ];
   // A refusal names the Cloudflare plans this run applied (each one's approval is this run's).
   const cloudflareApplied = (sharedResult?.approvals ?? []).map(
@@ -956,6 +959,15 @@ export async function provisionPortainer(
     where: { host: PORTAINER_SECRETS_RECORD, owner: github.owner, repo: github.repo },
     noun: "app",
   });
+  // 8b. The scheduled check's secrets: only the webhook's here, with no disk to read.
+  await provisionCheck(deps, {
+    plan,
+    github,
+    storeSecrets: options.secrets !== false,
+    services,
+    command,
+    phase,
+  });
 
   // 9. Commit, push and open the pull request.
   const published = await publishDeployment(deps, {
@@ -977,6 +989,8 @@ export async function provisionPortainer(
   deps.reporter.info(PORTAINER_NOTES);
   const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // The environment is set up again: a pause of its check (a teardown) ends.
+  await resumeCheck(deps, github, plan, { command, phase });
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),
     ...cloudflareHash,

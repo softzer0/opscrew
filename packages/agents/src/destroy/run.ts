@@ -41,6 +41,7 @@ import {
   deploySecretsLeft,
   type GitHubTarget,
   nothingDeployed,
+  pauseCheckForTeardown,
   recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
@@ -619,6 +620,10 @@ export async function runDestroy(
     },
     options.confirm,
   ).catch(async (error: unknown) => {
+    if (bucket !== undefined) await discardBucketDeletion(bucket);
+    throw error;
+  });
+  await pauseCheckForTeardown(deps, github, plan).catch(async (error: unknown) => {
     if (bucket !== undefined) await discardBucketDeletion(bucket);
     throw error;
   });

@@ -21,8 +21,10 @@ resource "digitalocean_droplet" "this" {
   ssh_keys   = [digitalocean_ssh_key.deploy.fingerprint]
   tags       = concat([digitalocean_tag.app.name], var.shared_tags)
 
+  # The scheduled check's key goes in as a second authorized key (YAML-quoted); none without it.
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    ssh_public_key = var.ssh_public_key
+    ssh_public_key  = var.ssh_public_key
+    check_key_entry = var.check_key_line == "" ? "" : "\n      - ${jsonencode(var.check_key_line)}"
   })
 
   # Daily backups at 04:00 UTC; the block is left out when backups are off.

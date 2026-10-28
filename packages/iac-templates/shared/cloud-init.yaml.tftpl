@@ -9,7 +9,7 @@ users:
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - ${ssh_public_key}
+      - ${ssh_public_key}${check_key_entry}
 ssh_pwauth: false
 disable_root: true
 package_update: true

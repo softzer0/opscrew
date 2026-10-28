@@ -46,6 +46,7 @@ import {
   deploySecretsLeft,
   type GitHubTarget,
   nothingDeployed,
+  pauseCheckForTeardown,
   recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
@@ -230,6 +231,7 @@ export async function destroyCloudflareWorkers(
     },
     options.confirm,
   );
+  await pauseCheckForTeardown(deps, github, plan);
 
   // 5. The Worker's destroy plan is approved before anything changes.
   const worker = await approveRootDeletion(session, {
@@ -493,6 +495,7 @@ export async function destroyGithubPages(
     },
     options.confirm,
   );
+  await pauseCheckForTeardown(deps, github, plan);
 
   // 5. The DNS records, while the site still claims the domain.
   const approvals: (ApprovalRecord | undefined)[] = [];

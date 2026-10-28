@@ -798,7 +798,9 @@ describe("design on GitHub Pages", () => {
         "GitHub's terms do not allow GitHub Pages for running a business, e-commerce or a commercial SaaS.",
       ]),
     );
-    expect(api.calls).toEqual(["/repos/acme/site"]);
+    // Whether Pages is allowed, then the scheduled check's visibility (public: no plan read).
+    expect(api.calls).toEqual(["/repos/acme/site", "/repos/acme/site"]);
+    expect(result.lines).toContain("Its Actions minutes are free: the repository is public.");
     // The GitHub token reaches no output, plan or audit entry.
     expect(await outputs(deps)).not.toContain(GITHUB);
     expect(JSON.stringify(deps.audit)).not.toContain(GITHUB);

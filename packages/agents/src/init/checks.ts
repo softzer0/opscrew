@@ -26,10 +26,11 @@ import {
   errorText,
   findExecutable,
   isUserFacingError,
+  listText,
   lowerFirst,
 } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
-import { usesTunnel } from "@opscrew/iac-templates";
+import { CHECK_PAUSED_VARIABLE, usesTunnel } from "@opscrew/iac-templates";
 import {
   type ArtifactKind,
   type ArtifactOf,
@@ -105,6 +106,8 @@ export type InitCheckId =
   | "namecheap"
   | "godaddy"
   | "github"
+  /** Listed only with the scheduled check on: the GitHub token's permissions it needs. */
+  | "scheduled-check"
   | "model"
   | "scanners"
   | "gitignore";
@@ -353,6 +356,13 @@ export async function runInitChecks(
         true,
       ),
     ),
+    ...(artifacts.plan?.observability?.check?.enabled === true
+      ? [
+          guard("scheduled-check", "GitHub permissions for the scheduled check", true, () =>
+            withBudget(checkScheduledCheck(github), budget, "GitHub", true),
+          ),
+        ]
+      : []),
     guard("model", "Model credentials", false, () => checkModel(deps)),
     guard("scanners", "Optional scanners", false, async () => checkScanners(which)),
     guard("gitignore", ".opscrew/ and .terraform/ in .gitignore", false, () =>
@@ -1374,6 +1384,66 @@ async function checkGitHub(
     };
   }
   return { status: "pass", message: `The GitHub token from ${source} can push to ${name}.` };
+}
+
+/**
+ * With the scheduled check on: whether the GitHub token has the permissions OpsCrew's side of the
+ * check needs, each probed with a read (nothing changes): Issues (`status` reads the check's open
+ * issues), Actions (its workflow's state) and Variables (pausing it while OpsCrew moves or tears
+ * down an app; writing is checked only when it pauses). Names each missing one and where to add
+ * it. Not checked offline or without a token that reads the repository (the GitHub check says
+ * why).
+ */
+async function checkScheduledCheck(github: () => Promise<GitHubLookup>): Promise<CheckResult> {
+  const { info, source, client, repo } = await github();
+  const coordinates = info.coordinates;
+  if (client === undefined || coordinates === undefined || repo === undefined) {
+    return {
+      status: "skip",
+      message:
+        source === undefined || coordinates === undefined
+          ? "Not checked: the GitHub token check says what is missing."
+          : "Not checked: run `opscrew init` online to check the token's Issues, Actions and Variables permissions.",
+    };
+  }
+  const { owner, repo: name } = coordinates;
+  const probes = [
+    { permission: "Issues: Read", read: () => client.openIssues(owner, name, "opscrew-check") },
+    {
+      permission: "Actions: Read and write",
+      read: () => client.checkWorkflowState(owner, name, "opscrew-check.yml"),
+    },
+    {
+      permission: "Variables: Read and write",
+      read: () => client.getRepoVariable(owner, name, CHECK_PAUSED_VARIABLE),
+    },
+  ];
+  const missing: string[] = [];
+  for (const probe of probes) {
+    try {
+      await probe.read();
+    } catch (error) {
+      if (!isPermissionError(error)) {
+        return {
+          status: "fail",
+          message: `OpsCrew could not check the token's ${probe.permission} permission on ${owner}/${name}: ${errorText(error)}`,
+          fix: "Run `opscrew init` again; if it keeps failing, check GitHub's status page.",
+        };
+      }
+      missing.push(probe.permission);
+    }
+  }
+  if (missing.length === 0) {
+    return {
+      status: "pass",
+      message: `The GitHub token from ${source} can read the scheduled check's issues, its workflow's state and the repository's variables.`,
+    };
+  }
+  return {
+    status: "fail",
+    message: `The GitHub token from ${source} lacks ${listText(missing)} on ${owner}/${name}, which the scheduled check needs: Issues for its open alerts in \`opscrew status\`, Actions for its workflow's state, Variables for pausing it while OpsCrew moves or tears down an app.`,
+    fix: `Add ${listText(missing)} under the token's Repository permissions at https://github.com/settings/personal-access-tokens, then run \`opscrew init\` again. Or turn the check off with observability.check.enabled: false in the plan.`,
+  };
 }
 
 async function checkModel(deps: PhaseDeps): Promise<CheckResult> {

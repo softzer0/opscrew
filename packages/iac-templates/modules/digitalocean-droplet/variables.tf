@@ -30,6 +30,12 @@ variable "ssh_public_key" {
   type        = string
 }
 
+variable "check_key_line" {
+  description = "The scheduled check's authorized_keys line for the deploy user (its key, restricted to df), written at the first boot; empty for none."
+  type        = string
+  default     = ""
+}
+
 variable "ssh_allowed_cidrs" {
   description = "Networks allowed to reach SSH (port 22)."
   type        = list(string)

@@ -66,6 +66,10 @@ async function setup(options: Options = {}) {
       deleteEnvironment: async () => {
         throw new Error("no GitHub environment expected");
       },
+      // The plan has no scheduled check, so nothing pauses it.
+      getRepoVariable: async () => undefined,
+      setRepoVariable: async () => undefined,
+      deleteRepoVariable: async () => undefined,
     },
   };
   const context = () => {

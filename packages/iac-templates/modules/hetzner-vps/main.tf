@@ -68,8 +68,10 @@ resource "hcloud_server" "this" {
   rebuild_protection = var.delete_protection
   labels             = var.labels
 
+  # The scheduled check's key goes in as a second authorized key (YAML-quoted); none without it.
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    ssh_public_key = var.ssh_public_key
+    ssh_public_key  = var.ssh_public_key
+    check_key_entry = var.check_key_line == "" ? "" : "\n      - ${jsonencode(var.check_key_line)}"
   })
 
   public_net {

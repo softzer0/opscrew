@@ -19,6 +19,7 @@ import {
   readArtifact,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { renderedCheckKeyLine } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import { readEnvironmentRequirements } from "../environments/requirements";
@@ -110,6 +111,8 @@ export async function deploymentRenderContext(
      * for a plan that follows a branch.
      */
     builderBranch?: string | undefined;
+    /** The scheduled check's authorized_keys line, which a new cloud server gets at first boot. */
+    checkKeyLine?: string;
   },
 ): Promise<RuntimeContext> {
   const { requirements, cloudflare, own, edge } = input;
@@ -127,6 +130,7 @@ export async function deploymentRenderContext(
     ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
     ...(own?.sshPort !== undefined ? { sshPort: own.sshPort } : {}),
     ...(input.builderBranch !== undefined ? { builderBranch: input.builderBranch } : {}),
+    ...(input.checkKeyLine !== undefined ? { checkKeyLine: input.checkKeyLine } : {}),
     ...(others.length > 0 ? { otherAppDirs: others } : {}),
     ...(cloudflare
       ? {
@@ -307,6 +311,12 @@ export async function previewDeploymentFiles(
       );
   const own = await previewRender(deps, plan);
   const { edge, values } = await recordedEdge(deps, plan);
+  const checkKeyLine = await renderedCheckKeyLine(
+    deps,
+    plan,
+    `${github.owner}/${github.repo}`,
+    options.createDeployKey !== false,
+  );
   const files = deploymentFiles(
     plan,
     await deploymentRenderContext(deps, {
@@ -319,6 +329,7 @@ export async function previewDeploymentFiles(
       server,
       own,
       edge,
+      ...(checkKeyLine !== undefined ? { checkKeyLine } : {}),
     }),
     values,
   );

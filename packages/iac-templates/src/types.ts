@@ -24,6 +24,12 @@ export interface RenderContext {
   github: { owner: string; repo: string };
   /** Deploy key public half (`ssh-ed25519 AAAA… comment`). */
   deploySshPublicKey: string;
+  /**
+   * The scheduled check's authorized_keys line for the deploy user
+   * (`restrict,command="df -P -B1 /" <key> opscrew-check:<owner>/<repo>`), which a new cloud
+   * server gets at its first boot; absent without the check (the files stay as they were).
+   */
+  checkKeyLine?: string;
   /** Email for TLS certificate registration (Caddy ACME). */
   acmeEmail?: string;
   cloudflare?: {

@@ -20,6 +20,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
+import { changeCheckPause } from "../check/pause";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
 import {
@@ -223,6 +224,42 @@ export async function resolveGitHub(
     });
   }
   return { ...coordinates, api };
+}
+
+/**
+ * 4. After the typed name and before anything is deleted: the scheduled check is paused for the
+ * environment (`destroyed`, a `github-settings` approval), so it opens no issue for the app going
+ * away. Declined, the teardown stops with nothing deleted. Without GitHub (the reason was said)
+ * a warning says the check may open an issue.
+ */
+export async function pauseCheckForTeardown(
+  deps: PhaseDeps,
+  github: GitHubTarget,
+  plan: DeployPlan,
+): Promise<void> {
+  const { api, owner, repo } = github;
+  if (!api || !owner || !repo) {
+    if (plan.observability?.check?.enabled === true) {
+      deps.reporter.warn(
+        "OpsCrew cannot pause the scheduled check for this environment either, so it may open an issue once the app is gone; close it, and it stays closed once the next deploy-setup pull request is merged.",
+      );
+    }
+    return;
+  }
+  const outcome = await changeCheckPause(
+    deps,
+    { api, owner, repo },
+    plan,
+    "destroyed",
+    "provision",
+  );
+  if (outcome === "refused") {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "The scheduled check was not paused, so it would open an issue once the app is gone. Nothing was deleted.",
+      { hint: `${SHOWS_PLAN_AGAIN} Approve the pause then.` },
+    );
+  }
 }
 
 export function secretsPage(github: GitHubTarget): string {

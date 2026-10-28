@@ -64,6 +64,7 @@ import {
   deploySecretsLeft,
   type GitHubTarget,
   nothingDeployed,
+  pauseCheckForTeardown,
   previewCloudflareRemoval,
   recordTeardown,
   removeDeploySecrets,
@@ -575,6 +576,12 @@ export async function destroyOwnServer(
       },
       options.confirm,
     ).catch(async (error: unknown) => {
+      if (bucket !== undefined) await discardBucketDeletion(bucket);
+      throw error;
+    });
+  }
+  if (removeApp) {
+    await pauseCheckForTeardown(deps, github, plan).catch(async (error: unknown) => {
       if (bucket !== undefined) await discardBucketDeletion(bucket);
       throw error;
     });

@@ -7,6 +7,7 @@ import {
   type DeployPlan,
   readArtifact,
 } from "@opscrew/plan-schema";
+import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { costFor } from "../design";
 import { confirmDeletion, forgetHostKeys } from "../destroy/deletion";
@@ -301,6 +302,11 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     `move to ${providerWords(moveProvider(to)).name} aborted`,
   );
   await auditStep(session, "aborted", `the deployment stays on ${from.provider} at ${oldHost}`);
+  // The scheduled check watches the app again, when the maintenance window paused it.
+  await resumeCheck(deps, session.github, restored, {
+    command: "opscrew provision",
+    phase: "retarget",
+  });
 
   const healthy = await isAppHealthy(
     remoteFor(deps, session.services, session.deployKey.privateKeyFile, oldHost),
