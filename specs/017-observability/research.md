@@ -388,4 +388,48 @@ The agent always connects to the hub over WebSocket (`HUB_URL`, `TOKEN`, `KEY`) 
 
 ## Spike results (T1702)
 
-To be filled by the spike, one line per item: what was run, and what was seen.
+Items 4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2), with OpsCrew's own `sshArgs` and settings. Everything was removed afterwards. Items 1–3 follow from the add-on run; items 5 and 6 need the e2e GitHub and Cloudflare accounts.
+
+4. **The check key:**
+   - **Setup:** two sshd containers, one per OpsCrew setting:
+     - Ubuntu 24.04 (OpenSSH 9.6p1) with the cloud-init drop-in (`AllowUsers deploy`, `MaxAuthTries 3`);
+     - Debian 13 (OpenSSH 10.0p2) with the own-server drop-in.
+   - **The line that works:** `restrict,command="df -P -B1 /" ssh-ed25519 AAAA… opscrew-check` in `deploy`'s `authorized_keys`.
+   - **Other commands:** no command, `bash`, `rm -rf /tmp/x` and `cat /etc/passwd` all print only the `df` table, exit 0. `/tmp/x` is untouched.
+   - **What fails:**
+     - `-tt`: "PTY allocation request failed";
+     - `-L`: "administratively prohibited";
+     - `-W`: fails;
+     - `-R`: nothing listens on the server;
+     - `scp` and `sftp`: no file moves either way.
+   - **No conflict with OpsCrew's settings:** `sshd -T` shows no `ForceCommand` and `AuthenticationMethods any`.
+   - **The ordinary deploy key** beside it works as before.
+   - **Not covered:** a user's own `ForceCommand` or `AllowUsers` on an own server would override or block it. OpsCrew sets neither.
+7. **Portainer CE 2.45.2** (the pinned image), with an admin's token and a standard user's (`ptr_…`, `X-API-Key`):
+   - **Logs:**
+     - A container without a TTY answers `application/vnd.docker.multiplexed-stream`, with 8-byte frames of types 1 and 2. A TTY container answers `application/vnd.docker.raw-stream`, CRLF included.
+     - **`follow=1` doesn't stream:** Portainer buffers it. The first bytes arrive after 42–44 s, in one burst of about 4 KiB, on 5 runs with both tokens. Closing the client does end it.
+     - **Polling works:** `since=<seconds>.<nanoseconds + 1>`, from the last line's timestamp, answers in 80–220 ms with no repeated line. Millisecond precision repeats the last line.
+   - **Stats:**
+     - `stream=false` takes 1.0–1.9 s with `precpu_stats` filled;
+     - `one-shot=true` takes under 70 ms with `precpu_stats` empty, so no CPU figure;
+     - `inactive_file` is present.
+   - **Inspect:** gives `RestartCount`, `State.StartedAt` and `HostConfig.Memory`, and also `Config.Env`.
+   - **`/info`:** gives `NCPU` and `MemTotal` with either token.
+   - **A standard user's token:**
+     - reads logs, stats, inspect and `/info` for its own stacks' containers;
+     - gets 403 "access denied to resource" for another user's stack or a container made with the Docker CLI;
+     - `containers/json` lists only its own containers (2 where the admin saw 22).
+8. **Following over SSH:**
+   - **Setup:** Node spawned `ssh`, as `NodeCommandRunner` does (detached, stdin ignored), then stopped it with SIGTERM and with SIGKILL to the process group.
+   - **Without `-tt`,** the remote process is orphaned to PID 1 and ends only when it next writes (SIGPIPE).
+     - A quiet follower (`docker logs -f` on a silent container) stays running.
+     - `ServerAliveInterval` doesn't help.
+   - **With `-tt`,** it always ends, but the output has CRLF and stderr merged into stdout.
+   - **Watching the parent ends it within about 1 s** on both OpenSSH versions, keeps stdout and stderr apart, and passes the follower's own exit code through: `<follow> & p=$!; while kill -0 $PPID 2>/dev/null && kill -0 $p 2>/dev/null; do sleep 1; done; kill $p 2>/dev/null; wait $p`.
+
+**What this changes:**
+- **Portainer's `--follow`** polls with nanosecond `since`. Stats never use `one-shot`.
+- **A standard user's token sees only that user's stacks,** so `status` and `logs` say so when the app's containers aren't visible to it, rather than calling them absent.
+- **SSH's `--follow`** runs `docker logs --follow` inside the parent-watching wrapper above.
+- **R3 holds as designed.**

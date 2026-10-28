@@ -185,13 +185,13 @@ Effort`.
       - It demultiplexes Docker's framing: an 8-byte header, the stream type in byte 0, and a big-endian uint32 size in bytes 4–7.
       - It passes a TTY container's raw stream as `stdout`.
       - It splits lines, and keeps a line cut across two frames whole.
-    - **`containerStats`** reads `stream=false` without `one-shot`, so `precpu_stats` is filled.
+    - **`containerStats`** reads `stream=false` without `one-shot` (with it, `precpu_stats` is empty: spike result 7), so `precpu_stats` is filled.
       - CPU % = `(cpu delta / system delta) × online_cpus × 100`.
       - Memory is `usage − inactive_file` on cgroup v2, or `usage − cache` on v1, against `memory_stats.limit`. A limit equal to the host's memory counts as no limit.
     - **`containerInspect`** keeps only `RestartCount`, `State.StartedAt` and `HostConfig.Memory`. Its zod schema strips everything else, so `Config.Env` never leaves the connector.
     - **`dockerInfo`** gains `cpus` (`NCPU`) and `memoryBytes` (`MemTotal`).
-    - **Follow:** as spike result 7 settles, either a streaming variant of `containerLogs` with `signal`, or none (agents poll).
-    - **Errors:** a 403 says the token's user can't read that container, and what Portainer role it needs.
+    - **Follow:** none here. Portainer buffers `follow=1` for about 40 s (spike result 7), so agents poll. `since` takes `<seconds>.<nanoseconds>`, so agents can ask for lines after the last one they have.
+    - **Errors:** a 403 says the token's user can't read that container, and what Portainer role it needs. A standard user's token sees only that user's stacks (spike result 7), and the message says so.
     - **Tests:**
       - frames for both streams, a frame split mid-line, and a TTY stream;
       - cgroup v1 and v2 stats;
@@ -362,8 +362,8 @@ Effort`.
       - **Cloud and own servers:** over the same access `status` uses, the fixed command `docker logs --timestamps --tail <n> [--since <unix>] [--follow] <container>`.
         - The container is found by the Compose labels of the app's project and the service name.
         - Names are checked against `status/components.ts`'s pattern before they reach the command.
-        - `--follow` streams through `onLine`, and stops on `signal`, as spike result 8 settles.
-      - **Portainer:** `containerLogs`. `--follow` polls with `since` every 2 seconds, or streams as T1705 settles.
+        - `--follow` streams through `onLine` and stops on `signal`. The remote command is wrapped so it ends when ssh goes, because without a terminal a quiet `docker logs --follow` outlives the CLI (spike result 8): `docker logs --follow … & p=$!; while kill -0 $PPID 2>/dev/null && kill -0 $p 2>/dev/null; do sleep 1; done; kill $p 2>/dev/null; wait $p`.
+      - **Portainer:** `containerLogs`. `--follow` polls every 2 seconds with `since` just after the last line's nanosecond timestamp (spike result 7). When the token's user can't see the app's containers, it says that a standard user's token sees only that user's stacks.
       - **localhost:** `docker logs` through `deps.runner` with `onLine`.
       - **Cloudflare, SSR:** `workersLogs` for the past, and `workersTail` for `--follow`.
       - **Cloudflare static, and GitHub Pages:** one sentence ("<host> keeps no request logs for this site: its files are served without running any code"), then the last deploy runs with their result and link.
@@ -396,7 +396,7 @@ Effort`.
         - `nproc`, `cat /proc/loadavg`, `free -b` and `df -P -B1 /`;
         - `docker stats --no-stream --format '{{json .}}'` for the app's project containers;
         - `docker inspect --format` with only `.Name`, `.RestartCount`, `.State.StartedAt` and `.HostConfig.Memory`.
-      - **Portainer:** `containerStats`, `containerInspect` and `dockerInfo`. `unavailable` names the host's disk.
+      - **Portainer:** `containerStats`, `containerInspect` and `dockerInfo`. `unavailable` names the host's disk. Containers the token's user can't see are named as not visible to that user, never as absent (spike result 7).
       - **localhost:** the same Docker figures through `deps.runner`, and `docker info` for the totals.
       - **Cloudflare:** `workersAnalytics` for the last 24 hours, against 100,000 requests a day and 10 ms of CPU time. It notes that requests served from the site's files aren't counted.
       - **GitHub Pages:** none, and `unavailable` says so. The latest build stays as today.
