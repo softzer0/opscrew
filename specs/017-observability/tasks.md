@@ -521,7 +521,7 @@ Effort`.
 - [ ] T1711 [P] [US4] [US5] The add-ons in agents: enable, disable, status and open, for Beszel and Grafana Cloud, and their memory in design, in `packages/agents/src/addons/**`, `packages/agents/src/design/components.ts`, `packages/agents/src/shared/memory.ts`, and `packages/agents/src/portainer/**` for exports only
   - Owns: those paths (+ tests; fakes in `packages/agents/src/testing/addons.ts` (new))
   - Reads: spec US4, US5, FR-1711–FR-1713; data-model.md "The plan block", "Secrets kept apart"; contracts/observability.md; research.md R5–R7 and "Spike results" 1–3; plan.md "9."; how `agents/src/portainer/run.ts` enables, disables and reports Portainer; T1706's and T1708's reports
-  - Depends: T1701a, T1706, T1708
+  - Depends: T1701a, T1706, T1708, T1710 (for the one line in `provision/shared-cloudflare.ts` below)
   - Accept:
     - **`addonEnable(deps, plan, kind, options)`** follows `portainerEnable`'s flow:
       - the plan's block written;
@@ -535,7 +535,7 @@ Effort`.
     - **Beszel:**
       - **Hub mode:** generates a password (24+ characters, letters, digits, `-` and `_`), a token (48 lowercase hex) and the hub's Ed25519 key (OpenSSH format, with `shared/ssh-keys.ts`'s generator; its public half goes to the host step as plain input) into Beszel's secrets file, and chooses the dashboard's login email (`USER_EMAIL`, not in the plan). Beszel's `config.yml` omits `users:`, so the system belongs to that only user (T1713 confirms it).
       - **Agent mode:** takes `--hub-url`, the hub's public key, and the token (from `OPSCREW_BESZEL_TOKEN`, or asked, never echoed).
-      - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. It refuses without `allowedEmails`, and never makes the dashboard public. It also refuses a hostname that Portainer's web UI already uses on the server, since both go through one tunnel (T1701a's review).
+      - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. `provision/shared-cloudflare.ts` (~143) sets up the one-time PIN login method only for `portainerHostname(plan)`: it must also do so for `beszelHostname(plan)`, or a Beszel-only subdomain always fails (T1708's review; T1711 owns that line). It refuses without `allowedEmails`, and never makes the dashboard public. It also refuses a hostname that Portainer's web UI already uses on the server, since both go through one tunnel (T1701a's review).
       - **`addonOpen`:** runs `ssh -N -L 8090:127.0.0.1:8090` as Portainer's status command builds it, until stopped. It prints the local address and where the password is.
     - **Grafana Cloud:**
       - asks for the metrics URL and user and the logs URL and user (or takes flags), and the token from `OPSCREW_GRAFANA_CLOUD_TOKEN` or asked;
@@ -685,6 +685,7 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
+  - The masking file (`mask.re`) still masks the frameworks' fixed production words (`production` and the like), because their table (`FRAMEWORK_ENV` in agents' `app-env.ts`) is agents'. Decide whether to move the word pairs to plan-schema as `hostListKind` was (T1708's review). It also has no URL-encoded forms and none of the service env files' values, unlike the redactor.
   - ssh-host's add-on tables: `SECRET_NEEDS` could be a `needs` field of `SECRET_CHECKS`. The add-ons' names live in four tables (`ADDON_NAMES`, `ADDON_TITLES`, `variant.what`, `addonRemoveScripts`' `what`), where one record in `constants.ts` would do (T1706's review).
   - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`, and have Portainer's drift use `app-secrets.ts`'s `GeneratedValuesSchema` instead of its own copy (T1701a's review).
   - The fixed read commands now live in `status/components.ts`, `HOST_CHECKS`, `inspect.ts`, the figures and the logs. Decide whether one table of allowed read commands is smaller than five.
