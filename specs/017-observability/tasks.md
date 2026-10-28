@@ -153,7 +153,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare` and `pnpm lint`
   - Effort: high
 
-- [ ] T1704 [P] [US2] [US3] The GitHub connector: the check workflow's state, open issues by label, repository variables, `hasIssues`, included minutes, and the permissions, in `packages/connectors/github/**`, and agents' GitHub fake
+- [X] T1704 [P] [US2] [US3] The GitHub connector: the check workflow's state, open issues by label, repository variables, `hasIssues`, included minutes, and the permissions, in `packages/connectors/github/**`, and agents' GitHub fake
   - Owns: that path (+ tests and fakes). In agents, only the new methods in `FakeGitHub` (`agents/src/testing/deploy.ts`) and in the `Pick<GitHubClient, …>` of `agents/src/provision/types.ts`, so wave 3 finds them ready.
   - Reads: contracts/observability.md "GitHub"; research.md R3, R4 and "Spike results" 5; plan.md "4."
   - Depends: T1701a, T1702
