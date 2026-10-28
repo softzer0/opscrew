@@ -62,8 +62,9 @@ workersLogs(accountId: string, worker: string, q: { from: number; to: number; li
 workersTail(accountId: string, worker: string, o: { signal: AbortSignal; onEvent: (e: TailEvent) => void }): Promise<void>;
 workersAnalytics(accountId: string, worker: string, since: Date):
   Promise<{ requests: number; errors: number; cpuTimeP50Ms: number; cpuTimeP99Ms: number }>;
-observabilityPermissions(): Promise<{ missing: string[] }>;   // names each missing permission
-// CLOUDFLARE_OBSERVABILITY_PERMISSIONS: Workers Tail Read, Workers Observability (spike), Account Analytics Read
+observabilityPermissions(accountId: string, worker: string): Promise<{ missing: string[] }>; // names each missing permission
+// CLOUDFLARE_OBSERVABILITY_PERMISSIONS: Workers Observability Read only. The tail and analytics work with
+// the Workers Scripts Edit that the hosting token already has (T1703's review, measured live).
 ```
 
 **GitHub (T1704)**

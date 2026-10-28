@@ -516,11 +516,13 @@ Items 1–4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2, 8 
 **What this changes:**
 - **The check** runs on `ubuntu-slim` (one constant in iac-templates). Design counts each run as one slim minute, a third of an included minute.
 - **Cloudflare's connector** (T1703):
-  - **Permissions:** Workers Tail Read, Workers Observability Read and Account Analytics Read.
+  - **Permissions:** only Workers Observability Read is extra. T1703's review measured that a token with only Workers Scripts Edit, which the hosting token already has, can create tails and read `workersInvocationsAdaptive`.
   - **`workersLogs`:**
     - It sends a fixed `queryId`, and pairs events by `requestId`, or uses `view: "invocations"`.
     - It keeps no request headers or `cf`.
   - **`workersTail`** connects with `trace-v1` and `arraybuffer`. On stop it deletes the tail and calls `close()` without waiting.
+    - Node 22's `WebSocket` then keeps the process alive: its `close()` has no timeout, and nothing can force the socket shut.
+    - So `logs --follow` ends the process itself once the follow settles, rather than OpsCrew taking a WebSocket dependency (T1703's review).
   - **`workersAnalytics`** reports CPU in ms (µs ÷ 1,000).
 - **What `logs` and `status` show on Cloudflare** (T1709c):
   - **`logs` prints:**

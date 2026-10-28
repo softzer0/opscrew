@@ -6,10 +6,7 @@
   - Issues: Read;
   - Actions: Read;
   - Variables: Read and write.
-- For Cloudflare: an app on Cloudflare's hosting, and the Cloudflare token with:
-  - Workers Tail Read;
-  - Workers Observability;
-  - Account Analytics Read.
+- For Cloudflare: an app on Cloudflare's hosting, and the Cloudflare token with Workers Observability Read (on top of Workers Scripts Edit, which hosting already needs).
 - For US5: a Grafana Cloud free account, and an access policy token with only `metrics:write` and `logs:write`.
 - For the webhook: an ntfy topic (or a Slack or Discord webhook).
 

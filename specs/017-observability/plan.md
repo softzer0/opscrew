@@ -73,7 +73,7 @@ Four ways to see an app once it is live. Nothing new runs on the server unless t
     - `/info`.
   - **Servers:** fixed read commands over `SshRemoteExec`, which gains streaming for `--follow`.
 - **Token permissions, only when used:**
-  - **Cloudflare:** Workers Tail Read, Workers Observability (spike item 6) and Account Analytics Read.
+  - **Cloudflare:** Workers Observability Read. The tail and analytics work with the Workers Scripts Edit that hosting already needs.
   - **GitHub:**
     - Issues: Read (status);
     - Actions: Read (the check's state);

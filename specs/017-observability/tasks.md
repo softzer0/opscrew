@@ -144,7 +144,7 @@ Effort`.
         - The tail is shared by every client of the Worker, so deleting it also stops theirs. A comment says so.
       - **`workersAnalytics`:** one GraphQL query on `workersInvocationsAdaptive` for the Worker since the given time, with `scriptName` as the only dimension: requests, errors (exceptions only), and `cpuTimeP50`/`cpuTimeP99` converted from µs to ms.
       - **`observabilityPermissions`:** names each missing permission.
-    - **The permission list:** `CLOUDFLARE_OBSERVABILITY_PERMISSIONS` holds Workers Tail Read, Workers Observability Read and Account Analytics Read (spike result 6). Each is marked "only for logs and status on Cloudflare hosting".
+    - **The permission list:** `CLOUDFLARE_OBSERVABILITY_PERMISSIONS` holds only Workers Observability Read, marked "only for logs on Cloudflare hosting". The tail and `workersInvocationsAdaptive` work with the Workers Scripts Edit that OpsCrew's hosting token already has (T1703's review, measured live).
     - **A WebSocket is injectable,** like `fetch`, so tests never open one.
     - **Errors:** a 403 names the missing permission and never prints the token. Any refusal to create a tail passes Cloudflare's message through, redacted (the 10-client limit couldn't be reproduced).
     - **Tests:** the fake covers each endpoint:
@@ -479,7 +479,8 @@ Effort`.
       - requests served from the site's files aren't counted;
       - errors are exceptions only;
       - figures lag about a minute.
-    - **`init`:** with Cloudflare hosting in use, it checks `observabilityPermissions` (FR-1714), naming each missing permission and where to add it.
+    - **`init`:** with Cloudflare hosting in use, it checks `observabilityPermissions(accountId, worker)` (FR-1714), naming the missing permission and where to add it.
+    - **After `--follow` on Cloudflare,** the CLI ends the process itself once the follow settles and stdout drains: Node's `WebSocket.close()` never completes against Cloudflare's tail, so the open socket keeps the process alive (T1703's review, measured live). The `logs` command does it in T1712a, and `readLogs` never leaves a pending timer.
     - **From T1709a's review:** on a Portainer stack whose `web.mode` isn't `caddy`, `logs` leaves `edge` out of its parts, or says the stack has no Caddy, instead of the generic missing-container error (`logs/read.ts` ~88).
     - **Tests:**
       - each with the Cloudflare fake;
@@ -591,7 +592,7 @@ Effort`.
       - `--follow`, `--service <name>`, `--since <duration>`, `--tail <lines>`, and `--app` and `--env` through `addEnvOption` and `chooseEnvironment`;
       - on GitHub Pages and a static Cloudflare site, `--service` and `--follow` are refused with the reason, or noted (T1709a's review: `readLogs` ignores them there);
       - output through `ctx.stdout` (redacted);
-      - Ctrl-C stops a follow cleanly.
+      - Ctrl-C stops a follow cleanly, and the command ends the process once the follow settles and stdout drains (Cloudflare's tail socket otherwise keeps it alive: T1703's review).
     - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
     - **`status`** prints the figures with their flags, and the check's state and open alerts. The CLI's and MCP's status fixtures write no deploy key, so today they show "could not read the resource figures" (T1709b's report): give them the key, and assert the figures' lines and `resources` data.
     - **`ALL_COMMANDS`** has 25 entries, and `program.test.ts` lists both new names.
