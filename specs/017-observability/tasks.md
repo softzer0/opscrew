@@ -214,18 +214,21 @@ Effort`.
       - Write the files T1708 renders under `opscrew/addons/<name>` (cloud server: `/home/deploy/opscrew/addons/<name>`; own server: `/srv/opscrew/addons/<name>`), as the `portainer` step writes Portainer's.
       - Write the secrets from `ApplyOptions.secrets` to root-only files there (mode 0600, then owned as the container needs).
       - Run `docker compose up -d`, and check the containers are running.
-      - **Teardown:** `docker compose down`, the files, the secrets and the volumes removed, so nothing of it stays (SC-1706). With `keepData`, Beszel's `beszel_data` volume stays. A teardown that deletes a volume is a destroying host plan (`allowDestroy` with the typed app name), as Portainer's data deletion is.
+      - **Teardown:** `docker compose down`, then the files, the secrets and the data folders removed, so nothing of it stays (SC-1706). With `keepData`, Beszel's `data/` folder stays. Deleting Beszel's history is a destroying host plan (`allowDestroy` with the typed app name), as Portainer's data deletion is.
     - **`planAddon(kind, …)`** plans a setup and its undo. `planTeardown` gains the add-ons when present.
     - **One of each per server:** the host record names the app that turned each add-on on. Planning it for another app is a plain refusal naming that app (data-model.md).
     - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken`, `beszelHubKey` and `grafanaCloudToken`, sent only on stdin and checked by name, as `tunnelToken` is.
     - **Beszel's hub key:** in hub mode, the step writes `beszelHubKey` to the hub's bind-mounted data folder as `data/id_ed25519` (0600) before the first start, so the hub uses OpsCrew's key (spike result 2).
+    - **`deleteData`** is set only when Beszel's history (`data/`) is deleted. Alloy's storage is a buffer, and goes without a typed confirmation.
     - **The files beside each add-on's Compose file** (agreed with T1708):
       - **Beszel:**
         - `config.yml` with `${BESZEL_TOKEN}` replaced by `beszelToken`, root-only;
         - `hub.env` (`USER_EMAIL`, `USER_PASSWORD`) and `agent.env` (`TOKEN`, and `KEY` in hub mode), root-only.
-      - **Alloy:**
-        - a `.env` with `OPSCREW_DEPLOY_GID` (`id -g` of the deploy user);
-        - `/srv/apps/<app>/mask.re` holding `[^\s\S]` when absent (owner the deploy user, mode 0640).
+      - **Alloy:** `/srv/apps/<app>/mask.re` holding `[^\s\S]` when absent (owner the deploy user, mode 0600).
+      - **Both:**
+        - a `.env` with `OPSCREW_DEPLOY_UID` and `OPSCREW_DEPLOY_GID` (`id -u` and `id -g` of the deploy user);
+        - every file and folder owned by the deploy user, with secrets 0600 and folders 0700. On own servers the step runs as root and hands them to the deploy user.
+        - No root helper container, no sudo, and no named volume (the lead, 2026-10-28).
     - **The Compose text cap (16 KiB)** holds for the add-on files, or is raised for them with the reason in a comment.
     - **Tests with `FakeHost`:**
       - each step's commands;
@@ -328,10 +331,12 @@ Effort`.
       - Everything else answers 403. `admin off`, `auto_https off`, `persist_config off`.
       - `flush_interval -1`.
       - The container runs with:
+        - `user: "0:${OPSCREW_DEPLOY_GID}"`, with the socket bound `…docker.sock|0660`, so the add-ons connect through the group;
         - `read_only: true`, `cap_drop: [ALL]` with `cap_add: [NET_BIND_SERVICE]` (the binary carries that file capability), and `security_opt: [no-new-privileges:true]`;
         - `tmpfs: [/data, /config]` and `network_mode: none`;
         - `mem_limit` from the plan, and the logging limits every OpsCrew container has (spike result 1).
       - Research.md's "Spike results" item 1 has the working Caddyfile.
+    - **Every add-on container** (Beszel's hub and agent, Alloy) runs as `user: "${OPSCREW_DEPLOY_UID}:${OPSCREW_DEPLOY_GID}"`. The deploy user already has Docker access, so this grants nothing new, and it reads less through Alloy's `/` mount than root without capabilities would.
     - **Beszel:**
       - **Hub mode:**
         - **The hub:**
@@ -345,7 +350,7 @@ Effort`.
       - **Agent mode:** only the agent and the proxy, with `HUB_URL` the plan's `hubUrl` and `KEY` its `hubKey`.
     - **Alloy:**
       - **The container:**
-        - `run --storage.path=/var/lib/opscrew-alloy --disable-reporting /etc/alloy/config.alloy`, with a volume at `/var/lib/opscrew-alloy` (the image's own folder belongs to another user);
+        - `run --storage.path=/var/lib/opscrew-alloy --disable-reporting /etc/alloy/config.alloy`, with the bind-mounted `data/` folder at `/var/lib/opscrew-alloy` (the image's own folder belongs to another user);
         - `read_only` with `tmpfs: [/tmp]`, `cap_drop: [ALL]` and `no-new-privileges`;
         - `/` and `/sys` mounted read-only under `/host`;
         - its own bridge network, never the host's, so its local API (which shows the masking values) stays inside the container;
@@ -366,7 +371,7 @@ Effort`.
       - **Nothing privileged:** no `privileged`, no Docker socket, no writable host mount.
     - **Beszel at a hostname** (`access: "subdomain"`): `cloudflare-access` gains Beszel's Access application and policy (the listed emails, after a one-time PIN), as Portainer's, behind optional variables that default to none; `infra/tunnel.ts` routes the hostname to the hub's local port. A plan without it renders byte-identical HCL. Both engines validate the module.
     - **The masking file:** when `grafanaCloud.enabled`, the deploy job writes `/srv/apps/<app>/mask.re` in place from `app.env`'s values, after writing `app.env`.
-      - It is owned by the deploy user with mode 0640, and Alloy reads it through `group_add: ["${OPSCREW_DEPLOY_GID}"]` at `/host/root/srv/apps/<app>/mask.re`. The deploy job runs as the deploy user, and Alloy has no `DAC_OVERRIDE`, so a root-only file would be out of its reach. It still can't read `app.env` (0600).
+      - It is owned by the deploy user, mode 0600. Alloy reads it at `/host/root/srv/apps/<app>/mask.re`, because it runs as the deploy user (below).
       - It holds one escaped RE2 alternation, and no value shorter than 8 characters (as `Redactor.addLiteral`).
       - With no values, it holds `[^\s\S]`, which never matches.
       - Server workflows without it stay byte-identical.
@@ -502,6 +507,7 @@ Effort`.
       - the result recorded.
 
       It is refused off the cloud and own targets, and for a second app on the same server, each with the reason.
+    - **Every add-on container** (Beszel's hub and agent, Alloy) runs as `user: "${OPSCREW_DEPLOY_UID}:${OPSCREW_DEPLOY_GID}"`. The deploy user already has Docker access, so this grants nothing new, and it reads less through Alloy's `/` mount than root without capabilities would.
     - **Beszel:**
       - **Hub mode:** generates a password (24+ characters), a token (48 hex) and the hub's Ed25519 key into Beszel's secrets file, and chooses the dashboard's login email (`USER_EMAIL`, not in the plan). Beszel's `config.yml` omits `users:`, so the system belongs to that only user (T1713 confirms it).
       - **Agent mode:** takes `--hub-url`, the hub's public key, and the token (from `OPSCREW_BESZEL_TOKEN`, or asked, never echoed).
@@ -514,7 +520,10 @@ Effort`.
         - series from the allow-list and the server's CPUs, filesystems and interfaces (host facts);
         - logs as 30 × the bytes of `docker logs --since 24h` for the app's containers, a fixed read;
         - both against 10,000 series and 50 GB a month. Past either, it offers a `logSampling` that fits.
-    - **`addonDisable`:** the teardown plan (`host-apply`). It removes everything the add-on added, its data included, after the typed app name (`allowDestroy`); `--keep-data` keeps Beszel's dashboard history and needs no typed name (spec US4 #5). The local secrets file is removed.
+    - **`addonDisable`:** the teardown plan (`host-apply`). It removes everything the add-on added, its data included.
+      - Deleting Beszel's dashboard history needs the typed app name (`allowDestroy`). `--keep-data` keeps it, and needs no typed name (spec US4 #5).
+      - Alloy's buffer goes without one.
+      - The local secrets file is removed.
     - **`addonStatus`:** whether each add-on is on, its containers' state and memory, and how to open it.
     - **Memory:** `appMemoryLimits` and design's memory line count enabled add-ons.
     - **Tests:**
