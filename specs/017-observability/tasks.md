@@ -317,7 +317,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`, and Beszel's hostname in `packages/iac-templates/modules/cloudflare-access/**`, `packages/iac-templates/src/infra/tunnel.ts`, `packages/iac-templates/src/tunnel/index.ts`, `packages/iac-templates/src/generated/modules.ts`
+- [X] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`, and Beszel's hostname in `packages/iac-templates/modules/cloudflare-access/**`, `packages/iac-templates/src/infra/tunnel.ts`, `packages/iac-templates/src/tunnel/index.ts`, `packages/iac-templates/src/generated/modules.ts`
   - Owns: those paths (+ tests, snapshots). In `serverless/wrangler.ts`, its test only, unless the guard finds a gap. `src/generated/modules.ts` only as `gen:modules` regenerates it. In `src/tunnel/index.ts`, `beszelHostname(plan)` and `usesTunnel` only (the lead, 2026-10-28).
   - Reads: spec US4, US5, FR-1702, FR-1711–FR-1714; contracts/observability.md "iac-templates"; research.md R5, R6, R7 and "Spike results" 1–3; plan.md "6."
   - Depends: T1701a, T1701b, T1702
