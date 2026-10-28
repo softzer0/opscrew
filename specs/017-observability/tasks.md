@@ -538,7 +538,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
 
-- [ ] T1710b [US3] Ask for the check's webhook only when GitHub doesn't hold it yet, in `packages/connectors/github/**` and `packages/agents/src/check/secrets.ts` (with its test)
+- [X] T1710b [US3] Ask for the check's webhook only when GitHub doesn't hold it yet, in `packages/connectors/github/**` and `packages/agents/src/check/secrets.ts` (with its test)
   - Owns: those paths (+ tests). In agents' `testing/deploy.ts` and `provision/types.ts`, only the new method in `FakeGitHub` and the `Pick`.
   - Reads: T1710's report (`ProvisionServices.askCheckWebhook`, `OPSCREW_CHECK_WEBHOOK`)
   - Depends: T1710
