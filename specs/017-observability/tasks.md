@@ -50,7 +50,7 @@ Effort`.
   - Reads: data-model.md "The plan block", "Secrets kept apart"; contracts/observability.md "plan-schema", "contracts"; plan.md "1."; ADR 0021
   - Depends: —
   - Accept:
-    - **`ObservabilitySchema`** on `DeployPlanSchema` as `observability` (prefault `{}`), with data-model.md's rules quoted in the messages:
+    - **`ObservabilitySchema`** on `DeployPlanSchema` as `observability`, optional so plans without it stay byte-identical, with data-model.md's rules quoted in the messages:
       - **`check`:**
         - `enabled` (optional boolean);
         - `intervalMinutes`, one of `5, 10, 15, 20, 30, 60`;

@@ -29,7 +29,7 @@ type Observability = {
     memoryMb: { alloy: number; proxy: number };
   };
 };
-// DeployPlanSchema gains `observability` (prefault {}).
+// DeployPlanSchema gains `observability`, optional: plans without it stay byte-identical.
 // Refused: beszel or grafanaCloud enabled unless onServer(plan); check.enabled on localhost.
 ```
 
