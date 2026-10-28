@@ -1,4 +1,5 @@
 export { type TlsStatusOptions, tlsStatusReport } from "./certificates";
+export type { CheckState } from "./check-state";
 export {
   type AppContainer,
   type ComponentState,
@@ -11,8 +12,15 @@ export {
   serviceContainers,
 } from "./components";
 export {
+  type ContainerReading,
+  type ResourceFlag,
+  type ResourceReading,
+  readResources,
+} from "./resources";
+export {
   appDeployed,
   type ComponentStatusOptions,
+  type ComponentStatusReport,
   componentStatusReport,
   readComponentStatus,
   readServerContainers,

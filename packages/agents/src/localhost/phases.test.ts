@@ -116,6 +116,10 @@ describe("status on this computer", () => {
       "Components:",
       "  The web process (app): running",
       "  PostgreSQL (db): running",
+      "",
+      // The fake computer's Docker answers no figures (status/resources.test.ts reads them).
+      "Resources (read now):",
+      "  Not available: this computer's load, memory in use and disk (OpsCrew reads only Docker's figures here)",
     ]);
     const { lines } = await tlsStatusReport(deps, plan);
     expect(lines).toEqual([

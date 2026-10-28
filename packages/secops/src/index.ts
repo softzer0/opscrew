@@ -26,6 +26,8 @@ export {
   CERTIFICATE_WARN_DAYS,
   certbotFailureCommand,
   certificateHostChecks,
+  DISK_HIGH_PERCENT,
+  DISK_WARN_PERCENT,
   daysLeft,
   defaultTcpConnect,
   HOST_CHECKS,

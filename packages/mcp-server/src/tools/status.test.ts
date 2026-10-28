@@ -165,7 +165,8 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
       deployedPlan(),
       "shop-app-1|running\nshop-worker-1|exited\nshop-db-1|running\n",
     );
-    expect(hosts).toEqual([SERVER_IPV4]);
+    // The components, then the resource figures.
+    expect(hosts).toEqual([SERVER_IPV4, SERVER_IPV4]);
     expect(text).toContain(
       [
         "Components:",

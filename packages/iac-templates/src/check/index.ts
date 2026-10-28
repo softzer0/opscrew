@@ -24,6 +24,12 @@ import {
   selfHosted,
 } from "../workflow/shared";
 
+/** The check's workflow file in `.github/workflows/`. */
+export const CHECK_WORKFLOW_FILE = "opscrew-check.yml";
+
+/** The label of every issue the check opens (`check.mjs`'s `LABEL`). */
+export const CHECK_LABEL = "opscrew-check";
+
 /** The repository variable that pauses environments: JSON, `{ "<app>/<env>": { reason, since } }`. */
 export const CHECK_PAUSED_VARIABLE = "OPSCREW_CHECK_PAUSED";
 
@@ -144,7 +150,7 @@ export function renderCheck(input: {
   };
   return [
     {
-      path: ".github/workflows/opscrew-check.yml",
+      path: `.github/workflows/${CHECK_WORKFLOW_FILE}`,
       content: workflow(config, repo, environments),
       kind: "workflow",
     },

@@ -10,7 +10,13 @@ import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { ssrPlan } from "../serverless/__fixtures__/plans";
 import type { RenderedFile } from "../types";
 import { inEnvironment, ofApp } from "../workflow/__fixtures__/plans";
-import { checkEnvironmentKey, checkServerSecret, renderCheck } from "./index";
+import {
+  CHECK_LABEL,
+  CHECK_WORKFLOW_FILE,
+  checkEnvironmentKey,
+  checkServerSecret,
+  renderCheck,
+} from "./index";
 
 type Check = NonNullable<NonNullable<DeployPlan["observability"]>["check"]>;
 
@@ -320,5 +326,16 @@ describe("the generated copy of check.mjs", () => {
   it("matches check/check.mjs (run gen:modules after editing it)", () => {
     expect(CHECK_SCRIPT).toBe(readCheckScript());
     expect(renderGeneratedCheck(CHECK_SCRIPT)).toContain("export const CHECK_SCRIPT");
+  });
+});
+
+describe("the check's names", () => {
+  it("check.mjs labels its issues with CHECK_LABEL, and the workflow is CHECK_WORKFLOW_FILE", () => {
+    expect(readCheckScript()).toContain(`const LABEL = ${JSON.stringify(CHECK_LABEL)};`);
+    const files = renderCheck({
+      plans: [withCheck(testPlan({ domain: "example.com" }))],
+      repo: PUBLIC,
+    });
+    expect(files.map((f) => f.path)).toContain(`.github/workflows/${CHECK_WORKFLOW_FILE}`);
   });
 });

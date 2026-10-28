@@ -1,0 +1,471 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PortainerApiError, type PortainerClient } from "@opscrew/connector-portainer";
+import type { CommandResult, RemoteExec } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import { localPlan } from "../localhost/__fixtures__/computer";
+import { recordPortainerConnection, recordServerAddress } from "../shared";
+import {
+  createTestPhaseDeps,
+  fakeCertificate,
+  PORTAINER_HOST,
+  PORTAINER_URL,
+  portainerPlan,
+  ScriptedRunner,
+  SERVER_IPV4,
+  testPlan,
+} from "../testing";
+import { sitePlan } from "../testing/serverless";
+import {
+  INSPECT_FORMAT,
+  type ResourceReading,
+  readResources,
+  resourceFlags,
+  resourceLines,
+  serverFiguresCommand,
+} from "./resources";
+import { componentStatusReport } from "./run";
+
+/** `base`, deployed, with a worker. */
+function withWorker(base: DeployPlan = testPlan({ deployed: true })): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...base,
+    deployment: { ...base.deployment, firstDeployAt: "2026-10-10T09:00:00.000Z" },
+    processes: { workers: [{ name: "worker", command: "node worker.js", source: "procfile" }] },
+  });
+}
+
+const MIB = 1024 ** 2;
+
+/** A stats line as `docker stats --format '{{json .}}'` prints it. */
+function stats(name: string, cpu: string, memory: string): string {
+  return JSON.stringify({
+    BlockIO: "0B / 0B",
+    CPUPerc: cpu,
+    Container: "0123456789ab",
+    ID: "0123456789ab",
+    MemPerc: "1.00%",
+    MemUsage: memory,
+    Name: name,
+    NetIO: "1kB / 2kB",
+    PIDs: "12",
+  });
+}
+
+/**
+ * The server command's output: 2 CPUs, 4 GB of memory, a disk 90% full, the web process at 95% of
+ * its 512 MB limit, a worker that restarted twice, and a stray `Config.Env` value in its line.
+ */
+function serverOutput(secret: string): string {
+  return [
+    "==opscrew-figures:cpus",
+    "2",
+    "==opscrew-figures:load",
+    "0.52 0.40 0.31 1/123 4567",
+    "==opscrew-figures:memory",
+    "               total        used        free      shared  buff/cache   available",
+    "Mem:      4000000000  1500000000   500000000     1000000  2000000000  2400000000",
+    "Swap:              0           0           0",
+    "==opscrew-figures:disk",
+    "Filesystem        1-blocks        Used   Available Capacity Mounted on",
+    "/dev/sda1      40000000000 36000000000  4000000000      90% /",
+    "==opscrew-figures:stats",
+    stats("shop-app-1", "3.25%", "486.4MiB / 512MiB"),
+    stats("shop-worker-1", "0.10%", "40MiB / 3.725GiB"),
+    stats("shop-release-1", "0.00%", "0B / 0B"),
+    "Error response from daemon: something unrelated",
+    "==opscrew-figures:inspect",
+    JSON.stringify({
+      name: "/shop-app-1",
+      restarts: 0,
+      startedAt: "2026-10-11T09:59:59.123456789Z",
+      memoryLimit: 512 * MIB,
+    }),
+    JSON.stringify({
+      name: "/shop-worker-1",
+      restarts: 2,
+      startedAt: "2026-10-11T11:30:00Z",
+      memoryLimit: 0,
+      Env: [`DATABASE_PASSWORD=${secret}`],
+    }),
+    JSON.stringify({
+      name: "/shop-release-1",
+      restarts: 0,
+      startedAt: "2026-10-11T09:00:00Z",
+      memoryLimit: 0,
+    }),
+    "",
+  ].join("\n");
+}
+
+/** The deploy user's shell: the figures command gets `figures`, `docker ps` gets `ps`. */
+function shell(figures: string, ps = "shop-app-1|running\nshop-worker-1|running\n") {
+  const commands: string[] = [];
+  const hosts: string[] = [];
+  const remote = (host: string): RemoteExec => {
+    hosts.push(host);
+    return {
+      host,
+      run: async (command: string): Promise<CommandResult> => {
+        commands.push(command);
+        const stdout = command.startsWith("docker ps -a") ? ps : figures;
+        return { exitCode: 0, stdout, stderr: "" };
+      },
+    };
+  };
+  return { remote, commands, hosts };
+}
+
+describe("the server command", () => {
+  it("is fixed: the project's containers, and inspect with only four fields, never Config.Env", () => {
+    const command = serverFiguresCommand("shop");
+    for (const part of ["nproc", "cat /proc/loadavg", "free -b", "df -P -B1 /"]) {
+      expect(command).toContain(part);
+    }
+    expect(command).toContain(
+      "docker ps -aq --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.oneoff=False",
+    );
+    expect(command).toContain("docker stats --no-stream --format '{{json .}}' $ids");
+    expect(command).toContain(`docker inspect --format '${INSPECT_FORMAT}' $ids`);
+    expect(INSPECT_FORMAT.match(/\{\{[^}]*\}\}/g)).toEqual([
+      "{{json .Name}}",
+      "{{.RestartCount}}",
+      "{{json .State.StartedAt}}",
+      "{{.HostConfig.Memory}}",
+    ]);
+    expect(command).not.toMatch(/Env|\.Config/);
+  });
+
+  it("refuses a project name that is not Compose's", () => {
+    expect(() => serverFiguresCommand("shop; rm -rf /")).toThrow(/Not a Compose project name/);
+    expect(() => serverFiguresCommand("$(id)")).toThrow();
+  });
+});
+
+describe("readResources on a server OpsCrew created", () => {
+  it("parses the command's answer with a container at 95% of its limit and a disk 90% full", async () => {
+    const deps = await createTestPhaseDeps();
+    const plan = withWorker();
+    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    const secret = fakeSecret("generic-password", "database-password");
+    const ssh = shell(serverOutput(secret));
+
+    const reading = await readResources(deps, plan, { services: { remote: ssh.remote } });
+
+    expect(ssh.hosts).toEqual([SERVER_IPV4]);
+    expect(ssh.commands).toEqual([serverFiguresCommand("shop")]);
+    expect(reading.takenAt).toBe("2026-10-11T12:00:00.000Z");
+    expect(reading.server).toEqual({
+      cpus: 2,
+      load1: 0.52,
+      load5: 0.4,
+      load15: 0.31,
+      memory: { usedBytes: 1_600_000_000, totalBytes: 4_000_000_000 },
+      disk: { usedBytes: 36_000_000_000, freeBytes: 4_000_000_000, totalBytes: 40_000_000_000 },
+    });
+    // The release one-shot and the unrelated line are left out.
+    expect(reading.containers).toEqual([
+      {
+        service: "app",
+        cpuPercent: 3.25,
+        memory: { usedBytes: Math.round(486.4 * MIB), limitBytes: 512 * MIB },
+        restarts: 0,
+        startedAt: "2026-10-11T09:59:59.123456789Z",
+      },
+      {
+        service: "worker",
+        cpuPercent: 0.1,
+        memory: { usedBytes: 40 * MIB },
+        restarts: 2,
+        startedAt: "2026-10-11T11:30:00Z",
+      },
+    ]);
+    expect(reading.unavailable).toEqual([]);
+    expect(reading.flags.map(({ figure, severity }) => [figure, severity])).toEqual([
+      ["the server's disk", "warning"],
+      ["the memory of the web process (app)", "warning"],
+      ["the restarts of the worker (worker)", "warning"],
+    ]);
+    // No Config.Env value anywhere in the reading.
+    expect(JSON.stringify(reading)).not.toContain(secret);
+    expect(JSON.stringify(reading)).not.toContain("DATABASE_PASSWORD");
+    // Audited without the address.
+    expect(deps.audit.entries).toEqual([
+      expect.objectContaining({
+        kind: "remote-exec",
+        action: "read the server's and the app's figures (read-only)",
+        target: "server",
+      }),
+    ]);
+    expect(JSON.stringify(deps.audit.entries)).not.toContain(SERVER_IPV4);
+
+    expect(resourceLines(plan, reading, new Date("2026-10-11T12:00:00.000Z"))).toEqual([
+      "Resources (read now):",
+      "  Server: load 0.52, 0.40, 0.31 (1, 5 and 15 minutes) on 2 CPUs; memory 1.5 GB used of 3.7 GB; disk 33.5 GB used, 3.7 GB free of 37.3 GB (90% full)",
+      "  The web process (app): CPU 3.3%, memory 486 MB of 512 MB (95%), 0 restarts, started 2 hours ago",
+      "  The worker (worker): CPU 0.1%, memory 40 MB (no limit), 2 restarts, started 30 minutes ago",
+      "  Warning: The server's disk is 90% full (3.7 GB free). When it is full, the database and the app can no longer write, and deploys fail. Free space: old images (`docker image prune` as the deploy user) and logs usually fill it. Or give the server a bigger disk.",
+      "  Warning: The web process (app) uses 95% of its 512 MB memory limit. At the limit, the system stops it and Docker starts it again. Raise its `memoryMb` in opscrew/plan.yaml and run `opscrew provision` (it shows the plan first), or find what in the app holds on to memory.",
+      "  Warning: The worker (worker) restarted 2 times since the last deploy: it stopped (it crashed or ran out of memory) and Docker started it again. See why in its logs: `opscrew logs --service worker`.",
+    ]);
+  });
+
+  it("names the server's figures as unavailable when their part of the answer is unreadable", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    const ssh = shell("nproc: command not found\n");
+    const reading = await readResources(deps, withWorker(), { services: { remote: ssh.remote } });
+    expect(reading.server).toBeUndefined();
+    expect(reading.containers).toEqual([]);
+    expect(reading.unavailable).toEqual([
+      "the server's load, memory and disk (OpsCrew could not read them from its answer)",
+    ]);
+  });
+});
+
+describe("resourceFlags", () => {
+  const plan = withWorker();
+  const server = (usedPercent: number) => ({
+    cpus: 1,
+    memory: { totalBytes: 1 },
+    disk: {
+      usedBytes: usedPercent * 1_000_000,
+      freeBytes: (100 - usedPercent) * 1_000_000,
+      totalBytes: 100_000_000,
+    },
+  });
+  const flagsOf = (figures: Pick<ResourceReading, "server" | "containers">) =>
+    resourceFlags(plan, { ...figures, unavailable: [] }).map((f) => [f.figure, f.severity]);
+
+  it("the disk at 85% is a warning, at 95% high, below 85% nothing (secure's thresholds)", () => {
+    expect(flagsOf({ server: server(84), containers: [] })).toEqual([]);
+    expect(flagsOf({ server: server(85), containers: [] })).toEqual([
+      ["the server's disk", "warning"],
+    ]);
+    expect(flagsOf({ server: server(95), containers: [] })).toEqual([
+      ["the server's disk", "high"],
+    ]);
+  });
+
+  it("memory at 90% of a limit is a warning; without a limit, or below, nothing", () => {
+    const container = (usedBytes: number, limitBytes?: number) => ({
+      service: "app",
+      cpuPercent: 1,
+      memory: { usedBytes, ...(limitBytes !== undefined ? { limitBytes } : {}) },
+      restarts: 0,
+      startedAt: "2026-10-11T10:00:00Z",
+    });
+    expect(flagsOf({ containers: [container(89, 100), container(500)] })).toEqual([]);
+    expect(flagsOf({ containers: [container(90, 100)] })).toEqual([
+      ["the memory of the web process (app)", "warning"],
+    ]);
+  });
+});
+
+describe("readResources in the user's Portainer", () => {
+  it("reads each container through Portainer, with the host's disk not available", async () => {
+    const token = fakeSecret("generic-password", "portainer-token");
+    const deps = await createTestPhaseDeps({
+      env: { OPSCREW_HOME: join(await mkdtemp(join(tmpdir(), "opscrew-figures-")), "home") },
+    });
+    deps.env.PORTAINER_API_KEY = token;
+    await recordPortainerConnection(deps.paths, {
+      url: PORTAINER_URL,
+      certFingerprint: fakeCertificate().fingerprint,
+      environmentId: 3,
+      environmentName: "local",
+      arch: "amd64",
+    });
+    const read: string[] = [];
+    const client = () =>
+      ({
+        listContainers: async () => [
+          { id: "c-app", project: "opscrew-shop", service: "app", running: true },
+          { id: "c-worker", project: "opscrew-shop", service: "worker", running: true },
+          { id: "c-tunnel", project: "opscrew-shop", service: "cloudflared", running: true },
+          { id: "c-other", project: "media", service: "app", running: true },
+        ],
+        dockerInfo: async () => ({ swarmActive: false, cpus: 4, memoryBytes: 8 * 1024 * MIB }),
+        containerStats: async (_env: number, id: string) => {
+          read.push(`stats ${id}`);
+          return { cpuPercent: 12.5, memoryUsedBytes: 100 * MIB };
+        },
+        containerInspect: async (_env: number, id: string) => {
+          read.push(`inspect ${id}`);
+          if (id === "c-worker") {
+            throw new PortainerApiError(
+              "PROVIDER_ERROR",
+              403,
+              "Portainer refused.",
+              "Use another.",
+            );
+          }
+          return {
+            restartCount: 1,
+            startedAt: "2026-10-11T11:00:00Z",
+            memoryLimitBytes: 512 * MIB,
+          };
+        },
+      }) as unknown as PortainerClient;
+
+    const reading = await readResources(deps, withWorker(portainerPlan({ deployed: true })), {
+      services: { portainer: { client } },
+    });
+
+    expect(read.sort()).toEqual([
+      "inspect c-app",
+      "inspect c-worker",
+      "stats c-app",
+      "stats c-worker",
+    ]);
+    expect(reading.server).toEqual({ cpus: 4, memory: { totalBytes: 8 * 1024 * MIB } });
+    expect(reading.containers).toEqual([
+      {
+        service: "app",
+        cpuPercent: 12.5,
+        memory: { usedBytes: 100 * MIB, limitBytes: 512 * MIB },
+        restarts: 1,
+        startedAt: "2026-10-11T11:00:00Z",
+      },
+    ]);
+    // The worker the token's user cannot read, and the database it cannot see, are named as not
+    // visible to that user, never as absent.
+    expect(reading.unavailable).toEqual([
+      "the host's load, memory in use and disk (Docker's API through Portainer does not give them)",
+      "the figures of db and worker: no container of theirs is visible to the token's user (a standard user's token sees only that user's own stacks; use an administrator's token, or the token of the user who deployed the stack, as PORTAINER_API_KEY)",
+    ]);
+    expect(reading.flags.map((f) => f.figure)).toEqual(["the restarts of the web process (app)"]);
+    expect(JSON.stringify(reading)).not.toContain(PORTAINER_HOST);
+    expect(deps.audit.entries).toEqual([
+      expect.objectContaining({ kind: "provider-call", target: "portainer" }),
+    ]);
+  });
+});
+
+describe("readResources on this computer", () => {
+  it("reads the Compose project's containers and docker info's totals through the runner", async () => {
+    const secret = fakeSecret("generic-password", "local-password");
+    const runner = new ScriptedRunner((command, args) => {
+      const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
+      if (command !== "docker") return ok("");
+      if (args[0] === "ps") {
+        return ok(
+          "opscrew-shop-app-1|running|app|False|\nopscrew-shop-release-1|exited|release|False|\n",
+        );
+      }
+      if (args[0] === "stats")
+        return ok(`${stats("opscrew-shop-app-1", "1.50%", "64MiB / 512MiB")}\n`);
+      if (args[0] === "inspect") {
+        return ok(
+          `${JSON.stringify({ name: "/opscrew-shop-app-1", restarts: 0, startedAt: "2026-10-11T11:59:30Z", memoryLimit: 512 * MIB, Config: { Env: [`X=${secret}`] } })}\n`,
+        );
+      }
+      if (args[0] === "info") return ok('{"cpus":8,"memoryBytes":8589934592}\n');
+      return ok("");
+    });
+    const deps = await createTestPhaseDeps({ runner });
+
+    const reading = await readResources(deps, localPlan());
+
+    expect(runner.calls.map((c) => c.args.slice(0, 2).join(" "))).toEqual([
+      "ps -a",
+      "network ls",
+      "volume ls",
+      "stats --no-stream",
+      "inspect --format",
+      "info --format",
+    ]);
+    expect(runner.calls[3]?.args.at(-1)).toBe("opscrew-shop-app-1");
+    expect(reading.server).toEqual({ cpus: 8, memory: { totalBytes: 8589934592 } });
+    expect(reading.containers).toEqual([
+      {
+        service: "app",
+        cpuPercent: 1.5,
+        memory: { usedBytes: 64 * MIB, limitBytes: 512 * MIB },
+        restarts: 0,
+        startedAt: "2026-10-11T11:59:30Z",
+      },
+    ]);
+    expect(reading.unavailable).toEqual([
+      "this computer's load, memory in use and disk (OpsCrew reads only Docker's figures here)",
+    ]);
+    expect(JSON.stringify(reading)).not.toContain(secret);
+    expect(resourceLines(localPlan(), reading, new Date("2026-10-11T12:00:00.000Z"))).toEqual([
+      "Resources (read now):",
+      "  Server: 8 CPUs; memory 8.0 GB",
+      "  The web process (app): CPU 1.5%, memory 64 MB of 512 MB (13%), 0 restarts, started less than a minute ago",
+      "  Not available: this computer's load, memory in use and disk (OpsCrew reads only Docker's figures here)",
+    ]);
+  });
+});
+
+describe("readResources on the server-less targets", () => {
+  it("Cloudflare's hosting names its figures as not available yet", async () => {
+    const deps = await createTestPhaseDeps();
+    const reading = await readResources(deps, sitePlan({ render: "ssr" }));
+    expect(reading).toEqual({
+      takenAt: "2026-10-11T12:00:00.000Z",
+      containers: [],
+      unavailable: [
+        "the Worker's requests, errors and CPU time per request (OpsCrew does not read them from Cloudflare yet)",
+      ],
+      flags: [],
+    });
+  });
+
+  it("GitHub Pages has none, and says so", async () => {
+    const deps = await createTestPhaseDeps();
+    const reading = await readResources(deps, sitePlan({ provider: "github-pages" }));
+    expect(reading.server).toBeUndefined();
+    expect(reading.unavailable).toEqual([
+      "resource figures (GitHub Pages serves the site's files without running any code, so there are none)",
+    ]);
+  });
+});
+
+describe("componentStatusReport with the figures", () => {
+  it("adds the figures after the components and returns the reading", async () => {
+    const deps = await createTestPhaseDeps();
+    const plan = withWorker();
+    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    const ssh = shell(serverOutput(fakeSecret("generic-password", "database-password")));
+
+    const report = await componentStatusReport(deps, plan, { services: { remote: ssh.remote } });
+
+    expect(report.lines.slice(0, 7)).toEqual([
+      "Components:",
+      "  The web process (app): running",
+      "  The worker (worker): running",
+      "  PostgreSQL (db): no container",
+      "",
+      "Resources (read now):",
+      expect.stringMatching(/^ {2}Server: load 0\.52/),
+    ]);
+    expect(report.resources?.containers.map((c) => c.service)).toEqual(["app", "worker"]);
+    expect(report.check).toBeUndefined();
+  });
+
+  it("a figures read that fails leaves a note under the components", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    const remote = (host: string): RemoteExec => ({
+      host,
+      run: async (command) =>
+        command.startsWith("docker ps -a")
+          ? { exitCode: 0, stdout: "shop-app-1|running\n", stderr: "" }
+          : { exitCode: 255, stdout: "", stderr: "" },
+    });
+    const report = await componentStatusReport(deps, withWorker(), { services: { remote } });
+    expect(report.lines.slice(-2)).toEqual([
+      "",
+      expect.stringMatching(
+        /^OpsCrew could not read the resource figures\. OpsCrew could not read the server's figures over SSH \(exit code 255\)\. Check that the server is on/,
+      ),
+    ]);
+    expect(report.status).toBeDefined();
+    expect(report.resources).toBeUndefined();
+  });
+});

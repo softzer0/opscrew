@@ -81,6 +81,9 @@ describe("opscrew status on Cloudflare's hosting", () => {
       "  Roll back to it: opscrew promote --to prod --version v-old",
       "  Custom domains: docs.example.com (set up), www.docs.example.com (missing)",
       "  A missing custom domain does not answer: run `opscrew provision` to set it up again (it shows the plan first).",
+      "",
+      "Resources (read now):",
+      "  Not available: the Worker's requests, errors and CPU time per request (OpsCrew does not read them from Cloudflare yet)",
     ]);
     // Read only, and nothing about a server.
     expect(zone.writes()).toEqual([]);
@@ -148,6 +151,9 @@ describe("opscrew status on GitHub Pages", () => {
       `  Last Pages run: ${runs}/202, started 2026-10-23 09:00 UTC, commit 2222222`,
       `  The one before: ${runs}/201, started 2026-10-22 09:00 UTC, commit 1111111`,
       "  Roll back to it: opscrew promote --to prod --version 201",
+      "",
+      "Resources (read now):",
+      "  Not available: resource figures (GitHub Pages serves the site's files without running any code, so there are none)",
     ]);
     expect(pages.log.every((line) => line.startsWith("pages GET"))).toBe(true);
   });

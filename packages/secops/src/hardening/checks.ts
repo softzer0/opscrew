@@ -190,6 +190,11 @@ const rebootRequired: HostCheck = {
   },
 };
 
+/** A disk this full (percent) is a warning (`secure`'s disk check, `status`'s figures). */
+export const DISK_WARN_PERCENT = 85;
+/** A disk this full (percent) is high severity. */
+export const DISK_HIGH_PERCENT = 95;
+
 const diskUsage: HostCheck = {
   id: "disk-usage",
   title: "Disk has free space",
@@ -199,7 +204,7 @@ const diskUsage: HostCheck = {
     const match = result.stdout.match(/(\d+)%\s+\/\s*$/m);
     if (!match) return check(this, "warn", "Could not read disk usage.");
     const used = Number(match[1]);
-    if (used >= 95)
+    if (used >= DISK_HIGH_PERCENT)
       return {
         ...check(
           this,
@@ -209,7 +214,7 @@ const diskUsage: HostCheck = {
         ),
         severity: "high",
       };
-    if (used >= 85)
+    if (used >= DISK_WARN_PERCENT)
       return check(
         this,
         "fail",

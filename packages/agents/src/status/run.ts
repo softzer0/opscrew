@@ -14,6 +14,7 @@ import {
   serverlessNotSupported,
 } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
+import { type CheckState, checkStateReport } from "./check-state";
 import {
   type AppContainer,
   type ComponentStatus,
@@ -24,6 +25,7 @@ import {
   type ServiceContainer,
   serviceContainers,
 } from "./components";
+import { type ResourceReading, readResources, resourceLines } from "./resources";
 import { siteStatusReport } from "./site";
 
 /** Options of {@link readServerContainers} and {@link readComponentStatus}. */
@@ -32,11 +34,13 @@ export interface ComponentStatusOptions {
   hostKey?: string;
   /**
    * The deploy user's shell on a server OpsCrew created, own-server and Portainer fakes, and
-   * Cloudflare's clients for a site on its hosting (tests).
+   * Cloudflare's clients for a site on its hosting, and GitHub's client for the scheduled check's
+   * state (tests). On a server the user owns, `remote` is the deploy user's shell, which reads the
+   * resource figures.
    */
   services?: Pick<
     ProvisionServices,
-    "remote" | "own" | "portainer" | "runnerGitHub" | "cloudflare" | "sharedCloudflare"
+    "remote" | "own" | "portainer" | "runnerGitHub" | "cloudflare" | "sharedCloudflare" | "github"
   >;
 }
 
@@ -147,39 +151,77 @@ async function readStackContainers(
   );
 }
 
+/** What {@link componentStatusReport} read, with its lines. */
+export interface ComponentStatusReport {
+  lines: string[];
+  status?: ComponentStatus;
+  /** The resource figures, once the app was deployed and its components could be read. */
+  resources?: ResourceReading;
+  /** The scheduled check's state, when the plan has it on and GitHub could be read. */
+  check?: CheckState;
+}
+
+/** `blocks` joined with an empty line between them, empty ones left out. */
+function joinBlocks(...blocks: string[][]): string[] {
+  return blocks
+    .filter((block) => block.length > 0)
+    .flatMap((block, i) => (i === 0 ? block : ["", ...block]));
+}
+
+/** The status lines of `reading`, redacted. */
+function readingLines(deps: PhaseDeps, plan: DeployPlan, reading: ResourceReading): string[] {
+  return resourceLines(plan, reading, deps.clock.now()).map((line) => deps.redactor.redact(line));
+}
+
 /**
  * What `status` shows of the plan's components (FR-1331): before a deploy was seen, the plan's
- * list; then each one and whether it runs ({@link readComponentStatus}), with the list and a note
- * (redacted) instead when the deployment cannot be read. `check` runs first and may stop the read
- * the same way (the MCP server's host-key check). A self-hosted runner's state follows (FR-1530).
- * A site on Cloudflare's hosting or GitHub Pages has no components: its running version, custom
- * domains or Pages site instead (`siteStatusReport`).
+ * list; then each one and whether it runs ({@link readComponentStatus}) and the resource figures
+ * ({@link readResources}, FR-1704), with the list and a note (redacted) instead when the
+ * deployment cannot be read. `check` runs first and may stop the read the same way (the MCP
+ * server's host-key check). A self-hosted runner's state follows (FR-1530), then the scheduled
+ * check's state and open alerts when the plan has it on (FR-1708). A site on Cloudflare's hosting
+ * or GitHub Pages has no components: its running version, custom domains or Pages site instead
+ * (`siteStatusReport`), and the figures it cannot give.
  */
 export async function componentStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
-): Promise<{ lines: string[]; status?: ComponentStatus }> {
+): Promise<ComponentStatusReport> {
+  let report: Omit<ComponentStatusReport, "check">;
   if (isServerlessProvider(plan.target.provider)) {
-    return siteStatusReport(deps, plan, options.services ? { services: options.services } : {});
+    const site = await siteStatusReport(
+      deps,
+      plan,
+      options.services ? { services: options.services } : {},
+    );
+    const resources = await readResources(deps, plan);
+    report = { lines: joinBlocks(site.lines, readingLines(deps, plan, resources)), resources };
+  } else {
+    const components = await componentsReport(deps, plan, options);
+    const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
+    report = { ...components, lines: joinBlocks(components.lines, runner) };
   }
-  const report = await componentsReport(deps, plan, options);
-  const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
-  return runner.length === 0 ? report : { ...report, lines: [...report.lines, "", ...runner] };
+  const state = await checkStateReport(deps, plan, options.services?.github);
+  return {
+    ...report,
+    lines: joinBlocks(report.lines, state.lines),
+    ...(state.check !== undefined ? { check: state.check } : {}),
+  };
 }
 
-/** {@link componentStatusReport} without the runner. */
+/** {@link componentStatusReport} without the runner and the check. */
 async function componentsReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> },
-): Promise<{ lines: string[]; status?: ComponentStatus }> {
+): Promise<Omit<ComponentStatusReport, "check">> {
   if (!appDeployed(plan)) return { lines: componentStatusLines(plan, undefined) };
   const { check, ...read } = options;
+  let status: ComponentStatus;
   try {
     await check?.();
-    const status = await readComponentStatus(deps, plan, read);
-    return { lines: componentStatusLines(plan, status), status };
+    status = await readComponentStatus(deps, plan, read);
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     return {
@@ -188,6 +230,15 @@ async function componentsReport(
         deps.redactor.redact(`OpsCrew could not check whether they run. ${errorText(error)}`),
       ],
     };
+  }
+  const lines = componentStatusLines(plan, status);
+  try {
+    const resources = await readResources(deps, plan, read);
+    return { lines: joinBlocks(lines, readingLines(deps, plan, resources)), status, resources };
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    const note = `OpsCrew could not read the resource figures. ${errorText(error)}`;
+    return { lines: joinBlocks(lines, [deps.redactor.redact(note)]), status };
   }
 }
 
