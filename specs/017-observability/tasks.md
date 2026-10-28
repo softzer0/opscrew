@@ -469,7 +469,7 @@ Effort`.
         - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages), and an own server reached through the tunnel unless it deploys from its own runner (T1707: the check's `ssh` can't pass the tunnel's Access login);
         - it says localhost gets no check.
     - **Provision,** when the environment has the check on:
-      - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
+      - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). It passes the repository (`owner/repo`): the key's comment is `opscrew-check:<owner>/<repo>`, so two repositories on one own server keep their own lines (T1706's review). The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
       - **The secrets** (`github-secrets`), each set as a repository secret:
         - `OPSCREW_CHECK_SSH_KEY`;
         - `<prefix>CHECK_SERVER`, holding the host, port, user and known-hosts line;
@@ -589,6 +589,7 @@ Effort`.
       - GitHub's 60-day rule and how to turn the check on again;
       - planned outages, forks, and issues off (the webhook is then posted on every failing run, since nothing records that it was already sent);
       - what it can't do: minute-level alerting, the user's computer, Portainer's disk, and the disk of an own server reached through the tunnel unless it deploys from its own runner.
+    - **Rotating an add-on's token:** disable, then enable with the new one (Beszel with `--keep-data`). Re-enabling alone keeps the old secret (T1706's review).
     - **`beszel.md`:**
       - hub and agent modes, opening it, and the subdomain behind Access;
       - the read-only proxy and what Beszel can't see (container settings and logs);
@@ -668,6 +669,7 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
+  - ssh-host's add-on tables: `SECRET_NEEDS` could be a `needs` field of `SECRET_CHECKS`. The add-ons' names live in four tables (`ADDON_NAMES`, `ADDON_TITLES`, `variant.what`, `addonRemoveScripts`' `what`), where one record in `constants.ts` would do (T1706's review).
   - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`, and have Portainer's drift use `app-secrets.ts`'s `GeneratedValuesSchema` instead of its own copy (T1701a's review).
   - The fixed read commands now live in `status/components.ts`, `HOST_CHECKS`, `inspect.ts`, the figures and the logs. Decide whether one table of allowed read commands is smaller than five.
 
