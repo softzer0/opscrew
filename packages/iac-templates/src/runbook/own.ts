@@ -185,7 +185,7 @@ export function renderOwnRunbook(
 
   lines.push(
     ...checkSection(plan, environments),
-    ...addonSections(plan, ctx.projectId),
+    ...addonSections(plan, ctx),
     ...settingsSection(plan, environments, [
       `- **Domain or tunnel:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plans (the Cloudflare changes and`,
       "  the host changes) and applies nothing without your approval.",

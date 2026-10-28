@@ -1,19 +1,21 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { CHECK_LABEL, CHECK_WORKFLOW_FILE } from "../check";
+import { CHECK_LABEL, CHECK_WORKFLOW_FILE, checkDiskVia } from "../check";
 import { BESZEL_PORT, beszelHostname, tunnelMode } from "../tunnel";
-import { deploysInPlace } from "../workflow/shared";
 import { opscrew, runbookFolders } from "./shared";
 
 /** What the check does with the environment's disk, after "and its certificate's days left". */
 function diskText(plan: DeployPlan): string {
-  if (plan.target.mode !== "vps-compose") return ".";
-  if (deploysInPlace(plan)) {
-    return ", and the server's free disk, read by a job on the server's own runner (an issue at 85% full, and at 95%).";
+  switch (checkDiskVia(plan)) {
+    case "own-runner":
+      return ", and the server's free disk, read by a job on the server's own runner (an issue at 85% full, and at 95%).";
+    case "github":
+    case "runner-host":
+      return ", and the server's free disk over SSH, with a key the server lets run only `df` (an issue at 85% full, and at 95%).";
+    case undefined:
+      return tunnelMode(plan)
+        ? ". It reads no disk here: the check's SSH can't pass the tunnel's Cloudflare Access login (deploying from the server's own runner would let it read the disk there)."
+        : ".";
   }
-  if (tunnelMode(plan)) {
-    return ". It reads no disk here: the check's SSH can't pass the tunnel's Cloudflare Access login (deploying from the server's own runner would let it read the disk there).";
-  }
-  return ", and the server's free disk over SSH, with a key the server lets run only `df` (an issue at 85% full, and at 95%).";
 }
 
 /**
@@ -47,7 +49,12 @@ export function checkSection(plan: DeployPlan, environments?: readonly string[])
  * to the user's hub) and Grafana Cloud (where the lines and metrics go), each with how to turn it
  * off. Never a secret: the password and the token are named by their files.
  */
-export function addonSections(plan: DeployPlan, projectId: string | undefined): string[] {
+export function addonSections(
+  plan: DeployPlan,
+  ctx: { projectId?: string; environments?: readonly string[] },
+): string[] {
+  const { projectId, environments } = ctx;
+  const addon = (command: string) => `\`${opscrew(plan, `addon ${command}`, environments)}\``;
   const { beszel, grafanaCloud } = plan.observability ?? {};
   const home = runbookFolders(plan, projectId).home;
   const lines: string[] = [];
@@ -64,7 +71,7 @@ export function addonSections(plan: DeployPlan, projectId: string | undefined): 
           ]
         : [
             `Beszel ${beszel.version} charts the server's and its containers' CPU, memory, disk and network. Its dashboard listens`,
-            `only on the server (127.0.0.1:${BESZEL_PORT}). \`opscrew addon open beszel\` keeps an SSH tunnel to it open; then open`,
+            `only on the server (127.0.0.1:${BESZEL_PORT}). ${addon("open beszel")} keeps an SSH tunnel to it open; then open`,
             `http://localhost:${BESZEL_PORT} and log in as \`admin@opscrew.invalid\` with the \`password\` in`,
             `\`${home}/beszel_secrets.json\` on the machine that turned it on (never in this repository).`,
             ...(hostname === undefined
@@ -77,10 +84,10 @@ export function addonSections(plan: DeployPlan, projectId: string | undefined): 
           ]),
       "",
       "Beszel reads Docker only through OpsCrew's read-only proxy: the containers and their figures, never their settings or",
-      "logs. `opscrew addon status` shows its containers and their memory.",
+      `logs. ${addon("status")} shows its containers and their memory.`,
       beszel.mode === "agent"
-        ? "`opscrew addon disable beszel` removes the agent and its token; remove the system from your hub too."
-        : "`opscrew addon disable beszel` removes it and deletes its history after you type the app name (`--keep-data` keeps the history).",
+        ? `${addon("disable beszel")} removes the agent and its token; remove the system from your hub too.`
+        : `${addon("disable beszel")} removes it and deletes its history after you type the app name (\`--keep-data\` keeps the history).`,
       "",
     );
   }
@@ -95,7 +102,7 @@ export function addonSections(plan: DeployPlan, projectId: string | undefined): 
       "them in your Grafana Cloud stack; the free tier keeps them 14 days. The token is in",
       `\`${home}/grafana_cloud_token\` on the machine that turned it on, never in this repository.`,
       "",
-      "`opscrew addon disable grafana-cloud` removes Alloy, its buffer, its token and the masking file from the server. The data",
+      `${addon("disable grafana-cloud")} removes Alloy, its buffer, its token and the masking file from the server. The data`,
       "already in Grafana Cloud stays in your account.",
       "",
     );

@@ -54,6 +54,12 @@ plan, a log or your repository.
 Commit the changed `opscrew/plan.yaml` and files afterwards. The next `npx opscrew provision` also
 includes them in its pull request.
 
+With several [apps](several-apps.md) or [environments](environments.md), choose the one whose server
+sends with `--app <key>` and `--env <name>`, as every command takes them:
+`npx opscrew addon enable grafana-cloud --env staging …`. Every `addon` command below takes them
+too. Another environment's plan and token are in its own folders (`opscrew/environments/<env>/` and
+`~/.opscrew/projects/<project>/environments/<env>/`).
+
 ## What is sent
 
 - **Your app's log lines:** those of the web process, its workers, cron jobs and services, labelled

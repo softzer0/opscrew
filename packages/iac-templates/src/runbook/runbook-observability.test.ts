@@ -156,6 +156,18 @@ describe("the runbook's add-ons", () => {
     }
   });
 
+  it("names this environment in the add-on commands", () => {
+    const staging = observed(
+      inEnvironment(testPlan({ domain: "example.com" }), { name: "staging" }),
+      { beszel, grafanaCloud: grafana },
+    );
+    const text = renderRunbook(staging, ctx).content;
+    expect(text).toContain("`opscrew addon open beszel --env staging` keeps an SSH tunnel");
+    expect(text).toContain("`opscrew addon status --env staging` shows its containers");
+    expect(text).toContain("`opscrew addon disable beszel --env staging` removes it");
+    expect(text).toContain("`opscrew addon disable grafana-cloud --env staging` removes Alloy");
+  });
+
   it("names Beszel's subdomain behind Cloudflare Access", () => {
     const text = renderRunbook(
       observed(testPlan({ domain: "example.com" }), {

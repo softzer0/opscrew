@@ -182,7 +182,8 @@ const SERVER_ID = /^[A-Za-z0-9_-]+$/;
  * @throws OpsCrewError `INTERNAL` for a given id with other characters than {@link SERVER_ID}'s.
  */
 function serverOf(plan: DeployPlan, given: string | undefined): CheckServer | undefined {
-  if (plan.target.mode !== "vps-compose") return undefined;
+  const via = checkDiskVia(plan);
+  if (via === undefined) return undefined;
   if (given !== undefined && !SERVER_ID.test(given)) {
     throw new OpsCrewError(
       "INTERNAL",
@@ -191,13 +192,22 @@ function serverOf(plan: DeployPlan, given: string | undefined): CheckServer | un
     );
   }
   const id = given ?? `${plan.target.provider}-${plan.app.name}`;
-  if (deploysInPlace(plan)) return { id, via: "own-runner" };
+  if (via === "own-runner") return { id, via };
+  return { id, secret: deploySecretName(plan, CHECK_SECRETS.server), via };
+}
+
+/**
+ * How the check reads the disk of `plan`'s server: where the environment's deploys run, over SSH
+ * with the check key from GitHub's machines (`github`) or its runner machine (`runner-host`), or
+ * on the server's own runner (`own-runner`). `undefined` when it reads none: no server of the
+ * app's (Portainer, the server-less targets), or an own server in tunnel mode deployed over SSH,
+ * which the check's SSH can't reach through the tunnel's Cloudflare Access login.
+ */
+export function checkDiskVia(plan: DeployPlan): CheckServer["via"] | undefined {
+  if (plan.target.mode !== "vps-compose") return undefined;
+  if (deploysInPlace(plan)) return "own-runner";
   if (tunnelMode(plan)) return undefined;
-  return {
-    id,
-    secret: deploySecretName(plan, CHECK_SECRETS.server),
-    via: selfHosted(plan) ? "runner-host" : "github",
-  };
+  return selfHosted(plan) ? "runner-host" : "github";
 }
 
 /** The cron line: every `interval` minutes from a minute the repository's name picks, never :00. */

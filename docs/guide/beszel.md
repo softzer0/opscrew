@@ -44,6 +44,12 @@ connection only while the plan is applied, and never into a plan, a log or your 
 Commit the changed `opscrew/plan.yaml` and files afterwards. The next `npx opscrew provision` also
 includes them in its pull request.
 
+With several [apps](several-apps.md) or [environments](environments.md), choose the one whose server
+gets Beszel with `--app <key>` and `--env <name>`, as every command takes them:
+`npx opscrew addon enable beszel --env staging`. Every `addon` command below takes them too. Another
+environment's plan and secrets are in its own folders (`opscrew/environments/<env>/` and
+`~/.opscrew/projects/<project>/environments/<env>/`).
+
 ## Open the dashboard
 
 ```bash
