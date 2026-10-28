@@ -138,6 +138,7 @@ Effort`.
       - **`workersTail`:** creates the tail, reads its WebSocket with Node's global `WebSocket`, and calls `onEvent` per message. It deletes the tail when `signal` aborts, and also when the socket closes.
       - **`workersAnalytics`:** one GraphQL query on `workersInvocationsAdaptive` for the Worker since the given time: requests, errors, `cpuTimeP50` and `cpuTimeP99` in ms.
       - **`observabilityPermissions`:** names each missing permission.
+      - **The allowance:** if the query's answer says the day's ingestion stopped (spike result 6), `workersLogs` returns that with the events.
     - **The permission list:** `CLOUDFLARE_OBSERVABILITY_PERMISSIONS` holds Workers Tail Read, the Workers Observability permission spike result 6 names, and Account Analytics Read. Each is marked "only for logs and status on Cloudflare hosting".
     - **A WebSocket is injectable,** like `fetch`, so tests never open one.
     - **Errors:**
@@ -213,7 +214,7 @@ Effort`.
       - Write the files T1708 renders under `opscrew/addons/<name>` (cloud server: `/home/deploy/opscrew/addons/<name>`; own server: `/srv/opscrew/addons/<name>`), as the `portainer` step writes Portainer's.
       - Write the secrets from `ApplyOptions.secrets` to root-only files there (mode 0600, then owned as the container needs).
       - Run `docker compose up -d`, and check the containers are running.
-      - **Teardown:** `docker compose down`, the files and the secrets removed. The volumes go only with `deleteData`.
+      - **Teardown:** `docker compose down`, the files, the secrets and the volumes removed, so nothing of it stays (SC-1706). With `keepData`, Beszel's `beszel_data` volume stays. A teardown that deletes a volume is a destroying host plan (`allowDestroy` with the typed app name), as Portainer's data deletion is.
     - **`planAddon(kind, …)`** plans a setup and its undo. `planTeardown` gains the add-ons when present.
     - **One of each per server:** the host record names the app that turned each add-on on. Planning it for another app is a plain refusal naming that app (data-model.md).
     - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken` and `grafanaCloudToken`, sent only on stdin and checked by name, as `tunnelToken` is.
@@ -221,7 +222,7 @@ Effort`.
     - **Tests with `FakeHost`:**
       - each step's commands;
       - re-applying changes nothing;
-      - teardown with and without `deleteData`;
+      - teardown with and without `keepData`;
       - another app refused;
       - the secrets on stdin and nowhere in the plan text or the audit.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
@@ -305,8 +306,8 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`
-  - Owns: those paths (+ tests, snapshots). In `serverless/wrangler.ts`, its test only, unless the guard finds a gap.
+- [ ] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`, and Beszel's hostname in `packages/iac-templates/modules/cloudflare-access/**`, `packages/iac-templates/src/infra/tunnel.ts`, `packages/iac-templates/src/generated/modules.ts`
+  - Owns: those paths (+ tests, snapshots). In `serverless/wrangler.ts`, its test only, unless the guard finds a gap. `src/generated/modules.ts` only as `gen:modules` regenerates it.
   - Reads: spec US4, US5, FR-1702, FR-1711–FR-1714; contracts/observability.md "iac-templates"; research.md R5, R6, R7 and "Spike results" 1–3; plan.md "6."
   - Depends: T1701a, T1701b, T1702
   - Accept:
@@ -337,6 +338,7 @@ Effort`.
         - `prometheus.relabel` keeping the allow-list;
         - `prometheus.remote_write` to `metrics.url` with `metrics.user`.
       - **Nothing privileged:** no `privileged`, no Docker socket, no writable host mount.
+    - **Beszel at a hostname** (`access: "subdomain"`): `cloudflare-access` gains Beszel's Access application and policy (the listed emails, after a one-time PIN), as Portainer's, behind optional variables that default to none; `infra/tunnel.ts` routes the hostname to the hub's local port. A plan without it renders byte-identical HCL. Both engines validate the module.
     - **The masking file:** when `grafanaCloud.enabled`, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) from `app.env`'s values after writing `app.env`, as spike result 3 settles. It holds one escaped alternation, and no value shorter than 8 characters (as `Redactor.addLiteral`). Server workflows without it stay byte-identical.
     - **The Workers Logs guard (FR-1714):** a test that the generated Wrangler config keeps `observability.enabled: true`, with no `head_sampling_rate` below 1 and no `invocation_logs = false`.
     - **Tests:**
@@ -370,7 +372,7 @@ Effort`.
       - the edge's lines are named as the server's shared proxy;
       - an unknown name is refused with the list of names.
     - **Bounds:** default `tail` 200, and `since` parses `30s`, `15m`, `2h` or `3d`.
-    - **The first line** says how far back the lines go: the oldest line's time, then "each deploy starts new containers, and each keeps up to 30 MB of logs". On Cloudflare it gives the dated allowance from `prices.ts` instead (research R2).
+    - **The first line** says how far back the lines go: the oldest line's time, then "each deploy starts new containers, and each keeps up to 30 MB of logs". On Cloudflare it gives the dated allowance from `prices.ts` instead (research R2), and says that lines past it are missing. When T1703 can tell the day's allowance was reached (spike result 6), it says so plainly.
     - **Errors:**
       - a server that doesn't answer over SSH says so and suggests `verify`;
       - a missing Cloudflare permission names it.
@@ -482,7 +484,7 @@ Effort`.
         - series from the allow-list and the server's CPUs, filesystems and interfaces (host facts);
         - logs as 30 × the bytes of `docker logs --since 24h` for the app's containers, a fixed read;
         - both against 10,000 series and 50 GB a month. Past either, it offers a `logSampling` that fits.
-    - **`addonDisable`:** the teardown plan (`host-apply`). `--delete-data` needs the typed app name. The local secrets file is removed unless it's still in use.
+    - **`addonDisable`:** the teardown plan (`host-apply`). It removes everything the add-on added, its data included, after the typed app name (`allowDestroy`); `--keep-data` keeps Beszel's dashboard history and needs no typed name (spec US4 #5). The local secrets file is removed.
     - **`addonStatus`:** whether each add-on is on, its containers' state and memory, and how to open it.
     - **Memory:** `appMemoryLimits` and design's memory line count enabled add-ons.
     - **Tests:**
@@ -505,13 +507,13 @@ Effort`.
       - `--follow`, `--service <name>`, `--since <duration>`, `--tail <lines>`, and `--app` and `--env` through `addEnvOption` and `chooseEnvironment`;
       - output through `ctx.stdout` (redacted);
       - Ctrl-C stops a follow cleanly.
-    - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--delete-data`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
+    - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
     - **`status`** prints the figures with their flags, and the check's state and open alerts.
     - **`ALL_COMMANDS`** has 25 entries, and `program.test.ts` lists both new names.
     - **MCP:**
       - **`opscrew_logs`** (`readOnlyHint: true`): at most 500 lines and 64 KiB, `truncated: true` past either, no follow, redacted through `runTool`;
       - **`opscrew_status`'s structured data** gains `resources` and `check`;
-      - **`addon` tools** follow the Portainer tools' pattern if those exist, and hash-bound approvals are never granted without the user.
+      - **`opscrew_addon_status`** (read-only), **`opscrew_addon_enable`** and **`opscrew_addon_disable`**, as `opscrew_portainer_status`, `_enable` and `_disable` are. Hash-bound approvals are never granted without the user.
     - **The plugin:**
       - **`plugin/skills/opscrew-troubleshoot/SKILL.md`:** for "why is it failing", "it's slow" and "how much does it use". It reads `opscrew_status` first, then `opscrew_logs` with a short `since` for the failing service. It explains the flags, and never asks for more than 500 lines.
       - `node plugin/validate.mjs` passes.
@@ -599,6 +601,7 @@ Effort`.
         - the app's lines and the server's CPU, memory and disk queried back within 5 minutes;
         - the series under 1,000 (SC-1707);
         - disabled leaving nothing.
+    - **The other targets (SC-1701):** the existing own-server (`OPSCREW_E2E_OWN_SERVER`), Portainer (`OPSCREW_E2E_PORTAINER`) and localhost (`OPSCREW_E2E_LOCAL_RUNNER`) passes each gain a step: `logs` shows the latest lines within 10 seconds, `logs --follow` a request's line within 10 seconds, and `status` the figures (the host's disk named as not available on Portainer).
     - **Cloudflare** (`OPSCREW_E2E_CLOUDFLARE_HOSTING=1`, the SSR example): `logs` and `logs --follow` showing a request, and `status`'s figures.
     - **The leak search:** a seeded secret, printed by the example app, searched in every output (SC-1704):
       - the terminal;

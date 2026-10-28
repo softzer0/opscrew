@@ -46,7 +46,7 @@ Plan-wide rules:
 | Secret | Where it lives | Written by |
 |---|---|---|
 | The check's private key | `~/.opscrew/projects/<id>/check_key` (recovery copy), GitHub secret `OPSCREW_CHECK_SSH_KEY` | provision (`github-secrets`) |
-| An environment's server address, SSH port and host key | GitHub secret `<prefix>CHECK_SERVER` (`deploySecretPrefix`) | provision (`github-secrets`) |
+| An environment's server address, SSH port, user and host key | GitHub secret `<prefix>CHECK_SERVER` (`deploySecretPrefix`) | provision (`github-secrets`) |
 | The webhook's address | GitHub secret `OPSCREW_CHECK_WEBHOOK`; ntfy's optional token `OPSCREW_CHECK_NTFY_TOKEN` | provision (`github-secrets`), asked like an app secret |
 | Beszel's dashboard password (hub mode) | generated; recovery copy; root-only env file on the server | `addon enable beszel` (`host-apply`, on stdin) |
 | Beszel's agent token | generated in hub mode, or given by the user in agent mode; recovery copy; root-only env file | the same |

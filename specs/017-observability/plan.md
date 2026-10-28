@@ -98,13 +98,13 @@ Four ways to see an app once it is live. Nothing new runs on the server unless t
     - the check's files come in the deploy-setup pull request (`pull-request`), with the plan that shows the interval, the checks and the cost;
     - the check's secrets go through `github-secrets`;
     - the pause variable is a repository setting (`github-settings`), set by retarget and destroy inside their own approved flows.
-  - **Turning an add-on off** removes what it added after a teardown plan approved by hash. Deleting the dashboard's data needs `--delete-data` and the typed name.
+  - **Turning an add-on off** removes everything it added, its data included, after a teardown plan approved by hash with `allowDestroy` and the typed app name. `--keep-data` keeps Beszel's dashboard history (spec US4 #5).
   - **No new approval kind.**
 - **II (user owns everything):**
   - The workflow, the script, its JSON, the add-on Compose files, the proxy config and the Alloy config are plain files.
   - The check keeps working without OpsCrew.
   - Beszel's data stays on the user's server, and Grafana Cloud's in the user's account.
-- **III (dual engine):** only Portainer's subdomain pattern touches HCL, reused for Beszel's dashboard. No new module.
+- **III (dual engine):** the only HCL change is Beszel's Access application in the existing `cloudflare-access` module, validated under both engines. No new module.
 - **IV (secrets):**
   - **Where lines are masked:**
     - in the terminal, in MCP answers, and in Alloy before they leave the server, which uses `loki.secretfilter`, OpsCrew's patterns and the app's known values;
@@ -213,7 +213,7 @@ Research's open items 1–8, on an e2e server, the throwaway repository and the 
 - **ssh-host:**
   - **Host steps:**
     - `check-key`: the check's public key in the deploy user's `authorized_keys` with `restrict,command="df -P -B1 /"`; removed on teardown;
-    - `beszel` and `alloy`: their Compose files under `opscrew/addons/<name>`, as Portainer's are; started, and removed on teardown, with data kept unless asked.
+    - `beszel` and `alloy`: their Compose files under `opscrew/addons/<name>`, as Portainer's are; started, and removed on teardown with their data, unless the user keeps Beszel's.
   - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken` and `grafanaCloudToken`, sent on stdin.
 - Every answer is validated with zod.
 
@@ -265,7 +265,8 @@ Research's open items 1–8, on an e2e server, the throwaway repository and the 
     - `prometheus.exporter.unix` with `/proc`, `/sys` and `/` read-only under `/host`, its collectors limited, and `prometheus.relabel` keeping the allow-list;
     - `loki.write` and `prometheus.remote_write` with basic auth, the token from a root-only file.
   - **`GOMEMLIMIT`** at 80% of the limit.
-- **The masking file:** when Grafana Cloud is on, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) from `app.env`'s values, as the spike settles. Server workflows without Grafana Cloud stay byte-identical (snapshots).
+- **Beszel at a hostname:** `cloudflare-access` gains Beszel's Access application next to Portainer's, and `infra/tunnel.ts` routes the hostname to the hub. Without it, the HCL is byte-identical.
+- **The masking file:** when Grafana Cloud is on, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) from `app.env`'s values, as the spike settles. Server workflows without Grafana Cloud stay byte-identical (snapshots). The file holds the same values as `app.env`, root-only on the server, and is never committed.
 
 ### 7. Agents: logs and figures (T1709)
 - **`readLogs(deps, plan, { service, since, tail, follow })`**, per target as in the Summary.
@@ -331,7 +332,7 @@ Research's open items 1–8, on an e2e server, the throwaway repository and the 
 ### 10. Surfaces (T1712a CLI, MCP and plugin; T1712b the guide)
 - **The CLI:**
   - **`opscrew logs`:** `--follow`, `--service`, `--since <duration>`, `--tail <lines>`, `--app` and `--env`.
-  - **`opscrew addon enable|disable|status|open <beszel|grafana-cloud>`:** `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` and `--delete-data`.
+  - **`opscrew addon enable|disable|status|open <beszel|grafana-cloud>`:** `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email`, `--keep-data` and `--confirm <app>`.
   - **`status`:** prints the figures and the check's state.
   - `ALL_COMMANDS` grows to 25.
 - **MCP:**

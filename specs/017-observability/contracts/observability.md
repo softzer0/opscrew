@@ -95,7 +95,7 @@ containerInspect(envId: number, containerId: string):
 **ssh-host (T1706)**
 - **Host steps:**
   - `check-key`: adds or removes the line `restrict,command="df -P -B1 /" <public key> opscrew-check`;
-  - `beszel` and `alloy`: write the Compose file and configs under `opscrew/addons/<name>`, start them, and on teardown remove them (data kept unless asked).
+  - `beszel` and `alloy`: write the Compose file and configs under `opscrew/addons/<name>`, start them, and on teardown remove them, their volumes included unless `keepData` (a volume's deletion is a destroying plan).
 - **Planners:** `planAddon(kind, …)`, and `planTeardown` gains the add-ons.
 - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken` and `grafanaCloudToken` (stdin only).
 
@@ -124,7 +124,7 @@ renderAddon(plan: DeployPlan, kind: "beszel" | "grafana-cloud"):
   - `registerAppSecrets(deps, plan)`.
 - **The CLI:**
   - `opscrew logs [--follow] [--service <name>] [--since <duration>] [--tail <lines>] [--app <key>] [--env <name>]`;
-  - `opscrew addon <enable|disable|status|open> <beszel|grafana-cloud> [--mode hub|agent] [--hub-url <url>] [--access local|subdomain] [--hostname <fqdn>] [--allow-email <email>…] [--delete-data]`.
+  - `opscrew addon <enable|disable|status|open> <beszel|grafana-cloud> [--mode hub|agent] [--hub-url <url>] [--access local|subdomain] [--hostname <fqdn>] [--allow-email <email>…] [--keep-data] [--confirm <app>]`.
 - **MCP:** `opscrew_logs { app?, env?, service?, since?, tail? }`.
   - Read-only, with no follow.
   - At most 500 lines and 64 KiB; past that, `truncated: true`.
