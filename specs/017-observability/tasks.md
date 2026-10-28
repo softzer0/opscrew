@@ -635,7 +635,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`, `node plugin/validate.mjs` and `pnpm lint`
   - Effort: high
 
-- [ ] T1712b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
+- [X] T1712b [P] The guide, the README and the runbook, in `docs/guide/**`, `README.md`, `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ tests)
   - Reads: spec FR-1716 and the edge cases; research.md and its "Spike results"; quickstart.md; the reports of T1707–T1711
   - Depends: T1709a, T1709b, T1710, T1711
