@@ -490,7 +490,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
 
-- [ ] T1710 [P] [US3] The check in agents: settings, cost, provision's check key, secrets and files, the pause, and `init`'s permission checks, in `packages/agents/src/check/**`, `packages/agents/src/{design,provision,retarget,destroy,init}/**`
+- [X] T1710 [P] [US3] The check in agents: settings, cost, provision's check key, secrets and files, the pause, and `init`'s permission checks, in `packages/agents/src/check/**`, `packages/agents/src/{design,provision,retarget,destroy,init}/**`
   - Owns: those paths (+ tests). Not `design/components.ts` (T1711). Not `provision/secrets.ts`'s registering lines (T1701a). Also, for the check key in cloud-init: `packages/iac-templates/modules/{hetzner-vps,digitalocean-droplet}/**`, `packages/iac-templates/src/infra/**`, the regenerated `src/generated/modules.ts`, and the e2e tests `packages/cli/test/e2e/{digitalocean,own-server}.test.ts`.
   - Reads: spec US3, FR-1705–FR-1710, FR-1714; data-model.md "The plan block", "Secrets kept apart", "The check's files", "Alerts"; research.md R3, R4; plan.md "8."; T1704's, T1706's and T1707's reports
   - Depends: T1701a, T1704, T1706, T1707
@@ -537,6 +537,18 @@ Effort`.
       - no address in the pull request's files.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: high
+
+- [ ] T1710b [US3] Ask for the check's webhook only when GitHub doesn't hold it yet, in `packages/connectors/github/**` and `packages/agents/src/check/secrets.ts` (with its test)
+  - Owns: those paths (+ tests). In agents' `testing/deploy.ts` and `provision/types.ts`, only the new method in `FakeGitHub` and the `Pick`.
+  - Reads: T1710's report (`ProvisionServices.askCheckWebhook`, `OPSCREW_CHECK_WEBHOOK`)
+  - Depends: T1710
+  - Accept:
+    - **`actionsSecretExists(owner, repo, name)`:** `GET /repos/{o}/{r}/actions/secrets/{name}`, with 404 = false. A 403 names Secrets: Read.
+    - **Provision asks for the webhook** only when `OPSCREW_CHECK_WEBHOOK` is unset and the repository has no `OPSCREW_CHECK_WEBHOOK` secret.
+    - **A changed webhook kind** in the plan needs `OPSCREW_CHECK_WEBHOOK` set again. The guide says so (T1712b), and provision prints that hint whenever the plan's kind is set and the secret exists.
+    - **Tests:** absent, asked; present, not asked; the env var wins.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: medium
 
 - [ ] T1711 [P] [US4] [US5] The add-ons in agents: enable, disable, status and open, for Beszel and Grafana Cloud, and their memory in design, in `packages/agents/src/addons/**`, `packages/agents/src/design/components.ts`, `packages/agents/src/shared/memory.ts`, and `packages/agents/src/portainer/**` for exports only
   - Owns: those paths (+ tests; fakes in `packages/agents/src/testing/addons.ts` (new)). Also, for Beszel's subdomain on cloud servers (the lead, 2026-10-28): `planAddon`'s `connector` option in `packages/connectors/ssh-host/src/**`, and in `packages/agents/src/portainer/**` the rule that removes a cloud server's tunnel connector only when `usesTunnel(plan)` is false, and `runChange`'s sequence generalised into one function Portainer and the add-ons share, with Portainer's behaviour and tests unchanged.
