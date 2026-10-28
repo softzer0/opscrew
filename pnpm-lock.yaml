@@ -150,6 +150,9 @@ importers:
       '@opscrew/connector-portainer':
         specifier: workspace:*
         version: link:../connectors/portainer
+      '@opscrew/connector-ssh-host':
+        specifier: workspace:*
+        version: link:../connectors/ssh-host
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts
