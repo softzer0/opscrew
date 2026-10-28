@@ -219,6 +219,13 @@ Effort`.
     - **One of each per server:** the host record names the app that turned each add-on on. Planning it for another app is a plain refusal naming that app (data-model.md).
     - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken`, `beszelHubKey` and `grafanaCloudToken`, sent only on stdin and checked by name, as `tunnelToken` is.
     - **Beszel's hub key:** in hub mode, the step writes `beszelHubKey` to the hub's bind-mounted data folder as `data/id_ed25519` (0600) before the first start, so the hub uses OpsCrew's key (spike result 2).
+    - **The files beside each add-on's Compose file** (agreed with T1708):
+      - **Beszel:**
+        - `config.yml` with `${BESZEL_TOKEN}` replaced by `beszelToken`, root-only;
+        - `hub.env` (`USER_EMAIL`, `USER_PASSWORD`) and `agent.env` (`TOKEN`, and `KEY` in hub mode), root-only.
+      - **Alloy:**
+        - a `.env` with `OPSCREW_DEPLOY_GID` (`id -g` of the deploy user);
+        - `/srv/apps/<app>/mask.re` holding `[^\s\S]` when absent (owner the deploy user, mode 0640).
     - **The Compose text cap (16 KiB)** holds for the add-on files, or is raised for them with the reason in a comment.
     - **Tests with `FakeHost`:**
       - each step's commands;
@@ -307,8 +314,8 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`, and Beszel's hostname in `packages/iac-templates/modules/cloudflare-access/**`, `packages/iac-templates/src/infra/tunnel.ts`, `packages/iac-templates/src/generated/modules.ts`
-  - Owns: those paths (+ tests, snapshots). In `serverless/wrangler.ts`, its test only, unless the guard finds a gap. `src/generated/modules.ts` only as `gen:modules` regenerates it.
+- [ ] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`, and Beszel's hostname in `packages/iac-templates/modules/cloudflare-access/**`, `packages/iac-templates/src/infra/tunnel.ts`, `packages/iac-templates/src/tunnel/index.ts`, `packages/iac-templates/src/generated/modules.ts`
+  - Owns: those paths (+ tests, snapshots). In `serverless/wrangler.ts`, its test only, unless the guard finds a gap. `src/generated/modules.ts` only as `gen:modules` regenerates it. In `src/tunnel/index.ts`, `beszelHostname(plan)` and `usesTunnel` only (the lead, 2026-10-28).
   - Reads: spec US4, US5, FR-1702, FR-1711–FR-1714; contracts/observability.md "iac-templates"; research.md R5, R6, R7 and "Spike results" 1–3; plan.md "6."
   - Depends: T1701a, T1701b, T1702
   - Accept:
@@ -358,7 +365,8 @@ Effort`.
         - `prometheus.remote_write` to `metrics.url` with `metrics.user`.
       - **Nothing privileged:** no `privileged`, no Docker socket, no writable host mount.
     - **Beszel at a hostname** (`access: "subdomain"`): `cloudflare-access` gains Beszel's Access application and policy (the listed emails, after a one-time PIN), as Portainer's, behind optional variables that default to none; `infra/tunnel.ts` routes the hostname to the hub's local port. A plan without it renders byte-identical HCL. Both engines validate the module.
-    - **The masking file:** when `grafanaCloud.enabled`, the deploy job writes `/srv/apps/<app>/mask.re` (root-only) in place from `app.env`'s values, after writing `app.env`.
+    - **The masking file:** when `grafanaCloud.enabled`, the deploy job writes `/srv/apps/<app>/mask.re` in place from `app.env`'s values, after writing `app.env`.
+      - It is owned by the deploy user with mode 0640, and Alloy reads it through `group_add: ["${OPSCREW_DEPLOY_GID}"]` at `/host/root/srv/apps/<app>/mask.re`. The deploy job runs as the deploy user, and Alloy has no `DAC_OVERRIDE`, so a root-only file would be out of its reach. It still can't read `app.env` (0600).
       - It holds one escaped RE2 alternation, and no value shorter than 8 characters (as `Redactor.addLiteral`).
       - With no values, it holds `[^\s\S]`, which never matches.
       - Server workflows without it stay byte-identical.
@@ -495,7 +503,7 @@ Effort`.
 
       It is refused off the cloud and own targets, and for a second app on the same server, each with the reason.
     - **Beszel:**
-      - **Hub mode:** generates a password (24+ characters), a token (48 hex) and the hub's Ed25519 key into Beszel's secrets file.
+      - **Hub mode:** generates a password (24+ characters), a token (48 hex) and the hub's Ed25519 key into Beszel's secrets file, and chooses the dashboard's login email (`USER_EMAIL`, not in the plan). Beszel's `config.yml` omits `users:`, so the system belongs to that only user (T1713 confirms it).
       - **Agent mode:** takes `--hub-url`, the hub's public key, and the token (from `OPSCREW_BESZEL_TOKEN`, or asked, never echoed).
       - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. It refuses without `allowedEmails`, and never makes the dashboard public. It also refuses a hostname that Portainer's web UI already uses on the server, since both go through one tunnel (T1701a's review).
       - **`addonOpen`:** runs `ssh -N -L 8090:127.0.0.1:8090` as Portainer's status command builds it, until stopped. It prints the local address and where the password is.
