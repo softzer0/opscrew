@@ -31,6 +31,9 @@ export const CONNECTOR_MEMORY_MB = 32;
 /** Port Portainer listens on, bound to the server's loopback interface only. */
 export const PORTAINER_PORT = 9443;
 
+/** Port Beszel's hub (its dashboard) listens on, bound to the server's loopback interface only. */
+export const BESZEL_PORT = 8090;
+
 /** True when an own-server plan serves the app through a Cloudflare Tunnel. */
 export function tunnelMode(plan: DeployPlan): boolean {
   return plan.target.provider === "own" && plan.target.access === "tunnel";
@@ -54,12 +57,20 @@ export function portainerHostname(plan: DeployPlan): string | undefined {
   return portainer?.enabled && portainer.access === "subdomain" ? portainer.hostname : undefined;
 }
 
+/** Beszel's hostname when the plan serves Beszel's hub on a subdomain (behind Access). */
+export function beszelHostname(plan: DeployPlan): string | undefined {
+  const beszel = plan.observability?.beszel;
+  return beszel?.enabled && beszel.access === "subdomain" ? beszel.hostname : undefined;
+}
+
 /**
  * True when the plan needs a Cloudflare Tunnel and Access: an own server in tunnel mode, or
- * Portainer on a subdomain (on any target).
+ * Portainer or Beszel's hub on a subdomain.
  */
 export function usesTunnel(plan: DeployPlan): boolean {
-  return tunnelMode(plan) || portainerHostname(plan) !== undefined;
+  return (
+    tunnelMode(plan) || portainerHostname(plan) !== undefined || beszelHostname(plan) !== undefined
+  );
 }
 
 /**

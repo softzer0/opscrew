@@ -2,6 +2,8 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import {
+  BESZEL_PORT,
+  beszelHostname,
   PORTAINER_PORT,
   portainerHostname,
   sshHostname,
@@ -24,11 +26,13 @@ export interface TunnelPieces {
 }
 
 /**
- * The tunnel and Access modules for a plan that serves an own server through a tunnel or Portainer
- * on a subdomain; `undefined` when the plan needs neither (the root module is then unchanged).
+ * The tunnel and Access modules for a plan that serves an own server through a tunnel, or Portainer
+ * or Beszel's hub on a subdomain; `undefined` when the plan needs none (the root module is then
+ * unchanged).
  *
  * The connector runs on the server's host network, so every route points at `localhost`: the app
- * at Caddy's loopback port, SSH at sshd's port and Portainer at its loopback-only HTTPS port.
+ * at Caddy's loopback port, SSH at sshd's port, Portainer at its loopback-only HTTPS port and
+ * Beszel's hub at its loopback-only HTTP port.
  */
 export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces | undefined {
   if (!usesTunnel(plan)) return undefined;
@@ -36,6 +40,9 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   const ssh = sshHostname(plan); // throws first when tunnel mode has no Cloudflare domain
   const account = accountId(ctx);
   const portainer = portainerHostname(plan);
+  const beszel = beszelHostname(plan);
+  // The listed emails' login (a one-time PIN), Portainer's and Beszel's.
+  const pinLogin = portainer !== undefined || beszel !== undefined;
   const domain = plan.dns.domain;
 
   const app = `"http://localhost:${TUNNEL_ORIGIN_PORT}"`;
@@ -56,6 +63,11 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       `    { hostname = var.portainer_hostname, service = "https://localhost:${PORTAINER_PORT}", no_tls_verify = true },`,
     );
   }
+  if (beszel !== undefined) {
+    routes.push(
+      `    { hostname = var.beszel_hostname, service = "http://localhost:${BESZEL_PORT}" },`,
+    );
+  }
 
   const accessHostnames: [string, string][] = [];
   if (ssh !== undefined) accessHostnames.push(["service_hostname", "var.ssh_hostname"]);
@@ -63,8 +75,19 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
     accessHostnames.push(
       ["portainer_hostname", "var.portainer_hostname"],
       ["portainer_allowed_emails", "var.portainer_allowed_emails"],
-      ["one_time_pin_identity_provider_id", "var.one_time_pin_identity_provider_id"],
     );
+  }
+  if (beszel !== undefined) {
+    accessHostnames.push(
+      ["beszel_hostname", "var.beszel_hostname"],
+      ["beszel_allowed_emails", "var.beszel_allowed_emails"],
+    );
+  }
+  if (pinLogin) {
+    accessHostnames.push([
+      "one_time_pin_identity_provider_id",
+      "var.one_time_pin_identity_provider_id",
+    ]);
   }
 
   const main = [
@@ -87,7 +110,11 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       ],
     }),
     ...moduleBlock({
-      comment: ["# Cloudflare Access in front of the tunnel's SSH and Portainer hostnames."],
+      comment: [
+        beszel === undefined
+          ? "# Cloudflare Access in front of the tunnel's SSH and Portainer hostnames."
+          : "# Cloudflare Access in front of the tunnel's SSH, Portainer and Beszel hostnames.",
+      ],
       name: "access",
       source: "cloudflare-access",
       args: accessArguments(accessHostnames),
@@ -114,17 +141,17 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
     tfvars.ssh_hostname = ssh;
     tfvars.ssh_port = ctx.sshPort ?? 22;
   }
+  const pin = ctx.cloudflare?.oneTimePinIdentityProviderId;
+  if (pinLogin && pin === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${portainer !== undefined ? "Portainer's" : "Beszel's"} Cloudflare Access needs the account's one-time PIN login method, and OpsCrew does not know its id yet.`,
+      {
+        hint: "Run `opscrew provision` again: it sets up the Cloudflare Zero Trust login (the account's organization and its one-time PIN login) before the infrastructure.",
+      },
+    );
+  }
   if (portainer !== undefined) {
-    const pin = ctx.cloudflare?.oneTimePinIdentityProviderId;
-    if (pin === undefined) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        "Portainer's Cloudflare Access needs the account's one-time PIN login method, and OpsCrew does not know its id yet.",
-        {
-          hint: "Run `opscrew provision` again: it sets up the Cloudflare Zero Trust login (the account's organization and its one-time PIN login) before the infrastructure.",
-        },
-      );
-    }
     variables.push(
       {
         name: "portainer_hostname",
@@ -136,14 +163,36 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
         type: "list(string)",
         description: "Email addresses Cloudflare Access lets through to Portainer.",
       },
-      {
-        name: "one_time_pin_identity_provider_id",
-        type: "string",
-        description: "Id of the account's one-time PIN login method, Portainer's login.",
-      },
     );
     tfvars.portainer_hostname = portainer;
     tfvars.portainer_allowed_emails = plan.portainer?.allowedEmails ?? [];
+  }
+  if (beszel !== undefined) {
+    variables.push(
+      {
+        name: "beszel_hostname",
+        type: "string",
+        description: "Hostname Beszel's dashboard is served on, behind Cloudflare Access.",
+      },
+      {
+        name: "beszel_allowed_emails",
+        type: "list(string)",
+        description: "Email addresses Cloudflare Access lets through to Beszel's dashboard.",
+      },
+    );
+    tfvars.beszel_hostname = beszel;
+    tfvars.beszel_allowed_emails = plan.observability?.beszel?.allowedEmails ?? [];
+  }
+  if (pinLogin) {
+    const logins = [
+      ...(portainer === undefined ? [] : ["Portainer's"]),
+      ...(beszel === undefined ? [] : ["Beszel's"]),
+    ];
+    variables.push({
+      name: "one_time_pin_identity_provider_id",
+      type: "string",
+      description: `Id of the account's one-time PIN login method, ${logins.join(" and ")} login.`,
+    });
     tfvars.one_time_pin_identity_provider_id = pin;
   }
 
@@ -157,6 +206,9 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   }
   if (portainer !== undefined) {
     outputs.push(...output("portainer_url", '"https://${var.portainer_hostname}"'));
+  }
+  if (beszel !== undefined) {
+    outputs.push(...output("beszel_url", '"https://${var.beszel_hostname}"'));
   }
 
   return {

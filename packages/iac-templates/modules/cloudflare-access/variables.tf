@@ -32,8 +32,20 @@ variable "portainer_allowed_emails" {
   default     = []
 }
 
+variable "beszel_hostname" {
+  description = "Hostname Beszel's dashboard is served on through the tunnel; null for none. Only beszel_allowed_emails get through, after a one-time PIN."
+  type        = string
+  default     = null
+}
+
+variable "beszel_allowed_emails" {
+  description = "Email addresses Access lets through to Beszel's dashboard."
+  type        = list(string)
+  default     = []
+}
+
 variable "one_time_pin_identity_provider_id" {
-  description = "Id of the account's one-time PIN login method, which Portainer's Access application uses. Required with portainer_hostname."
+  description = "Id of the account's one-time PIN login method, which the Portainer and Beszel Access applications use. Required with portainer_hostname or beszel_hostname."
   type        = string
   default     = null
 }

@@ -328,6 +328,46 @@ function envFileWrites(envFiles: readonly EnvFile[], dir: string, on: On): strin
   );
 }
 
+/**
+ * With Grafana Cloud on (`observability.grafanaCloud.enabled`), the masking file Grafana Alloy
+ * reads: `mask.re` in the app's folder `dir`, written in place (Alloy follows the file, not a
+ * rename) on the stdin of a command `on` the machine, owner-only as `app.env`, right after it. It
+ * holds every value of `app.env` of 8 characters or more (each line of a multi-line value, as the
+ * redactor's literals), escaped and joined as one RE2 alternation in a capture group (Alloy's
+ * `stage.replace` masks only groups), or `[^\s\S]`, which never matches, when there is none.
+ * Nothing without Grafana Cloud.
+ */
+function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
+  if (plan.observability?.grafanaCloud?.enabled !== true) return [];
+  return [
+    "    # Grafana Alloy's masking file: app.env's values as one RE2 alternation.",
+    "    mask=",
+    "    while IFS= read -r line; do",
+    '      [[ "$line" == [A-Za-z_]*=* ]] || continue',
+    '      value="${line#*=}"',
+    '      case "$value" in',
+    "        \\'*\\') value=\"${value:1:-1}\" ;;",
+    '        \\"*\\")',
+    // Undoes the env file's double quotes: \\ (kept apart first), \", \n and $$.
+    '          value="${value:1:-1}"',
+    "          value=\"${value//\\\\\\\\/$'\\x01'}\"",
+    '          value="${value//\\\\\\"/\\"}"',
+    "          value=\"${value//\\\\n/$'\\n'}\"",
+    '          value="${value//\\$\\$/\\$}"',
+    "          value=\"${value//$'\\x01'/\\\\}\"",
+    "          ;;",
+    "      esac",
+    "      while IFS= read -r part; do",
+    "        if (( ${#part} >= 8 )); then",
+    "          mask+=\"${mask:+|}$(printf '%s' \"$part\" | sed 's/[][\\.*+?(){}|^$]/\\\\&/g')\"",
+    "        fi",
+    '      done <<< "$value"',
+    `    done <<< "\${${DEPLOY_SECRETS.appEnv}:-}"`,
+    '    if [[ -n "$mask" ]]; then mask="($mask)"; else mask=\'[^\\s\\S]\'; fi',
+    `    printf '%s' "$mask" | ${on(`umask 077 && cat > ${dir}/mask.re`)}`,
+  ];
+}
+
 /** Saves the running version as `.env.previous` and prints its image, in the app's folder. */
 const SAVE_PREVIOUS =
   'rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi';
@@ -500,6 +540,7 @@ function sshDeploy(
     `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
     `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFileWrites(upload.envFiles, dir, OVER_SSH),
+    ...maskFileWrite(plan, dir, OVER_SSH),
     ...(upload.edgeFiles.originTls
       ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
       : []),
@@ -582,6 +623,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
     '    mkdir -p "$dir"',
     `    cp -r ${upload.files.join(" ")} "$dir"/`,
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
+    ...maskFileWrite(plan, '"$dir"', HERE),
     ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
   ];
   return {

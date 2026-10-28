@@ -2,10 +2,12 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { BESZEL_SUBDOMAIN, observabilityPlan } from "../addons/__fixtures__/plans";
 import { renderEdgeCompose } from "../edge";
 import { IMAGES } from "../pins";
 import { renderCaddyfile, renderCompose, renderTunnelConnectorCompose } from "../runtime";
 import {
+  beszelHostname,
   CONNECTOR_METRICS,
   sshHostname,
   TUNNEL_ORIGIN_PORT,
@@ -36,6 +38,19 @@ describe("tunnel hostnames", () => {
     expect(
       usesTunnel(testPlan({ domain: "shop.example.com", portainer: { access: "local" } })),
     ).toBe(false);
+  });
+
+  it("uses a tunnel for Beszel's hub on a subdomain, and not for a local hub or Beszel turned off", () => {
+    const domain = { domain: "shop.example.com" };
+    const beszel = observabilityPlan({ beszel: BESZEL_SUBDOMAIN }, domain);
+    expect(beszelHostname(beszel)).toBe("beszel.example.com");
+    expect(usesTunnel(beszel)).toBe(true);
+    const local = observabilityPlan({ beszel: { enabled: true, version: "0.21.1" } }, domain);
+    expect(beszelHostname(local)).toBeUndefined();
+    expect(usesTunnel(local)).toBe(false);
+    const off = observabilityPlan({ beszel: { ...BESZEL_SUBDOMAIN, enabled: false } }, domain);
+    expect(beszelHostname(off)).toBeUndefined();
+    expect(usesTunnel(off)).toBe(false);
   });
 });
 

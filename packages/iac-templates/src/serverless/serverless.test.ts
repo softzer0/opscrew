@@ -126,6 +126,32 @@ describe("renderWranglerConfig", () => {
     }
   });
 
+  // FR-1714: `opscrew logs` reads Workers Logs, so every Worker OpsCrew configures keeps them on.
+  it("keeps Workers Logs on: observability enabled, nothing sampled, invocation logs kept", () => {
+    const plans = [
+      cloudflarePlan(),
+      cloudflarePlan({ environment: "staging", workersDev: true, previewUrls: true }),
+      ssrPlan(),
+      ssrPlan({ site: NUXT_SSR, notFound: "none" }),
+    ];
+    for (const plan of plans) {
+      const config = jsonc(renderWranglerConfig(plan).content) as {
+        observability?: { enabled?: boolean; logs?: { enabled?: boolean } };
+      };
+      expect(config.observability?.enabled).toBe(true);
+      expect(config.observability?.logs?.enabled).not.toBe(false);
+      const walk = (value: unknown): void => {
+        if (typeof value !== "object" || value === null) return;
+        for (const [key, item] of Object.entries(value)) {
+          if (key === "head_sampling_rate") expect(item).toBeGreaterThanOrEqual(1);
+          if (key === "invocation_logs") expect(item).not.toBe(false);
+          walk(item);
+        }
+      };
+      walk(config);
+    }
+  });
+
   it("refuses a plan that is not on Cloudflare's hosting", () => {
     expect(() => renderWranglerConfig(pagesPlan())).toThrow(
       expect.objectContaining({ code: "PHASE_PRECONDITION" }),
