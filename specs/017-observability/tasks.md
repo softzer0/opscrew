@@ -721,6 +721,8 @@ Effort`.
 
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
+  - `renderBeszelCompose`'s comment (`iac-templates/src/addons/beszel.ts` ~20) says every add-on container runs as the deploy user with no capabilities; the proxy runs as root with the deploy group and `NET_BIND_SERVICE` (T1712b's review). Correct the comment.
+  - `agents/src/check/design.ts`' `noDiskReason` repeats the tunnel and own-runner rule that iac-templates' `checkDiskVia` now exports (T1712b's review). Use it.
   - Portainer's runbook (`agents/src/verify/portainer.ts`, `renderPortainerRunbook`) doesn't mention `opscrew logs` or the check yet (T1712b).
   - Hints that still say `docker compose logs --tail 200 app` could point to `opscrew logs`: `agents/src/verify/checks.ts` (~535, ~745), `verify/serverless.ts` (~257) and `retarget/server-ops.ts` (~303) (T1712b).
   - After `addon enable grafana-cloud`, a hint could say that the app's own secret values are masked only once the next deploy writes the masking file (until then only secret-shaped values are). The guide says so (T1712b).
