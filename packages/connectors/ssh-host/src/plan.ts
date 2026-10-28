@@ -7,6 +7,7 @@ import { z } from "zod";
 import { addonTaken, keyFingerprint } from "./addons";
 import {
   ADDON_KINDS,
+  ADDON_NAMES,
   ADDON_PROJECTS,
   type AddonKind,
   APPS_DIR,
@@ -2404,12 +2405,6 @@ export function planPortainer(options: {
   return plan;
 }
 
-/** The add-ons' names in plan titles. */
-const ADDON_TITLES: Readonly<Record<AddonKind, string>> = {
-  beszel: "Beszel",
-  alloy: "Grafana Alloy",
-};
-
 /**
  * A step that removes an add-on; Beszel's history (`data/`) stays with `keepData`. `agent`: only
  * Beszel's agent ran there: it made no history, and a `data/` kept from an earlier hub mode stays.
@@ -2648,7 +2643,7 @@ function addonStep(
     title,
     "change",
     params,
-    `${ADDON_TITLES[addon]} runs as its own Compose project ${ADDON_PROJECTS[addon]} in ${dir}, and reads Docker only through OpsCrew's read-only proxy. ${secrets} written at apply time to files only the deploy user can read, never part of this plan.`,
+    `${ADDON_NAMES[addon].runs} runs as its own Compose project ${ADDON_PROJECTS[addon]} in ${dir}, and reads Docker only through OpsCrew's read-only proxy. ${secrets} written at apply time to files only the deploy user can read, never part of this plan.`,
   );
 }
 

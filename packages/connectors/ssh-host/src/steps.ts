@@ -8,6 +8,7 @@
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
 import {
+  ADDON_NAMES,
   ADDON_PROJECTS,
   ADDONS_ROOT,
   type AddonKind,
@@ -2065,7 +2066,6 @@ const AddonParams = z.object({
 
 /** What differs between the add-ons and Beszel's modes. */
 interface AddonVariant {
-  what: string;
   secrets: SecretName[];
   /** The files the step writes from stdin, which must be there (non-empty). */
   secretFiles: string[];
@@ -2091,7 +2091,6 @@ function addonVariant(kind: AddonKind, mode: "hub" | "agent" | undefined): Addon
     `fail 'No valid ${what} arrived on standard input, so ${product} was not set up.'`;
   if (kind === "alloy") {
     return {
-      what: "Grafana Alloy",
       secrets: ["grafanaCloudToken"],
       secretFiles: ["grafana_cloud_credential"],
       dataDirs: ["data"],
@@ -2113,7 +2112,6 @@ if [ ! -e "$MASK" ]; then printf '%s' "$EMPTY_MASK" | put "$MASK"; fi`,
   }
   if (mode === "agent") {
     return {
-      what: "Beszel's agent",
       secrets: ["beszelToken"],
       secretFiles: ["agent.env"],
       dataDirs: ["agent_data"],
@@ -2124,7 +2122,6 @@ case "$token" in ''|*[!A-Za-z0-9-]*) token=''; ${refuse("Beszel agent token", "B
     };
   }
   return {
-    what: "Beszel",
     secrets: ["beszelPassword", "beszelToken", "beszelHubKey"],
     secretFiles: ["hub.env", "agent.env", "config.yml", "data/id_ed25519"],
     dataDirs: ["data", "agent_data"],
@@ -2189,6 +2186,7 @@ function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScri
   if ((p.mode === "hub") !== (p.hubKey !== undefined)) throw invalid(step, "hubKey");
   const files = addonFiles(step);
   const variant = addonVariant(kind, p.mode);
+  const what = p.mode === "agent" ? "Beszel's agent" : ADDON_NAMES[kind].runs;
   const templated = files.find(([name]) => name === variant.templated);
   if (variant.templated !== "" && !templated?.[1].includes(BESZEL_TOKEN_PLACEHOLDER)) {
     throw invalid(step, `${variant.templated} has no token placeholder`);
@@ -2216,7 +2214,7 @@ function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScri
       PLACEHOLDER: BESZEL_TOKEN_PLACEHOLDER,
       SECRET_FILES: variant.secretFiles.join(" "),
       DATA_DIRS: variant.dataDirs.join(" "),
-      WHAT: variant.what,
+      WHAT: what,
     },
     helpers: MONITOR_HELPERS,
     verify: `  files_ok || return 1
@@ -2254,9 +2252,9 @@ until all_running; do
   if [ "$i" -ge 30 ]; then fail "$WHAT did not keep all its containers running within a minute. See docker compose -p $PROJECT logs on the server."; fi
   sleep 2
 done`,
-    failed: `${variant.what} is not running as planned.`,
+    failed: `${what} is not running as planned.`,
     secrets: { names: variant.secrets, required: true },
-    doing: `starting ${variant.what}`,
+    doing: `starting ${what}`,
     timeoutMs: 10 * MINUTE,
   });
 }
@@ -2275,7 +2273,7 @@ function addonRemoveScripts(plan: HostPlan, step: HostStep, kind: AddonKind): St
   const app = AppNameSchema.safeParse(plan.app);
   if (kind === "alloy" && !app.success) throw invalid(step, "app");
   const dir = addonDir(kind, p.runAs);
-  const what = kind === "alloy" ? "Grafana Alloy" : "Beszel";
+  const { runs: what } = ADDON_NAMES[kind];
   return scripts({
     name: `${kind}.remove`,
     params: {

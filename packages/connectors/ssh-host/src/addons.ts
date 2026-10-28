@@ -4,13 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
-import type { AddonKind } from "./constants";
-
-/** The add-on's name as users know it, and its `opscrew addon` name. */
-const ADDON_NAMES: Readonly<Record<AddonKind, { name: string; command: string }>> = {
-  beszel: { name: "Beszel", command: "beszel" },
-  alloy: { name: "Grafana Cloud (Grafana Alloy)", command: "grafana-cloud" },
-};
+import { ADDON_NAMES, type AddonKind } from "./constants";
 
 /**
  * The refusal when `owner`, another app, turned the add-on on: a server has one of each, and it

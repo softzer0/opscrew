@@ -181,6 +181,17 @@ export function addonDir(kind: AddonKind, runAs: "root" | "login"): string {
   return `${runAs === "root" ? ADDONS_DIR : CLOUD_ADDONS_DIR}/${kind}`;
 }
 
+/**
+ * Each add-on's names: as users know it (`name`, in refusals), what runs on the server (`runs`, in
+ * plan titles and step messages) and its `opscrew addon` name (`command`).
+ */
+export const ADDON_NAMES: Readonly<
+  Record<AddonKind, { name: string; runs: string; command: string }>
+> = {
+  beszel: { name: "Beszel", runs: "Beszel", command: "beszel" },
+  alloy: { name: "Grafana Cloud (Grafana Alloy)", runs: "Grafana Alloy", command: "grafana-cloud" },
+};
+
 /** Each add-on's Compose project, on every server. */
 export const ADDON_PROJECTS: Readonly<Record<AddonKind, string>> = {
   beszel: "opscrew-beszel",

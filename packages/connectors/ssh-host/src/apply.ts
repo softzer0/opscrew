@@ -59,55 +59,60 @@ const PASSWORD_RE = /^[\x20-\x7e]{12,128}$/;
 /** GitHub's runner registration and remove tokens (29 upper-case letters and digits today). */
 const RUNNER_TOKEN_RE = /^[A-Za-z0-9_-]{16,512}$/;
 
-/** How each secret is checked before anything is sent, and what an invalid one says. */
+/**
+ * How each secret is checked before anything is sent, what an invalid one says, and what a step
+ * needs supplied (`needs`, for the refusal when a required secret is missing).
+ */
 const SECRET_CHECKS: Record<
   SecretName,
-  { label: string; valid: (value: string) => boolean; invalid: string; hint?: string }
+  {
+    label: string;
+    needs: string;
+    valid: (value: string) => boolean;
+    invalid: string;
+    hint?: string;
+  }
 > = {
   tunnelToken: {
     label: "tunnel-token",
+    needs: "the tunnel token",
     valid: (value) => TOKEN_RE.test(value),
     invalid: "The tunnel token does not look like a Cloudflare Tunnel token.",
     hint: "Read the token again from the tunnel's IaC output.",
   },
   portainerPassword: {
     label: "portainer-password",
+    needs: "the Portainer admin password",
     valid: (value) => PASSWORD_RE.test(value),
     invalid: "The Portainer password must be 12 to 128 printable characters on one line.",
   },
   beszelPassword: {
     label: "beszel-password",
+    needs: "Beszel's dashboard password",
     valid: (value) => /^[A-Za-z0-9_-]{16,128}$/.test(value),
     invalid:
       "Beszel's dashboard password must be 16 to 128 letters, digits, dashes and underscores.",
   },
   beszelToken: {
     label: "beszel-token",
+    needs: "Beszel's agent token",
     valid: (value) => /^[A-Za-z0-9-]{16,128}$/.test(value),
     invalid: "Beszel's agent token must be 16 to 128 letters, digits and dashes.",
     hint: "Copy the token again from your Beszel hub (Add system).",
   },
   beszelHubKey: {
     label: "beszel-hub-key",
+    needs: "Beszel's hub key",
     valid: isOpensshPrivateKey,
     invalid: "Beszel's hub key must be an unencrypted OpenSSH private key.",
   },
   grafanaCloudToken: {
     label: "grafana-cloud-token",
+    needs: "the Grafana Cloud token",
     valid: (value) => TOKEN_RE.test(value),
     invalid: "The Grafana Cloud token does not look like an access policy token.",
     hint: "Copy the token again from your Grafana Cloud stack's Access Policies.",
   },
-};
-
-/** What a step needs supplied, for the refusal when a required secret is missing. */
-const SECRET_NEEDS: Record<SecretName, string> = {
-  tunnelToken: "the tunnel token",
-  portainerPassword: "the Portainer admin password",
-  beszelPassword: "Beszel's dashboard password",
-  beszelToken: "Beszel's agent token",
-  beszelHubKey: "Beszel's hub key",
-  grafanaCloudToken: "the Grafana Cloud token",
 };
 
 /**
@@ -681,7 +686,7 @@ export async function applyHostPlan(
       : undefined;
     if (missing !== undefined) {
       throw refuse(
-        `Applying this plan needs ${SECRET_NEEDS[missing]}, and none was supplied.`,
+        `Applying this plan needs ${SECRET_CHECKS[missing].needs}, and none was supplied.`,
         "Supply it at apply time; it is never part of the plan.",
       );
     }
