@@ -110,9 +110,9 @@ Never an address, a key or a webhook URL.
 type ResourceReading = {
   takenAt: string;
   server?: {
-    cpus: number; load1: number; load5: number; load15: number;
-    memory: { usedBytes: number; totalBytes: number };
-    disk?: { usedBytes: number; freeBytes: number; totalBytes: number }; // absent on Portainer
+    cpus: number; load1?: number; load5?: number; load15?: number;      // load: servers only
+    memory: { usedBytes?: number; totalBytes: number };                 // used: servers only
+    disk?: { usedBytes: number; freeBytes: number; totalBytes: number }; // servers only
   };
   containers: {
     service: string;                 // web, a worker, a cron job, a service, edge

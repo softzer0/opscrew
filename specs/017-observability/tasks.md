@@ -422,7 +422,7 @@ Effort`.
   - Effort: xhigh
 
 - [ ] T1709b [P] [US2] Resource figures and the check's state in `status`, in `packages/agents/src/status/**`, and the disk thresholds' export in `packages/secops/src/hardening/checks.ts`
-  - Owns: those paths (+ tests). In secops, only the export of the two thresholds (and its index line).
+  - Owns: those paths (+ tests). In secops, only the export of the two thresholds (and its index line). In iac-templates' `src/check/index.ts`, only `CHECK_WORKFLOW_FILE` and `CHECK_LABEL` (with a test that `check.mjs`'s label matches). In `localhost/phases.test.ts`, only the status expectation the figures change (the lead, 2026-10-28).
   - Reads: spec US2, FR-1704, FR-1708; data-model.md "Reading figures"; research.md R1; plan.md "7."; T1704's and T1705's reports
   - Depends: T1701a, T1704, T1705
   - Accept:
