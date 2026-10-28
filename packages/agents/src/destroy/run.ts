@@ -34,6 +34,7 @@ import {
   COMMAND,
   CONTINUES_WITH_LEFT,
   checkCloudflare,
+  checkPauseNote,
   containerImagesLeft,
   type DeploymentFiles,
   DRIFT_THEN_DESTROY,
@@ -227,6 +228,7 @@ async function destroyInfrastructure(
               "OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel (Cloudflare deletes a tunnel only after its connector has stopped).",
             ]
           : []),
+        ...checkPauseNote(plan),
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
       planHash: summary.planHash,
@@ -686,7 +688,7 @@ export async function runDestroy(
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
-  await pauseCheckForTeardown(deps, github, plan);
+  await pauseCheckForTeardown(deps, github, plan, destroyApproval);
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: "The infrastructure is deleted.",

@@ -92,6 +92,43 @@ describe("changeCheckPause", () => {
     expect(handler.requests).toHaveLength(1);
   });
 
+  it("asks nothing under an approval already given, and records it in the audit", async () => {
+    const { deps, handler, target, paused } = await setup(false);
+    const given = {
+      id: "approval-1",
+      kind: "iac-apply" as const,
+      title: "Delete shop on Hetzner Cloud and Cloudflare (3 resources to delete)",
+      approved: true,
+      approver: "--approve and --confirm flags",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+    };
+    await expect(
+      changeCheckPause(deps, target, plan(), "destroyed", "provision", given),
+    ).resolves.toBe("changed");
+    expect(paused()).toEqual({
+      "shop/prod": { reason: "destroyed", since: "2026-10-11T12:00:00.000Z" },
+    });
+    expect(handler.requests).toEqual([]);
+    expect(deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "provider-call",
+        action: "pause the scheduled check for shop/prod",
+        decision: "approved",
+        detail: `under the approval "${given.title}" (approval-1)`,
+      }),
+    );
+    // A refused one changes nothing and asks nothing.
+    const other = await setup();
+    await expect(
+      changeCheckPause(other.deps, other.target, plan(), "destroyed", "provision", {
+        ...given,
+        approved: false,
+      }),
+    ).resolves.toBe("refused");
+    expect(other.github.variables.size).toBe(0);
+    expect(other.handler.requests).toEqual([]);
+  });
+
   it("changes nothing when the change is declined", async () => {
     const { deps, github, target } = await setup(false);
     await expect(changeCheckPause(deps, target, plan(), "destroyed", "provision")).resolves.toBe(

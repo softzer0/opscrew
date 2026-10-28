@@ -40,6 +40,7 @@ import {
   testPlan,
   unprotectPlan,
 } from "../testing";
+import { scriptedConfirm } from "./__fixtures__/confirm";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 
@@ -270,9 +271,25 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
     const s = await setup({ plan });
     await runDestroy(s.deps, { services: s.services });
-    const pause = s.events.indexOf("approval:github-settings");
-    expect(pause).toBeGreaterThan(s.events.indexOf("apply:destroy"));
-    expect(s.events[pause + 1]).toBe("approval:github-secrets");
+    // Under the destroy plan's typed confirmation, which says so: no question of its own.
+    expect(s.events).not.toContain("approval:github-settings");
+    const destroy = s.handler.requests.find(
+      (request) => request.kind === "iac-apply" && request.title.startsWith("Delete shop"),
+    );
+    expect(destroy?.details).toContain(
+      "This also pauses the scheduled check for shop/prod (the repository variable OPSCREW_CHECK_PAUSED)",
+    );
+    const pause = s.deps.audit.entries.findIndex(
+      (e) => e.action === "pause the scheduled check for shop/prod",
+    );
+    expect(s.deps.audit.entries[pause]).toMatchObject({
+      kind: "provider-call",
+      target: "acme/shop",
+      decision: "approved",
+      detail: expect.stringContaining(`under the approval "${destroy?.title}"`),
+    });
+    expect(pause).toBeGreaterThan(s.deps.audit.entries.findIndex((e) => e.kind === "iac"));
+    expect(pause).toBeLessThan(s.deps.audit.entries.findIndex((e) => e.kind === "secret-set"));
     expect(JSON.parse(s.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "")).toEqual({
       "shop/prod": { reason: "destroyed", since: NOW },
     });
@@ -311,12 +328,28 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(s.github.variables.get(CHECK_PAUSED_VARIABLE)).toBeUndefined();
   });
 
-  it("goes on with a warning when the check's pause is declined", async () => {
+  it("a scripted destroy (--confirm, no --yes) pauses the check under its typed confirmation", async () => {
     const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
-    const s = await setup({ plan, answer: (request) => request.kind !== "github-settings" });
+    const s = await setup({ plan, answer: scriptedConfirm("shop") });
+    await runDestroy(s.deps, { services: s.services });
+    expect(s.events).not.toContain("approval:github-settings");
+    expect(JSON.parse(s.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "")).toEqual({
+      "shop/prod": { reason: "destroyed", since: NOW },
+    });
+    expect(s.deps.reporter.text()).not.toContain("The scheduled check was not paused");
+  });
+
+  it("goes on with a warning when the check's pause fails", async () => {
+    const plan = { ...deployedPlan(), observability: { check: { enabled: true } } };
+    const s = await setup({ plan });
+    s.github.setRepoVariable = async () => {
+      throw new Error("GitHub answered 403");
+    };
     const result = await runDestroy(s.deps, { services: s.services });
     expect(result.destroyed.length).toBeGreaterThan(0);
-    expect(s.deps.reporter.text()).toContain("The scheduled check was not paused");
+    expect(s.deps.reporter.text()).toContain(
+      "OpsCrew could not pause the scheduled check (GitHub answered 403)",
+    );
     expect(s.github.variables.size).toBe(0);
   });
 

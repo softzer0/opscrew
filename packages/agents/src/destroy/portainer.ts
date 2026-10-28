@@ -54,6 +54,7 @@ import {
   type CloudflareRemovalWords,
   COMMAND,
   checkCloudflare,
+  checkPauseNote,
   containerImagesLeft,
   type DeploymentFiles,
   deploymentFiles,
@@ -557,7 +558,15 @@ export async function destroyPortainer(
         confirmed,
         appChanges: stackWork.length > 0,
         words: WORDS,
-        notes: stackWork.length === 0 && branchNote !== undefined ? [branchNote] : [],
+        // The branch's deletion and the check's pause are said in the typed confirmation they go
+        // under (the stack teardown's when there is one).
+        notes:
+          stackWork.length === 0
+            ? [
+                ...(branchNote !== undefined ? [branchNote] : []),
+                ...(removeApp ? checkPauseNote(plan) : []),
+              ]
+            : [],
       });
     }
     const tunnelFirst = removal?.tunnel === true;
@@ -579,6 +588,7 @@ export async function destroyPortainer(
                   ]
                 : []),
               ...(branchNote !== undefined ? [branchNote] : []),
+              ...(removeApp ? checkPauseNote(plan) : []),
               PORTAINER_STAYS,
             ],
             refused: `The removal of ${name} from your Portainer was not approved, so nothing in your Portainer was changed and nothing in Cloudflare was deleted.`,
@@ -645,7 +655,7 @@ export async function destroyPortainer(
   // 7. Deploy secrets and OpsCrew's record of the deployment
   let secretsRemoved: string[] = [];
   if (removeApp) {
-    await pauseCheckForTeardown(deps, github, plan);
+    await pauseCheckForTeardown(deps, github, plan, stackApproval ?? removal?.approval);
     secretsRemoved = await removeDeploySecrets(deps, github, {
       plan,
       done: "The app is removed from your Portainer and Cloudflare.",

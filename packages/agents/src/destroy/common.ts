@@ -13,6 +13,7 @@ import {
   upperFirst,
 } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
+import { CHECK_PAUSED_VARIABLE, checkEnvironmentKey } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   ghcrImageFor,
@@ -229,15 +230,30 @@ export async function resolveGitHub(
 }
 
 /**
+ * The line of the teardown's typed confirmation that says it also pauses the scheduled check
+ * (the approval {@link pauseCheckForTeardown} then pauses it under); none without the check.
+ */
+export function checkPauseNote(plan: DeployPlan): string[] {
+  if (plan.observability?.check?.enabled !== true) return [];
+  return [
+    `This also pauses the scheduled check for ${checkEnvironmentKey(plan)} (the repository variable ${CHECK_PAUSED_VARIABLE}), so it opens no issue for the app that is gone and closes its open ones.`,
+  ];
+}
+
+/**
  * 8. Once the app is deleted, before its secrets go: the scheduled check is paused for the
- * environment (`destroyed`, a `github-settings` approval), so it opens no issue for the app that
- * is gone and closes its open ones. Declined or failed, a warning says what to do; the teardown
- * goes on. Without GitHub (the reason was said) a warning says the check may open an issue.
+ * environment (`destroyed`), so it opens no issue for the app that is gone and closes its open
+ * ones. `approval` is the teardown's typed confirmation whose details carry
+ * {@link checkPauseNote}: the pause needs no approval of its own then (still audited); without
+ * one (nothing of that kind was approved in this run) it asks its own `github-settings` approval.
+ * Declined or failed, a warning says what to do; the teardown goes on. Without GitHub (the reason
+ * was said) a warning says the check may open an issue.
  */
 export async function pauseCheckForTeardown(
   deps: PhaseDeps,
   github: GitHubTarget,
   plan: DeployPlan,
+  approval: ApprovalRecord | undefined,
 ): Promise<void> {
   if (plan.observability?.check?.enabled !== true) return;
   const left =
@@ -256,6 +272,7 @@ export async function pauseCheckForTeardown(
       plan,
       "destroyed",
       "provision",
+      approval,
     );
     if (outcome === "refused") deps.reporter.warn(`The scheduled check was not paused, ${left}`);
   } catch (error) {

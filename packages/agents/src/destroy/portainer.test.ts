@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import type { ApprovalRequest, IacEngine } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { serviceSpec } from "@opscrew/iac-templates";
-import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import { CHECK_PAUSED_VARIABLE, serviceSpec } from "@opscrew/iac-templates";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   deployImage,
@@ -34,6 +34,7 @@ import {
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
 import { encryptedState, plainState, withStateList, writeFakeState } from "../testing";
+import { scriptedConfirm } from "./__fixtures__/confirm";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 
@@ -716,6 +717,52 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.handler.requests.some((request) => request.kind === "stack-apply")).toBe(false);
     expect(asked).toEqual(["acme/shop:opscrew-deploy"]);
     expect(s.events.indexOf("github:delete-branch")).toBeGreaterThan(s.events.indexOf("iac-apply"));
+  });
+
+  it("a scripted destroy pauses the scheduled check under the typed confirmation that says so", async () => {
+    const note = "This also pauses the scheduled check for shop/prod";
+    const withCheck = async (s: PortainerProject) => {
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...plan,
+        observability: { check: { enabled: true } },
+      });
+    };
+    const paused = (s: PortainerProject) =>
+      JSON.parse(s.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "{}");
+
+    // The stack teardown's confirmation carries it.
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    await withCheck(s);
+    s.answer(scriptedConfirm("shop"));
+    await destroy(s);
+    expect(s.events).not.toContain("approve:github-settings");
+    const teardown = s.handler.requests.find((request) => request.kind === "stack-apply");
+    expect(teardown?.details).toContain(note);
+    expect(paused(s)).toEqual({ "shop/prod": { reason: "destroyed", since: expect.any(String) } });
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        action: "pause the scheduled check for shop/prod",
+        detail: expect.stringContaining(`under the approval "${teardown?.title}"`),
+      }),
+    );
+
+    // Only Cloudflare left: its confirmation carries it.
+    const t = await deployed();
+    await withCheck(t);
+    for (const name of ["opscrew-shop", "opscrew-shop-updater"]) {
+      t.fake.stacks.splice(
+        t.fake.stacks.findIndex((stack) => stack.Name === name),
+        1,
+      );
+    }
+    t.fake.registries.splice(0);
+    t.answer(scriptedConfirm("shop"));
+    await destroy(t);
+    expect(t.events).not.toContain("approve:github-settings");
+    const cloudflare = t.handler.requests.find((request) => request.kind === "iac-apply");
+    expect(cloudflare?.details).toContain(note);
+    expect(paused(t)).toEqual({ "shop/prod": { reason: "destroyed", since: expect.any(String) } });
   });
 
   it("a branch already gone is fine", async () => {

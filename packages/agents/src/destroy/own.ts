@@ -58,6 +58,7 @@ import {
   type CloudflareRemovalWords,
   COMMAND,
   checkCloudflare,
+  checkPauseNote,
   containerImagesLeft,
   type DeploymentFiles,
   deploymentFiles,
@@ -615,6 +616,9 @@ export async function destroyOwnServer(
         confirmed,
         appChanges: hostSteps.length > 0,
         words,
+        // The check's pause is said in the typed confirmation it goes under (the host plan's when
+        // there is one).
+        notes: removeApp && hostSteps.length === 0 ? checkPauseNote(plan) : [],
       });
     }
     if (iac !== undefined && removal !== undefined && !removal.tunnel) {
@@ -647,6 +651,7 @@ export async function destroyOwnServer(
                 `${TUNNEL_AFTER_SERVER} so this goes first; the approved Cloudflare plan follows once Cloudflare reports no active connections for the tunnel.`,
               ]
             : []),
+          ...checkPauseNote(plan),
           SERVER_STAYS,
         ],
         refused: `The removal of ${name} from your server was not approved, so nothing on your server was changed${already}.`,
@@ -679,7 +684,7 @@ export async function destroyOwnServer(
   let secretsRemoved: string[] = [];
   let current = plan;
   if (removeApp) {
-    await pauseCheckForTeardown(deps, github, plan);
+    await pauseCheckForTeardown(deps, github, plan, teardownApproval ?? removal?.approval);
     secretsRemoved = await removeDeploySecrets(deps, github, {
       plan,
       done: "The app is removed from your server and Cloudflare.",

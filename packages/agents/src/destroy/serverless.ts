@@ -41,6 +41,7 @@ import {
   COMMAND,
   CONTINUES_WITH_LEFT,
   checkCloudflare,
+  checkPauseNote,
   DRIFT_THEN_DESTROY,
   deploymentFiles,
   deploySecretsLeft,
@@ -240,6 +241,7 @@ export async function destroyCloudflareWorkers(
       `Delete the Worker of ${name} and its custom domains on Cloudflare (${plural(count, "resource")} to delete)`,
     notes: [
       "The Worker's secrets go with it. OpsCrew applies this plan once this app's hostnames have left its shared Cloudflare rules (the next approval).",
+      ...checkPauseNote(plan),
     ],
     unchanged: "Nothing was deleted.",
   });
@@ -259,7 +261,7 @@ export async function destroyCloudflareWorkers(
       : await applyRootDeletion(session, worker, "the Worker and its custom domains");
 
   // 8. The deploy secrets, and OpsCrew's record of the deployment
-  await pauseCheckForTeardown(deps, github, plan);
+  await pauseCheckForTeardown(deps, github, plan, worker?.approval);
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: "The Worker and its custom domains are deleted.",
@@ -499,6 +501,8 @@ export async function destroyGithubPages(
   // 5. The DNS records, while the site still claims the domain.
   const approvals: (ApprovalRecord | undefined)[] = [];
   const destroyed: ResourceChange[] = [];
+  // The typed confirmation the check's pause goes under (it says so).
+  let recordsApproval: ApprovalRecord | undefined;
   if (dns !== undefined && records !== undefined) {
     const approved = await approveRootDeletion(dns, {
       suffix: "destroy",
@@ -507,12 +511,14 @@ export async function destroyGithubPages(
         `Delete the DNS records of ${domain} on Cloudflare (${plural(count, "resource")} to delete)`,
       notes: [
         `They go first, while the GitHub Pages site still claims ${domain}: no record ever points at GitHub with no site claiming the domain. The Pages plan that removes the site follows (its own approval).`,
+        ...checkPauseNote(plan),
       ],
       unchanged: "Nothing was deleted.",
     });
     if (approved !== undefined) {
       destroyed.push(...(await applyRootDeletion(dns, approved, `the DNS records of ${domain}`)));
       approvals.push(approved.approval);
+      recordsApproval = approved.approval;
     }
   }
 
@@ -560,7 +566,7 @@ export async function destroyGithubPages(
 
   // 8. The app's values for its build, and OpsCrew's record of the deployment (an earlier run
   // wrote it when only the verification record was left).
-  if (!verificationOnly) await pauseCheckForTeardown(deps, github, plan);
+  if (!verificationOnly) await pauseCheckForTeardown(deps, github, plan, recordsApproval);
   const secretsRemoved =
     verificationOnly || deploySecretNames(plan).length === 0
       ? []

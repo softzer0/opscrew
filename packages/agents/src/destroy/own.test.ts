@@ -24,6 +24,7 @@ import {
 } from "../drift/__fixtures__/own-project";
 import { hostPlanFile, readOwnServer, readServerAddresses } from "../shared";
 import { ED25519, OTHER_DEPLOY_KEY, ownPlan, withOtherApp } from "../testing";
+import { scriptedConfirm } from "./__fixtures__/confirm";
 import { applyHostPlanApproved, savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
@@ -735,18 +736,25 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     const facts = structuredClone(s.host.facts);
     if (facts.deployUser !== null) facts.deployUser.checkKeys = ["acme/shop", "acme/other"];
     s.host.facts = HostFactsSchema.parse(facts);
+    // A script: `opscrew destroy --confirm shop`, no `--yes`.
+    s.answer(scriptedConfirm("shop"));
     await runDestroy(s.deps, { services: services(s) });
-    // Paused once the app is removed, before its secrets go.
-    expect(kinds(s)).toEqual([
-      "iac-apply",
-      "host-apply",
-      "cloudflare-apply",
-      "github-settings",
-      "github-secrets",
-    ]);
+    // Paused once the app is removed, before its secrets go, under the host plan's typed
+    // confirmation (which says so): no question of its own.
+    expect(kinds(s)).toEqual(["iac-apply", "host-apply", "cloudflare-apply", "github-secrets"]);
+    const note = "This also pauses the scheduled check for shop/prod";
+    const teardown = s.handler.requests.find((request) => request.kind === "host-apply");
+    expect(teardown?.details).toContain(note);
+    expect(s.handler.requests.filter((request) => request.details.includes(note))).toHaveLength(1);
     expect(JSON.parse(s.github.variables.get("OPSCREW_CHECK_PAUSED") ?? "")).toEqual({
       "shop/prod": { reason: "destroyed", since: expect.any(String) },
     });
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        action: "pause the scheduled check for shop/prod",
+        detail: expect.stringContaining(`under the approval "${teardown?.title}"`),
+      }),
+    );
     // Only this repository's line goes; another repository's check key stays.
     const removal = s.host.applies.at(-1)?.plan.steps.filter((step) => step.id === "check-key");
     expect(removal).toEqual([

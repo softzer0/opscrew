@@ -1,4 +1,4 @@
-import type { RemoteExec } from "@opscrew/contracts";
+import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { exists, OpsCrewError } from "@opscrew/core";
 import { type AddonKind, BESZEL_PORT, beszelHostname } from "@opscrew/iac-templates";
 import { type DeployPlan, onOneServer } from "@opscrew/plan-schema";
@@ -324,11 +324,19 @@ export async function addonOpen(
       `Log in as ${BESZEL_EMAIL}; the password is the "password" in ${file} (on this computer only).`,
     ].join("\n"),
   );
-  const result = await deps.runner.run("ssh", tunnelArgs(deps, server), {
-    timeoutMs: Number.POSITIVE_INFINITY,
-    ...(options.signal !== undefined ? { signal: options.signal } : {}),
-  });
-  if (options.signal?.aborted === true) return;
+  // Stopped (Ctrl+C) ends it quietly, whether the runner then rejects or resolves.
+  const stopped = () => options.signal?.aborted === true;
+  let result: CommandResult;
+  try {
+    result = await deps.runner.run("ssh", tunnelArgs(deps, server), {
+      timeoutMs: Number.POSITIVE_INFINITY,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    });
+  } catch (error) {
+    if (stopped()) return;
+    throw error;
+  }
+  if (stopped()) return;
   if (result.exitCode !== 0) {
     throw new OpsCrewError(
       "COMMAND_FAILED",

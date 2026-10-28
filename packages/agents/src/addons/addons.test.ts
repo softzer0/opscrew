@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { type ApplyOptions, type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
-import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
+import type { ApprovalRequest, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
@@ -909,6 +909,30 @@ describe.skipIf(!hasGit)("status and open", () => {
     expect(s.deps.reporter.text()).toContain(s.deps.paths.files.beszelSecrets);
     const grafana = await failure(addonOpen(s.deps, await s.plan(), "grafana-cloud"));
     expect(grafana.message).toContain("Grafana Cloud stack");
+  });
+
+  it("open: Ctrl+C ends it quietly, also when the runner rejects on the abort", async () => {
+    const s = await cloudSetup();
+    await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });
+    const runner = s.deps.runner;
+    const stop = new AbortController();
+    // As the real runner does: the tunnel runs until the signal aborts, then it rejects.
+    const aborting: CommandRunner = {
+      run: (command, args, options) => {
+        if (command !== "ssh") return runner.run(command, args, options);
+        const ended = new Promise<never>((_, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("This operation was aborted", "AbortError")),
+          );
+        });
+        stop.abort(); // Ctrl+C while the tunnel runs
+        return ended;
+      },
+    };
+    const open = addonOpen({ ...s.deps, runner: aborting }, await s.plan(), "beszel", {
+      signal: stop.signal,
+    });
+    await expect(open).resolves.toBeUndefined();
   });
 
   it("parses only the add-ons' containers", () => {

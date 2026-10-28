@@ -1,5 +1,5 @@
 import type { GitHubClient } from "@opscrew/connector-github";
-import type { PhaseName } from "@opscrew/contracts";
+import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { CHECK_PAUSED_VARIABLE, checkEnvironmentKey } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -35,8 +35,11 @@ export type CheckPauseOutcome = "changed" | "unchanged" | "refused";
  * Pauses (`reason`) or resumes (`undefined`) the scheduled check for `plan`'s environment
  * (`checkEnvironmentKey`) in the repository variable `OPSCREW_CHECK_PAUSED`: it is read, its one
  * entry changed, and written back (deleted once no environment is paused), after a
- * `github-settings` approval; audited. Only an environment with the check on is paused or
- * resumed (without it the variable is not even read); nothing to change asks nothing. A variable that is not OpsCrew's JSON stops with how to fix it.
+ * `github-settings` approval, or under `given`, an approval that already covers it (destroy's
+ * typed confirmation, whose details say so): then nothing is asked, and a refused one changes
+ * nothing. Audited. Only an environment with the check on is paused or resumed (without it the
+ * variable is not even read); nothing to change asks nothing. A variable that is not OpsCrew's
+ * JSON stops with how to fix it.
  */
 export async function changeCheckPause(
   deps: Pick<PhaseDeps, "approvals" | "audit" | "clock">,
@@ -44,6 +47,7 @@ export async function changeCheckPause(
   plan: DeployPlan,
   reason: CheckPauseReason | undefined,
   phase: PhaseName,
+  given?: ApprovalRecord,
 ): Promise<CheckPauseOutcome> {
   // Without the check on, the variable is not read (the token may lack Variables).
   if (plan.observability?.check?.enabled !== true) return "unchanged";
@@ -83,16 +87,18 @@ export async function changeCheckPause(
     reason === undefined
       ? `Resume the scheduled check for ${key} in ${where}`
       : `Pause the scheduled check for ${key} in ${where}`;
-  const approval = await deps.approvals.request({
-    kind: "github-settings",
-    title: what,
-    details: [
-      reason === undefined
-        ? `OpsCrew removes ${key} from the repository variable ${CHECK_PAUSED_VARIABLE}, so the scheduled check checks it again and opens an issue when it fails.`
-        : `OpsCrew sets ${key} in the repository variable ${CHECK_PAUSED_VARIABLE} (${reason === "retarget" ? "the app is moving to another server" : "the app is torn down"}), so the scheduled check skips it, opens no issue for it and closes its open ones.`,
-      "Other environments' entries stay as they are.",
-    ].join("\n"),
-  });
+  const approval =
+    given ??
+    (await deps.approvals.request({
+      kind: "github-settings",
+      title: what,
+      details: [
+        reason === undefined
+          ? `OpsCrew removes ${key} from the repository variable ${CHECK_PAUSED_VARIABLE}, so the scheduled check checks it again and opens an issue when it fails.`
+          : `OpsCrew sets ${key} in the repository variable ${CHECK_PAUSED_VARIABLE} (${reason === "retarget" ? "the app is moving to another server" : "the app is torn down"}), so the scheduled check skips it, opens no issue for it and closes its open ones.`,
+        "Other environments' entries stay as they are.",
+      ].join("\n"),
+    }));
   if (!approval.approved) return "refused";
   if (Object.keys(next).length === 0) {
     await api.deleteRepoVariable(owner, repo, CHECK_PAUSED_VARIABLE);
@@ -106,6 +112,7 @@ export async function changeCheckPause(
     phase,
     target: where,
     decision: "approved",
+    ...(given !== undefined ? { detail: `under the approval "${given.title}" (${given.id})` } : {}),
   });
   return "changed";
 }

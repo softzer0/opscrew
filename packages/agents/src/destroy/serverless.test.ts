@@ -5,8 +5,8 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest, FetchLike, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { pagesVerificationRootDir } from "@opscrew/iac-templates";
-import { readArtifact } from "@opscrew/plan-schema";
+import { CHECK_PAUSED_VARIABLE, pagesVerificationRootDir } from "@opscrew/iac-templates";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision/run";
 import { pagesPlanHash, planPagesTeardown } from "../serverless/pages/plan";
@@ -33,6 +33,7 @@ import {
 } from "../testing/pages";
 import { createSiteProject, sitePlan, workerCreate, workerPlanJson } from "../testing/serverless";
 import { plainState, plainStateResources } from "../testing/state";
+import { scriptedConfirm } from "./__fixtures__/confirm";
 import { runDestroy } from "./run";
 import type { DestroyPreview } from "./types";
 
@@ -60,6 +61,32 @@ function request(handler: ScriptedApprovalHandler, kind: ApprovalRequest["kind"]
   const found = handler.requests.find((r) => r.kind === kind);
   expect(found, kind).toBeDefined();
   return found as ApprovalRequest;
+}
+
+/** What the typed confirmation that the check's pause goes under says. */
+const PAUSE_NOTE = "This also pauses the scheduled check for example-app/prod";
+
+/** Turns the scheduled check on in the plan at `file`, as design does. */
+async function withCheck(file: string): Promise<void> {
+  const plan = await readArtifact("plan", file);
+  await writeArtifact("plan", file, { ...plan, observability: { check: { enabled: true } } });
+}
+
+/** The check is paused for the environment, audited under the approval titled `title`. */
+function expectPaused(
+  github: FakeDestroyGitHub,
+  run: Awaited<ReturnType<typeof createTestPhaseDeps>>,
+  title: string,
+): void {
+  expect(JSON.parse(github.variables.get(CHECK_PAUSED_VARIABLE) ?? "{}")).toEqual({
+    "example-app/prod": { reason: "destroyed", since: expect.any(String) },
+  });
+  expect(run.audit.entries).toContainEqual(
+    expect.objectContaining({
+      action: "pause the scheduled check for example-app/prod",
+      detail: expect.stringContaining(`under the approval "${title}"`),
+    }),
+  );
 }
 
 /** Writes a state file holding one managed resource, as an apply leaves it. */
@@ -249,6 +276,18 @@ describe.skipIf(!findExecutable("git"))("destroy on Cloudflare's hosting", () =>
     expect(site.zone.opscrewRule(REDIRECT)).toBeDefined();
   });
 
+  it("a scripted destroy pauses the scheduled check under the Worker plan's typed confirmation", async () => {
+    const site = await cloudflareSite();
+    await withCheck(site.deps.paths.files.plan);
+    const { run, handler, github, result } = await site.destroy({
+      answer: scriptedConfirm("example-app"),
+    });
+    await result;
+    expect(kinds(handler)).toEqual(["iac-apply", "cloudflare-apply", "github-secrets"]);
+    expect(request(handler, "iac-apply").details).toContain(PAUSE_NOTE);
+    expectPaused(github, run, request(handler, "iac-apply").title);
+  });
+
   it("deletes nothing when the shared rules' plan is refused after the Worker's was approved", async () => {
     const site = await cloudflareSite();
     const refused = await site.destroy({ answer: (r) => r.kind !== "cloudflare-apply" });
@@ -414,6 +453,19 @@ describe.skipIf(!findExecutable("git"))("destroy on GitHub Pages", () => {
     expect(later.run.audit.entries.find((e) => e.action === "destroy")?.detail).toBe(
       "GitHub's verification record for docs.example.com deleted",
     );
+  });
+
+  it("a scripted destroy pauses the scheduled check under the DNS records' typed confirmation", async () => {
+    const site = await pagesSite();
+    await withCheck(site.deps.paths.files.plan);
+    const { run, handler, github, result } = await site.destroy({
+      answer: scriptedConfirm("example-app"),
+    });
+    await result;
+    expect(kinds(handler)).not.toContain("github-settings");
+    expect(request(handler, "iac-apply").details).toContain(PAUSE_NOTE);
+    expect(request(handler, "pages-apply").details).not.toContain(PAUSE_NOTE);
+    expectPaused(github, run, request(handler, "iac-apply").title);
   });
 
   it("with --delete-verification, deletes the verification record last", async () => {
