@@ -71,11 +71,16 @@ export interface CheckRepository {
 
 /**
  * `<app>/<env>`, the environment's name in check.json, its issues' keys and
- * {@link CHECK_PAUSED_VARIABLE}: a further app's key or the first app's name, then the environment
- * (`prod` for the plan without one).
+ * {@link CHECK_PAUSED_VARIABLE}: a further app's key or the first app's base name (a named
+ * environment's app is named `<app>-<env>`: `shop/staging`), then the environment (`prod` for the
+ * plan without one).
  */
 export function checkEnvironmentKey(plan: DeployPlan): string {
-  return `${plan.app.key ?? plan.app.name}/${environmentName(plan)}`;
+  const env = environmentName(plan);
+  const suffix = `-${env}`;
+  const named = plan.environment?.name !== undefined && plan.app.name.endsWith(suffix);
+  const app = plan.app.key ?? (named ? plan.app.name.slice(0, -suffix.length) : plan.app.name);
+  return `${app}/${env}`;
 }
 
 /** The content of an environment's server secret ({@link CHECK_SECRETS}' `server`). */

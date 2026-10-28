@@ -143,7 +143,7 @@ describe("renderCheck", () => {
     });
     const files = renderCheck({ plans: [cloud, staging], repo: PRIVATE });
     expect(configOf(files).environments[1]).toEqual({
-      key: "shop-staging/staging",
+      key: "shop/staging",
       hosts: [{ hostname: "staging-shop.example.com", healthPath: "/api/health" }],
       server: {
         id: "hetzner-shop-staging",
@@ -230,7 +230,7 @@ describe("renderCheck", () => {
       const staging = inEnvironment(own, { name: "staging", runner: "server" });
       const serverIds = {
         "shop/prod": "own-1",
-        "shop-staging/staging": "own-1",
+        "shop/staging": "own-1",
         "docs/prod": "own-1",
       };
       const files = renderCheck({ plans: [docs, staging, own], repo: PRIVATE, serverIds });
@@ -305,10 +305,11 @@ describe("renderCheck", () => {
   it("keys an environment by its app's key or name and its environment", () => {
     const prod = testPlan();
     expect(checkEnvironmentKey(prod)).toBe("shop/prod");
-    expect(checkEnvironmentKey(inEnvironment(prod, { name: "staging" }))).toBe(
-      "shop-staging/staging",
-    );
+    expect(checkEnvironmentKey(inEnvironment(prod, { name: "staging" }))).toBe("shop/staging");
     expect(checkEnvironmentKey(ofApp(prod, "docs"))).toBe("docs/prod");
+    expect(checkEnvironmentKey(inEnvironment(ofApp(prod, "docs"), { name: "staging" }))).toBe(
+      "docs/staging",
+    );
   });
 
   it("writes a server secret as the JSON check.mjs reads", () => {

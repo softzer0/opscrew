@@ -62,7 +62,7 @@ describe("changeCheckPause", () => {
     await changeCheckPause(deps, target, plan(), "retarget", "retarget");
     await changeCheckPause(deps, target, plan(), undefined, "provision");
     // A named environment's app name is `<app>-<env>`.
-    expect(Object.keys(paused())).toEqual(["shop-staging/staging"]);
+    expect(Object.keys(paused())).toEqual(["shop/staging"]);
     await changeCheckPause(deps, target, plan(true, "staging"), undefined, "provision");
     expect(github.variables.has(CHECK_PAUSED_VARIABLE)).toBe(false);
   });

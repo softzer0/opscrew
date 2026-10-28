@@ -66,7 +66,7 @@ describe("checkFiles", () => {
         server: { id, secret: "OPSCREW_CHECK_SERVER", via: "github" },
       },
       {
-        key: "shop-staging/staging",
+        key: "shop/staging",
         hosts: [{ hostname: "staging.example.com", healthPath: "/api/health" }],
       },
     ]);
@@ -90,7 +90,7 @@ describe("checkFiles", () => {
     const config = JSON.parse(files[1]?.content ?? "");
     expect(config.environments.map((environment: { key: string }) => environment.key)).toEqual([
       "shop/prod",
-      "shop-staging/staging",
+      "shop/staging",
     ]);
     for (const file of files) expect(file.content).not.toContain(SERVER_IPV4);
     // The same plans render the same files.
