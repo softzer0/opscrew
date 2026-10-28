@@ -68,6 +68,13 @@ export type GitHubApi = Pick<
   | "environmentPublicKey"
   | "setEnvironmentSecret"
   | "deleteEnvironmentSecret"
+  // The scheduled check: its workflow's state, its open alerts, pauses and the included minutes.
+  | "checkWorkflowState"
+  | "openIssues"
+  | "getRepoVariable"
+  | "setRepoVariable"
+  | "deleteRepoVariable"
+  | "includedMinutes"
 > & {
   createOrphanBranch(input: DeployBranchInput): Promise<{ commit: string }>;
   replaceOrphanBranch(input: DeployBranchInput): Promise<{ commit: string; previous: string }>;

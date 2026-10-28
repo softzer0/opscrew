@@ -44,11 +44,16 @@ describe("GitHubClient", () => {
   it("reads repository info with the right headers", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /repos/acme/shop": {
-        body: { default_branch: "main", private: true, permissions: { push: true } },
+        body: {
+          default_branch: "main",
+          private: true,
+          has_issues: true,
+          permissions: { push: true },
+        },
       },
     });
     const repo = await new GitHubClient({ token: TOKEN, fetch }).getRepo("acme", "shop");
-    expect(repo).toEqual({ defaultBranch: "main", private: true, canPush: true });
+    expect(repo).toEqual({ defaultBranch: "main", private: true, canPush: true, hasIssues: true });
     expect(calls[0]?.headers.Authorization).toBe(`Bearer ${TOKEN}`);
     expect(calls[0]?.headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
   });
@@ -335,6 +340,8 @@ describe("githubConnector", () => {
       "Environments: Read and write (only for an app with several environments)",
       "Pages: Read and write (only for GitHub Pages)",
       "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
+      "Issues: Read (only with the scheduled check)",
+      "Variables: Read and write (only with the scheduled check)",
     ]);
     expect(
       githubConnector({ token: TOKEN, fetch: fakeFetch({}).fetch }).credentials.scopes,

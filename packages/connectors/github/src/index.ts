@@ -3,6 +3,7 @@ export type { ImageFacts, ImagePlatform, ImageProvenance, RegistryCredential } f
 export { GitClient, type GitStatusEntry, parseGitHubRepo } from "./git";
 export {
   type BranchPolicy,
+  type CheckWorkflowState,
   type EnvironmentCapability,
   type EnvironmentReviewer,
   type EnvironmentSettings,
@@ -10,6 +11,7 @@ export {
   type ForkPrApprovalPolicy,
   GITHUB_TOKEN_PERMISSIONS,
   GitHubClient,
+  type OpenIssue,
   type PagesAllowed,
   type PagesHealth,
   type PagesRun,

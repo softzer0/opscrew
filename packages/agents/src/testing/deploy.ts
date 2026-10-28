@@ -8,7 +8,12 @@ import {
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
-import type { EnvironmentSettings, EnvironmentView } from "@opscrew/connector-github";
+import type {
+  CheckWorkflowState,
+  EnvironmentSettings,
+  EnvironmentView,
+  OpenIssue,
+} from "@opscrew/connector-github";
 import type {
   IacApplyResult,
   IacApproval,
@@ -559,6 +564,8 @@ export class FakeGitHub implements GitHubApi {
   readonly secrets = new Map<string, string>();
   readonly pulls: { head: string; base: string; title: string; body: string }[] = [];
   canPush = true;
+  /** Whether the repository's issues are on. */
+  hasIssues = true;
   /** Open pull request returned for every head (see `openPulls` for one per head). */
   openPull: { number: number; url: string } | undefined;
   /** Open pull requests by head branch. */
@@ -567,7 +574,12 @@ export class FakeGitHub implements GitHubApi {
   readonly lookups: string[] = [];
 
   async getRepo() {
-    return { defaultBranch: "main", private: true, canPush: this.canPush };
+    return {
+      defaultBranch: "main",
+      private: true,
+      canPush: this.canPush,
+      hasIssues: this.hasIssues,
+    };
   }
   async getActionsPublicKey() {
     return { keyId: "key-1", key: "dGVzdC1wdWJsaWMta2V5LXRlc3QtcHVibGljLWtleQ==" };
@@ -699,6 +711,32 @@ export class FakeGitHub implements GitHubApi {
   ) {
     const only = this.holds.get(branch);
     return only?.path === file.path && only.content === file.content;
+  }
+  /** Each workflow file's state (by file name); a file not here is `missing`. */
+  readonly workflowStates = new Map<string, CheckWorkflowState>();
+  async checkWorkflowState(_owner: string, _repo: string, file: string) {
+    return this.workflowStates.get(file.split("/").pop() ?? file) ?? "missing";
+  }
+  /** Open issues by label. */
+  readonly issues = new Map<string, OpenIssue[]>();
+  async openIssues(_owner: string, _repo: string, label: string) {
+    return this.issues.get(label) ?? [];
+  }
+  /** Repository variables. */
+  readonly variables = new Map<string, string>();
+  async getRepoVariable(_owner: string, _repo: string, name: string) {
+    return this.variables.get(name);
+  }
+  async setRepoVariable(_owner: string, _repo: string, name: string, value: string) {
+    this.variables.set(name, value);
+  }
+  async deleteRepoVariable(_owner: string, _repo: string, name: string) {
+    this.variables.delete(name);
+  }
+  /** The Actions minutes the owner's plan includes; `undefined`: the plan is hidden. */
+  minutes: number | undefined = 2_000;
+  async includedMinutes() {
+    return this.minutes;
   }
 }
 

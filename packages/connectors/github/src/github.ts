@@ -28,6 +28,8 @@ export const GITHUB_API = "https://api.github.com";
  * `opscrew promote` reads GitHub's container registry with `OPSCREW_GHCR_READ_TOKEN` (a classic
  * token with `read:packages`) when it is set, since the registry may not accept a fine-grained
  * token.
+ * Issues (the check's open alerts) and Variables (pausing the check) are needed only with the
+ * scheduled check; Actions above covers reading the check workflow's state.
  */
 export const GITHUB_TOKEN_PERMISSIONS = [
   "Contents: Read and write",
@@ -40,6 +42,8 @@ export const GITHUB_TOKEN_PERMISSIONS = [
   "Environments: Read and write (only for an app with several environments)",
   "Pages: Read and write (only for GitHub Pages)",
   "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
+  "Issues: Read (only with the scheduled check)",
+  "Variables: Read and write (only with the scheduled check)",
 ] as const;
 
 export interface GitHubClientOptions {
@@ -179,6 +183,27 @@ export interface RepoInfo {
   defaultBranch: string;
   private: boolean;
   canPush: boolean;
+  /** Whether the repository's issues are on (the scheduled check opens issues). */
+  hasIssues: boolean;
+}
+
+/** The state of a workflow as GitHub reports it, `missing` when the repository has no such file. */
+export type CheckWorkflowState =
+  | "active"
+  | "disabled_inactivity"
+  | "disabled_manually"
+  | "disabled_fork"
+  | "missing";
+
+/** An open issue as the scheduled check reads it. */
+export interface OpenIssue {
+  number: number;
+  title: string;
+  url: string;
+  /** The issue's text, empty when it has none. */
+  body: string;
+  /** When it was opened (ISO 8601). */
+  createdAt: string;
 }
 
 export interface PullRequest {
@@ -202,8 +227,21 @@ const ContentSchema = z.looseObject({ sha: z.string().regex(/^[0-9a-f]{40,64}$/)
 const RepoSchema = z.looseObject({
   default_branch: z.string(),
   private: z.boolean(),
+  has_issues: z.boolean(),
   permissions: z.looseObject({ push: z.boolean().optional() }).optional(),
 });
+const WorkflowSchema = z.looseObject({
+  state: z.enum(["active", "deleted", "disabled_fork", "disabled_inactivity", "disabled_manually"]),
+});
+const IssueSchema = z.looseObject({
+  number: z.number(),
+  title: z.string(),
+  html_url: z.string(),
+  body: z.string().nullable().optional(),
+  created_at: z.string(),
+  pull_request: z.unknown().optional(),
+});
+const VariableSchema = z.looseObject({ value: z.string() });
 const PullSchema = z.looseObject({ number: z.number(), html_url: z.string() });
 const PublicKeySchema = z.looseObject({ key_id: z.string(), key: z.string() });
 const RunSchema = z.looseObject({
@@ -328,6 +366,19 @@ const ADMINISTRATION_READ = "Administration: Read";
 const ADMIN_RIGHTS = /must have admin rights/i;
 /** The fine-grained permission the environment secret endpoints need. */
 const ENVIRONMENTS = "Environments: Read and write";
+/** What reading the check workflow's state needs. */
+const ACTIONS_READ = "Actions: Read";
+/** What reading the check's issues needs. */
+const ISSUES_READ = "Issues: Read";
+/** What the repository variable endpoints need. */
+const VARIABLES = "Variables: Read and write";
+/** Actions minutes a month each GitHub plan includes for private repositories. */
+const INCLUDED_MINUTES: Record<string, number> = {
+  free: 2_000,
+  pro: 3_000,
+  team: 3_000,
+  enterprise: 50_000,
+};
 /** What reading a Pages site needs. */
 const PAGES_READ = "Pages: Read";
 /** What changing a Pages site and its health check need (`pages=write,administration=write`). */
@@ -628,7 +679,113 @@ export class GitHubClient {
       defaultBranch: data.default_branch,
       private: data.private,
       canPush: data.permissions?.push ?? false,
+      hasIssues: data.has_issues,
     };
+  }
+
+  /**
+   * The state of the workflow `file` (`opscrew-check.yml` or its path): `missing` when GitHub has
+   * no such workflow (404) or it was deleted. Needs Actions: Read.
+   */
+  async checkWorkflowState(owner: string, repo: string, file: string): Promise<CheckWorkflowState> {
+    const what = `read the state of the workflow ${file}`;
+    const { status, json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/workflows/${workflowId(file)}`,
+      what,
+      { ok: [404], permission: ACTIONS_READ },
+    );
+    if (status === 404) return "missing";
+    const { state } = this.#parse(WorkflowSchema, json, what);
+    return state === "deleted" ? "missing" : state;
+  }
+
+  /** The open issues labelled `label`, every page, pull requests left out. Needs Issues: Read. */
+  async openIssues(owner: string, repo: string, label: string): Promise<OpenIssue[]> {
+    const what = `list the open issues labelled ${label}`;
+    const issues: OpenIssue[] = [];
+    for (let page = 1; ; page++) {
+      const query = new URLSearchParams({
+        labels: label,
+        state: "open",
+        per_page: "100",
+        page: String(page),
+      });
+      const { json, headers } = await this.#request(
+        "GET",
+        `/repos/${owner}/${repo}/issues?${query}`,
+        what,
+        { permission: ISSUES_READ },
+      );
+      for (const item of this.#parse(z.array(IssueSchema), json, what)) {
+        if (item.pull_request !== undefined) continue;
+        issues.push({
+          number: item.number,
+          title: item.title,
+          url: item.html_url,
+          body: item.body ?? "",
+          createdAt: item.created_at,
+        });
+      }
+      if (!/rel="next"/.test(headers.get("link") ?? "")) return issues;
+    }
+  }
+
+  /** The repository variable `name`'s value, `undefined` when it does not exist. Needs Variables. */
+  async getRepoVariable(owner: string, repo: string, name: string): Promise<string | undefined> {
+    const what = `read the repository variable ${name}`;
+    const { status, json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/variables/${encodeURIComponent(name)}`,
+      what,
+      { ok: [404], permission: VARIABLES },
+    );
+    if (status === 404) return undefined;
+    return this.#parse(VariableSchema, json, what).value;
+  }
+
+  /** Sets the repository variable `name`: updates it, or creates it when it does not exist. */
+  async setRepoVariable(owner: string, repo: string, name: string, value: string): Promise<void> {
+    const what = `set the repository variable ${name}`;
+    const base = `/repos/${owner}/${repo}/actions/variables`;
+    const body = { name, value };
+    const updated = await this.#request("PATCH", `${base}/${encodeURIComponent(name)}`, what, {
+      body,
+      ok: [404],
+      permission: VARIABLES,
+    });
+    if (updated.status !== 404) return;
+    await this.#request("POST", base, what, { body, permission: VARIABLES });
+  }
+
+  /** Deletes the repository variable `name`; one that does not exist (404) counts as deleted. */
+  async deleteRepoVariable(owner: string, repo: string, name: string): Promise<void> {
+    await this.#request(
+      "DELETE",
+      `/repos/${owner}/${repo}/actions/variables/${encodeURIComponent(name)}`,
+      `delete the repository variable ${name}`,
+      { ok: [404], permission: VARIABLES },
+    );
+  }
+
+  /**
+   * The Actions minutes a month the plan of `owner` includes for private repositories: 2,000 on
+   * Free, 3,000 on Pro and Team, 50,000 on Enterprise. Read from `GET /orgs/{org}` for an
+   * organization, or `GET /user` for the token's own account (both show the plan only with
+   * Plan: Read); `undefined` when GitHub does not show it.
+   */
+  async includedMinutes(owner: string): Promise<number | undefined> {
+    const { type } = await this.account(owner);
+    let account: z.infer<typeof PlanSchema>;
+    if (type === "Organization") {
+      const what = `read the plan of ${owner}`;
+      const org = await this.#request("GET", `/orgs/${encodeURIComponent(owner)}`, what);
+      account = this.#parse(PlanSchema, org.json, what);
+    } else {
+      account = await this.#me(PlanSchema);
+      if (account.login.toLowerCase() !== owner.toLowerCase()) return undefined;
+    }
+    return account.plan === undefined ? undefined : INCLUDED_MINUTES[account.plan.name];
   }
 
   /**
