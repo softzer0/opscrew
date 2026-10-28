@@ -330,8 +330,14 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     expect(again.hostApplied).toBe(false);
     expect(again.hostPlanHashes).toEqual([hostPlanHash(apply?.plan as HostPlan)]);
 
-    // Off: the agent and its token go, here and on the server.
+    // Off: the agent and its token go, here and on the server; it keeps no history, so no typed
+    // name is asked.
+    s.handler.requests.length = 0;
     await addonDisable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(s.handler.requests[0]?.title).toBe("Remove Beszel's agent from the server");
+    expect(s.handler.requests[0]?.allowDestroy).toBeUndefined();
+    expect(s.handler.requests[0]?.confirmPhrase).toBeUndefined();
+    expect(s.server.applies.at(-1)?.plan.deleteData).toBeUndefined();
     expect(s.server.running.has("beszel")).toBe(false);
     await expect(stat(s.deps.paths.files.beszelSecrets)).rejects.toThrow();
     expect((await s.plan()).observability).toBeUndefined();
@@ -464,27 +470,36 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect((await s.plan()).observability).toBeUndefined();
   });
 
-  it("over the free tier: stops before the host plan and offers a sampling that fits", async () => {
+  it("over the free tier: says so with the sampling that fits before the approval, and goes on", async () => {
     const token = grafanaToken();
     const s = await cloudSetup({ env: { OPSCREW_GRAFANA_CLOUD_TOKEN: token } });
     s.server.logBytes24h = 4_000_000_000; // 120 GB a month
-    const error = await failure(
-      addonEnable(s.deps, await s.plan(), "grafana-cloud", { ...GRAFANA, services: s.services }),
-    );
-    expect(error.message).toContain("more than Grafana Cloud's free tier holds");
-    expect(error.message).toContain("`--log-sampling 41`");
-    expect(kinds(s.handler)).toEqual([]);
-    expect(s.server.applies).toEqual([]);
+    const over = await addonEnable(s.deps, await s.plan(), "grafana-cloud", {
+      ...GRAFANA,
+      services: s.services,
+    });
+    // Printed with the host plan, before its approval was asked, and part of the approval's text.
+    const details = s.handler.requests[0]?.details ?? "";
+    for (const text of [details, s.deps.reporter.text()]) {
+      expect(text).toContain("120.0 GB of logs a month");
+      expect(text).toContain("more than Grafana Cloud's free tier holds");
+      expect(text).toContain("`--log-sampling 41`");
+    }
+    expect(over.hostApplied).toBe(true);
+    expect((await s.plan()).observability?.grafanaCloud?.logSampling).toBe(100);
 
+    // With the sampling given, it fits and the plan sends 40% of the lines.
+    s.handler.requests.length = 0;
     const result = await addonEnable(s.deps, await s.plan(), "grafana-cloud", {
       ...GRAFANA,
       logSampling: 40,
       services: s.services,
     });
     expect(result.hostApplied).toBe(true);
-    expect(s.deps.reporter.text()).toContain("48.0 GB of logs a month");
+    expect(s.handler.requests[0]?.details).toContain("48.0 GB of logs a month");
+    expect(s.handler.requests[0]?.details).not.toContain("more than Grafana Cloud's free tier");
     expect((await s.plan()).observability?.grafanaCloud?.logSampling).toBe(40);
-    expect(s.server.applies[0]?.plan.steps[0]?.params["file:config.alloy"]).toContain(
+    expect(s.server.applies.at(-1)?.plan.steps[0]?.params["file:config.alloy"]).toContain(
       "stage.sampling",
     );
   });

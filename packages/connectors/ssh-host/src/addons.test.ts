@@ -284,6 +284,17 @@ describe("beszel", () => {
     expect(fake.madeDirs.has(`${dir}/data`)).toBe(false);
     expect(fake.calls.every((call) => !call.sudo)).toBe(true);
     expect(fake.files.has("/etc/opscrew/host.json")).toBe(false);
+
+    // Off: the agent keeps no history, so its removal deletes no data (no typed name); the hub's
+    // removal without keepData does.
+    const off = planAddon("beszel", { app: "shop", runAs: "login", disable: { mode: "agent" } });
+    expect(off.deleteData).toBeUndefined();
+    expect(off.steps[0]?.title).toBe("Remove Beszel's agent");
+    expect((await applyApproved(fake, off)).applied).toEqual(["beszel"]);
+    expect(fake.files.has(`${dir}/agent.env`)).toBe(false);
+    const hubOff = planAddon("beszel", { app: "shop", runAs: "login", disable: { mode: "hub" } });
+    expect(hubOff.deleteData).toBe(true);
+    expect(planAddon("beszel", { app: "shop", runAs: "login", disable: {} }).deleteData).toBe(true);
   });
 
   it("runs the tunnel connector of its subdomain first on a server OpsCrew created, and removes it", async () => {

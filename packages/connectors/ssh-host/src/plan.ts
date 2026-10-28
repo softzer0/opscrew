@@ -2410,15 +2410,26 @@ const ADDON_TITLES: Readonly<Record<AddonKind, string>> = {
   alloy: "Grafana Alloy",
 };
 
-/** A step that removes an add-on; Beszel's history (`data/`) stays with `keepData`. */
-function addonRemoval(kind: AddonKind, app: string, runAs: RunAs, keepData: boolean): HostStep {
+/**
+ * A step that removes an add-on; Beszel's history (`data/`) stays with `keepData`. `agent`: only
+ * Beszel's agent ran there, which keeps no history.
+ */
+function addonRemoval(
+  kind: AddonKind,
+  app: string,
+  runAs: RunAs,
+  keepData: boolean,
+  agent = false,
+): HostStep {
   const dir = addonDir(kind, runAs);
   const title =
     kind === "alloy"
       ? `Remove Grafana Alloy, its buffered data and the masking file of "${app}"`
-      : keepData
-        ? `Remove Beszel (its history in ${dir}/data stays)`
-        : "Remove Beszel and its history";
+      : agent
+        ? "Remove Beszel's agent"
+        : keepData
+          ? `Remove Beszel (its history in ${dir}/data stays)`
+          : "Remove Beszel and its history";
   return step(
     kind,
     title,
@@ -2477,7 +2488,8 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *   `config.alloy`), each within the Compose text cap (16 KiB), written to the add-on's folder
  *   (`addonDir`) with its secrets (supplied at apply, never part of the plan), then started. Off,
  *   everything of it goes, except Beszel's history with `keepData`; without it the plan has
- *   `deleteData` (a destroying plan: approve it with allowDestroy and the typed app name).
+ *   `deleteData` (a destroying plan: approve it with allowDestroy and the typed app name), unless
+ *   only Beszel's agent ran there (`disable.mode: "agent"`), which keeps no history.
  *
  * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record);
  * `"root"` on a server the user owns, where `facts` (from `inspectHost`) name the app that turned
@@ -2498,7 +2510,7 @@ export function planAddon<K extends AddonPlanKind>(
     /** `check-key` only: the project's GitHub repository, `owner/repo`. */
     repository?: string;
     enable?: AddonEnable<K>;
-    disable?: { keepData?: boolean };
+    disable?: { keepData?: boolean; mode?: "hub" | "agent" };
     connector?: AddonConnector;
   },
 ): HostPlan {
@@ -2544,7 +2556,7 @@ export function planAddon<K extends AddonPlanKind>(
     item =
       kind === "check-key"
         ? checkKeyRemoval(runAs, repository)
-        : addonRemoval(kind as AddonKind, app, runAs, keepData);
+        : addonRemoval(kind as AddonKind, app, runAs, keepData, disable.mode === "agent");
   } else {
     item = addonStep(
       kind,
@@ -2568,7 +2580,10 @@ export function planAddon<K extends AddonPlanKind>(
       item,
     ],
     findings: [],
-    ...(kind === "beszel" && disable !== undefined && disable.keepData !== true
+    ...(kind === "beszel" &&
+    disable !== undefined &&
+    disable.keepData !== true &&
+    disable.mode !== "agent"
       ? { deleteData: true }
       : {}),
   };

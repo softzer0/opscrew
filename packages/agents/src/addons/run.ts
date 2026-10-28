@@ -377,9 +377,11 @@ async function addonHostChange(
         ? `Run Beszel's agent on ${server}, connected to your hub`
         : `Run Beszel (its dashboard and agent) on ${server}`
       : `Run Grafana Alloy on ${server}, sending the app's logs and the server's metrics to Grafana Cloud`
-    : hostPlan.deleteData === true
-      ? `Remove Beszel and delete its history on ${server}`
-      : `Remove ${what} from ${server}${kind === "beszel" ? " (its history stays)" : ""}`;
+    : agentOnly(change)
+      ? `Remove Beszel's agent from ${server}`
+      : hostPlan.deleteData === true
+        ? `Remove Beszel and delete its history on ${server}`
+        : `Remove ${what} from ${server}${kind === "beszel" ? " (its history stays)" : ""}`;
   return approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote: ownRun?.session.remote ?? (input.remote as RemoteExec),
@@ -418,9 +420,21 @@ function addonPlan(
     app: plan.app.name,
     runAs: ownRun ? "root" : "login",
     ...(ownRun ? { facts: ownRun.facts } : {}),
-    ...(change.enabling ? { enable } : { disable: { keepData: change.keepData } }),
+    ...(change.enabling
+      ? { enable }
+      : {
+          disable: {
+            keepData: change.keepData,
+            ...(change.kind === "beszel" ? { mode: agentOnly(change) ? "agent" : "hub" } : {}),
+          },
+        }),
     ...(connector !== undefined ? { connector } : {}),
   });
+}
+
+/** Turning off Beszel's agent mode: only the agent runs on the server, which keeps no history. */
+function agentOnly(change: Pick<AddonChange, "kind" | "before">): boolean {
+  return change.kind === "beszel" && change.before.observability?.beszel?.mode === "agent";
 }
 
 /**
@@ -473,7 +487,7 @@ async function runAddonChange(
           ...(ownRun ? {} : { monthly: after.cost.monthly }),
         }),
       );
-      if (kind === "grafana-cloud") intro.push(...grafanaCheck(after, reading, options));
+      if (kind === "grafana-cloud") intro.push(...grafanaCheck(after, reading));
     },
     hostChange: ({ ownRun, remote, plan, outputs, deployPublicKey, planOnly, shown }) =>
       ownRun && subdomain
@@ -514,7 +528,9 @@ async function runAddonChange(
   const done = { ...fields, hostPlanHashes: [...new Set(hashes)] };
   if (plan === undefined) return { ...done, status: await addonStatusOf(deps, before) };
   if (enabling) await change.input?.keep?.();
-  else if (kind === "grafana-cloud" || !change.keepData) await removeAddonSecrets(deps.paths, kind);
+  else if (kind === "grafana-cloud" || agentOnly(change) || !change.keepData) {
+    await removeAddonSecrets(deps.paths, kind);
+  }
   const status = await addonStatusOf(deps, plan);
   const state = status.addons.find((item) => item.kind === kind);
   if (enabling) {
@@ -524,9 +540,11 @@ async function runAddonChange(
     deps.reporter.success(
       kind === "grafana-cloud"
         ? "Grafana Cloud is off: Grafana Alloy, its buffer and its token are removed from the server, and the token from this computer. The data already in Grafana Cloud stays in your account."
-        : change.keepData
-          ? "Beszel is off; its history stays on the server (`opscrew addon disable beszel` without `--keep-data` deletes it)."
-          : "Beszel is off, and its history and secrets are deleted.",
+        : agentOnly(change)
+          ? "Beszel's agent is off: it and its token are removed from the server and from this computer. Remove the system from your hub too."
+          : change.keepData
+            ? "Beszel is off; its history stays on the server (`opscrew addon disable beszel` without `--keep-data` deletes it)."
+            : "Beszel is off, and its history and secrets are deleted.",
     );
   }
   deps.reporter.info(
@@ -536,35 +554,22 @@ async function runAddonChange(
 }
 
 /**
- * Grafana Cloud's estimate against the free tier, before the host plan: past it, a run that did
- * not choose its sampling stops and offers a `--log-sampling` that fits; a chosen one goes on with
- * a warning.
+ * Grafana Cloud's estimate against the free tier, said in the host plan's text (shown before its
+ * approval): past the free tier, a warning and the `--log-sampling` that would fit. It never
+ * stops: a paid Grafana plan holds more.
  */
-function grafanaCheck(
-  plan: DeployPlan,
-  reading: ServerReading,
-  options: AddonEnableOptions,
-): string[] {
+function grafanaCheck(plan: DeployPlan, reading: ServerReading): string[] {
   const sampling = plan.observability?.grafanaCloud?.logSampling ?? 100;
   const estimate = grafanaEstimate(reading, sampling);
   const text = estimateText(estimate, sampling);
   if (!estimate.over) return [text];
   const fit =
     estimate.fittingSampling !== undefined
-      ? ` Sending ${estimate.fittingSampling}% of the log lines fits it: \`--log-sampling ${estimate.fittingSampling}\`.`
+      ? ` Sending ${estimate.fittingSampling}% of the log lines would fit it: run the command again with \`--log-sampling ${estimate.fittingSampling}\` before approving.`
       : "";
-  if (options.logSampling === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `${text} That is more than Grafana Cloud's free tier holds, so OpsCrew changed nothing.${fit}`,
-      {
-        hint: "Run the command again with `--log-sampling <percent>`: a lower share fits the free tier, and 100 sends every line anyway.",
-      },
-    );
-  }
   return [
     text,
-    `This is more than Grafana Cloud's free tier holds; Grafana may drop what goes past it.${fit}`,
+    `This is more than Grafana Cloud's free tier holds: on the free plan, Grafana drops what goes past it.${fit}`,
   ];
 }
 
@@ -578,7 +583,7 @@ function grafanaCheck(
  * token and key; its agent mode takes the hub's address and key, and the token from
  * `OPSCREW_BESZEL_TOKEN` (or asked). Grafana Cloud takes the stack's addresses and the token from
  * `OPSCREW_GRAFANA_CLOUD_TOKEN` (or asked), and shows OpsCrew's estimate against the free tier
- * first. A subdomain for Beszel's dashboard goes through Portainer's tunnel and Access path.
+ * with the host plan, and past it the `--log-sampling` that would fit (never a refusal). A subdomain for Beszel's dashboard goes through Portainer's tunnel and Access path.
  */
 export async function addonEnable(
   deps: PhaseDeps,
@@ -623,8 +628,9 @@ export async function addonEnable(
  * (`host-apply`) removes everything the add-on added on the server, its secrets and data included,
  * then its local secrets. Deleting Beszel's history is a destroying plan: its approval needs the
  * app's name typed (`allowDestroy`); `--keep-data` keeps the history (and the dashboard's password
- * on this computer, which its user still has) and needs no typed name. Alloy's buffer goes without
- * one. Beszel's subdomain goes too: the tunnel connector, then the tunnel and Access as Portainer's.
+ * on this computer, which its user still has) and needs no typed name. Beszel's agent mode keeps no
+ * history, and Alloy's buffer goes, both without one. Beszel's subdomain goes too: the tunnel
+ * connector, then the tunnel and Access as Portainer's.
  */
 export async function addonDisable(
   deps: PhaseDeps,
