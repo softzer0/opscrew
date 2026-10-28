@@ -421,7 +421,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1709b [P] [US2] Resource figures and the check's state in `status`, in `packages/agents/src/status/**`, and the disk thresholds' export in `packages/secops/src/hardening/checks.ts`
+- [X] T1709b [P] [US2] Resource figures and the check's state in `status`, in `packages/agents/src/status/**`, and the disk thresholds' export in `packages/secops/src/hardening/checks.ts`
   - Owns: those paths (+ tests). In secops, only the export of the two thresholds (and its index line). In iac-templates' `src/check/index.ts`, only `CHECK_WORKFLOW_FILE` and `CHECK_LABEL` (with a test that `check.mjs`'s label matches). In `localhost/phases.test.ts`, only the status expectation the figures change (the lead, 2026-10-28).
   - Reads: spec US2, FR-1704, FR-1708; data-model.md "Reading figures"; research.md R1; plan.md "7."; T1704's and T1705's reports
   - Depends: T1701a, T1704, T1705
@@ -575,7 +575,7 @@ Effort`.
       - output through `ctx.stdout` (redacted);
       - Ctrl-C stops a follow cleanly.
     - **`opscrew addon <enable|disable|status|open> <beszel|grafana-cloud>`** with `--mode`, `--hub-url`, `--access`, `--hostname`, `--allow-email` (repeatable), `--keep-data`, `--confirm <app>`, and the Grafana flags T1711 defines. Approvals work as `portainer`'s.
-    - **`status`** prints the figures with their flags, and the check's state and open alerts.
+    - **`status`** prints the figures with their flags, and the check's state and open alerts. The CLI's and MCP's status fixtures write no deploy key, so today they show "could not read the resource figures" (T1709b's report): give them the key, and assert the figures' lines and `resources` data.
     - **`ALL_COMMANDS`** has 25 entries, and `program.test.ts` lists both new names.
     - **MCP:**
       - **`opscrew_logs`** (`readOnlyHint: true`): at most 500 lines and 64 KiB, `truncated: true` past either, no follow, redacted through `runTool`;
@@ -691,7 +691,7 @@ Effort`.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
   - The masking file (`mask.re`) still masks the frameworks' fixed production words (`production` and the like), because their table (`FRAMEWORK_ENV` in agents' `app-env.ts`) is agents'. Decide whether to move the word pairs to plan-schema as `hostListKind` was (T1708's review). It also has no URL-encoded forms and none of the service env files' values, unlike the redactor.
   - The container-name pattern is in `status/components.ts` and again in `logs/commands.ts` (T1709a): export it once and import it.
-  - `status` reads a server over two SSH connections, one for the components and one for the figures (T1709b). Decide whether one connection is worth a seam.
+  - `status` reads a server over two SSH connections, one for the components and one for the figures (T1709b). Decide whether one connection is worth a seam. On own servers the figures choose root with a small `asAdmin` wrapper, where the components use ssh-host's privilege probe (`asRoot`, not exported): one shared helper would do.
   - ssh-host's add-on tables: `SECRET_NEEDS` could be a `needs` field of `SECRET_CHECKS`. The add-ons' names live in four tables (`ADDON_NAMES`, `ADDON_TITLES`, `variant.what`, `addonRemoveScripts`' `what`), where one record in `constants.ts` would do (T1706's review).
   - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`, and have Portainer's drift use `app-secrets.ts`'s `GeneratedValuesSchema` instead of its own copy (T1701a's review).
   - The fixed read commands now live in `status/components.ts`, `HOST_CHECKS`, `inspect.ts`, the figures and the logs. Decide whether one table of allowed read commands is smaller than five.
