@@ -7,9 +7,7 @@
 import type { ContainerLogLine } from "@opscrew/connector-portainer";
 import { OpsCrewError } from "@opscrew/core";
 import { shellQuote } from "@opscrew/iac-templates";
-
-/** A container name as Docker allows it: the pattern `status` reads names with (`status/components.ts`). */
-const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+import { CONTAINER_NAME } from "../status/components";
 
 /** Docker's `since`: whole Unix seconds, or `<seconds>.<nanoseconds>` (`sinceAfter`). */
 const SINCE = /^\d{1,12}(\.\d{9})?$/;

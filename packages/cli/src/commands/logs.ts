@@ -1,4 +1,4 @@
-import { type LogLine, readLogs } from "@opscrew/agents";
+import { lineText, readLogs } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
@@ -14,11 +14,6 @@ interface LogsFlags extends AppEnvFlags {
   since?: string;
   tail?: string;
   hostKey?: string;
-}
-
-/** One line as `logs` prints it: `<time> <service> <text>`. */
-function lineText(line: LogLine): string {
-  return `${line.time} ${line.service} ${line.text}`;
 }
 
 /**

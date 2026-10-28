@@ -23,6 +23,8 @@ export {
   type AddonKind,
   addonDir,
   appDirs,
+  checkKeyComment,
+  checkKeyLine,
   EDGE_DIR,
   EDGE_PROJECT,
   HASHED_RUNTIME_FILES,

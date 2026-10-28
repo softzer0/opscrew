@@ -13,6 +13,11 @@ export interface LogLine {
   text: string;
 }
 
+/** One line as `opscrew logs` shows it: `<time> <service> <text>`. */
+export function lineText(line: LogLine): string {
+  return `${line.time} ${line.service} ${line.text}`;
+}
+
 /** What `readLogs` returns: its first line, then the lines when iterated. */
 export interface LogRead extends AsyncIterable<LogLine> {
   /**

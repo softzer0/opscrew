@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type LogLine, type LogServices, readLogs, readOwnServer } from "@opscrew/agents";
+import { type LogLine, type LogServices, lineText, readLogs, readOwnServer } from "@opscrew/agents";
 import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
@@ -14,11 +14,6 @@ export const MAX_LOG_BYTES = 64 * 1024;
 /** Test-only collaborators for `opscrew_logs` (production connects as `opscrew logs` does). */
 export interface LogsToolOptions {
   services?: LogServices;
-}
-
-/** One line as the tool returns it in its text: `<time> <service> <text>`. */
-function lineText(line: LogLine): string {
-  return `${line.time} ${line.service} ${line.text}`;
 }
 
 /**

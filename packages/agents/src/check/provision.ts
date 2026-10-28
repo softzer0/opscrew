@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { checkKeyLine } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import type { ProjectPaths } from "@opscrew/core";
 import {
@@ -15,7 +16,7 @@ import type { ProvisionServices } from "../provision/types";
 import { trackedFiles } from "../shared/github";
 import type { HostAdapterApi, HostPlanOutcome } from "../shared/host-plan";
 import { checkFiles, otherPlans } from "./files";
-import { addCheckKey, checkKeyLine } from "./host";
+import { addCheckKey } from "./host";
 import { type CheckKey, ensureCheckKey, readCheckKey } from "./key";
 import { changeCheckPause } from "./pause";
 import { type CheckServerReach, storeCheckSecrets } from "./secrets";
@@ -91,7 +92,7 @@ export async function renderedCheckKeyLine(
   const key = create
     ? await ensureCheckKey(deps.paths, deps.redactor)
     : await readCheckKey(deps.paths, deps.redactor);
-  return key === undefined ? undefined : checkKeyLine(key, repository);
+  return key === undefined ? undefined : checkKeyLine(key.publicKeyOpenSsh, repository);
 }
 
 /** The server whose disk the check reads, and how OpsCrew changes it. */

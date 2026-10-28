@@ -1,4 +1,4 @@
-import { planAddon } from "@opscrew/connector-ssh-host";
+import { checkKeyComment, planAddon } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -8,19 +8,6 @@ import {
   type HostPlanOutcome,
 } from "../shared/host-plan";
 import type { CheckKey } from "./key";
-
-/** The comment of `repository`'s (`owner/repo`) check key line, as the `check-key` step writes it. */
-function checkKeyComment(repository: string): string {
-  return `opscrew-check:${repository}`;
-}
-
-/**
- * The check key's authorized_keys line as the `check-key` host step writes it, restricted to `df`:
- * a new cloud server gets it at its first boot.
- */
-export function checkKeyLine(key: CheckKey, repository: string): string {
-  return `restrict,command="df -P -B1 /" ${key.publicKeyOpenSsh} ${checkKeyComment(repository)}`;
-}
 
 /**
  * True when the deploy user's authorized_keys on a server OpsCrew created already holds `key` as

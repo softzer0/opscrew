@@ -1,11 +1,11 @@
 import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
-import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
+import { applyHostPlan, checkKeyLine, otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { additionsPath, renderStorage, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
-import { checkKeyLine, hasCheckKey } from "../check/host";
+import { hasCheckKey } from "../check/host";
 import type { CheckKey } from "../check/key";
 import {
   type CheckServer,
@@ -650,7 +650,7 @@ async function provisionFlow(
     edge: site.edge,
     // A new cloud server gets the check's key at its first boot, inside the infrastructure plan.
     ...(checkKey !== undefined && !ownServer
-      ? { checkKeyLine: checkKeyLine(checkKey, repository) }
+      ? { checkKeyLine: checkKeyLine(checkKey.publicKeyOpenSsh, repository) }
       : {}),
   });
   // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).

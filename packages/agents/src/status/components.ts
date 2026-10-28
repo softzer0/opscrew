@@ -146,7 +146,7 @@ export function componentStatusLines(
 }
 
 /** A container name as Docker allows it. */
-const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+export const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 /**
  * The app's containers on a server, read over `remote` with `docker ps` (read-only): every
