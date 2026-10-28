@@ -329,21 +329,32 @@ function envFileWrites(envFiles: readonly EnvFile[], dir: string, on: On): strin
 }
 
 /**
+ * The host lists' names as a shell `case` pattern, as plan-schema's `hostListKind` reads them
+ * (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, each with or without a prefix): they hold the app's
+ * own hostnames, which the masking file leaves alone.
+ */
+const HOST_LIST_NAMES =
+  "ALLOWED_HOSTS|?*_ALLOWED_HOSTS|CSRF_TRUSTED_ORIGINS|?*_CSRF_TRUSTED_ORIGINS";
+
+/**
  * With Grafana Cloud on (`observability.grafanaCloud.enabled`), the masking file Grafana Alloy
  * reads: `mask.re` in the app's folder `dir`, written in place (Alloy follows the file, not a
  * rename) on the stdin of a command `on` the machine, owner-only as `app.env`, right after it. It
  * holds every value of `app.env` of 8 characters or more (each line of a multi-line value, as the
- * redactor's literals), escaped and joined as one RE2 alternation in a capture group (Alloy's
+ * redactor's literals) except the host lists ({@link HOST_LIST_NAMES}), longest first (RE2's
+ * alternation takes the first that matches, so a value that begins another can't leave the rest
+ * of it unmasked), escaped and joined as one RE2 alternation in a capture group (Alloy's
  * `stage.replace` masks only groups), or `[^\s\S]`, which never matches, when there is none.
  * Nothing without Grafana Cloud.
  */
 function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
   if (plan.observability?.grafanaCloud?.enabled !== true) return [];
   return [
-    "    # Grafana Alloy's masking file: app.env's values as one RE2 alternation.",
-    "    mask=",
+    "    # Grafana Alloy's masking file: app.env's values as one RE2 alternation, longest first.",
+    "    parts=",
     "    while IFS= read -r line; do",
     '      [[ "$line" == [A-Za-z_]*=* ]] || continue',
+    `      case "\${line%%=*}" in ${HOST_LIST_NAMES}) continue ;; esac`,
     '      value="${line#*=}"',
     '      case "$value" in',
     "        \\'*\\') value=\"${value:1:-1}\" ;;",
@@ -358,11 +369,10 @@ function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
     "          ;;",
     "      esac",
     "      while IFS= read -r part; do",
-    "        if (( ${#part} >= 8 )); then",
-    "          mask+=\"${mask:+|}$(printf '%s' \"$part\" | sed 's/[][\\.*+?(){}|^$]/\\\\&/g')\"",
-    "        fi",
+    "        if (( ${#part} >= 8 )); then parts+=\"${#part}\"$'\\t'\"$part\"$'\\n'; fi",
     '      done <<< "$value"',
     `    done <<< "\${${DEPLOY_SECRETS.appEnv}:-}"`,
+    "    mask=\"$(printf '%s' \"$parts\" | sort -rn | cut -f2- | sed 's/[][\\.*+?(){}|^$]/\\\\&/g' | paste -sd '|' -)\"",
     '    if [[ -n "$mask" ]]; then mask="($mask)"; else mask=\'[^\\s\\S]\'; fi',
     `    printf '%s' "$mask" | ${on(`umask 077 && cat > ${dir}/mask.re`)}`,
   ];

@@ -10,6 +10,8 @@ import {
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  type HostListKind,
+  hostListKind,
   type PlanService,
   REDIS_PROTOCOL_KINDS,
   type SelfHostedServiceKind,
@@ -69,19 +71,9 @@ export interface EnvQuestion {
   optional?: boolean;
 }
 
-/** What a host-list variable holds: host names or origins (`https://<host>`). */
-export type HostListKind = "hosts" | "origins";
-
-/**
- * The host list a variable holds, from its name: `ALLOWED_HOSTS` and `*_ALLOWED_HOSTS` hold host
- * names, `CSRF_TRUSTED_ORIGINS` and `*_CSRF_TRUSTED_ORIGINS` origins. Undefined for any other name.
- * `design` plans these as `derived`, and {@link assembleAppEnv} fills them from the deployment.
- */
-export function hostListKind(name: string): HostListKind | undefined {
-  if (/^(?:\w+_)?ALLOWED_HOSTS$/.test(name)) return "hosts";
-  if (/^(?:\w+_)?CSRF_TRUSTED_ORIGINS$/.test(name)) return "origins";
-  return undefined;
-}
+// The host lists (`design` plans them as `derived`, `assembleAppEnv` fills them), from plan-schema,
+// where the deploy job's masking file reads the same names.
+export { type HostListKind, hostListKind } from "@opscrew/plan-schema";
 
 /**
  * Production settings for frameworks that otherwise start in development, by framework name

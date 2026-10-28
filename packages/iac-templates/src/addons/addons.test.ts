@@ -280,6 +280,8 @@ describe("Grafana Alloy", () => {
     const alloy = services.alloy as Service;
     expect(alloy).toMatchObject({
       image: IMAGES.alloy.ref,
+      // A fixed hostname, the metrics' `instance`: a recreated container keeps its series.
+      hostname: "opscrew-alloy-shop",
       user: "${OPSCREW_DEPLOY_UID}:${OPSCREW_DEPLOY_GID}",
       command: [
         "run",
@@ -377,13 +379,19 @@ describe("Grafana Alloy", () => {
         "}",
       ].join("\n"),
     );
-    for (const [component, endpoint] of [
-      ["loki.write", GRAFANA_CLOUD.logs],
-      ["prometheus.remote_write", GRAFANA_CLOUD.metrics],
+    for (const [component, endpoint, labels] of [
+      ["loki.write", GRAFANA_CLOUD.logs, []],
+      [
+        "prometheus.remote_write",
+        GRAFANA_CLOUD.metrics,
+        // The app's and environment's names on every series, as on the log lines.
+        ['  external_labels = { app = "shop", env = "prod" }'],
+      ],
     ] as const) {
       expect(text).toContain(
         [
           `${component} "grafana_cloud" {`,
+          ...labels,
           "  endpoint {",
           `    url = "${endpoint.url}"`,
           "    basic_auth {",

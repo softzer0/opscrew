@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash in expected workflow lines, not JavaScript templates.
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { hostListKind } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { GRAFANA_CLOUD, observabilityPlan } from "../addons/__fixtures__/plans";
@@ -15,7 +16,7 @@ const lines = (plan: Parameters<typeof renderWorkflow>[0]) =>
 /** The masking script of a rendered workflow: from `mask=` to the line that sets the pattern. */
 function maskScript(content: string): string {
   const all = content.split("\n");
-  const start = all.findIndex((line) => line.trim() === "mask=");
+  const start = all.findIndex((line) => line.trim() === "parts=");
   const end = all.findIndex((line) => line.includes("mask='[^\\s\\S]'"));
   return all
     .slice(start, end + 1)
@@ -97,6 +98,33 @@ describe("the masking file in the deploy job (Grafana Cloud)", () => {
     // Escaped: a value's dot or plus matches only itself.
     expect("a value with (parens) and aXdot").not.toMatch(pattern);
     expect(mask.split("|")).toHaveLength(values.length);
+  });
+
+  it("lists longer values first, so a value that begins another never leaves the rest unmasked", async () => {
+    const short = "prefix-value";
+    const long = `${short}-and-the-rest`;
+    const mask = await maskFor(`A_SHORT=${short}\nB_LONG=${long}\n`);
+    expect(mask).toBe("(prefix-value-and-the-rest|prefix-value)");
+    // JavaScript's alternation, like RE2's, takes the first alternative that matches.
+    expect(`log: ${long} end`.replace(new RegExp(mask, "g"), "<masked>")).toBe("log: <masked> end");
+  });
+
+  it("leaves the host lists (the app's own hostnames) out, as plan-schema's hostListKind names them", async () => {
+    const names = [
+      "ALLOWED_HOSTS",
+      "DJANGO_ALLOWED_HOSTS",
+      "CSRF_TRUSTED_ORIGINS",
+      "APP_CSRF_TRUSTED_ORIGINS",
+      "_ALLOWED_HOSTS",
+      "ALLOWED_HOSTS_EXTRA",
+      "SECRET_KEY",
+    ];
+    const sampleFor = (name: string) => `value-${names.indexOf(name)}-of-${name.toLowerCase()}`;
+    const mask = await maskFor(names.map((name) => `${name}=${sampleFor(name)}`).join("\n"));
+    for (const name of names) {
+      expect(mask.includes(sampleFor(name)), name).toBe(hostListKind(name) === undefined);
+    }
+    expect(names.filter((name) => hostListKind(name) !== undefined)).toHaveLength(4);
   });
 
   it("holds a pattern that never matches when app.env has no long value", async () => {

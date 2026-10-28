@@ -260,6 +260,20 @@ export const EnvVarNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, {
   message: "must be an environment variable name such as `DATABASE_URL` (never a value)",
 });
 
+/** What a host-list variable holds: host names or origins (`https://<host>`). */
+export type HostListKind = "hosts" | "origins";
+
+/**
+ * The host list a variable holds, from its name: `ALLOWED_HOSTS` and `*_ALLOWED_HOSTS` hold host
+ * names, `CSRF_TRUSTED_ORIGINS` and `*_CSRF_TRUSTED_ORIGINS` origins. Undefined for any other name.
+ * `design` plans these as `derived`, and agents fill them from the deployment; they hold no secret.
+ */
+export function hostListKind(name: string): HostListKind | undefined {
+  if (/^(?:\w+_)?ALLOWED_HOSTS$/.test(name)) return "hosts";
+  if (/^(?:\w+_)?CSRF_TRUSTED_ORIGINS$/.test(name)) return "origins";
+  return undefined;
+}
+
 /** SHA-256 hash of a plan file: 64 hex characters. */
 export const PlanHashSchema = z
   .string()

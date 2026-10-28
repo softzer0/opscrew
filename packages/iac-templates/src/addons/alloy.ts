@@ -63,6 +63,8 @@ export function renderAlloyCompose(plan: DeployPlan, grafana: GrafanaCloudSettin
       alloy: {
         image: alloy.image,
         restart: "unless-stopped",
+        // The metrics' `instance` label: fixed, so a new container doesn't start new series.
+        hostname: `opscrew-alloy-${plan.app.name}`,
         user: DEPLOY_USER,
         command: [
           "run",
@@ -105,6 +107,7 @@ export function renderAlloyConfig(plan: DeployPlan, grafana: GrafanaCloudSetting
     throw new Error("Grafana Cloud's settings have no metrics or logs endpoint to send to.");
   }
   const environment = plan.environment?.name ?? "prod";
+  const appLabels = `{ app = ${str(plan.app.name)}, env = ${str(environment)} }`;
   const tokenStages = re2TokenPatterns().flatMap(({ id, expression }) => [
     "  stage.replace {",
     `    expression = ${str(expression)}`,
@@ -149,7 +152,7 @@ export function renderAlloyConfig(plan: DeployPlan, grafana: GrafanaCloudSetting
     'loki.source.docker "app" {',
     `  host       = ${str(PROXY_SOCKET)}`,
     "  targets    = discovery.relabel.app.output",
-    `  labels     = { app = ${str(plan.app.name)}, env = ${str(environment)} }`,
+    `  labels     = ${appLabels}`,
     "  forward_to = [loki.process.mask.receiver]",
     "}",
     "",
@@ -222,6 +225,7 @@ export function renderAlloyConfig(plan: DeployPlan, grafana: GrafanaCloudSetting
     "}",
     "",
     'prometheus.remote_write "grafana_cloud" {',
+    `  external_labels = ${appLabels}`,
     "  endpoint {",
     `    url = ${str(metrics.url)}`,
     ...basicAuth(metrics.user),

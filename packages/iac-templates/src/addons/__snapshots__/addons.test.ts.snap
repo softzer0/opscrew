@@ -287,6 +287,7 @@ services:
   alloy:
     image: <pin:IMAGES.alloy>
     restart: unless-stopped
+    hostname: opscrew-alloy-shop
     user: \${OPSCREW_DEPLOY_UID}:\${OPSCREW_DEPLOY_GID}
     command:
       - run
@@ -461,6 +462,7 @@ prometheus.relabel "allow" {
 }
 
 prometheus.remote_write "grafana_cloud" {
+  external_labels = { app = "shop", env = "prod" }
   endpoint {
     url = "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push"
     basic_auth {
@@ -534,6 +536,7 @@ services:
   alloy:
     image: <pin:IMAGES.alloy>
     restart: unless-stopped
+    hostname: opscrew-alloy-shop
     user: \${OPSCREW_DEPLOY_UID}:\${OPSCREW_DEPLOY_GID}
     command:
       - run
@@ -712,6 +715,7 @@ prometheus.relabel "allow" {
 }
 
 prometheus.remote_write "grafana_cloud" {
+  external_labels = { app = "shop", env = "prod" }
   endpoint {
     url = "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push"
     basic_auth {
