@@ -163,7 +163,7 @@ Effort`.
       - **`openIssues`:** paged, with pull requests skipped.
       - **`getRepoVariable`** (`undefined` on 404), **`setRepoVariable`** (create, or update when it exists) and **`deleteRepoVariable`** (a 404 is fine).
       - **`includedMinutes`:** from the account's or organization's plan when readable: 2,000 on Free, 3,000 on Pro and Team, 50,000 on Enterprise. Otherwise `undefined`.
-      - **`getRepo`** gains `hasIssues`.
+      - **`getRepo`** gains `hasIssues`, optional. Only an explicit `false` means issues are off.
     - **`GITHUB_TOKEN_PERMISSIONS`** gains Issues (Read) and Variables (Read and write). Each is marked "only with the scheduled check", with Actions (Read) for the check's state if the list lacks it. It lists only what the code calls, as spike result 5 confirms.
     - **Errors:** a 403 names the missing permission.
     - **Tests:** the fake covers each endpoint:
@@ -465,7 +465,7 @@ Effort`.
       - the check per environment, with the interval and the minutes a month: `(60 / interval) × 24 × 31` for the hosted job, against `includedMinutes`, or 2,000 with "GitHub Free's" when unknown. In a public repository: "free".
       - **Where design steps in:**
         - it warns when an interval the user set passes 750 minutes a month on a private repository on GitHub Free (or an unknown plan);
-        - it says when issues are off;
+        - it says when issues are off (`hasIssues === false`);
         - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages), and an own server reached through the tunnel unless it deploys from its own runner (T1707: the check's `ssh` can't pass the tunnel's Access login);
         - it says localhost gets no check.
     - **Provision,** when the environment has the check on:

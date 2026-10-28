@@ -76,7 +76,7 @@ getRepoVariable(owner: string, repo: string, name: string): Promise<string | und
 setRepoVariable(owner: string, repo: string, name: string, value: string): Promise<void>;
 deleteRepoVariable(owner: string, repo: string, name: string): Promise<void>;
 includedMinutes(owner: string): Promise<number | undefined>;  // from the account's plan, when readable
-// getRepo gains hasIssues: boolean.
+// getRepo gains hasIssues?: boolean (absent in older fakes; only an explicit false means issues are off).
 // GITHUB_TOKEN_PERMISSIONS gains Issues: Read and Variables: Read and write (only with the check).
 ```
 
