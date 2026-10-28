@@ -2030,6 +2030,11 @@ function addonFiles(step: HostStep): [string, string][] {
   return files as [string, string][];
 }
 
+/** The Beszel hub's public key line, as `ssh-keygen` writes it without a comment. */
+export const HubPublicKeySchema = z.string().regex(/^ssh-ed25519 [A-Za-z0-9+/=]+$/, {
+  message: "must be the hub's public key (ssh-ed25519 …)",
+});
+
 const EmailSchema = z
   .string()
   .regex(/^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,63}$/);
@@ -2040,6 +2045,8 @@ const AddonParams = z.object({
   mode: z.enum(["hub", "agent"]).optional(),
   /** Beszel's hub mode only: the dashboard user's email. */
   email: EmailSchema.optional(),
+  /** Beszel's hub mode only: the hub's public key (not secret), the agent's `KEY`. */
+  hubKey: HubPublicKeySchema.optional(),
 });
 
 /** What differs between the add-ons and Beszel's modes. */
@@ -2108,18 +2115,18 @@ case "$token" in ''|*[!A-Za-z0-9-]*) token=''; ${refuse("Beszel agent token", "B
     secretFiles: ["hub.env", "agent.env", "config.yml", "data/id_ed25519"],
     dataDirs: ["data", "agent_data"],
     templated: "config.yml",
-    read: `${readLines(["pw", "token", "key", "pub"])}
+    read: `${readLines(["pw", "token", "key"])}
 case "$pw" in ''|*[!A-Za-z0-9_-]*) pw=''; ${refuse("Beszel dashboard password", "Beszel")} ;; esac
 case "$token" in *[!0-9a-f]*) token='' ;; esac
 if [ "\${#token}" -ne 48 ]; then token=''; ${refuse("Beszel agent token", "Beszel")}; fi
-case "$key" in ''|*[!A-Za-z0-9+/=]*) key=''; ${refuse("Beszel hub key", "Beszel")} ;; esac
-case "$pub" in 'ssh-ed25519 '*) ;; *) ${refuse("Beszel hub public key", "Beszel")} ;; esac`,
-    // The hub reads its key from its data folder at the first start (spike result 2).
+case "$key" in ''|*[!A-Za-z0-9+/=]*) key=''; ${refuse("Beszel hub key", "Beszel")} ;; esac`,
+    // The hub reads its key from its data folder at the first start (spike result 2); its public
+    // half (the plan's, not secret) is the agent's KEY.
     write: `printf '%s' "$key" | base64 -d | put "$DIR/data/id_ed25519"
 key=''
 printf 'USER_EMAIL=%s\\nUSER_PASSWORD=%s\\n' "$EMAIL" "$pw" | put "$DIR/hub.env"
 pw=''
-printf 'TOKEN=%s\\nKEY=%s\\n' "$token" "$pub" | put "$DIR/agent.env"`,
+printf 'TOKEN=%s\\nKEY=%s\\n' "$token" "$HUB_KEY" | put "$DIR/agent.env"`,
   };
 }
 
@@ -2165,6 +2172,7 @@ function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScri
   const p = params(step, AddonParams);
   if ((kind === "beszel") !== (p.mode !== undefined)) throw invalid(step, "mode");
   if ((p.mode === "hub") !== (p.email !== undefined)) throw invalid(step, "email");
+  if ((p.mode === "hub") !== (p.hubKey !== undefined)) throw invalid(step, "hubKey");
   const files = addonFiles(step);
   const variant = addonVariant(kind, p.mode);
   const templated = files.find(([name]) => name === variant.templated);
@@ -2184,6 +2192,7 @@ function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScri
       USER_NAME: "deploy",
       PROJECT: ADDON_PROJECTS[kind],
       EMAIL: p.email ?? "",
+      HUB_KEY: p.hubKey ?? "",
       MASK: kind === "alloy" && app.success ? maskFilePath(app.data) : "",
       EMPTY_MASK,
       FILES: files.map(([name, content]) => `${name}:${base64(content)}`).join(" "),

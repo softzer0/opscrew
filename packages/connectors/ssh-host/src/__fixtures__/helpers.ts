@@ -236,33 +236,41 @@ export const ALLOY_FILES = {
   "config.alloy": 'local.file "token" {\n  filename = "/etc/alloy/grafana_cloud_credential"\n  is_secret = true\n}\n',
 };
 
-/** An Ed25519 key pair made at runtime: the private key in PKCS #8 PEM, the public as OpenSSH. */
-export function ed25519Pair(): { privatePem: string; publicKey: string } {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const raw = Buffer.from(publicKey.export({ format: "jwk" }).x ?? "", "base64url");
+/** An OpenSSH Ed25519 public key line (`ssh-ed25519 <base64>`) made at runtime. */
+export function ed25519PublicKey(): string {
+  const raw = Buffer.from(
+    generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x ?? "",
+    "base64url",
+  );
   const field = (bytes: Buffer) => {
     const length = Buffer.alloc(4);
     length.writeUInt32BE(bytes.length);
     return Buffer.concat([length, bytes]);
   };
-  const blob = Buffer.concat([field(Buffer.from("ssh-ed25519")), field(raw)]);
-  return {
-    privatePem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
-    publicKey: `ssh-ed25519 ${blob.toString("base64")}`,
-  };
+  return `ssh-ed25519 ${Buffer.concat([field(Buffer.from("ssh-ed25519")), field(raw)]).toString("base64")}`;
 }
 
-/** The add-ons' secrets, made at runtime (never committed), and the hub key's public half. */
+/** Beszel in hub mode with the stand-in files, the dashboard's email and the hub's public key. */
+export const BESZEL_HUB = {
+  mode: "hub",
+  email: "ops@example.com",
+  hubKey: ed25519PublicKey(),
+  files: BESZEL_HUB_FILES,
+} as const;
+
+/**
+ * The add-ons' secrets, made at runtime (never committed). The hub key has an OpenSSH private
+ * key's armour around random bytes: the adapter checks only its shape.
+ */
 export function addonSecrets() {
-  const hub = ed25519Pair();
+  const body = randomBytes(300).toString("base64").replace(/.{70}/g, "$&\n");
   return {
     secrets: {
       beszelPassword: randomBytes(24).toString("base64url"),
       beszelToken: randomBytes(24).toString("hex"),
-      beszelHubKey: hub.privatePem,
+      beszelHubKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${body}\n-----END OPENSSH PRIVATE KEY-----\n`,
       grafanaCloudToken: `glc_${randomBytes(48).toString("base64")}`,
     },
-    hubPublicKey: hub.publicKey,
   };
 }
 

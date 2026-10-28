@@ -6,7 +6,7 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { z } from "zod";
-import { addonTaken, ed25519PublicKey } from "./addons";
+import { addonTaken, isOpensshPrivateKey } from "./addons";
 import { ADDON_KINDS, type AddonKind, DEFAULT_DEAD_MAN_SECONDS } from "./constants";
 import {
   assumedApps,
@@ -89,8 +89,8 @@ const SECRET_CHECKS: Record<
   },
   beszelHubKey: {
     label: "beszel-hub-key",
-    valid: (value) => ed25519PublicKey(value) !== undefined,
-    invalid: "Beszel's hub key must be an Ed25519 private key in PKCS #8 PEM form.",
+    valid: isOpensshPrivateKey,
+    invalid: "Beszel's hub key must be an unencrypted OpenSSH private key.",
   },
   grafanaCloudToken: {
     label: "grafana-cloud-token",
@@ -111,16 +111,14 @@ const SECRET_NEEDS: Record<SecretName, string> = {
 };
 
 /**
- * What goes on stdin for a step's secrets: one line each, in order; the Beszel hub's key as its
- * base64 and its public key line (the agent's `KEY`). Undefined when none is supplied.
+ * What goes on stdin for a step's secrets: one line each, in order; the Beszel hub's key (several
+ * lines) as its base64. Undefined when none is supplied.
  */
 function stdinOf(names: readonly SecretName[], secrets: ApplySecrets): string | undefined {
   if (names.every((name) => secrets[name] === undefined)) return undefined;
-  const lines = names.flatMap((name) => {
+  const lines = names.map((name) => {
     const value = secrets[name] ?? "";
-    return name === "beszelHubKey"
-      ? [Buffer.from(value, "utf8").toString("base64"), ed25519PublicKey(value) ?? ""]
-      : [value];
+    return name === "beszelHubKey" ? Buffer.from(value, "utf8").toString("base64") : value;
   });
   return `${lines.join("\n")}\n`;
 }

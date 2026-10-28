@@ -8,11 +8,12 @@ import {
   addonSecrets,
   applyApproved,
   BESZEL_AGENT_FILES,
+  BESZEL_HUB,
   BESZEL_HUB_FILES,
   cloudServer,
   DEPLOY_KEY,
   desiredFor,
-  ed25519Pair,
+  ed25519PublicKey,
   portainerDesired,
   portainerPassword,
   provision,
@@ -57,9 +58,6 @@ import type { DesiredHost, HostPlan } from "./types";
 import { WEB_FILTER_DROP_IN_TEXT, WEB_FILTER_UNIT_TEXT, webFilterScript } from "./web-filter";
 
 const MAX_MAP_COUNT = { "vm.max_map_count": "262144" };
-
-/** Beszel in hub mode, with the stand-in files. */
-const BESZEL_HUB = { mode: "hub", email: "ops@example.com", files: BESZEL_HUB_FILES } as const;
 
 /**
  * research.md R8 on a server the user owns: ssh-audit's Ubuntu 24.04 lines without GSSAPI and
@@ -267,7 +265,7 @@ async function everyPlan(): Promise<HostPlan[]> {
     planAddon("check-key", {
       app: "shop",
       runAs: "root",
-      enable: { publicKey: ed25519Pair().publicKey },
+      enable: { publicKey: ed25519PublicKey() },
     }),
     planAddon("beszel", { app: "shop", runAs: "root", facts, enable: BESZEL_HUB }),
     planAddon("alloy", { app: "shop", runAs: "root", facts, enable: { files: ALLOY_FILES } }),
@@ -961,21 +959,21 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
   };
 
   it("check-key: replaces the line with its comment, keeps every other key, and the deploy-key step keeps it", async () => {
-    const check = ed25519Pair();
-    const old = ed25519Pair();
-    const line = `restrict,command="df -P -B1 /" ${check.publicKey} opscrew-check`;
+    const check = ed25519PublicKey();
+    const old = ed25519PublicKey();
+    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check`;
     const on = scriptsOf(
       planAddon("check-key", {
         app: "shop",
         runAs: "root",
-        enable: { publicKey: check.publicKey },
+        enable: { publicKey: check },
       }),
     );
     const off = scriptsOf(planAddon("check-key", { app: "shop", runAs: "root", disable: {} }));
     const h = harness();
     try {
       const keys = "/home/deploy/.ssh/authorized_keys";
-      h.write(keys, `${DEPLOY_KEY}\n${old.publicKey} opscrew-check\n`);
+      h.write(keys, `${DEPLOY_KEY}\n${old} opscrew-check\n`);
       expect(h.run(on.check).stdout).toContain("state=change");
       const applied = h.run(on.apply);
       expect(applied.status, applied.stderr).toBe(0);
@@ -1013,12 +1011,11 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
     const keep = scriptsOf(
       planAddon("beszel", { app: "shop", runAs: "root", facts, disable: { keepData: true } }),
     );
-    const { secrets, hubPublicKey } = addonSecrets();
+    const { secrets } = addonSecrets();
     const input = `${[
       secrets.beszelPassword,
       secrets.beszelToken,
       Buffer.from(secrets.beszelHubKey).toString("base64"),
-      hubPublicKey,
     ].join("\n")}\n`;
     const h = harness();
     try {
@@ -1044,7 +1041,7 @@ esac`,
         `USER_EMAIL=ops@example.com\nUSER_PASSWORD=${secrets.beszelPassword}\n`,
       );
       expect(h.read(`${dir}/agent.env`)).toBe(
-        `TOKEN=${secrets.beszelToken}\nKEY=${hubPublicKey}\n`,
+        `TOKEN=${secrets.beszelToken}\nKEY=${BESZEL_HUB.hubKey}\n`,
       );
       expect(h.read(`${dir}/data/id_ed25519`)).toBe(secrets.beszelHubKey);
       expect(h.read(`${dir}/.env`)).toBe("OPSCREW_DEPLOY_UID=1000\nOPSCREW_DEPLOY_GID=1000\n");

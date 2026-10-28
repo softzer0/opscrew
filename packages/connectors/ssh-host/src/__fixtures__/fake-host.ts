@@ -1739,7 +1739,7 @@ export class FakeHost implements RemoteExec {
   /** What the add-on step's apply does: its secrets from stdin, then its files, then up. */
   private addonApply(name: string, p: Record<string, string>, input: string): CommandResult {
     const dir = p.DIR ?? "";
-    const [first = "", second = "", key = "", pub = ""] = input.split("\n");
+    const [first = "", second = "", key = ""] = input.split("\n");
     const hub = p.TEMPLATED === "config.yml";
     const token = hub ? second : first;
     if (name === "alloy.apply") {
@@ -1747,7 +1747,7 @@ export class FakeHost implements RemoteExec {
     } else if (hub) {
       if (!/^[A-Za-z0-9_-]+$/.test(first)) return fail("No valid Beszel dashboard password arrived on standard input, so Beszel was not set up.");
       if (!/^[0-9a-f]{48}$/.test(token)) return fail("No valid Beszel agent token arrived on standard input, so Beszel was not set up.");
-      if (!/^[A-Za-z0-9+/=]+$/.test(key) || !pub.startsWith("ssh-ed25519 ")) return fail("No valid Beszel hub key arrived on standard input, so Beszel was not set up.");
+      if (!/^[A-Za-z0-9+/=]+$/.test(key)) return fail("No valid Beszel hub key arrived on standard input, so Beszel was not set up.");
     } else if (!/^[A-Za-z0-9-]+$/.test(token)) {
       return fail("No valid Beszel agent token arrived on standard input, so Beszel was not set up.");
     }
@@ -1759,7 +1759,7 @@ export class FakeHost implements RemoteExec {
     } else if (hub) {
       this.files.set(`${dir}/data/id_ed25519`, Buffer.from(key, "base64").toString("utf8"));
       this.files.set(`${dir}/hub.env`, `USER_EMAIL=${p.EMAIL}\nUSER_PASSWORD=${first}\n`);
-      this.files.set(`${dir}/agent.env`, `TOKEN=${token}\nKEY=${pub}\n`);
+      this.files.set(`${dir}/agent.env`, `TOKEN=${token}\nKEY=${p.HUB_KEY}\n`);
     } else {
       this.files.set(`${dir}/agent.env`, `TOKEN=${token}\n`);
     }

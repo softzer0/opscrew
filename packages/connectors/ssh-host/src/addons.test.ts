@@ -6,11 +6,12 @@ import {
   addonSecrets,
   applyApproved,
   BESZEL_AGENT_FILES,
+  BESZEL_HUB,
   BESZEL_HUB_FILES,
   cloudServer,
   DEPLOY_KEY,
   desiredFor,
-  ed25519Pair,
+  ed25519PublicKey,
   provision,
   SHOP_PROJECT,
   SHOP_REPOSITORY,
@@ -25,7 +26,7 @@ import type { HostPlan } from "./types";
 
 const BESZEL_DIR = "/srv/opscrew/addons/beszel";
 const ALLOY_DIR = "/srv/opscrew/addons/alloy";
-const HUB = { mode: "hub", email: "ops@example.com", files: BESZEL_HUB_FILES } as const;
+const HUB = BESZEL_HUB;
 
 async function rejection(
   promise: Promise<unknown>,
@@ -74,22 +75,22 @@ function everythingButStdin(fake: FakeHost, plan: HostPlan): string {
 describe("check-key", () => {
   it("adds the restricted line as the deploy user, shows only the key's fingerprint, and re-applies as a no-op", async () => {
     const fake = await ownServer();
-    const check = ed25519Pair();
+    const check = ed25519PublicKey();
     const plan = planAddon("check-key", {
       app: "shop",
       runAs: "root",
-      enable: { publicKey: `${check.publicKey} opscrew-check-key` },
+      enable: { publicKey: `${check} opscrew-check-key` },
     });
     expect(plan.steps.map((step) => step.id)).toEqual(["check-key"]);
     const [step] = plan.steps;
-    expect(step?.title).toContain(keyFingerprint(check.publicKey));
-    expect(`${step?.title} ${step?.reason}`).not.toContain(check.publicKey.split(" ")[1]);
+    expect(step?.title).toContain(keyFingerprint(check));
+    expect(`${step?.title} ${step?.reason}`).not.toContain(check.split(" ")[1]);
     expect(JSON.stringify(plan)).not.toContain("PRIVATE KEY");
 
     const result = await applyApproved(fake, plan);
     expect(result.applied).toEqual(["check-key"]);
-    const line = `restrict,command="df -P -B1 /" ${check.publicKey} opscrew-check`;
-    expect(checkKeyLine(check.publicKey)).toBe(line);
+    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check`;
+    expect(checkKeyLine(check)).toBe(line);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, line]);
     const calls = fake.calls.filter((call) => call.name.startsWith("check-key"));
     expect(calls.map((call) => call.name)).toEqual([
@@ -105,30 +106,30 @@ describe("check-key", () => {
 
   it("replaces a line with the same comment and keeps every other key", async () => {
     const fake = await ownServer();
-    const old = ed25519Pair();
+    const old = ed25519PublicKey();
     const deploy = fake.users.get("deploy");
-    deploy?.keys.push(`${old.publicKey} opscrew-check`);
-    const check = ed25519Pair();
+    deploy?.keys.push(`${old} opscrew-check`);
+    const check = ed25519PublicKey();
     await applyApproved(
       fake,
       planAddon("check-key", {
         app: "shop",
         runAs: "root",
-        enable: { publicKey: check.publicKey },
+        enable: { publicKey: check },
       }),
     );
-    expect(deploy?.keys).toEqual([DEPLOY_KEY, checkKeyLine(check.publicKey)]);
+    expect(deploy?.keys).toEqual([DEPLOY_KEY, checkKeyLine(check)]);
   });
 
   it("survives the deploy-key step, which writes exactly the apps' deploy keys", async () => {
     const fake = await ownServer();
-    const check = ed25519Pair();
+    const check = ed25519PublicKey();
     await applyApproved(
       fake,
       planAddon("check-key", {
         app: "shop",
         runAs: "root",
-        enable: { publicKey: check.publicKey },
+        enable: { publicKey: check },
       }),
     );
     // Inspection keeps the check's line apart, so the deploy keys stay in place.
@@ -139,16 +140,16 @@ describe("check-key", () => {
     // A rotated deploy key rewrites the file, and the check's line stays.
     const rotated = DEPLOY_KEY.replace("FAKEFAKEFAKE", "ROTATEDROTAT");
     await provision(fake, desiredFor(fake, { deploy: { user: "deploy", publicKey: rotated } }));
-    expect(fake.users.get("deploy")?.keys).toEqual([rotated, checkKeyLine(check.publicKey)]);
+    expect(fake.users.get("deploy")?.keys).toEqual([rotated, checkKeyLine(check)]);
   });
 
   it("is removed alone by its undo, and by the last app's teardown", async () => {
     const fake = await ownServer();
-    const check = ed25519Pair();
+    const check = ed25519PublicKey();
     const on = planAddon("check-key", {
       app: "shop",
       runAs: "root",
-      enable: { publicKey: check.publicKey },
+      enable: { publicKey: check },
     });
     await applyApproved(fake, on);
     const off = planAddon("check-key", { app: "shop", runAs: "root", disable: {} });
@@ -174,11 +175,11 @@ describe("check-key", () => {
       keys: [DEPLOY_KEY],
       groups: ["deploy"],
     });
-    const check = ed25519Pair();
+    const check = ed25519PublicKey();
     const plan = planAddon("check-key", {
       app: "shop",
       runAs: "login",
-      enable: { publicKey: check.publicKey },
+      enable: { publicKey: check },
     });
     expect((await applyApproved(fake, plan)).applied).toEqual(["check-key"]);
     expect(fake.calls.every((call) => !call.sudo && call.asUser === undefined)).toBe(true);
@@ -189,7 +190,7 @@ describe("check-key", () => {
 describe("beszel", () => {
   it("hub mode: writes the files, the secrets and the hub's key, starts it, and records the app", async () => {
     const fake = await ownServer();
-    const { secrets, hubPublicKey } = addonSecrets();
+    const { secrets } = addonSecrets();
     const plan = planAddon("beszel", {
       app: "shop",
       runAs: "root",
@@ -212,7 +213,7 @@ describe("beszel", () => {
     expect(file("hub.env")).toBe(
       `USER_EMAIL=ops@example.com\nUSER_PASSWORD=${secrets.beszelPassword}\n`,
     );
-    expect(file("agent.env")).toBe(`TOKEN=${secrets.beszelToken}\nKEY=${hubPublicKey}\n`);
+    expect(file("agent.env")).toBe(`TOKEN=${secrets.beszelToken}\nKEY=${HUB.hubKey}\n`);
     expect(file("data/id_ed25519")).toBe(secrets.beszelHubKey);
     const uid = fake.users.get("deploy")?.uid;
     expect(file(".env")).toBe(`OPSCREW_DEPLOY_UID=${uid}\nOPSCREW_DEPLOY_GID=${uid}\n`);
@@ -220,14 +221,13 @@ describe("beszel", () => {
     expect(fake.madeDirs.has(`${BESZEL_DIR}/agent_data`)).toBe(true);
     expect(hostRecord(fake).addons).toEqual({ beszel: "shop" });
 
-    // The secrets went on stdin only, in order, the hub's key as base64 and its public line.
+    // The secrets went on stdin only, in order, the hub's key as base64.
     const apply = fake.calls.find((call) => call.name === "beszel.apply");
     expect(apply?.input).toBe(
       `${[
         secrets.beszelPassword,
         secrets.beszelToken,
         Buffer.from(secrets.beszelHubKey).toString("base64"),
-        hubPublicKey,
       ].join("\n")}\n`,
     );
     const seen = everythingButStdin(fake, plan);
@@ -428,7 +428,7 @@ describe("the add-ons' secrets", () => {
     const notEd25519 = await rejection(
       applyApproved(fake, plan, { secrets: { ...secrets, beszelHubKey: "not a key at all" } }),
     );
-    expect(notEd25519.message).toContain("Ed25519 private key in PKCS #8 PEM form");
+    expect(notEd25519.message).toContain("unencrypted OpenSSH private key");
     const badToken = await rejection(
       applyApproved(fake, plan, { secrets: { ...secrets, beszelToken: "short" } }),
     );
@@ -483,6 +483,12 @@ describe("planAddon input", () => {
     expect(() =>
       planAddon("alloy", { app: "shop", runAs: "root", enable: { files: ALLOY_FILES } }),
     ).toThrow(/inspected facts/);
+    // The hub's public key is a plain input, checked only for its shape.
+    for (const hubKey of ["ssh-rsa AAAAB3Nza", `${HUB.hubKey} hub@home`]) {
+      expect(() => planAddon("beszel", { ...options, enable: { ...HUB, hubKey } })).toThrow(
+        /hubKey: must be the hub's public key/,
+      );
+    }
     expect(() => planAddon("alloy", { ...options, disable: { keepData: true } })).toThrow(
       /Only Beszel/,
     );

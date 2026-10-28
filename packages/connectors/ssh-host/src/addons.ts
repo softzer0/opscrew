@@ -1,8 +1,8 @@
 /**
  * Shared by the add-on planner and the apply: the refusal when another app has the add-on, and
- * the Ed25519 and OpenSSH key helpers (the Beszel hub's key, the check key's fingerprint).
+ * the check key's fingerprint.
  */
-import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
 import type { AddonKind } from "./constants";
 
@@ -31,31 +31,14 @@ export function addonTaken(kind: AddonKind, owner: string): OpsCrewError {
   );
 }
 
-/** An OpenSSH string field: its length (4 bytes, big-endian), then its bytes. */
-function sshString(bytes: Buffer): Buffer {
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(bytes.length);
-  return Buffer.concat([length, bytes]);
-}
-
 /**
- * The OpenSSH public key line (`ssh-ed25519 <base64>`) of an Ed25519 private key in PKCS #8 PEM
- * form; undefined for anything else.
+ * An unencrypted OpenSSH private key's shape (Beszel's hub key): its armour lines around base64.
+ * The key itself is not parsed.
  */
-export function ed25519PublicKey(pem: string): string | undefined {
-  try {
-    const key = createPrivateKey({ key: pem, format: "pem" });
-    if (key.asymmetricKeyType !== "ed25519") return undefined;
-    const { x } = createPublicKey(key).export({ format: "jwk" });
-    if (x === undefined) return undefined;
-    const blob = Buffer.concat([
-      sshString(Buffer.from("ssh-ed25519")),
-      sshString(Buffer.from(x, "base64url")),
-    ]);
-    return `ssh-ed25519 ${blob.toString("base64")}`;
-  } catch {
-    return undefined;
-  }
+export function isOpensshPrivateKey(text: string): boolean {
+  return /^-----BEGIN OPENSSH PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END OPENSSH PRIVATE KEY-----\r?\n?$/.test(
+    text,
+  );
 }
 
 /** OpenSSH's SHA-256 fingerprint of a public key (`<type> <base64> [comment]`): `SHA256:…`. */

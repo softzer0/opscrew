@@ -82,7 +82,14 @@ import {
   sshPortsText,
   sshSources,
 } from "./ssh-firewall";
-import { ADDON_FILE_PARAM, appRecord, dataKeptRecord, type RunAs, stepScripts } from "./steps";
+import {
+  ADDON_FILE_PARAM,
+  appRecord,
+  dataKeptRecord,
+  HubPublicKeySchema,
+  type RunAs,
+  stepScripts,
+} from "./steps";
 import {
   type AccessMode,
   AppNameSchema,
@@ -2420,7 +2427,12 @@ const AddonFilesSchema = z.record(z.string(), z.string());
 const AddonEnableSchemas = {
   "check-key": z.strictObject({ publicKey: PublicKeyLineSchema }),
   beszel: z.discriminatedUnion("mode", [
-    z.strictObject({ files: AddonFilesSchema, mode: z.literal("hub"), email: z.string() }),
+    z.strictObject({
+      files: AddonFilesSchema,
+      mode: z.literal("hub"),
+      email: z.string(),
+      hubKey: HubPublicKeySchema,
+    }),
     z.strictObject({ files: AddonFilesSchema, mode: z.literal("agent") }),
   ]),
   alloy: z.strictObject({ files: AddonFilesSchema }),
@@ -2438,7 +2450,8 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  * - `check-key`: the scheduled check's public key in the deploy user's authorized_keys, as
  *   `restrict,command="df -P -B1 /" <key> opscrew-check` (a line with that comment is replaced);
  *   off, only that line goes. The plan shows the key's fingerprint.
- * - `beszel` (`mode` hub, with the dashboard user's `email`, or agent) and `alloy`: the files
+ * - `beszel` (`mode` hub, with the dashboard user's `email` and the hub's public key `hubKey`,
+ *   the agent's `KEY`; or agent) and `alloy`: the files
  *   `renderAddon` rendered, by name (`compose.yaml`, `Caddyfile`, `config.yml` or
  *   `config.alloy`), each within the Compose text cap (16 KiB), written to the add-on's folder
  *   (`addonDir`) with its secrets (supplied at apply, never part of the plan), then started. Off,
@@ -2521,7 +2534,7 @@ export function planAddon<K extends AddonPlanKind>(
 /** Any kind's validated settings. */
 type AddonSettings =
   | { publicKey: string }
-  | { files: Record<string, string>; mode?: "hub" | "agent"; email?: string };
+  | { files: Record<string, string>; mode?: "hub" | "agent"; email?: string; hubKey?: string };
 
 /** The step that turns an add-on on, from its validated settings. */
 function addonStep(
@@ -2548,6 +2561,7 @@ function addonStep(
     runAs,
     ...(enable.mode === undefined ? {} : { mode: enable.mode }),
     ...(enable.email === undefined ? {} : { email: enable.email }),
+    ...(enable.hubKey === undefined ? {} : { hubKey: enable.hubKey }),
     ...files,
   };
   const secrets =

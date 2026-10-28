@@ -369,8 +369,8 @@ export interface ApplySecrets {
   /** Beszel's agent token (`beszel`): 48 hex digits in hub mode, the user's hub's in agent mode. */
   beszelToken?: string;
   /**
-   * The Beszel hub's private Ed25519 key in PKCS #8 PEM form, hub mode (`beszel`). The step writes
-   * it to the hub's `data/id_ed25519`, and its public half to the agent's `KEY`.
+   * The Beszel hub's private Ed25519 key, an unencrypted OpenSSH private key, hub mode (`beszel`).
+   * The step writes it to the hub's `data/id_ed25519`; its public half is the step's `hubKey`.
    */
   beszelHubKey?: string;
   /** The Grafana Cloud access policy token (`alloy`). */
