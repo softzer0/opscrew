@@ -49,6 +49,12 @@ of the pass passed; otherwise the status says how many of its steps did.
 | The localhost Docker pass (`test/e2e/localhost.test.ts`, feature 015, quickstart "1."): the site at `https://<app>.localhost` through the local CA, a second environment beside it, the stack's differences from a server's, destroy leaving nothing | `OPSCREW_DOCKER_TESTS=1`, Docker here | Passed, 7 of 7 tests: Windows by hand; Linux CI (`ubuntu-latest`); Intel macOS CI (`macos-15-intel` with Colima, run 39805990349, where the first provision takes about 9 minutes) | 2026-10-22 | — |
 | The off-Linux Buildpacks build (`test/e2e/off-linux-build.test.ts`): the pinned Linux `pack` in a container builds `examples/go-api` on a computer that is not Linux | `OPSCREW_DOCKER_TESTS=1`, Docker here, not Linux | Passed on Windows by hand (442 s). Intel macOS CI: **not tested live**: a plain `docker pull` of the 1.5 GB Paketo builder kills Colima's VM there, even one layer at a time, with no OpsCrew code involved, so the job no longer runs it | 2026-10-22 (Windows) | A macOS computer with more room for Docker |
 | Docker on Apple silicon | — | **Not tested live**: GitHub's arm64 macOS runners cannot run Docker | — | An Apple silicon Mac by hand |
+| Observability on Hetzner (`live.test.ts`, feature 017, quickstart "1."–"4."): `logs` and `logs --follow` within 10 seconds (SC-1701), `status`' figures, the scheduled check by dispatch with the app stopped and started (SC-1702), the disk past 85% (SC-1703), the ntfy posts, the billed minutes (SC-1705), destroy's pause, and the leak search with a seeded secret (SC-1704) ([its steps](e2e.md#the-hetzner-pass)) | `OPSCREW_E2E_OBSERVABILITY=1`, `OPSCREW_E2E_NTFY_TOPIC`, a Cloudflare domain, the default app | **Not run yet** | — | An ntfy topic; the GitHub token's Issues and Variables permissions |
+| Beszel on Hetzner (`live.test.ts`, feature 017, quickstart "5."): hub mode on, its API through `addon open beszel`'s tunnel, its memory, off leaving nothing (SC-1706) | `OPSCREW_E2E_ADDONS=1`, the default app | **Not run yet** | — | Port 8090 free on the test computer |
+| Grafana Cloud on Hetzner (`live.test.ts`, feature 017, quickstart "6."): the server's figures and the app's masked line queried back within 5 minutes, the series under 1,000 (SC-1707), off leaving nothing | + the six `OPSCREW_E2E_GRAFANA_CLOUD_*` variables | **Not run yet** | — | A Grafana Cloud free stack, a write token and a read token |
+| Retarget's pause of the scheduled check (feature 017, FR-1709) | the retarget move, + `OPSCREW_E2E_OBSERVABILITY=1`, a Cloudflare domain | **Not run yet** | — | Both provider tokens |
+| Logs and figures on the other targets (feature 017, SC-1701): your own server (step 2b), your existing Portainer (step 3c), the local runner (step 4b), the SSR app on Cloudflare's hosting (step S2b) ([the step](e2e.md#the-other-targets)) | each pass's own gate | **Not run yet** | — | For S2b, Workers Observability Read on `OPSCREW_E2E_CLOUDFLARE_TOKEN` |
+| Ctrl+C on `logs --follow` over SSH and on `addon open beszel` on Windows (feature 017) | by hand ([how](e2e.md#windows-by-hand)) | **Not run yet** | — | A Windows computer |
 
 Run in development, not tracked by date:
 
@@ -160,6 +166,28 @@ Run in development, not tracked by date:
   unit tests and the spike only.
 - **Raising the zone's minimum TLS on Cloudflare's hosting**: the e2e zone is already at 1.2, so
   provision has nothing to raise there; unit tests cover the raise and the advice.
+
+### Observability (feature 017)
+
+- **The check on its schedule:** the live passes run it by dispatch; GitHub's delay of scheduled
+  runs (SC-1702's "plus 10 minutes") is not measured.
+- **Slack and Discord webhooks:** only ntfy runs live; the others have unit tests (`check.mjs`).
+- **The certificate's 14 days, and the 60-day inactivity warning:** no run gets there; unit tests
+  only.
+- **The disk check from a runner machine or the server's own runner,** and a server checked once
+  for several environments: every live check runs from GitHub's machines over SSH for one
+  environment.
+- **The check's window during a move:** the window runs inside one `retarget` run; the live pass
+  checks the pause it leaves until `--finish`.
+- **Beszel in agent mode or at a subdomain behind Cloudflare Access, and either add-on on your own
+  server:** only hub mode with local access, and Grafana Cloud, on a cloud server run live; the
+  Docker pass (`test/e2e/observability.test.ts`) covers the proxy's refusals and the add-ons'
+  containers.
+- **Logs and figures on DigitalOcean, and for a static site on Cloudflare or GitHub Pages** (the
+  last deploy runs instead of lines): unit tests only.
+- **The add-ons' pulled images:** disabling an add-on removes its containers, volumes, networks
+  and files; the images it pulled stay on the server, as for every Compose project OpsCrew
+  removes, and no test checks them.
 
 ## Confirmed live behaviour
 

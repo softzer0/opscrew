@@ -10,7 +10,8 @@
  * - `examples/astro-ssr` in `OPSCREW_E2E_GITHUB_REPO_B`, with a page showing the SHA-256 of its
  *   secret (`test/e2e/__fixtures__/astro-secret`): adapt, provision, a page rendered per request,
  *   the headers, the secret reaching the app, a new secret value, and a rollback to the version
- *   before it: refused, naming the secret, then forced with `--allow-old-secrets` (T1623).
+ *   before it: refused, naming the secret, then forced with `--allow-old-secrets` (T1623); and
+ *   feature 017's `logs`, `logs --follow` and `status` on it (SC-1701).
  * - the leak search over every output, commit, pull request, audit entry and local file (SC-1602).
  */
 import { createHash } from "node:crypto";
@@ -23,6 +24,7 @@ import { describe, expect } from "vitest";
 import { httpRequest, minutes, sleep, waitFor } from "./cloud";
 import { AppEnvironments, opscrewUntilApproved, secretsRecord } from "./environment-checks";
 import { type CliRun, LiveRun, REPO_ROOT, serverSettings } from "./harness";
+import { liveRunTarget, logsAndFigures } from "./observability-checks";
 import {
   CLOUDFLARE_HOSTING_VARIABLES,
   redirectProblem,
@@ -432,6 +434,17 @@ describe.skipIf(MISSING.length > 0)(
         ssr.log(
           "observed: the SSR app renders per request and reads its secret (its SHA-256 matches)",
         );
+      },
+    );
+
+    ssr.step(
+      "S2b. logs: the Worker's recent requests within 10 seconds, a request's line in logs --follow within 10 seconds of it, then Ctrl+C; status: the Worker's figures (SC-1701)",
+      minutes(10),
+      async () => {
+        await logsAndFigures(liveRunTarget(ssr), {
+          request: (path) => httpRequest(`https://${ssr.appHost}${path}`),
+          figures: "worker",
+        });
       },
     );
 

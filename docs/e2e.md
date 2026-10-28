@@ -58,7 +58,7 @@ The test is skipped unless its environment variables are set, so normal runs and
 | `OPSCREW_E2E_APP_ENV` | Optional path to a file of production values (`NAME=value` lines) for the variables the app needs that OpsCrew cannot derive or generate (for example an API key or mail settings); without it the test supplies none, and `provision` stops if the app requires any. Use stand-in values, never real secrets. |
 | `OPSCREW_E2E_REGION` | Optional interview region, default `eu-central` (Nuremberg/Falkenstein on Hetzner, Frankfurt/Amsterdam on DigitalOcean). |
 | `OPSCREW_E2E_GITHUB_REPO` | `owner/name` of a **throwaway** repository. The test force-pushes its `main` branch. |
-| `OPSCREW_E2E_GITHUB_TOKEN` | Fine-grained token for that repository only. It needs Contents, Pull requests, Secrets, Actions and Workflows (read and write), plus Metadata (read). |
+| `OPSCREW_E2E_GITHUB_TOKEN` | Fine-grained token for that repository only. It needs Contents, Pull requests, Secrets, Actions, Workflows, Issues and Variables (read and write), plus Metadata (read). Issues and Variables are for feature 017's scheduled check, which design turns on for prod in every pass: OpsCrew reads its issues and sets its pause variable, and the test's reset closes its issues and deletes its label, variable and workflow (see [Cost and cleanup](#cost-and-cleanup)). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Optional. A Cloudflare token limited to one zone, with Zone Read, DNS Edit, Config Rules Edit, Zone WAF Edit, SSL and Certificates Edit, Zone Settings Edit and Single Redirect Edit. |
 | `OPSCREW_E2E_DOMAIN` | Optional, used together with the Cloudflare token: a hostname in that zone, for example `e2e.example.com`. It names the zone only: each run serves the app on its own hostname, `e2e-<run id>.<zone>`, because Let's Encrypt issues at most 5 certificates per week for the same names and every run's fresh server asks for one. |
 | `OPSCREW_E2E_BUILDS` | Optional, `1` runs [the builder checks](#the-builders) in the Hetzner pass (with `nextjs-postgres`, `go-api` or `rust-api`): about 20–40 minutes and four deploys per app. Off by default. |
@@ -71,6 +71,7 @@ The test is skipped unless its environment variables are set, so normal runs and
 | `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | For `OPSCREW_E2E_STORAGE=hetzner`: S3 credentials from the Hetzner Console of the throwaway project (Security → S3 credentials). Without them the Hetzner Object Storage pass is skipped with a message. The test never deletes them. |
 | `OPSCREW_E2E_TLS` | Optional, one of `proxied`, `live`, `dns-only` or `recovery`: runs that pass of [origin TLS, the recovery copy and the deeper checks](#origin-tls-the-recovery-copy-and-the-deeper-checks) (feature 014) in the Hetzner pass, with the Cloudflare domain. Off by default. |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN_NO_TLS` | Needed with `OPSCREW_E2E_TLS=live`: a second token for the same zone with only Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit (no SSL and Certificates, no Zone Settings), so the first deploy goes live without origin protection. |
+| `OPSCREW_E2E_OBSERVABILITY`, `OPSCREW_E2E_ADDONS` | Optional, `1` runs feature 017's passes in the Hetzner pass (the default app): logs, status, the scheduled check, and the add-ons. See [Observability](#observability). |
 
 Requirements:
 
@@ -472,6 +473,9 @@ and the per-hostname settings cost nothing on the Free plan.
      the probe block. A rule that listed nothing before the run must be gone once no app of the
      run is left;
    - the Zero Trust organization and every one-time PIN login seen so far are still there.
+   2b. **Logs and figures** (feature 017, SC-1701): as described in
+   [the other targets](#the-other-targets). The app's lines come over SSH; `status` must show the
+   server's load against its CPUs, its memory used of total, and its disk used and free.
 3. `provision --plan-only` again: nothing to apply.
 4. `portainer enable` (plan, then `--approve`): ports 9443, 9000 and 8000 do not answer on the
    server's addresses; through the SSH tunnel command `portainer status` prints, Portainer answers,
@@ -525,7 +529,10 @@ and the per-hostname settings cost nothing on the Free plan.
 
    7b. **Destroying the second app** with `--undo-host`, then again with `--approve <undo host plan
    hash>`: nothing of it is left in Cloudflare, no container of it or of the edge is left, `/srv/edge`
-   is gone, no `deploy` user is left and root still logs in with its key. OpsCrew's shared rules are
+   is gone, no `deploy` user is left and root still logs in with its key. No `authorized_keys` on
+   the server holds a scheduled check's key line (`… opscrew-check:<owner>/<repo>`), and nothing of
+   Beszel or Grafana Alloy is there: no container, volume or network of `opscrew-beszel` or
+   `opscrew-alloy`, and no `/srv/opscrew/addons`. OpsCrew's shared rules are
    gone (unless they listed other apps' hostnames before the run, which then stay), the seeded rules
    are byte-identical, and the Zero Trust organization and one-time PIN login are still there.
 8. Nothing leaked: the server's addresses (IPv4, IPv6 and their `/64` prefixes), the private keys,
@@ -699,9 +706,9 @@ your own server; if a run was interrupted, delete what it left by hand as descri
 runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install.
 `OPSCREW_E2E_PORTAINER_STEPS` chooses the steps:
 
-- `core` (the default, about 21 minutes with the second app, measured on 2026-10-18; about 24 with
-  feature 013's checks of the second app, not measured yet): steps 1, 1b, 2a, 2, 3, 7b, 8, 9, 9b
-  and 12. Step 8 then removes an updater + tunnel setup (one tunnel, no Access application), and
+- `core` (the default, about 21 minutes with the second app, measured on 2026-10-18; about 26 with
+  feature 013's checks of the second app and feature 017's step 3c, not measured yet): steps 1,
+  1b, 2a, 2, 3, 3c, 7b, 8, 9, 9b and 12. Step 8 then removes an updater + tunnel setup (one tunnel, no Access application), and
   step 12 searches what this pass produced; the bare short host name is searched only when step 11
   ran and gave it to OpsCrew.
 - `full` (about 1 to 1½ hours): every step and check below.
@@ -770,6 +777,10 @@ other value skips the whole test and names the variable.
    fail its run, roll back (the branch's newest commit is "Roll back to the previous version" with
    the previous image) and the site must serve the previous version again; a revert then deploys
    normally. The failing run waits about ten minutes for its health check.
+
+   3c. **Logs and figures** (feature 017, SC-1701), as described in
+   [the other targets](#the-other-targets): the app's lines come through Portainer's API, and
+   `status` must show each container's figures and name the host's disk as not available.
 4. **An apply through MCP**: `opscrew mcp` with `opscrew_plan` and then `opscrew_apply` (against
    the real provision), both with `replaceTokens: ["registry"]` and the stack plan's hash as
    `planHash`. The test's MCP client approves the stack plan's dialog as the user would and never
@@ -1263,6 +1274,11 @@ is created.
 4. **A merged change** (the change file of the other tests) is deployed the same way, on the
    runner. The image in the app's `.env` on this computer must change, and the new version must
    answer within 10 minutes of the change's push (SC-1507).
+
+   4b. **Logs and figures** (feature 017, SC-1701), as described in
+   [the other targets](#the-other-targets), with `--env dev`: the lines come from local Docker,
+   the request goes to `https://<app>.localhost` as in step 3, and `status` must show each
+   container's figures and the CPUs and memory Docker has here.
 5. **Stop:** `stop()`, after which the runner's `finished` resolves and GitHub lists no runner
    with the label. The runner's folder in the run's own OpsCrew home stays, with the pinned
    version.
@@ -1372,6 +1388,11 @@ The server-rendered app:
 - **S2. Provisioned and deployed,** with `verify`. Two requests to `/` 1.5 seconds apart must show
   two render times. OpsCrew's headers must be on `/` (the Worker's answer) and on `/favicon.svg` (a
   static file), and `/secret` must show the SHA-256 of the value.
+- **S2b. Logs and figures** (feature 017, SC-1701), as described in
+  [the other targets](#the-other-targets): `logs` shows the Worker's recent requests from Workers
+  Logs, `logs --follow` the request's line from the Worker's live tail (the Astro app's 404 page
+  is rendered by the Worker, so the request runs code), and `status` the Worker's requests, errors
+  and CPU time of the last 24 hours.
 - **S3. A new value:** the test writes another stand-in, and `provision` must set GitHub's
   `OPSCREW_ENV_STRIPE_SECRET_KEY` again. After a merged change, `/secret` shows the new value's
   SHA-256. Then the rollback of step 5, to the version that ran before the new value (noted
@@ -1405,7 +1426,7 @@ staging's prefix too).
 |---|---|
 | `OPSCREW_E2E_CLOUDFLARE_HOSTING` | `1` runs this test. |
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_GITHUB_TOKEN` | Two throwaway repositories and a token for both, as for environments (staging gets a GitHub environment). |
-| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for your own server, plus Account → Workers Scripts → Edit for the zone's account: OpsCrew's own token creates the Workers and their custom domains, and the test lists them (and deletes what a failed destroy left). |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for your own server, plus Account → Workers Scripts → Edit for the zone's account: OpsCrew's own token creates the Workers and their custom domains, and the test lists them (and deletes what a failed destroy left). For step S2b also Account → Workers Observability → Read (`opscrew logs` reads Workers Logs with it). |
 | `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN` | A second token with only Account → Workers Scripts → Edit for the same account: the deploy token OpsCrew stores in GitHub ([the guide](guide/cloudflare-hosting.md#the-tokens)). |
 | `OPSCREW_E2E_DOMAIN` | As above. |
 
@@ -1540,6 +1561,198 @@ OPSCREW_E2E_SEVERAL_APPS=1 OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_G
 
 Not measured yet: about 30 to 45 minutes, with no server and no cost on Workers Free.
 
+## Observability
+
+Feature 017 (logs, figures, the scheduled check and the two add-ons) runs live in four places:
+
+- **The Hetzner pass of `live.test.ts`** with `OPSCREW_E2E_OBSERVABILITY=1` (logs, status, the
+  check, the leak search) and/or `OPSCREW_E2E_ADDONS=1` (Beszel, and Grafana Cloud when its
+  variables are set), on a server OpsCrew creates
+  (`packages/cli/test/live/observability-checks.ts`). Both run with the default app only.
+- **The move** from Hetzner to DigitalOcean (`live.test.ts`, both provider tokens) gains the
+  check's pause with `OPSCREW_E2E_OBSERVABILITY=1` and a Cloudflare domain.
+- **The other targets' passes** each gain one step of logs and figures: your own server (step 2b),
+  your existing Portainer (step 3c), the local runner (step 4b) and the server-rendered app on
+  Cloudflare's hosting (step S2b).
+- **Windows, by hand** (below).
+
+### The request log and the seeded secret
+
+The examples log nothing per request, so the tests add a file to the copy of
+`examples/nextjs-postgres` they push: `proxy.ts`, a Next.js 16 proxy that runs in the app's server
+process and logs one line, `opscrew-e2e request <method> <path>`, for each request to a path that
+starts with `/opscrew-e2e-` (and nothing for any other request). The other targets' passes add it
+when they deploy that example (the default); with another `OPSCREW_E2E_APP` they log that the
+request's line is not checked. In the Hetzner pass the line of a request to
+`/opscrew-e2e-seeded-<random>` also prints `seeded=<value of SEEDED_SECRET>`: the seeded secret of
+the leak search (SC-1704), a random value made for each run and given to OpsCrew as one of the app's
+production values. Only the test's own requests print it, so the test chooses when: after Grafana
+Cloud's masking file is in place (OpsCrew writes it at the deploy after `addon enable
+grafana-cloud`, as the guide says; until then Alloy masks only secret-shaped values).
+
+### The other targets
+
+The step every target's pass takes (SC-1701, US2):
+
+1. `opscrew logs` (with `--env dev` on the local runner) must show at least one line, timed from
+   the command's start to its end; over 10 seconds is a finding that fails the run at its end.
+2. With the request log: `opscrew logs --follow` is started as a user starts it, and once it shows
+   its first line, the test requests `/opscrew-e2e-follow-<random>` from the app's address. The
+   request's line must show within 10 seconds of the request; slower, or missed, is a finding, and
+   after three requests 30 seconds apart without the line the step fails. Then the test sends
+   Ctrl+C (SIGINT): the command must end within 30 seconds with exit code 0 and no error message.
+   On Windows no Ctrl+C can be sent to another process, so there the command is stopped and the
+   test logs that Ctrl+C is to be checked by hand.
+3. `opscrew status` must show the figures ("Resources (read now)"): on a server, the load against
+   the CPUs, the memory used of total and the disk used and free, and each part's CPU and memory;
+   in a Portainer, each part's figures and the host's disk named as not available; on this
+   computer, each part's figures and Docker's CPUs and memory; on Cloudflare, the Worker's
+   requests, errors and CPU time of the last 24 hours.
+
+Everything the commands print is kept for each pass's leak search.
+
+### The Hetzner pass
+
+With `OPSCREW_E2E_OBSERVABILITY=1`, the pass edits `opscrew/plan.yaml` after design as a user
+would (`observability.check.webhook: ntfy`) and gives OpsCrew the webhook's address in
+`OPSCREW_CHECK_WEBHOOK` (`https://ntfy.sh/<OPSCREW_E2E_NTFY_TOPIC>`). After the usual deploy,
+verify, secure and drift:
+
+1. **Logs and figures** as above, on the server.
+2. **Grafana Cloud on** (with `OPSCREW_E2E_ADDONS=1` and its six variables; quickstart "6."):
+   `addon enable grafana-cloud --metrics-url … --metrics-user … --logs-url … --logs-user …
+   --plan-only --yes` must show OpsCrew's estimate of series and log volume before the plan; then
+   the run with each printed `--approve <hash>` (the token in `OPSCREW_GRAFANA_CLOUD_TOKEN`).
+   `addon status --json` must show Alloy's containers running; their memory is logged, and more
+   than design showed is a finding (SC-1706). With the read token, the test asks the stack's
+   Prometheus for the app's series (`count by (__name__) ({app="<app>"})`) until the server's CPU,
+   memory and disk are there (`node_cpu_seconds_total`, `node_memory_MemAvailable_bytes`,
+   `node_filesystem_avail_bytes`): later than 5 minutes after enable is a finding (SC-1707). The
+   app's series (`count({app="<app>"})`) are logged; 1,000 or more is a finding. Then `provision`
+   and the deploy of its pull request, which writes Alloy's masking file. A seeded request's line
+   must then reach the stack's Loki (`{app="<app>"} |= "<path>"`), labelled with the app, `prod` and
+   its service, with the secret masked (`seeded=<opscrew:…>`); later than 5 minutes after the
+   request is a finding.
+3. **The seeded line in the terminal and in MCP:** a seeded request, then `opscrew logs --since 15m`
+   must show its line with the secret masked (`seeded=[REDACTED:…]`), and so must MCP's
+   `opscrew_logs` (through `opscrew mcp`, as the plugin calls it).
+4. **The check, run by dispatch** (`workflow_dispatch` on `opscrew-check.yml`, as `gh workflow run`
+   does; with `OPSCREW_E2E_OBSERVABILITY=1`, quickstart "3."). The plan must have the check on with
+   the ntfy webhook, and the deploy-setup pull request must have put the workflow and
+   `opscrew/check/check.json` on `main`. Each dispatched run must succeed (the check exits 0
+   whenever it could report).
+   - **A passing run:** its jobs' times are logged, with the minutes GitHub bills (each job rounded
+     up to a whole minute, and GitHub's own `/timing` figure when it gives one), and the month's
+     minutes at the interval in `check.json`; over 750 in a private repository is a finding
+     (SC-1705). It opens no issue.
+   - **The app stopped** (`docker compose stop` in the app's folder, as `deploy`), once its health
+     route fails: one open issue per hostname of the app, each with its key
+     (`<app>/prod/https/<hostname>`) and a title and body naming the app, `prod` and the hostname
+     (SC-1702); an ntfy post with each issue's title (read back with ntfy's poll API); `opscrew
+     status` showing the check on and each open alert. A second run adds nothing: no new issue,
+     no new comment.
+   - **The app started again** (`docker compose start`), once it answers: a run closes each issue
+     as completed with "Resolved after <duration>." (logged), and ntfy gets the "resolved" posts.
+   - **The disk past 85%:** a file (`/home/deploy/opscrew-e2e-fill`, made with `fallocate`) takes
+     the disk to 87% as the check counts it. `status` must flag the disk, and a run must open the
+     disk issue (`<app>/prod/disk/<server id>`), naming the server and its free space (SC-1703),
+     with its ntfy post. The issue stays open for destroy (below).
+5. **Beszel** (with `OPSCREW_E2E_ADDONS=1`; quickstart "5.", SC-1706): `addon enable beszel` (hub
+   mode, local access), plan then approve. Its containers run and their memory is logged (more
+   than design showed is a finding); port 8090 does not answer on the server's address. Then
+   `opscrew addon open beszel` runs as a user runs it: through its SSH tunnel Beszel's API answers
+   on `http://localhost:8090`, logs in as `admin@opscrew.invalid` with the password from
+   `beszel_secrets.json`, and shows this server up with its containers, the app's among them;
+   Ctrl+C ends the tunnel as above. `addon disable beszel --approve <hash> --confirm <app>`
+   (deleting its history) must leave nothing: no container, volume or network of the Compose
+   project `opscrew-beszel`, no `/home/deploy/opscrew/addons/beszel`, and no
+   `beszel_secrets.json` on this computer.
+6. **Grafana Cloud off:** every line the app sent this run is read back for the leak search; then
+   `addon disable grafana-cloud` (plan, approve) must leave no container, volume or network of
+   `opscrew-alloy`, no `/home/deploy/opscrew/addons/alloy` (nor the empty `addons` folder), no
+   masking file (`/srv/apps/<app>/mask.re`) and no token on this computer. `provision` and its
+   deploy then take the masking file out of the workflow, and the server must still have none.
+7. **The leak search** (SC-1704): the seeded secret, the GitHub, Hetzner and Cloudflare tokens, the
+   ntfy topic, Grafana Cloud's two tokens, Beszel's password, token, hub key and session, and the
+   values OpsCrew generated must be in none of: every CLI output of the run and the long-running
+   commands' outputs (the terminal), MCP's results and standard error, the run's `opscrew-check`
+   issues (titles, bodies and comments), the ntfy posts since the run started, the app's lines in
+   Grafana Cloud, the commits (every branch), the run's pull requests and the audit log. Only
+   labels and places are printed.
+
+Then the usual teardown. After a finished destroy, `OPSCREW_CHECK_PAUSED` must pause the
+environment as destroyed, and one more dispatched run must close the open disk issue with "Closed
+while the check is paused." (quickstart "4."). Any issue of the run still open after the teardown
+is a problem; the repository's reset closes it (see [Cost and cleanup](#cost-and-cleanup)).
+
+### Retarget's pause
+
+In the move from Hetzner to DigitalOcean, with `OPSCREW_E2E_OBSERVABILITY=1` and a Cloudflare
+domain: after the switch (before `--finish`), `OPSCREW_CHECK_PAUSED` must pause the environment for
+the move. The test stops the app on the new server, and once its health route fails a dispatched
+run of the check must open no issue for it (FR-1709). The app is started again, and the move goes
+on to `--finish`. The window itself runs inside one `retarget` run, which no test can dispatch the
+check during; the variable it sets is the same one this run reads.
+
+### Windows, by hand
+
+When a Windows computer is available for the run (T1712a's review): in a project deployed on a
+server, run `npx opscrew logs --follow`, press Ctrl+C, and do the same with `npx opscrew addon open
+beszel`. Each must end without an error message. The runner does not detach its children on
+Windows, so `ssh.exe` may get the signal first; record what you saw in
+[the coverage page](e2e-coverage.md#live-results).
+
+### Variables and running it
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_OBSERVABILITY` | `1` runs logs, status, the check and the leak search in the Hetzner pass, and the pause in the move. Needs `OPSCREW_E2E_CLOUDFLARE_TOKEN` and `OPSCREW_E2E_DOMAIN` (the check checks the app's hostname over HTTPS) and `OPSCREW_E2E_NTFY_TOPIC`. |
+| `OPSCREW_E2E_NTFY_TOPIC` | A topic on ntfy.sh, 16 to 64 letters, digits, `-` or `_`. Anyone who knows a topic can read it, so make it random (for example `opscrew-e2e-` and 20 random letters). Nothing to create: ntfy makes it on the first post. |
+| `OPSCREW_E2E_ADDONS` | `1` runs Beszel, and Grafana Cloud with the variables below. Port 8090 must be free on this computer (Beszel's tunnel). |
+| `OPSCREW_E2E_GRAFANA_CLOUD_METRICS_URL`, `OPSCREW_E2E_GRAFANA_CLOUD_METRICS_USER` | The Grafana Cloud stack's Prometheus `remote_write` URL (`https://prometheus-….grafana.net/api/prom/push`) and its numeric user id, from the stack's details page. |
+| `OPSCREW_E2E_GRAFANA_CLOUD_LOGS_URL`, `OPSCREW_E2E_GRAFANA_CLOUD_LOGS_USER` | The stack's Loki push URL (`https://logs-….grafana.net/loki/api/v1/push`) and its numeric user id. |
+| `OPSCREW_E2E_GRAFANA_CLOUD_TOKEN` | An access policy token with only `metrics:write` and `logs:write`, the one the guide asks for: OpsCrew gets it. |
+| `OPSCREW_E2E_GRAFANA_CLOUD_READ_TOKEN` | A second token with only `metrics:read` and `logs:read`, for the test's queries. OpsCrew never gets it. |
+
+All six Grafana Cloud variables or none: with some missing the pass is skipped and names them.
+Use a free stack of its own (the test never deletes what Alloy sent). The pass also needs the
+Hetzner pass's own variables, and the GitHub token's Issues and Variables permissions (see
+[Setup](#setup)).
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
+# Logs, status, the check and the leak search.
+OPSCREW_E2E_OBSERVABILITY=1 OPSCREW_E2E_NTFY_TOPIC=opscrew-e2e-… npx vitest run test/live/live.test.ts
+# The add-ons (Beszel; Grafana Cloud with its six variables set).
+OPSCREW_E2E_ADDONS=1 npx vitest run test/live/live.test.ts
+# Or both on one server (the leak search then covers Grafana Cloud's lines too).
+OPSCREW_E2E_OBSERVABILITY=1 OPSCREW_E2E_ADDONS=1 OPSCREW_E2E_NTFY_TOPIC=opscrew-e2e-… \
+  npx vitest run test/live/live.test.ts
+```
+
+The other targets' steps run with their own passes, unchanged.
+
+**If a run was interrupted** (the cleanup never ran): delete the server as for the Hetzner pass,
+then in the throwaway repository run any live test once (its reset at the start removes the
+check's workflow, issues, label, variable and secrets), or by hand: delete
+`.github/workflows/opscrew-check.yml` from `main`, close the issues labelled `opscrew-check` (their
+titles name the run's hostname, `e2e-<run id>.<zone>`), and delete the label, the variable
+`OPSCREW_CHECK_PAUSED` and the secrets `OPSCREW_CHECK_*` and `…CHECK_SERVER` under Settings →
+Secrets and variables → Actions.
+
+**Expected time and cost** (not measured yet):
+
+| Pass | Time | Cost |
+|---|---|---|
+| `OPSCREW_E2E_OBSERVABILITY=1` | about 35 minutes: the usual 10, then about 20 for the check's six dispatched runs (each a minute or two, the stopped app's with its three tries 30 seconds apart) and the waits, and a run after destroy | a cx23 for under an hour, about one cent of server time; about 10 Actions minutes for the build and the check's runs (`ubuntu-slim`; free in a public repository); ntfy.sh is free |
+| `OPSCREW_E2E_ADDONS=1` with Grafana Cloud | about 45 minutes: the usual 10, Beszel about 5, Grafana Cloud about 30 (up to 5 minutes for its figures, two provisions and deploys, up to 5 minutes for the line) | a cx23 for about an hour, one to two cents; two more builds' Actions minutes; Grafana Cloud's free tier |
+| Both | about 70 minutes | a cx23 for one or two started hours, about two cents |
+| Retarget's pause | about 5 minutes more in the move | nothing more |
+| Each other target's step | about 1 to 2 minutes | nothing more |
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
@@ -1581,6 +1794,18 @@ Teardown runs in a `finally` block, so it happens even after a failure:
    settings left in the zone are removed through Cloudflare's API (a problem after a finished
    destroy), and nothing else in the zone may have changed (see
    [Origin TLS, the recovery copy and the deeper checks](#origin-tls-the-recovery-copy-and-the-deeper-checks)).
+5. With `OPSCREW_E2E_OBSERVABILITY`, destroy's pause of the scheduled check is checked, and any of
+   the run's `opscrew-check` issues still open is a problem (see [Observability](#observability)).
+6. Every live test resets its throwaway repositories last (the own-server, Portainer and other
+   tests too). Besides closing pull requests and deleting branches, the reset removes what
+   feature 017's scheduled check leaves, since design turns the check on for prod in every pass: it
+   cancels the check's queued and running runs, deletes `.github/workflows/opscrew-check.yml` from
+   `main` (a commit with `[skip ci]`, so nothing runs; without it the check would keep checking
+   the torn-down app every hour), closes every open issue labelled `opscrew-check`, and deletes the
+   label, the repository variable `OPSCREW_CHECK_PAUSED` and the check's secrets
+   (`OPSCREW_CHECK_SSH_KEY`, `OPSCREW_CHECK_WEBHOOK`, `OPSCREW_CHECK_NTFY_TOKEN` and each
+   `…CHECK_SERVER`). Anything GitHub keeps is a problem that fails the run. The reset at the start
+   of a run does the same, so an earlier interrupted run never changes this one.
 
 That fallback normally runs only when destroy fails. To test it on purpose, set
 `OPSCREW_E2E_SKIP_DESTROY=1` (off by default; the Hetzner pass only): the pass logs that it skips
@@ -1610,9 +1835,13 @@ Some things are not removed:
   test never deletes them (OpsCrew never creates or deletes storage keys). R2's are those of the
   Cloudflare token, which stays as it is.
 - **GitHub repository state:** the pushed container image (GHCR package), the Actions secrets
-  OpsCrew's record does not name, and the pull requests stay in the throwaway repository (GitHub cannot delete pull requests; the next
-  run closes open ones, deletes the branches and overwrites the rest). Delete and recreate the
-  repository for a completely clean slate.
+  OpsCrew's record does not name, the closed `opscrew-check` issues and the pull requests stay in
+  the throwaway repository (GitHub cannot delete pull requests, and deleting issues needs an admin;
+  the next run closes open ones, deletes the branches and overwrites the rest). Delete and recreate
+  the repository for a completely clean slate.
+- **Feature 017's outside data:** the ntfy posts stay on ntfy.sh for its cache time (12 hours), and
+  the lines and metrics Grafana Alloy sent stay in the Grafana Cloud stack for its retention (14
+  days on the free plan), labelled with the app's name (`app="<name>"`).
 
 ## Domain purchase (Cloudflare registrar sandbox)
 

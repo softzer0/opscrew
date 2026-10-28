@@ -639,7 +639,8 @@ export class LiveRun {
    * example (`commit` as its message) and without earlier pull requests or branches. The second
    * app must be another example than the first, so none of its names (stacks, tunnel, Access)
    * starts with the first app's. With `folders` (a repository of several apps), each example goes
-   * into its folder instead; `overlay` is a folder copied over the example afterwards.
+   * into its folder instead; `overlay` is a folder copied over the example afterwards, and `files`
+   * (paths in the repository and their text) are written after it (the request log).
    */
   async prepareRepo(options: {
     commit: string;
@@ -647,6 +648,7 @@ export class LiveRun {
     drop?: readonly string[];
     folders?: Readonly<Record<string, string>>;
     overlay?: string;
+    files?: Readonly<Record<string, string>>;
   }): Promise<void> {
     const { settings } = this.options;
     expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
@@ -701,6 +703,9 @@ export class LiveRun {
       await materializeFixture(join(EXAMPLES, example), join(this.repo, folder));
     }
     if (options.overlay !== undefined) await materializeFixture(options.overlay, this.repo);
+    for (const [path, text] of Object.entries(options.files ?? {})) {
+      await writeFile(join(this.repo, path), text);
+    }
     const appEnv = settings.appEnvFile ? await readFile(settings.appEnvFile, "utf8") : "";
     await writeFile(join(this.work, "production.env"), appEnv);
     // Stand-in values, but still never to be shown or committed (8+ characters: shorter ones

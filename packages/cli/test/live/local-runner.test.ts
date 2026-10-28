@@ -36,6 +36,8 @@ import {
   waitForRunner,
 } from "./environment-checks";
 import { LiveRun, serverSettings } from "./harness";
+import { liveRunTarget, logsAndFigures } from "./observability-checks";
+import { requestLogFiles } from "./observability-support";
 import { repoInfo } from "./portainer-cloud";
 import { deployedImage } from "./portainer-support";
 import { BUILD_JOB, missingVariables } from "./support";
@@ -153,13 +155,18 @@ describe.skipIf(MISSING.length > 0)(
       return deployedImage(await readFile(file, "utf8").catch(() => ""))?.digest;
     }
 
-    /** Waits up to 10 minutes until dev's health route answers 200, trusted with the local CA. */
-    async function waitForSite(): Promise<void> {
+    /** dev's `.localhost` site on this computer, and the local CA's certificate that trusts it. */
+    async function devSite() {
       const target = devPlan().target;
       if (target.provider !== "localhost") throw new Error("dev's plan is not on this computer.");
       const site = { ...(await localSite(run.paths(DEV), devPlan())), port: target.ports.https };
+      return { site, ca: await readFile(caFiles(run.paths(DEV)).certificate, "utf8") };
+    }
+
+    /** Waits up to 10 minutes until dev's health route answers 200, trusted with the local CA. */
+    async function waitForSite(): Promise<void> {
+      const { site, ca } = await devSite();
       const path = devPlan().app.healthPath;
-      const ca = await readFile(caFiles(run.paths(DEV)).certificate, "utf8");
       await waitFor(
         "dev's health route answering 200 at its .localhost address",
         minutes(10),
@@ -239,6 +246,7 @@ describe.skipIf(MISSING.length > 0)(
             HCLOUD_TOKEN: SETTINGS.hcloudToken,
             ...(GHCR_READ_TOKEN === "" ? {} : { OPSCREW_GHCR_READ_TOKEN: GHCR_READ_TOKEN }),
           },
+          files: requestLogFiles(SETTINGS.app) ?? {},
         });
         run.scrubber.add(GHCR_READ_TOKEN, "ghcr-read-token");
         if (!(await repoInfo(run.github)).private) {
@@ -338,6 +346,21 @@ describe.skipIf(MISSING.length > 0)(
           took,
           "from the change's merge to the new version answering (ms)",
         ).toBeLessThanOrEqual(SC_1507_MS);
+      },
+    );
+
+    run.step(
+      "4b. logs from local Docker: the latest lines within 10 seconds, a request's line in logs --follow within 10 seconds of it, then Ctrl+C; status: the figures (SC-1701)",
+      minutes(10),
+      async () => {
+        const { site, ca } = await devSite();
+        await logsAndFigures(liveRunTarget(run), {
+          args: ["--env", DEV],
+          ...(requestLogFiles(SETTINGS.app) === undefined
+            ? {}
+            : { request: (path: string) => localGet(site, path, ca) }),
+          figures: "local",
+        });
       },
     );
 

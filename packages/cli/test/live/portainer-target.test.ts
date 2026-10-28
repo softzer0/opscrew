@@ -38,6 +38,8 @@ import {
 } from "./component-checks";
 import { componentServices, withSearchEngine } from "./components-support";
 import { CLI, LiveRun, serverSettings } from "./harness";
+import { liveRunTarget, logsAndFigures } from "./observability-checks";
+import { requestLogFiles } from "./observability-support";
 import {
   changedRulesets,
   commitDetails,
@@ -208,7 +210,7 @@ describe.skipIf(MISSING.length > 0)(
     if (MISSING.length === 0) {
       const pass = STEPS_VALUE?.trim() || "core";
       const estimates: Record<string, string> = {
-        core: "; expected to take about 15 minutes (21 with the second app)",
+        core: "; expected to take about 17 minutes (23 with the second app)",
         full: "; expected to take about 1–1½ hours",
       };
       log(
@@ -922,6 +924,7 @@ describe.skipIf(MISSING.length > 0)(
           },
           // OpsCrew never gets an SSH login or a Portainer password, only `PORTAINER_API_KEY`.
           drop: ["PORTAINER_API_KEY", ...(repoPrivate ? [] : ["OPSCREW_REPO_READ_TOKEN"])],
+          files: requestLogFiles(SETTINGS.app) ?? {},
         });
         const testIpv4 = await publicIpv4();
         scrubber.add(testIpv4, "test-computer-ipv4");
@@ -1619,6 +1622,19 @@ describe.skipIf(MISSING.length > 0)(
           "success",
         );
         await expectDecoysUnchanged("the rollback and the revert");
+      },
+    );
+
+    step(
+      "3c. logs through the Portainer: the latest lines within 10 seconds, a request's line in logs --follow within 10 seconds of it, then Ctrl+C; status: the figures, the host's disk named as not available (SC-1701)",
+      minutes(10),
+      async () => {
+        await logsAndFigures(liveRunTarget(run), {
+          ...(requestLogFiles(SETTINGS.app) === undefined
+            ? {}
+            : { request: (path: string) => httpRequest(`https://${appHost}${path}`) }),
+          figures: "portainer",
+        });
       },
     );
 

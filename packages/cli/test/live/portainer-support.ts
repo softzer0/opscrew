@@ -42,6 +42,7 @@ export const PORTAINER_STEPS: readonly { id: string; needs: readonly string[] }[
   { id: "2", needs: ["2a"] },
   { id: "3", needs: ["2"] },
   { id: "3b", needs: ["2"] },
+  { id: "3c", needs: ["2"] },
   { id: "4", needs: ["2"] },
   { id: "5", needs: ["2"] },
   { id: "5b", needs: ["5"] },
@@ -57,7 +58,7 @@ export const PORTAINER_STEPS: readonly { id: string; needs: readonly string[] }[
 ];
 
 /** The steps of the core pass (the default). */
-export const CORE_STEPS = ["1", "1b", "2a", "2", "3", "7b", "8", "9", "9b", "12"] as const;
+export const CORE_STEPS = ["1", "1b", "2a", "2", "3", "3c", "7b", "8", "9", "9b", "12"] as const;
 
 /**
  * The steps `OPSCREW_E2E_PORTAINER_STEPS` selects, in order: `core` (or unset), `full` (every

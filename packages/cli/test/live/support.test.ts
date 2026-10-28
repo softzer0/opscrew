@@ -540,7 +540,7 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
     for (const value of [undefined, "", " ", "core", "CORE"]) {
       expect(portainerSteps(value), String(value)).toEqual([...CORE_STEPS]);
     }
-    expect(CORE_STEPS).toEqual(["1", "1b", "2a", "2", "3", "7b", "8", "9", "9b", "12"]);
+    expect(CORE_STEPS).toEqual(["1", "1b", "2a", "2", "3", "3c", "7b", "8", "9", "9b", "12"]);
     expect(portainerSteps("full")).toEqual(all);
     expect(all).toEqual([
       "1",
@@ -549,6 +549,7 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
       "2",
       "3",
       "3b",
+      "3c",
       "4",
       "5",
       "5b",

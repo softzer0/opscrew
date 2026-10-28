@@ -6,6 +6,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { ADDON_PROJECTS, addonDir } from "@opscrew/connector-ssh-host";
 import { appDir, EDGE_DIR, EDGE_PROJECT } from "@opscrew/iac-templates";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
@@ -28,6 +29,8 @@ import {
   writeValue,
 } from "./component-checks";
 import { LiveRun, serverSettings } from "./harness";
+import { liveRunTarget, logsAndFigures } from "./observability-checks";
+import { addonLeftoverCommand, addonLeftovers, requestLogFiles } from "./observability-support";
 import {
   addressLinesOutsidePurpose,
   approveHashes,
@@ -183,6 +186,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.prepareRepo({
           commit: `e2e: examples/${SETTINGS.app} on your own server`,
           env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
+          files: requestLogFiles(SETTINGS.app) ?? {},
         });
         ipv6Route = await hasIpv6Route();
         log(
@@ -257,6 +261,19 @@ describe.skipIf(MISSING.length > 0)(
         await run.opscrewOk("drift");
         await run.shell().ok("true");
         log("DNS only: deployed, verified, secured, drift-free; root still logs in with its key");
+      },
+    );
+
+    run.step(
+      "2b. logs over SSH: the latest lines within 10 seconds, a request's line in logs --follow within 10 seconds of it, then Ctrl+C; status: the figures (SC-1701)",
+      minutes(10),
+      async () => {
+        await logsAndFigures(liveRunTarget(run), {
+          ...(requestLogFiles(SETTINGS.app) === undefined
+            ? {}
+            : { request: (path: string) => httpRequest(`${site(run)}${path}`) }),
+          figures: "server",
+        });
       },
     );
 
@@ -655,6 +672,25 @@ describe.skipIf(MISSING.length > 0)(
         expect(edgeDir.exitCode, "the edge's folder is removed with the last app").not.toBe(0);
         const deployUser = await run.shell().run("id -u deploy");
         expect(deployUser.exitCode, "the deploy user is removed").not.toBe(0);
+        // Feature 017: no scheduled check's key line and nothing of the add-ons.
+        const keyLines = await run
+          .shell()
+          .ok("cat /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys 2>/dev/null || true");
+        expect(
+          keyLines.split(/\r?\n/).filter((line) => line.includes(" opscrew-check:")).length,
+          "check key lines left in authorized_keys",
+        ).toBe(0);
+        const addonsParent = addonDir("beszel", "root").replace(/\/beszel$/, "");
+        for (const kind of ["beszel", "alloy"] as const) {
+          const left = addonLeftovers(
+            await run
+              .shell()
+              .ok(
+                addonLeftoverCommand(ADDON_PROJECTS[kind], [addonDir(kind, "root"), addonsParent]),
+              ),
+          );
+          expect(left, `what is left of ${kind}`).toEqual([]);
+        }
         log(
           "second app destroyed with --undo-host: the edge and the deploy user removed, OpsCrew's shared rules list nothing of this run, root still logs in with its key",
         );

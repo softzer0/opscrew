@@ -15,6 +15,12 @@ import { connect, type LookupFunction } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import { SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
+import {
+  CHECK_LABEL,
+  CHECK_PAUSED_VARIABLE,
+  CHECK_SECRETS,
+  CHECK_WORKFLOW_FILE,
+} from "@opscrew/iac-templates";
 import type { ListedFirewallRule } from "./environments-support";
 import {
   type DeployJob,
@@ -964,6 +970,18 @@ export interface PagesSite {
   certificate: string | null;
 }
 
+/** An issue of OpsCrew's scheduled check, as GitHub lists it, with its comments. */
+export interface CheckIssue {
+  number: number;
+  title: string;
+  open: boolean;
+  /** `completed` (recovered) or `not_planned` (closed while paused, or gone from check.json). */
+  stateReason: string | null;
+  body: string;
+  createdAt: Date;
+  comments: string[];
+}
+
 /** A GitHub API client for the throwaway repository. */
 export class GitHubRepo {
   constructor(
@@ -1009,8 +1027,8 @@ export class GitHubRepo {
 
   /**
    * Closes every open pull request and deletes every branch but `main`, so branches and pull
-   * requests of an earlier run never change this one. Throws, after trying every branch, when
-   * GitHub kept one.
+   * requests of an earlier run never change this one, then removes the scheduled check's leftovers
+   * ({@link resetCheck}). Throws, after trying every branch, when GitHub kept one.
    */
   async reset(): Promise<void> {
     const pulls = await this.call("GET", `/repos/${this.name}/pulls?state=open&per_page=100`);
@@ -1026,6 +1044,77 @@ export class GitHubRepo {
       if (deleted.status !== 204) kept.push(`${branch.name} (HTTP ${deleted.status})`);
     }
     if (kept.length > 0) throw new Error(`GitHub did not delete the branches ${kept.join(", ")}.`);
+    const check = await this.resetCheck();
+    if (check.length > 0) throw new Error(`GitHub kept ${check.join(", ")}.`);
+  }
+
+  /**
+   * Removes what OpsCrew's scheduled check (feature 017, on by default for prod) leaves in the
+   * repository, so no later run checks a torn-down app or sees an earlier run's alert: its runs
+   * still queued or running are cancelled, its workflow is deleted from `main` (a commit with
+   * `[skip ci]`), its open issues are closed, and its label, the variable `OPSCREW_CHECK_PAUSED`
+   * and the check's repository secrets are deleted. Returns what GitHub kept.
+   */
+  async resetCheck(): Promise<string[]> {
+    const kept: string[] = [];
+    const repo = `/repos/${this.name}`;
+    for (const status of ["queued", "in_progress"]) {
+      const runs = await this.call(
+        "GET",
+        `${repo}/actions/workflows/${CHECK_WORKFLOW_FILE}/runs?status=${status}&per_page=100`,
+      );
+      const list = (runs.json as { workflow_runs?: { id: number }[] } | undefined)?.workflow_runs;
+      for (const run of list ?? [])
+        await this.call("POST", `${repo}/actions/runs/${run.id}/cancel`);
+    }
+    const path = `.github/workflows/${CHECK_WORKFLOW_FILE}`;
+    const file = await this.call("GET", `${repo}/contents/${path}?ref=main`);
+    const sha = (file.json as { sha?: string } | undefined)?.sha;
+    if (file.status === 200 && sha !== undefined) {
+      const deleted = await this.call("DELETE", `${repo}/contents/${path}`, {
+        message: "e2e: remove OpsCrew's scheduled check [skip ci]",
+        sha,
+        branch: "main",
+      });
+      if (deleted.status !== 200) kept.push(`${path} on main (HTTP ${deleted.status})`);
+    }
+    const open = await this.call(
+      "GET",
+      `${repo}/issues?labels=${CHECK_LABEL}&state=open&per_page=100`,
+    );
+    if (open.status !== 200) kept.push(`the ${CHECK_LABEL} issues unread (HTTP ${open.status})`);
+    const issues = open.status === 200 ? (open.json as { number: number }[]) : [];
+    for (const issue of issues) {
+      const closed = await this.call("PATCH", `${repo}/issues/${issue.number}`, {
+        state: "closed",
+        state_reason: "not_planned",
+      });
+      if (closed.status !== 200) kept.push(`issue #${issue.number} open (HTTP ${closed.status})`);
+    }
+    const label = await this.call("DELETE", `${repo}/labels/${CHECK_LABEL}`);
+    if (label.status !== 204 && label.status !== 404) {
+      kept.push(`the label ${CHECK_LABEL} (HTTP ${label.status})`);
+    }
+    const variable = await this.call(
+      "DELETE",
+      `${repo}/actions/variables/${CHECK_PAUSED_VARIABLE}`,
+    );
+    if (variable.status !== 204 && variable.status !== 404) {
+      kept.push(`the variable ${CHECK_PAUSED_VARIABLE} (HTTP ${variable.status})`);
+    }
+    const names = new Set<string>(Object.values(CHECK_SECRETS));
+    const secrets = await this.call("GET", `${repo}/actions/secrets?per_page=100`);
+    if (secrets.status !== 200) kept.push(`the check's secrets unread (HTTP ${secrets.status})`);
+    const listed = (secrets.json as { secrets?: { name: string }[] } | undefined)?.secrets ?? [];
+    for (const { name } of listed) {
+      // Each environment's server secret is `<prefix>CHECK_SERVER`.
+      if (!names.has(name) && !name.endsWith("CHECK_SERVER")) continue;
+      const deleted = await this.call("DELETE", `${repo}/actions/secrets/${name}`);
+      if (deleted.status !== 204 && deleted.status !== 404) {
+        kept.push(`the secret ${name} (HTTP ${deleted.status})`);
+      }
+    }
+    return kept;
   }
 
   /** The open pull request from `head` (a branch of this repository), if there is one. */
@@ -1127,16 +1216,109 @@ export class GitHubRepo {
     }));
   }
 
-  /** Starts the deploy workflow on `main` (`workflow_dispatch`). */
-  async dispatchDeploy(): Promise<void> {
+  /** Starts `workflow` (the deploy workflow by default) on `main` (`workflow_dispatch`). */
+  async dispatchDeploy(workflow = DEPLOY_WORKFLOW): Promise<void> {
     const started = await this.call(
       "POST",
-      `/repos/${this.name}/actions/workflows/${DEPLOY_WORKFLOW}/dispatches`,
+      `/repos/${this.name}/actions/workflows/${workflow}/dispatches`,
       { ref: "main" },
     );
     if (started.status !== 204) {
-      throw new Error(`GitHub did not start the deploy workflow (HTTP ${started.status}).`);
+      throw new Error(`GitHub did not start the workflow ${workflow} (HTTP ${started.status}).`);
     }
+  }
+
+  /** Each job of run `runId` with when it started and completed (jobs that never ran left out). */
+  async jobTimes(
+    runId: number,
+  ): Promise<{ name: string; startedAt: string; completedAt: string }[]> {
+    const got = await this.call(
+      "GET",
+      `/repos/${this.name}/actions/runs/${runId}/jobs?per_page=100`,
+    );
+    const jobs =
+      (
+        got.json as
+          | { jobs?: { name: string; started_at?: string | null; completed_at?: string | null }[] }
+          | undefined
+      )?.jobs ?? [];
+    return jobs.flatMap((job) =>
+      job.started_at && job.completed_at
+        ? [{ name: job.name, startedAt: job.started_at, completedAt: job.completed_at }]
+        : [],
+    );
+  }
+
+  /**
+   * The billable time GitHub states for run `runId` (`/timing`, every runner kind summed), in ms;
+   * `undefined` when it states none (a public repository, or an endpoint GitHub retired).
+   */
+  async billableMs(runId: number): Promise<number | undefined> {
+    const got = await this.call("GET", `/repos/${this.name}/actions/runs/${runId}/timing`);
+    const billable = (got.json as { billable?: Record<string, { total_ms?: number }> } | undefined)
+      ?.billable;
+    if (got.status !== 200 || billable === undefined || Object.keys(billable).length === 0) {
+      return undefined;
+    }
+    return Object.values(billable).reduce((sum, kind) => sum + (kind.total_ms ?? 0), 0);
+  }
+
+  /** The repository variable `name`, or `undefined` when it is not set. */
+  async variable(name: string): Promise<string | undefined> {
+    const got = await this.call("GET", `/repos/${this.name}/actions/variables/${name}`);
+    if (got.status === 404) return undefined;
+    const value = (got.json as { value?: string } | undefined)?.value;
+    if (got.status !== 200 || value === undefined) {
+      throw new Error(`Could not read the repository variable ${name} (HTTP ${got.status}).`);
+    }
+    return value;
+  }
+
+  /**
+   * Every issue labelled `opscrew-check` (any state) opened at or after `since`, with its
+   * comments, by number. Callers must not print a body or a comment, only what they found in it.
+   */
+  async checkIssues(since: Date): Promise<CheckIssue[]> {
+    const issues: CheckIssue[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const got = await this.call(
+        "GET",
+        `/repos/${this.name}/issues?labels=${CHECK_LABEL}&state=all&since=${since.toISOString()}&per_page=100&page=${page}`,
+      );
+      if (got.status !== 200) {
+        throw new Error(`Could not list the ${CHECK_LABEL} issues (HTTP ${got.status}).`);
+      }
+      const list = got.json as {
+        number: number;
+        title: string;
+        state: string;
+        state_reason?: string | null;
+        body?: string | null;
+        created_at: string;
+        pull_request?: unknown;
+      }[];
+      for (const item of list) {
+        const createdAt = new Date(item.created_at);
+        if (item.pull_request !== undefined || createdAt < since) continue;
+        const comments = await this.call(
+          "GET",
+          `/repos/${this.name}/issues/${item.number}/comments?per_page=100`,
+        );
+        issues.push({
+          number: item.number,
+          title: item.title,
+          open: item.state === "open",
+          stateReason: item.state_reason ?? null,
+          body: item.body ?? "",
+          createdAt,
+          comments: ((comments.json as { body?: string }[] | undefined) ?? []).map(
+            (comment) => comment.body ?? "",
+          ),
+        });
+      }
+      if (list.length < 100) break;
+    }
+    return issues.sort((a, b) => a.number - b.number);
   }
 
   /**

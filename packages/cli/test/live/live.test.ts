@@ -6,7 +6,9 @@
  * a Cloudflare domain it also checks the app's hostnames in OpsCrew's shared rules (feature 011).
  * On Hetzner the builder examples also get the builder checks of feature 012 (builder-checks.ts),
  * and the component examples the component checks of feature 013 (component-checks.ts), with the
- * app's bucket removed by the teardown too.
+ * app's bucket removed by the teardown too. With OPSCREW_E2E_OBSERVABILITY or OPSCREW_E2E_ADDONS
+ * the Hetzner pass runs feature 017's checks (observability-checks.ts), and the move checks the
+ * scheduled check's pause.
  */
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -47,6 +49,8 @@ import {
   withSearchEngine,
 } from "./components-support";
 import { CLI, EXAMPLES, isExample } from "./harness";
+import { observabilityPass, retargetPause } from "./observability-checks";
+import { OBSERVABILITY_GATE, observabilitySettings } from "./observability-support";
 import {
   type AppRules,
   appRules,
@@ -308,6 +312,16 @@ const TLS = tlsSettings(
 );
 
 /**
+ * Feature 017's pass on Hetzner with OPSCREW_E2E_OBSERVABILITY=1 and/or OPSCREW_E2E_ADDONS=1 (the
+ * default app with its request log and a seeded secret); the reason the pass is skipped (a missing
+ * variable, another app); or the line the pass logs instead.
+ */
+const OBSERVABILITY = observabilitySettings(
+  APP instanceof Error || APP.kind !== "example" ? undefined : APP.name,
+  process.env,
+);
+
+/**
  * OPSCREW_E2E_SKIP_DESTROY=1: the Hetzner pass skips `opscrew destroy` and takes the fallback a
  * failed destroy takes (the IaC destroy, the provider API, the shared Cloudflare rules), whose
  * leftover checks must then find nothing.
@@ -330,11 +344,11 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
   const builders = onHetzner && typeof BUILDERS !== "string" ? BUILDERS : undefined;
   const components = onHetzner && typeof COMPONENTS !== "string" ? COMPONENTS : undefined;
   const tls = onHetzner && typeof TLS !== "string" ? TLS : undefined;
+  const observability = onHetzner && typeof OBSERVABILITY !== "string" ? OBSERVABILITY : undefined;
+  const extra = [builders, components, tls, observability].some((pass) => pass !== undefined);
   describe.skipIf(!(provider.token && withGitHub))(`live end-to-end on ${provider.name}`, () => {
     it(`deploys ${APP_LABEL} from a GitHub repository and tears everything down`, {
-      timeout: minutes(
-        builders === undefined && components === undefined && tls === undefined ? 75 : 180,
-      ),
+      timeout: minutes(extra ? 180 : 75),
     }, async (context) => {
       const cleanup = { skipDestroy: onHetzner && skipDestroy };
       if (tls !== undefined) {
@@ -361,8 +375,19 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
         }
         return;
       }
+      if (observability !== undefined) {
+        if ("skip" in observability) {
+          console.log(`OpsCrew E2E: skipped: ${observability.skip}`);
+          return context.skip(observability.skip);
+        }
+        await deployAndTearDown(provider, {
+          ...cleanup,
+          ...observabilityPass(observability, github, TOKENS),
+        });
+        return;
+      }
       if (builders === undefined) {
-        for (const note of [BUILDERS, COMPONENTS, TLS]) {
+        for (const note of [BUILDERS, COMPONENTS, TLS, OBSERVABILITY]) {
           if (onHetzner && typeof note === "string") console.log(`OpsCrew E2E: ${note}`);
         }
         await deployAndTearDown(provider, cleanup);
@@ -529,6 +554,14 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub && isDefault
           // … and the app answers through its URL on the new server.
           const health = new URL(moved.app.healthPath, moved.deployment.url ?? `http://${newIp}`);
           expect((await fetch(health)).status, `GET ${health}`).toBe(200);
+          // Feature 017 (FR-1709): until --finish the move keeps the scheduled check paused.
+          if (process.env[OBSERVABILITY_GATE] === "1" && withDns) {
+            await retargetPause(run, newIp, health);
+          } else {
+            console.log(
+              `OpsCrew E2E: not checked: the scheduled check paused by the move (set ${OBSERVABILITY_GATE}=1 with a Cloudflare domain)`,
+            );
+          }
 
           const finish = ["--finish", "--confirm", run.appName, "--no-snapshot", "--yes"];
           await retargetUntilDone(run, finish, finish);
@@ -545,8 +578,12 @@ interface DeployOptions {
   alsoTokens?: readonly LiveProvider[];
   /** More interview answers (for example `signImages`). */
   answers?: Record<string, unknown>;
-  /** More variables for every CLI run (the bucket's key). */
+  /** More variables for every CLI run (the bucket's key, the check's webhook address). */
   env?: Record<string, string>;
+  /** Files written into the app before its first commit (feature 017's request log). */
+  files?: Record<string, string>;
+  /** Production values the app gets besides OPSCREW_E2E_APP_ENV's (the seeded secret). */
+  appEnv?: Record<string, string>;
   /** A change a user makes in opscrew/plan.yaml after design, before design runs again. */
   planEdit?: (plan: DeployPlan) => DeployPlan;
   /** A change to opscrew/plan.yaml after the last design, which design would undo (DNS only). */
@@ -559,7 +596,8 @@ interface DeployOptions {
   afterDeploy?: (run: DeployedRun) => Promise<void>;
   /**
    * Runs after the teardown and its shared-rule checks, `destroyed` telling whether `opscrew
-   * destroy` finished; returns what it found left or changed (feature 014's certificates).
+   * destroy` finished; returns what it found left or changed (feature 014's certificates, feature
+   * 017's issues).
    */
   afterTeardown?: (destroyed: boolean) => Promise<string[]>;
   /** Skips `opscrew destroy`, so the fallback cleanup a failed destroy gets runs and is checked. */
@@ -648,10 +686,15 @@ async function deployAndTearDown(
   // A fresh copy of the app becomes the throwaway repository's main branch.
   console.log(`OpsCrew E2E: deploying ${app.label} on ${provider.name}`);
   await materializeApp(app, repo);
+  for (const [path, text] of Object.entries(options.files ?? {})) {
+    await writeFile(join(repo, path), text);
+  }
   // Production values the app needs and OpsCrew cannot derive or generate (OPSCREW_E2E_APP_ENV).
+  const given = E2E.appEnvFile ? await readFile(E2E.appEnvFile, "utf8") : "";
+  const added = Object.entries(options.appEnv ?? {}).map(([name, value]) => `${name}=${value}\n`);
   await writeFile(
     join(work, "production.env"),
-    E2E.appEnvFile ? await readFile(E2E.appEnvFile, "utf8") : "",
+    [given === "" || given.endsWith("\n") ? given : `${given}\n`, ...added].join(""),
   );
   await git("init", "-q", "-b", "main");
   await git("config", "user.name", "OpsCrew E2E");
@@ -959,10 +1002,11 @@ async function deployAndTearDown(
     );
     await attempt("check the zone's DNS records", () => expectNoRecordsLeft(zone, sharedRules));
   }
-  // … and, for feature 014, no certificate or setting of the app, nothing else in the zone changed.
+  // … and, for feature 014, no certificate or setting of the app, nothing else in the zone changed;
+  // for feature 017, destroy's pause of the check and none of its issues left open.
   const { afterTeardown } = options;
   if (afterTeardown !== undefined) {
-    await attempt("check the zone's certificates and settings", async () => {
+    await attempt("check what the pass left", async () => {
       problems.push(...(await afterTeardown(destroyed)));
     });
   }

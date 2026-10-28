@@ -458,7 +458,7 @@ export interface DeployedRun extends BuilderRun {
   appName: string;
   /** SSH as `deploy`, like `ssh`, resolving with the result instead of throwing on an exit code. */
   sshRun: (host: string, command: string) => Promise<CommandResult>;
-  opscrew: (...args: string[]) => Promise<{ exitCode: number; output: string }>;
+  opscrew: (...args: string[]) => Promise<{ exitCode: number; stdout: string; output: string }>;
   git: (...args: string[]) => Promise<string>;
   /** Every CLI output of the run so far (never printed). */
   outputs: readonly string[];
