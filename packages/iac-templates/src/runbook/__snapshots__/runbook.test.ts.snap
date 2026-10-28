@@ -174,7 +174,9 @@ which shows the plan and applies nothing without your approval.
 
 1. Open the latest "OpsCrew deploy" run in GitHub → Actions and read the failed step.
 2. Run \`opscrew verify\` to see which check fails (DNS, certificate, health endpoint …).
-3. On the server, \`docker compose logs --tail 200 app\` usually shows why the app does not start.
+3. \`opscrew logs\` shows the app's latest log lines, which usually say why it does not start (\`--service <name>\`
+   for a worker, a service or the \`edge\`, \`--follow\` for new lines), and \`opscrew status\` its containers' CPU,
+   memory and restarts.
 
 ## Tear it down
 

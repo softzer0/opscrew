@@ -34,6 +34,13 @@ an app yet.
 - [Message brokers and queues](brokers.md)
 - [Search and analytics engines](search-and-analytics.md)
 
+## Once your app runs
+
+- [Your app's logs and resource figures](logs-and-status.md)
+- [Alerts: the scheduled check](alerts.md)
+- [Beszel: charts and history for your server](beszel.md)
+- [Grafana Cloud: searchable logs and metrics, free](grafana-cloud.md)
+
 ## Using OpsCrew
 
 - [OpsCrew in Claude Code: the plugin](claude-code-plugin.md)

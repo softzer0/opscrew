@@ -69,6 +69,8 @@ For [Cloudflare's hosting](cloudflare-hosting.md#the-tokens), also add:
 
 - Account → Workers Scripts → Edit (the Worker and its custom domains)
 - Zone → Single Redirect → Edit, only for a site with `www` (OpsCrew's redirect to the domain)
+- Account → Workers Observability → Read, only for a server-rendered site's past requests in
+  [`opscrew logs`](logs-and-status.md#cloudflares-hosting)
 
 Cloudflare's hosting also needs a second token for the deploy workflow,
 `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`, with only Account → Workers Scripts → Edit.
@@ -86,8 +88,9 @@ Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's reposito
 - Contents: Read and write
 - Pull requests: Read and write
 - Secrets: Read and write
-- Actions: Read and write (this also lets OpsCrew read GitHub environments, and re-run a
-  [GitHub Pages](github-pages.md#rolling-back) run for a rollback)
+- Actions: Read and write (this also lets OpsCrew read GitHub environments, re-run a
+  [GitHub Pages](github-pages.md#rolling-back) run for a rollback, and read the scheduled check's
+  state)
 - Workflows: Read and write
 - Metadata: Read
 - Administration: Read and write, only for an app with
@@ -102,6 +105,10 @@ Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's reposito
 - Plan: Read, optional, for GitHub Pages on a private repository: without it GitHub hides the
   owner's plan, so OpsCrew cannot tell before any change whether GitHub allows Pages there. It is
   an account permission, or an organization permission when an organization owns the repository.
+- Issues: Read, only with the [scheduled check](alerts.md#the-github-token) (`opscrew status`
+  reads its open alerts)
+- Variables: Read and write, only with the scheduled check (OpsCrew pauses it while it moves or
+  removes an app)
 
 GitHub's container registry may not accept a fine-grained token. Where OpsCrew reads it
 ([`opscrew promote`](environments.md#the-registry-token-for-promote), a private image

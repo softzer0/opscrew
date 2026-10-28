@@ -51,6 +51,11 @@ What runs next to your app:
 - [Message brokers and queues](docs/guide/brokers.md): Valkey (or Redis 8 or Dragonfly), RabbitMQ, NATS, Kafka and Redpanda.
 - [Search and analytics engines](docs/guide/search-and-analytics.md): OpenSearch, Elasticsearch, Meilisearch, Typesense, ClickHouse and Neo4j.
 
+How you watch it, for free:
+- [Logs and resource figures](docs/guide/logs-and-status.md): `opscrew logs` and `opscrew status` on every target, secrets masked.
+- [Alerts](docs/guide/alerts.md): a scheduled check in GitHub Actions opens an issue when the app is down, its certificate expires or its disk fills up, with an optional Slack, Discord or ntfy message.
+- [Beszel](docs/guide/beszel.md) and [Grafana Cloud](docs/guide/grafana-cloud.md): opt-in charts, history and log search.
+
 ## Quickstart
 
 You need Node.js 22.9+, git, OpenTofu or Terraform, a GitHub repository with your app, and an API token for Hetzner Cloud (`HCLOUD_TOKEN`) or DigitalOcean (`DIGITALOCEAN_TOKEN`). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.
@@ -71,6 +76,7 @@ In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every 
 
 ## After the first deploy
 
+- `npx opscrew logs` shows the app's log lines (`--follow` for new ones), and `npx opscrew status` what runs with its CPU, memory and disk. See [Your app's logs and resource figures](docs/guide/logs-and-status.md).
 - `npx opscrew destroy` deletes the deployment's infrastructure. It asks you to type the server name first and can take a snapshot.
 - `npx opscrew retarget --to <provider>` moves a live app to another cloud provider with its data (not yet to or from your own server or a Portainer). It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`.
 - No domain yet? `npx opscrew domain buy <domain>` buys one at cost after you confirm the price, through Cloudflare, Porkbun, Namecheap or GoDaddy. Already own one? `npx opscrew domain connect <domain>` moves its DNS to Cloudflare. See [Buying or connecting a domain](docs/guide/domains.md).

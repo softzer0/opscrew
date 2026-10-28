@@ -60,7 +60,7 @@ OpsCrew uses two Cloudflare tokens, and never stores either in your repository:
 
 | Variable | What it does | What to give it |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | OpsCrew's own token on your computer: it creates the Worker and its custom domains, and OpsCrew's rules in your zone | The zone permissions in [The Cloudflare token](security.md#the-cloudflare-token), plus Account → Workers Scripts → Edit, and Zone → Single Redirect → Edit when the site has `www` |
+| `CLOUDFLARE_API_TOKEN` | OpsCrew's own token on your computer: it creates the Worker and its custom domains, and OpsCrew's rules in your zone | The zone permissions in [The Cloudflare token](security.md#the-cloudflare-token), plus Account → Workers Scripts → Edit, Zone → Single Redirect → Edit when the site has `www`, and Account → Workers Observability → Read for a server-rendered site's [logs](logs-and-status.md#cloudflares-hosting) |
 | `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` | The deploy token: `npx opscrew provision` stores it as a GitHub secret, and the deploy workflow uploads each version with it | Only Account → Workers Scripts → Edit, for the account that holds your domain |
 
 To create the deploy token:
@@ -238,7 +238,10 @@ domain. To turn either on, set `target.previewUrls` or `target.workersDev` to `t
 - `npx opscrew drift` compares the Worker, its settings, its custom domains and OpsCrew's rules in
   your zone with what OpsCrew set up. It changes nothing; `npx opscrew provision` puts them back.
 - `npx opscrew secure` checks the headers and writes `opscrew/SECURITY_REPORT.md`.
-- The Worker's logs are in the Cloudflare dashboard: **Workers & Pages** → the Worker → **Logs**.
+- `npx opscrew logs` shows a server-rendered site's recent requests, with what the app printed and
+  its errors, and `npx opscrew status` its requests, errors and CPU time of the last day: see
+  [logs and resource figures](logs-and-status.md#cloudflares-hosting). A static site has no request
+  logs.
 - `npx opscrew retarget` does not move a site to or from a server yet: remove it with `destroy` and
   set it up on the new target.
 

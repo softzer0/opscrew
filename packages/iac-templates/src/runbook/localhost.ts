@@ -36,7 +36,7 @@ export function renderLocalRunbook(
     "",
     "## Everyday commands",
     "",
-    `- The logs: \`docker compose -p ${project} logs -f app\``,
+    `- The logs: \`opscrew logs${flag}\` (\`--follow\` for new lines, \`--service <name>\` for another part), or \`docker compose -p ${project} logs -f app\``,
     `- What runs: \`opscrew status${flag}\`, or \`docker compose -p ${project} ps\``,
     `- A new version: \`opscrew provision${flag}\`${plan.environment?.runner === "local" ? `, or push with the local runner started (\`opscrew runner start${flag}\`)` : ""}`,
     `- Stop it for now: \`docker compose -p ${project} stop\`; start it again: \`docker compose -p ${project} start\``,

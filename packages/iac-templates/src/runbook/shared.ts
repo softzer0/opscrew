@@ -325,7 +325,9 @@ export function troubleshooting(
     "",
     `1. Open the latest "${workflowName(plan)}" run in GitHub → Actions and read the failed step.`,
     `2. Run \`${opscrew(plan, "verify", environments)}\` to see which check fails (DNS, certificate, health endpoint …).`,
-    "3. On the server, `docker compose logs --tail 200 app` usually shows why the app does not start.",
+    `3. \`${opscrew(plan, "logs", environments)}\` shows the app's latest log lines, which usually say why it does not start (\`--service <name>\``,
+    `   for a worker, a service or the \`edge\`, \`--follow\` for new lines), and \`${opscrew(plan, "status", environments)}\` its containers' CPU,`,
+    "   memory and restarts.",
     "",
   ];
 }

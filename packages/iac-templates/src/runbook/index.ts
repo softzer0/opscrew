@@ -18,6 +18,7 @@ import {
   objectStorageSection,
   recoverySection,
 } from "./components";
+import { addonSections, checkSection } from "./observability";
 import { renderOwnRunbook } from "./own";
 import {
   cell,
@@ -154,6 +155,8 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
   }
 
   lines.push(
+    ...checkSection(plan, environments),
+    ...addonSections(plan, ctx.projectId),
     ...settingsSection(plan, environments, [
       `- **Server size, location, domain:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plan and the cost`,
       "  change and applies nothing without your approval. Destroying or replacing the server always needs a typed confirmation.",

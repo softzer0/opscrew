@@ -21,6 +21,7 @@ import {
   runbookFilePath,
   workflowName,
 } from "../workflow/shared";
+import { checkSection } from "./observability";
 import {
   cell,
   deployAgain,
@@ -152,12 +153,14 @@ export function renderSiteRunbook(plan: DeployPlan, ctx: SiteRunbookContext): Re
     "",
     `1. Open the latest "${workflowName(plan)}" run in GitHub → Actions and read the failed step.`,
     `2. Run ${command("verify")} to see which check fails (DNS, certificate, answer …).`,
-    ...(cloudflare
+    ...(ssr
       ? [
-          "3. The Worker's logs are in the Cloudflare dashboard: Workers & Pages → the Worker → Logs.",
+          `3. ${command("logs")} shows the Worker's recent requests with what the app printed and its errors (\`--follow\` for`,
+          "   new ones). The Cloudflare dashboard has them too: Workers & Pages → the Worker → Logs.",
         ]
       : []),
     "",
+    ...checkSection(plan, environments),
     ...(cloudflare ? workersTeardown(plan, command) : pagesTeardown(plan, ctx.owner, command)),
     "",
     ...deployAgain(plan, environments),
