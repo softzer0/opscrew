@@ -453,7 +453,7 @@ Effort`.
       - **Where design steps in:**
         - it warns when an interval the user set passes 750 minutes a month on a private repository on GitHub Free (or an unknown plan);
         - it says when issues are off;
-        - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages);
+        - it names the targets without a disk check (Portainer, Cloudflare, GitHub Pages), and an own server reached through the tunnel unless it deploys from its own runner (T1707: the check's `ssh` can't pass the tunnel's Access login);
         - it says localhost gets no check.
     - **Provision,** when the environment has the check on:
       - **The check key:** generated once (Ed25519), and added by the `check-key` host step on cloud and own servers (`host-apply`). The check is one per repository, so the key lives at the first app's prod `paths.files.checkKey` (`~/.opscrew/projects/<id>/check_key`), whatever app or environment is provisioned (T1701a's report).
@@ -563,7 +563,7 @@ Effort`.
       - the interval and its cost against each plan;
       - GitHub's 60-day rule and how to turn the check on again;
       - planned outages, forks, and issues off;
-      - what it can't do: minute-level alerting, the user's computer, and Portainer's disk.
+      - what it can't do: minute-level alerting, the user's computer, Portainer's disk, and the disk of an own server reached through the tunnel unless it deploys from its own runner.
     - **`beszel.md`:**
       - hub and agent modes, opening it, and the subdomain behind Access;
       - the read-only proxy and what Beszel can't see (container settings and logs);
