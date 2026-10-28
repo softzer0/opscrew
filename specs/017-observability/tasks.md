@@ -176,7 +176,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1705 [P] [US1] [US2] The Portainer connector: container logs, stats, inspect, and the host's totals, in `packages/connectors/portainer/**`
+- [X] T1705 [P] [US1] [US2] The Portainer connector: container logs, stats, inspect, and the host's totals, in `packages/connectors/portainer/**`
   - Owns: that path (+ tests and fakes)
   - Reads: contracts/observability.md "Portainer"; research.md R1 and "Spike results" 7; plan.md "4."
   - Depends: T1701a, T1702
