@@ -320,7 +320,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
 
-- [ ] T1707b [US3] The check runs on `ubuntu-slim`, in `packages/iac-templates/src/check/**`
+- [X] T1707b [US3] The check runs on `ubuntu-slim`, in `packages/iac-templates/src/check/**`
   - Owns: that path (+ tests, snapshots)
   - Reads: research.md "Spike results" 5
   - Depends: T1707
@@ -552,7 +552,9 @@ Effort`.
       It is refused off the cloud and own targets, and for a second app on the same server, each with the reason.
     - **Every add-on container** (Beszel's hub and agent, Alloy) runs as `user: "${OPSCREW_DEPLOY_UID}:${OPSCREW_DEPLOY_GID}"`. The deploy user already has Docker access, so this grants nothing new, and it reads less through Alloy's `/` mount than root without capabilities would.
     - **Beszel:**
-      - **Hub mode:** generates a password (24+ characters, letters, digits, `-` and `_`), a token (48 lowercase hex) and the hub's Ed25519 key (OpenSSH format, with `shared/ssh-keys.ts`'s generator; its public half goes to the host step as plain input) into Beszel's secrets file, and chooses the dashboard's login email (`USER_EMAIL`, not in the plan). Beszel's `config.yml` omits `users:`, so the system belongs to that only user (T1713 confirms it).
+      - **Hub mode:** generates a password (24+ characters, letters, digits, `-` and `_`), a token (48 lowercase hex) and the hub's Ed25519 key (OpenSSH format, with `shared/ssh-keys.ts`'s generator; its public half goes to the host step as plain input) into Beszel's secrets file.
+        - The file is written once, when none exists, before the plan is shown, so `--plan-only` and `--approve` see the same hash. It is never overwritten across modes, and agent mode is refused while it holds a kept hub history.
+        - User-supplied tokens (the agent's, Grafana's) are written only after the apply (T1711's review). and chooses the dashboard's login email (`USER_EMAIL`, not in the plan). Beszel's `config.yml` omits `users:`, so the system belongs to that only user (T1713 confirms it).
       - **Agent mode:** takes `--hub-url`, the hub's public key, and the token (from `OPSCREW_BESZEL_TOKEN`, or asked, never echoed).
       - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. `provision/shared-cloudflare.ts` (~143) sets up the one-time PIN login method only for `portainerHostname(plan)`: it must also do so for `beszelHostname(plan)`, or a Beszel-only subdomain always fails (T1708's review; T1711 owns that line). It refuses without `allowedEmails`, and never makes the dashboard public. It also refuses a hostname that Portainer's web UI already uses on the server, since both go through one tunnel (T1701a's review).
       - **`addonOpen`:** runs `ssh -N -L 8090:127.0.0.1:8090` as Portainer's status command builds it, until stopped. It prints the local address and where the password is.
