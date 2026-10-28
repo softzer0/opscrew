@@ -254,7 +254,7 @@ async function answerCheck(
   const title = `The site answers at ${host}`;
   const target = `https://${host}/`;
   const logs = cloudflare(plan)
-    ? "the latest deploy run in GitHub → Actions, and the Worker's logs in the Cloudflare dashboard (Workers & Pages → the Worker → Logs)"
+    ? `the latest deploy run in GitHub → Actions, and the Worker's logs (\`opscrew logs${input.flag}\`)`
     : "the latest Pages run in GitHub → Actions";
   let response: Response;
   try {

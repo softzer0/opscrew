@@ -612,6 +612,7 @@ async function runAddonChange(
   if (enabling) {
     deps.reporter.success(`${name} is on.`);
     if (state !== undefined) deps.reporter.info(describeAddonStatus(state));
+    if (kind === "grafana-cloud") deps.reporter.info(GRAFANA_MASKING_NOTE);
   } else {
     deps.reporter.success(
       kind === "grafana-cloud"
@@ -630,6 +631,10 @@ async function runAddonChange(
   );
   return { ...done, status };
 }
+
+/** Said after Grafana Cloud is turned on: the app's own values are masked from the next deploy. */
+const GRAFANA_MASKING_NOTE =
+  "The app's own secret values are masked from the next deploy, which writes the masking file once the change is on your deploy branch; until then only values shaped like secrets are.";
 
 /**
  * Grafana Cloud's estimate against the free tier, said in the host plan's text (shown before its

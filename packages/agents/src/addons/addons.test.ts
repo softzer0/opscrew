@@ -607,6 +607,9 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     });
     const text = s.deps.reporter.text();
     expect(text).toContain("metrics:write and logs:write scopes");
+    expect(text).toContain(
+      "The app's own secret values are masked from the next deploy, which writes the masking file",
+    );
     expect(text).toContain("Cloud access policies");
     expect(text).toContain(
       "OpsCrew's estimate for this server: 17 series, and 1.2 GB of logs a month (30 times the app's last 24 hours).",

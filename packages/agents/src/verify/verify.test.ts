@@ -607,6 +607,9 @@ describe("runVerify", () => {
     );
     expect(byId(result.checks, "http-redirect").message).toContain("HTTP 200");
     expect(byId(result.checks, "health-endpoint").message).toContain("HTTP 503");
+    expect(
+      (byId(result.checks, "health-endpoint") as { remediation?: string }).remediation,
+    ).toContain("look at the app's logs (`opscrew logs`)");
   });
 
   it("asks no public resolver about a missing record outside the user's Portainer", async () => {

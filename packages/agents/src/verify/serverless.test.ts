@@ -176,6 +176,22 @@ describe("opscrew verify on Cloudflare's hosting", () => {
     expect(deps.reporter.text()).not.toMatch(/server/i);
   });
 
+  it("points a Worker's server error at `opscrew logs`", async () => {
+    const { deps } = await setup(sitePlan({ deployed: true }));
+    const site = fakeInternet({ front: () => new Response("boom", { status: 500 }) });
+    const result = await runVerify(deps, {
+      resolver: CLOUDFLARE_DNS,
+      fetch: site.fetch,
+      tlsConnect: certificate(),
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const answer = result.checks.find((check) => check.id === "site-reachable");
+    expect(answer).toMatchObject({ status: "fail" });
+    expect(answer?.remediation).toBe(
+      "Look at the latest deploy run in GitHub → Actions, and the Worker's logs (`opscrew logs`).",
+    );
+  });
+
   it("says when the Worker still answers with the placeholder, and when DNS leaves Cloudflare", async () => {
     const { deps } = await setup(sitePlan({ deployed: true }));
     const site = fakeInternet({

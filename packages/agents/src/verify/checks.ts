@@ -124,6 +124,11 @@ function portainerWeb(plan: DeployPlan): "tunnel" | "proxy" | "caddy" | undefine
   return plan.target.provider === "portainer" ? plan.target.web.mode : undefined;
 }
 
+/** The command that shows the app's log lines, with the context's flags. */
+function logsCommand(ctx: Pick<VerifyCheckContext, "plan" | "flag">): string {
+  return `opscrew logs${ctx.flag ?? namedEnvironmentFlag(ctx.plan)}`;
+}
+
 /** Where the app's logs are in the user's Portainer (never its address). */
 function portainerLogs(plan: DeployPlan): string {
   return `the app's logs in your Portainer (Stacks → opscrew-${plan.app.name} → the app container → Logs)`;
@@ -532,7 +537,7 @@ async function siteReachable(
             remediation:
               portainerWeb(ctx.plan) !== undefined
                 ? `Look at ${portainerLogs(ctx.plan)} and the latest deploy run.`
-                : "Look at the app's logs on the server (`docker compose logs --tail 200 app`) and the latest deploy run.",
+                : `Look at the app's logs (\`${logsCommand(ctx)}\`) and the latest deploy run.`,
             target,
           },
         ),
@@ -742,7 +747,7 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
   const remediation =
     portainerWeb(ctx.plan) !== undefined
       ? `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at ${portainerLogs(ctx.plan)}.`
-      : `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at \`docker compose logs --tail 200 app\` on the server.`;
+      : `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at the app's logs (\`${logsCommand(ctx)}\`).`;
   try {
     const response = await get(ctx, target, "follow");
     await discard(response);
