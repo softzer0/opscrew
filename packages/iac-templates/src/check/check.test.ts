@@ -212,16 +212,58 @@ describe("renderCheck", () => {
     ).toEqual(["shop/prod"]);
   });
 
-  it("checks a server's disk once when two environments share it", () => {
-    const prod = withCheck(testPlan({ provider: "own", domain: "shop.example.com" }));
-    // Two environments with one server id. Valid plans of one repository never have one (each
-    // app name is unique there), so this plan skips the schema.
-    const staging: DeployPlan = { ...inEnvironment(prod, { name: "staging" }), app: prod.app };
-    const config = configOf(renderCheck({ plans: [prod, staging], repo: PUBLIC }));
-    expect(config.environments.map((e: { server?: unknown }) => e.server)).toEqual([
-      { id: "own-shop", secret: "OPSCREW_CHECK_SERVER", via: "github" },
-      undefined,
-    ]);
+  describe("two environments on one server", () => {
+    const own = withCheck(testPlan({ provider: "own", domain: "shop.example.com" }));
+    const docs = withCheck(
+      ofApp(testPlan({ provider: "own", domain: "docs.example.com" }), "docs"),
+    );
+    const servers = (files: RenderedFile[]) =>
+      configOf(files).environments.map((e: { server?: unknown }) => e.server);
+
+    it("checks its disk once, from the first environment in the repository's order", () => {
+      const staging = inEnvironment(own, { name: "staging", runner: "server" });
+      const serverIds = {
+        "shop/prod": "own-1",
+        "shop-staging/staging": "own-1",
+        "docs/prod": "own-1",
+      };
+      const files = renderCheck({ plans: [docs, staging, own], repo: PRIVATE, serverIds });
+      expect(servers(files)).toEqual([
+        { id: "own-1", secret: "OPSCREW_CHECK_SERVER", via: "github" },
+        undefined,
+        undefined,
+      ]);
+      expect(Object.keys(parse(workflowOf(files)).jobs)).toEqual(["check"]);
+    });
+
+    it("has one disk job when both deploy from the server's own runner", () => {
+      const prod = inEnvironment(own, { runner: "server" });
+      const docsOnServer = inEnvironment(docs, { runner: "server" });
+      const serverIds = { "shop/prod": "own-1", "docs/prod": "own-1" };
+      const files = renderCheck({ plans: [prod, docsOnServer], repo: PRIVATE, serverIds });
+      expect(servers(files)).toEqual([{ id: "own-1", via: "own-runner" }, undefined]);
+      const jobs = parse(workflowOf(files)).jobs;
+      expect(Object.keys(jobs)).toEqual(["check", "disk-own-1"]);
+      expect(jobs["disk-own-1"]["runs-on"]).toEqual(["self-hosted", "opscrew-shop-prod"]);
+    });
+
+    it("keeps today's id for an environment without a given one", () => {
+      const files = renderCheck({
+        plans: [own, docs],
+        repo: PRIVATE,
+        serverIds: { "docs/prod": "own-1" },
+      });
+      expect(servers(files)).toEqual([
+        { id: "own-shop", secret: "OPSCREW_CHECK_SERVER", via: "github" },
+        { id: "own-1", secret: "OPSCREW_DOCS_CHECK_SERVER", via: "github" },
+      ]);
+    });
+
+    it("refuses a given id that can't name a job", () => {
+      expect(() =>
+        renderCheck({ plans: [own], repo: PRIVATE, serverIds: { "shop/prod": "own 1/x" } }),
+      ).toThrow(/server id for shop\/prod with characters other than letters, digits/);
+    });
   });
 
   it("gives an own server in tunnel mode a disk check only from its own runner", () => {

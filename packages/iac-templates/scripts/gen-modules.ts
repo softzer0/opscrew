@@ -48,8 +48,8 @@ export function renderGeneratedModule(files: Record<string, string>): string {
 }
 
 /** The scheduled check's script, as OpsCrew writes it into a repository. */
-export function readCheckScript(path = checkScript): string {
-  return read(path);
+export function readCheckScript(): string {
+  return read(checkScript);
 }
 
 export function renderGeneratedCheck(script: string): string {

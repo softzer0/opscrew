@@ -68,6 +68,8 @@ interface FakeIssue {
   created_at: string;
   labels: string[];
   comments: string[];
+  /** A pull request, which GitHub lists with the issues. */
+  pullRequest?: boolean;
 }
 
 /** What a checked host answers: a status, a status with a body, no answer in time, or an error. */
@@ -96,6 +98,7 @@ class World {
   sleeps: number[] = [];
   sshCalls: { server: ServerReach; key: string }[] = [];
   hostRequests: string[] = [];
+  pagesRead: number[] = [];
   clock = START;
   config = config();
 
@@ -109,6 +112,7 @@ class World {
       created_at: START.toISOString(),
       labels: ["opscrew-check"],
       comments: [],
+      pullRequest: true,
     });
   }
 
@@ -118,7 +122,7 @@ class World {
   }
 
   open(): FakeIssue[] {
-    return this.issues.filter((issue) => issue.state === "open" && issue.number !== 1);
+    return this.issues.filter((issue) => issue.state === "open" && !issue.pullRequest);
   }
 
   later(minutes: number): void {
@@ -196,12 +200,16 @@ class World {
       this.labels.add(String(body.name));
       return json({}, 201);
     }
-    if (method === "GET" && path === "/issues?labels=opscrew-check&state=open&per_page=100") {
+    const list = /^\/issues\?labels=opscrew-check&state=open&per_page=100&page=(\d+)$/.exec(path);
+    if (method === "GET" && list !== null) {
       if (this.issuesGone) return json({ message: "Issues are disabled" }, 410);
+      const page = Number(list[1]);
+      this.pagesRead.push(page);
       return json(
         this.issues
           .filter((i) => i.state === "open")
-          .map((i) => ({ ...i, ...(i.number === 1 ? { pull_request: {} } : {}) })),
+          .slice((page - 1) * 100, page * 100)
+          .map(({ pullRequest, ...i }) => ({ ...i, ...(pullRequest ? { pull_request: {} } : {}) })),
       );
     }
     if (method === "POST" && path === "/issues") {
@@ -664,6 +672,46 @@ describe("check.mjs", () => {
       expect(await run(env(), world.io(["--only", "disk:other"]))).toBe(1);
       expect(world.logs.at(-1)).toContain("--only takes disk:<server id>");
     });
+  });
+
+  it("reads every page of open issues, and opens no duplicate of an issue past the first 100", async () => {
+    const world = new World();
+    // 160 other open items with the label: pull requests, and issues without a marker.
+    for (let n = 2; n <= 161; n++) {
+      world.issues.push({
+        number: n,
+        title: `Something else ${n}`,
+        body: "Not the check's.",
+        state: "open",
+        created_at: START.toISOString(),
+        labels: ["opscrew-check"],
+        comments: [],
+        pullRequest: n % 2 === 0,
+      });
+    }
+    world.answer("example.com", 503);
+    await run(env(), world.io());
+    expect(world.pagesRead).toEqual([1, 2]);
+    const opened = world.issues.filter((issue) => issue.body.includes("opscrew-check:"));
+    expect(opened.map((issue) => issue.number)).toEqual([1, 162]);
+
+    // The check's issue is now the 162nd open item, on the second page.
+    world.pagesRead = [];
+    world.later(15);
+    await run(env(), world.io());
+    expect(world.pagesRead).toEqual([1, 2]);
+    expect(world.issues).toHaveLength(162);
+    expect(world.issues[161]?.comments).toEqual([]);
+
+    world.answer("example.com", 200);
+    await run(env(), world.io());
+    expect(world.issues[161]?.state_reason).toBe("completed");
+  });
+
+  it("reads one page when it holds fewer than 100", async () => {
+    const world = new World();
+    await run(env(), world.io());
+    expect(world.pagesRead).toEqual([1]);
   });
 
   it("exits 1 when GitHub's API fails, naming only the status", async () => {

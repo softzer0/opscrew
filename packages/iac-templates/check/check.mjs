@@ -496,15 +496,20 @@ class Reporter {
     }
   }
 
-  /** The open issues with the label, by their key, read once. */
+  /** The open issues with the label, by their key, read once: every page of 100. */
   async openIssues() {
-    const items = await this.github("GET", `/issues?labels=${LABEL}&state=open&per_page=100`);
     const issues = new Map();
-    for (const item of items) {
-      const key = item.pull_request ? undefined : MARKER.exec(item.body ?? "")?.[1];
-      if (key !== undefined && !issues.has(key)) issues.set(key, item);
+    for (let page = 1; ; page++) {
+      const items = await this.github(
+        "GET",
+        `/issues?labels=${LABEL}&state=open&per_page=100&page=${page}`,
+      );
+      for (const item of items) {
+        const key = item.pull_request ? undefined : MARKER.exec(item.body ?? "")?.[1];
+        if (key !== undefined && !issues.has(key)) issues.set(key, item);
+      }
+      if (items.length < 100) return issues;
     }
-    return issues;
   }
 
   async open(key, failure) {

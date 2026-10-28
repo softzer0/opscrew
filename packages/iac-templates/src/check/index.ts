@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are GitHub Actions expressions, not JavaScript templates.
 import { createHash } from "node:crypto";
+import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
 import type {
   CheckConfig,
@@ -90,10 +91,20 @@ export function checkServerSecret(server: ServerReach): string {
  *
  * The interval and the webhook are the repository's: the first app's prod plan's, else every 15
  * minutes in a public repository and 60 in a private one.
+ *
+ * A server's disk is checked once, by the first environment in the repository's order whose plan
+ * has it: one disk check, one disk issue, and one job on its own runner per server.
  */
 export function renderCheck(input: {
   plans: readonly DeployPlan[];
   repo: CheckRepository;
+  /**
+   * The id of each environment's server, by {@link checkEnvironmentKey}: what identifies the
+   * server outside the plan (an own server's record), so environments on one server share it.
+   * Letters, digits, `-` and `_`, never an address. Without one, a cloud or own server's id is
+   * `<provider>-<app name>` (`hetzner-shop`, `own-shop`).
+   */
+  serverIds?: Readonly<Record<string, string>>;
 }): RenderedFile[] {
   const { repo } = input;
   const plans = input.plans
@@ -111,7 +122,7 @@ export function renderCheck(input: {
   const seen = new Set<string>();
   const environments: { plan: DeployPlan; environment: CheckEnvironment }[] = plans.map((plan) => {
     const path = isServerlessTarget(plan.target) ? "/" : healthPath(plan);
-    let server = serverOf(plan);
+    let server = serverOf(plan, input.serverIds?.[checkEnvironmentKey(plan)]);
     if (server !== undefined && seen.has(server.id)) server = undefined;
     if (server !== undefined) seen.add(server.id);
     return {
@@ -152,17 +163,28 @@ function byApp(a: DeployPlan, b: DeployPlan): number {
   return key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
 }
 
+/** A server id: it names a job, a concurrency group and a part of each disk issue's key. */
+const SERVER_ID = /^[A-Za-z0-9_-]+$/;
+
 /**
- * The server whose disk the check reads, on a cloud or own server: by the provider and the app's
- * name (`hetzner-shop`, `own-shop`), which the renderer can see and no other environment in the
- * repository has. Read where the environment's deploys run: from GitHub's machines or its runner
- * machine over SSH with the check key, or on the server's own runner. An own server in tunnel mode
- * is reached over SSH only through Cloudflare Access, so it gets a disk check only from its own
- * runner.
+ * The server whose disk the check reads, on a cloud or own server: by `given` (the caller's id for
+ * it), else by the provider and the app's name (`hetzner-shop`, `own-shop`), which no other
+ * environment in the repository has. Read where the environment's deploys run: from GitHub's
+ * machines or its runner machine over SSH with the check key, or on the server's own runner. An
+ * own server in tunnel mode is reached over SSH only through Cloudflare Access, so it gets a disk
+ * check only from its own runner.
+ * @throws OpsCrewError `INTERNAL` for a given id with other characters than {@link SERVER_ID}'s.
  */
-function serverOf(plan: DeployPlan): CheckServer | undefined {
+function serverOf(plan: DeployPlan, given: string | undefined): CheckServer | undefined {
   if (plan.target.mode !== "vps-compose") return undefined;
-  const id = `${plan.target.provider}-${plan.app.name}`;
+  if (given !== undefined && !SERVER_ID.test(given)) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `OpsCrew gave the scheduled check a server id for ${checkEnvironmentKey(plan)} with characters other than letters, digits, "-" and "_".`,
+      { hint: "This is a bug in OpsCrew; please report it." },
+    );
+  }
+  const id = given ?? `${plan.target.provider}-${plan.app.name}`;
   if (deploysInPlace(plan)) return { id, via: "own-runner" };
   if (tunnelMode(plan)) return undefined;
   return {
