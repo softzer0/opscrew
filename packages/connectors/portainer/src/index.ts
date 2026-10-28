@@ -15,6 +15,8 @@ export {
   StackApplyError,
 } from "./apply";
 export {
+  type ContainerInspection,
+  type ContainerSummary,
   type DockerInfo,
   PORTAINER_TOKEN_STEPS,
   PortainerApiError,
@@ -23,6 +25,7 @@ export {
   type PortainerEnvironment,
   portainerClient,
 } from "./client";
+export { type ContainerFigures, type ContainerLogLine, sinceAfter } from "./docker";
 export type { PortainerFacts, PortainerStackFacts } from "./facts";
 export { normalizeCertFingerprint, sameCertFingerprint } from "./fingerprint";
 export { dockerArchitecture, environmentKind, inspectPortainer } from "./inspect";

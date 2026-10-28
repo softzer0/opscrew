@@ -247,8 +247,19 @@ describe("plain HTTP to this computer", () => {
       timeoutMs: 10_000,
     });
     expect(response.status).toBe(200);
+    expect(response.bytes).toBeUndefined();
     expect(seen[0]?.headers["x-api-key"]).toBe(token);
     expect(seen[0]?.url).toBe("/api/users/me");
+    // `raw` also returns the body's bytes (Docker's log stream is not text).
+    const raw = await request({
+      method: "GET",
+      path: "/api/x",
+      headers: {},
+      timeoutMs: 10_000,
+      raw: true,
+    });
+    expect(Buffer.from(raw.bytes ?? []).toString("utf8")).toBe(raw.body);
+    expect(raw.body).toBe(JSON.stringify({ Version: "2.45.2" }));
   });
 
   it("has no certificate to read", async () => {

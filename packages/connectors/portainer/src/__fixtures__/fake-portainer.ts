@@ -32,6 +32,9 @@ export interface FakeEnvironment {
   dockerVersion: string;
   /** Regular users who may use the environment (administrators always may). */
   users: number[];
+  /** Docker's `NCPU` and `MemTotal` (default 4 and 8 GiB). */
+  cpus?: number;
+  memoryBytes?: number;
 }
 
 export interface FakeStack {
@@ -99,6 +102,28 @@ export interface FakeContainer {
   oneOff?: boolean;
   running: boolean;
   ports: number[];
+  /** Its Docker id (default `c<index>` in the list); the routes below find it by this id. */
+  id?: string;
+  /** What `…/containers/{id}/logs` answers: Docker's framing ({@link dockerFrames}) or raw TTY. */
+  logs?: Uint8Array;
+  /** What `…/containers/{id}/stats` and `…/containers/{id}/json` answer, as Docker gives them. */
+  stats?: unknown;
+  inspect?: unknown;
+}
+
+/** Docker's log framing: an 8-byte header (stream, 0, 0, 0, big-endian size) before each chunk. */
+export function dockerFrames(
+  ...frames: [stream: number, payload: string | Uint8Array][]
+): Uint8Array {
+  return Buffer.concat(
+    frames.map(([stream, payload]) => {
+      const bytes = Buffer.from(payload);
+      const header = Buffer.alloc(8);
+      header[0] = stream;
+      header.writeUInt32BE(bytes.length, 4);
+      return Buffer.concat([header, bytes]);
+    }),
+  );
 }
 
 export interface FakeVolume {
@@ -165,6 +190,8 @@ export interface RecordedCall {
 export interface FakeReply {
   status: number;
   body?: unknown;
+  /** A body that is not JSON (a log stream). */
+  bytes?: Uint8Array;
 }
 
 export interface FakePortainerOptions extends Partial<FakeState> {
@@ -471,6 +498,8 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
       ServerVersion: env.dockerVersion,
       Swarm: { LocalNodeState: env.swarm ? "active" : "inactive" },
       Name: "nas-host",
+      NCPU: env.cpus ?? 4,
+      MemTotal: env.memoryBytes ?? 8 * 1024 ** 3,
     });
   });
   route("GET", /^\/api\/endpoints\/(\d+)\/docker\/containers\/json$/, ({ match, user }) => {
@@ -493,7 +522,7 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     return reply(
       200,
       visible.map((container, index) => ({
-        Id: `c${index}`,
+        Id: container.id ?? `c${index}`,
         Names: [`/container-${index}`],
         State: container.running ? "running" : "exited",
         Labels: {
@@ -512,6 +541,23 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
       })),
     );
   });
+  route(
+    "GET",
+    /^\/api\/endpoints\/(\d+)\/docker\/containers\/([^/]+)\/(logs|stats|json)$/,
+    ({ match, user }) => {
+      const env = envFor(user, match[1]);
+      if (isReply(env)) return env;
+      const name = decodeURIComponent(match[2] ?? "");
+      const container = state.containers.find(
+        (item) => item.EndpointId === env.Id && item.id === name,
+      );
+      if (container === undefined) return reply(404, { message: `No such container: ${name}` });
+      // Spike result 7: a standard user reads only its own stacks' containers.
+      if (!ownsProject(user, env.Id, container.project)) return denied();
+      if (match[3] === "logs") return { status: 200, bytes: container.logs ?? new Uint8Array() };
+      return reply(200, match[3] === "stats" ? container.stats : container.inspect);
+    },
+  );
   route("GET", /^\/api\/endpoints\/(\d+)\/docker\/volumes$/, ({ match, user }) => {
     const env = envFor(user, match[1]);
     if (isReply(env)) return env;
@@ -870,6 +916,13 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     calls.push(call);
     const forced = options.override?.(call);
     const result = forced ?? dispatch(call, body);
+    if (result.bytes !== undefined) {
+      return {
+        status: result.status,
+        body: Buffer.from(result.bytes).toString("utf8"),
+        ...(init.raw === true && { bytes: result.bytes }),
+      };
+    }
     return {
       status: result.status,
       body: result.body === undefined ? "" : JSON.stringify(result.body),

@@ -22,12 +22,16 @@ export interface PinnedRequestInit {
   headers: Readonly<Record<string, string>>;
   body?: string;
   timeoutMs: number;
+  /** Also return the body's bytes, for an answer that is not text (Docker's log stream). */
+  raw?: boolean;
 }
 
 /** Portainer's answer: the status and the body text (never logged). */
 export interface PinnedResponse {
   status: number;
   body: string;
+  /** The body's bytes, when the request asked for them (`raw`). */
+  bytes?: Uint8Array;
 }
 
 /** Sends one request to the pinned Portainer endpoint (tests inject a fake). */
@@ -271,12 +275,14 @@ function send(
         }
         chunks.push(chunk);
       });
-      response.on("end", () =>
+      response.on("end", () => {
+        const bytes = Buffer.concat(chunks);
         finish(undefined, {
           status: response.statusCode ?? 0,
-          body: Buffer.concat(chunks).toString("utf8"),
-        }),
-      );
+          body: bytes.toString("utf8"),
+          ...(init.raw === true && { bytes }),
+        });
+      });
       response.on("error", (error) => finish(error));
     });
     const timer = setTimeout(() => {

@@ -1,6 +1,13 @@
 import { OpsCrewError, parseAnswer, Redactor } from "@opscrew/core";
 import { z } from "zod";
 import {
+  type ContainerFigures,
+  type ContainerLogLine,
+  containerFigures,
+  dockerStatsSchema,
+  logLines,
+} from "./docker";
+import {
   COMPOSE_ONEOFF_LABEL,
   COMPOSE_PROJECT_LABEL,
   COMPOSE_SERVICE_LABEL,
@@ -9,6 +16,7 @@ import {
 import {
   type PinnedRequest,
   type PinnedRequestInit,
+  type PinnedResponse,
   PortainerCertificateError,
   type PortainerEndpoint,
   parsePortainerEndpoint,
@@ -65,15 +73,31 @@ export interface DockerInfo {
   architecture?: string;
   serverVersion?: string;
   swarmActive: boolean;
+  /** The host's CPUs (`NCPU`). */
+  cpus?: number;
+  /** The host's memory (`MemTotal`). */
+  memoryBytes?: number;
 }
 
-/** A container, reduced to its Compose project and service and the host ports it publishes. */
+/** A container, reduced to its id, Compose project and service and the host ports it publishes. */
 export interface ContainerSummary {
+  /** Docker's container id (for the container reads). */
+  id: string;
   project?: string;
   /** Its Compose service; absent for a one-off container (`docker compose run`). */
   service?: string;
   running: boolean;
   publishedPorts: number[];
+}
+
+/** What `containerInspect` keeps of a container (never its `Config.Env`). */
+export interface ContainerInspection {
+  /** Restarts since the container was created (a deploy creates new ones). */
+  restartCount: number;
+  /** `State.StartedAt`, as Docker gives it. */
+  startedAt: string;
+  /** `HostConfig.Memory`; absent when the container has no limit. */
+  memoryLimitBytes?: number;
 }
 
 /** A Docker volume, reduced to its name and Compose project. */
@@ -172,6 +196,23 @@ export interface PortainerClient {
   dockerInfo(environmentId: number): Promise<DockerInfo>;
   /** `GET /api/endpoints/{id}/docker/containers/json?all=1` (an administrator sees all). */
   listContainers(environmentId: number): Promise<ContainerSummary[]>;
+  /**
+   * `GET …/docker/containers/{id}/logs?stdout=1&stderr=1&timestamps=1&tail=N[&since=S]`: the last
+   * `tail` lines, oldest first. `since` is whole Unix seconds or `<seconds>.<nanoseconds>`; to
+   * follow, poll with `sinceAfter(last line's time)` (Portainer buffers `follow=1` for ~40 s).
+   */
+  containerLogs(
+    environmentId: number,
+    containerId: string,
+    options: { tail: number; since?: number | string },
+  ): Promise<ContainerLogLine[]>;
+  /**
+   * `GET …/docker/containers/{id}/stats?stream=false` (without `one-shot`, so Docker takes two
+   * samples, 1–2 s) and the host's memory from `…/docker/info`.
+   */
+  containerStats(environmentId: number, containerId: string): Promise<ContainerFigures>;
+  /** `GET …/docker/containers/{id}/json`, reduced to {@link ContainerInspection}. */
+  containerInspect(environmentId: number, containerId: string): Promise<ContainerInspection>;
   /** `GET /api/endpoints/{id}/docker/volumes` (Compose volumes only). */
   listVolumes(environmentId: number): Promise<VolumeSummary[]>;
   /** `DELETE /api/endpoints/{id}/docker/volumes/{name}`. */
@@ -297,19 +338,21 @@ export function portainerClient(
   if (deps.valueKey !== undefined) checkKey(deps.valueKey);
   const stackSchema = stackSchemaFor(deps.valueKey);
 
-  async function call<S extends z.ZodType>(
-    spec: Omit<PinnedRequestInit, "headers" | "timeoutMs" | "body"> & {
-      action: string;
-      /** What a 403 means here, as an access the user can grant. */
-      access?: string;
-      body?: unknown;
-      schema?: S;
-      auth?: false;
-      notFound?: "absent";
-    },
-  ): Promise<z.output<S> | "absent" | undefined> {
+  type CallSpec = Omit<PinnedRequestInit, "headers" | "timeoutMs" | "body"> & {
+    action: string;
+    /** What a 403 means here, as an access the user can grant. */
+    access?: string;
+    /** What to do about a 403, when the default hint does not fit. */
+    forbiddenHint?: string;
+    body?: unknown;
+    auth?: false;
+    notFound?: "absent";
+  };
+
+  /** Sends one request; a refusal or failure becomes a {@link PortainerApiError}. */
+  async function send(spec: CallSpec): Promise<PinnedResponse | "absent"> {
     const headers: Record<string, string> = {
-      Accept: "application/json",
+      Accept: spec.raw === true ? DOCKER_STREAM_TYPES : "application/json",
       "User-Agent": USER_AGENT,
     };
     if (spec.auth !== false) headers["X-API-Key"] = token;
@@ -320,13 +363,22 @@ export function portainerClient(
       headers,
       timeoutMs,
       ...(spec.body !== undefined && { body: JSON.stringify(spec.body) }),
+      ...(spec.raw === true && { raw: true }),
     }).catch((error: unknown) => {
       throw redactError(error, redactor);
     });
     if (response.status === 404 && spec.notFound === "absent") return "absent";
     if (response.status < 200 || response.status >= 300) {
-      throw apiError(response.status, response.body, spec.action, spec.access, redactor);
+      throw apiError(response.status, response.body, spec, redactor);
     }
+    return response;
+  }
+
+  async function call<S extends z.ZodType>(
+    spec: CallSpec & { schema?: S },
+  ): Promise<z.output<S> | "absent" | undefined> {
+    const response = await send(spec);
+    if (response === "absent") return "absent";
     if (spec.schema === undefined) return undefined;
     let json: unknown;
     try {
@@ -371,6 +423,22 @@ export function portainerClient(
       action,
       access: STACK_ACCESS,
     })) as StackDetails;
+
+  async function dockerInfo(environmentId: number): Promise<DockerInfo> {
+    const info = await get(
+      `/api/endpoints/${id(environmentId)}/docker/info`,
+      dockerInfoSchema,
+      "read the environment's Docker information",
+      "use the environment",
+    );
+    return {
+      ...(info.Architecture && { architecture: info.Architecture }),
+      ...(info.ServerVersion && { serverVersion: info.ServerVersion }),
+      swarmActive: info.Swarm?.LocalNodeState === "active",
+      ...(info.NCPU !== undefined && { cpus: info.NCPU }),
+      ...(info.MemTotal !== undefined && { memoryBytes: info.MemTotal }),
+    };
+  }
 
   return {
     pinned: target.pin !== undefined,
@@ -420,19 +488,7 @@ export function portainerClient(
         }),
       }));
     },
-    async dockerInfo(environmentId) {
-      const info = await get(
-        `/api/endpoints/${id(environmentId)}/docker/info`,
-        dockerInfoSchema,
-        "read the environment's Docker information",
-        "use the environment",
-      );
-      return {
-        ...(info.Architecture && { architecture: info.Architecture }),
-        ...(info.ServerVersion && { serverVersion: info.ServerVersion }),
-        swarmActive: info.Swarm?.LocalNodeState === "active",
-      };
-    },
+    dockerInfo,
     async listContainers(environmentId) {
       const list = await get(
         `/api/endpoints/${id(environmentId)}/docker/containers/json?all=1`,
@@ -449,12 +505,58 @@ export function portainerClient(
           if (port.PublicPort !== undefined && port.PublicPort > 0) ports.add(port.PublicPort);
         }
         return {
+          id: container.Id,
           ...(project !== undefined && { project }),
           ...(service !== undefined && { service }),
           running: container.State === "running",
           publishedPorts: [...ports].sort((a, b) => a - b),
         };
       });
+    },
+    async containerLogs(environmentId, containerId, options) {
+      if (!Number.isSafeInteger(options.tail) || options.tail <= 0) {
+        throw new OpsCrewError("INTERNAL", "The log tail is a positive whole number of lines.");
+      }
+      const since = options.since === undefined ? "" : `&since=${sinceValue(options.since)}`;
+      const response = (await send({
+        method: "GET",
+        path: `${containerPath(environmentId, containerId)}/logs?stdout=1&stderr=1&timestamps=1&tail=${options.tail}${since}`,
+        action: "read the container's logs",
+        raw: true,
+        ...CONTAINER_ACCESS,
+      })) as PinnedResponse;
+      if (response.bytes === undefined) {
+        throw new OpsCrewError("INTERNAL", "The request function returned no body bytes.");
+      }
+      return logLines(response.bytes);
+    },
+    async containerStats(environmentId, containerId) {
+      const [stats, info] = await Promise.all([
+        call({
+          method: "GET",
+          path: `${containerPath(environmentId, containerId)}/stats?stream=false`,
+          schema: dockerStatsSchema,
+          action: "read the container's CPU and memory",
+          ...CONTAINER_ACCESS,
+        }) as Promise<z.output<typeof dockerStatsSchema>>,
+        dockerInfo(environmentId),
+      ]);
+      return containerFigures(stats, info.memoryBytes);
+    },
+    async containerInspect(environmentId, containerId) {
+      const details = (await call({
+        method: "GET",
+        path: `${containerPath(environmentId, containerId)}/json`,
+        schema: inspectSchema,
+        action: "inspect the container",
+        ...CONTAINER_ACCESS,
+      })) as z.output<typeof inspectSchema>;
+      const memory = details.HostConfig?.Memory ?? 0;
+      return {
+        restartCount: details.RestartCount,
+        startedAt: details.State.StartedAt,
+        ...(memory > 0 && { memoryLimitBytes: memory }),
+      };
     },
     async listVolumes(environmentId) {
       // Every volume (not only labelled ones): a volume named like OpsCrew's without the app's
@@ -715,6 +817,16 @@ export function portainerClient(
 }
 
 const STACK_ACCESS = "manage stacks on the environment";
+/** Docker's two log answers: framed (no TTY) and raw (TTY). */
+const DOCKER_STREAM_TYPES =
+  "application/vnd.docker.multiplexed-stream, application/vnd.docker.raw-stream";
+/** A 403 on a container read (spike result 7: CE gives a standard user only its own stacks). */
+const CONTAINER_ACCESS = {
+  access:
+    "read this container; a standard user's token sees only the containers of that user's own stacks",
+  forbiddenHint:
+    "Use an administrator's access token, or the token of the user who deployed the app's stack, as PORTAINER_API_KEY, then try again.",
+};
 
 /** Path segment for an id: a positive integer, never text from elsewhere. */
 function id(value: number): number {
@@ -722,6 +834,29 @@ function id(value: number): number {
     throw new OpsCrewError("INTERNAL", "Portainer ids are positive whole numbers.");
   }
   return value;
+}
+
+/** `/api/endpoints/{id}/docker/containers/{container}` for a checked id or name. */
+function containerPath(environmentId: number, containerId: string): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(containerId)) {
+    throw new OpsCrewError("INTERNAL", "A container id is letters, digits, '_', '.' and '-'.");
+  }
+  return `/api/endpoints/${id(environmentId)}/docker/containers/${containerId}`;
+}
+
+/** Docker's `since`: whole Unix seconds, or `<seconds>.<nanoseconds>` (see `sinceAfter`). */
+function sinceValue(since: number | string): string {
+  const text = String(since);
+  if (
+    (typeof since === "number" && (!Number.isSafeInteger(since) || since < 0)) ||
+    !/^\d{1,12}(\.\d{1,9})?$/.test(text)
+  ) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      "The log since is whole Unix seconds or <seconds>.<nanoseconds>.",
+    );
+  }
+  return text;
 }
 
 function pair(entry: EnvPair): { name: string; value: string } {
@@ -754,8 +889,7 @@ function redactError(error: unknown, redactor: Redactor): unknown {
 function apiError(
   status: number,
   body: string,
-  action: string,
-  access: string | undefined,
+  { action, access, forbiddenHint }: { action: string; access?: string; forbiddenHint?: string },
   redactor: Redactor,
 ): PortainerApiError {
   let detail = "";
@@ -785,9 +919,10 @@ function apiError(
       "PROVIDER_ERROR",
       status,
       `Portainer refused to ${action}: the token's user may not ${access ?? "do this"} (HTTP 403)${suffix}.`,
-      access?.includes("administrators")
-        ? "Use an administrator's access token, or follow the steps OpsCrew shows for a limited token."
-        : "In Portainer, give the token's user access to the environment (Environments → the environment → Manage access) or use an administrator's token, then try again.",
+      forbiddenHint ??
+        (access?.includes("administrators")
+          ? "Use an administrator's access token, or follow the steps OpsCrew shows for a limited token."
+          : "In Portainer, give the token's user access to the environment (Environments → the environment → Manage access) or use an administrator's token, then try again."),
     );
   }
   if (status === 409) {
@@ -838,15 +973,24 @@ const dockerInfoSchema = z.object({
   Architecture: z.string().optional(),
   ServerVersion: z.string().optional(),
   Swarm: z.object({ LocalNodeState: z.string().optional() }).nullable().optional(),
+  NCPU: z.int().positive().optional(),
+  MemTotal: z.int().positive().optional(),
 });
 const labelsSchema = z.record(z.string(), z.string()).nullable().optional();
 const containerSchema = z.object({
+  Id: z.string().min(1),
   Labels: labelsSchema,
   State: z.string().optional(),
   Ports: z
     .array(z.object({ PublicPort: z.int().optional() }))
     .nullable()
     .optional(),
+});
+/** Three fields of `…/containers/{id}/json`; everything else (`Config.Env`) is stripped here. */
+const inspectSchema = z.object({
+  RestartCount: z.int().nonnegative(),
+  State: z.object({ StartedAt: z.string() }),
+  HostConfig: z.object({ Memory: z.int().nonnegative().optional() }).optional(),
 });
 const volumesSchema = z.object({
   Volumes: z

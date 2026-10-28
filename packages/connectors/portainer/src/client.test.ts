@@ -2,8 +2,9 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { fakePortainer } from "./__fixtures__/fake-portainer";
+import { dockerFrames, fakePortainer } from "./__fixtures__/fake-portainer";
 import { PortainerApiError, portainerClient } from "./client";
+import { sinceAfter } from "./docker";
 import { PortainerCertificateError } from "./pinned";
 import { valueFingerprint, valueFingerprints } from "./values";
 
@@ -79,6 +80,8 @@ describe("portainerClient", () => {
       architecture: "x86_64",
       serverVersion: "29.9.1",
       swarmActive: false,
+      cpus: 4,
+      memoryBytes: 8 * 1024 ** 3,
     });
   });
 
@@ -210,12 +213,12 @@ describe("portainerClient", () => {
     });
     const containers = await client.listContainers(3);
     expect(containers).toEqual([
-      { project: "media", running: true, publishedPorts: [8096] },
-      { running: true, publishedPorts: [80, 443] },
-      { project: "old", running: false, publishedPorts: [] },
+      { id: "c0", project: "media", running: true, publishedPorts: [8096] },
+      { id: "c1", running: true, publishedPorts: [80, 443] },
+      { id: "c2", project: "old", running: false, publishedPorts: [] },
       // The Compose service, except for a one-off container.
-      { project: "opscrew-shop", service: "worker", running: true, publishedPorts: [] },
-      { project: "opscrew-shop", running: false, publishedPorts: [] },
+      { id: "c3", project: "opscrew-shop", service: "worker", running: true, publishedPorts: [] },
+      { id: "c4", project: "opscrew-shop", running: false, publishedPorts: [] },
     ]);
     expect(JSON.stringify(containers)).not.toContain("basicauth");
     expect(await client.listVolumes(3)).toEqual([
@@ -385,5 +388,166 @@ describe("portainerClient", () => {
     expect(refused.status).toBe(403);
     expect(refused.message).toMatch(/replace the token of the registry entry opscrew-shop/);
     expect(`${refused.message}${refused.hint}`).not.toContain(next);
+  });
+});
+
+describe("container reads", () => {
+  const T1 = "2026-10-28T09:00:01.000000001Z";
+  const T2 = "2026-10-28T09:00:02.000000002Z";
+  const stack = (ownerId: number) => ({
+    Id: 7,
+    Name: "opscrew-shop",
+    Type: 2 as const,
+    EndpointId: 3,
+    Env: [],
+    Status: 1 as const,
+    DeploymentStatus: [],
+    AutoUpdate: null,
+    GitConfig: null,
+    file: "services: {}",
+    ownerId,
+    containers: "none" as const,
+    ports: [],
+    deploys: 1,
+  });
+  const app = {
+    EndpointId: 3,
+    project: "opscrew-shop",
+    service: "app",
+    running: true,
+    ports: [],
+    id: "a1b2c3",
+  };
+
+  it("reads a container's log lines with the fixed query, since in nanoseconds", async () => {
+    const { client, fake } = setup({
+      stacks: [stack(1)],
+      containers: [
+        {
+          ...app,
+          logs: dockerFrames([1, `${T1} up\n${T2} GET /`], [2, `${T2} oops\n`], [1, " 200\n"]),
+        },
+      ],
+    });
+    const since = sinceAfter(T1);
+    expect(await client.containerLogs(3, "a1b2c3", { tail: 50, since })).toEqual([
+      { stream: "stdout", time: T1, line: "up" },
+      { stream: "stderr", time: T2, line: "oops" },
+      { stream: "stdout", time: T2, line: "GET / 200" },
+    ]);
+    await client.containerLogs(3, "a1b2c3", { tail: 200, since: 1_761_642_000 });
+    await client.containerLogs(3, "a1b2c3", { tail: 200 });
+    const logs = "/api/endpoints/3/docker/containers/a1b2c3/logs";
+    expect(fake.calls.map((call) => [call.path, call.query.toString()])).toEqual([
+      [logs, `stdout=1&stderr=1&timestamps=1&tail=50&since=${since}`],
+      [logs, "stdout=1&stderr=1&timestamps=1&tail=200&since=1761642000"],
+      [logs, "stdout=1&stderr=1&timestamps=1&tail=200"],
+    ]);
+    // Nothing but whole seconds or <seconds>.<nanoseconds> reaches the query.
+    for (const bad of ["1&follow=1", "-5", "1.1234567890", "", -1, 1.5]) {
+      await expect(
+        client.containerLogs(3, "a1b2c3", { tail: 10, since: bad }),
+        String(bad),
+      ).rejects.toThrow(/since/);
+    }
+    await expect(client.containerLogs(3, "a1b2c3", { tail: 0 })).rejects.toThrow(/tail/);
+    await expect(client.containerLogs(3, "../../info", { tail: 10 })).rejects.toThrow(/container/);
+    expect(fake.calls).toHaveLength(3);
+  });
+
+  it("passes a TTY container's raw stream as stdout", async () => {
+    const { client } = setup({
+      containers: [{ ...app, project: "other", logs: Buffer.from(`${T1} one\r\n${T2} two\r\n`) }],
+    });
+    expect(await client.containerLogs(3, "a1b2c3", { tail: 10 })).toEqual([
+      { stream: "stdout", time: T1, line: "one" },
+      { stream: "stdout", time: T2, line: "two" },
+    ]);
+  });
+
+  it("reads one stats sample without one-shot, and the host's memory as no limit", async () => {
+    const host = 8 * 1024 ** 3;
+    const sample = (limit: number) => ({
+      read: "2026-10-28T09:00:02Z",
+      cpu_stats: {
+        cpu_usage: { total_usage: 3_000_000_000 },
+        system_cpu_usage: 200_000_000_000,
+        online_cpus: 2,
+      },
+      precpu_stats: {
+        cpu_usage: { total_usage: 2_000_000_000 },
+        system_cpu_usage: 190_000_000_000,
+        online_cpus: 2,
+      },
+      memory_stats: { usage: 500_000_000, limit, stats: { inactive_file: 200_000_000 } },
+      networks: { eth0: { rx_bytes: 1 } },
+    });
+    const { client, fake } = setup({
+      containers: [
+        { ...app, stats: sample(host) },
+        { ...app, id: "limited", stats: sample(256 * 1024 * 1024) },
+      ],
+    });
+    const figures = await client.containerStats(3, "a1b2c3");
+    // (1e9 / 10e9) × 2 × 100
+    expect(figures.cpuPercent).toBeCloseTo(20, 10);
+    expect(figures).toEqual({ cpuPercent: figures.cpuPercent, memoryUsedBytes: 300_000_000 });
+    expect(await client.containerStats(3, "limited")).toMatchObject({
+      memoryLimitBytes: 256 * 1024 * 1024,
+    });
+    const stats = fake.calls.filter((call) => call.path.endsWith("/stats"));
+    expect(stats.map((call) => call.query.toString())).toEqual(["stream=false", "stream=false"]);
+  });
+
+  it("keeps only the restart count, start time and memory limit: never Config.Env", async () => {
+    const secret = fakeSecret("stripe-live-key", "inspect");
+    const inspect = (memory: number) => ({
+      Id: "a1b2c3",
+      RestartCount: 2,
+      State: { Status: "running", StartedAt: "2026-10-28T08:00:00.123456789Z", Pid: 42 },
+      HostConfig: { Memory: memory, Binds: ["/srv:/srv"] },
+      Config: { Env: [`STRIPE_KEY=${secret}`], Image: "ghcr.io/acme/shop" },
+    });
+    const { client } = setup({
+      containers: [
+        { ...app, inspect: inspect(536_870_912) },
+        { ...app, id: "unlimited", inspect: inspect(0) },
+      ],
+    });
+    const details = await client.containerInspect(3, "a1b2c3");
+    expect(details).toEqual({
+      restartCount: 2,
+      startedAt: "2026-10-28T08:00:00.123456789Z",
+      memoryLimitBytes: 536_870_912,
+    });
+    expect(JSON.stringify(details)).not.toContain(secret);
+    expect(await client.containerInspect(3, "unlimited")).toEqual({
+      restartCount: 2,
+      startedAt: "2026-10-28T08:00:00.123456789Z",
+    });
+  });
+
+  it("says on 403 that a standard user's token sees only that user's stacks", async () => {
+    const { client } = setup({ stacks: [stack(1)], containers: [app] }, "limited");
+    for (const read of [
+      () => client.containerLogs(3, "a1b2c3", { tail: 10 }),
+      () => client.containerStats(3, "a1b2c3"),
+      () => client.containerInspect(3, "a1b2c3"),
+    ]) {
+      const error = (await read().catch((caught: unknown) => caught)) as PortainerApiError;
+      expect(error).toBeInstanceOf(PortainerApiError);
+      expect(error.status).toBe(403);
+      expect(error.message).toMatch(/may not read this container/);
+      expect(error.message).toMatch(
+        /a standard user's token sees only the containers of that user's own stacks/,
+      );
+      expect(error.hint).toMatch(/administrator's access token/);
+    }
+    // The stack's owner reads them.
+    const owner = setup(
+      { stacks: [stack(2)], containers: [{ ...app, logs: new Uint8Array() }] },
+      "limited",
+    );
+    expect(await owner.client.containerLogs(3, "a1b2c3", { tail: 10 })).toEqual([]);
   });
 });
