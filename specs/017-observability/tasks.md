@@ -217,12 +217,13 @@ Effort`.
       - **Teardown:** `docker compose down`, the files, the secrets and the volumes removed, so nothing of it stays (SC-1706). With `keepData`, Beszel's `beszel_data` volume stays. A teardown that deletes a volume is a destroying host plan (`allowDestroy` with the typed app name), as Portainer's data deletion is.
     - **`planAddon(kind, …)`** plans a setup and its undo. `planTeardown` gains the add-ons when present.
     - **One of each per server:** the host record names the app that turned each add-on on. Planning it for another app is a plain refusal naming that app (data-model.md).
-    - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken` and `grafanaCloudToken`, sent only on stdin and checked by name, as `tunnelToken` is.
+    - **`ApplyOptions.secrets`** gains `beszelPassword`, `beszelToken`, `beszelHubKey` and `grafanaCloudToken`, sent only on stdin and checked by name, as `tunnelToken` is.
+    - **Beszel's hub key:** in hub mode, the step writes `beszelHubKey` to the hub's bind-mounted data folder as `data/id_ed25519` (0600) before the first start, so the hub uses OpsCrew's key (spike result 2).
     - **The Compose text cap (16 KiB)** holds for the add-on files, or is raised for them with the reason in a comment.
     - **Tests with `FakeHost`:**
       - each step's commands;
       - re-applying changes nothing;
-      - teardown with and without `keepData`;
+      - teardown with and without `keepData` (the hub's `data/` folder);
       - another app refused;
       - the secrets on stdin and nowhere in the plan text or the audit.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host` and `pnpm lint`
@@ -327,9 +328,9 @@ Effort`.
     - **Beszel:**
       - **Hub mode:**
         - **The hub:**
-          - `127.0.0.1:8090:8090`, the `beszel_data` volume, `read_only` with `tmpfs: [/tmp]`, `cap_drop: [ALL]` and `no-new-privileges`;
+          - `127.0.0.1:8090:8090`, its data in a bind-mounted `data/` folder beside the Compose file (at `/beszel_data`), `read_only` with `tmpfs: [/tmp]`, `cap_drop: [ALL]` and `no-new-privileges`;
           - `USER_EMAIL` and `USER_PASSWORD` from a root-only env file, with `CONTAINER_DETAILS=false` and `DISABLE_SSH=true`. `AUTO_LOGIN` is never set.
-          - **Its key:** the host step (T1706) writes OpsCrew's generated Ed25519 key to `beszel_data/id_ed25519` before the first start.
+          - **Its key:** the host step (T1706) writes OpsCrew's generated Ed25519 key to `data/id_ed25519` before the first start. Its public half is the agent's `KEY`.
         - **`config.yml`:** `systems: [{ name: <server>, host: localhost, port: 45876, token: <48 hex>, users: [<email>] }]` (spike result 2).
         - **The agent:**
           - `network_mode: host`, `read_only`, `cap_drop: [ALL]` and a `beszel_agent_data` volume at `/var/lib/beszel-agent` (`DATA_DIR`, so its fingerprint survives);
@@ -494,7 +495,7 @@ Effort`.
 
       It is refused off the cloud and own targets, and for a second app on the same server, each with the reason.
     - **Beszel:**
-      - **Hub mode:** generates a password (24+ characters) and a token into Beszel's secrets file.
+      - **Hub mode:** generates a password (24+ characters), a token (48 hex) and the hub's Ed25519 key into Beszel's secrets file.
       - **Agent mode:** takes `--hub-url`, the hub's public key, and the token (from `OPSCREW_BESZEL_TOKEN`, or asked, never echoed).
       - **`subdomain`:** reuses Portainer's tunnel and Access path (`iac-apply`, `cloudflare-apply`), with the hub's local port as the route. It refuses without `allowedEmails`, and never makes the dashboard public. It also refuses a hostname that Portainer's web UI already uses on the server, since both go through one tunnel (T1701a's review).
       - **`addonOpen`:** runs `ssh -N -L 8090:127.0.0.1:8090` as Portainer's status command builds it, until stopped. It prints the local address and where the password is.

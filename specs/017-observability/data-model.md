@@ -50,6 +50,7 @@ Plan-wide rules:
 | The webhook's address | GitHub secret `OPSCREW_CHECK_WEBHOOK`; ntfy's optional token `OPSCREW_CHECK_NTFY_TOKEN` | provision (`github-secrets`), asked like an app secret |
 | Beszel's dashboard password (hub mode) | generated; recovery copy; root-only env file on the server | `addon enable beszel` (`host-apply`, on stdin) |
 | Beszel's agent token | generated in hub mode, or given by the user in agent mode; recovery copy; root-only env file | the same |
+| Beszel's hub key (hub mode) | generated (Ed25519); recovery copy; the hub's data folder on the server (0600) | the same |
 | The Grafana Cloud token | given by the user; recovery copy; root-only file on the server | `addon enable grafana-cloud` (`host-apply`, on stdin) |
 
 None is ever in a plan, a committed file, a host plan's text, a log or an audit entry.
