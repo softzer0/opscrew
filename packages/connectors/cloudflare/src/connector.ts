@@ -2,6 +2,7 @@ import type { Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
 import { errorText, Redactor } from "@opscrew/core";
 import {
   CLOUDFLARE_HOSTING_PERMISSIONS,
+  CLOUDFLARE_OBSERVABILITY_PERMISSIONS,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -51,6 +52,7 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
       scopes: [
         ...CLOUDFLARE_TOKEN_PERMISSIONS,
         ...CLOUDFLARE_HOSTING_PERMISSIONS,
+        ...CLOUDFLARE_OBSERVABILITY_PERMISSIONS,
         ...CLOUDFLARE_REGISTRAR_PERMISSIONS.map((p) => `${p} (optional, for buying domains)`),
       ],
       createUrl: CLOUDFLARE_TOKEN_PAGE,

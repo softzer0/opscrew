@@ -24,6 +24,19 @@ import {
   zodIssues,
 } from "@opscrew/core";
 import { z } from "zod";
+import {
+  ANALYTICS_QUERY,
+  AnalyticsAnswerSchema,
+  type TailEvent,
+  TailMessageSchema,
+  TelemetryInvocationsSchema,
+  telemetryQuery,
+  toAnalytics,
+  toLogEntries,
+  toTailEvent,
+  type WorkerAnalytics,
+  type WorkerLogEntry,
+} from "./observability";
 import type { CloudflareRecordInput } from "./records";
 import {
   CLOUDFLARE_REGISTRAR_DASHBOARD,
@@ -84,6 +97,21 @@ export const CLOUDFLARE_HOSTING_PERMISSIONS = [
  * the account's zones.
  */
 export const CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS = [WORKERS_PERMISSION] as const;
+
+/** The account permissions `logs` and `status` read a Worker with (spike T1702, result 6). */
+const TAIL_PERMISSION = "Account → Workers Tail → Read";
+const OBSERVABILITY_PERMISSION = "Account → Workers Observability → Read";
+const ANALYTICS_PERMISSION = "Account → Account Analytics → Read";
+
+/**
+ * Permissions only `logs` and `status` on Cloudflare hosting add to the token: the live tail,
+ * the past logs, and the Worker's figures.
+ */
+export const CLOUDFLARE_OBSERVABILITY_PERMISSIONS = [
+  `${TAIL_PERMISSION} (only for logs and status on Cloudflare hosting)`,
+  `${OBSERVABILITY_PERMISSION} (only for logs and status on Cloudflare hosting)`,
+  `${ANALYTICS_PERMISSION} (only for logs and status on Cloudflare hosting)`,
+] as const;
 
 /** The zone rule phases OpsCrew adds its own rule to, next to the user's rules. */
 export type ManagedRulesetPhase =
@@ -191,7 +219,20 @@ export interface CloudflareClientOptions {
    * it first. Pass the session's redactor so that key is masked everywhere.
    */
   redactor?: Redactor;
+  /** Opens a Worker's live tail (default: Node's global `WebSocket`). */
+  webSocket?: WebSocketFactory;
 }
+
+/** The part of a `WebSocket` a Worker's live tail uses. */
+export interface TailSocket {
+  binaryType: string;
+  addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
+  addEventListener(type: "close" | "error", listener: () => void): void;
+  close(): void;
+}
+
+/** Opens a WebSocket to `url` with the subprotocol `protocol`. */
+export type WebSocketFactory = (url: string, protocol: string) => TailSocket;
 
 /** One of the zone's Cloudflare Origin CA certificates. */
 export interface OriginCertificate {
@@ -308,6 +349,8 @@ interface RawAnswer {
   body: EnvelopeBody;
   /** The answer was a JSON Cloudflare envelope (not synthesized from a bare HTTP status). */
   envelope: boolean;
+  /** The answer's JSON as it came (GraphQL answers are not envelopes). */
+  json: unknown;
 }
 
 const ZoneSchema = z.looseObject({
@@ -643,6 +686,40 @@ const WORKERS_HINTS: FailHints = {
   auth: `Cloudflare hosting needs the account permission "${WORKERS_PERMISSION}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/** The hints for a refusal that a missing observability `permission` explains. */
+function observabilityHints(permission: string): FailHints {
+  return {
+    auth: `Logs and status on Cloudflare hosting need the account permission "${permission}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+  };
+}
+
+/** True when `call` fails because the token lacks a permission (HTTP 403); other errors throw. */
+function refused(call: Promise<unknown>): Promise<boolean> {
+  return call.then(
+    () => false,
+    (error: unknown) => {
+      if (error instanceof CloudflareError) return true;
+      throw error;
+    },
+  );
+}
+
+/** A tail frame's JSON (binary or text); `undefined` when it is not JSON. */
+function frameJson(data: unknown): unknown {
+  const text =
+    typeof data === "string"
+      ? data
+      : data instanceof ArrayBuffer
+        ? new TextDecoder().decode(data)
+        : undefined;
+  if (text === undefined) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Cloudflare's error code (with HTTP 404) for "This Worker does not exist on your account". */
 const NO_WORKER_CODE = 10007;
 
@@ -804,6 +881,7 @@ export class CloudflareClient {
   readonly #registrar: string;
   readonly #timeoutMs: number;
   readonly #redactor: Redactor;
+  readonly #webSocket: WebSocketFactory;
 
   constructor(options: CloudflareClientOptions) {
     this.#token = options.token;
@@ -814,6 +892,7 @@ export class CloudflareClient {
     this.#registrar = options.registrarSandbox ? "registrar-sandbox" : "registrar";
     this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
     this.#redactor = options.redactor ?? new Redactor();
+    this.#webSocket = options.webSocket ?? ((url, protocol) => new WebSocket(url, protocol));
   }
 
   /**
@@ -901,7 +980,7 @@ export class CloudflareClient {
             success: false,
             errors: [{ message: `Unexpected response (HTTP ${response.status})` }],
           };
-      return { status: response.status, body, envelope: jsonOk && parsed.success };
+      return { status: response.status, body, envelope: jsonOk && parsed.success, json };
     }
   }
 
@@ -1621,6 +1700,163 @@ export class CloudflareClient {
       { hints: WORKERS_HINTS },
     );
     return (domains ?? []).map((d) => ({ hostname: d.hostname, zoneId: d.zone_id }));
+  }
+
+  /**
+   * The Worker's past logs between `q.from` and `q.to` (Unix ms), oldest request first: each
+   * request's method, path, status and outcome, then its console lines and exceptions (the
+   * telemetry query, at most `q.limit`). A request can take up to half a minute to show.
+   * Read-only.
+   */
+  async workersLogs(
+    accountId: string,
+    worker: string,
+    q: { from: number; to: number; limit: number },
+  ): Promise<WorkerLogEntry[]> {
+    const result = await this.#call(
+      `/accounts/${encodeURIComponent(accountId)}/workers/observability/telemetry/query`,
+      TelemetryInvocationsSchema,
+      `read the logs of the Worker ${worker}`,
+      {
+        method: "POST",
+        body: telemetryQuery(worker, q),
+        retryServerErrors: true,
+        hints: observabilityHints(OBSERVABILITY_PERMISSION),
+      },
+    );
+    return toLogEntries(result);
+  }
+
+  /**
+   * Follows the Worker's requests live, calling `o.onEvent` for each, until `o.signal` aborts. It
+   * creates the Worker's tail (`POST …/tails`) and reads it over a WebSocket (`trace-v1`, binary
+   * JSON frames). Once stopped, it deletes the tail, then calls the socket's `close()` without
+   * waiting: after the delete Cloudflare goes silent and never completes the close.
+   *
+   * Cloudflare keeps one tail per Worker, shared by every client following it (`wrangler tail`
+   * and the dashboard included), so deleting it stops theirs too.
+   */
+  async workersTail(
+    accountId: string,
+    worker: string,
+    o: { signal: AbortSignal; onEvent: (event: TailEvent) => void },
+  ): Promise<void> {
+    if (o.signal.aborted) return;
+    const path = `${workerPath(accountId, worker)}/tails`;
+    const what = `follow the logs of the Worker ${worker}`;
+    const hints = observabilityHints(TAIL_PERMISSION);
+    const tail = await this.#call(
+      path,
+      z.looseObject({ id: z.string().min(1), url: z.string().startsWith("wss://") }),
+      what,
+      // Creating it again while it exists answers the same tail, so a retry is safe.
+      { method: "POST", body: {}, retryServerErrors: true, hints },
+    );
+    const socket = this.#webSocket(tail.url, "trace-v1");
+    socket.binaryType = "arraybuffer";
+    const failure = await new Promise<unknown>((settle) => {
+      let done = false;
+      const stop = (error?: unknown) => {
+        if (done) return;
+        done = true;
+        o.signal.removeEventListener("abort", onAbort);
+        settle(error);
+      };
+      const onAbort = () => stop();
+      const ended = () =>
+        stop(
+          new OpsCrewError("PROVIDER_ERROR", `The live logs of the Worker ${worker} stopped.`, {
+            hint: "Run the command again to keep following the logs.",
+          }),
+        );
+      o.signal.addEventListener("abort", onAbort);
+      socket.addEventListener("message", (event) => {
+        if (done) return;
+        try {
+          o.onEvent(toTailEvent(this.#parse(TailMessageSchema, frameJson(event.data), what)));
+        } catch (error) {
+          stop(error);
+        }
+      });
+      socket.addEventListener("error", ended);
+      socket.addEventListener("close", ended);
+      if (o.signal.aborted) stop();
+    });
+    try {
+      const answer = await this.#request(`${path}/${encodeURIComponent(tail.id)}`, {
+        method: "DELETE",
+        retryServerErrors: true,
+      });
+      // Already gone (another client deleted it): 404 with the "no such Worker" code.
+      if (!noWorker(answer)) {
+        this.#result(answer, z.unknown(), `stop following the logs of the Worker ${worker}`, hints);
+      }
+    } finally {
+      socket.close();
+    }
+    if (failure !== undefined) throw failure;
+  }
+
+  /**
+   * The Worker's requests, exceptions and CPU time (p50 and p99, in ms) since `since`, from the
+   * GraphQL dataset `workersInvocationsAdaptive`. Figures lag up to a minute, and requests served
+   * from static assets are not counted. Read-only.
+   */
+  async workersAnalytics(accountId: string, worker: string, since: Date): Promise<WorkerAnalytics> {
+    const what = `read the figures of the Worker ${worker}`;
+    const hints = observabilityHints(ANALYTICS_PERMISSION);
+    const answer = await this.#request("/graphql", {
+      method: "POST",
+      body: {
+        query: ANALYTICS_QUERY,
+        variables: { account: accountId, since: since.toISOString(), worker },
+      },
+      retryServerErrors: true,
+    });
+    if (answer.status >= 400) this.#fail(answer.status, answer.body, what, hints);
+    const parsed = this.#parse(AnalyticsAnswerSchema, answer.json, what);
+    const errors = parsed.errors ?? [];
+    if (errors.length > 0) {
+      const detail = this.#redactor.redactSecrets(
+        errors.map((e) => e.message.replace(/\.$/, "")).join("; ") || "no reason given",
+      );
+      // GraphQL refuses an account the token may not read with `authz`, not with HTTP 403.
+      if (
+        errors.some((e) => e.extensions?.code === "authz" || /not authori[sz]ed/i.test(e.message))
+      ) {
+        throw new CloudflareError(`Cloudflare refused the request to ${what}: ${detail}.`, {
+          hint: hints.auth,
+        });
+      }
+      throw new OpsCrewError("PROVIDER_ERROR", `Cloudflare could not ${what}: ${detail}.`, {
+        hint: REFUSAL_HINT,
+      });
+    }
+    return toAnalytics(parsed);
+  }
+
+  /**
+   * Which of the permissions `logs` and `status` need the token lacks, named as in the token
+   * builder: it lists the Worker's tails (a missing Worker is fine), and reads the last minute
+   * of its logs and figures. Only a refusal counts as missing. Read-only.
+   */
+  async observabilityPermissions(
+    accountId: string,
+    worker: string,
+  ): Promise<{ missing: string[] }> {
+    const missing: string[] = [];
+    const tails = await this.#request(`${workerPath(accountId, worker)}/tails`);
+    if (tails.status === 403) missing.push(TAIL_PERMISSION);
+    else if (!noWorker(tails)) {
+      this.#result(tails, z.unknown(), `list the tails of the Worker ${worker}`);
+    }
+    const now = Date.now();
+    const logs = this.workersLogs(accountId, worker, { from: now - 60_000, to: now, limit: 1 });
+    if (await refused(logs)) missing.push(OBSERVABILITY_PERMISSION);
+    if (await refused(this.workersAnalytics(accountId, worker, new Date(now - 60_000)))) {
+      missing.push(ANALYTICS_PERMISSION);
+    }
+    return { missing };
   }
 
   /**

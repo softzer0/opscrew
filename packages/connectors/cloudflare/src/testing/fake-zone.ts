@@ -1,6 +1,14 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { type FakeReply, fakeFetch } from "@opscrew/core/testing";
-import { CLOUDFLARE_API } from "../client";
+import { CLOUDFLARE_API, type WebSocketFactory } from "../client";
+import {
+  analyticsAnswer,
+  FakeTailSocket,
+  type FakeWorkerFigures,
+  type FakeWorkerRequest,
+  tailMessage,
+  telemetryEvents,
+} from "./fake-observability";
 
 /**
  * A fake Cloudflare zone and account behind core's `fakeFetch`, with the Rulesets behaviour the
@@ -26,6 +34,12 @@ import { CLOUDFLARE_API } from "../client";
  * not sent), 404 with code 10007 for a Worker the account does not have
  * (and 7003 for another account), and the account's Workers custom domains, filtered by `service`. Single redirect rules have the
  * configuration rules' limits. State is plain data for assertions.
+ *
+ * Workers logs as feature 017's spike saw them: the telemetry query (400 without a `queryId`,
+ * events grouped by request with `view: "invocations"`), one live tail per Worker (`POST`
+ * answers the same tail while it exists; `DELETE` removes it and its sockets go silent; a socket
+ * needs the `trace-v1` subprotocol and sends binary JSON frames), and the Worker's figures over
+ * GraphQL (a token without the permission gets `authz`, with HTTP 200).
  */
 
 /** The fake zone's id. */
@@ -156,9 +170,20 @@ export class FakeZone {
   /**
    * What the token may not read or change (HTTP 403): phases by name, `ssl` for origin
    * certificates and origin pulls, `settings` for the zone's settings, `dns` for its DNS records,
-   * `workers` for the account's Workers and their custom domains.
+   * `workers` for the account's Workers and their custom domains, `logs`, `tail` and
+   * `analytics` for a Worker's past logs, live tail and figures.
    */
   readonly denied = new Set<string>();
+  /** Requests the account's Workers handled, for the telemetry query. */
+  readonly requests: FakeWorkerRequest[] = [];
+  /** Requests each new tail socket sends, in order, while its tail exists. */
+  readonly tailRequests: FakeWorkerRequest[] = [];
+  /** The Workers' live tails, by Worker name. */
+  readonly tails = new Map<string, { id: string; url: string }>();
+  /** The sockets opened through {@link FakeZone.webSocket}. */
+  readonly sockets: FakeTailSocket[] = [];
+  /** The Workers' figures since any time, by Worker name. */
+  readonly figures = new Map<string, FakeWorkerFigures>();
   /** The account's Workers, by name. */
   readonly workers = new Map<string, FakeWorker>();
   /** The account's Workers custom domains. */
@@ -205,6 +230,27 @@ export class FakeZone {
       if (!fault) return answer(reply, input, init);
     }
     return answer((fault as FakeFault).reply, input, init);
+  };
+
+  /**
+   * Opens a {@link FakeTailSocket}. A socket to a tail that exists, with `trace-v1`, sends
+   * {@link FakeZone.tailRequests} one per task while the tail exists; any other socket fails.
+   */
+  readonly webSocket: WebSocketFactory = (url, protocol) => {
+    const socket = new FakeTailSocket(url, protocol);
+    this.sockets.push(socket);
+    const live = () => [...this.tails.values()].some((t) => t.url === url);
+    const send = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (protocol !== "trace-v1" || !live()) return socket.emit("error");
+      for (const request of this.tailRequests) {
+        if (!live()) return;
+        socket.send(tailMessage(request));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    void send();
+    return socket;
   };
 
   /** Puts a rule of the user's own into the phase (creating its entrypoint), as Cloudflare would. */
@@ -325,6 +371,7 @@ export class FakeZone {
     if (route === `/zones/${FAKE_ZONE_ID}/settings/min_tls_version`) {
       return this.#minTls(method, body);
     }
+    if (route === "/graphql" && method === "POST") return this.#graphql(body);
     if (route === `/zones/${FAKE_ZONE_ID}/dns_records` && method === "GET") {
       if (this.denied.has("dns")) return refuse(403, 10000, "Authentication error");
       return {
@@ -498,6 +545,11 @@ export class FakeZone {
         },
       };
     }
+    if (rest === "/observability/telemetry/query" && method === "POST") {
+      return this.#telemetry(body);
+    }
+    const tails = /^\/scripts\/([^/]+)\/tails(?:\/([^/]+))?$/.exec(rest);
+    if (tails?.[1]) return this.#tails(method, decodeURIComponent(tails[1]), tails[2]);
     const script = /^\/scripts\/([^/]+)\/(versions|deployments)$/.exec(rest);
     if (!script?.[1]) throw new Error(`fake zone: ${method} on Workers ${rest}`);
     const worker = this.workers.get(decodeURIComponent(script[1]));
@@ -564,6 +616,88 @@ export class FakeZone {
     worker.deployments.unshift(deployment);
     // A forced activation answers only the deployment's id (seen live).
     return ok(forced ? { id: deployment.id } : deployment);
+  }
+
+  /** The telemetry query: the Workers' events in the timeframe, grouped by request. */
+  #telemetry(body: unknown): FakeReply {
+    if (this.denied.has("logs")) return refuse(403, 10000, "Authentication error");
+    const query = body as {
+      queryId?: string;
+      timeframe: { from: number; to: number };
+      view: string;
+      limit: number;
+      parameters: { filters: { key: string; operation: string; value: string }[] };
+    };
+    if (!query.queryId) {
+      // Cloudflare's raw validation answer, without `errors` (seen live).
+      return {
+        status: 400,
+        body: { success: false, _c: { issues: [{ path: ["queryId"], code: "invalid_type" }] } },
+      };
+    }
+    if (query.view !== "invocations") throw new Error(`fake zone: telemetry view ${query.view}`);
+    const service = query.parameters.filters.find(
+      (f) => f.key === "$metadata.service" && f.operation === "eq",
+    )?.value;
+    const invocations = Object.fromEntries(
+      this.requests
+        .filter((r) => r.worker === service)
+        .filter((r) => r.time >= query.timeframe.from && r.time <= query.timeframe.to)
+        .slice(0, query.limit)
+        .map((r) => [r.requestId, telemetryEvents(r)]),
+    );
+    return ok({
+      run: { id: this.#id(), status: "COMPLETED" },
+      invocations,
+      statistics: { elapsed: 0.01, rows_read: 0, bytes_read: 0 },
+    });
+  }
+
+  /** A Worker's live tail: `GET` lists it, `POST` creates it (or answers it), `DELETE` ends it. */
+  #tails(method: string, worker: string, id: string | undefined): FakeReply {
+    if (this.denied.has("tail")) return refuse(403, 10000, "Authentication error");
+    if (!this.workers.has(worker)) {
+      return refuse(404, 10007, "This Worker does not exist on your account.");
+    }
+    const tail = this.tails.get(worker);
+    if (method === "GET" && id === undefined) return ok(tail ? [tail] : []);
+    if (method === "POST" && id === undefined) {
+      const created = tail ?? {
+        id: this.#id(),
+        url: `wss://tail.developers.workers.dev/${this.#id()}`,
+      };
+      this.tails.set(worker, created);
+      return ok({
+        ...created,
+        expires_at: new Date(this.now.getTime() + 6 * 3600_000).toISOString(),
+      });
+    }
+    if (method === "DELETE" && id !== undefined) {
+      if (tail?.id !== id) return refuse(404, 10007, "This Worker does not exist on your account.");
+      this.tails.delete(worker);
+      return ok(null);
+    }
+    throw new Error(`fake zone: ${method} on the tails of ${worker}`);
+  }
+
+  /** The GraphQL analytics query, answered for its `$worker`. */
+  #graphql(body: unknown): FakeReply {
+    if (this.denied.has("analytics")) {
+      return {
+        body: {
+          data: null,
+          errors: [
+            {
+              message: "not authorized for that account",
+              path: ["viewer", "accounts"],
+              extensions: { code: "authz" },
+            },
+          ],
+        },
+      };
+    }
+    const { variables } = body as { variables: { worker: string } };
+    return { body: analyticsAnswer(variables.worker, this.figures.get(variables.worker)) };
   }
 
   #minTls(method: string, body: unknown): FakeReply {

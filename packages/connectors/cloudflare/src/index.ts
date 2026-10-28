@@ -1,6 +1,7 @@
 export {
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
   CLOUDFLARE_HOSTING_PERMISSIONS,
+  CLOUDFLARE_OBSERVABILITY_PERMISSIONS,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -15,7 +16,9 @@ export {
   OPSCREW_MANAGED_COMMENT,
   type OriginCertificate,
   type RulesetRule,
+  type TailSocket,
   type TunnelConnectionState,
+  type WebSocketFactory,
   WORKER_SECRET_NAME,
   type WorkerCustomDomain,
   type WorkerDeployment,
@@ -24,6 +27,7 @@ export {
   zoneCandidates,
 } from "./client";
 export { type CloudflareConnector, cloudflareConnector } from "./connector";
+export type { TailEvent, WorkerAnalytics, WorkerLogEntry } from "./observability";
 export {
   type CloudflareRecordInput,
   mapRegistrarRecord,
