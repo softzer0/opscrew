@@ -645,7 +645,7 @@ Effort`.
       - **The billed minutes** of a passing run, logged against SC-1705.
     - **Add-ons** (`OPSCREW_E2E_ADDONS=1`):
       - **Beszel** in hub mode: enabled, its API answering through the tunnel, its memory logged, disabled leaving nothing (SC-1706).
-      - **Grafana Cloud,** when `OPSCREW_E2E_GRAFANA_CLOUD_*` (metrics and logs URLs and users, the write token, and a read token for the test's queries) are present:
+      - **Grafana Cloud,** when `OPSCREW_E2E_GRAFANA_CLOUD_METRICS_URL`, `_METRICS_USER`, `_LOGS_URL`, `_LOGS_USER`, `_TOKEN` (`metrics:write`, `logs:write`) and `_READ_TOKEN` (`metrics:read`, `logs:read`, for the test's queries) are present:
         - the app's lines and the server's CPU, memory and disk queried back within 5 minutes;
         - the series under 1,000 (SC-1707);
         - disabled leaving nothing.
