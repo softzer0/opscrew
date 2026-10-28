@@ -686,6 +686,7 @@ Effort`.
 - [ ] T1716 The end-of-feature simplify pass (lead): duplication across 017's changes, and the items collected during the waves.
   - Portainer's drift still registers the app's values itself. Move it to `registerAppSecrets` (T1701a).
   - The masking file (`mask.re`) still masks the frameworks' fixed production words (`production` and the like), because their table (`FRAMEWORK_ENV` in agents' `app-env.ts`) is agents'. Decide whether to move the word pairs to plan-schema as `hostListKind` was (T1708's review). It also has no URL-encoded forms and none of the service env files' values, unlike the redactor.
+  - `status` reads a server over two SSH connections, one for the components and one for the figures (T1709b). Decide whether one connection is worth a seam.
   - ssh-host's add-on tables: `SECRET_NEEDS` could be a `needs` field of `SECRET_CHECKS`. The add-ons' names live in four tables (`ADDON_NAMES`, `ADDON_TITLES`, `variant.what`, `addonRemoveScripts`' `what`), where one record in `constants.ts` would do (T1706's review).
   - `shared/app-secrets.ts` imports `generatedValuesFile` from `provision/secrets.ts`, which imports it back (a harmless cycle, T1701a's report). Move `generatedValuesFile` into `shared/`, and have Portainer's drift use `app-secrets.ts`'s `GeneratedValuesSchema` instead of its own copy (T1701a's review).
   - The fixed read commands now live in `status/components.ts`, `HOST_CHECKS`, `inspect.ts`, the figures and the logs. Decide whether one table of allowed read commands is smaller than five.
