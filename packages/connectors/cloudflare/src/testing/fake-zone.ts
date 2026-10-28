@@ -39,7 +39,7 @@ import {
  * events grouped by request with `view: "invocations"`), one live tail per Worker (`POST`
  * answers the same tail while it exists; `DELETE` removes it and its sockets go silent; a socket
  * needs the `trace-v1` subprotocol and sends binary JSON frames), and the Worker's figures over
- * GraphQL (a token without the permission gets `authz`, with HTTP 200).
+ * GraphQL (a token refused the account gets `authz`, with HTTP 200).
  */
 
 /** The fake zone's id. */
@@ -639,11 +639,13 @@ export class FakeZone {
     const service = query.parameters.filters.find(
       (f) => f.key === "$metadata.service" && f.operation === "eq",
     )?.value;
+    // `limit` counts requests, each with all its events, and keeps the newest (measured).
     const invocations = Object.fromEntries(
       this.requests
         .filter((r) => r.worker === service)
         .filter((r) => r.time >= query.timeframe.from && r.time <= query.timeframe.to)
-        .slice(0, query.limit)
+        .sort((a, b) => a.time - b.time)
+        .slice(-query.limit)
         .map((r) => [r.requestId, telemetryEvents(r)]),
     );
     return ok({
@@ -653,14 +655,13 @@ export class FakeZone {
     });
   }
 
-  /** A Worker's live tail: `GET` lists it, `POST` creates it (or answers it), `DELETE` ends it. */
+  /** A Worker's live tail: `POST` creates it (or answers it), `DELETE` ends it. */
   #tails(method: string, worker: string, id: string | undefined): FakeReply {
     if (this.denied.has("tail")) return refuse(403, 10000, "Authentication error");
     if (!this.workers.has(worker)) {
       return refuse(404, 10007, "This Worker does not exist on your account.");
     }
     const tail = this.tails.get(worker);
-    if (method === "GET" && id === undefined) return ok(tail ? [tail] : []);
     if (method === "POST" && id === undefined) {
       const created = tail ?? {
         id: this.#id(),
@@ -688,7 +689,8 @@ export class FakeZone {
           data: null,
           errors: [
             {
-              message: "not authorized for that account",
+              message:
+                "Actor 'com.cloudflare.api.token.0123456789abcdef' does not have permission 'com.cloudflare.api.account.analytics.read'",
               path: ["viewer", "accounts"],
               extensions: { code: "authz" },
             },

@@ -22,9 +22,8 @@ const WORKER = "example-app";
 const SCRIPT = `/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER}`;
 const T0 = Date.parse("2026-10-28T10:00:00.000Z");
 
-const TAIL = "Account → Workers Tail → Read";
+const WORKERS = "Account → Workers Scripts → Edit";
 const OBSERVABILITY = "Account → Workers Observability → Read";
-const ANALYTICS = "Account → Account Analytics → Read";
 
 /** A request with a plain `console.log`, a `console.warn` and an exception. */
 const FAILED: FakeWorkerRequest = {
@@ -155,6 +154,21 @@ describe("workersLogs", () => {
     );
   });
 
+  it("keeps the newest requests when there are more than the limit", async () => {
+    const { zone, client } = setup();
+    zone.requests.push(FAILED, PLAIN, { ...PLAIN, requestId: "req-3", time: T0 + 30_000 });
+    const entries = await client.workersLogs(ACCOUNT_ID, WORKER, {
+      from: T0,
+      to: T0 + 120_000,
+      limit: 2,
+    });
+    expect(entries.filter((e) => e.outcome !== undefined).map((e) => e.time)).toEqual([
+      "2026-10-28T10:00:30.000Z",
+      "2026-10-28T10:01:00.000Z",
+    ]);
+    expect(entries).toHaveLength(5);
+  });
+
   it("names the missing permission on a 403, without the token", async () => {
     const { zone, client } = setup();
     zone.denied.add("logs");
@@ -270,7 +284,7 @@ describe("workersTail", () => {
       }),
     );
     expect(error).toBeInstanceOf(CloudflareError);
-    expect(errorText(error)).toContain(TAIL);
+    expect(errorText(error)).toContain(WORKERS);
     expect(errorText(error)).not.toContain(TOKEN);
     expect(zone.sockets).toEqual([]);
   });
@@ -340,7 +354,8 @@ describe("workersAnalytics", () => {
     zone.denied.add("analytics");
     const error = await rejection(client.workersAnalytics(ACCOUNT_ID, WORKER, new Date(T0)));
     expect(error).toBeInstanceOf(CloudflareError);
-    expect(errorText(error)).toContain(ANALYTICS);
+    expect(errorText(error)).toContain("does not have permission");
+    expect(errorText(error)).toContain(WORKERS);
     expect(errorText(error)).not.toContain(TOKEN);
   });
 
@@ -349,40 +364,37 @@ describe("workersAnalytics", () => {
     zone.faults.push({ match: "POST /graphql", reply: { status: 403, body: { errors: [] } } });
     const error = await rejection(client.workersAnalytics(ACCOUNT_ID, WORKER, new Date(T0)));
     expect(error).toBeInstanceOf(CloudflareError);
-    expect(errorText(error)).toContain(ANALYTICS);
+    expect(errorText(error)).toContain(WORKERS);
   });
 });
 
 describe("observabilityPermissions", () => {
-  it("finds none missing on a token with all three", async () => {
-    const { zone, client } = setup();
+  it("finds none missing, reading the last minute of logs by the client's clock", async () => {
+    const { zone } = setup();
+    const client = new CloudflareClient({ token: TOKEN, fetch: zone.fetch, now: () => T0 });
     expect(await client.observabilityPermissions(ACCOUNT_ID, WORKER)).toEqual({ missing: [] });
-    expect(zone.writes().filter((c) => c.path.includes("/tails"))).toEqual([]);
+    expect(zone.calls).toEqual([
+      {
+        method: "POST",
+        path: `/accounts/${ACCOUNT_ID}/workers/observability/telemetry/query`,
+        body: expect.objectContaining({ timeframe: { from: T0 - 60_000, to: T0 }, limit: 1 }),
+      },
+    ]);
   });
 
-  it("names each missing permission", async () => {
+  it("names Workers Observability Read when the logs are refused", async () => {
     const { zone, client } = setup();
-    zone.denied.add("tail");
     zone.denied.add("logs");
-    zone.denied.add("analytics");
     expect(await client.observabilityPermissions(ACCOUNT_ID, WORKER)).toEqual({
-      missing: [TAIL, OBSERVABILITY, ANALYTICS],
+      missing: [OBSERVABILITY],
     });
-  });
-
-  it("checks a Worker that is not deployed yet", async () => {
-    const { zone, client } = setup();
-    zone.workers.clear();
-    expect(await client.observabilityPermissions(ACCOUNT_ID, WORKER)).toEqual({ missing: [] });
   });
 });
 
 describe("CLOUDFLARE_OBSERVABILITY_PERMISSIONS", () => {
-  it("lists the three, each marked as only for logs and status, and the connector asks for them", () => {
+  it("holds Workers Observability Read, marked as only for logs, and the connector asks for it", () => {
     expect(CLOUDFLARE_OBSERVABILITY_PERMISSIONS).toEqual([
-      `${TAIL} (only for logs and status on Cloudflare hosting)`,
-      `${OBSERVABILITY} (only for logs and status on Cloudflare hosting)`,
-      `${ANALYTICS} (only for logs and status on Cloudflare hosting)`,
+      `${OBSERVABILITY} (only for logs on Cloudflare hosting)`,
     ]);
     const { credentials } = cloudflareConnector({ env: {}, fetch: new FakeZone().fetch });
     expect(credentials.scopes).toEqual(
