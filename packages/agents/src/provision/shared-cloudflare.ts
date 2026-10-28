@@ -29,7 +29,7 @@ import {
   readTextIfExists,
   writeFileAtomic,
 } from "@opscrew/core";
-import { portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
+import { beszelHostname, portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { listsRedirect, siteRulesDesired } from "../serverless/cloudflare/rules";
@@ -119,9 +119,9 @@ export async function writeCloudflareRecord(
  * probe block wherever OpsCrew blocks probes (`security.wafCustomRules`, not on the user's
  * Portainer unless it serves the app through its tunnel) and in the strict-TLS rule wherever the
  * origin has its own certificate (not through a tunnel, not on the user's Portainer); the Zero
- * Trust organization whenever the plan has Cloudflare Access (a tunnel's SSH or Portainer
- * hostname, Portainer's webhook), and the one-time PIN login with Portainer on a subdomain. A site
- * on Cloudflare's hosting has rules of its own ({@link siteRulesDesired}).
+ * Trust organization whenever the plan has Cloudflare Access (a tunnel's SSH, Portainer or Beszel
+ * hostname, Portainer's webhook), and the one-time PIN login with Portainer or Beszel on a
+ * subdomain. A site on Cloudflare's hosting has rules of its own ({@link siteRulesDesired}).
  */
 export function sharedDesired(plan: DeployPlan, zone: string): SharedDesired {
   if (plan.target.provider === "cloudflare-workers") return siteRulesDesired(plan);
@@ -140,7 +140,7 @@ export function sharedDesired(plan: DeployPlan, zone: string): SharedDesired {
       ? {
           access: {
             authDomain: zeroTrustAuthDomain(zone),
-            oneTimePin: portainerHostname(plan) !== undefined,
+            oneTimePin: portainerHostname(plan) !== undefined || beszelHostname(plan) !== undefined,
           },
         }
       : {}),

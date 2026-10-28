@@ -78,6 +78,8 @@ async function cloudSetup(
     env?: Record<string, string>;
     answer?: (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
     interactive?: boolean;
+    /** The Cloudflare account has no Zero Trust organization and no one-time PIN login yet. */
+    freshAccount?: boolean;
   } = {},
 ) {
   const project = await createProject(
@@ -107,11 +109,13 @@ async function cloudSetup(
     outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: tunnelToken },
   });
   const zone = new FakeZone();
-  zone.organization = {
-    name: "someone-else.cloudflareaccess.com",
-    auth_domain: "someone-else.cloudflareaccess.com",
-  };
-  zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
+  if (o.freshAccount !== true) {
+    zone.organization = {
+      name: "someone-else.cloudflareaccess.com",
+      auth_domain: "someone-else.cloudflareaccess.com",
+    };
+    zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
+  }
   const services: AddonServices = {
     deployRemote: server.shell,
     applyHost: server.apply,
@@ -120,7 +124,7 @@ async function cloudSetup(
     sharedCloudflare: fakeSharedCloudflare(zone),
   };
   const plan = () => readArtifact("plan", deps.paths.files.plan);
-  return { ...project, deps, handler, server, services, engine, tunnelToken, plan };
+  return { ...project, deps, handler, server, services, engine, tunnelToken, plan, zone };
 }
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
@@ -737,6 +741,26 @@ describe.skipIf(!hasGit)("Beszel's dashboard at a subdomain (Hetzner)", () => {
     expect(result.status.addons[0]?.url).toBe("https://beszel.example.com");
   });
 
+  it("in a fresh account, sets up the Zero Trust organization and one-time PIN login for Beszel alone", async () => {
+    const s = await cloudSetup({ freshAccount: true });
+    await addonEnable(s.deps, await s.plan(), "beszel", { ...SUBDOMAIN, services: s.services });
+    expect(kinds(s.handler)).toEqual(["cloudflare-apply", "repo-write", "iac-apply", "host-apply"]);
+    const pin = s.zone.providers.find((provider) => provider.type === "onetimepin");
+    expect(s.zone.organization).toBeDefined();
+    expect(pin).toBeDefined();
+    const tfvars = JSON.parse(
+      await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(tfvars).toMatchObject({
+      beszel_hostname: "beszel.example.com",
+      one_time_pin_identity_provider_id: pin?.id,
+    });
+    expect(s.server.applies[0]?.plan.steps.map((step) => step.id)).toEqual([
+      "tunnel-connector",
+      "beszel",
+    ]);
+  });
+
   it("--plan-only then --approve: the planned hashes apply exactly that change", async () => {
     const s = await cloudSetup();
     const planned = await addonEnable(s.deps, await s.plan(), "beszel", {
@@ -874,14 +898,8 @@ async function ownSetup(answer: (request: ApprovalRequest) => boolean = () => tr
   const engine = new OwnEngine(PUBLIC_CHANGES, publicOutputs());
   const host = new FakeHostServer(freshFacts());
   const handler = new ScriptedApprovalHandler(answer);
-  // The account already has its Zero Trust organization and one-time PIN login. (Setting them up
-  // for a Beszel-only subdomain waits for provision/shared-cloudflare.ts to count Beszel's.)
+  // A fresh account: no Zero Trust organization and no one-time PIN login yet.
   const zone = new FakeZone();
-  zone.organization = {
-    name: "someone-else.cloudflareaccess.com",
-    auth_domain: "someone-else.cloudflareaccess.com",
-  };
-  zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
   const home = await mkdtemp(join(tmpdir(), "opscrew-addons-home-"));
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -924,7 +942,7 @@ async function ownSetup(answer: (request: ApprovalRequest) => boolean = () => tr
   await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT });
   handler.requests.length = 0;
   const plan = () => readArtifact("plan", deps.paths.files.plan);
-  return { ...project, deps, engine, host, server, handler, services, plan };
+  return { ...project, deps, engine, host, server, handler, services, plan, zone };
 }
 
 describe.skipIf(!hasGit)("add-ons on a server the user owns", () => {
@@ -947,19 +965,36 @@ describe.skipIf(!hasGit)("add-ons on a server the user owns", () => {
     expect(s.handler.requests.at(-1)).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
   });
 
-  it("Beszel at a subdomain: tunnel and Access, the connector in the server's host plan, then Beszel's", async () => {
+  it("Beszel at a subdomain in a fresh account: Zero Trust login, tunnel and Access, the connector, then Beszel", async () => {
     const s = await ownSetup();
     const token = `eyJ${fakeSecret("cloudflare-token", "own-beszel-tunnel")}`;
     s.engine.changes = tunnelCreate;
     s.engine.nextOutputs = { ...publicOutputs(), tunnel_id: TUNNEL_ID, tunnel_token: token };
+    expect(s.zone.organization).toBeUndefined();
     const result = await addonEnable(s.deps, await s.plan(), "beszel", {
       access: "subdomain",
       hostname: "beszel",
       allowEmails: ["owner@example.com"],
       services: s.services,
     });
-    // OpsCrew's shared Cloudflare resources are already as planned: no Cloudflare plan to approve.
-    expect(kinds(s.handler)).toEqual(["repo-write", "iac-apply", "host-apply", "host-apply"]);
+    // The account's Zero Trust organization and one-time PIN login come first, for Beszel alone.
+    expect(kinds(s.handler)).toEqual([
+      "cloudflare-apply",
+      "repo-write",
+      "iac-apply",
+      "host-apply",
+      "host-apply",
+    ]);
+    const pin = s.zone.providers.find((provider) => provider.type === "onetimepin");
+    expect(s.zone.organization).toBeDefined();
+    expect(pin).toBeDefined();
+    const tfvars = JSON.parse(
+      await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(tfvars).toMatchObject({
+      beszel_hostname: "beszel.example.com",
+      one_time_pin_identity_provider_id: pin?.id,
+    });
     const connector = s.host.applies
       .at(-1)
       ?.plan.steps.find((step) => step.id === "tunnel-connector");
