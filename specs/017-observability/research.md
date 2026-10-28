@@ -388,7 +388,7 @@ The agent always connects to the hub over WebSocket (`HUB_URL`, `TOKEN`, `KEY`) 
 
 ## Spike results (T1702)
 
-Items 1–4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2, 8 CPUs), with the pinned images and OpsCrew's own `sshArgs` and settings. Everything was removed afterwards. Items 5 and 6 need the e2e GitHub and Cloudflare accounts, and Alloy's delivery to Grafana Cloud (part of item 3) the founder's stack; a local Loki and Prometheus stood in for it.
+Items 1–4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2, 8 CPUs), with the pinned images and OpsCrew's own `sshArgs` and settings. Items 5 and 6 ran the same day on the private throwaway repository and the e2e Cloudflare account (Workers Free plan). Everything was removed afterwards, except four closed test issues the token can't delete. A local Loki and Prometheus stood in for Grafana Cloud in item 3. The founder's stack was checked separately with a pushed line read back.
 
 1. **The Docker proxy (Caddy, pinned):**
    - **Starting it:**
@@ -476,7 +476,59 @@ Items 1–4, 7 and 8 were run on 2026-10-28 on local Docker (29.9, cgroup v2, 8 
    - **With `-tt`,** it always ends, but the output has CRLF and stderr merged into stdout.
    - **Watching the parent ends it within about 1 s** on both OpenSSH versions, keeps stdout and stderr apart, and passes the follower's own exit code through: `<follow> & p=$!; while kill -0 $PPID 2>/dev/null && kill -0 $p 2>/dev/null; do sleep 1; done; kill $p 2>/dev/null; wait $p`.
 
+5. **The check on GitHub:**
+   - **The runners:** both ran the shipped `check.mjs` and checkout.
+     - `ubuntu-slim` ran on the private repository: 1 CPU, a container with Node 24, curl, OpenSSL, OpenSSH, jq and gh. It took 17–24 s from start to finish (check 1.5 s).
+     - `ubuntu-latest` (now Ubuntu 26.04) took 13–19 s.
+   - **Billing:**
+     - GitHub's page prices Linux 1-core (`actions_linux_slim`) at $0.002 a minute, against $0.006 for Linux 2-core. So a slim minute uses a third of the included minutes (2,000 on Free).
+     - The per-run timing API reports 0 billable ms for every runner now. The billing usage API needs Plan: Read.
+   - **Variables:** `vars.<NAME>` reached the job intact. The token's Variables: Read and write passed POST 201, GET, PATCH and DELETE, and a second POST gave 409.
+   - **Issues:**
+     - An issue created with a label that doesn't exist creates the label (colour `ededed`). Creating an existing label answers 422 `already_exists`.
+     - A new issue appears in the label filter only 7–8 s after it was created.
+     - Issues, comments and closes by `GITHUB_TOKEN` are authored by `github-actions[bot]`. Whether watchers get email can't be read with a fine-grained token.
+   - **Workflow state:** reads `active`, and `deleted` once the file is gone.
+   - **The token:** reading issues needs Issues: Read (`x-accepted-github-permissions: issues=read`). The e2e token was given it.
+6. **Cloudflare's logs, tail and analytics** (a server-side Worker with a static asset on a custom domain; the account has no `workers.dev` subdomain):
+   - **The query** (`…/workers/observability/telemetry/query`) worked with Workers Observability Read.
+     - `queryId` is required. Without it, the answer is 400 with a raw validation body and no `errors[]`.
+     - **Two events per request,** sharing `$metadata.requestId`:
+       - an invocation (`$metadata.type: "cf-worker-event"`): `$workers.outcome`, `$workers.event.request.{method,url}`, `$workers.event.path`, `$workers.event.response.status`, `$metadata.level`, `$metadata.message`, and `$metadata.error` on an exception;
+       - a console line (`"cf-worker"`): `source.message` and `source.level` (none for plain `console.log`), and on an exception `source.exception.{name, stack}` with `$metadata.error`.
+     - `view: "invocations"` groups the events by request.
+     - The invocation's `request.headers` and `cf` hold the visitor's IP and location.
+     - Events can be queried 10–28 s after the request (8 samples).
+   - **The tail** (Node 22's `WebSocket`):
+     - **Setup:** `POST …/tails` with `{}` returns a `wss://` URL that expires after 6 h. The `trace-v1` subprotocol is required, and frames are binary JSON.
+     - **A message:** `outcome`, `exceptions[]` (`name`, `message`), `logs[]` (`message` = the console arguments, `level`), `event.request.{url,method}`, `event.response.status` and `eventTimestamp`.
+     - **Latency:** 0.2–0.25 s.
+     - **One tail per Worker,** shared by every client of the account, and 11 sockets were accepted.
+     - **Closing:** `DELETE` stops all of them, and open sockets then go silent without closing. A client's `close()` never completes, and keeps a Node process alive.
+   - **Analytics:**
+     - `workersInvocationsAdaptive` answers on the Free plan.
+     - CPU time quantiles are in **microseconds**. `errors` counts exceptions only, not 4xx or 5xx.
+     - Figures lag 30–45 s, and a query covers at most 32 days.
+   - **Static assets:** asset-only requests appear in none of the three.
+   - **The allowance:** nothing in the query's answer says the day's log allowance was reached. Event sizes can't be queried, so the volume allowance from 2026-12-01 can't be measured.
+   - **Scanners:** they hit a new hostname within about 2 minutes.
+
 **What this changes:**
+- **The check** runs on `ubuntu-slim` (one constant in iac-templates). Design counts each run as one slim minute, a third of an included minute.
+- **Cloudflare's connector** (T1703):
+  - **Permissions:** Workers Tail Read, Workers Observability Read and Account Analytics Read.
+  - **`workersLogs`:**
+    - It sends a fixed `queryId`, and pairs events by `requestId`, or uses `view: "invocations"`.
+    - It keeps no request headers or `cf`.
+  - **`workersTail`** connects with `trace-v1` and `arraybuffer`. On stop it deletes the tail and calls `close()` without waiting.
+  - **`workersAnalytics`** reports CPU in ms (µs ÷ 1,000).
+- **What `logs` and `status` show on Cloudflare** (T1709c):
+  - **`logs` prints:**
+    - the request's method, path (never the query string, which can hold secrets), status and outcome;
+    - its console lines and exceptions.
+
+    It says that requests from the last half-minute may not show yet (`--follow` shows them at once), and states the dated allowance. Nothing can say the allowance was reached (spec edge case amended).
+  - **`status` says:** errors are exceptions, figures lag about a minute, and asset requests aren't counted.
 - **The proxy container:**
   - it gains `cap_add: [NET_BIND_SERVICE]`, `tmpfs: [/data, /config]` and `network_mode: none`;
   - Alloy's list adds `GET /networks` and `/containers/{id}/json`. Inspect is allowed: Alloy already holds the app's values for masking, so hiding the containers' environment from it would gain nothing.

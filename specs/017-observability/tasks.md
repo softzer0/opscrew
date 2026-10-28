@@ -130,20 +130,23 @@ Effort`.
 
 - [ ] T1703 [P] [US1] [US2] The Cloudflare connector: Workers logs, the tail, analytics, and their permissions, in `packages/connectors/cloudflare/**`
   - Owns: that path (+ tests and fakes)
-  - Reads: contracts/observability.md "Cloudflare"; research.md R2 and "Spike results" 6; plan.md "4."
+  - Reads: contracts/observability.md "Cloudflare"; research.md R2 and "Spike results" 6 (measured: event shapes, the tail's `trace-v1` frames, analytics units); plan.md "4."
   - Depends: T1701a, T1702
   - Accept:
     - **The methods in the contract,** zod-checked:
-      - **`workersLogs`:** the telemetry query, `view: "events"`, filtered on the Worker's name. Each event maps to `{ time, level, message, status?, outcome?, error? }` as spike result 6 locates the fields.
-      - **`workersTail`:** creates the tail, reads its WebSocket with Node's global `WebSocket`, and calls `onEvent` per message. It deletes the tail when `signal` aborts, and also when the socket closes.
-      - **`workersAnalytics`:** one GraphQL query on `workersInvocationsAdaptive` for the Worker since the given time: requests, errors, `cpuTimeP50` and `cpuTimeP99` in ms.
+      - **`workersLogs`:** the telemetry query with a fixed `queryId`, filtered on `$metadata.service` = the Worker.
+        - Events are paired by `$metadata.requestId`, or read with `view: "invocations"`.
+        - The request's method, path (never the query string), status and outcome come from the invocation event, and the console lines and exceptions from its `cf-worker` events (spike result 6 has the fields).
+        - `level` defaults to `log`.
+        - Request headers and `cf` are never kept.
+      - **`workersTail`:** creates the tail and opens its URL with Node's global `WebSocket` and the `trace-v1` subprotocol (`binaryType = "arraybuffer"`, JSON frames). It calls `onEvent` per message.
+        - On abort, it deletes the tail, calls `close()` without waiting for the `close` event (which never comes), and settles itself.
+        - The tail is shared by every client of the Worker, so deleting it also stops theirs. A comment says so.
+      - **`workersAnalytics`:** one GraphQL query on `workersInvocationsAdaptive` for the Worker since the given time, with `scriptName` as the only dimension: requests, errors (exceptions only), and `cpuTimeP50`/`cpuTimeP99` converted from µs to ms.
       - **`observabilityPermissions`:** names each missing permission.
-      - **The allowance:** if the query's answer says the day's ingestion stopped (spike result 6), `workersLogs` returns that with the events.
-    - **The permission list:** `CLOUDFLARE_OBSERVABILITY_PERMISSIONS` holds Workers Tail Read, the Workers Observability permission spike result 6 names, and Account Analytics Read. Each is marked "only for logs and status on Cloudflare hosting".
+    - **The permission list:** `CLOUDFLARE_OBSERVABILITY_PERMISSIONS` holds Workers Tail Read, Workers Observability Read and Account Analytics Read (spike result 6). Each is marked "only for logs and status on Cloudflare hosting".
     - **A WebSocket is injectable,** like `fetch`, so tests never open one.
-    - **Errors:**
-      - a 403 names the missing permission and never prints the token;
-      - a tail refused because 10 clients already follow the Worker says so.
+    - **Errors:** a 403 names the missing permission and never prints the token. Any refusal to create a tail passes Cloudflare's message through, redacted (the 10-client limit couldn't be reproduced).
     - **Tests:** the fake covers each endpoint:
       - events with a console line and an exception;
       - an empty answer;
@@ -282,7 +285,7 @@ Effort`.
         - workflow-level `concurrency: opscrew-check` without cancelling;
         - the job guard `if: github.repository == '<owner>/<repo>'`.
       - **The `check` job:**
-        - on `ubuntu-slim` or `ubuntu-latest` as spike result 5 settles;
+        - on `ubuntu-slim` (spike result 5; T1707b switches the constant);
         - `timeout-minutes: 5`;
         - `actions/checkout` (pinned) with a sparse checkout of `opscrew/check`;
         - `node opscrew/check/check.mjs`.
@@ -316,6 +319,16 @@ Effort`.
         - no address in any file.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
   - Effort: xhigh
+
+- [ ] T1707b [US3] The check runs on `ubuntu-slim`, in `packages/iac-templates/src/check/**`
+  - Owns: that path (+ tests, snapshots)
+  - Reads: research.md "Spike results" 5
+  - Depends: T1707
+  - Accept:
+    - The `check` job's runner constant is `ubuntu-slim`. The jobs on self-hosted runners are unchanged.
+    - Snapshots updated, and nothing else in the rendered files changes.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `pnpm lint`
+  - Effort: medium
 
 - [X] T1708 [P] [US4] [US5] The add-on renderers (the Docker proxy, Beszel, Alloy), the masking file in the deploy job, and the Workers Logs guard, in `packages/iac-templates/src/addons/**`, `packages/iac-templates/src/workflow/**`, `packages/iac-templates/src/serverless/wrangler.ts`, and Beszel's hostname in `packages/iac-templates/modules/cloudflare-access/**`, `packages/iac-templates/src/infra/tunnel.ts`, `packages/iac-templates/src/tunnel/index.ts`, `packages/iac-templates/src/generated/modules.ts`
   - Owns: those paths (+ tests, snapshots). In `serverless/wrangler.ts`, its test only, unless the guard finds a gap. `src/generated/modules.ts` only as `gen:modules` regenerates it. In `src/tunnel/index.ts`, `beszelHostname(plan)` and `usesTunnel` only (the lead, 2026-10-28).
@@ -459,10 +472,13 @@ Effort`.
   - Depends: T1703, T1709a, T1709b, T1710
   - Accept:
     - **`logs` on Cloudflare with SSR:**
-      - `workersLogs` for the past, mapped to `LogLine`: the request's method, path, status and outcome, then its console lines and exceptions;
+      - `workersLogs` for the past, mapped to `LogLine`: the request's method, path (never the query string), status and outcome, then its console lines and exceptions;
       - `workersTail` for `--follow`, stopped by `signal`;
-      - the dated allowance from `prices.ts` in the first line, and the reached-allowance note when T1703 reports it.
-    - **`status` on Cloudflare:** `workersAnalytics` for the last 24 hours, against 100,000 requests a day and 10 ms of CPU time. It notes that requests served from the site's files aren't counted.
+      - **the first line:** the dated allowance from `prices.ts`, that lines past it aren't kept, and that requests from the last half-minute may not show yet (`--follow` shows them at once). Spike result 6: events lag 10–28 s, and nothing says the allowance was reached.
+    - **`status` on Cloudflare:** `workersAnalytics` for the last 24 hours, against 100,000 requests a day and 10 ms of CPU time. It notes that:
+      - requests served from the site's files aren't counted;
+      - errors are exceptions only;
+      - figures lag about a minute.
     - **`init`:** with Cloudflare hosting in use, it checks `observabilityPermissions` (FR-1714), naming each missing permission and where to add it.
     - **From T1709a's review:** on a Portainer stack whose `web.mode` isn't `caddy`, `logs` leaves `edge` out of its parts, or says the stack has no Caddy, instead of the generic missing-container error (`logs/read.ts` ~88).
     - **Tests:**
