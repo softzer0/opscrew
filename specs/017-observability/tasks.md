@@ -128,7 +128,7 @@ Effort`.
 
 ## Phase 3: Packages (parallel)
 
-- [ ] T1703 [P] [US1] [US2] The Cloudflare connector: Workers logs, the tail, analytics, and their permissions, in `packages/connectors/cloudflare/**`
+- [X] T1703 [P] [US1] [US2] The Cloudflare connector: Workers logs, the tail, analytics, and their permissions, in `packages/connectors/cloudflare/**`
   - Owns: that path (+ tests and fakes)
   - Reads: contracts/observability.md "Cloudflare"; research.md R2 and "Spike results" 6 (measured: event shapes, the tail's `trace-v1` frames, analytics units); plan.md "4."
   - Depends: T1701a, T1702
