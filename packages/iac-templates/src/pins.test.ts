@@ -91,6 +91,9 @@ describe("pins.ts", () => {
       certbot: "v5.8.0",
       pebble: "2.10.1",
       linuxTools: "latest",
+      beszel: "0.21.1",
+      beszelAgent: "0.21.1",
+      alloy: "v1.21.2",
     });
     // Distroless publishes no versioned tags; the digest pins it, update-pins refreshes it.
     expect(parseImageRef(IMAGES.linuxTools.ref).repo).toBe("gcr.io/distroless/base-debian13");
@@ -106,8 +109,14 @@ describe("pins.ts", () => {
     expect(parseImageRef(IMAGES.dragonfly.ref).repo).toBe(
       "docker.dragonflydb.io/dragonflydb/dragonfly",
     );
+    expect(parseImageRef(IMAGES.beszel.ref).repo).toBe("henrygd/beszel");
+    expect(parseImageRef(IMAGES.beszelAgent.ref).repo).toBe("henrygd/beszel-agent");
+    expect(parseImageRef(IMAGES.alloy.ref).repo).toBe("grafana/alloy");
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
+        "alloy",
+        "beszel",
+        "beszelAgent",
         "caddy",
         "certbot",
         "cloudflared",

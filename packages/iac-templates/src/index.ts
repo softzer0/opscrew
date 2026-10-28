@@ -1,3 +1,4 @@
+export * from "./addons";
 export { appRoot } from "./app-root";
 export {
   appVariables,
@@ -16,6 +17,7 @@ export type {
   ServiceContext,
   ServiceSpec,
 } from "./catalog/types";
+export * from "./check";
 export * from "./dependabot";
 export * from "./docker";
 export * from "./edge";

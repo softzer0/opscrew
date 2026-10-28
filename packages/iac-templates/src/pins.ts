@@ -184,6 +184,19 @@ export const IMAGES = {
   pebble: {
     ref: "ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199",
   },
+  // The 017 add-ons (2026-10-28, research.md R6 and R7). Beszel's tags have no `v`; Alloy's do.
+  /** Beszel's hub (dashboard), for the Beszel add-on in hub mode. */
+  beszel: {
+    ref: "henrygd/beszel:0.21.1@sha256:8514a69d9bbbcb74f371a3205561ee231fc0289739cea64e8131f341d695b770",
+  },
+  /** Beszel's agent, connecting out to the hub over WebSocket. */
+  beszelAgent: {
+    ref: "henrygd/beszel-agent:0.21.1@sha256:cb6868012964d7a68debaa2c84bb72285e5f08531e81f506bd4c493bf052e41c",
+  },
+  /** Grafana Alloy, sending logs and server metrics to the user's Grafana Cloud stack. */
+  alloy: {
+    ref: "grafana/alloy:v1.21.2@sha256:89a5a320168387336b9ac3c850609c3ba7757eadd4ae5f1d819deb35e9854b18",
+  },
 } as const satisfies Record<string, ImagePin>;
 
 /** A platform the GitHub Actions runner is released for, as its release assets name it. */
