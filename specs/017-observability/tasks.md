@@ -550,7 +550,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1711 [P] [US4] [US5] The add-ons in agents: enable, disable, status and open, for Beszel and Grafana Cloud, and their memory in design, in `packages/agents/src/addons/**`, `packages/agents/src/design/components.ts`, `packages/agents/src/shared/memory.ts`, and `packages/agents/src/portainer/**` for exports only
+- [X] T1711 [P] [US4] [US5] The add-ons in agents: enable, disable, status and open, for Beszel and Grafana Cloud, and their memory in design, in `packages/agents/src/addons/**`, `packages/agents/src/design/components.ts`, `packages/agents/src/shared/memory.ts`, and `packages/agents/src/portainer/**` for exports only
   - Owns: those paths (+ tests; fakes in `packages/agents/src/testing/addons.ts` (new)). Also, for Beszel's subdomain on cloud servers (the lead, 2026-10-28): `planAddon`'s `connector` option in `packages/connectors/ssh-host/src/**`, and in `packages/agents/src/portainer/**` the rule that removes a cloud server's tunnel connector only when `usesTunnel(plan)` is false, and `runChange`'s sequence generalised into one function Portainer and the add-ons share, with Portainer's behaviour and tests unchanged.
   - Reads: spec US4, US5, FR-1711–FR-1713; data-model.md "The plan block", "Secrets kept apart"; contracts/observability.md; research.md R5–R7 and "Spike results" 1–3; plan.md "9."; how `agents/src/portainer/run.ts` enables, disables and reports Portainer; T1706's and T1708's reports
   - Depends: T1701a, T1706, T1708, T1710 (for the one line in `provision/shared-cloudflare.ts` below)
