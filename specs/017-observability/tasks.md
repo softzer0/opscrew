@@ -771,6 +771,16 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: medium
 
+- [ ] T1714c The local-runner pass verifies dev before `status`' figures, in `packages/cli/test/live/local-runner.test.ts`
+  - Owns: that path
+  - Reads: `packages/agents/src/status/run.ts` (`appDeployed`, `componentsReport`); `packages/agents/src/localhost/verify.ts`; `packages/cli/test/live/observability-checks.ts` (`logsAndFigures`)
+  - Depends: T1714
+  - Accept:
+    - **Found live (2026-10-29, the local-runner pass's run 2):** step 4b's logs passed, then `status --env dev` showed the plan's components and no figures, so the step failed with "status showed no resource figures". `status` reads what runs, and its figures, only once `verify` has recorded the first deploy (`deployment.firstDeployAt`), on every target. Every other pass runs `verify` before its `status` step; this one never ran it. The guide says `verify` and `status` work on this computer as on a server.
+    - **Step 4b** runs `opscrew verify --env dev` first, as a user does after the deploy, and it must pass; then the logs and figures as now. The step's title names it.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint` (the live pass itself runs with T1715)
+  - Effort: medium
+
 - [ ] T1715 Live runs (lead), after T1714: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1715)
