@@ -771,7 +771,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1714c The local-runner pass verifies dev before `status`' figures, in `packages/cli/test/live/local-runner.test.ts`
+- [x] T1714c The local-runner pass verifies dev before `status`' figures, in `packages/cli/test/live/local-runner.test.ts`
   - Owns: that path
   - Reads: `packages/agents/src/status/run.ts` (`appDeployed`, `componentsReport`); `packages/agents/src/localhost/verify.ts`; `packages/cli/test/live/observability-checks.ts` (`logsAndFigures`)
   - Depends: T1714
