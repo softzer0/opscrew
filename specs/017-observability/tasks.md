@@ -781,7 +781,9 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` and `pnpm lint` (the live pass itself runs with T1715)
   - Effort: medium
 
-- [ ] T1715 Live runs (lead), after T1714: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
+- [x] T1715 Live runs (lead), after T1714: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
+  - **Done 2026-10-29:** all passed: Hetzner with observability and the add-ons (run 2), Cloudflare's hosting (S2b), your own server (run 3), your existing Portainer (3c) and the local runner on Ubuntu (run 3). The runs found T1717, T1714b, T1718 and T1714c.
+  - **Not run:** retarget's pause (the move needs a DigitalOcean token, which the test credentials don't have) and the Ctrl+C check on Windows by hand.
 
 ## End-of-feature simplify pass (after T1715)
 
