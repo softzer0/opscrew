@@ -112,6 +112,22 @@ describe("the leak helpers", () => {
     ).toBe(1);
   });
 
+  it("allows the address on the one line after status' address heading", () => {
+    const addresses = ["5.6.7.8", "2001:db8:1:2::1"];
+    const heading = "Server address (kept on this computer only, never in the repository):";
+    const section = (line: string) => ["Phases:", "  deploy  done", "", heading, line].join("\n");
+    expect(addressLinesOutsidePurpose(section("  5.6.7.8"), addresses)).toBe(0);
+    expect(addressLinesOutsidePurpose(section("  5.6.7.8 (IPv6 2001:db8:1:2::1)"), addresses)).toBe(
+      0,
+    );
+    // The same address anywhere else in the output still counts.
+    expect(addressLinesOutsidePurpose(`${section("  5.6.7.8")}\nat 5.6.7.8`, addresses)).toBe(1);
+    expect(addressLinesOutsidePurpose(`${section("  5.6.7.8")}\n  5.6.7.8`, addresses)).toBe(1);
+    expect(addressLinesOutsidePurpose(`  5.6.7.8\n${heading}`, addresses)).toBe(1);
+    expect(addressLinesOutsidePurpose(section("  5.6.7.8 via 5.6.7.8"), addresses)).toBe(1);
+    expect(addressLinesOutsidePurpose(section("  reach 5.6.7.8"), addresses)).toBe(1);
+  });
+
   it("counts a short host name only where it is a host name", () => {
     const leaks = [
       "Could not reach https://nas:9443 in time.",

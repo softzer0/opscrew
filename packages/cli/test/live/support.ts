@@ -513,18 +513,33 @@ export class Scrubber {
   }
 }
 
+/** `opscrew status`' heading above the server's address (`addressLines` in its `status.ts`). */
+const STATUS_ADDRESS_HEADING =
+  "Server address (kept on this computer only, never in the repository):";
+
 /**
  * How many lines of CLI output name one of the server's `addresses` outside the mentions that show
  * it on purpose, on this computer only: `deploy@<address>` in the Portainer SSH tunnel command
  * (a line with `-L <port>:127.0.0.1:<port>`, also inside `--json`) and "server at <address>" or
  * "server at [<address>]" in the host key and reachability messages. Those mentions are cut out of
- * the line first; any address left in the rest counts. Never returns the lines themselves.
+ * the line first; any address left in the rest counts. `opscrew status`' one line after its heading
+ * "Server address (kept on this computer only, never in the repository):" (`  <ipv4>` or
+ * `  <ipv4> (IPv6 <ipv6>)`) is allowed too. Never returns the lines themselves.
  */
 export function addressLinesOutsidePurpose(output: string, addresses: readonly string[]): number {
   const longestFirst = [...addresses].filter((a) => a !== "").sort((a, b) => b.length - a.length);
   const known = longestFirst.map((value) => ({ label: "address", value }));
+  const statusLine = (line: string) =>
+    longestFirst.some(
+      (ipv4) =>
+        line === `  ${ipv4}` || longestFirst.some((ipv6) => line === `  ${ipv4} (IPv6 ${ipv6})`),
+    );
   let count = 0;
+  let previous = "";
   for (const line of output.split(/\r?\n/)) {
+    const afterHeading = previous === STATUS_ADDRESS_HEADING;
+    previous = line;
+    if (afterHeading && statusLine(line)) continue;
     let rest = line;
     const tunnel = /-L \d+:127\.0\.0\.1:\d+ deploy@/.test(line);
     for (const address of longestFirst) {
