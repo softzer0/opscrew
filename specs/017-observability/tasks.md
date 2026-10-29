@@ -760,6 +760,17 @@ Effort`.
   - Verify: `pnpm turbo run test --filter=opscrew -- test/live/support.test.ts` and `pnpm lint`
   - Effort: medium
 
+- [ ] T1718 Found live: the local executor's `input` on Linux, where `sh` is dash, in `packages/connectors/ssh-host/src/local.ts` (+ its test)
+  - Owns: that path and `local.test.ts` beside it
+  - Reads: `packages/agents/src/localhost/apply.ts` (`withRegistryLogin`); `packages/agents/src/shared/remote.ts` (`stdinBootstrap`, which the SSH executor already uses)
+  - Depends: none
+  - Accept:
+    - **Found live (2026-10-29, the local-runner pass on Ubuntu under WSL, Docker Desktop):** `provision` of dev stopped with "Docker on this computer could not log in to GitHub Container Registry with your token". The token works with `docker login` by hand. `localExec` pipes `{ <command> } ; exit $?` and then `input` to `<shell> -s` on the same stdin, and `sh` on Debian and Ubuntu is dash, which reads ahead from a pipe, so `docker login --password-stdin` got nothing (`printf '{\ncat\n} ; exit $?\nx\n' | dash -s` prints nothing; bash prints `x`). The pass ran before on Windows (Git for Windows' bash), where it works.
+    - **The fix:** with `input`, the script stays on the shell's stdin and the input reaches the command through the shell's builtin `printf` piped into the group: `printf '%s' <input, shell-quoted> | { <command> } ; exit $?`. The input's exact bytes, never in any program's arguments or in a file; any POSIX shell, Git for Windows' bash included. Without `input`, the script is as before. The comment says why (dash reads ahead).
+    - **Tests:** the script's shape with and without `input`; and, where `sh` is on PATH and the platform isn't Windows, the real `sh -s` (dash on Ubuntu CI) passes the input to `cat` byte for byte, including a value with quotes, `$` and a newline, and the command's exit code comes back.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --concurrency=2` and `pnpm lint`
+  - Effort: medium
+
 - [ ] T1715 Live runs (lead), after T1714: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1715)
