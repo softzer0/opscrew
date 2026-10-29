@@ -350,9 +350,11 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "4b. logs from local Docker: the latest lines within 10 seconds, a request's line in logs --follow within 10 seconds of it, then Ctrl+C; status: the figures (SC-1701)",
+      "4b. verify --env dev passes; logs from local Docker: the latest lines within 10 seconds, a request's line in logs --follow within 10 seconds of it, then Ctrl+C; status: the figures (SC-1701)",
       minutes(10),
       async () => {
+        // status reads what runs, and its figures, once verify has recorded the first deploy.
+        await run.opscrewOk("verify", "--env", DEV);
         const { site, ca } = await devSite();
         await logsAndFigures(liveRunTarget(run), {
           args: ["--env", DEV],
