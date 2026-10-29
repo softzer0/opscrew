@@ -760,7 +760,7 @@ Effort`.
   - Verify: `pnpm turbo run test --filter=opscrew -- test/live/support.test.ts` and `pnpm lint`
   - Effort: medium
 
-- [ ] T1718 Found live: the local executor's `input` on Linux, where `sh` is dash, in `packages/connectors/ssh-host/src/local.ts` (+ its test)
+- [x] T1718 Found live: the local executor's `input` on Linux, where `sh` is dash, in `packages/connectors/ssh-host/src/local.ts` (+ its test)
   - Owns: that path and `local.test.ts` beside it; `packages/agents/src/localhost/__fixtures__/computer.ts` (the fake computer reads the script and the input back from the shell's stdin; the lead's decision, 2026-10-29)
   - Reads: `packages/agents/src/localhost/apply.ts` (`withRegistryLogin`); `packages/agents/src/shared/remote.ts` (`stdinBootstrap`, which the SSH executor already uses)
   - Depends: none
