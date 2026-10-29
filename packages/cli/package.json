@@ -1,6 +1,6 @@
 {
   "name": "opscrew",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpsCrew — the ops crew you didn't hire. From a GitHub repo to a hardened production deployment on your own cloud.",
   "keywords": [
     "devops",
