@@ -134,8 +134,10 @@ export class FakeComputer {
   private run(command: string, args: readonly string[], input: string | undefined): CommandResult {
     const ok = (stdout: string): CommandResult => ({ exitCode: 0, stdout, stderr: "" });
     if (command === SHELL) {
-      const script = (input ?? "").replace(/^\{\n/, "").replace(/\n\} ; exit \$\?\n[\s\S]*$/, "");
-      this.scripts.push({ script, input: input ?? "" });
+      // `localExec` sends `[printf '%s' '<input>' | ]{\n<script>\n} ; exit $?\n`.
+      const [, quoted, script = ""] =
+        /^(?:printf '%s' ('(?:[^']|'\\'')*') \| )?\{\n([\s\S]*)\n\} ; exit \$\?\n$/.exec(input ?? "") ?? [];
+      this.scripts.push({ script, input: quoted?.slice(1, -1).replaceAll("'\\''", "'") ?? "" });
       return this.script(script);
     }
     if (command !== "docker") {
