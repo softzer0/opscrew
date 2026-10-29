@@ -3,7 +3,10 @@ import type { CommandOptions, CommandResult, CommandRunner } from "@opscrew/cont
 import { describe, expect, it } from "vitest";
 import { BASH_AVAILABLE } from "./__fixtures__/shell-harness";
 import { localExec } from "./local";
-import { asLogin } from "./shell";
+import { asLogin, shellQuote } from "./shell";
+
+/** Whether a real `sh` (dash on Debian and Ubuntu) can run here. */
+const SH_AVAILABLE = process.platform !== "win32" && spawnSync("sh", ["-c", "exit 0"]).status === 0;
 
 /** A runner that records each call and answers `exitCode` 0. */
 function fakeRunner() {
@@ -61,11 +64,13 @@ describe("localExec", () => {
     ]);
   });
 
-  it("puts stdin input after the command, and never runs anything through sudo", async () => {
+  it("pipes stdin input into the command with printf, and never runs anything through sudo", async () => {
     const { calls, runner } = fakeRunner();
     const exec = localExec({ runner, shell: "sh", env: {}, homeDir: "/home/me/.opscrew" });
-    await exec.run("read -r x", { input: "value\n" });
-    expect(calls[0]?.options?.input).toBe("{\nread -r x\n} ; exit $?\nvalue\n");
+    await exec.run("read -r x", { input: "it's\n" });
+    expect(calls[0]?.options?.input).toBe(
+      `printf '%s' ${shellQuote("it's\n")} | {\nread -r x\n} ; exit $?\n`,
+    );
     expect(calls[0]?.options?.env?.OPSCREW_EDGE_DIR).toBe("/home/me/.opscrew/local/srv/edge");
     await expect(exec.run("sudo -n sh -c 'id'")).rejects.toThrow(
       "OpsCrew never runs anything as root on this computer.",
@@ -98,6 +103,21 @@ exit 3`;
         `"${process.execPath.replaceAll("\\", "/")}" -e 'console.log(process.argv[1])' /api/health`,
       );
       expect(argument).toMatchObject({ exitCode: 0, stdout: "/api/health\n" });
+    },
+  );
+
+  it.skipIf(!SH_AVAILABLE)(
+    "gives the command its input byte for byte in the real sh, and returns its exit code",
+    async () => {
+      const exec = localExec({
+        runner: spawnRunner,
+        shell: "sh",
+        env: { PATH: process.env.PATH },
+        homeDir: "/home/me/.opscrew",
+      });
+      const input = "it's $HOME \\n \\ `x` %s\nsecond line\n";
+      expect(await exec.run("cat", { input })).toMatchObject({ exitCode: 0, stdout: input });
+      expect(await exec.run("cat > /dev/null; exit 7", { input })).toMatchObject({ exitCode: 7 });
     },
   );
 });
