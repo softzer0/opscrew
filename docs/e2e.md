@@ -1595,7 +1595,9 @@ grafana-cloud`, as the guide says; until then Alloy masks only secret-shaped val
 
 ### The other targets
 
-The step every target's pass takes (SC-1701, US2):
+The step every target's pass takes (SC-1701, US2). The other passes have run `verify` by then; the
+local runner's runs `opscrew verify --env dev` first, since `status` shows what runs, and its
+figures, only once `verify` has recorded the first deploy.
 
 1. `opscrew logs` (with `--env dev` on the local runner) must show at least one line, timed from
    the command's start to its end; over 10 seconds is a finding that fails the run at its end.
@@ -1758,15 +1760,16 @@ titles name the run's hostname, `e2e-<run id>.<zone>`), and delete the label, th
 `OPSCREW_CHECK_PAUSED` and the secrets `OPSCREW_CHECK_*` and `…CHECK_SERVER` under Settings →
 Secrets and variables → Actions.
 
-**Expected time and cost** (not measured yet):
+**Time and cost** (both gates and the other targets' steps measured on 2026-10-29; each gate alone
+is less than both):
 
 | Pass | Time | Cost |
 |---|---|---|
-| `OPSCREW_E2E_OBSERVABILITY=1` | about 35 minutes: the usual 10, then about 20 for the check's six dispatched runs (each a minute or two, the stopped app's with its three tries 30 seconds apart) and the waits, and a run after destroy | a cx23 for under an hour, about one cent of server time; about 10 Actions minutes for the build and the check's runs (`ubuntu-slim`; free in a public repository); ntfy.sh is free |
-| `OPSCREW_E2E_ADDONS=1` with Grafana Cloud | about 45 minutes: the usual 10, Beszel about 5, Grafana Cloud about 30 (up to 5 minutes for its figures, two provisions and deploys, up to 5 minutes for the line) | a cx23 for about an hour, one to two cents; two more builds' Actions minutes; Grafana Cloud's free tier |
-| Both | about 70 minutes | a cx23 for one or two started hours, about two cents |
-| Retarget's pause | about 5 minutes more in the move | nothing more |
-| Each other target's step | about 1 to 2 minutes | nothing more |
+| `OPSCREW_E2E_OBSERVABILITY=1` | under 23 minutes | a cx23 for under an hour, about one cent of server time; about 13 Actions minutes in a private repository (the build and the check's six runs on `ubuntu-slim`; free in a public repository); ntfy.sh is free |
+| `OPSCREW_E2E_ADDONS=1` with Grafana Cloud | under 23 minutes | a cx23 for under an hour, about one cent; three deploys' Actions minutes, about 15; Grafana Cloud's free tier |
+| Both | 23 minutes | a cx23 for under an hour, about one cent; 23 Actions minutes (the check's six runs 8, three deploys 15) |
+| Retarget's pause | about 5 minutes more in the move (not measured) | nothing more |
+| Each other target's step | under a minute (9 s on the local runner with its `verify`, 11 s in your existing Portainer, 24 s on Cloudflare's hosting, 30 s on your own server) | nothing more |
 
 ## Price tables
 
