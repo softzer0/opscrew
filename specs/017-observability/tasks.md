@@ -749,7 +749,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --concurrency=2` and `pnpm lint`
   - Effort: high
 
-- [ ] T1714b `opscrew status`'s address section is not a leak in the own-server passes, in `packages/cli/test/live/support.ts` (and its test)
+- [x] T1714b `opscrew status`'s address section is not a leak in the own-server passes, in `packages/cli/test/live/support.ts` (and its test)
   - Owns: that path and `support.test.ts`
   - Reads: `packages/cli/src/commands/status.ts` (`addressLines`); `own-server.test.ts` step 8
   - Depends: T1714
