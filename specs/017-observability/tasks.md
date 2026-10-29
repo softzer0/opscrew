@@ -749,6 +749,17 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --concurrency=2` and `pnpm lint`
   - Effort: high
 
+- [ ] T1714b `opscrew status`'s address section is not a leak in the own-server passes, in `packages/cli/test/live/support.ts` (and its test)
+  - Owns: that path and `support.test.ts`
+  - Reads: `packages/cli/src/commands/status.ts` (`addressLines`); `own-server.test.ts` step 8
+  - Depends: T1714
+  - Accept:
+    - **Found live (2026-10-29, the own-server pass):** step 8 reported "#14 opscrew status printed the server's address on 1 line(s)". That was step 2b's `status`, the first `status` the own-server pass runs. `status` prints the address on purpose, in its section "Server address (kept on this computer only, never in the repository):", so this is no leak.
+    - **`addressLinesOutsidePurpose`** also accepts the one line that follows that heading (`  <ipv4>` or `  <ipv4> (IPv6 <ipv6>)`). The address anywhere else in `status`' output still counts.
+    - **Tests:** the section passes; the same address on another line of the same output is still counted.
+  - Verify: `pnpm turbo run test --filter=opscrew -- test/live/support.test.ts` and `pnpm lint`
+  - Effort: medium
+
 - [ ] T1715 Live runs (lead), after T1714: the passes in `docs/e2e.md`, with the results in `docs/e2e-coverage.md` (its Live results and the status at a glance).
 
 ## End-of-feature simplify pass (after T1715)
