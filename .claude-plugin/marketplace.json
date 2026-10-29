@@ -11,7 +11,7 @@
       "name": "opscrew",
       "source": "./plugin",
       "description": "Scan, plan, prepare and deploy your app to your own cloud with OpsCrew.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "license": "Apache-2.0",
       "category": "devops"
     }
