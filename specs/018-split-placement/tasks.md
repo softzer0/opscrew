@@ -237,7 +237,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T1808 [P] [US1] [US2] [US3] Agents' network core: allocation, keys, peers, step params, `readNetwork`, the server record and per-server remotes, in `packages/agents/src/network/**` and `packages/agents/src/shared/{server-record,server-address,app-secrets}.ts`
+- [X] T1808 [P] [US1] [US2] [US3] Agents' network core: allocation, keys, peers, step params, `readNetwork`, the server record and per-server remotes, in `packages/agents/src/network/**` and `packages/agents/src/shared/{server-record,server-address,app-secrets}.ts`
   - Owns: those paths (+ tests). In `packages/agents/src/index.ts`, only the new export lines. In `packages/agents/src/testing/**`, only new fakes.
   - Reads: plan.md "7."; data-model.md (all); contracts/split-placement.md "Agents and surfaces"; research.md R5, R5a
   - Depends: T1801a
