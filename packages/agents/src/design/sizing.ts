@@ -169,13 +169,15 @@ function serverAppMb(app: ServerApp): number {
  * (FR-1325, the same figures as on cloud servers): `refused` when they do not fit, a `warning` when less
  * than 15% stays free, each saying how much the other apps take; `undefined` when it fits, or
  * when inspection could not read the memory (the own-server option then records a placeholder
- * under 100 MB, and design warns about the server's size already).
+ * under 100 MB, and design warns about the server's size already). For an extra server `name`
+ * (feature 018), `appMb` is this app's services there, and an `edgeMb` of 0 runs no edge.
  */
 export function ownServerMemory(
   serverMb: number,
   appMb: number,
   others: readonly ServerApp[],
   edgeMb: number,
+  name?: string,
 ): { refused?: { message: string; hint: string }; warning?: string } | undefined {
   if (serverMb < 100) return undefined;
   const othersMb = others.reduce((sum, app) => sum + serverAppMb(app), 0);
@@ -188,6 +190,8 @@ export function ownServerMemory(
     ),
   );
   const server = Math.round(serverMb);
+  const noun = name === undefined ? "Your server" : `Server ${name}`;
+  const edge = edgeMb > 0 ? ` and ${edgeMb} MB for OpsCrew's edge` : "";
   if (!headroom.fits) {
     const left = server - SYSTEM_RESERVE_MB - edgeMb;
     const taken =
@@ -196,8 +200,11 @@ export function ownServerMemory(
         : `the other OpsCrew ${others.length === 1 ? "app on it takes" : "apps on it take"} ${othersMb} MB of memory limits (${each}), which leaves ${Math.max(0, left - othersMb)} MB`;
     return {
       refused: {
-        message: `Your server has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, ${taken}, and this app's containers have ${appMb} MB of memory limits. Nothing was written.`,
-        hint: "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again.",
+        message: `${noun} has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system${edge}, ${taken}, and this app's ${name === undefined ? "containers" : "services there"} have ${appMb} MB of memory limits. ${name === undefined ? "Nothing was written." : "plan.yaml was not changed."}`,
+        hint:
+          name === undefined
+            ? "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again."
+            : `Lower the memory limits of the services on server ${name} in opscrew/plan.yaml, add memory to the server, or place fewer services on it, then run \`opscrew design\` again.`,
       },
     };
   }
@@ -206,7 +213,7 @@ export function ownServerMemory(
       ? ""
       : ` and of the other OpsCrew ${others.length === 1 ? "app" : "apps"} on it (${othersMb} MB: ${each})`;
   return {
-    warning: `Your server keeps only ${Math.max(0, Math.round(headroom.free * 100))}% of its memory free after the memory limits of this app (${appMb} MB)${theirs}, OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
+    warning: `${noun} keeps only ${Math.max(0, Math.round(headroom.free * 100))}% of its memory free after the memory limits of this app (${appMb} MB)${theirs}${edgeMb > 0 ? ", OpsCrew's edge and" : " and"} the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
   };
 }
 

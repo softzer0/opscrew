@@ -6,8 +6,9 @@ import { connectOwnServer, inspectOwnServer, type OwnServerDeps } from "./own-se
 /**
  * What design needs from the user's own server: connects with the login the interview recorded
  * (confirming and pinning the host key on the first connection, see {@link connectOwnServer}) and
- * inspects the server read-only: its size, whether its CPU has AVX, and the OpsCrew apps set up
- * there with their memory limits. Design itself never connects.
+ * inspects the server read-only: its size, whether its CPU has AVX, the OpsCrew apps set up there
+ * with their memory limits, and its WireGuard interfaces and UDP ports in use (the port of the
+ * app's private network there). Design itself never connects.
  */
 export async function inspectOwnServerForDesign(
   deps: OwnServerDeps,
@@ -28,5 +29,10 @@ export async function inspectOwnServerForDesign(
       memoryMb: record.memoryMb,
       tunnel: tunnelOf(facts, record.app).installed,
     }));
-  return { facts: inspected.server, apps, avx: facts.avx };
+  return {
+    facts: inspected.server,
+    apps,
+    avx: facts.avx,
+    network: { udpPortsInUse: facts.udpPortsInUse, wireguardInterfaces: facts.wireguardInterfaces },
+  };
 }

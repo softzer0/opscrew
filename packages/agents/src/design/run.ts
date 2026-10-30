@@ -13,6 +13,7 @@ import { detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/dete
 import { type EdgeProxy, edgeMemoryMb, edgeProxy, serviceSpec } from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
+  type CloudProvider,
   CloudProviderSchema,
   type DeployPlan,
   DeployPlanSchema,
@@ -24,9 +25,9 @@ import {
   isServerlessProvider,
   isServerlessTarget,
   type Observability,
+  onOneServer,
   type PlanService,
   type ProjectFacts,
-  type Region,
   type Requirements,
   readArtifact,
   readOptionalArtifact,
@@ -62,8 +63,10 @@ import {
 } from "../localhost/design";
 import { githubRegistry, type LocalRegistry } from "../localhost/image";
 import type { LocalhostServices } from "../localhost/services";
+import type { NetworkHostFacts } from "../network";
 import {
   type OwnServerFacts,
+  planProvider,
   providerProfile,
   requestedProvider,
   requestedRegion,
@@ -82,6 +85,7 @@ import {
   serverlessName,
   serviceFilledNames,
 } from "../shared";
+import { recordGeneratedEntries } from "../shared/app-secrets";
 import { reasonOf } from "../shared/errors";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { vercelAdditions } from "./additions";
@@ -116,6 +120,8 @@ import {
   tunnelDomainMessage,
   tunnelNeedsCloudflareDomain,
 } from "./own";
+import { designPlacement, onAppServer, type PlacementOptions } from "./placement";
+import { hasPlacement, type PlacementEdits, readPlanWithEdits } from "./placement-edits";
 import { optionToPlan } from "./plan";
 import {
   buildPortainerOption,
@@ -128,6 +134,7 @@ import {
 } from "./portainer";
 import { releaseCommandNote } from "./release";
 import { resolveRuntime } from "./runtime-version";
+import { appServerChange } from "./server-changes";
 import {
   buildServerlessOption,
   pagesAllowedFor,
@@ -142,7 +149,11 @@ import { checkSqliteFolder, sqliteOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
 
-export interface RunDesignOptions {
+/**
+ * Besides the choice: how design reaches the extra servers the user owns (their login is asked
+ * once with `askServerLogin`) and makes the private network's keys (`PlacementOptions`).
+ */
+export interface RunDesignOptions extends PlacementOptions {
   /**
    * Interactive picker: receives the options and returns the chosen option id. Ignored when
    * `optionId` is set; without either, the recommended option is used.
@@ -207,6 +218,11 @@ export interface OwnServerDesignInput {
   apps?: readonly ServerApp[];
   /** The server's x86 CPU has AVX (inspection's CPU flags; MongoDB 5 and later need it). */
   avx?: boolean;
+  /**
+   * Its WireGuard interfaces and the UDP ports in use (inspection's facts): the port of the app's
+   * private network on it, when design creates one for extra servers.
+   */
+  network?: NetworkHostFacts;
 }
 
 export interface DesignResult {
@@ -240,6 +256,12 @@ export interface DesignResult {
  * whose shared parts it copies (`withSharedParts`). A promoted one keeps the services its source no
  * longer has while it does not run the source's image yet ({@link servicesToKeep}). A hostname
  * another environment uses stops design.
+ *
+ * Services the user places on servers of their own in plan.yaml (`servers`, `services[].server`;
+ * feature 018) are completed by `designPlacement`: each server sized and priced (or reached and
+ * inspected when the user owns it), the private network, a move of a deployed service, each
+ * server's lines and the total; the app's server is sized for what stays on it. The network's new
+ * private keys go into the generated values, never the plan.
  * @throws OpsCrewError `PHASE_PRECONDITION` (nothing written) when the plan has a live deployment
  * on another provider than the one requested, before prod's plan exists for another environment,
  * before a promoted environment's source has a plan, and (before reading anything else) while
@@ -249,9 +271,10 @@ export async function runDesign(
   deps: PhaseDeps,
   options: RunDesignOptions = {},
 ): Promise<DesignResult> {
-  // A move in progress stops before anything else, without recording a failed design phase.
-  const onDisk = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
-  if (onDisk !== undefined) requireNoMoveInProgress(onDisk);
+  // A move in progress stops before anything else, without recording a failed design phase, also
+  // when plan.yaml places a service on another server meanwhile.
+  const onDisk = await readPlanWithEdits(deps.paths.files.plan).catch(() => undefined);
+  if (onDisk !== undefined) requireNoMoveInProgress(onDisk.plan);
   return runPhase(deps, "design", () => design(deps, options));
 }
 
@@ -315,10 +338,10 @@ export async function previewDesignOptions(
 ): Promise<DesignPreview> {
   const inputs = await readInputs(deps, options.facts);
   const warnings: string[] = [];
-  const previous = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
-  const source = await sharedPartsSource(
-    deps.paths,
-    previous ?? newPlanBasis(inputs.requirements, undefined),
+  const read = await readPlanWithEdits(deps.paths.files.plan).catch(() => undefined);
+  const previous = read?.plan;
+  const source = unplaced(
+    await sharedPartsSource(deps.paths, previous ?? newPlanBasis(inputs.requirements, undefined)),
   );
   const move = previous === undefined ? undefined : moveInProgress(previous);
   if (move !== undefined) {
@@ -338,6 +361,7 @@ export async function previewDesignOptions(
     previous,
     shared: source?.plan,
     localhost: { services: options.localhost, environment: previous ?? {} },
+    ...(read === undefined ? {} : { placed: read.edits.placed }),
   });
 }
 
@@ -412,7 +436,8 @@ interface Designed {
 
 /**
  * The single option on the user's own server: no price, warnings when the server is smaller than
- * the app needs or a tunnel has no Cloudflare domain, and the backups note.
+ * the app needs (`onApp`: what runs on it) or a tunnel has no Cloudflare domain, and the backups
+ * note.
  */
 async function priceOwnServer(
   deps: PhaseDeps,
@@ -421,6 +446,7 @@ async function priceOwnServer(
   warnings: string[],
   input: OwnServerDesignInput | undefined,
   designed: Designed,
+  onApp: Components,
   edge: EdgeProxy,
 ): Promise<DesignPreview> {
   const say = (text: string) => deps.redactor.redact(text);
@@ -433,7 +459,7 @@ async function priceOwnServer(
     catalog,
     access,
     serving,
-    components: designed.components,
+    components: onApp,
     edge,
   });
   for (const warning of own.warnings) warn(warning);
@@ -540,7 +566,15 @@ interface PlanBasis {
     services: Pick<LocalhostServices, "arch" | "portFree"> | undefined;
     environment: Pick<DeployPlan, "environment">;
   };
+  /**
+   * The services plan.yaml places on other servers (`services[].server`, by name): the app's server
+   * is sized and priced without them.
+   */
+  placed?: Readonly<Record<string, string>>;
 }
+
+/** A preview, with the catalogue a server OpsCrew creates was priced from. */
+type PricedPreview = DesignPreview & { catalog?: ComputeCatalog };
 
 /**
  * The single option on this computer: no price, the computer's CPU and the edge's ports
@@ -655,8 +689,8 @@ async function priceOptions(
   warnings: string[],
   ownServer: OwnServerDesignInput | undefined,
   basis: PlanBasis,
-): Promise<DesignPreview> {
-  const { previous, shared } = basis;
+): Promise<PricedPreview> {
+  const { previous, shared, placed = {} } = basis;
   const { facts, requirements } = inputs;
   // The user's own server is the catalogue's only offer; its vCPUs decide whether Dragonfly is
   // offered there.
@@ -691,11 +725,24 @@ async function priceOptions(
     previous === undefined || isServerlessProvider(previous.target.provider)
       ? "caddy"
       : edgeProxy(previous);
+  // The app's server holds what plan.yaml does not place on another server.
+  const components = {
+    ...designed.components,
+    services: designed.components.services.filter((s) => placed[s.name] === undefined),
+  };
   if (ownCatalog !== undefined) {
-    return priceOwnServer(deps, inputs, ownCatalog, warnings, ownServer, designed, edge);
+    return priceOwnServer(
+      deps,
+      inputs,
+      ownCatalog,
+      warnings,
+      ownServer,
+      designed,
+      components,
+      edge,
+    );
   }
   const provider = requestedProvider(requirements);
-  const { components } = designed;
   const { reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
@@ -704,10 +751,11 @@ async function priceOptions(
   if (region === undefined) throw new Error(`${provider} requirements need a region.`);
   const now = deps.clock.now();
 
+  const firstLocation = providerProfile(provider).regionLocations[region][0] ?? "";
   let catalog = override;
   let isStatic = false;
   if (catalog === undefined) {
-    const resolved = await resolveCatalog(deps, provider, region);
+    const resolved = await resolveCatalog(deps, provider, firstLocation);
     catalog = resolved.catalog;
     isStatic = resolved.isStatic;
     if (resolved.warning !== undefined) warn(resolved.warning);
@@ -727,7 +775,7 @@ async function priceOptions(
     if (override !== undefined || isStatic) throw error;
     if (isUserFacingError(error) && error.code === "INVALID_INPUT") throw error;
     const reason = isUserFacingError(error) ? error.message : "an unexpected error";
-    const fallback = await staticCatalog(deps, provider, region);
+    const fallback = await staticCatalog(deps, provider, firstLocation);
     catalog = fallback.catalog;
     warn(
       `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
@@ -763,8 +811,16 @@ async function priceOptions(
       ),
     );
   }
-  appWarnings(facts, components, warn);
-  return { options: designOptions, priceSource, warnings, facts, requirements, ...designed };
+  appWarnings(facts, designed.components, warn);
+  return {
+    options: designOptions,
+    priceSource,
+    warnings,
+    facts,
+    requirements,
+    ...designed,
+    catalog,
+  };
 }
 
 async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<DesignResult> {
@@ -776,14 +832,18 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const inputs = await readInputs(deps);
   const name = paths.environment;
   const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
-  const previous = await readArtifact("plan", paths.files.plan).catch((error: unknown) => {
-    if (!(isUserFacingError(error) && error.code === "ARTIFACT_MISSING")) {
-      warn(
-        "The existing opscrew/plan.yaml could not be read, so OpsCrew wrote a new plan. Settings you changed in it by hand (security, infra) and the record of an earlier deployment were not kept; check them before you run `opscrew provision`.",
-      );
-    }
+  // The plan without its placement, which design completes from the user's edits below.
+  const read = await readPlanWithEdits(paths.files.plan).catch((error: unknown) => {
+    // A placement field that is not valid stops design: the rest of the plan is the user's.
+    if (isUserFacingError(error) && error.code === "INVALID_INPUT") throw error;
+    warn(
+      "The existing opscrew/plan.yaml could not be read, so OpsCrew wrote a new plan. Settings you changed in it by hand (security, infra) and the record of an earlier deployment were not kept; check them before you run `opscrew provision`.",
+    );
     return undefined;
   });
+  const previous = read?.plan;
+  const edits: PlacementEdits = read?.edits ?? { servers: [], placed: {} };
+  requirePlacementTarget(edits, inputs.requirements);
   if (previous !== undefined) {
     requireSameProvider(
       previous,
@@ -794,9 +854,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   }
   // The plan the components are designed from, as far as the earlier plan (or a new
   // environment's block) tells; the plan's own target decides it below.
-  const basis = await sharedPartsSource(
-    paths,
-    previous ?? newPlanBasis(inputs.requirements, options.environment),
+  const basis = unplaced(
+    await sharedPartsSource(
+      paths,
+      previous ?? newPlanBasis(inputs.requirements, options.environment),
+    ),
   );
 
   let ownServer = options.ownServer;
@@ -819,6 +881,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       environment:
         options.environment === undefined ? (previous ?? {}) : { environment: options.environment },
     },
+    placed: edits.placed,
   });
   const { facts, requirements, priceSource, components } = preview;
   const designOptions = preview.options;
@@ -867,6 +930,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ...(serverless !== undefined ? { serverless } : {}),
       ...(build !== undefined ? { build } : {}),
       components: planned,
+      placed: edits.placed,
     });
   let planned = components;
   let fresh = planFor(planned);
@@ -900,7 +964,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const { plan: own, lines: ownLines } = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
   // image comes from) is chosen.
-  const source = await sharedPartsSource(paths, own);
+  const source = unplaced(await sharedPartsSource(paths, own));
   const keep =
     source === undefined ||
     previous === undefined ||
@@ -924,18 +988,42 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       : environmentPlan(shared, source, keep, paths),
     name,
   );
+  // The services placed on other servers, those servers, the private network and a move (018).
+  const edgeMb = serverless === undefined ? edgeMemoryMb(edgeProxy(kept)) : 0;
+  const placement = await designPlacement(
+    deps,
+    {
+      plan: kept,
+      edits,
+      previous,
+      requirements,
+      chosen,
+      edgeMb,
+      catalogFor: extraCatalogs(deps, preview.catalog, warn),
+      ...(ownServer?.network === undefined ? {} : { appNetwork: ownServer.network }),
+    },
+    options,
+  );
+  const networkKeys = Object.values(placement.privateKeys);
+  for (const key of networkKeys) deps.redactor.addLiteral(key, "network-key");
   // SC-1307: with nothing changed the plan stays as it is, its date and price check included. After
   // a newer interview it is written anyway: its date then says the answers are in it, so the next
   // design keeps what the user edits in plan.yaml instead of taking the answers again.
   const answeredLater =
     previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
+  const whole = read?.whole;
   const plan =
-    previous !== undefined && !answeredLater && samePlan(kept, previous) ? previous : kept;
+    whole !== undefined && !answeredLater && samePlan(placement.plan, whole)
+      ? whole
+      : placement.plan;
+  const servers = plan.servers ?? [];
+  // What runs on the app's server: the services placed elsewhere run on theirs.
+  const onApp = onAppServer(plan);
   // On the user's own server, its memory must hold this app next to the other OpsCrew apps there.
   if (chosen.target.provider === "own") {
     const memory = ownServerMemory(
       chosen.target.memoryGb * 1024,
-      appMemoryMb(plan),
+      appMemoryMb(onApp),
       (ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
       edgeMemoryMb(edgeProxy(plan)),
     );
@@ -966,29 +1054,38 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     `Give the apps names of their own: a further app takes another key (\`opscrew app remove <key>\`, then \`opscrew app add <new key> --dir <folder>\`), and a name set by hand in a plan.yaml another value; then run \`opscrew design${await appFlag(paths.root, paths.app)}\` again.`,
   );
   if (plan.target.provider === "github-pages") await requireOnePagesSite(paths, self);
-  if (plan !== previous) await writeArtifact("plan", paths.files.plan, plan);
+  if (plan !== whole) {
+    // The new network members' private keys stay on this computer, with the generated values.
+    if (networkKeys.length > 0) {
+      await recordGeneratedEntries(deps, "network", placement.privateKeys);
+    }
+    await writeArtifact("plan", paths.files.plan, plan);
+  }
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
   const onComputer = chosen.target.provider === "localhost";
   // Neither a Portainer host nor this computer is sized by OpsCrew: no memory line or headroom.
   const inPortainer = chosen.target.provider === "portainer" || onComputer;
   const ownsServer = chosen.target.provider === "own" || inPortainer;
-  const cost = formatMoney(chosen.cost.monthly);
+  // With extra servers, the price is the total of every server.
+  const total = servers.length > 0 ? plan.cost : chosen.cost;
+  const unpriced = ownsServer && total.monthly.amount === 0;
+  const cost = formatMoney(total.monthly);
   // Nothing needs no conversion (a free server-less site).
   const inBudget =
-    chosen.cost.monthly.currency === budget.currency || chosen.cost.monthly.amount === 0
+    total.monthly.currency === budget.currency || total.monthly.amount === 0
       ? ""
-      : ` (about ${formatMoney(convertMoney(chosen.cost.monthly, budget.currency))})`;
+      : ` (about ${formatMoney(convertMoney(total.monthly, budget.currency))})`;
   const price = onComputer
     ? "no server cost (it runs in this computer's Docker)"
     : inPortainer
       ? "no server cost (you already run this Portainer)"
-      : ownsServer
-        ? "no server cost (you already pay for this server)"
-        : `${cost}/month${inBudget}`;
+      : unpriced
+        ? `no server cost (you already pay for ${servers.length > 0 ? "these servers" : "this server"})`
+        : `${cost}/month${servers.length > 0 ? ` for its ${servers.length + 1} servers` : ""}${inBudget}`;
   reporter.success(
     say(
-      `${plan === previous ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
+      `${plan === whole ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
   );
   // A server-less site has no server: no image builder or strategy, memory, migrations, image
@@ -1001,9 +1098,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const supplyLines = serverless === undefined ? supplyChainLines(plan) : [];
   for (const line of buildLines) reporter.info(line);
   if (serverless !== undefined) for (const warning of serverlessSecretWarnings(plan)) warn(warning);
-  // The components, with each one's memory on the chosen server (SC-1308).
+  // The components, with each one's memory on the chosen server (SC-1308); with extra servers,
+  // each server's memory follows it in the placement's lines.
   const serverMb = chosen.target.memoryGb * 1024;
-  const edgeMb = serverless === undefined ? edgeMemoryMb(edgeProxy(plan)) : 0;
   const componentLines = [
     // Copied from a source, the components are its plan's, not those designed from the code here.
     ...(source !== undefined
@@ -1014,12 +1111,16 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
           ),
           ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
         ]),
-    ...(inPortainer || serverless !== undefined
+    ...(inPortainer || serverless !== undefined || servers.length > 0
       ? []
       : [memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
-  const headroom = memoryHeadroom(serverMb, appMemoryMb(plan), edgeMb);
+  // Each server, the total, each hop's delay, what has no login and a move's window.
+  const placementLines = placement.lines.map(say);
+  for (const line of placementLines) reporter.info(line);
+  for (const warning of placement.warnings) warn(warning);
+  const headroom = memoryHeadroom(serverMb, appMemoryMb(onApp), edgeMb);
   if (!ownsServer && serverless === undefined && headroom.low) {
     warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   }
@@ -1058,9 +1159,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     "design",
     "ok",
     say(
-      ownsServer
+      unpriced
         ? `${chosen.id}, no server cost`
-        : `${chosen.id}, ${cost}/month (${priceLabel(chosen.cost)})`,
+        : `${chosen.id}, ${cost}/month (${priceLabel(total)})`,
     ),
   );
   return {
@@ -1069,7 +1170,14 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     plan,
     priceSource,
     warnings,
-    lines: [...buildLines, ...componentLines, ...supplyLines, ...additionLines, ...checkLines],
+    lines: [
+      ...buildLines,
+      ...componentLines,
+      ...placementLines,
+      ...supplyLines,
+      ...additionLines,
+      ...checkLines,
+    ],
   };
 }
 
@@ -1132,6 +1240,16 @@ function newPlanBasis(
       ? { target: { provider: "localhost", image: "registry" } }
       : {}),
   };
+}
+
+/**
+ * The environment `source` with its services not placed on its servers: each environment places
+ * its services on servers of its own (`services[].server` from its own plan.yaml).
+ */
+function unplaced(source: SharedPartsSource | undefined): SharedPartsSource | undefined {
+  if (source === undefined) return undefined;
+  const services = source.plan.services.map(({ server: _server, ...service }) => service);
+  return { ...source, plan: { ...source.plan, services } };
 }
 
 /**
@@ -1387,6 +1505,23 @@ function requireSameProvider(
 }
 
 /**
+ * Stops before anything is written when plan.yaml places services on other servers (FR-1819) but
+ * the app runs on a target that is not a server: a Portainer, this computer, Cloudflare's hosting
+ * or GitHub Pages.
+ */
+function requirePlacementTarget(edits: PlacementEdits, requirements: Requirements): void {
+  const provider: DeployProvider = requirements.provider ?? "hetzner";
+  if (!hasPlacement(edits) || onOneServer(provider)) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `opscrew/plan.yaml places services on other servers (servers, services[].server or network), but the app runs on ${providerName(provider)}, and placement and the private network apply to servers only. Nothing was written.`,
+    {
+      hint: "Remove servers, network and each services[].server from opscrew/plan.yaml, or choose a cloud server or your own server in `opscrew interview`, then run `opscrew design` again.",
+    },
+  );
+}
+
+/**
  * OpsCrew deploys one app per repository. When neither the requirements nor the facts name an app
  * folder, re-detects the repository (the saved facts may be stale) and stops with
  * `PHASE_PRECONDITION` when it has several deployable apps, instead of designing a plan from the
@@ -1620,28 +1755,20 @@ function isCloudServer(target: DeployTarget): target is CloudDeployTarget {
  * to move.
  */
 function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] {
-  const { deployment } = previous;
-  const deployed = deployment.lastApplyAt !== undefined || deployment.lastPlanHash !== undefined;
-  if (!deployed || deployment.destroyedAt !== undefined) return [];
-  const before = previous.target;
-  const after = plan.target;
-  if (before.provider !== after.provider) return [];
   // Only a server OpsCrew creates is moved or resized: never a server the user owns, a Portainer,
   // this computer or a server-less target.
-  if (before.provider !== "hetzner" && before.provider !== "digitalocean") return [];
-  if (after.provider !== "hetzner" && after.provider !== "digitalocean") return [];
-  const server = providerProfile(after.provider).serverNoun;
-  if (before.location !== after.location) {
+  const change = appServerChange(previous, plan);
+  if (change === undefined) return [];
+  const { before, after } = change;
+  const server = providerProfile(planProvider(plan)).serverNoun;
+  if (change.kind === "replace") {
     return [
       `Your ${server} already runs in ${before.location} (${before.serverType}). The chosen option uses ${after.location} (${after.serverType}), so the next \`opscrew provision\` will replace the ${server}: it creates a new one and deletes the old one together with the data on it. Back up your data first, or choose an option in ${before.location} to keep the ${server}.`,
     ];
   }
-  if (before.serverType !== after.serverType) {
-    return [
-      `The chosen option changes the server type from ${before.serverType} to ${after.serverType}, so the next \`opscrew provision\` will resize the ${server}. The app is offline while the ${server} restarts.`,
-    ];
-  }
-  return [];
+  return [
+    `The chosen option changes the server type from ${before.serverType} to ${after.serverType}, so the next \`opscrew provision\` will resize the ${server}. The app is offline while the ${server} restarts.`,
+  ];
 }
 
 async function pick(
@@ -1676,12 +1803,12 @@ interface ResolvedCatalog {
 async function resolveCatalog(
   deps: PhaseDeps,
   provider: VpsProviderId,
-  region: Region,
+  location: string,
 ): Promise<ResolvedCatalog> {
   const wording = designWording(provider);
   const connector = vpsConnector(provider, deps, { now: () => deps.clock.now() });
   if (!connector.configured) {
-    const fallback = await staticCatalog(deps, provider, region);
+    const fallback = await staticCatalog(deps, provider, location);
     return {
       catalog: fallback.catalog,
       isStatic: true,
@@ -1690,7 +1817,7 @@ async function resolveCatalog(
   }
   const check = await connector.verifyCredentials();
   if (!check.ok) {
-    const fallback = await staticCatalog(deps, provider, region);
+    const fallback = await staticCatalog(deps, provider, location);
     return {
       catalog: fallback.catalog,
       isStatic: true,
@@ -1701,13 +1828,38 @@ async function resolveCatalog(
 }
 
 /**
+ * The catalogue an extra cloud server is sized and priced from: the one the app's server was priced
+ * from for the same provider, else that provider's own ({@link resolveCatalog}, its warning said),
+ * read once per provider.
+ */
+function extraCatalogs(
+  deps: PhaseDeps,
+  appCatalog: ComputeCatalog | undefined,
+  warn: (text: string) => void,
+): (provider: CloudProvider, location: string) => Promise<ComputeCatalog> {
+  const resolved = new Map<CloudProvider, Promise<ComputeCatalog>>();
+  return (provider, location) => {
+    if (appCatalog?.provider === provider) return Promise.resolve(appCatalog);
+    let catalog = resolved.get(provider);
+    if (catalog === undefined) {
+      catalog = resolveCatalog(deps, provider, location).then((found) => {
+        if (found.warning !== undefined) warn(found.warning);
+        return found.catalog;
+      });
+      resolved.set(provider, catalog);
+    }
+    return catalog;
+  };
+}
+
+/**
  * The provider's dated static price list (its connector without a token) and the list's date,
- * read from the static extras of the region's first location.
+ * read from the static extras of `location`.
  */
 async function staticCatalog(
   deps: PhaseDeps,
   provider: VpsProviderId,
-  region: Region,
+  location: string,
 ): Promise<{ catalog: ComputeCatalog; date: string; dated: string }> {
   const catalog = vpsConnector(provider, {
     env: {},
@@ -1715,7 +1867,6 @@ async function staticCatalog(
     redactor: deps.redactor,
     version: deps.version,
   }).catalog();
-  const location = providerProfile(provider).regionLocations[region][0] ?? "";
   const date = (await catalog.extras(location)).asOf.slice(0, 10);
   return {
     catalog,

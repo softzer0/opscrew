@@ -80,6 +80,11 @@ export interface OptionToPlanInput {
   build?: BuilderChoice;
   /** What runs next to the app (`designComponents`); by default designed from the facts. */
   components?: Components;
+  /**
+   * The services plan.yaml places on other servers (`services[].server`, by name): Dragonfly's
+   * threads there follow that server's vCPUs, not the app server's.
+   */
+  placed?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -164,16 +169,17 @@ export function appPortFor(facts: ProjectFacts): number {
 }
 
 /**
- * The services with each Dragonfly's most threads (`options.threads`) set to the chosen server's
- * vCPUs, unless plan.yaml already sets them (an edit is kept). Only a server's are known: not a
- * Portainer host's or this computer's.
+ * The services with the most threads (`options.threads`) of each Dragonfly that runs on a server
+ * (`on`) set to that server's `vcpus`, unless plan.yaml already sets them (an edit is kept).
  */
-function withServerThreads(services: readonly PlanService[], option: DesignOption): PlanService[] {
+export function withServerThreads(
+  services: readonly PlanService[],
+  vcpus: number,
+  on: (service: PlanService) => boolean,
+): PlanService[] {
   return services.map((service) =>
-    service.kind === "dragonfly" &&
-    service.options.threads === undefined &&
-    onOneServer(option.target.provider)
-      ? { ...service, options: { ...service.options, threads: option.target.vcpus } }
+    service.kind === "dragonfly" && service.options.threads === undefined && on(service)
+      ? { ...service, options: { ...service.options, threads: vcpus } }
       : service,
   );
 }
@@ -328,7 +334,15 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     target: targetFor(option, input, components, name),
     deploy: deployStrategyFor(option, components.storage?.sqlite !== undefined),
     processes: components.processes,
-    services: withServerThreads(components.services, option),
+    // Only a server's vCPUs are known: not a Portainer host's or this computer's. A service placed
+    // on another server takes that server's (`designPlacement`).
+    services: onOneServer(option.target.provider)
+      ? withServerThreads(
+          components.services,
+          option.target.vcpus,
+          (service) => input.placed?.[service.name] === undefined,
+        )
+      : components.services,
     externalServices: [...components.externalServices],
     ...(components.storage === undefined ? {} : { storage: components.storage }),
     cost: option.cost,

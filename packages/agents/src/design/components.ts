@@ -27,7 +27,7 @@ import {
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
 import { localhostHostSettingProblem } from "../localhost/preflight";
-import { appMemoryLimits, appMemoryMb, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryLimits, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
 import {
@@ -1223,9 +1223,10 @@ export function appNameFor(facts: ProjectFacts): string {
 
 /**
  * The containers' memory on a server of `serverMb`, next to the edge's `edgeMb`, each with its
- * share of the server's monthly price when there is one (SC-1308): `Memory: the app 512 MB
+ * share of the server's monthly price when there is one (SC-1308): `Memory limits: the app 512 MB
  * (€1.37/month), mysql 512 MB (€1.37/month); OpsCrew's edge and the system 512 MB; 1.0 GB of 2 GB
- * free.` A plan's enabled add-ons (Beszel, Grafana Alloy) count as containers too.
+ * free.` A plan's enabled add-ons (Beszel, Grafana Alloy) count as containers too. With `server`,
+ * the line names the server (`Memory limits on server app: …`).
  */
 export function memoryText(
   components: Pick<Components, "app" | "processes" | "services"> &
@@ -1233,15 +1234,49 @@ export function memoryText(
   serverMb: number,
   edgeMb: number,
   monthly?: Money,
+  server?: string,
 ): string {
-  const limits = appMemoryLimits(components);
+  const shared = { label: "OpsCrew's edge and the system", mb: edgeMb + SYSTEM_RESERVE_MB };
+  return limitsText(appMemoryLimits(components), shared, serverMb, monthly, server);
+}
+
+/**
+ * The memory of the extra server `server` (feature 018): its (enabled) services' limits, each with
+ * its share of the server's monthly price when there is one, the system's share and what stays
+ * free: `Memory limits on server db: db 512 MB (€0.78/month); the system 384 MB; 3.1 GB of 4.0 GB
+ * free.`
+ */
+export function serverMemoryText(
+  server: string,
+  services: readonly PlanService[],
+  serverMb: number,
+  monthly?: Money,
+): string {
+  const limits = services.map((service) => ({ name: service.name, memoryMb: service.memoryMb }));
+  return limitsText(
+    limits,
+    { label: "the system", mb: SYSTEM_RESERVE_MB },
+    serverMb,
+    monthly,
+    server,
+  );
+}
+
+/** The memory line of a server: each limit with its share of `monthly`, `shared`, and what stays free. */
+function limitsText(
+  limits: readonly { name: string; memoryMb: number }[],
+  shared: { label: string; mb: number },
+  serverMb: number,
+  monthly: Money | undefined,
+  server: string | undefined,
+): string {
   const share = (mb: number) =>
     monthly === undefined
       ? ""
       : ` (${formatMoney({ amount: (monthly.amount * mb) / serverMb, currency: monthly.currency })}/month)`;
-  const shared = edgeMb + SYSTEM_RESERVE_MB;
-  const used = appMemoryMb(components);
-  const free = Math.max(0, serverMb - used - shared);
+  const used = limits.reduce((sum, limit) => sum + limit.memoryMb, 0);
+  const free = Math.max(0, serverMb - used - shared.mb);
   const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
-  return `Memory limits: ${limits.map((l) => `${l.name} ${l.memoryMb} MB${share(l.memoryMb)}`).join(", ")}; OpsCrew's edge and the system ${shared} MB; ${gb(free)} of ${gb(serverMb)} free.`;
+  const where = server === undefined ? "" : ` on server ${server}`;
+  return `Memory limits${where}: ${limits.map((l) => `${l.name} ${l.memoryMb} MB${share(l.memoryMb)}`).join(", ")}; ${shared.label} ${shared.mb} MB; ${gb(free)} of ${gb(serverMb)} free.`;
 }

@@ -27,12 +27,13 @@ import {
   forbiddenFetch,
   makeRequirements,
   nextPostgresFacts,
+  ownPlan,
   ScriptedRunner,
   type TestPhaseDepsOptions,
 } from "../testing";
 import { addEnvironment } from "./add";
 import { environmentPaths } from "./paths";
-import { requireSharedParts } from "./shared-parts";
+import { requireSharedParts, sharedPartsDiffer } from "./shared-parts";
 
 const DB_ONLY = selfHostedServices({ postgres: true, redis: false });
 const WITH_CACHE = selfHostedServices({ postgres: true, redis: true });
@@ -339,5 +340,15 @@ describe("the shared parts follow the image (FR-1539)", () => {
       world.deps.paths,
       await readArtifact("plan", world.deps.paths.files.plan),
     );
+  });
+});
+
+describe("sharedPartsDiffer", () => {
+  it("does not count where a service runs: each environment places its services itself", () => {
+    const plan = ownPlan();
+    const placed = { ...plan, services: plan.services.map((s) => ({ ...s, server: "db" })) };
+    expect(sharedPartsDiffer(placed, plan)).toEqual([]);
+    const bigger = { ...placed, services: placed.services.map((s) => ({ ...s, memoryMb: 1024 })) };
+    expect(sharedPartsDiffer(bigger, plan)).toEqual(["services.db (other settings)"]);
   });
 });

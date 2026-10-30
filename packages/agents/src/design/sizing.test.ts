@@ -91,6 +91,18 @@ describe("ownServerMemory", () => {
     expect(ownServerMemory(0, 1024, [blog], CADDY_EDGE)).toBeUndefined();
   });
 
+  it("names an extra server, whose services there run with no edge of this app", () => {
+    const refused = ownServerMemory(1024, 768, [], 0, "home");
+    expect(refused?.refused).toEqual({
+      message:
+        "Server home has 1024 MB of memory. After 384 MB for the system, 640 MB are left, and this app's services there have 768 MB of memory limits. plan.yaml was not changed.",
+      hint: "Lower the memory limits of the services on server home in opscrew/plan.yaml, add memory to the server, or place fewer services on it, then run `opscrew design` again.",
+    });
+    expect(ownServerMemory(1024, 600, [], 0, "home")?.warning).toBe(
+      "Server home keeps only 6% of its memory free after the memory limits of this app (600 MB) and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.",
+    );
+  });
+
   it("counts the nginx edge's memory when the server runs nginx", () => {
     // 1024 - 384 - 192 leaves 448 MB.
     expect(ownServerMemory(1024, 448, [], edgeMemoryMb("nginx"))?.refused).toBeUndefined();

@@ -32,13 +32,15 @@ const SHARED_PARTS = {
  * What `plan` lacks of the shared parts of `source`, the plan it takes them from: each service of
  * `source` missing in `plan` or with other settings (`services.cache (missing)`), then each other
  * part that differs (by its place in the plan, `app.port`). Services `plan` has beyond the
- * source's are not differences: the image it runs may still use them.
+ * source's are not differences: the image it runs may still use them. Nor is where a service runs
+ * (`services[].server`): each environment places its services on servers of its own.
  */
 export function sharedPartsDiffer(source: DeployPlan, plan: DeployPlan): string[] {
-  const own = new Map(plan.services.map((service) => [service.name, canonicalJson(service)]));
+  const settings = ({ server: _server, ...service }: PlanService) => canonicalJson(service);
+  const own = new Map(plan.services.map((service) => [service.name, settings(service)]));
   const services = source.services.flatMap((service) => {
     const theirs = own.get(service.name);
-    if (theirs === canonicalJson(service)) return [];
+    if (theirs === settings(service)) return [];
     return [`services.${service.name} (${theirs === undefined ? "missing" : "other settings"})`];
   });
   const parts = Object.entries(SHARED_PARTS)

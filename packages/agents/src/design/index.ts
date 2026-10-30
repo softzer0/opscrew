@@ -3,6 +3,11 @@ export { convertMoney, costFor, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
 export { type BuildDesignOptionsInput, buildDesignOptions } from "./options";
 export { OWN_SERVER_BACKUPS_NOTE, OWN_SERVER_LOCATION } from "./own";
 export {
+  type PlacementEstimate,
+  type PlacementEstimateInput,
+  placementEstimate,
+} from "./placement";
+export {
   PORTAINER_BACKUPS_NOTE,
   PORTAINER_HOST_NOTE,
   PORTAINER_NOTES,

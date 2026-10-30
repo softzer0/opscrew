@@ -21,6 +21,24 @@ export interface ExtraServerCall {
   provider: ProviderText;
 }
 
+/** The prefix of an extra server's own root variables: `<name>_`. */
+function extraServerPrefix(name: string): VariablePrefix {
+  return `${name}_`;
+}
+
+/** The names of a server's location and server type variables under `prefix`. */
+function locationAndType(prefix: VariablePrefix): { location: string; serverType: string } {
+  return { location: `${prefix}location`, serverType: `${prefix}server_type` };
+}
+
+/**
+ * The root module's variables that hold the extra server `name`'s location and server type, as
+ * `terraform.tfvars.json` holds them once provision rendered the server.
+ */
+export function extraServerVariables(name: string): { location: string; serverType: string } {
+  return locationAndType(extraServerPrefix(name));
+}
+
 /** The plan's extra servers OpsCrew creates, in plan order; servers the user owns have none. */
 export function extraServerCalls(plan: DeployPlan): ExtraServerCall[] {
   return (plan.servers ?? []).flatMap(({ name, target }) =>
@@ -30,7 +48,7 @@ export function extraServerCalls(plan: DeployPlan): ExtraServerCall[] {
           {
             name,
             module: `server_${name}`,
-            prefix: `${name}_` as const,
+            prefix: extraServerPrefix(name),
             target,
             provider: PROVIDER_TEXT[target.provider],
           },
@@ -103,9 +121,10 @@ export function serverTfvars(
   prefix: VariablePrefix,
   target: ServerSettings,
 ): Record<string, unknown> {
+  const names = locationAndType(prefix);
   return {
-    [`${prefix}location`]: target.location,
-    [`${prefix}server_type`]: target.serverType,
+    [names.location]: target.location,
+    [names.serverType]: target.serverType,
     [`${prefix}image`]: target.image,
     [`${prefix}backups`]: target.backups,
   };
