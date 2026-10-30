@@ -396,7 +396,9 @@ Effort`.
       - provision waits for each server's ready marker and pins its host key, as it does for the
         app's.
     - **An extra own server** gets the own-server setup host plan, as an own app server does
-      (`provision/own.ts`'s path, per server).
+      (`provision/own.ts`'s path, per server), and its last setup plan is kept per server, so
+      `secure` reads that server's SSH ports and password setting from it (T1812 uses fixed
+      values until then).
     - **Wiring:** `networkSteps`' `published` comes from iac-templates' `publishedOnNetwork`, and
       the `network` step's `localPorts` are the TCP ports of that server's services published on its
       private address (from `publishedOnNetwork`), and the workflow's render context gets each extra
