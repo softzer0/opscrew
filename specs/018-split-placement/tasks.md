@@ -314,7 +314,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
   - Effort: high
 
-- [ ] T1809 [P] [US1] Agents' design: servers, placement, sizing, prices, the delay estimate, refusals and moves, in `packages/agents/src/design/**`
+- [X] T1809 [P] [US1] Agents' design: servers, placement, sizing, prices, the delay estimate, refusals and moves, in `packages/agents/src/design/**`
   - Owns: `packages/agents/src/design/**` (+ tests and fixtures)
   - Reads: plan.md "8."; spec US1, FR-1801–1803, FR-1809, FR-1818, FR-1819; research.md R3, R7; data-model.md "The plan"
   - Depends: T1801a, T1805, T1808
