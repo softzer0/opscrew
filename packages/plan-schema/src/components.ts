@@ -36,6 +36,23 @@ export const ComponentNameSchema = z
     message: `is a name OpsCrew uses itself (${[...RESERVED_NAMES].join(", ")}); choose another`,
   });
 
+/** The app's own server (`target`), wherever the network or a placement names a server. */
+export const APP_SERVER = "app";
+
+/**
+ * An extra server's name (`servers[].name`): its module, its cloud resources, its GitHub secrets
+ * and the lines of every command name it. Never {@link APP_SERVER}.
+ */
+export const ServerNameSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]{0,14}$/, {
+    message: "must be 1-15 lower-case letters, digits or hyphens and start with a letter",
+  })
+  .refine((name) => name !== APP_SERVER, {
+    message:
+      'must not be "app": that names the app\'s own server (target); give the extra server another name, such as "data"',
+  });
+
 /** A process that runs from the app's image next to the web process, for example a job queue. */
 const WorkerSchema = z
   .strictObject({
@@ -106,6 +123,8 @@ function serviceEntry<K extends z.ZodType, O extends z.ZodType>(kind: K, options
     memoryMb: MemoryMbSchema,
     /** `false` keeps the entry and runs nothing. */
     enabled: z.boolean().default(true),
+    /** The extra server it runs on (`servers[].name`); absent: the app's server. */
+    server: ServerNameSchema.optional(),
     options,
     /** The app's own variable for the service's address, when detection found one; it gets the address too. */
     variable: EnvVarNameSchema.optional(),

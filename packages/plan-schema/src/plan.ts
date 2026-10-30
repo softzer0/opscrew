@@ -2,7 +2,14 @@ import { posix } from "node:path";
 import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN } from "@opscrew/core";
 import { z } from "zod";
 import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
-import { PlanServiceSchema, ProcessesSchema, StorageSchema, serviceOf } from "./components";
+import {
+  ComponentNameSchema,
+  PlanServiceSchema,
+  ProcessesSchema,
+  ServerNameSchema,
+  StorageSchema,
+  serviceOf,
+} from "./components";
 import { CostEstimateSchema } from "./design";
 import {
   type CloudProvider,
@@ -27,6 +34,7 @@ import {
   UrlPathSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
+import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
 
 /** Services that conflict with a self-hosted Postgres container. */
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
@@ -74,6 +82,30 @@ export const OwnTargetSchema = z.strictObject({
    */
   access: z.enum(["public", "tunnel"]),
   edge: EdgeSchema,
+});
+
+/**
+ * An extra server OpsCrew creates: {@link CloudTargetSchema} without `edge`, as it serves no web
+ * traffic.
+ */
+const ExtraCloudTargetSchema = CloudTargetSchema.omit({ edge: true });
+
+/**
+ * An extra server of the app (`servers[]`), for services placed on it (`services[].server`): one
+ * OpsCrew creates on Hetzner Cloud or DigitalOcean, or one the user owns, reached at its public
+ * address (its address and login stay in `.opscrew/server.json`, as the app server's do).
+ */
+export const ExtraServerSchema = z.strictObject({
+  name: ServerNameSchema,
+  target: z.discriminatedUnion("provider", [
+    ExtraCloudTargetSchema,
+    z.strictObject({
+      provider: z.literal("own"),
+      mode: z.literal("vps-compose"),
+      /** The server's CPU architecture, from inspection. */
+      arch: z.enum(["amd64", "arm64"]),
+    }),
+  ]),
 });
 
 /**
@@ -1300,6 +1332,11 @@ const DeployPlanFieldsSchema = z.strictObject({
     build: AppBuildSchema.optional(),
   }),
   target: DeployTargetSchema,
+  /**
+   * The app's extra servers, for services placed on them; the app's own server is `target`.
+   * Absent: none (a plan without them keeps its bytes).
+   */
+  servers: z.array(ExtraServerSchema).optional(),
   /** How a new version replaces the running one. */
   deploy: DeploySettingsSchema.prefault({}),
   /** Workers and cron jobs, from the app's image. */
@@ -1397,6 +1434,8 @@ const DeployPlanFieldsSchema = z.strictObject({
       imageScan: z.boolean().default(true),
     })
     .prefault({}),
+  /** The private network of the app's servers and the user's devices; absent until one is added. */
+  network: NetworkSchema.optional(),
   supplyChain: z
     .strictObject({
       /**
@@ -1436,9 +1475,16 @@ const DeployPlanFieldsSchema = z.strictObject({
       firstDeployAt: IsoDateTimeSchema.optional(),
       /** When `opscrew destroy` removed the infrastructure. */
       destroyedAt: IsoDateTimeSchema.optional(),
+      /**
+       * Where each service ran after the last successful deploy: service name → `app` or an extra
+       * server's name. Design compares it with `services[].server` to find a move.
+       */
+      placement: z.record(ComponentNameSchema, z.string()).optional(),
     })
     .prefault({}),
   retarget: RetargetSchema.optional(),
+  /** A service's move between the app's servers in progress; absent when none. */
+  move: MoveSchema.optional(),
 });
 
 /** A parsed plan before its cross-field rules and its defaults that depend on other fields. */
@@ -1496,6 +1542,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   checkObservability(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
   checkComponents(plan, ctx);
+  checkPlacement(plan, ctx);
 });
 
 /**
@@ -1563,8 +1610,11 @@ export const DEFAULT_IMAGES: Readonly<Record<CloudProvider, string>> = {
   digitalocean: "ubuntu-24-04-x64",
 };
 
-/** A cloud target with its image filled in from `DEFAULT_IMAGES` when omitted. */
-function withImage(target: z.output<typeof CloudTargetSchema>) {
+/**
+ * A cloud target (the app's or an extra server's) with its image filled in from `DEFAULT_IMAGES`
+ * when omitted.
+ */
+function withImage<T extends { provider: CloudProvider; image?: string | undefined }>(target: T) {
   return { ...target, image: target.image ?? DEFAULT_IMAGES[target.provider] };
 }
 
@@ -1594,6 +1644,15 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
   return {
     ...plan,
     target: withTargetDefaults(plan.target),
+    ...(plan.servers === undefined
+      ? {}
+      : {
+          servers: plan.servers.map((server) =>
+            server.target.provider === "own"
+              ? server
+              : { ...server, target: withImage(server.target) },
+          ),
+        }),
     infra: { engine, dir: dir ?? infraDirFor(key, environment), ...infra },
     cicd: { provider, workflowPath: workflowPath ?? workflowPathFor(key, environment), ...cicd },
     ...(plan.retarget === undefined
@@ -1648,6 +1707,8 @@ export const PORTAINER_TARGET_NO_MOVE = {
 export type PortainerWeb = PortainerDeployTarget["web"];
 /** A move to another provider in progress. */
 export type Retarget = NonNullable<DeployPlan["retarget"]>;
+/** An extra server of the app, with an extra cloud server's image filled in. */
+export type ExtraServer = NonNullable<DeployPlan["servers"]>[number];
 /** Portainer CE settings with their defaults filled in. */
 export type PortainerSettings = NonNullable<DeployPlan["portainer"]>;
 /** The scheduled check and the add-ons, with their defaults filled in. */

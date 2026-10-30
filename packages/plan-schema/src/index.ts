@@ -29,5 +29,17 @@ export {
   serializeArtifact,
   writeArtifact,
 } from "./io";
+export {
+  DeviceNameSchema,
+  GRANTABLE_KINDS,
+  type Move,
+  MoveSchema,
+  type Network,
+  NetworkSchema,
+  networkInterface,
+  serverOfService,
+  servicesOn,
+  WireGuardKeySchema,
+} from "./placement";
 export * from "./plan";
 export * from "./requirements";

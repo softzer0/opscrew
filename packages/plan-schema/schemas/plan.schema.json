@@ -523,6 +523,73 @@
         }
       ]
     },
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,14}$"
+          },
+          "target": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": ["hetzner", "digitalocean"]
+                  },
+                  "mode": {
+                    "type": "string",
+                    "const": "vps-compose"
+                  },
+                  "location": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "serverType": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "image": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "backups": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["provider", "mode", "location", "serverType", "backups"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "const": "own"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "const": "vps-compose"
+                  },
+                  "arch": {
+                    "type": "string",
+                    "enum": ["amd64", "arm64"]
+                  }
+                },
+                "required": ["provider", "mode", "arch"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": ["name", "target"],
+        "additionalProperties": false
+      }
+    },
     "deploy": {
       "default": {},
       "type": "object",
@@ -660,6 +727,10 @@
                 "default": true,
                 "type": "boolean"
               },
+              "server": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,14}$"
+              },
               "options": {
                 "type": "object",
                 "properties": {
@@ -710,6 +781,10 @@
               "enabled": {
                 "default": true,
                 "type": "boolean"
+              },
+              "server": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,14}$"
               },
               "options": {
                 "type": "object",
@@ -771,6 +846,10 @@
                 "default": true,
                 "type": "boolean"
               },
+              "server": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,14}$"
+              },
               "options": {
                 "default": {},
                 "type": "object",
@@ -821,6 +900,10 @@
               "enabled": {
                 "default": true,
                 "type": "boolean"
+              },
+              "server": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,14}$"
               },
               "options": {
                 "default": {},
@@ -892,6 +975,10 @@
               "enabled": {
                 "default": true,
                 "type": "boolean"
+              },
+              "server": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,14}$"
               },
               "options": {
                 "default": {},
@@ -1301,6 +1388,101 @@
       },
       "additionalProperties": false
     },
+    "network": {
+      "type": "object",
+      "properties": {
+        "range": {
+          "type": "string",
+          "format": "cidrv4",
+          "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\/([0-9]|[1-2][0-9]|3[0-2])$"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "address": {
+                "type": "string",
+                "format": "ipv4",
+                "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 51820,
+                "maximum": 65535
+              },
+              "publicKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$"
+              }
+            },
+            "required": ["name", "address", "port", "publicKey"],
+            "additionalProperties": false
+          }
+        },
+        "devices": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,31}$"
+              },
+              "address": {
+                "type": "string",
+                "format": "ipv4",
+                "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
+              },
+              "publicKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$"
+              },
+              "addedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              }
+            },
+            "required": ["name", "address", "publicKey", "addedAt"],
+            "additionalProperties": false
+          }
+        },
+        "grants": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,31}$"
+              },
+              "service": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "access": {
+                "type": "string",
+                "enum": ["read-only", "full"]
+              }
+            },
+            "required": ["device", "service", "access"],
+            "additionalProperties": false
+          }
+        },
+        "publicSsh": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": ["range", "members"],
+      "additionalProperties": false
+    },
     "supplyChain": {
       "default": {},
       "type": "object",
@@ -1561,6 +1743,16 @@
           "type": "string",
           "format": "date-time",
           "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "placement": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -1715,6 +1907,36 @@
         }
       },
       "required": ["from", "step", "startedAt"],
+      "additionalProperties": false
+    },
+    "move": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string",
+          "enum": ["started", "deployed", "switched"]
+        },
+        "copy": {
+          "type": "string",
+          "enum": ["dump", "empty"]
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["service", "from", "to", "step", "copy"],
       "additionalProperties": false
     }
   },
